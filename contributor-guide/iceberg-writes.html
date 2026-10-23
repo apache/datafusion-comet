@@ -420,6 +420,7 @@ under the License.
 <li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg-scheduler-failures.html">Iceberg Scheduler Failure Tests</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
@@ -1027,31 +1028,34 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code></p></td>
 <td><p>End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="iceberg-scheduler-failures.html"><span class="std std-doc"><code class="docutils literal notranslate"><span class="pre">CometIcebergSchedulerFailureSuite</span></code></span></a></p></td>
+<td><p>Manual multi-host speculation and executor-loss recovery, with scheduler evidence and a manifest-to-storage audit.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteDetectionSuite</span></code></p></td>
 <td><p>Most eligibility rules, each accepted and declined.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergSystemFunctionSuite</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergSystemFunctionSuite</span></code></p></td>
 <td><p>Native <code class="docutils literal notranslate"><span class="pre">bucket</span></code>, <code class="docutils literal notranslate"><span class="pre">truncate</span></code>, <code class="docutils literal notranslate"><span class="pre">years</span></code>/<code class="docutils literal notranslate"><span class="pre">months</span></code>/<code class="docutils literal notranslate"><span class="pre">days</span></code>/<code class="docutils literal notranslate"><span class="pre">hours</span></code>, which keep a partitioned write’s hash distribution and sort native end to end.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergRewriteActionSuite</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergRewriteActionSuite</span></code></p></td>
 <td><p>Iceberg’s <code class="docutils literal notranslate"><span class="pre">rewrite_data_files</span></code> with the split plan and the native writer.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslationSuite</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteProtoTranslationSuite</span></code></p></td>
 <td><p>Translation of properties into <code class="docutils literal notranslate"><span class="pre">IcebergParquetWriteSettings</span></code> and the writer mode.</p></td>
 </tr>
-<tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and in <code class="docutils literal notranslate"><span class="pre">iceberg_partition_*.rs</span></code></p></td>
+<tr class="row-even"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_write.rs</span></code> and in <code class="docutils literal notranslate"><span class="pre">iceberg_partition_*.rs</span></code></p></td>
 <td><p>File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past <code class="docutils literal notranslate"><span class="pre">chrono</span></code>’s calendar.</p></td>
 </tr>
-<tr class="row-even"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code></p></td>
+<tr class="row-odd"><td><p>Rust tests in <code class="docutils literal notranslate"><span class="pre">iceberg_dictionary.rs</span></code></p></td>
 <td><p>The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg_dictionary_chooser</span></code> benchmark in <code class="docutils literal notranslate"><span class="pre">native/core/benches</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">iceberg_dictionary_chooser</span></code> benchmark in <code class="docutils literal notranslate"><span class="pre">native/core/benches</span></code></p></td>
 <td><p>The time one partition’s dictionary choice takes, over primitive, struct, array, map and nested columns.</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteBenchmark</span></code></p></td>
 <td><p>Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm’s plan before timing it.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergEndToEndBenchmark</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergEndToEndBenchmark</span></code></p></td>
 <td><p>An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm’s plan and the rows it wrote before timing it.</p></td>
 </tr>
 </tbody>

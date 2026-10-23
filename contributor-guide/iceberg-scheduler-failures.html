@@ -1,0 +1,905 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Native Iceberg writes: Spark scheduler failure tests &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=bfdde722" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'contributor-guide/iceberg-scheduler-failures';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <script src="../_static/comet-ux.js?v=97577a30"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Continuous Integration" href="ci.html" />
+    <link rel="prev" title="Running Iceberg Spark Tests" href="iceberg-spark-tests.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../changelog/index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+      <p aria-level="2" class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="contributing.html">Getting Started</a></li>
+<li class="toctree-l1"><a class="reference internal" href="development.html">Development Guide</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Architecture</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="plugin_overview.html">Comet Plugin Architecture</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="ffi.html">Arrow FFI</a></li>
+<li class="toctree-l1"><a class="reference internal" href="timezones.html">Timezone Handling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="floating_point.html">Floating-Point Semantics</a></li>
+<li class="toctree-l1"><a class="reference internal" href="jvm_shuffle.html">JVM Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="native_shuffle.html">Native Shuffle</a></li>
+<li class="toctree-l1"><a class="reference internal" href="memory_management.html">Memory Management</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg-writes.html">Iceberg Writes</a></li>
+<li class="toctree-l1"><a class="reference internal" href="sql_error_propagation.html">ANSI Error Propagation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="s3-credential-provider-design.html">S3 Credential Provider Design</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Functionality</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_operator.html">Adding a New Operator</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_expression.html">Adding a New Expression</a></li>
+<li class="toctree-l1"><a class="reference internal" href="adding_a_new_spark_version.html">Adding a New Spark Version</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Testing</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="sql-file-tests.html">Comet SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="spark-sql-tests.html">Spark SQL Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="iceberg-spark-tests.html">Iceberg Spark Tests</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Iceberg Scheduler Failure Tests</a></li>
+<li class="toctree-l1"><a class="reference internal" href="ci.html">Continuous Integration</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Debugging and Performance</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="debugging.html">Debugging Guide</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="benchmarking.html">Benchmarking Guide</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="benchmark-results/tpc-ds.html">TPC-DS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_macos.html">Comet Benchmarking on macOS</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_aws_ec2.html">Comet Benchmarking in EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_micro_ec2.html">Micro Benchmarking on AWS EC2</a></li>
+<li class="toctree-l2"><a class="reference internal" href="benchmarking_spark_sql_perf.html">TPC-DS Benchmarking with spark-sql-perf</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="optimizing_expressions.html">Optimizing Scalar Expressions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="profiling.html">Profiling</a></li>
+<li class="toctree-l1"><a class="reference internal" href="tracing.html">Tracing</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1 has-children"><a class="reference internal" href="expression-audits/index.html">Expression Audits</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/agg_funcs.html">agg_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/array_funcs.html">array_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/bitwise_funcs.html">bitwise_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/collection_funcs.html">collection_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conditional_funcs.html">conditional_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/conversion_funcs.html">conversion_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/datetime_funcs.html">datetime_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/generator_funcs.html">generator_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/hash_funcs.html">hash_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/json_funcs.html">json_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/map_funcs.html">map_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/math_funcs.html">math_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/misc_funcs.html">misc_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/predicate_funcs.html">predicate_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/string_funcs.html">string_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/struct_funcs.html">struct_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/url_funcs.html">url_funcs</a></li>
+<li class="toctree-l2"><a class="reference internal" href="expression-audits/window_funcs.html">window_funcs</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="data-source-audits/index.html">Data Source Audits</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="data-source-audits/parquet.html">Parquet</a></li>
+<li class="toctree-l2"><a class="reference internal" href="data-source-audits/iceberg.html">Iceberg</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="bug_triage.html">Bug Triage</a></li>
+<li class="toctree-l1"><a class="reference internal" href="backporting.html">Backporting</a></li>
+<li class="toctree-l1"><a class="reference internal" href="release_process.html">Release Process</a></li>
+<li class="toctree-l1"><a class="reference internal" href="roadmap.html">Roadmap</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/apache/datafusion-comet">Github and Issue Tracker</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Comet Contributor Guide</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">Native Iceberg writes: Spark scheduler failure tests</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="native-iceberg-writes-spark-scheduler-failure-tests">
+<h1>Native Iceberg writes: Spark scheduler failure tests<a class="headerlink" href="#native-iceberg-writes-spark-scheduler-failure-tests" title="Link to this heading">#</a></h1>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergSchedulerFailureSuite</span></code> tests speculative execution and executor loss during
+multi-task native Iceberg writes. It covers the scheduler scenarios in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5646">#5646</a>, complementing the mid-write,
+post-native handoff and job/commit failure tests in <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code>.
+The suite adds test instrumentation without changing Iceberg commit or cleanup semantics.</p>
+<section id="test-scenarios">
+<h2>Test scenarios<a class="headerlink" href="#test-scenarios" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Scenario</p></th>
+<th class="head"><p>Required scheduler evidence</p></th>
+<th class="head"><p>Storage expectation</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Original attempt wins speculation</p></td>
+<td><p>Two attempts on distinct hosts finish native handoff; the original succeeds and its message is accepted</p></td>
+<td><p>Only accepted winner files are referenced; no orphan or missing files</p></td>
+</tr>
+<tr class="row-odd"><td><p>Speculative attempt wins</p></td>
+<td><p>Two attempts on distinct hosts finish native handoff; the speculative attempt succeeds and its message is accepted</p></td>
+<td><p>Only accepted winner files are referenced; no orphan or missing files</p></td>
+</tr>
+<tr class="row-even"><td><p>Executor-loss task replacement</p></td>
+<td><p>Executor removal, <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code>, and successful replacement of the affected partition on another executor</p></td>
+<td><p>Only accepted winner files are referenced; every orphan belongs to a known rejected attempt; no missing files</p></td>
+</tr>
+<tr class="row-odd"><td><p>Executor loss with shuffle-output loss</p></td>
+<td><p>The task-replacement evidence, plus <code class="docutils literal notranslate"><span class="pre">FetchFailed</span></code> and a higher writer <code class="docutils literal notranslate"><span class="pre">stageAttemptId</span></code></p></td>
+<td><p>The same storage assertions as executor-loss task replacement</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>An increased task attempt number alone does not prove stage re-execution. The shuffle-output-loss
+case fails if the cluster only replaces the task without the required stage and fetch-failure events.</p>
+</section>
+<section id="common-assertions">
+<h2>Common assertions<a class="headerlink" href="#common-assertions" title="Link to this heading">#</a></h2>
+<p>Every scenario writes to a new empty table and asserts:</p>
+<ul class="simple">
+<li><p>Exactly 48,000 rows and 48,000 distinct IDs. Bidirectional <code class="docutils literal notranslate"><span class="pre">EXCEPT</span> <span class="pre">ALL</span></code> comparisons check the
+complete expected ID multiset, rather than relying on counts alone.</p></li>
+<li><p>Exactly one new snapshot, one commit operator, and one successful commit marker.</p></li>
+<li><p>One driver-accepted message per logical writer partition. Each message’s complete file set
+identifies exactly one native handoff attempt with a scheduler <code class="docutils literal notranslate"><span class="pre">Success</span></code> event.</p></li>
+<li><p>Manifest references equal the complete union of accepted winner files. Files reported by
+rejected attempts must not be referenced.</p></li>
+<li><p>Every referenced file exists under the data location.</p></li>
+</ul>
+<p>The storage audit inventories all regular files under the data location, including unfinished
+files, excluding only Hadoop CRC metadata sidecars. It computes:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>orphan  = physical files - manifest-referenced files
+missing = manifest-referenced files - physical files
+</pre></div>
+</div>
+<p>For speculation, both sets must be empty after the losing attempt terminates and cleanup finishes.
+For executor loss, <code class="docutils literal notranslate"><span class="pre">missing</span></code> must be empty and <code class="docutils literal notranslate"><span class="pre">orphan</span></code> must be a subset of <code class="docutils literal notranslate"><span class="pre">rejectedFiles</span></code>, the
+paths observed through attempt-unique file-name prefixes or native handoff, belonging to
+attempts whose messages were not accepted. Unknown orphan files fail the test. This checks the storage state even when readers see the correct table rows.</p>
+<p><code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code> bypasses executor-side cleanup, so known rejected-attempt orphans do not by themselves
+fail executor-loss recovery. These scenarios do not require immediate <code class="docutils literal notranslate"><span class="pre">physical</span> <span class="pre">==</span> <span class="pre">referenced</span></code>
+and do not introduce a surviving process’s cleanup mechanism. Files are never removed before
+storage verification to make the audit pass.</p>
+</section>
+<section id="cluster-requirements">
+<h2>Cluster requirements<a class="headerlink" href="#cluster-requirements" title="Link to this heading">#</a></h2>
+<p>This is a manual integration suite, excluded from automatic discovery by <code class="docutils literal notranslate"><span class="pre">&#64;DoNotDiscover</span></code> and
+from ordinary single-host CI through <code class="docutils literal notranslate"><span class="pre">dev/ci/check-suites.py</span></code>. Missing infrastructure fails the
+suite; it does not produce a skipped pass.</p>
+<p>Use a dedicated Spark Standalone cluster with:</p>
+<ul class="simple">
+<li><p>At least two Linux worker hosts, as seen by the Spark scheduler, with at least two cores per
+worker and executor replacement enabled. <code class="docutils literal notranslate"><span class="pre">local[...]</span></code> and <code class="docutils literal notranslate"><span class="pre">local-cluster[...]</span></code> are rejected.</p></li>
+<li><p>Matching Spark/Scala profiles, JDK, operating system and native architecture on the driver and
+executors. A macOS native build cannot serve Linux executors.</p></li>
+<li><p>A driver address reachable from both workers, configured through the usual Spark settings.</p></li>
+<li><p>A shared POSIX filesystem mounted at the same absolute path on the driver and all workers.
+It holds the warehouse, source files, attempt markers and executor classpath snapshot.
+Atomic rename must work. S3/HDFS warehouses are outside this harness’s scope.</p></li>
+</ul>
+<p>The suite requests one core per executor and up to four cores in total. A gated preflight job
+checks shared-filesystem visibility and concurrent executor processes on at least two distinct
+hosts before running the write scenarios.</p>
+<p>AQE, partition coalescing, dynamic allocation, decommissioning, push shuffle and the external
+shuffle service are disabled. The stage-loss case depends on executor-local shuffle output being
+lost when its owning process terminates. Comet shuffle is disabled; the stage-loss fixture exposes
+ordinary Spark shuffle lineage through an RDDScan so Spark-to-Arrow can feed the native writer.</p>
+<section id="speculation-settings">
+<h3>Speculation settings<a class="headerlink" href="#speculation-settings" title="Link to this heading">#</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">COMET_SCHEDULER_SPECULATION_ENABLED</span></code> controls <code class="docutils literal notranslate"><span class="pre">spark.speculation</span></code> before SparkContext creation
+and defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code>. Run speculation with <code class="docutils literal notranslate"><span class="pre">true</span></code> and executor-loss cases in separate Maven
+invocations with <code class="docutils literal notranslate"><span class="pre">false</span></code>.</p>
+<p>The initial loss-mode gates prevent speculation before any writer succeeds, but speculation can
+still occur during recovery if enabled. Disabling it ensures the loss tests prove ordinary task
+replacement. Run the filters below separately rather than running all scenarios with one setting.</p>
+</section>
+</section>
+<section id="failure-injection-and-probes">
+<h2>Failure injection and probes<a class="headerlink" href="#failure-injection-and-probes" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">IcebergSchedulerTestProbe</span></code> is an explicitly scoped driver hook. Its serializable instance is
+captured in task closures, so executors do not depend on a driver-installed JVM singleton.
+<code class="docutils literal notranslate"><span class="pre">IcebergCommitExec</span></code> records messages actually accepted by Spark’s <code class="docutils literal notranslate"><span class="pre">runJob</span></code> result handler and
+records the successful commit. Duplicate accepted messages or commit markers fail the probe.</p>
+<p><code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> installs per-attempt gates before parent input iteration and after native
+payload handoff. <code class="docutils literal notranslate"><span class="pre">IcebergSchedulerProbeRDD</span></code> wraps the JVM input iterator and pauses before
+pulling another batch after the configured row threshold. The native writer pulls this input
+through <code class="docutils literal notranslate"><span class="pre">CometArrowStream.inputObjects</span></code>. It can prefetch a batch while a write awaits native I/O,
+so the row count measures supplied input rather than completed writes. The pause occurs before
+input EOF and writer close; the physical-file checks establish actual write progress. The probe
+inventories files under the data location using the attempt-unique <code class="docutils literal notranslate"><span class="pre">file_name_prefix</span></code> (partition ID, task attempt ID and operation ID), recording
+paths and their current byte sizes in <code class="docutils literal notranslate"><span class="pre">native-progress.json</span></code>. There is no native or protobuf test
+hook. JSON markers are published atomically under unique run/task-attempt directories; all gate waits have bounded timeouts and diagnostics.</p>
+<section id="speculative-attempts">
+<h3>Speculative attempts<a class="headerlink" href="#speculative-attempts" title="Link to this heading">#</a></h3>
+<p>Four source Parquet files contain disjoint ID ranges. The original attempt for writer partition 0
+is held after native handoff while other partitions finish, allowing Spark to launch a speculative
+attempt on another host. Both attempts must report nonempty, disjoint file sets for the same
+stage, stage attempt and partition.</p>
+<p>The tests control each winner direction by releasing only the selected attempt and requiring its
+scheduler <code class="docutils literal notranslate"><span class="pre">Success</span></code> and accepted message. Both attempts completing native handoff does not mean
+both succeed in the scheduler: Spark cancels the loser after accepting the winner.</p>
+</section>
+<section id="executor-process-loss">
+<h3>Executor process loss<a class="headerlink" href="#executor-process-loss" title="Link to this heading">#</a></h3>
+<p>Initial writer attempts pause after supplying 4,000 rows, using 1,000-row batches, a one-byte
+target file size and <code class="docutils literal notranslate"><span class="pre">write.parquet.page-row-limit=1000</span></code>. The native writer holds back each partition’s first
+data page before opening a file; its default 20,000-row page exceeds this fixture’s 12,000 rows
+per task. The smaller page permits early file rolling. The 4,000-row input threshold leaves
+room for native input prefetch and asynchronous file creation before the JVM iterator pauses.
+The row threshold alone is not evidence of physical write progress.
+Before termination, the test independently requires physical bytes at a native-owned path, no
+native handoff or terminal task event for the target, and progress on another writer partition
+in a different executor process.</p>
+<p>The ordinary loss case targets partition 0. The shuffle-output-loss case selects an active writer
+executor that also owns completed upstream shuffle output. Two other reducers are gated before
+constructing their parent iterators, preventing eager shuffle fetches. After executor removal,
+releasing those reducers must cause <code class="docutils literal notranslate"><span class="pre">FetchFailed</span></code> and writer-stage re-execution.</p>
+<p>The suite records the target’s exact host, PID, executor ID and native-owned paths before invoking
+the termination helper. <code class="docutils literal notranslate"><span class="pre">dev/iceberg-scheduler-kill-executor.py</span></code> is a Linux/SSH implementation that
+checks <code class="docutils literal notranslate"><span class="pre">/proc/PID/cmdline</span></code> for <code class="docutils literal notranslate"><span class="pre">CoarseGrainedExecutorBackend</span></code> and the expected executor ID before
+sending <code class="docutils literal notranslate"><span class="pre">SIGKILL</span></code>, then waits for process exit. It terminates the executor, not the worker or driver.</p>
+<p>A custom executable may replace the SSH helper for containers or Kubernetes. Its argument contract
+is <code class="docutils literal notranslate"><span class="pre">HOST</span> <span class="pre">PID</span> <span class="pre">EXECUTOR_ID</span> <span class="pre">RUN_DIRECTORY</span></code>; it must provide equivalent process-identity and exit
+evidence. The SSH helper requires noninteractive SSH access as the executor owner and Python 3
+on each worker.</p>
+</section>
+</section>
+<section id="build-and-run">
+<h2>Build and run<a class="headerlink" href="#build-and-run" title="Link to this heading">#</a></h2>
+<p>Run commands from the repository root. These examples use Spark 4.1 explicitly; if selecting
+another profile, use it consistently and provision matching cluster binaries.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>make<span class="w"> </span>core
+./mvnw<span class="w"> </span>test-compile<span class="w"> </span>-Pspark-4.1<span class="w"> </span>-DskipTests
+</pre></div>
+</div>
+<p>The local smoke test checks probe serialization, handoff, accepted files, completion markers,
+rows and physical files. Additional local cases exercise the executor-loss input hook with
+<code class="docutils literal notranslate"><span class="pre">release-all</span></code> pre-created and assert byte sizes captured before handoff. Further cases hold a
+write until either its attempt’s <code class="docutils literal notranslate"><span class="pre">release-native</span></code> or the run’s <code class="docutils literal notranslate"><span class="pre">release-all</span></code> is created, and
+verify that a gate timeout fails the attempt, cleans its files, and retries into one snapshot.
+Commit-hook cases verify that a failed commit never publishes a success marker and that a
+throwing post-commit probe never aborts or deletes committed files. These tests run in
+<code class="docutils literal notranslate"><span class="pre">CometIcebergWriteActionSuite</span></code> in ordinary CI; they do not prove multi-host scheduler behavior:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometIcebergWriteActionSuite scheduler probe"</span>
+
+./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometIcebergWriteActionSuite"</span>
+</pre></div>
+</div>
+<p>Replace the cluster settings below with your infrastructure:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nb">export</span><span class="w"> </span><span class="nv">COMET_SCHEDULER_MASTER</span><span class="o">=</span><span class="s1">'spark://spark-master:7077'</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">COMET_SCHEDULER_SHARED_ROOT</span><span class="o">=</span><span class="s1">'/shared/comet-scheduler'</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">COMET_SCHEDULER_KILL_COMMAND</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/dev/iceberg-scheduler-kill-executor.py"</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">COMET_SCHEDULER_TIMEOUT_SECONDS</span><span class="o">=</span><span class="m">180</span>
+
+<span class="nv">COMET_SCHEDULER_SPECULATION_ENABLED</span><span class="o">=</span><span class="nb">true</span><span class="w"> </span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometIcebergSchedulerFailureSuite speculative"</span>
+
+<span class="nv">COMET_SCHEDULER_SPECULATION_ENABLED</span><span class="o">=</span><span class="nb">false</span><span class="w"> </span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometIcebergSchedulerFailureSuite task replacement"</span>
+
+<span class="nv">COMET_SCHEDULER_SPECULATION_ENABLED</span><span class="o">=</span><span class="nb">false</span><span class="w"> </span>./mvnw<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-Pspark-4.1<span class="w"> </span>-Dtest<span class="o">=</span>none<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-Dsuites<span class="o">=</span><span class="s2">"org.apache.comet.CometIcebergSchedulerFailureSuite stage re-execution"</span>
+</pre></div>
+</div>
+<p>By default the suite snapshots the actual Maven test JVM’s unshaded classpath to the shared root
+before creating SparkContext. It includes current reactor classes, test helpers, dependencies and
+native resources. A shaded Comet jar alone is insufficient for the unshaded task closures.
+The snapshot is removed after SparkContext stops. To use a pre-provisioned matching unshaded
+classpath instead, set <code class="docutils literal notranslate"><span class="pre">COMET_SCHEDULER_EXECUTOR_CLASSPATH</span></code> to paths visible on every worker.</p>
+</section>
+<section id="diagnostics-and-teardown">
+<h2>Diagnostics and teardown<a class="headerlink" href="#diagnostics-and-teardown" title="Link to this heading">#</a></h2>
+<p>Evidence is exported to <code class="docutils literal notranslate"><span class="pre">spark/target/iceberg-scheduler-artifacts/&lt;runId&gt;/</span></code>, including scheduler
+events, plans, attempt markers, the process-termination log, file inventories and
+<code class="docutils literal notranslate"><span class="pre">gates/storage-audit.json</span></code>. The audit records physical, referenced, winner, rejected, orphan and
+missing file sets before storage assertions.</p>
+<p>The suite releases gates, waits for or cancels the job, drains the listener bus and exports evidence
+before deleting successful fixtures. Failed runs retain the shared warehouse for inspection.
+Unique run IDs isolate subsequent invocations from earlier files.</p>
+<p>Report scheduler recovery and storage results separately. A passing executor-loss test with known
+orphans proves recovery and file attribution, not immediate cleanup. Do not claim stage
+re-execution when only task attempts increased. Repeat the speculation filter when assessing race
+stability, and retain each invocation’s evidence.</p>
+</section>
+<section id="regression-checks">
+<h2>Regression checks<a class="headerlink" href="#regression-checks" title="Link to this heading">#</a></h2>
+<p>Compilation and formatting checks do not replace execution on the required cluster. An Iceberg
+write-path change also needs an upstream Iceberg regression verdict before merging, using the
+<code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label or an appropriate <code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span> <span class="pre">iceberg</span></code> shard as described in
+<a class="reference internal" href="ci.html"><span class="std std-doc">Continuous Integration</span></a>. That regression run does not replace this scheduler suite.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="iceberg-spark-tests.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Running Iceberg Spark Tests</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="ci.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Continuous Integration</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#test-scenarios">Test scenarios</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-assertions">Common assertions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#cluster-requirements">Cluster requirements</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speculation-settings">Speculation settings</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#failure-injection-and-probes">Failure injection and probes</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speculative-attempts">Speculative attempts</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#executor-process-loss">Executor process loss</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#build-and-run">Build and run</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#diagnostics-and-teardown">Diagnostics and teardown</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#regression-checks">Regression checks</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="../index.html" aria-label="Apache DataFusion Comet — home">
+      <img src="../_static/images/DataFusionComet-Logo-Light.png"
+           class="comet-footer__logo only-light"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+      <img src="../_static/images/DataFusionComet-Logo-Dark.png"
+           class="comet-footer__logo only-dark pst-js-only"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="../user-guide/index.html">User Guide</a>
+        <a href="index.html">Contributor Guide</a>
+        <a href="../changelog/index.html">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
+  </div>
+</footer>
+
+  </body>
+</html>
