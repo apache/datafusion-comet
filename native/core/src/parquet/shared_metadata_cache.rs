@@ -581,6 +581,45 @@ mod tests {
     }
 
     #[test]
+    fn a_runtime_started_after_a_shutdown_frees_idle_caches() {
+        static CACHES: LazyLock<SharedMetadataCaches> =
+            LazyLock::new(SharedMetadataCaches::default);
+        let timeout = Duration::from_millis(50);
+        let runtime = || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .unwrap()
+        };
+
+        // The plugin shuts down before the first context's timer has run, which drops the runtime
+        // the timer was spawned on.
+        let first = runtime();
+        drop(CACHES.cache_for(key(1, 0)));
+        CACHES.expire_idle_on(first.handle(), timeout);
+        CACHES.clear();
+        drop(first);
+
+        // A context started later in the same JVM gets a new runtime. Its tasks leave a cache
+        // behind, and the timer has to start again on the new runtime to free it.
+        let second = runtime();
+        let idle = Arc::downgrade(&CACHES.cache_for(key(1, 0)).stage);
+        CACHES.expire_idle_on(second.handle(), timeout);
+        second
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while CACHES.expiring.load(Ordering::Acquire) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+            })
+            .expect("the timer should stop once it has freed the idle cache");
+        assert!(idle.upgrade().is_none());
+        assert_eq!(CACHES.len(), 0);
+    }
+
+    #[test]
     fn clearing_frees_the_retained_caches_but_not_a_running_one() {
         let caches = SharedMetadataCaches::default();
         let running = caches.cache_for(key(0, 0));
