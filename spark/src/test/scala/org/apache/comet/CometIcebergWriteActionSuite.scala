@@ -1506,6 +1506,73 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq(false, true).foreach { partitioned =>
+    test(
+      "native acceleration: a top-level unknown column matches iceberg-java " +
+        s"(partitioned = $partitioned)") {
+      assumeNativeAcceleration()
+      assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+      withIcebergCatalog { _ =>
+        val nativeTable = s"unknown_native_$partitioned"
+        val jvmTable = s"unknown_jvm_$partitioned"
+        Seq(nativeTable, jvmTable).foreach { t =>
+          createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+          addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+          spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD COLUMN tail STRING")
+          // `tail` sits after `u`, so its partition source index shifts once `u` is pruned.
+          if (partitioned) spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD tail")
+          spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+        }
+        def insert(t: String): Unit =
+          spark.sql(
+            s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL, 'a'), (2, 'eu', 2.0, NULL, NULL)")
+        assertNativeWriteEngages(nativeTable, Seq(1, 2))(insert(nativeTable))
+        insert(jvmTable)
+        def rows(t: String): Seq[Row] =
+          spark.sql(s"SELECT * FROM $catalog.$ns.$t ORDER BY id").collect().toSeq
+        assert(rows(nativeTable) == rows(jvmTable))
+        // Neither writer puts `u` in the data file or its metrics.
+        def footerColumns(t: String): Set[String] =
+          spark
+            .sql(s"SELECT file_path FROM $catalog.$ns.$t.files")
+            .collect()
+            .flatMap { r =>
+              val reader = ParquetFileReader.open(HadoopInputFile
+                .fromPath(new HadoopPath(r.getString(0)), spark.sessionState.newHadoopConf()))
+              try reader.getFooter.getFileMetaData.getSchema.getPaths.asScala.map(_.mkString("."))
+              finally reader.close()
+            }
+            .toSet
+        assert(footerColumns(nativeTable) == Set("id", "region", "amount", "tail"))
+        assert(footerColumns(jvmTable) == footerColumns(nativeTable))
+        def metricIds(t: String): Seq[Row] =
+          spark
+            .sql("SELECT map_keys(column_sizes), map_keys(value_counts), " +
+              s"map_keys(null_value_counts) FROM $catalog.$ns.$t.files")
+            .collect()
+            .toSeq
+        assert(metricIds(nativeTable) == metricIds(jvmTable))
+      }
+    }
+  }
+
+  test("native acceleration: a partition sourced from an unknown column falls back") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withIcebergCatalog { _ =>
+      val t = "unknown_partition_source"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD u")
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      // The native writer prunes `u`, so its partition calculator could not resolve the source.
+      assertNativeWriteDoesNotEngage(t, Seq(1, 2)) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL), (2, 'eu', 2.0, NULL)")
+      }
+    }
+  }
+
   test("native acceleration: a driver commit failure aborts all completed task files") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>

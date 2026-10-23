@@ -27,6 +27,7 @@ import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
+import org.apache.spark.sql.types.NullType
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -81,11 +82,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   private val EncryptionPropertyPrefix = "encryption."
-  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
-  // as NullType, neither of which the native writer handles; Spark cannot plan a write to
-  // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
+  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType, which the
+  // native writer does not handle; Spark cannot plan a write to `timestamp_ns`, `geometry` or
+  // `geography` today, so those are declined in case it learns to. `unknown` is checked below.
   private val UnsupportedWriteTypeIds: Set[String] =
-    Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
+    Set("UUID", "VARIANT", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
   // Loaded from the native storage factory: `builtin_storage_schemes` in
   // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
   // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
@@ -416,6 +417,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
     requireNoVoidFieldWithDroppedSource,
+    requireNoUnknownPartitionSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
     requireRowGroupCheckMinRecordCountAtDefault,
@@ -524,10 +526,18 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case Some(schema) =>
         IcebergReflection
           .findFieldWithTypeIds(schema, UnsupportedWriteTypeIds)
+          // Only top-level `unknown` fields are pruned, so a nested one would still
+          // get a Parquet column that iceberg-java does not write.
+          .orElse(
+            IcebergReflection.findFieldWithTypeIds(schema, Set("UNKNOWN"), nestedOnly = true))
           .map { case (name, typeId) =>
             s"column $name has Iceberg type ${typeId.toLowerCase(Locale.ROOT)}, " +
               "which the native writer cannot reproduce"
           }
+          // Pruning would leave no columns, which iceberg-java cannot write either.
+          .orElse(if (IcebergReflection.toSparkSchema(schema).forall(_.dataType == NullType)) {
+            Some("every column has Iceberg type unknown")
+          } else None)
     }
 
   // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
@@ -546,6 +556,24 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
             s"partition field $name is a void transform whose source column was dropped, " +
               "beside a live partition field"
+          }
+        } catch {
+          case e: Exception =>
+            Some(s"could not inspect the output partition spec: ${e.getMessage}")
+        }
+    }
+
+  // Top-level `unknown` columns are pruned from the native schema, so a partition field sourced
+  // from one would fail the native partition calculator with `Field not found`.
+  private val requireNoUnknownPartitionSource: TriggerRule = ctx =>
+    IcebergReflection
+      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
+      case None => Some("could not resolve the output partition spec for unknown source checking")
+      case Some(spec) =>
+        try {
+          IcebergReflection.partitionFieldsWithUnknownSource(spec).headOption.map { name =>
+            s"partition field $name is sourced from a column of Iceberg type unknown"
           }
         } catch {
           case e: Exception =>
