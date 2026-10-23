@@ -174,9 +174,8 @@ fn log_native_allocated() {
 /// Used to sum memory reservations across all contexts for the memory usage log and tracing.
 ///
 /// Never read a pool's reservation while holding this registry's lock; copy the pools out with
-/// [`snapshot_registry`] and read them after it is released. `reserved()` takes the pool's own
-/// lock, and a pool lock taken under this one would put every context on the executor behind
-/// that one pool.
+/// [`snapshot_registry`] and read them after it is released. `reserved()` takes the fair pool's
+/// `state` lock; keep the registry lock free of pool locks.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();

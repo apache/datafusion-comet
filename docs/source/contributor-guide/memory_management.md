@@ -204,16 +204,6 @@ Spark's monitor and would wait for the consumer's, while whatever held the consu
 Spark's. For the same reason, nothing reachable from a `spill` callback may allocate memory that
 routes back through the same consumer.
 
-**A short grant must not take the `TaskMemoryManager` monitor again.** `acquireExecutionMemory`
-holds that monitor for the whole call, including while `ExecutionMemoryPool.acquireMemory` waits in
-`lock.wait()`, which gives up the memory manager's monitor but not the task's. When
-`CometTaskMemoryManager.acquireMemory` gets less than it asked for, its thread holds those bytes
-until native code hands them back, and another acquire of the same task can be waiting for exactly
-those bytes. If the first thread then took the task's monitor, for example through
-`TaskMemoryManager.showMemoryUsage`, neither thread could go on until an unrelated task freed
-memory. So a short grant is logged with the figures already in hand and
-`getMemoryConsumptionForThisTask`, which takes only the memory manager's monitor.
-
 **`scala.util.control.NonFatal` does not contain an acquisition.** `acquireExecutionMemory` fails in
 three ways and `NonFatal` catches only the first. It runs other consumers' `spill`, where
 `TaskMemoryManager` turns an interrupted spill into a `RuntimeException` and an `IOException` into a
@@ -301,12 +291,11 @@ ignored and the pool is always `UnboundedMemoryPool`.
 the inside out, a Comet plan in the default configuration sees:
 
 ```text
-[PlanMemoryPool]             <- counts the plan's bytes so releasing the plan can wait for them
-  [LoggingMemoryPool]        <- only when spark.comet.debug.memory=true
-    [TaskSharedMemoryPool]   <- RAII handle for the per-task registry
-      [SpillReplayPool]      <- lets a spilled final aggregate read its spill files back
-        [TrackConsumersPool] <- DataFusion; names the top 10 consumers in error messages
-          [CometFairMemoryPool] <- delegates acquire/release to Spark over JNI
+[LoggingMemoryPool]          <- only when spark.comet.debug.memory=true
+  [TaskSharedMemoryPool]     <- RAII handle for the per-task registry
+    [SpillReplayPool]        <- lets a spilled final aggregate read its spill files back
+      [TrackConsumersPool]   <- DataFusion; names the top 10 consumers in error messages
+        [CometFairMemoryPool]  <- delegates acquire/release to Spark over JNI
 ```
 
 Each decorator forwards every `MemoryPool` method to its inner pool, so `reserved()` at any level
@@ -333,14 +322,8 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 - `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
   and carries the shortfall as _overcommit_ (`spark_memory.rs`). A later `shrink` repays the
   overcommit before returning anything to Spark, so Spark is never handed back more than it
-  granted. Each `try_grow` asks Spark for the debt no other `try_grow` in flight is already asking
-  for, on top of its own request, and is refused unless Spark covers both. A release that repays
-  the debt while such a request is parked in Spark leaves the request larger than needed, because
-  Spark cannot shrink a parked request. It waits until other memory frees or the number of active
-  tasks changes, so the task can be held up until an unrelated task releases memory, and the
-  request may then come back short and be refused. Any request that carries debt has this window,
-  with or without a second `try_grow`. Closing it would mean handing claimed debt to Spark on
-  release, which gives Spark back bytes it never granted if the claim is then refused. Both pools'
+  granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
+  is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
 `CometFairMemoryPool` additionally applies two local checks before it asks Spark, and refuses the
@@ -372,40 +355,38 @@ This is why `fair_unified` can spill earlier than `greedy_unified`: a consumer a
 refused even when the rest of the pool is free, which keeps that memory for the task's other
 consumers.
 
-**The pool mutex is never held across a JNI call.** Both checks run, and the bytes are charged to
-the pool's total and to the consumer's running total, under the lock. The lock is dropped before
-`acquireMemory` or `releaseMemory` runs, and the bookkeeping is settled after the call returns. This
-holds for `grow` as well as `try_grow`: `grow` skips both checks but charges its bytes under the
-lock the same way, and its JVM call runs without it. The reason is an acquire parked inside
-`ExecutionMemoryPool.acquireMemory` below its minimum share: it waits for another thread of the same
-task to release memory. If the release had to take a lock that the parked acquire was holding, it
-could not land until an unrelated task freed memory, so the task would stall meanwhile. Such a
-release can empty the task's balance, which makes Spark drop the task's entry under the parked
-acquire, and `CometTaskMemoryManager.acquireMemory` then asks Spark again.
+**The pool has two locks, split the way `TaskMemoryManager` splits a task's calls.**
+`acquireExecutionMemory` holds the task's monitor for the whole call, including while
+`ExecutionMemoryPool.acquireMemory` waits in `lock.wait()` below the task's minimum share, so a
+task's acquires already run one at a time. `releaseExecutionMemory` does not take that monitor, so a
+release can land while an acquire waits. `CometFairMemoryPool` copies this:
 
-Settling after the call leaves two windows, both on the conservative side:
+- `acquire` is held by `grow` and `try_grow` across their `acquireMemory` call, so the pool asks
+  Spark for one reservation at a time. That costs no concurrency, because Spark would queue the
+  second acquire on the task's monitor anyway. A thread waits for `acquire` in `block_in_place`, as
+  it does for the JNI call, so the other tasks of a Tokio worker keep running.
+- `state` covers the pool's total and each consumer's running total. It is held only while they
+  are read or updated, never across a JNI call. `shrink`, `reserved`, `register` and `unregister`
+  take only `state`, so none of them waits behind an acquire parked in Spark. This matters most for
+  a release: a parked acquire can be waiting for the very bytes another thread of the task is
+  releasing, and a release stuck behind it would stall the task until an unrelated task freed
+  memory.
+- `acquire` is always taken before `state`.
 
-- A `try_grow` is charged to the pool's total and its consumer's when it passes both checks, and a
-  `grow` when it is called, before Spark answers. A second `try_grow` in that window is checked
-  against totals that include the first, so it can be refused where waiting for the first to settle
-  would have let it through. This charge is what keeps two concurrent grows from jointly taking a
-  consumer past its share or the pool past `pool_size`.
-- A shrink, and the rollback of a short grant, hand the bytes to Spark first and take them off the
-  pool's total and the consumer's only once Spark has them. A grow in that window is checked against
-  totals that still include those bytes, so a grow that only fits once they are free is refused by
-  the share or pool check instead of being sent to Spark ahead of the release. A grow that fits
-  without them still goes to Spark and can come back with a short grant if the release has not
-  landed and the task is at its Spark share. If the rollback release itself fails, those bytes stay
-  charged for the pool's life, because Spark holds them until the task ends.
+`try_grow` runs both checks under `state`, drops it for the JNI call, and records the bytes once
+Spark has granted them. The checks still hold at that point: while `acquire` is held nothing else
+adds to the totals, a `shrink` only lowers them, and a consumer that registers meanwhile lowers the
+shares just as it would by registering a moment later. A refusal, a JNI error or a panic records
+nothing. Because a pool's acquires run one at a time, two of its `try_grow` calls never both ask
+Spark for the same overcommit.
 
-Neither window admits a `try_grow` that the two checks would have refused. A refusal is the ordinary
-`ResourcesExhausted` error, which a spillable operator answers by spilling. `grow` is never refused:
-it is not subject to either check, and whatever Spark declines of it becomes overcommit, as
-described above.
+`shrink` hands its bytes to Spark before it takes them off the totals. A `try_grow` checked in
+between still counts those bytes, so it can be refused where it would fit a moment later, but it is
+never admitted on bytes Spark still holds. One that passes the checks can still come back with a
+short grant if the task is at its Spark share until the release lands.
 
-The overcommit window in [The unified pools](#the-unified-pools) never admits a request these checks
-would refuse either, but unlike these two it can delay one: it can hold a `try_grow` until an
-unrelated task frees memory. It applies to both pools.
+Nothing reachable from a Spark `spill` callback may reserve memory through this pool. Spark runs
+that callback on the acquiring thread, which already holds `acquire`.
 
 ### Task-shared pools and their lifetime
 
