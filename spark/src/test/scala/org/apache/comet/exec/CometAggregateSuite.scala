@@ -366,6 +366,38 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       classOf[LocalTableScanExec])
   }
 
+  test("grouped collect_list and collect_set over non-nullable nested fields") {
+    withTempPath { path =>
+      spark
+        .createDataFrame((0 until 32768).map { i =>
+          (i % 4096, i % 8192, s"${i % 8192}-" + "x" * 256)
+        })
+        .coalesce(1)
+        .write
+        .parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "tbl") {
+        // The literal and coalesce create required fields after the Parquet scan, which
+        // otherwise widens field nullability. Sorting removes collect order differences.
+        val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
+        // No memory pressure here: on this fixture neither the Partial nor the Final aggregate
+        // spills at the pool sizes tried (4 MiB, 2 MiB, 400 KiB), and shrinking the pool past the
+        // Final state's first allocation fails the task ("Additional allocation failed for
+        // FinalHashAggregateStream") instead of spilling. The grouped path still reproduces
+        // #5239 without spilling, so the assertion is native execution plus the answer. The
+        // ungrouped Accumulator path is covered by collect_list.sql and collect_set.sql.
+        Seq(struct, s"array($struct)").foreach { value =>
+          val df = sql(s"""
+            SELECT _1, sort_array(collect_list(s)), sort_array(collect_set(s))
+            FROM (
+              SELECT _1, $value AS s
+              FROM tbl
+            ) GROUP BY _1""")
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometHashAggregateExec]))
+        }
+      }
+    }
+  }
+
   test("grouped collect_list/collect_set over nulls, duplicates and several batches") {
     // Grouped collect_list/collect_set are served by a native GroupsAccumulator rather than one
     // boxed accumulator per group, so the group's identity travels with each row instead of being

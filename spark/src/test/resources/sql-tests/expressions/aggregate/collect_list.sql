@@ -370,6 +370,30 @@ query
 SELECT grp, sort_array(collect_list(s)) FROM cl_src_struct GROUP BY grp ORDER BY grp
 
 -- ============================================================
+-- Struct with required fields built after the Parquet scan
+-- Ungrouped, so the boxed Accumulator builds the final state rather than the
+-- GroupsAccumulator, and the intermediate buffer nullability must still match
+-- (issue #5239). The array case puts the required fields under a list element.
+-- ============================================================
+
+statement
+CREATE TABLE cl_src_struct_required(a bigint, b bigint, c string) USING parquet
+
+statement
+INSERT INTO cl_src_struct_required VALUES
+  (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, NULL, 'd'), (5, NULL, NULL)
+
+query
+SELECT sort_array(collect_list(s)) FROM (
+  SELECT named_struct('flag', true, 'id', coalesce(b, 0), 'value', c) AS s
+  FROM cl_src_struct_required)
+
+query
+SELECT sort_array(collect_list(s)) FROM (
+  SELECT array(named_struct('flag', true, 'id', coalesce(b, 0), 'value', c)) AS s
+  FROM cl_src_struct_required)
+
+-- ============================================================
 -- Nested array input
 -- ============================================================
 

@@ -2492,12 +2492,9 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       val aggFunc = aggExpr.aggregateFunction
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case cl: CollectList =>
-          val elementType = cl.children.head.dataType
+        case _: CollectSet | _: CollectList =>
+          // Match the native planner's collect argument normalization, including nested fields.
+          val elementType = aggFunc.children.head.dataType.asNullable
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>
