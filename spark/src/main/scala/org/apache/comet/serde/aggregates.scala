@@ -227,48 +227,20 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  // Keep the default native-to-Spark restriction until #5420: an untouched native AVG emits
-  // (null, 0), but Spark's merge needs (0.0, 0).
-
-  override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
-    // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
-    // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
+  // Non-decimal AVG emits Spark's (sum: double, count: long) buffer, including (0.0, 0) for
+  // empty partials. Decimal AVG nulls count differently on overflow and remains unsafe to mix.
+  override def supportsNativePartialToSparkFinal(fn: Average): Boolean =
     !fn.child.dataType.isInstanceOf[DecimalType]
 
-  private val rescaledSumOverflowReason =
-    "a large sum of a DECIMAL with precision 25 or more overflows when the native average " +
-      "rescales it, which returns NULL " +
-      "(https://github.com/apache/datafusion-comet/issues/7007)"
+  override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
+    !fn.child.dataType.isInstanceOf[DecimalType]
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "For a `DECIMAL` input with precision 25 or more, other than `DECIMAL(38, 38)`, the native " +
-      "average rescales the sum within 38 digits before dividing it by the count, so a large " +
-      "sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark " +
-      "rejects with `NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL` " +
-      "([#7007](https://github.com/apache/datafusion-comet/issues/7007)).")
-
-  /**
-   * Whether the native average can overflow when it rescales the sum to the result scale. It
-   * multiplies the sum, which holds up to `sumDataType.precision` digits, by 10 to the power of
-   * the scale difference in an `i128`, which holds 38 digits, before dividing by the count, while
-   * Spark divides with `BigDecimal`. That covers input precision 25 and up, except scale 38,
-   * which needs no rescale.
-   */
-  private def rescaledSumCanOverflow(expr: Average): Boolean =
-    (expr.sumDataType, expr.dataType) match {
-      case (sum: DecimalType, result: DecimalType) =>
-        sum.precision + result.scale - sum.scale > DecimalType.MAX_PRECISION
-      case _ => false
-    }
-
   override def getSupportLevel(expr: Average): SupportLevel =
     if (!AggSerde.avgDataTypeSupported(expr.dataType)) {
       Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
-    } else if (rescaledSumCanOverflow(expr)) {
-      Incompatible(Some(rescaledSumOverflowReason))
     } else {
       Compatible()
     }
@@ -1359,8 +1331,7 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
   // `StringType` here is the default UTF8_BINARY collation; a collated `StringType(collationId)`
   // falls through to the `case _` because Spark hashes those via the collation sort key.
-  // `DecimalType` is limited to precision <= 18, since Spark hashes wider decimals through
-  // `BigDecimal` (two's-complement big-endian bytes), which the native `i128` path does not match.
+  // Wide decimals remain unsupported here pending HLL register compatibility tests.
   private def hashableType(dt: DataType): Boolean = dt match {
     case BooleanType => true
     case ByteType | ShortType | IntegerType | LongType => true

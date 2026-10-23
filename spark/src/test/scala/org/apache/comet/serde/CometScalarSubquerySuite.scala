@@ -198,6 +198,25 @@ class CometScalarSubquerySuite extends CometTestBase with CometTypeShim {
     assert(CometScalarSubquery.consumerFallbackReason(DateDiff(epoch, epoch)).isEmpty)
   }
 
+  test("scalar-subquery guards record reasons in the current conversion scope") {
+    val text = GetStructField(subquery(struct(StringType)), 0)
+    val nondeterministic =
+      If(GreaterThanOrEqual(Rand(Literal(42L)), Literal(0.0)), text, Literal(""))
+    val calendar = TruncDate(GetStructField(subquery(struct(DateType)), 0), Literal("YEAR"))
+    Seq(nondeterministic -> "Nondeterministic", calendar -> "Calendar operations")
+      .foreach { case (expr, prefix) =>
+        val (converted, reasons) =
+          QueryPlanSerde.exprToProtoWithFallbackReasons(expr, Seq.empty, binding = false)
+        assert(converted.isEmpty)
+        assert(reasons.exists(_.startsWith(prefix)), reasons)
+        assert(org.apache.comet.CometExplainInfo.currentFallbackReasons(expr).isEmpty)
+      }
+    val (converted, reasons) =
+      QueryPlanSerde.exprToProtoWithFallbackReasons(Literal(42), Seq.empty, binding = false)
+    assert(converted.nonEmpty)
+    assert(reasons.isEmpty)
+  }
+
   test("calendar allow-list retains raw transport comparison epoch and clock consumers") {
     val date = GetStructField(subquery(struct(DateType)), 0)
     val timestamp = GetStructField(subquery(struct(TimestampType)), 0)

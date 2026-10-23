@@ -34,7 +34,7 @@ import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.{ShimCometEmptyRelation, ShimCometOneRowRelation}
+import org.apache.spark.sql.comet.shims.{ShimCometArrowEvalPythonExec, ShimCometEmptyRelation, ShimCometOneRowRelation}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
@@ -126,6 +126,7 @@ object CometExecRule {
       classOf[WindowExec] -> CometWindowExec) ++
       // EmptyRelationExec was introduced in Spark 4.0.
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
+      ShimCometArrowEvalPythonExec.nativeOperator ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
       // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
@@ -1116,22 +1117,23 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    val converted = ScalarSubquerySerde.withPlanInputs(op) {
-      tryConvertToComet(op, handler)
+  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] =
+    CometExplainInfo.withFallbackReasonScope {
+      val converted = ScalarSubquerySerde.withPlanInputs(op) {
+        tryConvertToComet(op, handler)
+      }
+      if (converted.isEmpty) {
+        // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
+        // reasons recorded on its expressions onto the operator itself - see
+        // `rollUpFallbackReasons` for why this is needed - and then make sure something was
+        // recorded. `reportUnexplainedFallback` inspects only the operator's own tag, so a reason
+        // still sitting on an expression would look like no reason at all and trip the strict
+        // check. Keep these two calls together and in this order.
+        rollUpFallbackReasons(op)
+        reportUnexplainedFallback(op)
+      }
+      converted
     }
-    if (converted.isEmpty) {
-      // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
-      // reasons recorded on its expressions onto the operator itself - see
-      // `rollUpFallbackReasons` for why this is needed - and then make sure something was
-      // recorded. The order is required, not incidental: `reportUnexplainedFallback` inspects only
-      // the operator's own tag, so a reason still sitting on an expression would look like no
-      // reason at all and trip the strict check.
-      rollUpFallbackReasons(op)
-      reportUnexplainedFallback(op)
-    }
-    converted
-  }
 
   private def tryConvertToComet(
       op: SparkPlan,
@@ -1199,8 +1201,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * used to be hand-written at every serde call site (see
    * https://github.com/apache/datafusion-comet/issues/5230).
    *
-   * Only child *expressions* are collected, not child operators: reasons on a child operator are
-   * already reachable by the explain traversal via `children`.
+   * Only reasons recorded for these expression instances during this conversion are collected.
+   * Tags alone are insufficient: Catalyst may have copied one onto a shared singleton. Only child
+   * *expressions* are collected, not child operators: reasons on a child operator are already
+   * reachable by the explain traversal via `children`.
    *
    * Called only when `op` was left in the Spark plan, which scopes the roll-up to the operator
    * that actually failed conversion. That matters because some expression instances
@@ -1209,11 +1213,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    *
    * [[reportUnexplainedFallback]] relies on this having run first; the two must not be separated.
    */
-  private def rollUpFallbackReasons(op: SparkPlan): Unit = {
+  private[comet] def rollUpFallbackReasons(op: SparkPlan): Unit = {
     val reasons = op.expressions
       .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
-      .flatten
+      .flatMap(CometExplainInfo.currentFallbackReasons)
       .toSet
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(op, reasons)
@@ -1944,7 +1947,22 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
    * shared predicate helper would be preferable.
    */
-  private def canAggregateBeConverted(
+  private[rules] def canAggregateBeConverted(
+      agg: BaseAggregateExec,
+      expectedMode: AggregateMode): Boolean =
+    CometExplainInfo.withFallbackReasonScope {
+      val convertible = checkAggregateConversion(agg, expectedMode)
+      if (!convertible) {
+        // This preflight may discover an expression failure that actual conversion never reaches:
+        // the child can stay in Spark, making conversion decline on buffer compatibility first.
+        // Preserve this probe's diagnostics on their operator before discarding its journal.
+        // Reading only the journal keeps copied or stale expression tags out of the explanation.
+        rollUpFallbackReasons(agg)
+      }
+      convertible
+    }
+
+  private def checkAggregateConversion(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
     val handler = allExecs.get(agg.getClass)

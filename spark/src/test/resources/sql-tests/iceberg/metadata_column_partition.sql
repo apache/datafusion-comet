@@ -257,7 +257,7 @@ statement
 INSERT INTO test_cat.db.multi_rg SELECT id, REPEAT('x', 100) FROM range(1000)
 
 query
-SELECT _pos, id FROM test_cat.db.multi_rg WHERE _pos IN (0, 1, 998, 999) ORDER BY _pos
+SELECT _pos, id FROM test_cat.db.multi_rg WHERE _pos IN (0, 1, 998, 999) ORDER BY _pos, id
 
 statement
 DROP TABLE test_cat.db.multi_rg
