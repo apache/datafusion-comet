@@ -30,22 +30,11 @@ import org.apache.comet.CometConf
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Focused benchmark of hash expressions that `CodegenDispatchFallback` keeps in the Comet
- * pipeline: wide-decimal `hash` / `xxhash64` and column-valued `sha2(payload, numBits)`.
+ * Benchmark of non-foldable `sha2(payload, numBits)` through `CodegenDispatchFallback`.
  *
- * The enrollment exists so that one unhandled hash does not drop bucketing, partitioning or dedup
- * -- the surrounding aggregate, exchange and (for a mixed projection) native neighbors -- back to
- * Spark. Both Comet arms run Spark's `doGenCode` for the hash itself, so an isolated `SELECT
- * hash(wide_decimal)` is expected to be close; the grouped cases are the comparison the issue is
- * about.
- *
- * The interesting comparison is therefore
- *
- *   - `codegen dispatch` -- Spark's `doGenCode` runs as a Janino kernel inside the Comet
- *     pipeline, so the enclosing operator stays native, and
- *   - `dispatch off` -- `spark.comet.exec.scalaUDF.codegen.enabled=false`, so the enclosing
- *     projection falls back to Spark and every operator above it leaves the Comet pipeline with
- *     it.
+ * The dispatcher runs Spark's `doGenCode` inside the Comet pipeline. With dispatch disabled, the
+ * projection falls back to Spark. The mixed projection also measures native expressions alongside
+ * `sha2`; it does not imply that SHA-2 itself executes natively.
  *
  * A pure Spark case is included as a third reference point. A `dispatch off (repeat)` case
  * repeats the baseline at the end of every table so the spread between the two is this machine's
@@ -78,67 +67,34 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
    *   Case name, as it appears in the results table.
    * @param query
    *   The query to time. Every argument is a column so that the expression is evaluated per row.
-   * @param extraConfigs
-   *   Applied to all three arms, so they never account for a difference between them.
    */
-  private case class DispatchCase(
-      name: String,
-      query: String,
-      extraConfigs: Seq[(String, String)] = Nil)
-
-  /**
-   * Grouped cases shuffle. AQE is off and the shuffle is one partition so that both arms plan the
-   * same shape every iteration, and so that the plan check is not looking at `AQEShuffleRead`.
-   */
-  private val groupByConfigs: Seq[(String, String)] =
-    Seq(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false", SQLConf.SHUFFLE_PARTITIONS.key -> "1")
+  private case class DispatchCase(name: String, query: String)
 
   private def cases: Seq[DispatchCase] = Seq(
-    // Isolated projections. Both Comet arms run Spark's `doGenCode` for the hash itself, so they
-    // are expected to be close; they exist so a results file can tell kernel cost from
-    // enclosing-operator cost.
-    DispatchCase("hash(wide decimal)", "select hash(c_wide_dec) from parquetV1Table"),
-    DispatchCase("xxhash64(wide decimal)", "select xxhash64(c_wide_dec) from parquetV1Table"),
     DispatchCase("sha2(payload, numBits)", "select sha2(c_str, c_bits) from parquetV1Table"),
-    // One unhandled hash used to cost the whole projection, including the native expressions
-    // next to it. `sha2` is not in this mix: it is so much slower than murmur3 that it hides
-    // whether the native neighbors stayed native.
     DispatchCase(
-      "mixed projection",
-      "select length(c_str), c_int + 1, hash(c_int), hash(c_wide_dec) from parquetV1Table"),
-    // The case the enrollment is really about: hash as a grouping key in bucketing / dedup.
-    // With the projection gone the aggregate above it has a row-based child, so the partial
-    // aggregate, the exchange and the final aggregate all leave the Comet pipeline with it.
-    // `pmod(..., 1024)` keeps the grouping cheap so the per-row hash still dominates.
-    DispatchCase(
-      "group by hash",
-      "select pmod(hash(c_wide_dec), 1024) as k, count(*) from parquetV1Table group by 1",
-      extraConfigs = groupByConfigs),
-    DispatchCase(
-      "group by hash + aggs",
-      "select pmod(hash(c_wide_dec), 1024) as k, sum(c_int), count(*) " +
-        "from parquetV1Table group by 1",
-      extraConfigs = groupByConfigs))
+      "sha2 mixed projection",
+      "select length(c_str), c_int + 1, hash(c_int), sha2(c_str, c_bits) from parquetV1Table"))
 
   private def noConstantFolding: (String, String) =
     SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> excludedRulesWith(ConstantFolding.ruleName)
 
-  private def sparkConfigs(c: DispatchCase): Seq[(String, String)] =
-    Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false") ++ c.extraConfigs
+  private def sparkConfigs: Seq[(String, String)] =
+    Seq(noConstantFolding, CometConf.COMET_ENABLED.key -> "false")
 
   /** Comet on, dispatcher on: the behaviour this benchmark is validating. */
-  private def dispatchConfigs(c: DispatchCase): Seq[(String, String)] =
-    cometConfigs(c, dispatch = true)
+  private def dispatchConfigs: Seq[(String, String)] =
+    cometConfigs(dispatch = true)
 
   /** Comet on, dispatcher off: the enclosing projection falls back to Spark. */
-  private def fallbackConfigs(c: DispatchCase): Seq[(String, String)] =
-    cometConfigs(c, dispatch = false)
+  private def fallbackConfigs: Seq[(String, String)] =
+    cometConfigs(dispatch = false)
 
-  private def cometConfigs(c: DispatchCase, dispatch: Boolean): Seq[(String, String)] = Seq(
+  private def cometConfigs(dispatch: Boolean): Seq[(String, String)] = Seq(
     noConstantFolding,
     CometConf.COMET_ENABLED.key -> "true",
     CometConf.COMET_EXEC_ENABLED.key -> "true",
-    CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString) ++ c.extraConfigs
+    CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> dispatch.toString)
 
   private val DispatchCaseName = "Comet, codegen dispatch"
   private val FallbackCaseName = "Comet, dispatch off (Spark fallback)"
@@ -146,16 +102,17 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val selected = cases
-    runBenchmark("Hash codegen dispatch: environment") {
+    runBenchmark("SHA-2 codegen dispatch: environment") {
       emitEnvironment(selected)
     }
 
     // The kernels must be uncompiled when `runFirstUse` starts, so it runs before anything else
     // executes these queries: `CodeGenerator.compile` caches on the generated source JVM-wide,
-    // and a single earlier execution would make every "first use" number a cache hit.
+    // and a single earlier execution would make the "first use" number a cache hit. Only the
+    // isolated case is measured here: the mixed projection reuses the same SHA-2 kernel.
     withCorpus(SmallRows) {
-      runBenchmark(s"Hash codegen dispatch: first use, $SmallRows rows") {
-        runFirstUse(selected)
+      runBenchmark(s"SHA-2 codegen dispatch: first use, $SmallRows rows") {
+        runFirstUse(selected.take(1))
       }
       selected.foreach(verifyArmsAgree(_, SmallRows))
       selected.foreach(runSteadyState(_, SmallRows))
@@ -185,15 +142,8 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
       "  at least 2 iterations and at least 2s of timed iterations; the table reports best and")
     emit("  average of the timed iterations.")
     emit(s"Row counts: $SmallRows (sub-batch) and $LargeRows (multi-batch).")
-    emit(
-      "Wide decimal unscaled values exceed 64 bits " +
-        "(id + 10^19, DECIMAL(38,10)), so hashing goes through Java BigDecimal.")
-    emit(
-      "Isolated hash / xxhash64 / sha2 projections are kernel-cost controls " +
-        "(both Comet arms run Spark's doGenCode; expected near 1.0X).")
-    emit(
-      "mixed projection and the group-by cases keep surrounding native work in the Comet " +
-        "pipeline only on the dispatch arm -- those are the comparison the enrollment is for.")
+    emit("Payloads include nulls, empty strings and varying lengths; numBits varies per row.")
+    emit("Both Comet arms use Spark codegen for SHA-2; dispatch keeps the projection in Comet.")
     emit(s"Cases: ${selected.map(_.name).mkString(", ")}")
   }
 
@@ -205,13 +155,12 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
    * `CodeGenerator`, the Arrow bridge and the FFI boundary are all loaded and JIT-warm before the
    * first case runs and the difference is dominated by compiling that one kernel. It is still an
    * upper bound on the compile: the first case in the list absorbs whatever class loading the
-   * warmup missed, and any case that reaches machinery no earlier case did -- the grouped cases
-   * are the first to shuffle -- pays for that here too.
+   * warmup missed. It is a query-level measurement, not an isolated compiler measurement.
    */
   private def runFirstUse(selected: Seq[DispatchCase]): Unit = {
     // `rlike` routes through the same dispatcher and is not one of the cases below.
     val warmup = DispatchCase("warmup", "select c_str rlike '[0-9]+' from parquetV1Table")
-    (0 until 5).foreach(_ => runQuery(warmup.query, dispatchConfigs(warmup)))
+    (0 until 5).foreach(_ => runQuery(warmup.query, dispatchConfigs))
 
     emit(
       f"${"case"}%-24s  ${"1st run (ms)"}%14s  ${"2nd run (ms)"}%14s  " +
@@ -219,9 +168,9 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
     emit("-" * 84)
     selected.foreach { c =>
       CometScalaUDFCodegen.resetStats()
-      val cold = timeMillis(runQuery(c.query, dispatchConfigs(c)))
+      val cold = timeMillis(runQuery(c.query, dispatchConfigs))
       val compiles = CometScalaUDFCodegen.stats().compileCount
-      val warm = timeMillis(runQuery(c.query, dispatchConfigs(c)))
+      val warm = timeMillis(runQuery(c.query, dispatchConfigs))
       emit(f"${c.name}%-24s  $cold%14.1f  $warm%14.1f  ${cold - warm}%14.1f  $compiles%9d")
     }
     emit("")
@@ -231,9 +180,8 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Fails if the three arms disagree on `query`. Rows are compared as a sorted multiset rather
-   * than positionally, because the grouped cases shuffle and their output order is a property of
-   * the plan, which is the one thing that differs between the arms.
+   * Fails if the three arms disagree on `query`. Rows are compared as a sorted multiset because
+   * output order is not guaranteed across the different plans.
    */
   private def verifyArmsAgree(c: DispatchCase, rows: Int): Unit = {
     def collect(configs: Seq[(String, String)]): Array[String] = {
@@ -254,8 +202,8 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
         .sorted
     }
 
-    val expected = collect(sparkConfigs(c))
-    Seq(DispatchCaseName -> dispatchConfigs(c), FallbackCaseName -> fallbackConfigs(c)).foreach {
+    val expected = collect(sparkConfigs)
+    Seq(DispatchCaseName -> dispatchConfigs, FallbackCaseName -> fallbackConfigs).foreach {
       case (armName, configs) =>
         val actual = collect(configs)
         assert(
@@ -273,57 +221,36 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
   private def runSteadyState(c: DispatchCase, rows: Int): Unit = {
     runBenchmark(s"${c.name} -- $rows rows") {
       val benchmark = new Benchmark(s"${c.name} -- $rows rows", rows, output = output)
-      checkPlans(benchmark, c)
+      checkPlans(c)
       // The dispatch-off arm goes first so the `Relative` column reads as the speedup this
       // change buys over falling the enclosing operator back to Spark.
-      benchmark.addCase(FallbackCaseName)(_ => runQuery(c.query, fallbackConfigs(c)))
-      benchmark.addCase(DispatchCaseName)(_ => runQuery(c.query, dispatchConfigs(c)))
-      benchmark.addCase(SparkCaseName)(_ => runQuery(c.query, sparkConfigs(c)))
-      benchmark.addCase(s"$FallbackCaseName (repeat)")(_ => runQuery(c.query, fallbackConfigs(c)))
+      benchmark.addCase(FallbackCaseName)(_ => runQuery(c.query, fallbackConfigs))
+      benchmark.addCase(DispatchCaseName)(_ => runQuery(c.query, dispatchConfigs))
+      benchmark.addCase(SparkCaseName)(_ => runQuery(c.query, sparkConfigs))
+      benchmark.addCase(s"$FallbackCaseName (repeat)")(_ => runQuery(c.query, fallbackConfigs))
       benchmark.run()
     }
   }
 
-  /**
-   * Warns rather than fails, so a routing surprise degrades the table to a note instead of
-   * aborting the run. A case where the dispatch arm is not fully native, or where the
-   * dispatch-off arm is, is not measuring what its name says.
-   */
-  private def checkPlans(benchmark: Benchmark, c: DispatchCase): Unit = {
-    var dispatchNonComet: Option[String] = None
-    var fallbackIsFullyComet = false
-    var dispatcherRan = false
-    withSQLConf(dispatchConfigs(c): _*) {
+  /** Refuses to time a case whose actual routing does not match its label. */
+  private def checkPlans(c: DispatchCase): Unit = {
+    withSQLConf(dispatchConfigs: _*) {
       CometScalaUDFCodegen.resetStats()
       val df = spark.sql(c.query)
       df.noop()
       val stats = CometScalaUDFCodegen.stats()
-      dispatcherRan = stats.compileCount + stats.cacheHitCount > 0
-      dispatchNonComet =
-        findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan)).map(_.nodeName)
+      assert(stats.compileCount + stats.cacheHitCount > 0, s"dispatcher did not run: $stats")
+      val nonComet = findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan))
+      assert(nonComet.isEmpty, s"dispatch projection fell back to Spark: $nonComet")
     }
-    withSQLConf(fallbackConfigs(c): _*) {
+    withSQLConf(fallbackConfigs: _*) {
+      CometScalaUDFCodegen.resetStats()
       val df = spark.sql(c.query)
       df.noop()
-      fallbackIsFullyComet =
-        findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan)).isEmpty
-    }
-    dispatchNonComet.foreach(op =>
-      warn(
-        benchmark,
-        "WARNING: the codegen-dispatch plan is not fully Comet native (first " +
-          s"non-Comet operator: $op), so that case is partly measuring Spark."))
-    if (!dispatcherRan) {
-      warn(
-        benchmark,
-        "WARNING: the codegen dispatcher did not run for this query, so the two " +
-          "Comet cases below are measuring the same plan.")
-    }
-    if (fallbackIsFullyComet) {
-      warn(
-        benchmark,
-        "WARNING: the dispatch-off plan is fully Comet native, so this case is " +
-          "not exercising the operator fallback it is meant to be compared against.")
+      assert(
+        findFirstNonCometOperator(stripAQEPlan(df.queryExecution.executedPlan)).nonEmpty,
+        "dispatch-off case did not fall back to Spark")
+      assert(CometScalaUDFCodegen.stats().totalLookups == 0, "dispatcher ran while disabled")
     }
   }
 
@@ -350,24 +277,16 @@ object CometHashCodegenDispatchBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Every column varies per row, so no argument to a benchmarked expression is loop-invariant and
-   * neither engine can hoist the call out of the row loop. `c_wide_dec` is `id + 10^19` as
-   * `DECIMAL(38,10)` so the unscaled integer exceeds 64 bits (Spark hashes via `BigDecimal`).
+   * Inputs vary per row, including nulls and empty payloads, so neither engine can hoist the
+   * expression out of the row loop.
    */
   private def corpusQuery: String = {
     val columns = Seq(
-      "c_str" -> "REPEAT(CAST(id AS STRING), 4)",
+      "c_str" -> ("CASE WHEN pmod(id, 31) = 0 THEN NULL WHEN pmod(id, 31) = 1 THEN '' " +
+        "ELSE REPEAT(CAST(id AS STRING), CAST(pmod(id, 16) AS INT) + 1) END"),
       "c_int" -> "CAST(id AS INT)",
-      "c_bits" -> "element_at(array(0, 224, 256, 384, 512), CAST(pmod(id, 5) AS INT) + 1)",
-      "c_wide_dec" -> ("CAST(id AS DECIMAL(38, 10)) + " +
-        "CAST('10000000000000000000.0000000000' AS DECIMAL(38, 10))"))
+      "c_bits" -> "element_at(array(0, 224, 256, 384, 512, 128, NULL), CAST(pmod(id, 7) AS INT) + 1)")
     s"SELECT ${columns.map { case (name, expr) => s"$expr AS $name" }.mkString(", ")} FROM $tbl"
-  }
-
-  /** Writes a warning to the results file as well as the console, ordered against the table. */
-  private def warn(benchmark: Benchmark, message: String): Unit = {
-    val border = "=" * 80
-    benchmark.out.println(s"\n$border\n$message\n$border")
   }
 
   /** [[Benchmark]] tees console and results file; this benchmark's own tables need the same. */

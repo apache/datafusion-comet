@@ -84,7 +84,7 @@ object CometHashExpressionBenchmark extends CometBenchmarkBase {
   }
 
   // Run only these cases with --wide-decimal. The fallback arm is the path used by
-  // wide-decimal hash on main before native support; codegen dispatch is tracked in #5835.
+  // wide-decimal hash on main before native support.
   private def runWideDecimalBenchmarks(values: Int): Unit = {
     runBenchmarkWithTable("Wide decimal hash", values) { rows =>
       withTempPath { dir =>

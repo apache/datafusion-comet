@@ -32,8 +32,8 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
  * Native kernels are asserted for supported input shapes, including wide and nested decimals.
- * `sha2` with a non-foldable `numBits` stays in the Comet pipeline via the JVM codegen dispatcher.
- * `TimeType` is out of scope for that enrollment and falls the projection back to Spark.
+ * `sha2` with a non-foldable `numBits` stays in the Comet pipeline via the JVM codegen
+ * dispatcher. `TimeType` hash inputs fall back to Spark.
  */
 class CometHashExpressionSuite
     extends CometTestBase
@@ -145,10 +145,19 @@ class CometHashExpressionSuite
             ('hello', 512),
             ('hello', 128),
             ('hello', -1),
+            ('', 256),
+            ('', 512),
             (NULL, 256),
             ('hello', NULL)""")
-      assertCodegenRan {
-        checkSparkAnswerAndOperator("SELECT sha2(payload, num_bits) FROM t")
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+        Seq(
+          "SELECT sha2(payload, num_bits) FROM t",
+          "SELECT sha2(payload, num_bits + 0) FROM t",
+          "SELECT sha2('hello', num_bits) FROM t").foreach { query =>
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(query)
+          }
+        }
       }
     }
   }
@@ -157,7 +166,13 @@ class CometHashExpressionSuite
     withTable("t") {
       sql("CREATE TABLE t(payload STRING) USING parquet")
       sql("INSERT INTO t VALUES ('hello'), (''), (NULL)")
-      assertNativeHash("SELECT sha2(payload, 256) FROM t")
+      Seq("true", "false").foreach { enabled =>
+        withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> enabled) {
+          Seq("0", "224", "256", "384", "512", "128", "-1", "128 + 128").foreach { bits =>
+            assertNativeHash(s"SELECT sha2(payload, $bits) FROM t")
+          }
+        }
+      }
     }
   }
 
@@ -462,4 +477,5 @@ class CometHashExpressionSuite
     assert(
       CometScalaUDFCodegen.stats().totalLookups == 0,
       s"expected native hash execution for $query, got ${CometScalaUDFCodegen.stats()}")
-  }}
+  }
+}
