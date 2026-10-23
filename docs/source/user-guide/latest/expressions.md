@@ -360,9 +360,9 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `crc32` | ✅ | Native |  |
 | `hash` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 | `md5` | ✅ | Native |  |
-| `sha` | ✅ | Native |  |
+| `sha` | ✅ | Native | Alias of `sha1` |
 | `sha1` | ✅ | Native |  |
-| `sha2` | ✅ | Native |  |
+| `sha2` | ✅ | Native | Supports literal and column `numBits` ([audit](../../contributor-guide/expression-audits/hash_funcs.md#sha2)) |
 | `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
