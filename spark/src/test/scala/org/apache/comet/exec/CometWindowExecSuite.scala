@@ -521,6 +521,28 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("Native window operator reports its output rows and time") {
+    withTempDir { dir =>
+      (0 until 1000)
+        .map(i => (i % 10, i))
+        .toDF("k", "v")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      withTempView("window_metrics") {
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_metrics")
+        // `max` needs no cast projection. The planner test in `planner.rs` covers the window
+        // that does, such as `row_number`.
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql("SELECT max(v) OVER (PARTITION BY k ORDER BY v) FROM window_metrics"))
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(windows.length == 1)
+        assert(windows.head.metrics("output_rows").value == 1000)
+        assert(windows.head.metrics("elapsed_compute").value > 0)
+      }
+    }
+  }
+
   test("Window range frame with long boundary should not fail") {
     val df =
       Seq((1L, "1"), (1L, "1"), (2147483650L, "1"), (3L, "2"), (2L, "1"), (2147483650L, "2"))
