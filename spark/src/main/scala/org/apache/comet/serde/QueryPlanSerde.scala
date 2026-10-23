@@ -100,6 +100,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
 
   private val predicateExpressions: Map[Class[_ <: Expression], CometExpressionSerde[_]] = Map(
     classOf[And] -> CometAnd,
+    classOf[AtLeastNNonNulls] -> CometAtLeastNNonNulls,
     classOf[EqualTo] -> CometEqualTo,
     classOf[EqualNullSafe] -> CometEqualNullSafe,
     classOf[GreaterThan] -> CometGreaterThan,
@@ -1313,11 +1314,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
+    // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
     lazy val common: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions
+        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
       } else {
         Nil
       }
@@ -1343,11 +1345,22 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
    * share is unknown.
    */
-  def canShortCircuitNulls(expr: Expression): Boolean = {
-    val later = expr.children.tail
+  def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
+
+  /**
+   * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
+   * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
+   * the operator's expressions share and Spark eliminates, nor outside
+   * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
+   * promotion so callers may pass either original or already-promoted trees.
+   */
+  def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
-    later.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !later.exists(_.exists(e => s.common.exists(_.semanticEquals(e))))
+    skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
+      // Avoid decimal promotion when Spark shares nothing.
+      s.common.isEmpty || !skippable.exists { expr =>
+        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
+      }
     }
   }
 
