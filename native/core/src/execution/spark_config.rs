@@ -34,6 +34,14 @@ pub(crate) const COMET_NATIVE_UDF_ENABLED: &str = "spark.comet.nativeUdf.enabled
 pub(crate) const COMET_NATIVE_UDF_ALLOWED_PATHS: &str = "spark.comet.nativeUdf.allowedPaths";
 pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
     "spark.comet.testing.strictTimestampLabels.enabled";
+pub(crate) const COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED: &str =
+    "spark.comet.parquet.metadataCache.sharedWithinStage.enabled";
+/// Not a user config: `CometExecIterator.serializeCometSQLConfs` injects the application and
+/// stage of the task. Stage ids restart at zero in every `SparkContext`, so the application
+/// identifies which context's stage 0 this is.
+pub(crate) const COMET_APP_ID: &str = "spark.comet.internal.appId";
+pub(crate) const COMET_STAGE_ID: &str = "spark.comet.internal.stageId";
+pub(crate) const COMET_STAGE_ATTEMPT: &str = "spark.comet.internal.stageAttemptNumber";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
 
 /// Comet configs read through this trait must be resolved by the JVM first:

@@ -190,7 +190,11 @@ fn plan_delta_spark_scan(
             "Delta partition resolved {store_references} store references with {memo_hits} memo hits"
         );
         files = crate::execution::jni_api::get_runtime().block_on(
-            crate::execution::delta_dv::attach_access_plans(runtime_env, dv_files),
+            crate::execution::delta_dv::attach_access_plans(
+                runtime_env,
+                &object_store_url,
+                dv_files,
+            ),
         )?;
     }
 

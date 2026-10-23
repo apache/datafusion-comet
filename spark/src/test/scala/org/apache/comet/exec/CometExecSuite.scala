@@ -29,6 +29,7 @@ import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkException
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, TableIdentifier}
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogStatistics, CatalogTable}
@@ -3484,6 +3485,54 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  /** The footer metadata cache hits and misses of the native scan that ran `df`. */
+  private def footerCacheCounts(df: DataFrame): (Long, Long) = {
+    val scan = find(df.queryExecution.executedPlan)(s =>
+      s.isInstanceOf[CometScanExec] || s.isInstanceOf[CometNativeScanExec])
+    assert(scan.isDefined, "Expected to find a Comet scan node")
+    val metrics = scan.get.metrics
+    (metrics("scan_io_metadata_cache_hits").value, metrics("scan_io_metadata_cache_misses").value)
+  }
+
+  test("Parquet footers are shared by the tasks of a stage") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "one-file").toString
+      spark
+        .range(0, 200000)
+        .selectExpr("id", "cast(id * 7 as string) as s")
+        .coalesce(1)
+        .write
+        .parquet(path)
+
+      // One file split into many tasks, so every task needs the same footer.
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "64k",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "0") {
+        val query = s"SELECT sum(id), count(s) FROM parquet.`$path`"
+        val tasks = spark.read.parquet(path).rdd.getNumPartitions
+        assert(tasks > 8, s"Expected the file to be split into many tasks, got $tasks")
+
+        withSQLConf(CometConf.COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED.key -> "true") {
+          val df = sql(query)
+          df.collect()
+          val (hits, misses) = footerCacheCounts(df)
+          // Tasks that start together can each miss, but not all of them do.
+          assert(hits > 0, s"hits=$hits misses=$misses")
+          assert(misses < tasks, s"hits=$hits misses=$misses tasks=$tasks")
+        }
+
+        withSQLConf(CometConf.COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED.key -> "false") {
+          val df = sql(query)
+          df.collect()
+          val (hits, misses) = footerCacheCounts(df)
+          assert(hits == 0, s"hits=$hits misses=$misses")
+          assert(misses >= tasks, s"hits=$hits misses=$misses tasks=$tasks")
+        }
+      }
+    }
+  }
+
   test("native scan loads the next file's metadata while it reads the current file") {
     withTempPath { dir =>
       val path = dir.getCanonicalPath
@@ -3506,6 +3555,36 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("scan_io_metadata_prefetches").value == (if (prefetch) 3 else 0))
           assert(metrics("scan_io_footer_reads").value == 4)
         }
+      }
+    }
+  }
+
+  test("Parquet footers are not shared between queries") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "table").toString
+      spark.range(0, 1000).repartition(4).write.parquet(path)
+      withSQLConf(
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED.key -> "true") {
+        // The relation keeps its file listing, as a cached table does, so the second query is
+        // given a file that no longer exists. It must find that out by opening the file.
+        val table = spark.read.parquet(path)
+        val first = table.selectExpr("count(*)")
+        assert(first.collect().head.getLong(0) == 1000)
+        assert(
+          find(first.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined,
+          s"Expected a native scan:\n${first.queryExecution.executedPlan}")
+        val deleted = new java.io.File(dir, "table")
+          .listFiles()
+          .filter(_.getName.endsWith(".parquet"))
+          .head
+        assert(deleted.delete())
+        val error = intercept[SparkException](table.selectExpr("count(*)").collect())
+        // FAILED_READ_FILE.FILE_NOT_EXIST on Spark 4.0+, as HiveMetadataCacheSuite expects, and
+        // Spark 3.x's file-not-found read error, both caused by the missing file.
+        assert(
+          causeChain(error).exists(_.isInstanceOf[java.io.FileNotFoundException]),
+          s"Expected the missing file to fail the read, got: $error")
       }
     }
   }

@@ -33,8 +33,10 @@ use std::mem::size_of;
 use std::sync::Arc;
 
 use datafusion::datasource::listing::PartitionedFile;
+use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::datasource::physical_plan::parquet::metadata::DFParquetMetadata;
 use datafusion::datasource::physical_plan::parquet::{ParquetAccessPlan, RowGroupAccess};
+use datafusion::execution::cache::cache_manager::FileMetadataCache;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion_datasource::FileRange;
@@ -47,6 +49,7 @@ use roaring::{RoaringBitmap, RoaringTreemap};
 
 use crate::execution::operators::ExecutionError;
 use crate::execution::operators::ExecutionError::GeneralError;
+use crate::parquet::shared_metadata_cache::scope_to_store;
 use datafusion_comet_proto::spark_operator::DeltaSparkDvDescriptor;
 
 const NATIVE_MAGIC: i32 = 1681511376;
@@ -588,13 +591,24 @@ const DV_FETCH_CONCURRENCY: usize = 8;
 /// dropped. When no file carries a DV, it is dropped when this call returns.
 pub async fn attach_access_plans(
     runtime_env: Arc<RuntimeEnv>,
+    object_store_url: &ObjectStoreUrl,
     files: Vec<DvScanFile>,
 ) -> Result<Vec<PartitionedFile>, ExecutionError> {
     let partition_reservation =
         MemoryConsumer::new("DeltaDeletionVectorAccessPlan").register(&runtime_env.memory_pool);
+    // The footers read here are the ones the scan will look up, so they go through the scan's
+    // view of the metadata cache: `object_store_url` is the URL the scan is built with.
+    let metadata_cache = scope_to_store(
+        runtime_env.cache_manager.get_file_metadata_cache(),
+        object_store_url,
+    );
     futures::stream::iter(files)
         .map(|scan_file| {
-            attach_access_plan(Arc::clone(&runtime_env), &partition_reservation, scan_file)
+            attach_access_plan(
+                Arc::clone(&metadata_cache),
+                &partition_reservation,
+                scan_file,
+            )
         })
         .buffered(DV_FETCH_CONCURRENCY)
         .try_collect()
@@ -606,7 +620,7 @@ pub async fn attach_access_plans(
 /// call's one registered consumer, and a DV'd file takes an empty reservation
 /// from it rather than registering a consumer of its own.
 async fn attach_access_plan(
-    runtime_env: Arc<RuntimeEnv>,
+    metadata_cache: Arc<FileMetadataCache>,
     partition_reservation: &MemoryReservation,
     scan_file: DvScanFile,
 ) -> Result<PartitionedFile, ExecutionError> {
@@ -680,7 +694,6 @@ async fn attach_access_plan(
     // size hint (mirroring EagerPageIndexReaderFactory): the one fetch here also serves the
     // subsequent data-file open, so DV files pay no extra footer round-trip. Keyed by
     // `file.object_meta`, the exact ObjectMeta the scan's reader factory will look up.
-    let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
     let metadata = DFParquetMetadata::new(data_store.as_ref(), &file.object_meta)
         .with_file_metadata_cache(Some(metadata_cache))
         .with_page_index_policy(Some(PageIndexPolicy::Optional))
@@ -1006,9 +1019,13 @@ mod tests {
             })
             .collect();
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), files)
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            files,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(out.len(), names.len());
         for (file, name) in out.iter().zip(names) {
@@ -1053,7 +1070,11 @@ mod tests {
         // Footer reads must go through the shared FileMetadataCache so the scan's
         // subsequent open of the same file is served from cache instead of paying a
         // second footer round-trip. Files without a DV read no footer at all.
-        let cache = runtime_env.cache_manager.get_file_metadata_cache();
+        // The scan looks the footers up through its store's view of the cache, so this does too.
+        let cache = scope_to_store(
+            runtime_env.cache_manager.get_file_metadata_cache(),
+            &ObjectStoreUrl::local_filesystem(),
+        );
         for (file, name) in out.iter().zip(names) {
             let cached = cache.get(&file.object_meta.location);
             match name {
@@ -1448,9 +1469,13 @@ mod tests {
             start: offset,
             end: offset + 1,
         });
-        let files = attach_access_plans(runtime_env, vec![full, split])
-            .await
-            .unwrap();
+        let files = attach_access_plans(
+            runtime_env,
+            &ObjectStoreUrl::local_filesystem(),
+            vec![full, split],
+        )
+        .await
+        .unwrap();
         let full_plan = files[0].extensions.get::<ParquetAccessPlan>().unwrap();
         let split_plan = files[1].extensions.get::<ParquetAccessPlan>().unwrap();
         assert_eq!(total_selectors(full_plan), 3_000);
@@ -1515,9 +1540,13 @@ mod tests {
                 start: offset,
                 end: offset + 1,
             });
-            let files = attach_access_plans(Arc::clone(&runtime_env), vec![file])
-                .await
-                .unwrap();
+            let files = attach_access_plans(
+                Arc::clone(&runtime_env),
+                &ObjectStoreUrl::local_filesystem(),
+                vec![file],
+            )
+            .await
+            .unwrap();
             let session = Arc::new(SessionContext::new_with_config_rt(
                 SessionConfig::new(),
                 runtime_env,
@@ -1619,9 +1648,13 @@ mod tests {
         );
         let scan_file = alternating_dv_scan_file(&runtime_env, tmp.path(), 1024);
 
-        let err = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap_err();
+        let err = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("alternating.parquet"),
@@ -1663,9 +1696,13 @@ mod tests {
         // this file's retained selector count regardless of its real page-index bound.
         let expected_bytes = reader_peak_bytes(1024, 1).unwrap();
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(
             pool.reserved(),
@@ -1709,9 +1746,13 @@ mod tests {
         let expected_bytes =
             reader_peak_bytes(1024, 1).unwrap() + reader_peak_bytes(512, 1).unwrap();
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file_a, scan_file_b])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file_a, scan_file_b],
+        )
+        .await
+        .unwrap();
         assert_eq!(out.len(), 2);
         assert_eq!(
             pool.reserved(),
@@ -1867,6 +1908,7 @@ mod tests {
 
         let mut out = attach_access_plans(
             Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
             vec![scan_file_a, scan_file_b, scan_file_c],
         )
         .await
@@ -1951,9 +1993,13 @@ mod tests {
         let scan_file_a = dv_scan_file_for_alternating(&runtime_env, &path_a, size_a, &deleted_a);
         let scan_file_b = alternating_dv_scan_file(&runtime_env, tmp_b.path(), 512);
 
-        let err = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file_a, scan_file_b])
-            .await
-            .unwrap_err();
+        let err = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file_a, scan_file_b],
+        )
+        .await
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("Resources exhausted") || msg.contains("exceeding"),
@@ -2014,9 +2060,13 @@ mod tests {
         );
         let scan_file = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
 
-        let err = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap_err();
+        let err = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.to_lowercase().contains("construct"),
@@ -2048,9 +2098,13 @@ mod tests {
         let deleted = alternating_deleted(num_rows as u64);
         let scan_file = alternating_dv_scan_file(&runtime_env, tmp.path(), num_rows);
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap();
 
         let plan = full_file_access_plan(&[num_rows], &deleted).unwrap();
         let expected_bytes = reader_peak_bytes(total_selectors(&plan), 1).unwrap();
@@ -2129,9 +2183,13 @@ mod tests {
         let (path, size, deleted) = write_alternating_parquet(tmp.path(), 1024);
         let scan_file = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap();
         let attached_plan = out[0]
             .extensions
             .get::<ParquetAccessPlan>()
@@ -2196,9 +2254,13 @@ mod tests {
         let size = write_two_row_groups(&path, rows_per_group);
         let scan_file = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap();
         let attached_plan = out[0]
             .extensions
             .get::<ParquetAccessPlan>()
@@ -2270,9 +2332,13 @@ mod tests {
         let (path, size, deleted) = write_alternating_parquet(tmp.path(), num_rows);
         let scan_file = dv_scan_file_for_alternating(&runtime_env, &path, size, &deleted);
 
-        let out = attach_access_plans(Arc::clone(&runtime_env), vec![scan_file])
-            .await
-            .unwrap();
+        let out = attach_access_plans(
+            Arc::clone(&runtime_env),
+            &ObjectStoreUrl::local_filesystem(),
+            vec![scan_file],
+        )
+        .await
+        .unwrap();
         let attached_plan = out[0]
             .extensions
             .get::<ParquetAccessPlan>()
