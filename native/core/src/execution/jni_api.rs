@@ -450,7 +450,8 @@ pub fn get_runtime() -> Handle {
         .clone()
 }
 
-/// Tears down the global Tokio runtime, if it has been initialized.
+/// Tears down the global Tokio runtime, if it has been initialized, and frees the process-wide
+/// caches that outlive tasks: the Iceberg `FileIO`s and the retained Parquet metadata caches.
 ///
 /// The runtime is moved out of the global slot, so the next [`init_runtime`] or
 /// [`get_runtime`] call builds a new one. Shutting it down blocks the calling (JNI) thread
@@ -463,6 +464,7 @@ pub fn get_runtime() -> Handle {
 /// would deadlock/panic.
 pub fn release_runtime() {
     crate::execution::operators::clear_file_io_cache();
+    crate::parquet::shared_metadata_cache::clear_shared_metadata_caches();
     let runtime = TOKIO_RUNTIME.lock().take();
     if let Some(runtime) = runtime {
         runtime.shutdown_timeout(Duration::from_secs(3));

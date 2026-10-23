@@ -37,7 +37,11 @@
 //! tasks own it through their `RuntimeEnv`. It additionally holds strong references to the last
 //! [`MAX_IDLE_CACHES`] caches it handed out. Those matter when an executor runs one task at a
 //! time: the next task of the stage starts after the previous one released its plan. Whatever the
-//! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them.
+//! tasks do, at most [`MAX_IDLE_CACHES`] caches outlive the tasks that used them. A retained cache
+//! is freed when tasks of [`MAX_IDLE_CACHES`] other stages have asked for theirs since, or when
+//! the plugin shuts down and [`clear_shared_metadata_caches`] runs. Nothing frees it sooner: an
+//! executor is not told that a stage has finished, so one that goes idle after a query keeps the
+//! caches of its last stages until it shuts down.
 //!
 //! A stage's cache holds DataFusion's per-task limit for each of its tasks that is running, and one
 //! task's limit once none is, so that sharing does not shrink the room each task had with a cache
@@ -65,7 +69,7 @@ use datafusion::execution::cache::default_cache::DefaultCache;
 use datafusion::execution::cache::{Cache, CacheEntryInfo};
 use object_store::path::Path;
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
 /// How many caches of stages with no running task the registry holds on to.
@@ -227,10 +231,24 @@ impl SharedMetadataCaches {
         Arc::new(TaskCache::new(stage))
     }
 
+    /// Forgets every stage, freeing the retained caches. Running tasks keep the caches they hold.
+    fn clear(&self) {
+        let dropped = std::mem::take(&mut *self.registry.lock().unwrap());
+        drop(dropped);
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.registry.lock().unwrap().alive.len()
     }
+}
+
+/// The registry of the executor's stages.
+static CACHES: LazyLock<SharedMetadataCaches> = LazyLock::new(SharedMetadataCaches::default);
+
+/// Frees the caches retained for stages with no running task, as the plugin shuts down.
+pub fn clear_shared_metadata_caches() {
+    CACHES.clear();
 }
 
 /// A view of a [`FileMetadataCache`] that keys every entry by the object store as well as the
@@ -336,8 +354,6 @@ pub(crate) fn scope_to_store(
 pub(crate) fn shared_metadata_cache_for_task(
     spark_config: &HashMap<String, String>,
 ) -> Option<Arc<FileMetadataCache>> {
-    static CACHES: OnceLock<SharedMetadataCaches> = OnceLock::new();
-
     if !spark_config.get_bool(COMET_PARQUET_SHARED_METADATA_CACHE_ENABLED) {
         return None;
     }
@@ -347,9 +363,7 @@ pub(crate) fn shared_metadata_cache_for_task(
         stage_id: parse(COMET_STAGE_ID)?,
         stage_attempt: parse(COMET_STAGE_ATTEMPT)?,
     };
-    let cache: Arc<FileMetadataCache> = CACHES
-        .get_or_init(SharedMetadataCaches::default)
-        .cache_for(key);
+    let cache: Arc<FileMetadataCache> = CACHES.cache_for(key);
     Some(cache)
 }
 
@@ -431,6 +445,21 @@ mod tests {
         // The running stage plus the idle ones that fit.
         assert_eq!(caches.len(), 1 + MAX_IDLE_CACHES);
         assert!(same_stage(&running, &caches.cache_for(key(0, 0))));
+    }
+
+    #[test]
+    fn clearing_frees_the_retained_caches_but_not_a_running_one() {
+        let caches = SharedMetadataCaches::default();
+        let running = caches.cache_for(key(0, 0));
+        let idle = Arc::downgrade(&caches.cache_for(key(1, 0)).stage);
+        assert!(idle.upgrade().is_some());
+
+        caches.clear();
+        assert!(idle.upgrade().is_none());
+        assert_eq!(caches.len(), 0);
+        assert_eq!(running.cache_limit(), DEFAULT_METADATA_CACHE_LIMIT);
+        drop(running);
+        assert_eq!(caches.len(), 0);
     }
 
     #[test]

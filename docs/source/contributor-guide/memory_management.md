@@ -513,8 +513,10 @@ diverge for several structural reasons:
   `spark.comet.parquet.metadataCache.sharedWithinStage.enabled`, the default, the tasks of a stage
   share one cache per executor, which holds up to 50 MiB for each of its running tasks. The two
   most recently used caches are kept after their tasks finish, for the next task of their stage,
-  and shrink to 50 MiB each, so up to 100 MiB stays resident with no task running. With the
-  setting off, each task has its own 50 MiB cache, freed with the task.
+  and shrink to 50 MiB each, so up to 100 MiB stays resident with no task running. A kept cache is
+  freed once tasks of two other stages run on the executor, or when the plugin shuts down. An
+  executor is not told when a stage ends, so one that goes idle after a query holds its last two
+  caches until then. With the setting off, each task has its own 50 MiB cache, freed with the task.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
