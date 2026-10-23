@@ -72,24 +72,12 @@ object CometMurmur3Hash extends CometExpressionSerde[Murmur3Hash] {
   }
 }
 
-// Non-foldable numBits uses Spark codegen inside the Comet pipeline; foldable values stay native.
-object CometSha2 extends CometExpressionSerde[Sha2] with CodegenDispatchFallback {
+object CometSha2 extends CometExpressionSerde[Sha2] {
 
-  override def hasConditionalNativeDefault: Boolean = true
+  override def getUnsupportedReasons(): Seq[String] = HashUtils.unsupportedReasons
 
-  private val nonFoldableNumBitsReason =
-    "The `numBits` argument must be a foldable literal value"
-
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(nonFoldableNumBitsReason)
-
-  override def getSupportLevel(expr: Sha2): SupportLevel = {
-    if (!expr.right.foldable) {
-      Unsupported(Some(nonFoldableNumBitsReason))
-    } else {
-      HashUtils.supportLevelForChildren(expr)
-    }
-  }
+  override def getSupportLevel(expr: Sha2): SupportLevel =
+    HashUtils.supportLevelForChildren(expr)
 
   override def convert(
       expr: Sha2,

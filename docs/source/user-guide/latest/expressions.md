@@ -362,7 +362,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native | Alias of `sha1` |
 | `sha1` | ✅ | Native |  |
-| `sha2` | ✅ | Hybrid | Non-foldable `numBits` routes through the JVM codegen dispatcher ([audit](../../contributor-guide/expression-audits/hash_funcs.md#sha2)) |
+| `sha2` | ✅ | Native | Supports literal and column `numBits` ([audit](../../contributor-guide/expression-audits/hash_funcs.md#sha2)) |
 | `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
