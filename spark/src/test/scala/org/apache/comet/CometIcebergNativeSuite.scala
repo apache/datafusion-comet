@@ -1518,7 +1518,8 @@ class CometIcebergNativeSuite
             "PARTITIONED BY (Region) TBLPROPERTIES ('format-version' = '2')")
         spark.sql(s"INSERT INTO $t VALUES (1, 'a', 10), (2, 'a', 20), (3, 'b', 30)")
       }
-      // Metadata columns resolve by reserved field id, so the exact name check must skip them.
+      // Metadata columns resolve by reserved field id and keep Iceberg's reserved names, so the
+      // native scan's exact name check finds them too.
       Seq(true, false).foreach { caseSensitive =>
         withCaseCatalog(warehouseDir, caseSensitive) {
           failures ++= failingNativeScanChecks(Seq(
@@ -1556,6 +1557,43 @@ class CometIcebergNativeSuite
           s"SELECT id FROM $t WHERE s.X = 20").foreach { query =>
           checkNestedFieldEvolutionFallback(query, "s.X (renamed from x)")
         }
+        spark.sql(s"DROP TABLE $t")
+      }
+    }
+  }
+
+  test("issue 5540: nested field renamed under A beside a") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_pair_nested"
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        // After the rename `a` and `A` share the shape <x, z>, since case-insensitive schema
+        // pruning requests `A` with the type of `a`.
+        spark.sql(
+          s"CREATE TABLE $t (a STRUCT<x: INT, z: INT>, A STRUCT<x: INT, y: INT>) USING iceberg")
+        spark.sql(
+          s"INSERT INTO $t VALUES " +
+            "(named_struct('x', 1, 'z', 2), named_struct('x', 10, 'y', 100)), " +
+            "(named_struct('x', 3, 'z', 4), " +
+            "named_struct('x', CAST(NULL AS INT), 'y', CAST(NULL AS INT)))")
+        spark.sql(s"ALTER TABLE $t RENAME COLUMN A.y TO z")
+        spark.sql(
+          s"INSERT INTO $t VALUES " +
+            "(named_struct('x', 5, 'z', 6), named_struct('x', 30, 'z', 300))")
+      }
+      // A case-insensitive lookup of `A` finds `a` first and would skip the check on `A.z`.
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        val query = s"SELECT * FROM $t"
+        if (isSpark41Plus) {
+          val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
+          assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
+        } else {
+          checkNestedFieldEvolutionFallback(query, "A.z (renamed from y)")
+        }
+      }
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        checkIcebergNativeScan(s"SELECT a FROM $t")
+        checkNestedFieldEvolutionFallback(s"SELECT A FROM $t", "A.z (renamed from y)")
         spark.sql(s"DROP TABLE $t")
       }
     }
