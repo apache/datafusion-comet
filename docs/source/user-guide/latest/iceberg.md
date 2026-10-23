@@ -378,10 +378,6 @@ spark.sql.catalog.<name>.warehouse=...
 
 # Split-operator plan and native Parquet writer
 spark.comet.write.iceberg.enabled=true
-
-# Lets writes whose input is a local relation (INSERT ... VALUES, a local DataFrame) use the
-# native writer; see "Native Parquet write eligibility" below
-spark.comet.exec.localTableScan.enabled=true
 ```
 
 ### Supported operations
@@ -461,8 +457,8 @@ plan; an ineligible write keeps `IcebergWrite`.
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
 must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
-`LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
-(off by default). Without that setting such writes keep `IcebergWrite` and run through
+`LocalTableScanExec`, which Comet converts unless `spark.comet.exec.localTableScan.enabled=false`
+(on by default). With that setting turned off, such writes keep `IcebergWrite` and run through
 iceberg-java.
 
 **Most Iceberg write settings are not supported.** Detection is an allowlist: a write is
