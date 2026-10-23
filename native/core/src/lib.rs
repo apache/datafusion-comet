@@ -133,7 +133,7 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     log_conf_path: JString,
     log_level: JString,
 ) {
-    // Initialize the error handling to capture panic backtraces
+    // Install the panic hook, which logs each native panic with its backtrace
     errors::init();
 
     try_unwrap_or_throw(&e, |env| {
