@@ -372,7 +372,10 @@ ordering must keep it natively, and the native operator must say so by returning
 `maintains_input_order` for that child, as DataFusion's filter and projection do. The planner
 declares the order through an operator only when the operator says it keeps it. An operator that
 cannot keep the order natively must not report it, or has to be added to `mayReportFalseOrder` in
-`operators.scala`, which makes the hash join serde send no order over it.
+`operators.scala`. The hash join serde then sends no order over it, and an outer hash join above it
+that has to keep that order falls back to Spark. Comet's hash joins are the exception within one
+native plan: an outer hash join over one of them stays native, even over one that declared no
+order, since DataFusion keeps the order it can see there.
 
 A leaf that reports an ordering is where the order starts, so the planner has to know that the
 native operator produces its rows in that order. It knows that of an input from the JVM and of a
@@ -575,6 +578,13 @@ empty projections such as the input to `count(*)`. Each required output column i
 then the projection restores its order, duplicates and aliases. The predicate still sees its
 original input schema. Both native plans remain for metrics, including when they share a Spark
 plan ID. Computed projections and projections that use every input column are unchanged.
+
+`CometFilterExec` and `CometProjectionExec` are typed aliases of `MetricOwningExec`, which owns
+the stable metrics for their Spark plan nodes. Execution-local child replacements share that
+metric set and register the executing DataFusion operator's fresh metric handles. Plan rewrites,
+including `reset_state`, create a new metric set. Both keep the operator's settings, such as the
+filter's runtime filter pushdown permission. The aliases retain their operator-specific accessors
+and distinct downcast types.
 
 #### Implement the Operator
 

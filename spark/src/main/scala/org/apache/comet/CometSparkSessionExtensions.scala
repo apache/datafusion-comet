@@ -24,6 +24,7 @@ import java.nio.ByteOrder
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
+import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
@@ -318,9 +319,12 @@ object CometSparkSessionExtensions extends Logging {
    * Record one or more fallback reasons on a `TreeNode`. This is the set-valued form of
    * [[withFallbackReason]]; see that overload for the full contract.
    *
-   * Reasons are accumulated (never overwritten) on the node's `FALLBACK_REASONS` tag and are
-   * surfaced in extended explain output. When `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled,
-   * each new reason is also emitted as a warning.
+   * Reasons are accumulated on the node's `FALLBACK_REASONS` tag and are surfaced in extended
+   * explain output. During conversion, expression reasons accumulate only within that scope:
+   * pre-existing expression tags may have been copied from an unrelated conversion. Operator
+   * reasons remain sticky because earlier planning rules can intentionally veto conversion. When
+   * `COMET_EXPLAIN_FALLBACK_LOG_ENABLED` is enabled, each new reason is also emitted as a
+   * warning.
    *
    * @param node
    *   The Spark operator or expression that is falling back to Spark.
@@ -337,9 +341,15 @@ object CometSparkSessionExtensions extends Logging {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
-    val existingNodeInfos =
-      node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
-    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, existingNodeInfos ++ info)
+    val reasons = node match {
+      case expr: Expression =>
+        CometExplainInfo.recordFallbackReasons(expr, info).getOrElse {
+          expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+        }
+      case _ =>
+        node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+    }
+    node.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons)
     node
   }
 
