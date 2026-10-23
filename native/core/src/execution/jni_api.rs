@@ -531,6 +531,8 @@ struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
+    /// The Spark task attempt running the plan
+    pub task_attempt_id: i64,
     /// The number of partitions
     pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
@@ -872,6 +874,7 @@ fn create_execution_context(
     Ok(Box::new(ExecutionContext {
         id,
         spark_plan,
+        task_attempt_id,
         partition_count,
         root_op: None,
         scans: vec![],
@@ -1476,6 +1479,7 @@ fn execute_plan(
         let start = Instant::now();
         let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
             .with_exec_id(exec_context_id)
+            .with_task_attempt_id(exec_context.task_attempt_id)
             .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
@@ -1703,6 +1707,25 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
             .as_mut()
             .expect("Comet execution context shouldn't be null!")
     }
+}
+
+/// Whether the plan evaluates a Python UDF in the embedded interpreter, which the JVM then
+/// interrupts when the task is killed.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_hasPythonUdf(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+) -> jboolean {
+    fn contains_python_udf(op: &Operator) -> bool {
+        matches!(op.op_struct, Some(OpStruct::ArrowPythonUdf(_)))
+            || op.children.iter().any(contains_python_udf)
+    }
+    try_unwrap_or_throw(&e, |_| {
+        Ok(contains_python_udf(
+            &get_execution_context(exec_context).spark_plan,
+        ))
+    })
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.

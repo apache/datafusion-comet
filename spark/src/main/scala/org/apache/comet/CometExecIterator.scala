@@ -235,6 +235,11 @@ class CometExecIterator(
 
   CometExecIterator.startMemoryUsageLog()
 
+  // A native Python UDF ignores the task's kill, so watch the task to interrupt its calls.
+  if (PythonUdfMonitor.supported && nativeLib.hasPythonUdf(plan)) {
+    PythonUdfMonitor.watch(TaskContext.get())
+  }
+
   /**
    * Matches any throwable once a JVM input of this plan has failed, and extracts what that input
    * threw. Native saw only its text. See `CometArrowStream.inputFailure`.

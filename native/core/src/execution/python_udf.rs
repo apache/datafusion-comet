@@ -29,13 +29,163 @@ use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
 use pyo3::types::{PyBytes, PyList, PyTuple};
-use std::sync::{Mutex, PoisonError};
+use pyo3::PyTypeInfo;
+use std::collections::HashMap;
+use std::os::raw::{c_long, c_ulong};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError};
 
 // Tasks create their callables concurrently. Concurrent first imports of a package
 // can hand a thread a partially initialized module (observed with PyArrow on Python
 // 3.10), so callables are unpickled one at a time. Take it with `lock_py_attached`,
 // which waits for the lock without holding the GIL.
 static IMPORT_LOCK: Mutex<()> = Mutex::new(());
+
+pyo3::create_exception!(
+    comet,
+    TaskKilled,
+    pyo3::exceptions::PyBaseException,
+    "Raised in a running Arrow UDF when Spark kills its task."
+);
+
+unsafe extern "C" {
+    // Part of the stable Python C API, but not declared by pyo3-ffi.
+    fn PyThread_get_thread_ident() -> c_ulong;
+}
+
+/// The native plans of one Spark task attempt that hold Arrow UDFs.
+#[derive(Default)]
+struct TaskCalls {
+    plans: usize,
+    killed: bool,
+    /// Python thread ids of the calls running now, one entry per call.
+    threads: Vec<c_ulong>,
+}
+
+// Holders of this lock never wait for the GIL, so a thread attached to Python may take it.
+static TASKS: LazyLock<Mutex<HashMap<i64, TaskCalls>>> = LazyLock::new(Default::default);
+
+fn tasks() -> MutexGuard<'static, HashMap<i64, TaskCalls>> {
+    TASKS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Registers a native plan's Arrow UDFs under their Spark task attempt, so that
+/// [`interrupt_task`] reaches their calls. The task's entry is removed when its last
+/// registration is dropped, which happens when the plan is released.
+pub struct TaskRegistration {
+    task_attempt_id: i64,
+}
+
+impl TaskRegistration {
+    pub fn new(task_attempt_id: i64) -> Self {
+        tasks().entry(task_attempt_id).or_default().plans += 1;
+        Self { task_attempt_id }
+    }
+
+    fn is_killed(&self) -> bool {
+        tasks()
+            .get(&self.task_attempt_id)
+            .is_some_and(|task| task.killed)
+    }
+
+    fn killed_error(&self) -> ArrowError {
+        ArrowError::ComputeError(format!(
+            "Arrow UDF stopped because task {} was killed",
+            self.task_attempt_id
+        ))
+    }
+}
+
+impl Drop for TaskRegistration {
+    fn drop(&mut self) {
+        let mut tasks = tasks();
+        if let Some(task) = tasks.get_mut(&self.task_attempt_id) {
+            task.plans -= 1;
+            if task.plans == 0 {
+                tasks.remove(&self.task_attempt_id);
+            }
+        }
+    }
+}
+
+/// A call to the user's callable, recorded so that [`interrupt_task`] can raise in its thread.
+struct RunningCall<'a> {
+    task: &'a TaskRegistration,
+    thread: c_ulong,
+}
+
+impl<'a> RunningCall<'a> {
+    /// Fails without recording the call when the task has already been killed.
+    fn enter(_py: Python<'_>, task: &'a TaskRegistration) -> Result<Self> {
+        // SAFETY: the caller is attached to the interpreter.
+        let thread = unsafe { PyThread_get_thread_ident() };
+        let mut tasks = tasks();
+        let calls = tasks.entry(task.task_attempt_id).or_default();
+        if calls.killed {
+            return Err(task.killed_error());
+        }
+        calls.threads.push(thread);
+        Ok(Self { task, thread })
+    }
+}
+
+impl Drop for RunningCall<'_> {
+    fn drop(&mut self) {
+        let mut tasks = tasks();
+        let Some(calls) = tasks.get_mut(&self.task.task_attempt_id) else {
+            return;
+        };
+        if let Some(index) = calls.threads.iter().position(|t| *t == self.thread) {
+            calls.threads.swap_remove(index);
+        }
+        if calls.killed {
+            // An interrupt that arrived as the callable returned is still pending on this
+            // thread. Nothing can set another one now that the call is unrecorded, so clear
+            // it rather than let it fire in later Python code on this thread.
+            // SAFETY: the call is made while attached, on the thread it names.
+            unsafe {
+                pyo3::ffi::PyThreadState_SetAsyncExc(self.thread as c_long, std::ptr::null_mut())
+            };
+        }
+    }
+}
+
+/// Marks a Spark task attempt as killed and raises [`TaskKilled`] in its running Arrow UDF
+/// calls. Later calls of the task fail without entering Python. Returns the number of calls
+/// interrupted. A task with no registered plan is not recorded, so the caller repeats this
+/// until the task completes.
+///
+/// The exception takes effect when the thread next runs Python bytecode: a call blocked in
+/// native code that released the GIL is interrupted only when that code returns.
+pub fn interrupt_task(task_attempt_id: i64) -> usize {
+    let running = match tasks().get_mut(&task_attempt_id) {
+        Some(task) => {
+            task.killed = true;
+            !task.threads.is_empty()
+        }
+        None => false,
+    };
+    if !running {
+        return 0;
+    }
+    // Calls cannot start after the flag is set, so only calls recorded before it remain.
+    Python::attach(|py| {
+        let exception = TaskKilled::type_object(py);
+        let tasks = tasks();
+        let Some(task) = tasks.get(&task_attempt_id) else {
+            return 0;
+        };
+        task.threads
+            .iter()
+            .map(|thread| {
+                // SAFETY: attached to the interpreter, and `exception` is a live type object.
+                let set = unsafe {
+                    pyo3::ffi::PyThreadState_SetAsyncExc(*thread as c_long, exception.as_ptr())
+                };
+                set.max(0) as usize
+            })
+            .sum()
+    })
+}
 
 fn initialize_python() -> Result<()> {
     use std::ffi::CStr;
@@ -168,6 +318,7 @@ pub struct ArrowPythonUdf {
     allow_cast: bool,
     safe_cast: bool,
     accept_array_like: bool,
+    task: Option<Arc<TaskRegistration>>,
 }
 
 impl ArrowPythonUdf {
@@ -234,8 +385,15 @@ impl ArrowPythonUdf {
                 allow_cast,
                 safe_cast,
                 accept_array_like,
+                task: None,
             })
         })
+    }
+
+    /// Lets [`interrupt_task`] interrupt this UDF's calls for the registered task.
+    pub fn with_task(mut self, task: Arc<TaskRegistration>) -> Self {
+        self.task = Some(task);
+        self
     }
 
     /// Evaluate one Arrow batch, with the same row count for every argument.
@@ -297,14 +455,18 @@ impl ArrowPythonUdf {
                     kwargs.set_item(name, arg).map_err(python_error)?;
                 }
             }
-            let result = self
-                .callable
-                .bind(py)
-                .call(
-                    PyTuple::new(py, positional).map_err(python_error)?,
-                    Some(&kwargs),
-                )
-                .map_err(|error| python_traceback_error(py, error))?;
+            let positional = PyTuple::new(py, positional).map_err(python_error)?;
+            let call = self
+                .task
+                .as_deref()
+                .map(|task| RunningCall::enter(py, task))
+                .transpose()?;
+            let result = self.callable.bind(py).call(positional, Some(&kwargs));
+            drop(call);
+            let result = result.map_err(|error| python_traceback_error(py, error))?;
+            if let Some(task) = self.task.as_deref().filter(|task| task.is_killed()) {
+                return Err(task.killed_error());
+            }
             let result = if self.accept_array_like {
                 // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`,
                 // which converts lists and NumPy arrays and rejects chunked arrays.
@@ -598,6 +760,56 @@ mod tests {
             assert!(error.contains("line 1"), "{error}");
             assert!(error.contains("ZeroDivisionError"), "{error}");
         });
+    }
+
+    fn running_calls(task_attempt_id: i64) -> Option<usize> {
+        tasks().get(&task_attempt_id).map(|task| task.threads.len())
+    }
+
+    #[test]
+    fn interrupts_running_call_of_killed_task() {
+        const TASK: i64 = -6811;
+        initialize_python().unwrap();
+        // `except Exception` must not swallow the interrupt.
+        let command = Python::attach(|py| {
+            cloudpickled_lambda(
+                py,
+                c"(lambda ns: (exec('def f(a):\\n    n = 0\\n    while True:\\n        n += 1\\n        try:\\n            n %= 7\\n        except Exception:\\n            pass\\n', ns), ns['f'])[1])({})",
+            )
+        });
+        let task = Arc::new(TaskRegistration::new(TASK));
+        let udf = Arc::new(
+            ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                .unwrap()
+                .with_task(Arc::clone(&task)),
+        );
+        let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        {
+            let (udf, input) = (Arc::clone(&udf), Arc::clone(&input));
+            // Not joined: a call that ignores the interrupt would never return.
+            std::thread::spawn(move || sender.send(udf.evaluate(&[input], 1)));
+        }
+        let start = std::time::Instant::now();
+        while running_calls(TASK) != Some(1) {
+            assert!(start.elapsed().as_secs() < 30, "the UDF call did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(interrupt_task(TASK), 1);
+        let error = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the interrupted call did not return")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("TaskKilled"), "{error}");
+        assert_eq!(running_calls(TASK), Some(0));
+        // A killed task does not enter Python again.
+        let error = udf.evaluate(&[input], 1).unwrap_err().to_string();
+        assert!(error.contains("was killed"), "{error}");
+        assert_eq!(interrupt_task(TASK), 0);
+        drop(udf);
+        drop(task);
+        assert_eq!(running_calls(TASK), None);
     }
 
     const UNBUFFERED_CHILD: &str = "COMET_ARROW_UDF_UNBUFFERED_CHILD";
