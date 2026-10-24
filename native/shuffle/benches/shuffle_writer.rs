@@ -376,6 +376,182 @@ fn partitioning_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+/// The row-level gather on nested columns, through the same place+gather harness as
+/// [`partitioning_benchmark`] but under hash partitioning, which is what most shuffles use.
+///
+/// Hash placement scatters rows, so the flush has to gather every output partition back out a
+/// row at a time with `interleave_record_batch`. For a primitive or string column that is a copy
+/// of values; for a nested column it also has to rebuild list and map offsets and recurse into
+/// every child array, and the fixtures above have no list or map columns at all. The shapes
+/// measured here are `List<Int64>`, `List<Struct<Int64, Utf8>>`, `Map<Utf8, Int64>` and a flat
+/// `Struct<Int64, Utf8, Float64>`. Each schema puts four columns of its shape behind an Int64
+/// key, and the hash reads only the key, so the gap between `place` and `place+gather` is the
+/// gather of the nested columns and not the hash of them. IPC encoding and the file write stay
+/// out, as above. List and map lengths vary from row to row (0 to 8 and 1 to 7), so the gather
+/// cannot fall into a fixed-stride pattern. Every batch is built separately, for the reasons
+/// given in [`partitioning_benchmark`].
+fn nested_gather_benchmark(c: &mut Criterion) {
+    const BATCH_SIZE: usize = 8192;
+    const NUM_BATCHES: usize = 8;
+    const NUM_PARTITIONS: usize = 50;
+
+    let partitioning =
+        CometPartitioning::Hash(vec![Arc::new(Column::new("key", 0))], NUM_PARTITIONS);
+    let mut group = c.benchmark_group("shuffle_gather_nested");
+    for shape in [
+        NestedShape::ListInt64,
+        NestedShape::ListStruct,
+        NestedShape::MapUtf8Int64,
+        NestedShape::Struct,
+    ] {
+        let batches = (0..NUM_BATCHES)
+            .map(|b| nested_shape_batch(shape, b * BATCH_SIZE, BATCH_SIZE, 4))
+            .collect::<Vec<_>>();
+        let name = shape.name();
+        group.bench_function(format!("place ({name})"), |b| {
+            b.iter_batched(
+                || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                |mut repartitioner| {
+                    repartitioner.place(&batches).unwrap();
+                    repartitioner
+                },
+                BatchSize::LargeInput,
+            );
+        });
+        group.bench_function(format!("place+gather ({name})"), |b| {
+            b.iter_batched(
+                || BenchRepartitioner::try_new(partitioning.clone(), BATCH_SIZE).unwrap(),
+                |mut repartitioner| {
+                    repartitioner.place(&batches).unwrap();
+                    repartitioner.gather().unwrap();
+                    repartitioner
+                },
+                BatchSize::LargeInput,
+            );
+        });
+    }
+    group.finish();
+}
+
+/// The column shapes of [`nested_gather_benchmark`].
+#[derive(Clone, Copy)]
+enum NestedShape {
+    ListInt64,
+    ListStruct,
+    MapUtf8Int64,
+    Struct,
+}
+
+impl NestedShape {
+    fn name(self) -> &'static str {
+        match self {
+            NestedShape::ListInt64 => "list_int64",
+            NestedShape::ListStruct => "list_struct",
+            NestedShape::MapUtf8Int64 => "map_utf8_int64",
+            NestedShape::Struct => "struct",
+        }
+    }
+}
+
+/// An Int64 `key` column, distinct on every row, followed by `num_cols` columns of `shape`. All
+/// values run from `first_row`, so successive batches differ.
+fn nested_shape_batch(
+    shape: NestedShape,
+    first_row: usize,
+    num_rows: usize,
+    num_cols: usize,
+) -> RecordBatch {
+    use arrow::array::builder::{Int64Builder, ListBuilder, MapBuilder, StructBuilder};
+    use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
+    use arrow::datatypes::Fields;
+
+    let rows = first_row..first_row + num_rows;
+    let mut fields = vec![Field::new("key", DataType::Int64, false)];
+    let mut columns: Vec<Arc<dyn Array>> = vec![Arc::new(Int64Array::from_iter_values(
+        rows.clone().map(|row| row as i64),
+    ))];
+    let entry_fields = || {
+        Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Utf8, true),
+        ])
+    };
+    for col in 0..num_cols {
+        let column: Arc<dyn Array> = match shape {
+            NestedShape::ListInt64 => {
+                let mut builder = ListBuilder::new(Int64Builder::new());
+                for row in rows.clone() {
+                    let values = builder.values();
+                    for i in 0..row % 9 {
+                        values.append_value((row * 16 + i + col) as i64);
+                    }
+                    builder.append(true);
+                }
+                Arc::new(builder.finish())
+            }
+            NestedShape::ListStruct => {
+                let mut builder = ListBuilder::new(StructBuilder::from_fields(entry_fields(), 0));
+                for row in rows.clone() {
+                    let entries = builder.values();
+                    for i in 0..row % 9 {
+                        entries
+                            .field_builder::<Int64Builder>(0)
+                            .unwrap()
+                            .append_value((row * 16 + i + col) as i64);
+                        entries
+                            .field_builder::<StringBuilder>(1)
+                            .unwrap()
+                            .append_value(format!("entry {row} {i}"));
+                        entries.append(true);
+                    }
+                    builder.append(true);
+                }
+                Arc::new(builder.finish())
+            }
+            NestedShape::MapUtf8Int64 => {
+                let mut builder = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+                for row in rows.clone() {
+                    for i in 0..1 + row % 7 {
+                        builder.keys().append_value(format!("key {i} {}", row % 97));
+                        builder.values().append_value((row * 16 + i + col) as i64);
+                    }
+                    builder.append(true).unwrap();
+                }
+                Arc::new(builder.finish())
+            }
+            NestedShape::Struct => Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("a", DataType::Int64, false)),
+                    Arc::new(Int64Array::from_iter_values(
+                        rows.clone().map(|row| (row + col) as i64),
+                    )) as Arc<dyn Array>,
+                ),
+                (
+                    Arc::new(Field::new("b", DataType::Utf8, false)),
+                    Arc::new(
+                        rows.clone()
+                            .map(|row| Some(format!("value {row} {col}")))
+                            .collect::<StringArray>(),
+                    ) as Arc<dyn Array>,
+                ),
+                (
+                    Arc::new(Field::new("c", DataType::Float64, false)),
+                    Arc::new(Float64Array::from_iter_values(
+                        rows.clone().map(|row| row as f64 * 1.5 + col as f64),
+                    )) as Arc<dyn Array>,
+                ),
+            ])),
+        };
+        fields.push(Field::new(
+            format!("col{col}"),
+            column.data_type().clone(),
+            true,
+        ));
+        columns.push(column);
+    }
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
 /// Benchmarks the per-block IPC encoding cost (schema + record batch) in isolation, using the
 /// `None` codec so that compression does not obscure the schema-encoding cost. Covers a wide flat
 /// schema and a deeply nested schema, where the schema flatbuffer is largest.
@@ -593,6 +769,6 @@ fn config() -> Criterion {
 criterion_group! {
     name = benches;
     config = config();
-    targets = criterion_benchmark, partitioning_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
+    targets = criterion_benchmark, partitioning_benchmark, nested_gather_benchmark, schema_encoding_benchmark, ipc_context_reuse_benchmark
 }
 criterion_main!(benches);
