@@ -56,7 +56,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         classOf[AssertNotNull].getName,
         "review_assert"),
       (children: Seq[org.apache.spark.sql.catalyst.expressions.Expression]) =>
-        AssertNotNull(children.head))
+        AssertNotNull(children.head, children.tail.map(_.asInstanceOf[Literal].value.toString)))
     try f
     finally spark.sessionState.functionRegistry.dropFunction(id)
   }
@@ -122,12 +122,14 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq[java.lang.Long](null, 0L).toDF("den").coalesce(1).write.parquet(path.toString)
         val input = spark.read.parquet(path.toString)
         def firstError(enabled: Boolean): Throwable = {
+          var failure: Throwable = null
           withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
             val result =
               input.select(getColumnFromExpression(AssertNotNull(expr("10L DIV den").expr)))
             val error = intercept[Exception](result.collect())
-            causeChain(error).last
+            failure = causeChain(error).last
           }
+          failure
         }
         val expected = firstError(false)
         val actual = firstError(true)
@@ -166,6 +168,80 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkReviewError(input.repartition(2, a, b), "NOT_NULL_ASSERT_VIOLATION")
             case "sort keys" =>
               checkSparkAnswer(input.sortWithinPartitions(input("a"), b).repartition(1))
+          }
+        }
+      }
+    }
+  }
+
+  for (codegen <- Seq(false, true); scenario <- Seq("two checks", "one check", "ordinary")) {
+    test(
+      s"AssertNotNull preserves distinct aggregate Expand errors: $scenario codegen=$codegen") {
+      withReviewAssertion {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+          withTempPath { path =>
+            val rows = if (scenario == "two checks") {
+              Seq[(Integer, Integer, Int, Int)]((1, null, 0, 0), (null, 2, 1, 1))
+            } else Seq[(Integer, Integer, Int, Int)]((1, 3, 0, 0), (4, 2, 1, 1))
+            rows.toDF("a", "b", "x", "y").coalesce(1).write.parquet(path.toString)
+            withTempView("review_expand") {
+              spark.read.parquet(path.toString).createOrReplaceTempView("review_expand")
+              val a = if (scenario == "ordinary") "a" else "review_assert(a, 'a')"
+              val b = if (scenario == "two checks") "review_assert(b, 'b')" else "b"
+              val query = sql(
+                s"SELECT min($a), min($b), count(DISTINCT x), " +
+                  "count(DISTINCT y) FROM review_expand")
+              if (scenario == "two checks") {
+                checkReviewError(query, "NOT_NULL_ASSERT_VIOLATION")
+              } else {
+                checkSparkAnswer(query)
+                assert(query.queryExecution.executedPlan.toString.contains("CometExpand"))
+                if (scenario == "one check") {
+                  checkSparkAnswerAndImpl(query, native = Seq("assertnotnull"))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (consumer <- Seq("sort", "shuffle", "top-k"); codegen <- Seq(false, true);
+    scenario <- Seq("competing", "safe check", "ordinary")) {
+    test(s"AssertNotNull preserves child errors before $consumer: $scenario codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withTempPath { path =>
+          val rows = if (scenario == "safe check") {
+            Seq[(Integer, Long)]((1, 1L), (2, 2L))
+          } else Seq[(Integer, Long)]((1, 0L), (2, 0L), (null, 1L))
+          rows.toDF("a", "den").coalesce(1).write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked =
+            if (scenario == "ordinary") input("a")
+            else {
+              getColumnFromExpression(AssertNotNull(input("a").expr, Seq("checked")))
+            }
+          val projected = input.select(checked.as("checked"), input("den"))
+          val query = if (consumer == "sort") {
+            projected.sortWithinPartitions(expr("10L DIV den"))
+          } else if (consumer == "shuffle") projected.repartition(2, expr("10L DIV den"))
+          else projected.orderBy(expr("10L DIV den")).limit(1).repartition(1)
+          if (scenario == "safe check") checkSparkAnswer(query)
+          else checkReviewError(query, "DIVIDE_BY_ZERO")
+          // A nonthrowing key remains a full-consumption barrier for safe native checks.
+          if (scenario == "safe check") {
+            val plainKey = if (consumer == "sort") {
+              projected.sortWithinPartitions(col("den"))
+            } else if (consumer == "shuffle") projected.repartition(2, col("den"))
+            else projected.orderBy(col("den")).limit(1).repartition(1)
+            checkSparkAnswerAndImpl(plainKey, native = Seq("assertnotnull"))
           }
         }
       }
@@ -286,14 +362,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val query = input.select(
         checked.as("v"),
         concat(input("id").cast("string"), repeat(lit("p"), 65536)).as("pad"))
-      def exported(enabled: Boolean): org.apache.spark.api.java.JavaRDD[Array[Byte]] =
+      def exported(enabled: Boolean): org.apache.spark.api.java.JavaRDD[Array[Byte]] = {
+        var result: org.apache.spark.api.java.JavaRDD[Array[Byte]] = null
         withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
           val fresh = datasetOfRows(spark, extractLogicalPlan(query))
-          fresh.getClass
+          result = fresh.getClass
             .getMethod("javaToPython")
             .invoke(fresh)
             .asInstanceOf[org.apache.spark.api.java.JavaRDD[Array[Byte]]]
         }
+        result
+      }
       assert(exported(false).take(1).size() == 1)
       assert(exported(true).take(1).size() == 1)
     }

@@ -175,9 +175,10 @@ class CometTypedDatasetSuite extends CometTestBase {
         .toDF()
         .selectExpr("value + 1 AS value")
       for (enabled <- Seq(false, true)) {
-        val exported = withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+        var exported: org.apache.spark.api.java.JavaRDD[Array[Byte]] = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
           val fresh = datasetOfRows(spark, extractLogicalPlan(query))
-          fresh.getClass
+          exported = fresh.getClass
             .getMethod("javaToPython")
             .invoke(fresh)
             .asInstanceOf[org.apache.spark.api.java.JavaRDD[Array[Byte]]]

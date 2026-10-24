@@ -156,12 +156,13 @@ class CometIcebergWriteActionSuite
             sql(s"""CREATE TABLE cat.db.$table (id BIGINT NOT NULL) USING iceberg
               |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
             var failure: Throwable = null
-            val plans = withNativeEnabled {
+            var plans = Seq.empty[SparkPlan]
+            withNativeEnabled {
               withSQLConf(
                 CometConf.COMET_ENABLED.key -> enabled.toString,
                 SQLConf.ANSI_ENABLED.key -> "true",
                 SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
-                capturePlans(spark, includeFailures = true) {
+                plans = capturePlans(spark, includeFailures = true) {
                   failure = intercept[Exception] {
                     spark.read
                       .parquet(path.toString)

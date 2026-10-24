@@ -43,7 +43,7 @@ import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{array, count, lit, rand, struct, sum, when}
+import org.apache.spark.sql.functions.{array, broadcast, count, expr, lit, rand, struct, sum, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BooleanType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
@@ -3691,4 +3691,106 @@ class CometJoinSuite extends CometTestBase {
       }
     }
   }
+  for (scenario <- Seq("single", "unpacked", "sibling"); codegen <- Seq(false, true)) {
+    test(s"AssertNotNull preserves outer join key errors: $scenario codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          val rows = if (scenario == "single") {
+            Seq[(Integer, Integer, Int)]((null, 1, 5))
+          } else {
+            Seq[(Integer, Integer, Int)](
+              (1, if (scenario == "sibling") 0 else null, 5),
+              (null, 2, 5))
+          }
+          rows.toDF("a", "b", "c").coalesce(1).write.parquet(s"$dir/left")
+          Seq((1, 2L, 5)).toDF("d", "e", "f").write.parquet(s"$dir/right")
+          val left = spark.read.parquet(s"$dir/left")
+          val right = broadcast(spark.read.parquet(s"$dir/right"))
+          val a = getColumnFromExpression(AssertNotNull(left("a").expr, Seq("a")))
+          val b = getColumnFromExpression(AssertNotNull(left("b").cast("long").expr, Seq("b")))
+          val condition = scenario match {
+            case "single" => a === right("d")
+            case "unpacked" => a === right("d") && b === right("e") && left("c") === right("f")
+            case "sibling" =>
+              a === right("d") && expr("10L DIV b") === right("e") && left("c") === right("f")
+          }
+          val query = left.join(right, condition, "left_outer").repartition(1)
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(query)
+          assert(sparkError.nonEmpty && cometError.nonEmpty)
+          val expected = causeChain(sparkError.get).last
+          val actual = causeChain(cometError.get).last
+          assert(actual.getClass == expected.getClass)
+          assert(actual.getMessage == expected.getMessage)
+        }
+      }
+    }
+  }
+  for (codegen <- Seq(false, true); scenario <- Seq("conflict", "division", "safe")) {
+    test(s"AssertNotNull preserves outer key vs residual $scenario codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          val zero = if (scenario == "safe") 1L else 0L
+          Seq[(java.lang.Long, Long)]((1L, zero), (if (scenario == "conflict") null else 2L, 1L))
+            .toDF("k", "x")
+            .coalesce(1)
+            .write
+            .parquet(s"$dir/l")
+          Seq((1L, 0L, 10L)).toDF("rk", "y", "v").write.parquet(s"$dir/r")
+          val l = spark.read.parquet(s"$dir/l").as("l")
+          val r = broadcast(spark.read.parquet(s"$dir/r")).as("r")
+          val key = getColumnFromExpression(AssertNotNull(l("k").expr, Seq("key")))
+          val q = l
+            .join(r, key === r("rk") && expr("r.v DIV (l.x-r.y)") > 0, "left_outer")
+            .repartition(1)
+          if (scenario == "safe") {
+            checkSparkAnswerAndFallbackReason(
+              q,
+              "Native AssertNotNull in a hash join could change the first key or condition error")
+          } else {
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(q)
+            assert(sparkError.nonEmpty && cometError.nonEmpty)
+            val expected = causeChain(sparkError.get).last
+            val actual = causeChain(cometError.get).last
+            assert(actual.getClass == expected.getClass)
+            assert(actual.getMessage == expected.getMessage)
+          }
+        }
+      }
+    }
+  }
+
+  for (codegen <- Seq(false, true)) {
+    test(
+      s"AssertNotNull preserves shuffled build errors without a key shuffle: codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+        val left = spark.range(0, 1, 1, 1).selectExpr("CAST(id AS INT) AS a")
+        val right = spark
+          .range(0, 1, 1, 1)
+          .selectExpr("IF(id=0,CAST(NULL AS INT),CAST(id AS INT)) AS b")
+          .hint("shuffle_hash")
+        val key = getColumnFromExpression(AssertNotNull(right("b").expr, Seq("build")))
+        val query = left.join(right, left("a") === key, "inner").repartition(1)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(query)
+        assert(sparkError.nonEmpty && cometError.nonEmpty)
+        val expected = causeChain(sparkError.get).last
+        val actual = causeChain(cometError.get).last
+        assert(actual.getClass == expected.getClass)
+        assert(actual.getMessage == expected.getMessage)
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(query.queryExecution.executedPlan)
+            .exists(_.contains("shuffled build keys")))
+      }
+    }
+  }
+
 }

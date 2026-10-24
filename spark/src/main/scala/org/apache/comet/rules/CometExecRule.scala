@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Average, Count, Final, First, Last, Max, Min, Partial, PartialMerge, Sum}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -1227,6 +1228,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               }
           val projectionExpressions = op match {
             case project: ProjectExec => project.projectList
+            case expand: ExpandExec => expand.projections.flatten
             case topK: TakeOrderedAndProjectExec => topK.projectList
             case aggregate: BaseAggregateExec => aggregate.resultExpressions
             case _ => Seq.empty
@@ -1334,6 +1336,11 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         return Some(
           "Native AssertNotNull in broadcast build keys could skip broadcast-time checks")
       }
+      // Native hash-build failures otherwise lose Spark's structured error in the async build.
+      if (op.isInstanceOf[ShuffledHashJoinExec] &&
+        buildKeys.exists(CometAssertNotNull.containsNativeAssertion)) {
+        return Some("Native AssertNotNull in shuffled build keys could lose Spark's error")
+      }
       // Spark's packed integral key is null-propagating: an earlier NULL component skips
       // later components. Native hash joins evaluate the component arrays independently.
       op match {
@@ -1363,6 +1370,27 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       if (keys.exists(CometAssertNotNull.containsNativeAssertion)) {
         return Some("Native AssertNotNull in hash join keys could change which keys Spark checks")
+      }
+      // Independent key roots run column by column natively, but row by row in Spark.
+      op match {
+        case hash: HashJoin =>
+          val keyGroups = Seq(hash.leftKeys -> leftKeys, hash.rightKeys -> rightKeys)
+          val assertedKeys = (leftKeys ++ rightKeys)
+            .exists(CometAssertNotNull.containsNativeAssertion)
+          if ((assertedKeys && !hash.condition.forall(CometAssertNotNull.isNonThrowing)) ||
+            (CometAssertNotNull.containsNativeAssertion(join.getCondition) &&
+              !CometAssertNotNull.canEvaluateInBatch(
+                hash.leftKeys ++ hash.rightKeys ++ hash.condition))) {
+            return Some(
+              "Native AssertNotNull in a hash join could change the first key or condition error")
+          }
+          if (keyGroups.exists { case (expressions, nativeKeys) =>
+              nativeKeys.exists(CometAssertNotNull.containsNativeAssertion) &&
+              !CometAssertNotNull.canEvaluateInBatch(expressions)
+            }) {
+            return Some("Native AssertNotNull in hash join keys could change the first key error")
+          }
+        case _ =>
       }
     }
     None
@@ -1517,7 +1545,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * fields until an expression needs them. Conversely, native joins can skip input Spark would
    * evaluate. An operator that reads all of its input before it returns a row ends the search,
    * since Spark computes every row below it anyway: an exchange, a sort, a hash aggregate, or a
-   * top-k over input that is not already sorted.
+   * top-k over input that is not already sorted. Throwing keys and updates still require a
+   * field-only context so a later child assertion cannot precede their earlier error.
    *
    * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
    * during transformUp, while an identity set would not. Retain established tags when AQE visits
@@ -1565,6 +1594,19 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         case _: BroadcastHashJoinExec | _: ShuffledHashJoinExec | _: SortMergeJoinExec |
             _: BroadcastNestedLoopJoinExec =>
           Some(PartialReader("a join"))
+        case topK: TakeOrderedAndProjectExec
+            if !topK.sortOrder.forall(order => CometAssertNotNull.isNonThrowing(order.child)) =>
+          Some(PartialReader("a top-k key", canSkipInput = false))
+        case sort: SortExec
+            if !sort.sortOrder.forall(order => CometAssertNotNull.isNonThrowing(order.child)) =>
+          Some(PartialReader("a sort key", canSkipInput = false))
+        case exchange: ShuffleExchangeExec if !(exchange.outputPartitioning match {
+              case HashPartitioning(keys, _) => keys.forall(CometAssertNotNull.isNonThrowing)
+              case RangePartitioning(order, _) =>
+                order.forall(key => CometAssertNotNull.isNonThrowing(key.child))
+              case _ => true
+            }) =>
+          Some(PartialReader("a shuffle key", canSkipInput = false))
         case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
             _: TakeOrderedAndProjectExec =>
           None

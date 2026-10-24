@@ -159,6 +159,11 @@ prefix before reporting the input error on the next read. This lets a native con
 earlier error from those rows first. Encoding failures that can leave a partial row, and task
 cancellation, propagate immediately.
 
+Native assertions need a separate field-evaluation check at these consumers. Full row consumption
+alone does not order an earlier sort, shuffle or TopK key error before a later child's assertion.
+Independent expression roots, including Expand projections and hash join keys and conditions,
+must also preserve Spark's first error across rows.
+
 Fusing the deserializer, the `Invoke` that calls the user function, and the
 serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
 [#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
