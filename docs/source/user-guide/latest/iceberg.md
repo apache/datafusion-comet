@@ -488,7 +488,7 @@ A write is eligible only when ALL of the following hold:
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | `true` or `false`; on Iceberg 1.11+, an explicit NDV enables the column even when this value is `false`. Enabled columns use the native writer when `spark.comet.write.iceberg.bloomFilterFolding.enabled=true`                                                                                                                                                                                                                                                                 |
-| `write.parquet.bloom-filter-fpp.column.<col>` / `write.parquet.bloom-filter-ndv.column.<col>`                                               | Interpretation depends on the Iceberg runtime: Iceberg 1.5.2 ignores both prefixes, Iceberg 1.8.1 through 1.10.x interprets FPP but ignores NDV, and Iceberg 1.11 interprets both. For every interpreted property on a column named by an `enabled` property, FPP must be a finite double strictly between 0 and 1 and NDV must be a positive Java long no greater than `Long.MAX_VALUE / 8`; the Iceberg FPP default is `0.01`                                                 |
+| `write.parquet.bloom-filter-fpp.column.<col>` / `write.parquet.bloom-filter-ndv.column.<col>`                                               | Iceberg 1.10 interprets FPP but ignores NDV; 1.11 interprets both. For interpreted properties on a column named by an `enabled` property, FPP is finite and strictly between 0 and 1 (default `0.01`), and NDV is a positive Java long no greater than `Long.MAX_VALUE / 8`.                                                                                                                                                                                                    |
 | `write.parquet.bloom-filter-max-bytes`                                                                                                      | With a configured Bloom column: unset (1 MiB) or a power of two from 32 bytes through 128 MiB. Java writes other settings, including a 32-byte cap that it ignores for a larger explicit NDV/FPP request. With no configured Bloom column: any positive Java int.                                                                                                                                                                                                               |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
@@ -655,50 +655,39 @@ unchanged.
 
 ### Native Bloom-filter writes
 
-Set `spark.comet.write.iceberg.bloomFilterFolding.enabled=true` together with
-`spark.comet.write.iceberg.enabled=true` to use native writes for Bloom-enabled tables. The
-Bloom option defaults to `false`, which selects Iceberg's Java writer when a Bloom column is
-enabled. It selects the writer; it cannot turn folding off inside the pinned parquet-rs writer.
+Comet's native Iceberg writer supports tables with column Bloom filters and can produce
+byte-identical filters to Java for compatible settings. Other setups produce different filters
+because parquet-rs enables folding by default, while Iceberg's non-adaptive parquet-java writer
+does not.
 
-Native Bloom filters offer a file-size versus pruning tradeoff. After inserting values,
-parquet-rs can fold a sparse filter into fewer bytes while targeting the configured false-positive
-probability (FPP). Iceberg's non-adaptive Java writer retains its initial allocation, which can
-have a lower realized FPP and prune more row groups. Sparse filters can arise from ordinary skew,
-an overestimated distinct-value count (NDV), or a partially filled final row group. Keeping the
-option off can be useful when preserving Java's stronger pruning for those row groups matters
-more than reducing serialized filter size. Turning it on accepts that tradeoff. Folding preserves
-inserted-value membership; it does not introduce false negatives. It retains the original buffer
-capacity, so smaller serialized filters do not imply lower peak writer memory.
+Folding automatically shrinks a filter when its initial NDV- or max-bytes-based allocation is
+larger than the actual values need at the requested false-positive probability (FPP). It saves
+serialized space by shrinking toward the target FPP; Java retains the larger filter. Folding
+retains the original buffer capacity, so this does not imply lower peak writer memory.
 
-Boolean filters also differ: parquet-java leaves their bitsets empty, whereas parquet-rs inserts
-boolean values. This difference is covered by the same opt-in. Applications comparing Bloom
-bytes across writers should account for it separately from folding.
+Enable `spark.comet.write.iceberg.bloomFilterFolding.enabled=true` together with
+`spark.comet.write.iceberg.enabled=true` to use native Bloom writes. The Bloom option defaults to
+`false`, selecting Java's writer. Enabling it accepts byte differences and the pruning tradeoff
+below; it cannot turn folding off inside the pinned parquet-rs writer. Enabling it is generally
+safe when the requested FPP meets your pruning needs: folding preserves inserted-value membership
+and introduces no false negatives.
 
-Java also omits Bloom filters for column chunks whose data pages are entirely dictionary encoded,
-while the pinned Rust writer can retain them. This changes filter presence and serialized space
-independently of folding.
+Pruning can regress when existing Java-written filters are oversized for their actual values
+and therefore have a much lower FPP than requested. For example, with no explicit NDV, a 64-MiB
+maximum and only 256 distinct values, Java can retain a 64-MiB filter with extra pruning accuracy.
+Rust can shrink that filter toward the target FPP and produce more false positives. Leave the
+option off if your workload relies on that extra accuracy. This can happen with an overestimated
+NDV, skew, or a partly filled row group. With explicit NDV, `max-bytes` is a ceiling; a large cap alone does not enlarge the allocation.
 
-Comet matches Java's initial allocation decision for native-eligible settings: without NDV it
-allocates `write.parquet.bloom-filter-max-bytes` (default 1 MiB); with NDV it sizes from NDV and FPP
-(default `0.01`) and applies the cap. A binding cap can make the requested FPP unattainable on
-either writer. Iceberg 1.10 interprets per-column FPP and ignores NDV; Iceberg 1.11 interprets both.
-Comet follows the loaded Iceberg runtime, including its defaults and ignored properties.
+Even with the option enabled, unsupported settings use Java's writer, preserving Bloom filters.
+For configured Bloom columns, native caps are powers of two from 32 bytes through 128 MiB;
+other caps and unsupported NDV/FPP combinations fall back as described in the eligibility table.
 
-The eligibility table above describes settings that use the native writer. Configured Bloom
-columns use power-of-two caps from 32 bytes to 128 MiB; other caps use Java's writer, as do NDVs
-above `Long.MAX_VALUE / 8` and explicit NDV/FPP requests for which Java ignores a 32-byte cap.
-With no configured Bloom column, any positive Java-int cap is accepted because it does not affect
-the file. Malformed or non-positive caps follow Java's validation through fallback.
-
-Iceberg 1.10 and newer versions use canonical Iceberg column names. Earlier Iceberg runtimes
-need no separate user setting: Comet resolves raw physical Parquet paths before Iceberg 1.8,
-field-name aliases in 1.8/1.9, and canonical names in 1.10 and newer, matching each Java writer.
-
-The upstream [folding option request](https://github.com/apache/arrow-rs/issues/11891) tracks a
-way to retain the initial allocation in parquet-rs, implemented in
-[arrow-rs #11892](https://github.com/apache/arrow-rs/pull/11892). Disabling folding addresses one source of
-byte differences; physical value encodings, initial sizing, and other writer settings still
-need to match for byte identity.
+Byte parity also requires matching inserted values, physical encodings, and initial sizes.
+Boolean filters differ because Java does not populate them; dictionary-only chunks can have a
+native filter where Java omits it. Comet follows the loaded runtime's properties: Iceberg 1.10
+ignores NDV, while 1.11 interprets it. The upstream [folding option PR](https://github.com/apache/arrow-rs/pull/11892)
+([issue](https://github.com/apache/arrow-rs/issues/11891)) addresses retaining the initial Rust allocation.
 
 ### Accepted divergences
 
