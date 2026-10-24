@@ -20,15 +20,15 @@ under the License.
 # JVM Shuffle
 
 This document describes Comet's JVM-based columnar shuffle implementation (`CometColumnarShuffle`), which
-writes shuffle data in Arrow IPC format using JVM code with native encoding. For the fully native
-alternative, see [Native Shuffle](native_shuffle.md).
+writes shuffle data in Arrow IPC format. Partition assignment runs on the JVM and Arrow IPC encoding runs in
+Rust. For the alternative that partitions in Rust, see [Native Shuffle](native_shuffle.md).
 
 ## Overview
 
 Comet provides two shuffle implementations:
 
-- **CometNativeShuffle** (`CometExchange`): Fully native shuffle using Rust. Takes columnar input directly
-  from Comet native operators and performs partitioning in native code.
+- **CometNativeShuffle** (`CometExchange`): Shuffle implemented in Rust. Takes Arrow batches directly
+  from Comet operators and performs partitioning in Rust.
 - **CometColumnarShuffle** (`CometColumnarExchange`): JVM-based shuffle that operates on rows internally,
   buffers `UnsafeRow`s in memory pages, and uses native code (via JNI) to encode them to Arrow IPC format.
   Uses Spark's partitioner for partition assignment. Can accept either row-based or columnar input
@@ -42,7 +42,7 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 
 1. **Shuffle mode is explicitly set to "jvm"**: When `spark.comet.shuffle.mode` is set to `jvm`.
 
-2. **Child plan is not a Comet native operator**: When the child plan is a Spark row-based operator
+2. **Child plan is not a Comet operator**: When the child plan is a Spark row-based operator
    (not a `CometPlan`), JVM shuffle is used, since native shuffle requires columnar input from
    Comet operators. The exception is `spark.comet.convert.shuffleInput.enabled`, which converts
    the child's rows to Arrow with `CometSparkToColumnarExec` so that native shuffle can take the
@@ -51,7 +51,7 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
 3. **Unsupported partition key types**: `RangePartitioning` keys must be primitive, so a complex
    range key always falls back here. `HashPartitioning` keys must be primitive only by default:
    setting `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` keeps struct and
-   array keys, and map keys on Spark 4.0 and later, on the native path. The config defaults to
+   array keys, and map keys on Spark 4.0 and later, with native shuffle. The config defaults to
    `false`, so a complex hash key falls back to JVM columnar shuffle unless it is enabled. See
    [Supported partition key types](native_shuffle.md#when-native-shuffle-is-used) for the exact
    rules. Complex types are fully supported as data columns in both implementations.
@@ -65,7 +65,7 @@ returns an `RDD[InternalRow]`. The rows flow directly to the JVM shuffle writers
 
 ### Comet Columnar Input
 
-When the child plan is a Comet native operator (e.g., `CometHashAggregate`) but JVM shuffle is selected
+When the child plan is a Comet operator (e.g., `CometHashAggregate`) but JVM shuffle is selected
 (due to shuffle mode setting or unsupported partitioning), `CometColumnarExchange` still calls
 `child.execute()`. Comet operators implement `doExecute()` by wrapping themselves with `ColumnarToRowExec`:
 
@@ -78,13 +78,13 @@ override def doExecute(): RDD[InternalRow] =
 This means the data path becomes:
 
 ```
-Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
+Comet operator (Arrow batches) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
 This is less efficient than native shuffle which avoids the columnar-to-row conversion:
 
 ```
-Comet Native (columnar) → Native Shuffle → Arrow IPC → columnar
+Comet operator (Arrow batches) → Native Shuffle → Arrow IPC → columnar
 ```
 
 ### Why Use Spark's Partitioner?
@@ -92,7 +92,7 @@ Comet Native (columnar) → Native Shuffle → Arrow IPC → columnar
 JVM shuffle uses row-based input so it can leverage Spark's existing partitioner infrastructure
 (`partitioner.getPartition(key)`). This allows Comet to support all of Spark's partitioning schemes
 without reimplementing them in Rust. Native shuffle, by contrast, serializes the partitioning scheme
-to protobuf and implements the partitioning logic in native code.
+to protobuf and implements the partitioning logic in Rust.
 
 ## Architecture
 
@@ -108,7 +108,7 @@ to protobuf and implements the partitioning logic in native code.
 ┌─────────────────────┐  ┌─────────────────────┐  ┌─────────────────────┐
 │ CometBypassMerge-   │  │ CometUnsafe-        │  │ CometNative-        │
 │ SortShuffleWriter   │  │ ShuffleWriter       │  │ ShuffleWriter       │
-│ (hash-based)        │  │ (sort-based)        │  │ (fully native)      │
+│ (hash-based)        │  │ (sort-based)        │  │ (writes in Rust)    │
 └─────────────────────┘  └─────────────────────┘  └─────────────────────┘
            │                        │
            ▼                        ▼
@@ -121,7 +121,7 @@ to protobuf and implements the partitioning logic in native code.
                         ▼
               ┌─────────────────────┐
               │ SpillWriter         │
-              │ (native encoding    │
+              │ (Rust encoding      │
               │  via JNI)           │
               └─────────────────────┘
 ```
@@ -141,7 +141,7 @@ to protobuf and implements the partitioning logic in native code.
 | ----------------------------------- | --------------------------------------------------------- |
 | `CometBypassMergeSortShuffleHandle` | Hash-based: one file per partition, merged at end         |
 | `CometSerializedShuffleHandle`      | Sort-based: records sorted by partition ID, single output |
-| `CometNativeShuffleHandle`          | Fully native shuffle                                      |
+| `CometNativeShuffleHandle`          | Native shuffle                                            |
 
 Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 
@@ -154,7 +154,7 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 | ----------------------------------- | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CometBypassMergeSortShuffleWriter` | `.../shuffle/CometBypassMergeSortShuffleWriter.java` | Hash-based writer. Creates one `CometDiskBlockWriter` per partition. Supports async writes.                                                           |
 | `CometUnsafeShuffleWriter`          | `.../shuffle/CometUnsafeShuffleWriter.java`          | Sort-based writer. Uses `CometShuffleExternalSorter` to buffer and sort records, then merges spill files.                                             |
-| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via native encoding. Used by bypass writer.                                       |
+| `CometDiskBlockWriter`              | `.../shuffle/CometDiskBlockWriter.java`              | Buffers rows in memory pages for a single partition. Spills to disk via Arrow IPC encoding in Rust. Used by bypass writer.                            |
 | `CometShuffleExternalSorter`        | `.../shuffle/sort/CometShuffleExternalSorter.java`   | Buffers records across all partitions, sorts by partition ID, spills sorted data. Used by unsafe writer.                                              |
 | `SpillSorter`                       | `.../shuffle/sort/SpillSorter.java`                  | Holds one spill's records for `CometShuffleExternalSorter`. Writes every partition of the spill with one `Native.writeSortedPartitionsNative()` call. |
 | `SpillWriter`                       | `.../shuffle/SpillWriter.java`                       | Base class for spill logic. Manages memory pages. `doSpilling()` encodes one partition's rows with `Native.writeSortedFileNative()`.                  |
@@ -194,8 +194,8 @@ Selection logic in `CometShuffleManager.shouldBypassMergeSort()`:
 3. Native code (`Native.decodeShuffleBlock()`) decompresses and decodes to Arrow arrays
 4. Arrow FFI imports arrays as `ColumnarBatch`
 
-This is the path taken when the consumer is a Spark operator. When a Comet native operator consumes
-the shuffle output and `spark.comet.shuffle.directRead.enabled` is set, steps 2 through 4 are skipped:
+This is the path taken when the consumer is a Spark operator. When a Comet block reads the shuffle output as a
+`ShuffleScan` input and `spark.comet.shuffle.directRead.enabled` is set, steps 2 through 4 are skipped:
 the raw compressed blocks are handed to native code, which decodes them inside the plan. JVM shuffle
 writes the same Arrow IPC block format as native shuffle, so direct read applies to both. See
 [Direct Read](native_shuffle.md#direct-read-shufflescan) for the mechanism.
@@ -235,4 +235,4 @@ writes the same Arrow IPC block format as native shuffle, so direct read applies
 | `spark.comet.shuffle.jvm.spillThreshold`                   | Row count threshold for spill                                                                 |
 | `spark.comet.shuffle.compression.codec`                    | Compression codec, `lz4` by default                                                           |
 | `spark.comet.shuffle.compression.offsetsAsLengths.enabled` | Store offsets as lengths in zstd blocks without dictionary-encoded columns, `true` by default |
-| `spark.comet.shuffle.directRead.enabled`                   | Decode blocks natively on read, `true` by default                                             |
+| `spark.comet.shuffle.directRead.enabled`                   | Decode blocks inside the Rust plan on read, bypassing Arrow FFI, `true` by default            |
