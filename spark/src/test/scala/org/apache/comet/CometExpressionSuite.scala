@@ -24,13 +24,14 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, EqualTo, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, NamedExpression, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, EqualTo, FromUnixTime, GetStructField, In, InSet, IntegralDivide, Literal, Multiply, NamedExpression, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
@@ -82,6 +83,47 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           actual.asInstanceOf[SparkThrowable].getMessageParameters ==
             expected.asInstanceOf[SparkThrowable].getMessageParameters)
+      }
+    }
+  }
+
+  test("AssertNotNull preserves scalar struct field projection") {
+    withTempPath { path =>
+      Seq(1, 2, 3).toDF("id").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      withTempView("assertion_scalar_source") {
+        input.createOrReplaceTempView("assertion_scalar_source")
+        val value = expr("""IF((SELECT max(id) FROM assertion_scalar_source) > 0,
+          |named_struct('a', (SELECT max(id) FROM assertion_scalar_source)),
+          |CAST(NULL AS STRUCT<a: INT>))""".stripMargin)
+        val checked = AssertNotNull(value.expr, Seq("s"))
+        val result =
+          input.select(input("id"), getColumnFromExpression(GetStructField(checked, 0)))
+        checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true); codegen <- Seq(false, true)) {
+    test(
+      s"AssertNotNull respects partial window group limit input: AQE=$adaptive, codegen=$codegen") {
+      assume(isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "16") {
+        val input = spark.range(0, 6, 1, 2)
+        val payload = when(input("id") % 3 < 2, input("id"))
+        val checked = getColumnFromExpression(AssertNotNull(payload.expr, Seq("checked")))
+        val projected = input.select(input("id"), checked.as("checked"), rand(0).as("nonce"))
+        val result = projected
+          .withColumn("r", rank().over(Window.orderBy("id")))
+          .where("r <= 1")
+          .select("id", "checked", "nonce")
+        checkSparkAnswerAndFallbackReason(
+          result,
+          "Native AssertNotNull below a window group limit could change which values Spark checks")
       }
     }
   }

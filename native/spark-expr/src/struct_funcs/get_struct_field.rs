@@ -99,9 +99,12 @@ impl PhysicalExpr for GetStructField {
                     self.ordinal,
                 )?))
             }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                child_with_parent_nulls(&struct_array, self.ordinal)?,
-            )),
+            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
+                let field = child_with_parent_nulls(&struct_array, self.ordinal)?;
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    &field, 0,
+                )?))
+            }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
             ))),
@@ -139,7 +142,36 @@ mod tests {
     use arrow::array::{ArrayRef, Int64Array};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{Column, Literal};
+
+    #[test]
+    fn scalar_struct_fields_preserve_representation_and_nulls() {
+        for parent_valid in [false, true] {
+            for child in [None, Some(7_i64)] {
+                let fields = Fields::from(vec![Field::new("a", DataType::Int64, true)]);
+                let value = ScalarValue::Struct(Arc::new(StructArray::new(
+                    fields,
+                    vec![Arc::new(Int64Array::from(vec![child]))],
+                    Some(NullBuffer::from(vec![parent_valid])),
+                )));
+                let expr = GetStructField::new(Arc::new(Literal::new(value)), 0);
+                for num_rows in [0, 1, 3] {
+                    let batch = RecordBatch::try_from_iter(vec![(
+                        "id",
+                        Arc::new(Int64Array::from(vec![0_i64; num_rows])) as ArrayRef,
+                    )])
+                    .unwrap();
+                    let value = expr.evaluate(&batch).unwrap();
+                    assert!(matches!(&value, ColumnarValue::Scalar(_)));
+                    let expected = if parent_valid { child } else { None };
+                    assert_eq!(
+                        value.into_array_of_size(num_rows).unwrap().as_ref(),
+                        &Int64Array::from(vec![expected; num_rows])
+                    );
+                }
+            }
+        }
+    }
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
     // non-null value at that row -- Arrow stores child validity independently of the parent

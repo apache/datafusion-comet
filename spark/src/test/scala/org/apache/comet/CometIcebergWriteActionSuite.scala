@@ -142,6 +142,39 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("native AssertNotNull writes scalar struct fields") {
+    assume(icebergAvailable && isSpark35Plus)
+    withIcebergCatalog { _ =>
+      withTempPath { path =>
+        sql("SELECT 1 AS id UNION ALL SELECT 2 UNION ALL SELECT 3")
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+        withTempView("assertion_scalar_source") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("assertion_scalar_source")
+          sql("""CREATE TABLE cat.db.assert_scalar_struct
+            |(id INT, s STRUCT<a: INT> NOT NULL) USING iceberg
+            |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+          val snapshot = withNativeEnabled {
+            captureWrite("assert_scalar_struct") {
+              sql("""INSERT INTO cat.db.assert_scalar_struct
+                |SELECT id, CASE WHEN (SELECT max(id) FROM assertion_scalar_source) > 0
+                |THEN named_struct('a', (SELECT max(id) FROM assertion_scalar_source))
+                |ELSE CAST(NULL AS STRUCT<a: INT>) END AS s
+                |FROM assertion_scalar_source""".stripMargin)
+            }
+          }
+          assert(snapshot.snapshotDelta == 1)
+          assert(snapshot.plans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty))
+          checkAnswer(
+            sql("SELECT * FROM cat.db.assert_scalar_struct"),
+            Seq(Row(1, Row(3)), Row(2, Row(3)), Row(3, Row(3))))
+        }
+      }
+    }
+  }
+
   test("native AssertNotNull allows a null parent of a required nested field") {
     assume(icebergAvailable && isSpark35Plus)
     withIcebergCatalog { _ =>

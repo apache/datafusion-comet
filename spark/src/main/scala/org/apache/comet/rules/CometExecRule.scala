@@ -1450,6 +1450,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         case topK: TakeOrderedAndProjectExec
             if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
           Some(PartialReader("a limit"))
+        // Global window limits can stop below an exchange, without an upper reader tag.
+        case w if ShimCometWindowGroupLimit.extract(w).exists(_.partitionSpec.isEmpty) =>
+          Some(PartialReader("a window group limit"))
         case _: MapPartitionsExec => Some(PartialReader("a mapPartitions function"))
         // These consumers defer projected fields, but still read every input object. Keep
         // typed Dataset conversion eligible unless an ancestor can skip whole input rows.
