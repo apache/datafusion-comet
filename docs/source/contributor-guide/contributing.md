@@ -38,6 +38,12 @@ To assign yourself an issue, comment `take` on the issue. To unassign yourself, 
 
 We use [GitHub issues](https://github.com/apache/datafusion-comet/issues) for bug reports and feature requests.
 
+## Using AI tools
+
+AI coding tools are welcome. See [AI-Assisted Contributions](ai_assisted_contributions.md) for what
+the project expects when you use them. In short, you are responsible for what you submit, and a
+human must approve every pull request.
+
 ## Asking for Help
 
 The Comet project uses the same Slack and Discord channels as the main Apache DataFusion project. See details at
