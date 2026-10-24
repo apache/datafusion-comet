@@ -18,8 +18,6 @@
 //! Builders for the native join operators (hash join, sort-merge join, and broadcast nested loop
 //! join), and the join-key and join-filter planning they share.
 
-mod semi_join_reduction;
-
 use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema};
@@ -42,10 +40,13 @@ use datafusion::{
             utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
         },
         projection::ProjectionExec,
+        sorts::sort::SortExec,
         ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
 };
-use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
+use datafusion_comet_operators::{
+    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
+};
 use datafusion_comet_proto::{
     spark_expression::Expr,
     spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
@@ -203,6 +204,42 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
+/// Spark enables reduction only for simple integer membership keys read from a Comet shuffle.
+/// Its IPC frames can arrive through either the JVM Arrow stream or the direct shuffle reader.
+fn reduce_before_sort(
+    params: &mut JoinParameters,
+    sort_options: &[SortOptions],
+) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
+    if params.join_type != DFJoinType::LeftSemi || params.join_filter.is_some() {
+        return Ok(None);
+    }
+    let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
+        return Ok(None);
+    };
+    let input = sort.input();
+    let ordering = sort.expr();
+    if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
+        || ordering.len() != params.join_on.len()
+        || ordering.len() != sort_options.len()
+        || !ordering
+            .iter()
+            .zip(&params.join_on)
+            .zip(sort_options)
+            .all(|((order, (_, key)), options)| order.options == *options && order.expr.eq(key))
+    {
+        return Ok(None);
+    }
+    let reducer: Arc<dyn ExecutionPlan> =
+        Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
+    let sort = Arc::clone(&params.right.native_plan).replace_children(
+        vec![Arc::clone(&reducer)],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?;
+    Arc::make_mut(&mut params.right).native_plan = sort;
+    // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
+    Ok(Some(reducer))
+}
+
 impl OperatorBuilder for SortMergeJoinBuilder {
     fn build(
         &self,
@@ -242,7 +279,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
                 if sort.fetch.is_none() && sort.skip.is_none())
         {
-            semi_join_reduction::reduce_before_sort(&mut join_params, &sort_options)?
+            reduce_before_sort(&mut join_params, &sort_options)?
         } else {
             None
         };

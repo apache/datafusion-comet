@@ -72,7 +72,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
     val buildRows = 100000
 
     withTempPath { dir =>
-      withTempTable("probe", "build", "build_repeated", "build_moderate", "build_skewed") {
+      withTempTable("probe", "build", "build_repeated", "build_balanced", "build_skewed") {
         spark
           .range(probeRows.toLong)
           .selectExpr("id AS k", "id % 100 AS v")
@@ -83,35 +83,21 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
           .selectExpr("id AS k", "id * 10 AS w")
           .write
           .parquet(s"${dir.getAbsolutePath}/build")
-        spark
-          .range(buildRows.toLong)
-          .selectExpr("id % 128 AS k")
-          .write
-          .parquet(s"${dir.getAbsolutePath}/build_repeated")
-        // Each group of four rows contains three distinct keys. No key occurs more than twice.
-        spark
-          .range(buildRows.toLong)
-          .selectExpr("id - IF(id % 4 = 3, 1, 0) AS k")
-          .write
-          .parquet(s"${dir.getAbsolutePath}/build_moderate")
-        // Twelve of every 25 rows have a unique key. The other rows share seven keys.
-        spark
-          .range(buildRows.toLong)
-          .selectExpr("IF(id % 25 < 12, 7 + (id DIV 25) * 12 + id % 25, id % 7) AS k")
-          .write
-          .parquet(s"${dir.getAbsolutePath}/build_skewed")
-
-        spark.read.parquet(s"${dir.getAbsolutePath}/probe").createOrReplaceTempView("probe")
-        spark.read.parquet(s"${dir.getAbsolutePath}/build").createOrReplaceTempView("build")
-        spark.read
-          .parquet(s"${dir.getAbsolutePath}/build_repeated")
-          .createOrReplaceTempView("build_repeated")
-        spark.read
-          .parquet(s"${dir.getAbsolutePath}/build_moderate")
-          .createOrReplaceTempView("build_moderate")
-        spark.read
-          .parquet(s"${dir.getAbsolutePath}/build_skewed")
-          .createOrReplaceTempView("build_skewed")
+        val keyPatterns = Seq(
+          "build_repeated" -> "id % 128",
+          "build_balanced" -> "id % 2048",
+          // Twelve of every 25 rows have a unique key. The others share seven keys.
+          "build_skewed" -> "IF(id % 25 < 12, 7 + (id DIV 25) * 12 + id % 25, id % 7)")
+        for ((table, key) <- keyPatterns) {
+          spark
+            .range(buildRows.toLong)
+            .selectExpr(s"$key AS k")
+            .write
+            .parquet(s"${dir.getAbsolutePath}/$table")
+        }
+        for (table <- Seq("probe", "build") ++ keyPatterns.map(_._1)) {
+          spark.read.parquet(s"${dir.getAbsolutePath}/$table").createOrReplaceTempView(table)
+        }
 
         runBenchmark("SortMergeJoin - inner count") {
           runExpressionBenchmark(
@@ -155,22 +141,18 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
             CometConf.COMET_SHUFFLE_MODE.key -> "native")
           withSQLConf(settings.toSeq: _*) {
             val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
-            // Three batches in one shuffle partition, just beyond the reducer's initial prefix.
-            val shortRows = 12288
-            for ((table, inputRows, distinctKeys, batchSize) <- Seq(
-                ("build_repeated", buildRows, 128, 4096),
-                ("build_moderate", buildRows, buildRows * 3 / 4, 4096),
-                ("build_skewed", buildRows, buildRows / 25 * 12 + 7, 1024),
-                ("build", buildRows, buildRows, 4096),
-                ("build", shortRows, shortRows, 4096))) {
+            for ((table, distinctKeys, batchSize, shouldReduce) <- Seq(
+                ("build_repeated", 128, 1024, true),
+                ("build_balanced", 2048, 8192, true),
+                ("build_skewed", buildRows / 25 * 12 + 7, 1024, false),
+                ("build", buildRows, 8192, false))) {
               val benchmark = new Benchmark(
-                s"left semi, $distinctKeys distinct right keys in $inputRows rows",
-                inputRows.toLong,
+                s"left semi, $distinctKeys distinct right keys in $buildRows rows",
+                buildRows.toLong,
                 output = output)
               val query = s"""SELECT /*+ MERGE(b) */ count(*)
-                             |FROM (SELECT k FROM probe WHERE k < $inputRows) p
-                             |LEFT SEMI JOIN (SELECT k FROM $table WHERE k < $inputRows) b
-                             |ON p.k = b.k""".stripMargin
+                             |FROM (SELECT k FROM probe WHERE k < $buildRows) p
+                             |LEFT SEMI JOIN $table b ON p.k = b.k""".stripMargin
               // Check the result and the actual reducer work outside the timed section.
               for (enabled <- Seq(false, true)) {
                 val conf = Seq(
@@ -190,14 +172,14 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
                     val in = join.longMetric("right_key_reduction_input_rows").value
                     val out = join.longMetric("right_key_reduction_output_rows").value
                     val bypass = join.longMetric("right_key_reduction_bypass_rows").value
-                    require(in == inputRows && out == sortRows)
-                    if (table == "build_repeated") {
+                    require(in == buildRows && out == sortRows)
+                    if (shouldReduce) {
                       require(out > 0 && out < in)
                     } else {
                       require(out == in && bypass == in)
                     }
                   } else {
-                    require(sortRows == inputRows)
+                    require(sortRows == buildRows)
                   }
                 }
                 benchmark.addCase(s"right key reduction=$enabled") { _ =>

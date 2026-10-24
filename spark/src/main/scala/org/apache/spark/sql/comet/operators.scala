@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.util.Locale
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -30,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Coalesce, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, IsNull, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -48,7 +49,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
@@ -66,7 +67,7 @@ import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregat
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
-import org.apache.comet.shims.{MergeRowsMetricsShim, ShimCometStreaming}
+import org.apache.comet.shims.MergeRowsMetricsShim
 
 /**
  * Trait for injecting per-partition planning data into operator nodes.
@@ -3554,6 +3555,32 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED)
 
+  // The JVM and direct shuffle readers both decode a fresh IPC body for each batch.
+  @tailrec
+  private def readsCometShuffle(plan: SparkPlan): Boolean = plan match {
+    case _: CometShuffleExchangeExec => true
+    case stage: ShuffleQueryStageExec => stage.shuffle.isInstanceOf[CometShuffleExchangeExec]
+    case read: AQEShuffleReadExec => readsCometShuffle(read.child)
+    case ReusedExchangeExec(_, child) => readsCometShuffle(child)
+    case sink: CometSinkPlaceHolder => readsCometShuffle(sink.child)
+    case _ => false
+  }
+
+  // The shuffle must contain only the membership columns. Spark expands a <=> b into a
+  // comparison of (coalesce(key, default), isnull(key)) before serializing the join.
+  private def canReduceRightKeys(join: SortMergeJoinExec): Boolean = join.right match {
+    case sort: CometSortExec
+        if readsCometShuffle(sort.child) &&
+          sort.output.forall(_.dataType.isInstanceOf[IntegralType]) =>
+      val columns = join.rightKeys.collect {
+        case a: Attribute => a
+        case Coalesce(Seq(a: Attribute, _: Literal)) => a
+        case IsNull(a: Attribute) => a
+      }
+      columns.size == join.rightKeys.size && AttributeSet(columns) == sort.outputSet
+    case _ => false
+  }
+
   override def convert(
       join: SortMergeJoinExec,
       builder: Operator.Builder,
@@ -3648,8 +3675,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         .setJoinType(joinType)
         .setRightKeyReductionEnabled(
           CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.get(join.conf) &&
-            join.joinType == LeftSemi && join.condition.isEmpty &&
-            !ShimCometStreaming.isStreamingPlan(join))
+            join.joinType == LeftSemi && join.condition.isEmpty && canReduceRightKeys(join))
         .addAllSortOptions(sortOptions.map(_.get).asJava)
         .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)

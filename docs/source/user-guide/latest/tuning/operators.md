@@ -41,23 +41,18 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 
 ### Left-semi sort-merge joins
 
-A left-semi join returns each left row if any right row matches. When the right input
-has many duplicate integer keys, set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
-to discard repeated right-side rows in each batch before the native sort. This option is off
-by default. It applies to batch joins with no residual condition and a compatible right-side
-sort. Duplicate left rows are preserved.
+A left-semi join returns each left row if any right row matches. If the right input has many
+duplicate integer keys, set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each key per batch before the native sort. Duplicate left rows are
+preserved. The option is off by default and applies to unfiltered batch joins whose right
+sort reads directly from a Comet shuffle.
 
-The reducer passes through whole batches within the first 8,192 rows of each partition and
-batches with fewer than 1,024 rows. It also passes through batches whose Arrow buffers are
-already pinned by an earlier batch or shared with other live views. For eligible batches it
-samples complete keys before grouping them. Batches of up to 8,192 rows must shrink to about
-a third of their size. Larger batches must shrink to less than half.
-
-If the sample finds too few repeats, grouping saves too few rows, a batch
-exceeds 65,536 rows, or memory is insufficient, the rest of the partition goes directly to
-the sort. This also happens if tracking passed-through buffers reaches its limit.
-Compare the join's right-side reduction input and output row counts to see how many
-rows the sort saved. Reduction time includes work spent on attempts that fell back.
+The reducer forwards whole batches until it has seen at least 8,192 rows in the partition.
+It then tries batches of 1,024 to 65,536 rows and skips smaller batches. If more than about
+a third of a batch would remain, the batch is too large, or the reducer reaches its memory
+or hash-probing budget, it sends that batch and the rest of the partition to the native sort.
+Compare the join's reduction input and output counts to see how many rows the sort saved.
+Reduction time includes unsuccessful attempts.
 
 ### Broadcast Joins
 
