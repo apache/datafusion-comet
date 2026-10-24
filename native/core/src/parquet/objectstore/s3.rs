@@ -18,7 +18,7 @@
 use log::{debug, error};
 use std::collections::HashMap;
 use std::sync::OnceLock;
-use url::Url;
+use url::{Host, Url};
 
 use crate::cloud::s3::credential_bridge::{AccessMode, CometS3CredentialBridge};
 use crate::execution::jni_api::get_runtime;
@@ -53,6 +53,8 @@ use std::{
 /// When the configured `CometS3CredentialProvider` implements
 /// `CometS3LocationScopedCredentialProvider`, the store is a [`LocationScopedObjectStore`] that
 /// serves each of the provider's policy locations with its own credential.
+/// With no provider class configured, a bucket whose provider list names Hadoop's
+/// `ProfileAWSCredentialsProvider` uses the built-in `HadoopS3ACredentialProviderAdapter`.
 ///
 /// # Arguments
 ///
@@ -88,7 +90,7 @@ pub fn create_store(
             // Parquet path: forward the full fs.s3a.* config subset so the SPI provider sees the
             // same config Spark would (e.g. the built-in adapters read fs.s3a.aws.credentials.provider
             // and any static keys a chain resolves through). Only built when a bridge is actually
-            // configured. See s3-credential-provider-design.md.
+            // used. See s3-credential-provider-design.md.
             let forwarded_props = forward_catalog_properties(configs);
             // Fail rather than fall back to the default chain, which could resolve to the wrong
             // identity for a user who explicitly named a provider.
@@ -297,7 +299,7 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
         }
     }
 
-    let endpoint = format!("https://{bucket}.s3.amazonaws.com");
+    let endpoint = region_probe_url(bucket);
     let client = reqwest::Client::new();
 
     let response = client.head(&endpoint).send().await?;
@@ -330,6 +332,16 @@ pub async fn resolve_bucket_region(bucket: &str) -> Result<String, Box<dyn Error
     Ok(region)
 }
 
+/// HeadBucket URL on the global endpoint. A bucket the SDK would not virtual-host goes in the
+/// path, since a hostname would lowercase a mixed-case legacy name into a different bucket.
+fn region_probe_url(bucket: &str) -> String {
+    if is_virtual_hostable_bucket(bucket, false) {
+        format!("https://{bucket}.s3.amazonaws.com")
+    } else {
+        format!("https://s3.amazonaws.com/{bucket}")
+    }
+}
+
 /// Extracts S3 configuration options from Hadoop S3A configurations and returns them
 /// as a HashMap of (AmazonS3ConfigKey, String) pairs that can be applied to an AmazonS3Builder.
 ///
@@ -354,23 +366,30 @@ fn extract_s3_config_options(
     }
 
     // Extract and handle path style access (virtual hosted style)
-    let mut virtual_hosted_style_request = false;
-    if let Some(path_style) = get_config_trimmed(configs, bucket, "path.style.access") {
-        virtual_hosted_style_request = path_style.to_lowercase() == "true";
-        s3_configs.insert(
-            AmazonS3ConfigKey::VirtualHostedStyleRequest,
-            virtual_hosted_style_request.to_string(),
-        );
-    }
+    // Hadoop reads anything but "true" as false (virtual-hosted); object_store takes the inverse.
+    let path_style_access = get_config_trimmed(configs, bucket, "path.style.access")
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    let mut virtual_hosted_style_request = !path_style_access;
 
     // Extract endpoint configuration and modify if virtual hosted style is enabled
-    if let Some(endpoint) = get_config_trimmed(configs, bucket, "endpoint") {
-        let normalized_endpoint =
-            normalize_endpoint(endpoint, bucket, virtual_hosted_style_request);
-        if let Some(endpoint) = normalized_endpoint {
-            s3_configs.insert(AmazonS3ConfigKey::Endpoint, endpoint);
+    let custom_endpoint = get_config_trimmed(configs, bucket, "endpoint")
+        .and_then(|endpoint| normalize_endpoint(endpoint, bucket, virtual_hosted_style_request));
+    match custom_endpoint {
+        Some(normalized) => {
+            virtual_hosted_style_request = normalized.virtual_hosted_style_request;
+            s3_configs.insert(AmazonS3ConfigKey::Endpoint, normalized.endpoint);
+        }
+        None => {
+            // The default endpoint is HTTPS, where the SDK allows no dots
+            if !is_virtual_hostable_bucket(bucket, false) {
+                virtual_hosted_style_request = false;
+            }
         }
     }
+    s3_configs.insert(
+        AmazonS3ConfigKey::VirtualHostedStyleRequest,
+        virtual_hosted_style_request.to_string(),
+    );
 
     // Extract request payer configuration
     if let Some(requester_pays) = get_config_trimmed(configs, bucket, "requester.pays.enabled") {
@@ -384,11 +403,42 @@ fn extract_s3_config_options(
     s3_configs
 }
 
+/// Mirrors the AWS SDK's `isVirtualHostableS3Bucket`: 3 to 63 lowercase letters, digits and
+/// hyphens that start and end with a letter or digit. Dots only over plain HTTP, since a dotted
+/// host falls outside S3's wildcard certificate, and then no IPv4 shape or adjacent separators.
+fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
+    let bytes = bucket.as_bytes();
+    let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
+    let inner = |b: &u8| edge(b) || *b == b'-' || (allow_dots && *b == b'.');
+    if !(3..=63).contains(&bytes.len())
+        || !bytes.first().is_some_and(edge)
+        || !bytes.last().is_some_and(edge)
+        || !bytes.iter().all(inner)
+    {
+        return false;
+    }
+    let ipv4_shaped = bucket.split('.').count() == 4
+        && bucket
+            .split('.')
+            .all(|label| label.bytes().all(|b| b.is_ascii_digit()));
+    let separators_touch = bytes
+        .windows(2)
+        .any(|pair| pair.iter().all(|b| *b == b'.' || *b == b'-'));
+    !(allow_dots && (ipv4_shaped || separators_touch))
+}
+
+/// An endpoint and the addressing mode it was shaped for, so the two never disagree.
+#[derive(Debug, Clone, PartialEq)]
+struct NormalizedEndpoint {
+    endpoint: String,
+    virtual_hosted_style_request: bool,
+}
+
 fn normalize_endpoint(
     endpoint: &str,
     bucket: &str,
     virtual_hosted_style_request: bool,
-) -> Option<String> {
+) -> Option<NormalizedEndpoint> {
     if endpoint.is_empty() {
         return None;
     }
@@ -406,15 +456,38 @@ fn normalize_endpoint(
         endpoint.to_string()
     };
 
-    if virtual_hosted_style_request {
-        if endpoint.ends_with("/") {
-            Some(format!("{endpoint}{bucket}"))
-        } else {
-            Some(format!("{endpoint}/{bucket}"))
-        }
-    } else {
-        Some(endpoint) // Avoid extra to_string() call since endpoint is already a String
+    let path_style = |endpoint: String| {
+        Some(NormalizedEndpoint {
+            endpoint,
+            virtual_hosted_style_request: false,
+        })
+    };
+    // Path-style endpoints pass through, since object_store appends `/bucket` itself.
+    if !virtual_hosted_style_request {
+        return path_style(endpoint);
     }
+    if !is_virtual_hostable_bucket(bucket, endpoint.starts_with("http://")) {
+        return path_style(endpoint);
+    }
+
+    // Pass an unparseable endpoint through so object_store reports it as written
+    let Ok(url) = Url::parse(&endpoint) else {
+        return path_style(endpoint);
+    };
+    // The AWS SDK addresses IP-literal hosts path-style; like Hadoop, `localhost` is not special
+    let host = match url.host() {
+        Some(Host::Domain(host)) => host,
+        _ => return path_style(endpoint),
+    };
+    let port = url
+        .port()
+        .map(|port| format!(":{port}"))
+        .unwrap_or_default();
+    let path = url.path().trim_end_matches('/');
+    Some(NormalizedEndpoint {
+        endpoint: format!("{}://{bucket}.{host}{port}{path}", url.scheme()),
+        virtual_hosted_style_request: true,
+    })
 }
 
 fn get_config<'a>(
@@ -467,11 +540,20 @@ pub(super) const NATIVE_S3A_CONFIG_PROPERTIES: &[&str] = &[
 /// Per-bucket override is honored via [`get_config_trimmed`].
 const PROVIDER_CLASS_PROPERTY: &str = "comet.credential.provider.class";
 
+const HADOOP_S3A_ADAPTER: &str = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
+
+/// The configured class, else the Hadoop adapter when the provider list names Hadoop's profile
+/// provider, which the native reader cannot resolve. A blank configured class means no bridge.
 fn lookup_provider_class<'a>(
     configs: &'a HashMap<String, String>,
     bucket: &str,
 ) -> Option<&'a str> {
-    get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY).filter(|s| !s.is_empty())
+    match get_config_trimmed(configs, bucket, PROVIDER_CLASS_PROPERTY) {
+        Some(class) => (!class.is_empty()).then_some(class),
+        None => get_config_trimmed(configs, bucket, "aws.credentials.provider")
+            .is_some_and(|names| parse_credential_provider_names(names).contains(&HADOOP_PROFILE))
+            .then_some(HADOOP_S3A_ADAPTER),
+    }
 }
 
 /// Builds the `catalog_properties` map forwarded to the SPI on the Parquet path: the full
@@ -514,6 +596,7 @@ const AWS_WEB_IDENTITY: &str =
 const AWS_WEB_IDENTITY_V1: &str = "com.amazonaws.auth.WebIdentityTokenCredentialsProvider";
 const AWS_PROFILE: &str = "software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider";
 const AWS_PROFILE_V1: &str = "com.amazonaws.auth.profile.ProfileCredentialsProvider";
+const HADOOP_PROFILE: &str = "org.apache.hadoop.fs.s3a.auth.ProfileAWSCredentialsProvider";
 const AWS_ANONYMOUS: &str = "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider";
 const AWS_ANONYMOUS_V1: &str = "com.amazonaws.auth.AnonymousAWSCredentials";
 
@@ -1281,6 +1364,20 @@ mod tests {
             self
         }
 
+        fn with_property(mut self, property: &str, value: &str) -> Self {
+            self.configs
+                .insert(format!("fs.s3a.{property}"), value.to_string());
+            self
+        }
+
+        fn with_bucket_property(mut self, bucket: &str, property: &str, value: &str) -> Self {
+            self.configs.insert(
+                format!("fs.s3a.bucket.{bucket}.{property}"),
+                value.to_string(),
+            );
+            self
+        }
+
         fn build(self) -> HashMap<String, String> {
             self.configs
         }
@@ -1320,6 +1417,59 @@ mod tests {
 
         let store = get_runtime().block_on(async { template.build(S3Credentials::SkipSignature) });
         assert!(store.is_ok(), "{:?}", store.err());
+    }
+
+    #[test]
+    fn test_region_probe_url() {
+        let short = "ab";
+        let longest = "a".repeat(63);
+        let too_long = "a".repeat(64);
+        let cases = [
+            (
+                "comet-data",
+                "https://comet-data.s3.amazonaws.com".to_string(),
+            ),
+            (
+                "123bucket",
+                "https://123bucket.s3.amazonaws.com".to_string(),
+            ),
+            (
+                longest.as_str(),
+                format!("https://{longest}.s3.amazonaws.com"),
+            ),
+            (
+                "my.dotted.bucket",
+                "https://s3.amazonaws.com/my.dotted.bucket".to_string(),
+            ),
+            (
+                "LegacyBucket",
+                "https://s3.amazonaws.com/LegacyBucket".to_string(),
+            ),
+            (
+                "legacy_bucket",
+                "https://s3.amazonaws.com/legacy_bucket".to_string(),
+            ),
+            (
+                "-legacy-bucket",
+                "https://s3.amazonaws.com/-legacy-bucket".to_string(),
+            ),
+            (
+                "legacy-bucket-",
+                "https://s3.amazonaws.com/legacy-bucket-".to_string(),
+            ),
+            (short, format!("https://s3.amazonaws.com/{short}")),
+            (
+                too_long.as_str(),
+                format!("https://s3.amazonaws.com/{too_long}"),
+            ),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (bucket, url) in cases {
+            actual.push(format!("{bucket}: {}", region_probe_url(bucket)));
+            expected.push(format!("{bucket}: {url}"));
+        }
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1413,6 +1563,80 @@ mod tests {
             "".to_string(),
         );
         assert_eq!(lookup_provider_class(&configs, "public-data"), None);
+    }
+
+    #[test]
+    fn test_hadoop_profile_provider_routes_through_the_adapter() {
+        let adapter = "org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter";
+        let provider_list = "aws.credentials.provider";
+        let class = PROVIDER_CLASS_PROPERTY;
+        let padded_list = format!("\n  {HADOOP_SIMPLE} ,\n {HADOOP_PROFILE} ,,");
+        let lowercased = HADOOP_PROFILE.to_lowercase();
+        let suffixed = format!("{HADOOP_PROFILE}2");
+        let without_profile = format!("{HADOOP_SIMPLE},{AWS_ENVIRONMENT}");
+        type Properties<'a> = Vec<(&'a str, &'a str)>;
+        let cases: Vec<(&str, Properties, Option<&str>)> = vec![
+            (
+                "list names the profile provider",
+                vec![(provider_list, HADOOP_PROFILE)],
+                Some(adapter),
+            ),
+            (
+                "padded list with empty entries",
+                vec![(provider_list, padded_list.as_str())],
+                Some(adapter),
+            ),
+            (
+                "list without the profile provider",
+                vec![(provider_list, without_profile.as_str())],
+                None,
+            ),
+            (
+                "SDK v2 profile provider stays native",
+                vec![(provider_list, AWS_PROFILE)],
+                None,
+            ),
+            (
+                "SDK v1 profile provider stays native",
+                vec![(provider_list, AWS_PROFILE_V1)],
+                None,
+            ),
+            (
+                "class names match exactly",
+                vec![(provider_list, lowercased.as_str())],
+                None,
+            ),
+            (
+                "class names match whole entries",
+                vec![(provider_list, suffixed.as_str())],
+                None,
+            ),
+            (
+                "configured class wins",
+                vec![(provider_list, HADOOP_PROFILE), (class, "com.vendor.X")],
+                Some("com.vendor.X"),
+            ),
+            (
+                "blank class opts out",
+                vec![(provider_list, HADOOP_PROFILE), (class, " ")],
+                None,
+            ),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (label, properties, class) in cases {
+            let mut builder = TestConfigBuilder::new();
+            for (property, value) in properties {
+                builder = builder.with_property(property, value);
+            }
+            let configs = builder.build();
+            actual.push(format!(
+                "{label}: {:?}",
+                lookup_provider_class(&configs, "b")
+            ));
+            expected.push(format!("{label}: {class:?}"));
+        }
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -1809,6 +2033,25 @@ mod tests {
         if let Err(e) = result {
             assert!(e.to_string().contains("Unsupported credential provider"));
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)] // AWS credential providers call foreign functions
+    fn test_opted_out_bucket_rejects_hadoop_profile_provider() {
+        // Failing is safer than letting the native chain resolve a different identity
+        let url = Url::parse("s3a://test-bucket/data.parquet").unwrap();
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(HADOOP_PROFILE)
+            .with_bucket_property("test-bucket", PROVIDER_CLASS_PROPERTY, "")
+            .build();
+        let err = create_store(&url, &configs, Duration::from_secs(300))
+            .expect_err("Should error for the profile provider without the adapter");
+        assert!(
+            err.to_string().contains(&format!(
+                "Unsupported credential provider: {HADOOP_PROFILE}"
+            )),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -2358,75 +2601,366 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_s3_config_custom_endpoint() {
-        let cases = vec![
-            ("custom.endpoint.com", "https://custom.endpoint.com"),
-            ("https://custom.endpoint.com", "https://custom.endpoint.com"),
-            (
-                "https://custom.endpoint.com/path/to/resource",
-                "https://custom.endpoint.com/path/to/resource",
-            ),
-        ];
-        for (endpoint, configured_endpoint) in cases {
-            let mut configs = HashMap::new();
-            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
-            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-            assert_eq!(
-                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-                Some(&configured_endpoint.to_string())
-            );
-        }
-    }
-
-    #[test]
-    fn test_extract_s3_config_custom_endpoint_with_virtual_hosted_style() {
-        let cases = vec![
+    fn test_normalize_endpoint_virtual_hosted_style() {
+        let cases = [
             (
                 "custom.endpoint.com",
-                "https://custom.endpoint.com/test-bucket",
+                "https://test-bucket.custom.endpoint.com",
             ),
             (
-                "https://custom.endpoint.com",
-                "https://custom.endpoint.com/test-bucket",
+                "http://custom.endpoint.com",
+                "http://test-bucket.custom.endpoint.com",
             ),
             (
                 "https://custom.endpoint.com/",
-                "https://custom.endpoint.com/test-bucket",
+                "https://test-bucket.custom.endpoint.com",
+            ),
+            (
+                "http://minio.internal:9000",
+                "http://test-bucket.minio.internal:9000",
+            ),
+            (
+                "https://custom.endpoint.com:8443/",
+                "https://test-bucket.custom.endpoint.com:8443",
             ),
             (
                 "https://custom.endpoint.com/path/to/resource",
-                "https://custom.endpoint.com/path/to/resource/test-bucket",
+                "https://test-bucket.custom.endpoint.com/path/to/resource",
             ),
             (
                 "https://custom.endpoint.com/path/to/resource/",
-                "https://custom.endpoint.com/path/to/resource/test-bucket",
+                "https://test-bucket.custom.endpoint.com/path/to/resource",
+            ),
+            (
+                "s3.us-west-2.amazonaws.com",
+                "https://test-bucket.s3.us-west-2.amazonaws.com",
             ),
         ];
-        for (endpoint, configured_endpoint) in cases {
-            let mut configs = HashMap::new();
-            configs.insert("fs.s3a.endpoint".to_string(), endpoint.to_string());
-            configs.insert("fs.s3a.path.style.access".to_string(), "true".to_string());
-            let s3_configs = extract_s3_config_options(&configs, "test-bucket");
+        for (endpoint, expected) in cases {
             assert_eq!(
-                s3_configs.get(&AmazonS3ConfigKey::Endpoint),
-                Some(&configured_endpoint.to_string())
+                normalize_endpoint(endpoint, "test-bucket", true),
+                Some(NormalizedEndpoint {
+                    endpoint: expected.to_string(),
+                    virtual_hosted_style_request: true,
+                }),
+                "endpoint {endpoint}"
             );
+        }
+
+        assert_eq!(
+            normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", true),
+            Some(NormalizedEndpoint {
+                endpoint: "https://custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: false,
+            })
+        );
+        assert_eq!(
+            normalize_endpoint("http://custom.endpoint.com", "my.dotted.bucket", true),
+            Some(NormalizedEndpoint {
+                endpoint: "http://my.dotted.bucket.custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: true,
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_path_style() {
+        let cases = [
+            ("custom.endpoint.com", "https://custom.endpoint.com"),
+            ("http://custom.endpoint.com", "http://custom.endpoint.com"),
+            (
+                "https://custom.endpoint.com/",
+                "https://custom.endpoint.com/",
+            ),
+            ("http://minio.internal:9000", "http://minio.internal:9000"),
+            (
+                "https://custom.endpoint.com:8443/",
+                "https://custom.endpoint.com:8443/",
+            ),
+            (
+                "https://custom.endpoint.com/path/to/resource",
+                "https://custom.endpoint.com/path/to/resource",
+            ),
+            (
+                "s3.us-west-2.amazonaws.com",
+                "https://s3.us-west-2.amazonaws.com",
+            ),
+        ];
+        for (endpoint, expected) in cases {
+            assert_eq!(
+                normalize_endpoint(endpoint, "test-bucket", false),
+                Some(NormalizedEndpoint {
+                    endpoint: expected.to_string(),
+                    virtual_hosted_style_request: false,
+                }),
+                "endpoint {endpoint}"
+            );
+        }
+
+        assert_eq!(
+            normalize_endpoint("custom.endpoint.com", "my.dotted.bucket", false),
+            Some(NormalizedEndpoint {
+                endpoint: "https://custom.endpoint.com".to_string(),
+                virtual_hosted_style_request: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_normalize_endpoint_ip_host_forces_path_style() {
+        let cases = [
+            ("http://127.0.0.1:9000", "http://127.0.0.1:9000"),
+            ("http://127.0.0.1", "http://127.0.0.1"),
+            ("127.0.0.1:9000", "https://127.0.0.1:9000"),
+            ("http://[::1]:9000", "http://[::1]:9000"),
+            ("https://[::1]", "https://[::1]"),
+            ("[::1]:9000", "https://[::1]:9000"),
+        ];
+        for (endpoint, expected) in cases {
+            for virtual_hosted_style_request in [true, false] {
+                assert_eq!(
+                    normalize_endpoint(endpoint, "test-bucket", virtual_hosted_style_request),
+                    Some(NormalizedEndpoint {
+                        endpoint: expected.to_string(),
+                        virtual_hosted_style_request: false,
+                    }),
+                    "endpoint {endpoint}, requested virtual-hosted {virtual_hosted_style_request}"
+                );
+            }
         }
     }
 
     #[test]
-    fn test_extract_s3_config_ignore_default_endpoint() {
-        let mut configs = HashMap::new();
-        configs.insert(
-            "fs.s3a.endpoint".to_string(),
-            "s3.amazonaws.com".to_string(),
-        );
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        assert!(s3_configs.is_empty());
+    fn test_normalize_endpoint_skips_default_aws_endpoint() {
+        for virtual_hosted_style_request in [true, false] {
+            assert_eq!(
+                normalize_endpoint(
+                    "s3.amazonaws.com",
+                    "test-bucket",
+                    virtual_hosted_style_request
+                ),
+                None
+            );
+            assert_eq!(
+                normalize_endpoint("", "test-bucket", virtual_hosted_style_request),
+                None
+            );
+        }
+    }
 
-        configs.insert("fs.s3a.endpoint".to_string(), "".to_string());
-        let s3_configs = extract_s3_config_options(&configs, "test-bucket");
-        assert!(s3_configs.is_empty());
+    /// The URL a GET for `s3a://<bucket>/object` goes to, read from a presigned URL so no request
+    /// leaves the test.
+    async fn final_url(bucket: &str, configs: &HashMap<String, String>) -> String {
+        use object_store::signer::Signer;
+
+        assert!(
+            extract_s3_config_options(configs, bucket).contains_key(&AmazonS3ConfigKey::Region),
+            "set fs.s3a.endpoint.region for {bucket} so creating the store skips the region probe"
+        );
+        let url = Url::parse(&format!("s3a://{bucket}/object")).unwrap();
+        let credentials = S3Credentials::Provider(Arc::new(
+            object_store::StaticCredentialProvider::new(AwsCredential {
+                key_id: "test_access_key".to_string(),
+                secret_key: "test_secret_key".to_string(),
+                token: None,
+            }),
+        ));
+        let store = S3StoreTemplate::new(&url, configs, bucket)
+            .and_then(|template| template.build(credentials));
+        let signed = match store {
+            Ok(store) => {
+                store
+                    .signed_url(
+                        reqwest::Method::GET,
+                        &Path::from("object"),
+                        Duration::from_secs(60),
+                    )
+                    .await
+            }
+            Err(e) => Err(e),
+        };
+        match signed {
+            Ok(mut url) => {
+                url.set_query(None);
+                url.to_string()
+            }
+            Err(e) => format!("error: {e}"),
+        }
+    }
+
+    #[tokio::test]
+    #[cfg_attr(miri, ignore)] // object_store calls foreign functions
+    async fn test_extract_s3_config_final_url() {
+        let endpoint = "fs.s3a.endpoint";
+        let path_style = "fs.s3a.path.style.access";
+        let custom = (endpoint, "custom.endpoint.com");
+        let minio = (endpoint, "http://minio.internal:9000");
+        let http = (endpoint, "http://storage.example.test");
+        let long = "a".repeat(64);
+        let long_url = format!("https://s3.us-east-1.amazonaws.com/{long}/object");
+        let vh_bucket_override = vec![
+            (endpoint, "global.endpoint.com"),
+            (path_style, "true"),
+            (
+                "fs.s3a.bucket.vh-bucket.endpoint",
+                "http://bucket.endpoint.com:9000",
+            ),
+            ("fs.s3a.bucket.vh-bucket.path.style.access", "false"),
+        ];
+        let ps_bucket_override = vec![
+            (endpoint, "global.endpoint.com"),
+            (path_style, "false"),
+            ("fs.s3a.bucket.ps-bucket.path.style.access", "true"),
+        ];
+        type Properties<'a> = Vec<(&'a str, &'a str)>;
+        let cases: Vec<(Properties, &str, &str)> = vec![
+            (
+                vec![],
+                "test-bucket",
+                "https://test-bucket.s3.us-east-1.amazonaws.com/object",
+            ),
+            (
+                vec![(path_style, "true")],
+                "test-bucket",
+                "https://s3.us-east-1.amazonaws.com/test-bucket/object",
+            ),
+            (
+                vec![(endpoint, "s3.amazonaws.com"), (path_style, "false")],
+                "test-bucket",
+                "https://test-bucket.s3.us-east-1.amazonaws.com/object",
+            ),
+            (
+                vec![(endpoint, ""), (path_style, "true")],
+                "test-bucket",
+                "https://s3.us-east-1.amazonaws.com/test-bucket/object",
+            ),
+            (
+                vec![],
+                "review.dotted.bucket",
+                "https://s3.us-east-1.amazonaws.com/review.dotted.bucket/object",
+            ),
+            (
+                vec![],
+                "LegacyBucket",
+                "https://s3.us-east-1.amazonaws.com/LegacyBucket/object",
+            ),
+            (
+                vec![],
+                "legacy_bucket",
+                "https://s3.us-east-1.amazonaws.com/legacy_bucket/object",
+            ),
+            (
+                vec![],
+                "-legacy-bucket",
+                "https://s3.us-east-1.amazonaws.com/-legacy-bucket/object",
+            ),
+            (
+                vec![],
+                "legacy-bucket-",
+                "https://s3.us-east-1.amazonaws.com/legacy-bucket-/object",
+            ),
+            (vec![], long.as_str(), long_url.as_str()),
+            (
+                vec![custom],
+                "test-bucket",
+                "https://test-bucket.custom.endpoint.com/object",
+            ),
+            (
+                vec![custom, (path_style, "false")],
+                "test-bucket",
+                "https://test-bucket.custom.endpoint.com/object",
+            ),
+            (
+                vec![custom, (path_style, "yes")], // non-boolean text
+                "test-bucket",
+                "https://test-bucket.custom.endpoint.com/object",
+            ),
+            (
+                vec![custom, (path_style, "true")],
+                "test-bucket",
+                "https://custom.endpoint.com/test-bucket/object",
+            ),
+            (
+                vec![custom, (path_style, " TRUE ")],
+                "test-bucket",
+                "https://custom.endpoint.com/test-bucket/object",
+            ),
+            (
+                vec![minio, (path_style, "false")],
+                "test-bucket",
+                "http://test-bucket.minio.internal:9000/object",
+            ),
+            (
+                vec![minio, (path_style, "true")],
+                "test-bucket",
+                "http://minio.internal:9000/test-bucket/object",
+            ),
+            // Plain HTTP allows dots, but not an IPv4 shape, `-.` or uppercase
+            (
+                vec![http],
+                "my.dotted.bucket",
+                "http://my.dotted.bucket.storage.example.test/object",
+            ),
+            (
+                vec![http],
+                "192.168.10.12",
+                "http://storage.example.test/192.168.10.12/object",
+            ),
+            (
+                vec![http],
+                "legacy-.bucket",
+                "http://storage.example.test/legacy-.bucket/object",
+            ),
+            (
+                vec![http],
+                "LegacyBucket",
+                "http://storage.example.test/LegacyBucket/object",
+            ),
+            (
+                vec![(endpoint, "http://127.0.0.1:9000")],
+                "test-bucket",
+                "http://127.0.0.1:9000/test-bucket/object",
+            ),
+            (
+                vec![(endpoint, "http://[::1]")],
+                "test-bucket",
+                "http://[::1]/test-bucket/object",
+            ),
+            (
+                vh_bucket_override.clone(),
+                "vh-bucket",
+                "http://vh-bucket.bucket.endpoint.com:9000/object",
+            ),
+            (
+                vh_bucket_override,
+                "other-bucket",
+                "https://global.endpoint.com/other-bucket/object",
+            ),
+            (
+                ps_bucket_override.clone(),
+                "ps-bucket",
+                "https://global.endpoint.com/ps-bucket/object",
+            ),
+            (
+                ps_bucket_override,
+                "other-bucket",
+                "https://other-bucket.global.endpoint.com/object",
+            ),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (properties, bucket, url) in cases {
+            let mut configs = TestConfigBuilder::new().with_region("us-east-1").build();
+            configs.extend(
+                properties
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string())),
+            );
+            let label = format!("{bucket} {properties:?}");
+            actual.push(format!("{label}: {}", final_url(bucket, &configs).await));
+            expected.push(format!("{label}: {url}"));
+        }
+        assert_eq!(actual, expected);
     }
 
     #[test]
