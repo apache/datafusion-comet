@@ -48,6 +48,6 @@
 - Spark 4.0.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Spark 4.1.1 (audited 2026-05-27): byte-for-byte identical to 3.5.8.
 - Both `ArrayType` and `MapType` inputs are `Compatible` and run natively; every other child type is `Unsupported`.
-- Performance (tuned 2026-07-10, PR [#4877](https://github.com/apache/datafusion-comet/pull/4877)): compute list row sizes from the offset buffer instead of allocating a sliced `ArrayRef` per row via `list_array.value(i)`, removing one heap allocation per row. ~94% faster. Benchmark: `benches/array_size.rs`.
+- Performance (tuned 2026-08-22, PRs [#4877](https://github.com/apache/datafusion-comet/pull/4877), [#5233](https://github.com/apache/datafusion-comet/pull/5233), [#5395](https://github.com/apache/datafusion-comet/pull/5395), [#5300](https://github.com/apache/datafusion-comet/pull/5300)): List and FixedSizeList compute row lengths via Arrow's `length` kernel plus an `into_parts` null → `-1` rewrite. LargeList and Map subtract adjacent offsets directly into Int32 (LargeList falls back to per-row `try_from` on span overflow). Up to ~12x faster on List / FixedSizeList, ~6.6x on LargeList, and ~6-13x on Map versus the per-row builder loop. Benchmark: `benches/array_size.rs`.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
