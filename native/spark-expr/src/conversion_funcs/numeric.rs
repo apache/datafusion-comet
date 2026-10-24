@@ -91,8 +91,8 @@ pub(crate) fn is_df_cast_from_decimal_spark_compatible(to_type: &DataType) -> bo
 }
 
 /// Seconds since the epoch as microseconds, or `None` when the value is NaN,
-/// infinite, or the product does not fit in an i64. Legacy and Try turn that
-/// into null. ANSI reports it via [`float_timestamp_error`].
+/// infinite, or the product does not fit in an i64. Try turns that into null.
+/// ANSI reports it via [`float_timestamp_error`].
 fn float_timestamp_micros(val: f64) -> Option<i64> {
     if val.is_nan() || val.is_infinite() {
         return None;
@@ -158,10 +158,18 @@ where
             let val = value.into();
             float_timestamp_micros(val).ok_or_else(|| float_timestamp_error(val))
         })?)
-    } else {
-        // Legacy and Try null the same values ANSI rejects, without allocating an
-        // error string. `unary_opt` skips null slots, so this closure does not see them.
+    } else if eval_mode == EvalMode::Try {
+        // Try nulls the same values ANSI rejects, without allocating an error
+        // string. `unary_opt` skips null slots, so this closure does not see them.
         Ok(array.unary_opt(|value| float_timestamp_micros(value.into())))
+    } else {
+        // Legacy nulls only NaN and infinity. A finite product that does not fit
+        // saturates, as Spark's `(long)` cast does.
+        Ok(array.unary_opt(|value| {
+            let val: f64 = value.into();
+            val.is_finite()
+                .then_some((val * MICROS_PER_SECOND as f64) as i64)
+        }))
     }
 }
 
@@ -2902,7 +2910,7 @@ mod tests {
             }
         }
 
-        // Legacy and Try null the same values and do not raise.
+        // Legacy and Try both null NaN and infinity and do not raise.
         let mixed: ArrayRef = Arc::new(Float64Array::from(vec![
             Some(2.0),
             Some(f64::NAN),
@@ -2943,6 +2951,37 @@ mod tests {
             }
             other => panic!("expected overflow, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_cast_float_to_timestamp_legacy_saturates() {
+        let tz = Some(Arc::from("UTC"));
+        let overflow: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1e16),
+            Some(-1e16),
+            Some(9.3e12),
+            Some(f64::MAX),
+            Some(f64::NAN),
+        ]));
+        let legacy = cast_float_to_timestamp(&overflow, &tz, EvalMode::Legacy).unwrap();
+        assert_ts(
+            &legacy,
+            &[
+                Some(i64::MAX),
+                Some(i64::MIN),
+                Some(i64::MAX),
+                Some(i64::MAX),
+                None,
+            ],
+            Some("UTC"),
+        );
+        // Try goes through the ANSI path in Spark and turns the overflow into null.
+        let try_mode = cast_float_to_timestamp(&overflow, &tz, EvalMode::Try).unwrap();
+        assert_ts(&try_mode, &[None, None, None, None, None], Some("UTC"));
+
+        let f32_max: ArrayRef = Arc::new(Float32Array::from(vec![Some(f32::MAX), Some(f32::MIN)]));
+        let legacy = cast_float_to_timestamp(&f32_max, &tz, EvalMode::Legacy).unwrap();
+        assert_ts(&legacy, &[Some(i64::MAX), Some(i64::MIN)], Some("UTC"));
     }
 
     #[test]
