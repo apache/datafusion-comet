@@ -888,7 +888,6 @@ object IcebergReflection extends Logging {
 
   /**
    * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
-
    */
   private def fieldsAtAnyDepth(schema: Any): Seq[(Int, String, Option[Any])] = {
     import scala.jdk.CollectionConverters._

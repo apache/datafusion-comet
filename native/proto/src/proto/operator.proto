@@ -819,7 +819,8 @@ message IcebergParquetWriteSettings {
   // physical Parquet leaf paths used by list/map encodings and resolves effective defaults.
   repeated IcebergColumnBloomFilterProps bloom_filters = 8;
   // Iceberg `write.parquet.bloom-filter-max-bytes` (default 1 MiB). Native eligibility only
-  // admits powers of two in [32, 128 MiB], which parquet-rs can represent exactly.
+  // admits powers of two in [32, 128 MiB] when a Bloom column is configured. With no Bloom
+  // columns, any positive Java int is accepted because it does not affect the file.
   uint64 bloom_filter_max_bytes = 9;
 }
 

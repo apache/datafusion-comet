@@ -337,7 +337,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       sessionConf => effectiveHadoopConf(op, table, sessionConf))
     val context =
       TriggerContext(
-        table, tableProperties ++ writeProperties, sparkWrite, hadoopConfs,
+        table,
+        tableProperties ++ writeProperties,
+        sparkWrite,
+        hadoopConfs,
         CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.get(op.conf))
     triggers.iterator.map(rule => rule(context)).collectFirst { case Some(reason) => reason }
   }
@@ -639,13 +642,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val configuredMaxBytes = properties.get(PropertyKeys.ParquetBloomFilterMaxBytes).map { raw =>
       raw -> scala.util.Try(java.lang.Integer.parseInt(raw)).toOption
     }
-    val malformedMaxRejection = configuredMaxBytes.collect { case (raw, None) =>
-      s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int"
+    val malformedMaxRejection = configuredMaxBytes.collect {
+      case (raw, None) =>
+        s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw is not a Java int"
+      case (raw, Some(value)) if value <= 0 =>
+        s"${PropertyKeys.ParquetBloomFilterMaxBytes}=$raw must be positive"
     }
     // Iceberg visits every enabled-prefix entry and applies enabled, FPP, then NDV. With no such
-    // entry, a parseable maximum cannot affect the file and must not force an otherwise-compatible
-    // write onto the classic path. Keep rejecting malformed values because protobuf translation
-    // parses this property before native execution.
+    // entry, a positive, parseable maximum cannot affect the file and must not force an
+    // otherwise-compatible write onto the classic path. Keep rejecting malformed and
+    // non-positive values because Iceberg validates them even with no Bloom column.
     val configured = properties.iterator.collect {
       case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
         key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
