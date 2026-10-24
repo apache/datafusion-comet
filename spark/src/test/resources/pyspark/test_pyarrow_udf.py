@@ -280,6 +280,45 @@ def test_scalar_arrow_udf_skips_empty_input_batches(spark):
         spark.conf.unset("spark.sql.adaptive.enabled")
 
 
+def test_scalar_arrow_udf_error_raises_python_exception(spark):
+    from pyspark.errors import PythonException
+    from pyspark.sql.pandas import functions as pandas_functions
+
+    if not hasattr(pandas_functions, "arrow_udf"):
+        pytest.skip("scalar arrow_udf requires Spark 4.1 or later")
+
+    sentinel = "boom-from-native-arrow-udf"
+
+    @pandas_functions.arrow_udf("long")
+    def boom(values):
+        raise ValueError(sentinel)
+
+    previous_comet_enabled = spark.conf.get("spark.comet.enabled")
+    spark.conf.set("spark.sql.adaptive.enabled", "false")
+    spark.conf.set("spark.comet.sparkToColumnar.enabled", "true")
+    try:
+        # Spark's own Python worker path, as the reference.
+        spark.conf.set("spark.comet.enabled", "false")
+        with pytest.raises(PythonException) as spark_error:
+            spark.range(1, 5, 1, 1).select(boom("id")).collect()
+        assert sentinel in str(spark_error.value)
+
+        spark.conf.set("spark.comet.enabled", "true")
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "true")
+        native_result = spark.range(1, 5, 1, 1).select(boom("id"))
+        assert "CometArrowEvalPython" in _executed_plan(native_result)
+        with pytest.raises(PythonException) as native_error:
+            native_result.collect()
+        message = str(native_error.value)
+        assert "Traceback (most recent call last)" in message, message
+        assert f"ValueError: {sentinel}" in message, message
+    finally:
+        spark.conf.set("spark.comet.exec.nativeArrowPythonUDF.enabled", "false")
+        spark.conf.set("spark.comet.enabled", previous_comet_enabled)
+        spark.conf.unset("spark.comet.sparkToColumnar.enabled")
+        spark.conf.unset("spark.sql.adaptive.enabled")
+
+
 def test_map_in_arrow_doubles_value(spark, tmp_path, accelerated):
     data = [(i, float(i * 1.5), f"name_{i}") for i in range(100)]
     src = str(tmp_path / "src.parquet")
