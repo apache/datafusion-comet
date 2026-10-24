@@ -74,7 +74,25 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
     AggExprConfig(
       "covar_pop",
       "SELECT COVAR_POP(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
-    AggExprConfig("corr", "SELECT CORR(c_double, c_double2) FROM parquetV1Table GROUP BY grp"))
+    AggExprConfig("corr", "SELECT CORR(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_sxx",
+      "SELECT regr_sxx(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_syy",
+      "SELECT regr_syy(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_sxy",
+      "SELECT regr_sxy(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_slope",
+      "SELECT regr_slope(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_intercept",
+      "SELECT regr_intercept(c_double, c_double2) FROM parquetV1Table GROUP BY grp"),
+    AggExprConfig(
+      "regr_r2",
+      "SELECT regr_r2(c_double, c_double2) FROM parquetV1Table GROUP BY grp"))
 
   private val bitwiseAggregates = List(
     AggExprConfig("bit_and", "SELECT BIT_AND(c_long) FROM parquetV1Table GROUP BY grp"),
@@ -225,9 +243,20 @@ object CometAggregateExpressionBenchmark extends CometBenchmarkBase {
             highCardinalityAggregates ++ percentileAggregates ++ approxPercentileAggregates ++
             approxCountDistinctAggregates ++ maxMinByAggregates
 
-          allAggregates.foreach { config =>
-            runExpressionBenchmark(config.name, v.toLong, config.query, config.extraCometConfigs)
-          }
+          require(
+            mainArgs.forall(name => allAggregates.exists(_.name == name)),
+            s"Unknown aggregate name in: ${mainArgs.mkString(", ")}")
+          // Optional names allow focused comparisons. With SPARK_GENERATE_BENCHMARK_FILES=1,
+          // a filtered run replaces the results file with only the selected aggregates.
+          allAggregates
+            .filter(config => mainArgs.isEmpty || mainArgs.contains(config.name))
+            .foreach { config =>
+              runExpressionBenchmark(
+                config.name,
+                v.toLong,
+                config.query,
+                config.extraCometConfigs)
+            }
         }
       }
     }
