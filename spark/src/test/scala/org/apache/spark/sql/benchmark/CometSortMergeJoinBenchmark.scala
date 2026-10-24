@@ -72,7 +72,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
     val buildRows = 100000
 
     withTempPath { dir =>
-      withTempTable("probe", "build", "build_repeated", "build_moderate") {
+      withTempTable("probe", "build", "build_repeated", "build_moderate", "build_skewed") {
         spark
           .range(probeRows.toLong)
           .selectExpr("id AS k", "id % 100 AS v")
@@ -94,6 +94,12 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
           .selectExpr("id - IF(id % 4 = 3, 1, 0) AS k")
           .write
           .parquet(s"${dir.getAbsolutePath}/build_moderate")
+        // Twelve of every 25 rows have a unique key. The other rows share seven keys.
+        spark
+          .range(buildRows.toLong)
+          .selectExpr("IF(id % 25 < 12, 7 + (id DIV 25) * 12 + id % 25, id % 7) AS k")
+          .write
+          .parquet(s"${dir.getAbsolutePath}/build_skewed")
 
         spark.read.parquet(s"${dir.getAbsolutePath}/probe").createOrReplaceTempView("probe")
         spark.read.parquet(s"${dir.getAbsolutePath}/build").createOrReplaceTempView("build")
@@ -103,6 +109,9 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         spark.read
           .parquet(s"${dir.getAbsolutePath}/build_moderate")
           .createOrReplaceTempView("build_moderate")
+        spark.read
+          .parquet(s"${dir.getAbsolutePath}/build_skewed")
+          .createOrReplaceTempView("build_skewed")
 
         runBenchmark("SortMergeJoin - inner count") {
           runExpressionBenchmark(
@@ -139,20 +148,21 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
         runBenchmark("SortMergeJoin - right key reduction") {
           val settings = cometConfigs ++ Map(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-            CometConf.COMET_BATCH_SIZE.key -> "4096",
+            SQLConf.SHUFFLE_PARTITIONS.key -> "1",
             CometConf.COMET_ENABLED.key -> "true",
             CometConf.COMET_EXEC_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native")
           withSQLConf(settings.toSeq: _*) {
             val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
-            // About three batches per shuffle partition, just beyond the reducer's initial prefix.
-            val shortRows = 24576
-            for ((table, inputRows, distinctKeys) <- Seq(
-                ("build_repeated", buildRows, 128),
-                ("build_moderate", buildRows, buildRows * 3 / 4),
-                ("build", buildRows, buildRows),
-                ("build", shortRows, shortRows))) {
+            // Three batches in one shuffle partition, just beyond the reducer's initial prefix.
+            val shortRows = 12288
+            for ((table, inputRows, distinctKeys, batchSize) <- Seq(
+                ("build_repeated", buildRows, 128, 4096),
+                ("build_moderate", buildRows, buildRows * 3 / 4, 4096),
+                ("build_skewed", buildRows, buildRows / 25 * 12 + 7, 1024),
+                ("build", buildRows, buildRows, 4096),
+                ("build", shortRows, shortRows, 4096))) {
               val benchmark = new Benchmark(
                 s"left semi, $distinctKeys distinct right keys in $inputRows rows",
                 inputRows.toLong,
@@ -163,7 +173,10 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
                              |ON p.k = b.k""".stripMargin
               // Check the result and the actual reducer work outside the timed section.
               for (enabled <- Seq(false, true)) {
-                withSQLConf(flag -> enabled.toString) {
+                val conf = Seq(
+                  flag -> enabled.toString,
+                  CometConf.COMET_BATCH_SIZE.key -> batchSize.toString)
+                withSQLConf(conf: _*) {
                   val df = spark.sql(query)
                   require(df.collect().head.getLong(0) == distinctKeys)
                   val plan = df.queryExecution.executedPlan
@@ -188,7 +201,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
                   }
                 }
                 benchmark.addCase(s"right key reduction=$enabled") { _ =>
-                  withSQLConf(flag -> enabled.toString) { spark.sql(query).collect() }
+                  withSQLConf(conf: _*) { spark.sql(query).collect() }
                 }
               }
               benchmark.run()

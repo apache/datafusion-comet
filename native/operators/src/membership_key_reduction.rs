@@ -19,11 +19,14 @@
 //! Grouping complete integer tuples keeps the set of matching keys, including nulls.
 //! The downstream sort restores ordering and the join preserves duplicate left rows.
 
+use std::collections::HashSet;
 use std::fmt::{Debug, Formatter};
 use std::hash::BuildHasher;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use arrow::array::{make_array, ArrayRef, MutableArrayData};
+use arrow::buffer::Buffer;
 use arrow::compute::concat_batches;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::hash_utils::{create_hashes, RandomState};
@@ -51,7 +54,10 @@ use futures::{StreamExt, TryStreamExt};
 // through unchanged, while an oversized or unprofitable attempt disables later attempts.
 const PREFIX_ROWS: usize = 8192;
 const MIN_BATCH_ROWS: usize = 1024;
+const SMALL_BATCH_MAX_ROWS: usize = 8192;
 const MAX_BATCH_ROWS: usize = 64 * 1024;
+// Track identities only. Stop attempting reduction if many tiny batches exhaust the bound.
+const MAX_FORWARDED_BUFFERS: usize = 256;
 
 #[derive(Debug)]
 pub struct MembershipKeyReductionExec {
@@ -134,8 +140,8 @@ impl ExecutionPlan for MembershipKeyReductionExec {
         let time =
             MetricBuilder::new(&self.metrics).subset_time("right_key_reduction_time", partition);
         let stream = futures::stream::try_unfold(
-            (input, 0usize, false),
-            move |(mut input, seen, mut bypass)| {
+            (input, 0usize, false, HashSet::new()),
+            move |(mut input, seen, mut bypass, mut forwarded)| {
                 let context = Arc::clone(&context);
                 let (input_rows, output_rows, bypass_rows, time) = (
                     input_rows.clone(),
@@ -149,35 +155,51 @@ impl ExecutionPlan for MembershipKeyReductionExec {
                     };
                     input_rows.add(batch.num_rows());
                     let seen = seen.saturating_add(batch.num_rows());
-                    let reduced =
-                        if bypass || seen <= PREFIX_ROWS || batch.num_rows() < MIN_BATCH_ROWS {
-                            None
-                        } else {
-                            let reduced = match try_reduce_batch(&batch, &context, &time).await {
-                                Ok(reduced) => reduced,
-                                Err(e)
-                                    if matches!(
-                                        e.find_root(),
-                                        DataFusionError::ResourcesExhausted(_)
-                                    ) =>
-                                {
-                                    None
-                                }
-                                Err(e) => return Err(e),
-                            };
-                            bypass = reduced.is_none();
-                            reduced
+                    let reduced = if bypass
+                        || seen <= PREFIX_ROWS
+                        || batch.num_rows() < MIN_BATCH_ROWS
+                        || (batch.num_rows() <= MAX_BATCH_ROWS
+                            && shares_input_backing(&batch, &forwarded, &time))
+                    {
+                        None
+                    } else {
+                        let reduced = match try_reduce_batch(&batch, &context, &time).await {
+                            Ok(reduced) => reduced,
+                            Err(e)
+                                if matches!(
+                                    e.find_root(),
+                                    DataFusionError::ResourcesExhausted(_)
+                                ) =>
+                            {
+                                None
+                            }
+                            Err(e) => return Err(e),
                         };
+                        bypass = reduced.is_none();
+                        reduced
+                    };
                     let batch = match reduced {
                         Some(reduced) => reduced,
                         None => {
                             bypass_rows.add(batch.num_rows());
-                            // Other input batches can share this batch's backing buffers.
+                            // Sort ignores empty batches. Nonempty forwarded buffers may
+                            // stay live until it has consumed the entire partition.
+                            if !bypass && batch.num_rows() != 0 {
+                                let _timer = time.timer();
+                                for buffer in key_buffers(&batch) {
+                                    forwarded.insert(buffer.data_ptr().addr());
+                                    if forwarded.len() > MAX_FORWARDED_BUFFERS {
+                                        bypass = true;
+                                        forwarded = HashSet::new();
+                                        break;
+                                    }
+                                }
+                            }
                             batch
                         }
                     };
                     output_rows.add(batch.num_rows());
-                    Ok(Some((batch, (input, seen, bypass))))
+                    Ok(Some((batch, (input, seen, bypass, forwarded))))
                 }
             },
         );
@@ -190,6 +212,42 @@ impl ExecutionPlan for MembershipKeyReductionExec {
     fn metrics(&self) -> Option<MetricsSet> {
         Some(self.metrics.clone_inner())
     }
+}
+
+fn key_buffers(batch: &RecordBatch) -> impl Iterator<Item = &Buffer> {
+    batch.columns().iter().flat_map(|column| {
+        let column = column.as_ref();
+        let values = arrow::downcast_primitive_array!(
+            column => column.values().inner(),
+            _ => unreachable!("membership keys must be signed integers")
+        );
+        std::iter::once(values).chain(column.nulls().map(|nulls| nulls.buffer()))
+    })
+}
+
+fn shares_input_backing(
+    batch: &RecordBatch,
+    forwarded: &HashSet<NonZeroUsize>,
+    time: &Time,
+) -> bool {
+    let _timer = time.timer();
+    let mut shared = Vec::new();
+    for buffer in key_buffers(batch) {
+        if forwarded.contains(&buffer.data_ptr().addr()) {
+            return true;
+        }
+        if buffer.strong_count() > 1 {
+            shared.push(buffer);
+        }
+    }
+    // IPC columns can own different slices of the same body. Count each Buffer
+    // object once, even when a projection repeats the same array. Other live views
+    // can belong to a later input batch that the sort will have to retain.
+    shared.sort_unstable_by_key(|b| (b.data_ptr(), std::ptr::from_ref(*b)));
+    shared.dedup_by(|a, b| std::ptr::eq(*a, *b));
+    shared
+        .chunk_by(|a, b| a.data_ptr() == b.data_ptr())
+        .any(|views| views[0].strong_count() > views.len())
 }
 
 fn retained_bytes(batch: &RecordBatch) -> usize {
@@ -275,6 +333,20 @@ fn sample_has_repeated_keys(batch: &RecordBatch) -> Result<bool> {
         let offset = start + state.hash_one(i) as usize % (end - start - WINDOW_ROWS + 1);
         let columns = batch.columns().iter().map(|c| c.slice(offset, WINDOW_ROWS));
         create_hashes(columns, &state, window)?;
+        // DataFusion skips null values when hashing integers. Include their column
+        // positions so (tenant, k, NULL) and (tenant, NULL, k) hash differently.
+        if batch.num_columns() > 1 {
+            for (index, column) in batch.columns().iter().enumerate() {
+                let Some(nulls) = column.nulls().filter(|n| n.null_count() > 0) else {
+                    continue;
+                };
+                for (row, hash) in window.iter_mut().enumerate() {
+                    if nulls.is_null(offset + row) {
+                        *hash = state.hash_one((*hash, index));
+                    }
+                }
+            }
+        }
     }
     let hashes = windows.as_flattened_mut();
     hashes.sort_unstable();
@@ -339,7 +411,14 @@ async fn try_reduce_batch(
     drop(aggregate);
     let mut output = output?;
     let rows: usize = output.iter().map(RecordBatch::num_rows).sum();
-    if 2 * rows >= original.num_rows() {
+    // Small batches must save more sort work to repay per-batch aggregate setup.
+    let input_rows = original.num_rows();
+    let unprofitable = if input_rows <= SMALL_BATCH_MAX_ROWS {
+        rows > input_rows.div_ceil(3)
+    } else {
+        2 * rows >= input_rows
+    };
+    if unprofitable {
         return Ok(None);
     }
     let reduced = if output.len() == 1 {
@@ -364,6 +443,7 @@ mod tests {
 
     use arrow::array::{cast::AsArray, Int32Array};
     use arrow::datatypes::{DataType, Field, Int32Type, Schema};
+    use datafusion::common::utils::memory::RecordBatchMemoryCounter;
     use datafusion::execution::memory_pool::{
         GreedyMemoryPool, MemoryLimit, MemoryPool, MemoryReservation,
     };
@@ -399,20 +479,22 @@ mod tests {
         // Model a decoded IPC body with eight disjoint columns in one allocation.
         let rows = 4096;
         let columns = 8;
-        let values = Int32Array::from_iter_values((0..rows * columns).map(|i| (i % 4) as i32));
-        let input = RecordBatch::try_from_iter((0..columns).map(|i| {
-            (
-                format!("k{i}"),
-                Arc::new(values.slice(i * rows, rows)) as ArrayRef,
-            )
-        }))
-        .unwrap();
+        let inputs = (0..16).map(|_| {
+            let values = Int32Array::from_iter_values((0..rows * columns).map(|i| (i % 4) as i32));
+            RecordBatch::try_from_iter((0..columns).map(|i| {
+                (
+                    format!("k{i}"),
+                    Arc::new(values.slice(i * rows, rows)) as ArrayRef,
+                )
+            }))
+            .unwrap()
+        });
         let runtime = RuntimeEnvBuilder::new()
             .with_memory_pool(Arc::new(GreedyMemoryPool::new(384 * 1024)))
             .build_arc()
             .unwrap();
         let context = SessionContext::new_with_config_rt(SessionConfig::new(), runtime).task_ctx();
-        let plan = reducer(vec![input; 16]);
+        let plan = reducer(inputs.collect());
         let out = collect(plan.execute(0, Arc::clone(&context)).unwrap())
             .await
             .unwrap();
@@ -431,21 +513,24 @@ mod tests {
         ]));
         let keys = [None, Some(0), Some(i32::MIN), Some(0)];
         let n = PREFIX_ROWS + 2;
-        let input = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(Int32Array::from_iter((0..n).map(|i| keys[i % 4]))),
-                Arc::new(Int32Array::from_iter_values((0..n).map(|i| (i % 4) as i32))),
-            ],
-        )
-        .unwrap()
-        .slice(1, PREFIX_ROWS);
-        let plan = reducer(vec![input.clone(), input.clone()]);
+        let input = || {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int32Array::from_iter((0..n).map(|i| keys[i % 4]))),
+                    Arc::new(Int32Array::from_iter_values((0..n).map(|i| (i % 4) as i32))),
+                ],
+            )
+            .unwrap()
+            .slice(1, PREFIX_ROWS)
+        };
+        let prefix = input();
+        let plan = reducer(vec![prefix.clone(), input()]);
         let out = collect(plan.execute(0, SessionContext::new().task_ctx()).unwrap())
             .await
             .unwrap();
         assert_eq!(out.len(), 2);
-        assert_eq!(out[0], input);
+        assert_eq!(out[0], prefix);
         assert_eq!(out[1].schema(), schema);
         assert_eq!(out[1].num_rows(), 4);
         let pairs = out[1]
@@ -477,6 +562,29 @@ mod tests {
         assert!(plan.properties().eq_properties.constraints().is_empty());
     }
 
+    #[test]
+    fn sample_distinguishes_null_positions_in_composite_keys() {
+        let input = |distinct: usize| {
+            let column = |slot| {
+                Arc::new(Int32Array::from_iter(
+                    (0..MIN_BATCH_ROWS)
+                        .map(|i| (i % 2 == slot).then_some(((i / 2) % distinct) as i32)),
+                )) as ArrayRef
+            };
+            RecordBatch::try_from_iter([
+                (
+                    "tenant",
+                    Arc::new(Int32Array::from(vec![7; MIN_BATCH_ROWS])) as ArrayRef,
+                ),
+                ("a", column(0)),
+                ("b", column(1)),
+            ])
+            .unwrap()
+        };
+        assert!(!sample_has_repeated_keys(&input(MIN_BATCH_ROWS / 2)).unwrap());
+        assert!(sample_has_repeated_keys(&input(4)).unwrap());
+    }
+
     #[tokio::test]
     async fn unique_batches_bypass_before_reserving_aggregate_memory() {
         let runtime = RuntimeEnvBuilder::new()
@@ -503,23 +611,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn batches_retaining_at_least_half_their_rows_disable_later_attempts() {
-        for distinct in [2048, 3200] {
+    async fn unprofitable_batches_disable_later_attempts() {
+        let context =
+            SessionContext::new_with_config(SessionConfig::new().with_batch_size(MAX_BATCH_ROWS))
+                .task_ctx();
+        for (rows, distinct) in [(1024, 499), (4096, 3200), (8192, 2732), (16_384, 8192)] {
             let prefix = batch(vec![0; PREFIX_ROWS]);
             // A repeated suffix admits the batch to the full aggregate.
-            let marginal = batch((0..4096).map(|i| i.min(distinct - 1)).collect());
+            let marginal = batch((0..rows).map(|i| i.min(distinct - 1) as i32).collect());
             assert!(sample_has_repeated_keys(&marginal).unwrap());
             let duplicate = batch(vec![7; MIN_BATCH_ROWS]);
             let input = vec![prefix, marginal, duplicate];
             let plan = reducer(input.clone());
-            let out = collect(plan.execute(0, SessionContext::new().task_ctx()).unwrap())
+            let out = collect(plan.execute(0, Arc::clone(&context)).unwrap())
                 .await
                 .unwrap();
             assert_eq!(out, input);
             assert_eq!(
                 metric(&plan, "right_key_reduction_bypass_rows"),
-                PREFIX_ROWS + 4096 + MIN_BATCH_ROWS
+                PREFIX_ROWS + rows + MIN_BATCH_ROWS
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn profitable_batches_reduce_at_both_batch_sizes() {
+        let context = SessionContext::new().task_ctx();
+        let hot_keys = batch((0..1024).map(|i| i % 7).collect());
+        let triples = batch((0..1024).map(|i| i / 3).collect());
+        let large = batch((0..8193).map(|i| i.min(3199)).collect());
+        for (input, distinct) in [(hot_keys, 7), (triples, 342), (large, 3200)] {
+            let reduced = try_reduce_batch(&input, &context, &Time::new())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(reduced.num_rows(), distinct);
         }
     }
 
@@ -639,8 +765,7 @@ mod tests {
     #[tokio::test]
     async fn bypass_preserves_buffers_shared_by_input_batches() {
         let backing = batch((0..(2 * PREFIX_ROWS) as i32).collect());
-        // The first two slices are within the prefix. The third is unique and disables
-        // reduction for the remainder. Each output must continue to use the same buffer.
+        // The first two slices are within the prefix. Later slices reuse that allocation.
         let input = vec![
             backing.slice(0, 4096),
             backing.slice(4096, 2048),
@@ -654,6 +779,74 @@ mod tests {
         assert_eq!(output, input);
         for (out, original) in output.iter().zip(&input) {
             assert!(Arc::ptr_eq(out.column(0), original.column(0)));
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_slices_do_not_add_to_sort_memory_in_either_order() {
+        let bytes = |batches: &[RecordBatch]| {
+            let mut counter = RecordBatchMemoryCounter::new();
+            for batch in batches {
+                counter.count_batch(batch);
+            }
+            counter.memory_usage()
+        };
+        // The first parent crosses the prefix. The second supplies a reducible batch
+        // before a small slice that will have to be forwarded unchanged.
+        let parent = batch(vec![1; 2 * PREFIX_ROWS]);
+        let next = batch(vec![2; PREFIX_ROWS + 1]);
+        let input = vec![
+            parent.slice(0, PREFIX_ROWS),
+            batch(vec![0]),
+            parent.slice(PREFIX_ROWS, PREFIX_ROWS),
+            next.slice(0, PREFIX_ROWS),
+            next.slice(PREFIX_ROWS, 1),
+        ];
+        let expected_bytes = bytes(&input);
+        let mut batches = input.clone();
+        batches.push(batch(vec![3; MIN_BATCH_ROWS]));
+        let plan = reducer(batches);
+        let out = collect(plan.execute(0, SessionContext::new().task_ctx()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(bytes(&out[..input.len()]), expected_bytes);
+        assert_eq!(out[..input.len()], input);
+        assert_eq!(out.last().unwrap(), &batch(vec![3]));
+    }
+
+    #[tokio::test]
+    async fn forwarded_columns_protect_cloned_arrays_and_bound_tracking() {
+        let context = SessionContext::new().task_ctx();
+        // Both batches reuse the same ArrayRef for one column. This does not add
+        // another reference to its Buffer, so the previously forwarded identity matters.
+        let common = Arc::new(Int32Array::from(vec![7; PREFIX_ROWS])) as ArrayRef;
+        let pair = |first: &ArrayRef, value| {
+            RecordBatch::try_from_iter([
+                ("shared", Arc::clone(first)),
+                (
+                    "private",
+                    Arc::new(Int32Array::from(vec![value; PREFIX_ROWS])) as ArrayRef,
+                ),
+            ])
+            .unwrap()
+        };
+        let prefix = pair(&common, 0);
+        let mixed = pair(&common, 1);
+        let plan = reducer(vec![prefix, mixed.clone()]);
+        let out = collect(plan.execute(0, Arc::clone(&context)).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(out[1], mixed);
+
+        for (size, expected) in [(0, 1), (1, MIN_BATCH_ROWS)] {
+            let mut inputs = vec![batch(vec![0; PREFIX_ROWS])];
+            inputs.extend((0..=MAX_FORWARDED_BUFFERS).map(|_| batch(vec![0]).slice(0, size)));
+            inputs.push(batch(vec![1; MIN_BATCH_ROWS]));
+            let plan = reducer(inputs);
+            let out = collect(plan.execute(0, Arc::clone(&context)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(out.last().unwrap().num_rows(), expected);
         }
     }
 

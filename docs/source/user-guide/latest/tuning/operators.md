@@ -47,12 +47,17 @@ to discard repeated right-side rows in each batch before the native sort. This o
 by default. It applies to batch joins with no residual condition and a compatible right-side
 sort. Duplicate left rows are preserved.
 
-The reducer skips small batches and whole batches within the first 8,192 rows of each partition.
-It samples eligible batches for repeated keys before grouping them. If the sample finds too few
-repeats, grouping keeps at least half the rows, or the reducer lacks memory to finish, it sends
-the original batch and the rest of the partition directly to the sort. Compare the join's
-right-side reduction input and output row counts to see how many rows the sort saved. Reduction
-time includes work spent on attempts that fell back.
+The reducer passes through whole batches within the first 8,192 rows of each partition and
+batches with fewer than 1,024 rows. It also passes through batches whose Arrow buffers are
+already pinned by an earlier batch or shared with other live views. For eligible batches it
+samples complete keys before grouping them. Batches of up to 8,192 rows must shrink to about
+a third of their size. Larger batches must shrink to less than half.
+
+If the sample finds too few repeats, grouping saves too few rows, a batch
+exceeds 65,536 rows, or memory is insufficient, the rest of the partition goes directly to
+the sort. This also happens if tracking passed-through buffers reaches its limit.
+Compare the join's right-side reduction input and output row counts to see how many
+rows the sort saved. Reduction time includes work spent on attempts that fell back.
 
 ### Broadcast Joins
 
