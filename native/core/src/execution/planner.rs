@@ -43,6 +43,7 @@ mod delta_spark_scan;
 mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
+use crate::execution::operators::init_text_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
@@ -1884,6 +1885,55 @@ impl PhysicalPlanner {
                     partition_schema,
                     projection_vector,
                     &scan.csv_options.clone().unwrap(),
+                )?;
+                Ok((
+                    vec![],
+                    vec![],
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, scan, vec![])),
+                ))
+            }
+            OpStruct::TextScan(scan) => {
+                let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
+                let partition_schema =
+                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
+                let projection_vector: Vec<usize> =
+                    scan.projection_vector.iter().map(|i| *i as usize).collect();
+                let object_store_options: HashMap<String, String> =
+                    scan.object_store_options.clone();
+                let partition = usize::try_from(self.partition)
+                    .ok()
+                    .and_then(|p| scan.file_partitions.get(p))
+                    .ok_or_else(|| {
+                        GeneralError(format!(
+                            "TextScan has no file partition {} ({} partitions)",
+                            self.partition,
+                            scan.file_partitions.len()
+                        ))
+                    })?;
+                // Build the store from this partition's files; other partitions may read
+                // from a different one.
+                let object_store_url = match partition.partitioned_file.first() {
+                    Some(file) => {
+                        prepare_object_store_with_configs(
+                            self.session_ctx.runtime_env(),
+                            file.file_path.clone(),
+                            &object_store_options,
+                        )?
+                        .0
+                    }
+                    None => ObjectStoreUrl::local_filesystem(),
+                };
+                let files = self.get_partitioned_files(partition, &object_store_options)?;
+                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let scan = init_text_datasource_exec(
+                    object_store_url,
+                    file_groups,
+                    data_schema,
+                    partition_schema,
+                    projection_vector,
+                    scan.text_options
+                        .as_ref()
+                        .ok_or_else(|| GeneralError("TextScan missing text_options".to_string()))?,
                 )?;
                 Ok((
                     vec![],

@@ -1,0 +1,6 @@
+hello world
+foo,bar,baz
+"quoted stays literal"
+café münchen naïve
+日本語テスト
+1234567890

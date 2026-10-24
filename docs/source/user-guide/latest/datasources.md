@@ -51,11 +51,25 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 
 ### Text
 
-Comet does not provide a Rust-based Text scan, but when `spark.comet.convert.text.enabled` is enabled, data from Spark's
-Text reader is immediately converted into Arrow format, allowing the Comet pipeline to take over after that. Spark's Text
-reader keeps the bytes of each line as they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings
-that are not valid UTF-8. Arrow strings must be valid UTF-8, so the conversion replaces those bytes with `U+FFFD`, and
-results that depend on the original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
+Comet provides experimental Rust-based text scan support (a single `value: string` column). When
+`spark.comet.scan.text.v2.enabled` is enabled, text files are read in Rust. This feature is experimental and
+performance benefits are workload-dependent. Only Spark's DataSource V2 text scan is accelerated, and Spark reads
+text through the V1 API by default, so also remove `text` from `spark.sql.sources.useV1SourceList`. The native scan
+falls back to Spark for cases it does not handle -- including compressed files, files larger than
+`spark.comet.scan.text.maxFileSize` (64MB by default, since the reader loads each file whole), files Spark splits
+into byte ranges, unsupported filesystem schemes, and `input_file_name()` or
+`ignoreCorruptFiles`/`ignoreMissingFiles` usage. It targets small lookup tables such as a broadcast join's build side.
+Reading a partition column from a partitioned directory falls back to Spark, but selecting only `value` stays native.
+
+Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the
+Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
+see [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes) in the compatibility guide.
+
+Separately, `spark.comet.convert.text.enabled` converts data from Spark's own Text reader into Arrow format
+immediately, allowing the Comet pipeline to take over after that. Spark's Text reader keeps the bytes of each line as
+they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Arrow
+strings must be valid UTF-8, so the conversion replaces those bytes with `U+FFFD`, and results that depend on the
+original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
 [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
 
 ### Other Spark inputs
@@ -130,13 +144,13 @@ Comet supports most standard storage systems, such as local file system and obje
 
 ### Scans over more than one object store
 
-A native Parquet or CSV scan reads each of its partitions through one object store, such as one S3
+A native Parquet, CSV, or Text scan reads each of its partitions through one object store, such as one S3
 bucket, one GCS bucket, or one HDFS name node. When a scan's files live in more than one store,
 Comet puts the files of each store into separate partitions, so such a scan can run with a different
 number of partitions than Spark would use. A native Parquet scan packs each store's files on their
-own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately. A native CSV
-scan that would split a partition falls back to Spark when Spark planned the operators above it for
-the scan's own partitioning, as Spark 3.4 does for a scan of one partition.
+own, so `spark.sql.files.maxPartitionNum` applies to each store's files separately. A native CSV or
+Text scan that would split a partition falls back to Spark when Spark planned the operators above
+it for the scan's own partitioning, as Spark 3.4 does for a scan of one partition.
 
 Such a scan forwards the object store settings of every scheme it reads, so its files can mix
 schemes such as `s3a://`, `gs://` and `hdfs://`. It falls back to Spark when it reads one bucket

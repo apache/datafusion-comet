@@ -190,6 +190,27 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_TEXT_V2_NATIVE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.text.v2.enabled")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Whether to use the native Comet V2 reader for the text file format (a single " +
+          "'value: string' column). Requires the V2 text source (remove 'text' from " +
+          "spark.sql.sources.useV1SourceList). Default: false. " +
+          "Experimental: Performance benefits are workload-dependent.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_SCAN_TEXT_MAX_FILE_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.scan.text.maxFileSize")
+      .category(CATEGORY_TESTING)
+      .doc("Maximum size of a single text file that the native Text scan will read. The native " +
+        "reader loads each file whole and does not reserve the buffer against the memory pool, " +
+        "so this bounds its peak memory; files larger than this fall back to Spark. The native " +
+        "Text scan targets small lookup tables such as a broadcast join's build side.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(64L * 1024 * 1024)
+
   val COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.parquet.rowFilterPushdown.enabled")
       .category(CATEGORY_PARQUET)
