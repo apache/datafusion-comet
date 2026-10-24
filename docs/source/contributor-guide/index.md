@@ -98,6 +98,7 @@ Expression Audits <expression-audits/index>
 Data Source Audits <data-source-audits/index>
 Supported Spark Configurations <spark_configs_support>
 Configuration Conventions <config_conventions>
+Documentation Style Guide <style_guide>
 ```
 
 ```{toctree}
