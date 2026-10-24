@@ -26,6 +26,8 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -55,6 +57,71 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .lastOption
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("make_date does not evaluate an overflowing row beyond a partial consumer") {
+    import testImplicits._
+
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.PushProjectionThroughLimit",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(2)
+            .coalesce(1)
+            .selectExpr("CAST(CASE WHEN id = 0 THEN 2024 ELSE 6000000 END AS INT) AS y")
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        withTempView("make_date_limit") {
+          spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("make_date_limit")
+          for (ansi <- Seq(false, true); codegen <- Seq(false, true)) {
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansi.toString,
+              SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+              val query = "SELECT unix_date(make_date(y, 1, 1)) FROM make_date_limit LIMIT 1"
+              var expected = Seq.empty[Row]
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(query).collect().toSeq
+              }
+              assert(expected == Seq(Row(19723)))
+              val df = sql(query)
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(plan.collect { case p: ProjectExec => p }.nonEmpty, plan.treeString)
+              assert(plan.collect { case p: CometProjectExec => p }.isEmpty, plan.treeString)
+              assert(
+                new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(_.contains("make_date")),
+                plan.treeString)
+              assert(df.collect().toSeq == expected)
+
+              val unlimited = query.stripSuffix(" LIMIT 1")
+              val partialConsumers: Seq[(String, DataFrame => Seq[Row])] = Seq(
+                ("RDD.take", df => df.rdd.take(1).toSeq),
+                (
+                  "mapPartitions",
+                  df => df.as[Int].mapPartitions(_.take(1)).collect().toSeq.map(Row(_))))
+              partialConsumers.foreach { case (name, consume) =>
+                withClue(s"$name ansi=$ansi codegen=$codegen: ") {
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    expected = consume(sql(unlimited))
+                  }
+                  assert(expected == Seq(Row(19723)))
+                  assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // A full collection must still evaluate the second row in the native expression.
+              val _ = checkSparkError(sql(unlimited), "ARITHMETIC_OVERFLOW")
+            }
+          }
+        }
+      }
+    }
+  }
 
   test("next_day and make_date ANSI errors match Spark exceptions") {
     withSQLConf(

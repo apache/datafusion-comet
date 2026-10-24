@@ -28,13 +28,14 @@ import org.scalatest.PrivateMethodTester._
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
+import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
+import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, IdentityBroadcastMode, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.CometExec.nativeLeaves
@@ -43,13 +44,15 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec, SimpleCost, SimpleCostEvaluator}
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
-import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.serde.{CometAggregateExpressionSerde, Compatible, ExprOuterClass, OperatorOuterClass, QueryPlanSerde, Unsupported}
+import org.apache.comet.shims.ShimCometWindowGroupLimit
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 /**
@@ -124,6 +127,427 @@ class CometExecRuleSuite extends CometTestBase {
         countOperators(stage.plan, opClass)
       case op if op.getClass.isAssignableFrom(opClass) => 1
     }.sum
+  }
+
+  test("make_date preserves row demand below lazy consumers, including reused native plans") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (6000000) AS t(y)")
+      val sample = createSparkPlan(
+        spark,
+        "SELECT * FROM (SELECT * FROM range(8)) TABLESAMPLE (50 PERCENT)").collectFirst {
+        case op: SampleExec => op
+      }.get
+      val consumers: Seq[(String, SparkPlan => SparkPlan)] = Seq(
+        ("LIMIT", child => CollectLimitExec(1, child)),
+        ("LIMIT", child => LocalLimitExec(1, child)),
+        ("LIMIT", child => GlobalLimitExec(1, child)),
+        ("SAMPLE", child => sample.withNewChildren(Seq(child))),
+        ("FILTER", child => FilterExec(GreaterThan(child.output.head, Literal(0)), child)))
+      for (ansi <- Seq(false, true)) {
+        def project: SparkPlan = ProjectExec(
+          Seq(
+            input.output.head,
+            Alias(MakeDate(input.output.head, Literal(1), Literal(1), ansi), "date")()),
+          input)
+        val native = applyCometExecRule(project)
+        assert(countOperators(native, classOf[CometProjectExec]) == 1, native.treeString)
+        for ((boundary, consume) <- consumers; reused <- Seq(false, true)) {
+          val child = if (reused) applyCometExecRule(project) else project
+          val converted = applyCometExecRule(consume(child))
+          for (result <- Seq(converted, applyCometExecRule(converted))) {
+            withClue(s"ansi=$ansi reused=$reused $boundary\n${result.treeString}") {
+              assert(countOperators(result, classOf[ProjectExec]) == 1)
+              assert(countOperators(result, classOf[CometProjectExec]) == 0)
+              assert(
+                new ExtendedExplainInfo()
+                  .getFallbackReasons(result)
+                  .exists(_.contains(s"make_date requires Spark evaluation below $boundary")))
+            }
+          }
+        }
+
+        // These consumers evaluate their complete input independently of the outer limit.
+        val materializers: Seq[SparkPlan => SparkPlan] = Seq(
+          child => SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child),
+          child => ShuffleExchangeExec(SinglePartition, child))
+        materializers.foreach { materialize =>
+          val result = applyCometExecRule(LocalLimitExec(1, materialize(project)))
+          assert(countOperators(result, classOf[CometProjectExec]) == 1, result.treeString)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(result)
+              .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+        }
+      }
+    }
+  }
+
+  test("make_date join input demand reaches local sorts before hash join rewriting") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_FORCE_SHJ.key -> "true",
+      CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+      val left = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (6000000) AS t(y)")
+      val right = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = MakeDate(left.output.head, Literal(1), Literal(1), failOnError = false)
+      val projection = ProjectExec(Seq(left.output.head, Alias(date, "date")()), left)
+      def sort(child: SparkPlan): SparkPlan =
+        SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child)
+      val join = SortMergeJoinExec(
+        Seq(left.output.head),
+        Seq(right.output.head),
+        Inner,
+        None,
+        sort(applyCometExecRule(projection)),
+        sort(right))
+      val converted = applyCometExecRule(join)
+      for (result <- Seq(converted, applyCometExecRule(converted))) {
+        assert(countOperators(result, classOf[SortMergeJoinExec]) == 1, result.treeString)
+        assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+        assert(countOperators(result, classOf[ProjectExec]) == 1, result.treeString)
+        assert(
+          new ExtendedExplainInfo()
+            .getFallbackReasons(result)
+            .exists(_.contains("make_date requires Spark evaluation below JOIN")))
+      }
+    }
+  }
+
+  test("make_date remains deferred across conditional projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "false") {
+      val selectedDate = java.sql.Date.valueOf("2024-01-01")
+      val rows = Seq((6000000, null.asInstanceOf[java.sql.Date]), (2024, selectedDate))
+      withParquetTable(rows, "make_date_deferred") {
+        def checkProjection(query: String)(checkSparkRows: Seq[Row] => Unit): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          checkSparkRows(expected)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          stripAQEPlan(df.queryExecution.executedPlan)
+        }
+
+        def assertDeferredProjection(plan: SparkPlan): Unit = {
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+
+        val expressions = Seq(
+          "IF(r < 0, dt, DATE '2024-01-01')",
+          "COALESCE(IF(r >= 0, DATE '2024-01-01', NULL), dt)")
+        for (aqe <- Seq(false, true); expression <- expressions) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            // Reusing nondeterministic r prevents the optimizer from merging the projections.
+            val query = s"""
+              |SELECT r, $expression AS d FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt FROM make_date_deferred
+              |)
+              |""".stripMargin
+            val plan = checkProjection(query) { expected =>
+              assert(expected.map(_.getDate(1)) == Seq.fill(2)(selectedDate))
+            }
+            withClue(s"aqe=$aqe expression=$expression\n${plan.treeString}") {
+              assertDeferredProjection(plan)
+            }
+          }
+        }
+
+        for (aqe <- Seq(false, true)) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            val plan = checkProjection("""
+              |SELECT r, datediff(nullable_date, dt) AS d, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, _2 AS nullable_date, make_date(_1, 1, 1) AS dt
+              |  FROM make_date_deferred
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 2)
+              assert(expected.map(_.get(1)).toSet == Set(null, 0))
+            }
+            assertDeferredProjection(plan)
+          }
+        }
+
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          val plan = checkProjection("""
+            |SELECT r, date_add(dt, 1) AS d, IF(r < 0, 0, r + 1) AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt
+            |  FROM make_date_deferred WHERE _1 < 3000
+            |)
+            |""".stripMargin) { expected =>
+            assert(expected.map(_.getDate(1)) == Seq(java.sql.Date.valueOf("2024-01-02")))
+          }
+          assert(countOperators(plan, classOf[CometProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            !new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+      }
+    }
+  }
+
+  test("make_date aggregate arguments retain Spark execution") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
+      withParquetTable(Seq(Tuple1(2024), Tuple1(6000000), Tuple1(2025)), "make_date_aggregate") {
+        val cases = Seq(
+          (
+            "unix_date(min(make_date(_1, 1, 1)) FILTER (WHERE _1 < 3000))",
+            classOf[HashAggregateExec],
+            Row(19723)),
+          (
+            "sort_array(collect_list(unix_date(make_date(_1, 1, 1))) " +
+              "FILTER (WHERE _1 < 3000))",
+            classOf[ObjectHashAggregateExec],
+            Row(Seq(19723, 20089))))
+        cases.foreach { case (expression, aggregateClass, expected) =>
+          val df = sql(s"SELECT $expression FROM make_date_aggregate")
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(
+            plan.exists { op =>
+              aggregateClass.isInstance(op) &&
+              op.expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+            },
+            plan.treeString)
+          val name = aggregateClass.getSimpleName.stripSuffix("Exec")
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains(s"make_date requires Spark evaluation in $name")),
+            plan.treeString)
+          checkCometAnswer(df, Seq(expected))
+        }
+      }
+    }
+  }
+
+  test("make_date top-k respects input ordering and deferred output projection") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      // Ordered top-k takes one row per partition before the final selection.
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      val template = createSparkPlan(
+        spark,
+        "SELECT * FROM VALUES (2024), (6000000) AS t(y) ORDER BY y LIMIT 1").collectFirst {
+        case topK: TakeOrderedAndProjectExec => topK
+      }.get
+      val input = template.child
+      val date = Alias(MakeDate(input.output.head, Literal(1), Literal(1), false), "date")()
+      def project(child: SparkPlan): ProjectExec = ProjectExec(input.output :+ date, child)
+      val order = template.sortOrder
+      for (sorted <- Seq(false, true)) {
+        val child = project(if (sorted) SortExec(order, false, input) else input)
+        assert(SortOrder.orderingSatisfies(child.outputOrdering, order) == sorted)
+        val result = applyCometExecRule(template.copy(projectList = child.output, child = child))
+        if (sorted) {
+          assert(result.isInstanceOf[TakeOrderedAndProjectExec], result.treeString)
+          assert(countOperators(result, classOf[CometProjectExec]) == 0, result.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(result)
+              .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+          assert(
+            result.executeCollect().map(row => (row.getInt(0), row.getInt(1))).toSeq ==
+              Seq((2024, 19723)))
+        } else {
+          assert(result.isInstanceOf[CometTakeOrderedAndProjectExec], result.treeString)
+          assert(countOperators(result, classOf[CometProjectExec]) == 1, result.treeString)
+        }
+      }
+      val deferred = applyCometExecRule(template.copy(projectList = input.output :+ date))
+      assert(deferred.isInstanceOf[TakeOrderedAndProjectExec], deferred.treeString)
+      assert(
+        new ExtendedExplainInfo()
+          .getFallbackReasons(deferred)
+          .exists(_.contains("make_date requires Spark evaluation in TakeOrderedAndProject")))
+      assert(
+        deferred.executeCollect().map(row => (row.getInt(0), row.getInt(1))).toSeq ==
+          Seq((2024, 19723)))
+    }
+  }
+
+  test("make_date below a window group limit retains Spark evaluation") {
+    val windowLimitClass = ShimCometWindowGroupLimit.windowGroupLimitClass
+    assume(windowLimitClass.isDefined, "WindowGroupLimit requires Spark 3.5+")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+      val plan = createSparkPlan(
+        spark,
+        """
+        |SELECT p, y FROM (
+        |  SELECT p, y, row_number() OVER (PARTITION BY p ORDER BY y) AS rn
+        |  FROM VALUES (0, 2024), (0, 6000000) AS t(p, y)
+        |) WHERE rn <= 1
+        |""".stripMargin)
+      val limit = plan.collectFirst { case op if windowLimitClass.get.isInstance(op) => op }.get
+      val input = limit.children.head
+      val year = input.output.find(_.name == "y").get
+      val date = Alias(MakeDate(year, Literal(1), Literal(1), false), "date")()
+      val projected = ProjectExec(input.output :+ date, input)
+      val result = applyCometExecRule(limit.withNewChildren(Seq(projected)))
+      assert(windowLimitClass.get.isInstance(result), result.treeString)
+      assert(
+        result.exists {
+          case p: ProjectExec => p.projectList.exists(_.exists(_.isInstanceOf[MakeDate]))
+          case _ => false
+        },
+        result.treeString)
+      assert(
+        new ExtendedExplainInfo()
+          .getFallbackReasons(result)
+          .exists(_.contains("make_date requires Spark evaluation below LIMIT")),
+        result.treeString)
+    }
+  }
+
+  test("make_date operator fallback can be disabled without disabling overflow checks") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = Alias(MakeDate(input.output.head, Literal(1), Literal(1), false), "date")()
+      // Tag the Spark plan before disabling the setting.
+      val guarded = MakeDateEvaluation.preserve(LocalLimitExec(1, ProjectExec(Seq(date), input)))
+      assert(countOperators(guarded, classOf[ProjectExec]) == 1, guarded.treeString)
+      assert(MakeDateEvaluation.reason(guarded).isDefined, guarded.treeString)
+      withSQLConf(CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.key -> "false") {
+        val converted = applyCometExecRule(guarded)
+        assert(countOperators(converted, classOf[CometProjectExec]) == 1, converted.treeString)
+        assert(countOperators(converted, classOf[CometLocalLimitExec]) == 1, converted.treeString)
+        withParquetTable(Seq((2024, 1, 1), (2025, 1, 1)), "make_date_opt_out") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT unix_date(make_date(_1, _2, _3)) FROM make_date_opt_out LIMIT 1"),
+            Seq(classOf[CometProjectExec], classOf[CometCollectLimitExec]))
+          val (_, joinPlan) = checkSparkAnswerAndOperator(
+            sql("""
+              |SELECT /*+ BROADCAST(b) */ unix_date(p.d), b._1 FROM (
+              |  SELECT _1 AS y, make_date(_1, _2, _3) AS d FROM make_date_opt_out
+              |) p JOIN make_date_opt_out b ON p.y = b._1
+              |""".stripMargin),
+            Seq(classOf[CometProjectExec], classOf[CometBroadcastHashJoinExec]))
+          val join = joinPlan.collectFirst { case j: CometBroadcastHashJoinExec => j }.get
+          assert(
+            join.left.exists {
+              case p: CometProjectExec =>
+                p.originalPlan.expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+              case _ => false
+            },
+            joinPlan.treeString)
+          val _ = checkSparkError(
+            sql("SELECT make_date(_1 + 6000000, _2, _3) FROM make_date_opt_out"),
+            "ARITHMETIC_OVERFLOW")
+        }
+      }
+    }
+  }
+
+  test("make_date fallback reuses native broadcast rows in Spark's broadcast representation") {
+    for (direct <- Seq(false, true); nestedLoop <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+        CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED.key -> direct.toString,
+        CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.key -> "1",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+        val date = MakeDate(input.output.head, Literal(1), Literal(1), failOnError = false)
+        val probe =
+          applyCometExecRule(ProjectExec(Seq(input.output.head, Alias(date, "date")()), input))
+        val build = applyCometExecRule(
+          createSparkPlan(spark, "SELECT CAST(id AS INT) AS y FROM range(2024, 2028, 1, 2)"))
+        assert(build.isInstanceOf[CometNativeExec], build.treeString)
+        val key = build.output.head
+        val mode =
+          if (nestedLoop) IdentityBroadcastMode
+          else HashedRelationBroadcastMode(Seq(BoundReference(0, key.dataType, key.nullable)))
+        val sparkExchange = BroadcastExchangeExec(mode, build)
+        val exchange = CometBroadcastExchangeExec(sparkExchange, build.output, mode, build)
+        val reused = ReusedExchangeExec(build.output.map(_.newInstance()), exchange)
+        val inputs = Seq[SparkPlan](
+          exchange,
+          reused,
+          BroadcastQueryStageExec(0, exchange, exchange.canonicalized),
+          BroadcastQueryStageExec(1, reused, reused.canonicalized))
+        inputs.zipWithIndex.foreach { case (broadcast, index) =>
+          // Model a native plan supplied by an earlier planning pass; its parent must restore it.
+          val native = if (nestedLoop) {
+            val original = BroadcastNestedLoopJoinExec(probe, broadcast, BuildRight, Inner, None)
+            CometBroadcastNestedLoopJoinExec.createExec(
+              OperatorOuterClass.Operator.getDefaultInstance,
+              original)
+          } else {
+            val original = BroadcastHashJoinExec(
+              Seq(probe.output.head),
+              Seq(broadcast.output.head),
+              Inner,
+              BuildRight,
+              None,
+              probe,
+              broadcast)
+            CometBroadcastHashJoinExec.createExec(
+              OperatorOuterClass.Operator.getDefaultInstance,
+              original)
+          }
+          val converted = applyCometExecRule(native)
+          for (result <- Seq(converted, applyCometExecRule(converted))) {
+            val join = result.asInstanceOf[BaseJoinExec]
+            assert(join.isInstanceOf[BroadcastNestedLoopJoinExec] == nestedLoop)
+            val restored = join.right.asInstanceOf[CometColumnarToRowExec]
+            assert(restored.output == broadcast.output)
+            assert(restored.child eq broadcast)
+            assert(countOperators(join.left, classOf[CometProjectExec]) == 0)
+          }
+          if (index == 0) {
+            val restored = converted
+              .asInstanceOf[BaseJoinExec]
+              .right
+              .asInstanceOf[CometColumnarToRowExec]
+            val relation = restored.executeBroadcast[Any]().value
+            val rows = if (nestedLoop) {
+              relation.asInstanceOf[Array[InternalRow]].toVector
+            } else {
+              // HashedRelation is private[execution]; inspect Spark's broadcast through its keys/get
+              // methods.
+              val keys = PrivateMethod[Iterator[InternalRow]](Symbol("keys"))
+              val get = PrivateMethod[Iterator[InternalRow]](Symbol("get"))
+              val hashed = relation.asInstanceOf[AnyRef]
+              (hashed invokePrivate keys()).flatMap { key =>
+                (hashed invokePrivate get(key)).map(_.copy()).toVector
+              }.toVector
+            }
+            // Multiple rows in each partition expose reused row objects; the complete build must
+            // retain its values and cardinality across both partitions.
+            withClue(s"direct=$direct nestedLoop=$nestedLoop: ") {
+              assert(rows.map(_.getInt(0)).sorted == Seq(2024, 2025, 2026, 2027))
+            }
+          }
+        }
+      }
+    }
   }
 
   /**

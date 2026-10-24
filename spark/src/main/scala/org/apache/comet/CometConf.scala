@@ -341,6 +341,16 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.makeDate.operatorFallback.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Keep affected make_date operators in Spark when native batching can evaluate rows " +
+        "that Spark skips. When false, allow native operators even if make_date can raise " +
+        "an overflow on a row Spark would not evaluate. This does not disable expression-level " +
+        "evaluation safeguards or change make_date's overflow and invalid-date behavior.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =

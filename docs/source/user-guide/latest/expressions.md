@@ -281,7 +281,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `hour` | ✅ | Native |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
-| `make_date` | ✅ | Native |  |
+| `make_date` | ✅ | Native | Date32 overflow raises in both ANSI modes. Affected operators retain Spark execution to preserve skipped evaluation; see [make_date evaluation](#make_date-evaluation). |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |
@@ -712,6 +712,30 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Structural expressions:** aliases, attribute references, literals, sort orders, and `CASE WHEN`.
 
 This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.
+
+## make_date evaluation
+
+`make_date(6000000, 1, 1)` raises `ARITHMETIC_OVERFLOW` in both ANSI modes because
+its epoch day does not fit in Date32. Spark may never evaluate that row: for example,
+a `LIMIT` can stop after earlier valid rows. Native batches can evaluate the date before
+the consuming operator decides which rows it needs.
+
+By default, Comet keeps affected operators in Spark to preserve that behavior. This applies
+to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins, `mapPartitions`, and
+`Dataset.rdd` consumers; date expressions inside joins, aggregates, and ordered limits;
+and projections below a window group limit. A parent projection can also defer a date output
+when an `IF`, `COALESCE`, or NULL-skipping operand does not need it. Comet preserves that
+evaluation across projections while allowing eager date consumers to remain native.
+Only affected parts of the plan fall back.
+An ordinary native scan can remain native. Exchanges materialize their inputs independently,
+and local sorts and aggregates can also separate date evaluation from an outer limit.
+
+Users who accept evaluating dates on rows Spark would skip can set
+`spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
+these shapes. The default is `true`. Disabling it can produce an overflow error where Spark
+would return rows successfully. This setting preserves the corrected overflow behavior,
+invalid-date handling, and expression-level safeguards for skipped arguments and operands.
+For example, an empty `IN` predicate containing `make_date` still falls back when needed.
 
 ## See also
 
