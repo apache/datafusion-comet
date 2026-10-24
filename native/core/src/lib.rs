@@ -190,6 +190,22 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
     cfg!(feature = "python-udf")
 }
 
+/// JNI: the `major.minor` version of the embedded Python interpreter, or an empty string when
+/// libcomet was built without the `python-udf` feature. The interpreter is the `libpython` that
+/// libcomet was linked against, so its version is fixed when libcomet is built, while PySpark's
+/// workers may run another Python.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativePythonUdfVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    #[cfg(feature = "python-udf")]
+    let version = execution::python_udf::embedded_python_version();
+    #[cfg(not(feature = "python-udf"))]
+    let version = String::new();
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(version)?.into_raw()))
+}
+
 #[no_mangle]
 /// Releases the global Tokio runtime used by Comet native execution.
 pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
