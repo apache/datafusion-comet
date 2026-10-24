@@ -960,6 +960,28 @@ natively and decodes the bytes before the aggregate sees them.</p></li>
 valid UTF-8 rather than reading them like Spark
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4121">#4121</a>).</p>
 </section>
+<section id="ansi-errors-from-rows-skipped-by-limit">
+<h2>ANSI errors from rows skipped by LIMIT<a class="headerlink" href="#ansi-errors-from-rows-skipped-by-limit" title="Link to this heading">#</a></h2>
+<p>Native operators evaluate batches of rows. With <code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=true</span></code>, some <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code>
+plan shapes can therefore raise an expression error from a row that Spark stops before evaluating.
+For example, with a Parquet batch read in the order <code class="docutils literal notranslate"><span class="pre">(id,</span> <span class="pre">value)</span> <span class="pre">=</span> <span class="pre">(0,</span> <span class="pre">'0'),</span> <span class="pre">(1,</span> <span class="pre">'1')</span></code>:</p>
+<div class="highlight-sql notranslate"><div class="highlight"><pre><span></span><span class="k">SELECT</span><span class="w"> </span><span class="n">value</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">t</span>
+<span class="k">WHERE</span><span class="w"> </span><span class="k">CAST</span><span class="p">(</span><span class="k">IF</span><span class="p">(</span><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="s1">'bad'</span><span class="p">,</span><span class="w"> </span><span class="n">value</span><span class="p">)</span><span class="w"> </span><span class="k">AS</span><span class="w"> </span><span class="nb">INT</span><span class="p">)</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="mi">0</span>
+<span class="k">LIMIT</span><span class="w"> </span><span class="mi">1</span>
+</pre></div>
+</div>
+<p>Spark returns <code class="docutils literal notranslate"><span class="pre">'0'</span></code> after the first row matches. Comet can evaluate the filter predicate on the
+second row in the same batch and raise <code class="docutils literal notranslate"><span class="pre">CAST_INVALID_INPUT</span></code>. SQL without <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> does not
+guarantee this input order; the example describes a physical scan order that exposes the difference.</p>
+<p>Comet caps projection input when a collect limit directly consumes the projection. This protects
+that projection’s expressions, but does not bound evaluation inside its child operators. Throwing
+filter predicates and projections beneath non-collect <code class="docutils literal notranslate"><span class="pre">LocalLimit</span></code> / <code class="docutils literal notranslate"><span class="pre">GlobalLimit</span></code> plans, such as
+a <code class="docutils literal notranslate"><span class="pre">LIMIT</span></code> inside a subquery, remain affected. These existing limitations and the investigation of
+already-ordered <code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProject</span></code> inputs are tracked in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7147">#7147</a>.</p>
+<p>An error on a row absent from the final result is not always a mismatch: Spark can also need to
+evaluate that row, for example to sort the input or process an <code class="docutils literal notranslate"><span class="pre">OFFSET</span></code> prefix.</p>
+</section>
 <section id="ansi-mode-error-classes-and-messages">
 <h2>ANSI-mode error classes and messages<a class="headerlink" href="#ansi-mode-error-classes-and-messages" title="Link to this heading">#</a></h2>
 <p>Under <code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=true</span></code>, several native error paths raise the error at the correct
@@ -1054,6 +1076,7 @@ returns <code class="docutils literal notranslate"><span class="pre">NULL</span>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compatible-by-default-opt-in-to-native">Compatible by default, opt in to native</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-and-codegen-dispatch-implementations">Native and codegen-dispatch implementations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#strings-with-non-utf-8-bytes">Strings with non-UTF-8 bytes</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-errors-from-rows-skipped-by-limit">ANSI errors from rows skipped by LIMIT</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#ansi-mode-error-classes-and-messages">ANSI-mode error classes and messages</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-result-value-divergences">Known result-value divergences</a></li>
 </ul>
