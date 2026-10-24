@@ -1035,6 +1035,12 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
+    CometScalarSubquery.consumerFallbackReason(expr) match {
+      case Some(reason) =>
+        withFallbackReason(expr, reason)
+        return None
+      case None =>
+    }
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {
@@ -1122,6 +1128,14 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
               None
           }
       })
+      .filter { protoExpr =>
+        CometScalarSubquery.dispatchedConsumerFallbackReason(expr, protoExpr) match {
+          case Some(reason) =>
+            withFallbackReason(expr, reason)
+            false
+          case None => true
+        }
+      }
       .map { protoExpr =>
         // Record that this expression stayed in the native pipeline, for the expression coverage
         // stats in extended explain. `CometScalaUDF.emitJvmCodegenDispatch` marks the expressions
@@ -1196,8 +1210,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       right: Expression,
       inputs: Seq[Attribute],
       binding: Boolean,
-      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder)
-      : Option[ExprOuterClass.Expr] = {
+      f: (ExprOuterClass.Expr.Builder, ExprOuterClass.BinaryExpr) => ExprOuterClass.Expr.Builder,
+      nullShortCircuit: Boolean = false): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
     if (leftExpr.isDefined && rightExpr.isDefined) {
@@ -1206,6 +1220,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         .newBuilder()
         .setLeft(leftExpr.get)
         .setRight(rightExpr.get)
+        .setNullShortCircuit(nullShortCircuit)
         .build()
       // call the user-supplied function to wrap BinaryExpr in a top-level Expr
       // such as Expr.And or Expr.Or

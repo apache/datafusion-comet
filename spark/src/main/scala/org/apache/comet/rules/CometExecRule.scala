@@ -61,7 +61,7 @@ import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExpla
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
 import org.apache.comet.rules.CometExecRule.allExecs
-import org.apache.comet.serde._
+import org.apache.comet.serde.{CometScalarSubquery => ScalarSubquerySerde, _}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometMergeRows, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
@@ -1058,6 +1058,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
 
+      ScalarSubquerySerde.tagPlanInputs(planWithJoinRewritten)
+
       // Tag leaves on broadcast join build sides so shouldApplySparkToColumnar can bridge an
       // unsupported build-side scan (e.g. ORC) to Arrow and let the join run natively (#6008).
       tagBroadcastBuildSideLeaves(planWithJoinRewritten)
@@ -1186,7 +1188,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
   private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] =
     CometExplainInfo.withFallbackReasonScope {
-      val converted = tryConvertToComet(op, handler)
+      val converted = ScalarSubquerySerde.withPlanInputs(op) {
+        tryConvertToComet(op, handler)
+      }
       if (converted.isEmpty) {
         // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
         // reasons recorded on its expressions onto the operator itself - see

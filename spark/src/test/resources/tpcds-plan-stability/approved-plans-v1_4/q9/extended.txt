@@ -1,61 +1,61 @@
- Project [COMET: Unsupported data type: StructType(StructField(count(1),LongType,false),StructField(avg(ss_ext_discount_amt),DecimalType(11,6),true),StructField(avg(ss_net_paid),DecimalType(11,6),true))]
-:  :- Subquery
-:  :  +- CometColumnarToRow
-:  :     +- CometProject
-:  :        +- CometHashAggregate
-:  :           +- CometExchange
-:  :              +- CometHashAggregate
-:  :                 +- CometProject
-:  :                    +- CometFilter
-:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-:  :- ReusedSubquery
-:  :- ReusedSubquery
-:  :- Subquery
-:  :  +- CometColumnarToRow
-:  :     +- CometProject
-:  :        +- CometHashAggregate
-:  :           +- CometExchange
-:  :              +- CometHashAggregate
-:  :                 +- CometProject
-:  :                    +- CometFilter
-:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-:  :- ReusedSubquery
-:  :- ReusedSubquery
-:  :- Subquery
-:  :  +- CometColumnarToRow
-:  :     +- CometProject
-:  :        +- CometHashAggregate
-:  :           +- CometExchange
-:  :              +- CometHashAggregate
-:  :                 +- CometProject
-:  :                    +- CometFilter
-:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-:  :- ReusedSubquery
-:  :- ReusedSubquery
-:  :- Subquery
-:  :  +- CometColumnarToRow
-:  :     +- CometProject
-:  :        +- CometHashAggregate
-:  :           +- CometExchange
-:  :              +- CometHashAggregate
-:  :                 +- CometProject
-:  :                    +- CometFilter
-:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-:  :- ReusedSubquery
-:  :- ReusedSubquery
-:  :- Subquery
-:  :  +- CometColumnarToRow
-:  :     +- CometProject
-:  :        +- CometHashAggregate
-:  :           +- CometExchange
-:  :              +- CometHashAggregate
-:  :                 +- CometProject
-:  :                    +- CometFilter
-:  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
-:  :- ReusedSubquery
-:  +- ReusedSubquery
-+- CometColumnarToRow
+CometColumnarToRow
++- CometProject
+   :  :- Subquery
+   :  :  +- CometColumnarToRow
+   :  :     +- CometProject
+   :  :        +- CometHashAggregate
+   :  :           +- CometExchange
+   :  :              +- CometHashAggregate
+   :  :                 +- CometProject
+   :  :                    +- CometFilter
+   :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+   :  :- ReusedSubquery
+   :  :- ReusedSubquery
+   :  :- Subquery
+   :  :  +- CometColumnarToRow
+   :  :     +- CometProject
+   :  :        +- CometHashAggregate
+   :  :           +- CometExchange
+   :  :              +- CometHashAggregate
+   :  :                 +- CometProject
+   :  :                    +- CometFilter
+   :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+   :  :- ReusedSubquery
+   :  :- ReusedSubquery
+   :  :- Subquery
+   :  :  +- CometColumnarToRow
+   :  :     +- CometProject
+   :  :        +- CometHashAggregate
+   :  :           +- CometExchange
+   :  :              +- CometHashAggregate
+   :  :                 +- CometProject
+   :  :                    +- CometFilter
+   :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+   :  :- ReusedSubquery
+   :  :- ReusedSubquery
+   :  :- Subquery
+   :  :  +- CometColumnarToRow
+   :  :     +- CometProject
+   :  :        +- CometHashAggregate
+   :  :           +- CometExchange
+   :  :              +- CometHashAggregate
+   :  :                 +- CometProject
+   :  :                    +- CometFilter
+   :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+   :  :- ReusedSubquery
+   :  :- ReusedSubquery
+   :  :- Subquery
+   :  :  +- CometColumnarToRow
+   :  :     +- CometProject
+   :  :        +- CometHashAggregate
+   :  :           +- CometExchange
+   :  :              +- CometHashAggregate
+   :  :                 +- CometProject
+   :  :                    +- CometFilter
+   :  :                       +- CometNativeScan parquet spark_catalog.default.store_sales
+   :  :- ReusedSubquery
+   :  +- ReusedSubquery
    +- CometFilter
       +- CometNativeScan parquet spark_catalog.default.reason
 
-Comet accelerated 37 out of 43 eligible operators (86%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 11 native, 0 codegen dispatch.
+Comet accelerated 38 out of 43 eligible operators (88%). Final plan contains 6 transitions between Spark and Comet. Accelerated expressions: 15 native, 0 codegen dispatch.

@@ -475,6 +475,8 @@ message PreciseTimestampConversion {
 message BinaryExpr {
   Expr left = 1;
   Expr right = 2;
+  // Only ordinary comparisons may use this; Spark's shared-expression analysis authorizes it.
+  bool null_short_circuit = 3;
 }
 
 message UnaryExpr {
@@ -640,6 +642,8 @@ message Subquery {
 message BloomFilterMightContain {
   Expr bloom_filter = 1;
   Expr value = 2;
+  // Spark may skip value for a NULL filter only when shared-expression evaluation permits it.
+  bool null_short_circuit = 3;
 }
 
 message CreateNamedStruct {

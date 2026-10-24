@@ -56,6 +56,10 @@ pub struct NullShortCircuit {
 }
 
 impl NullShortCircuit {
+    pub(crate) fn inner(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.inner
+    }
+
     /// Wraps `inner` if evaluating one of its arguments after the first for a row that Spark skips
     /// could change the outcome, and returns it unchanged otherwise.
     pub fn wrap(

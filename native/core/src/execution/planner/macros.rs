@@ -93,14 +93,32 @@ macro_rules! binary_expr_builder {
                         &$operator,
                         &input_schema,
                     );
-                datafusion_comet_spark_expr::spark_comparison(
+                let comparison = datafusion_comet_spark_expr::spark_comparison(
                     left,
                     $operator,
                     right,
                     input_schema.as_ref(),
                     planner.float_operands(),
-                )
-                .map_err(Into::into)
+                )?;
+                if expr.null_short_circuit
+                    && matches!(
+                        $operator,
+                        datafusion::logical_expr::Operator::Eq
+                            | datafusion::logical_expr::Operator::NotEq
+                            | datafusion::logical_expr::Operator::Lt
+                            | datafusion::logical_expr::Operator::LtEq
+                            | datafusion::logical_expr::Operator::Gt
+                            | datafusion::logical_expr::Operator::GtEq
+                    )
+                {
+                    datafusion_comet_spark_expr::NullShortCircuit::wrap(
+                        comparison,
+                        input_schema.as_ref(),
+                    )
+                    .map_err(Into::into)
+                } else {
+                    Ok(comparison)
+                }
             }
         }
     };

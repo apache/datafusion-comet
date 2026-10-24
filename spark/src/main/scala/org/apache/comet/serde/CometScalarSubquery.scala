@@ -19,30 +19,362 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.execution.ScalarSubquery
+import scala.jdk.CollectionConverters._
+import scala.util.DynamicVariable
+
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, BoundReference, CaseWhen, Cast, Coalesce, CreateArray, CreateMap, CreateNamedStruct, DateFromUnixDate, DayOfWeek, ElementAt, EqualNullSafe, EqualTo, Expression, ExprId, GetArrayItem, GetArrayStructFields, GetMapValue, GetStructField, GreaterThan, GreaterThanOrEqual, Greatest, Hour, If, In, InSet, IsNotNull, IsNull, KnownNotNull, KnownNullable, Least, LessThan, LessThanOrEqual, Literal, Minute, NamedExpression, PreciseTimestampConversion, Second, SortOrder, ToUnixTimestamp, TryEval, UnixDate, UnixTimestamp, WeekDay}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
+import org.apache.spark.sql.catalyst.trees.TreePattern.PLAN_EXPRESSION
+import org.apache.spark.sql.comet.CometExec
+import org.apache.spark.sql.execution.{ExecSubqueryExpression, ExpandExec, GenerateExec, ScalarSubquery, SparkPlan, UnionExec}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
+import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
+import org.apache.spark.sql.types._
+
+import com.google.protobuf.Message
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.QueryPlanSerde.{serializeDataType, supportedDataType}
 
 object CometScalarSubquery extends CometExpressionSerde[ScalarSubquery] {
 
-  override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all data types are supported for scalar subquery results")
+  private val structSubqueryInputs =
+    new TreeNodeTag[Set[ExprId]]("CometStructScalarSubqueryInputs")
+  private val structSubqueryContext =
+    new TreeNodeTag[Boolean]("CometStructScalarSubqueryContext")
+  private val currentStructSubqueryInputs = new DynamicVariable[Set[ExprId]](Set.empty)
+  private val currentPlanHasStructSubquery = new DynamicVariable[Boolean](false)
 
-  override def getSupportLevel(expr: ScalarSubquery): SupportLevel =
-    if (supportedDataType(expr.dataType)) {
+  /**
+   * Trace struct scalar values before native conversion replaces their producing projections.
+   * Attribute object identity is insufficient: aliases, nullable join outputs and reused stages
+   * can create fresh attributes. Keep provenance by ExprId on the owning plan instead.
+   *
+   * This is recomputed on every rule application, including the plans hidden by AQE/reuse nodes.
+   * No provenance is inferred from a column's data type or carried in a global ExprId registry.
+   */
+  private[comet] def tagPlanInputs(root: SparkPlan): Unit = {
+    val visited = new java.util.IdentityHashMap[SparkPlan, Set[ExprId]]()
+    def remember(plan: SparkPlan, sources: Set[ExprId]): Unit = {
+      val _ = visited.put(plan, sources)
+    }
+
+    def visit(plan: SparkPlan): Set[ExprId] = {
+      if (visited.containsKey(plan)) return visited.get(plan)
+      remember(plan, Set.empty)
+      plan.unsetTagValue(structSubqueryInputs)
+      plan.unsetTagValue(structSubqueryContext)
+
+      val original = plan match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val children = plan match {
+        case reused: ReusedExchangeExec => Seq(reused.child)
+        case stage: QueryStageExec => Seq(stage.plan)
+        case adaptive: AdaptiveSparkPlanExec => Seq(adaptive.executedPlan)
+        case comet: CometExec if comet.children.isEmpty => Seq(comet.originalPlan)
+        case other => other.children
+      }
+      val childSources = children.map(visit)
+      var sources = childSources.flatten.toSet
+      // A struct subquery can enable native conversion of both its operator and ancestors.
+      // Keep that context even when a later projection drops the struct: sibling/ancestor
+      // calendar consumers can still receive ordinary columns outside the native range.
+      val hasStructContext =
+        children.exists(_.getTagValue(structSubqueryContext).contains(true)) ||
+          original.expressions.exists(hasStructSubquerySource(_, sources))
+      plan.setTagValue(structSubqueryContext, hasStructContext)
+      if (sources.isEmpty &&
+        !original.expressions.exists(_.containsPattern(PLAN_EXPRESSION))) {
+        return Set.empty
+      }
+
+      // Union and reused stages can expose different ExprIds for the same output positions.
+      original match {
+        case _: UnionExec | _: ReusedExchangeExec | _: QueryStageExec |
+            _: AdaptiveSparkPlanExec =>
+          plan.output.zipWithIndex.foreach { case (output, ordinal) =>
+            if (children.zip(childSources).exists { case (child, ids) =>
+                child.output.lift(ordinal).exists(a => ids.contains(a.exprId))
+              }) {
+              sources += output.exprId
+            }
+          }
+        case _ =>
+      }
+
+      val named = original.expressions.flatMap(_.collect { case e: NamedExpression => e })
+      var changed = true
+      while (changed) {
+        val previous = sources
+        named.foreach { expression =>
+          if (hasStructSubquerySource(expression, sources)) sources += expression.exprId
+        }
+        original match {
+          case aggregate: BaseAggregateExec =>
+            aggregate.aggregateExpressions.zip(aggregate.aggregateAttributes).foreach {
+              case (expression, output) =>
+                val function = expression.aggregateFunction
+                if (hasStructSubquerySource(expression, sources) ||
+                  function.inputAggBufferAttributes.exists(a => sources.contains(a.exprId))) {
+                  sources += output.exprId
+                  sources ++= function.aggBufferAttributes.map(_.exprId)
+                  sources ++= function.inputAggBufferAttributes.map(_.exprId)
+                }
+            }
+          case generate: GenerateExec if hasStructSubquerySource(generate.generator, sources) =>
+            // Generators expose fresh attributes rather than NamedExpression aliases.
+            sources ++= generate.generatorOutput.map(_.exprId)
+          case expand: ExpandExec =>
+            expand.output.zipWithIndex.foreach { case (output, ordinal) =>
+              if (expand.projections.exists(p => hasStructSubquerySource(p(ordinal), sources))) {
+                sources += output.exprId
+              }
+            }
+          case _ =>
+        }
+        changed = previous != sources
+      }
+
+      plan.setTagValue(structSubqueryInputs, sources)
+      val outputs = plan.output.iterator.map(_.exprId).filter(sources.contains).toSet
+      remember(plan, outputs)
+      outputs
+    }
+
+    val _ = visit(root)
+  }
+
+  /** Keep the lineage local to this conversion, even when an attribute was copied or rebound. */
+  private[comet] def withPlanInputs[T](plan: SparkPlan)(f: => T): T = {
+    val inputs = plan.getTagValue(structSubqueryInputs).getOrElse(Set.empty)
+    currentStructSubqueryInputs.withValue(inputs) {
+      currentPlanHasStructSubquery.withValue(
+        plan.getTagValue(structSubqueryContext).getOrElse(false))(f)
+    }
+  }
+
+  private val calendarConsumerFallbackReason =
+    "Calendar operations on struct scalar subqueries require Spark because their runtime values " +
+      "may exceed the native calendar range"
+
+  private val timezoneConsumerFallbackReason =
+    "Timezone-dependent scalar subquery operations require Spark for non-fixed timezones"
+
+  private val dateUnixTimestampFallbackReason =
+    "Date scalar subqueries in unix_timestamp require Spark because their runtime values " +
+      "may exceed the native calendar range"
+
+  private def containsCalendarType(dt: DataType): Boolean = dt match {
+    case DateType | TimestampType | TimestampNTZType => true
+    case s: StructType => s.fields.exists(f => containsCalendarType(f.dataType))
+    case ArrayType(elementType, _) => containsCalendarType(elementType)
+    case MapType(keyType, valueType, _) =>
+      containsCalendarType(keyType) || containsCalendarType(valueType)
+    case _ => false
+  }
+
+  private def containsVariableWidth(dt: DataType): Boolean = dt match {
+    case StringType | BinaryType => true
+    case s: StructType => s.fields.exists(f => containsVariableWidth(f.dataType))
+    case ArrayType(elementType, _) => containsVariableWidth(elementType)
+    case _ => false
+  }
+
+  private def hasVariableWidthStructSubquery(expr: Expression): Boolean =
+    expr.containsPattern(PLAN_EXPRESSION) && expr.exists {
+      case subquery: ExecSubqueryExpression =>
+        subquery.dataType.isInstanceOf[StructType] && containsVariableWidth(subquery.dataType)
+      case _ => false
+    }
+
+  /** Opaque JVM kernels cannot participate in the native consumer's bounded evaluation. */
+  private[serde] def dispatchedConsumerFallbackReason(
+      expr: Expression,
+      proto: ExprOuterClass.Expr): Option[String] = {
+    def containsDispatch(message: Message): Boolean = message match {
+      case e: ExprOuterClass.Expr if e.hasJvmScalarUdf => true
+      case other =>
+        other.getAllFields.values().asScala.exists {
+          case child: Message => containsDispatch(child)
+          case children: java.util.List[_] =>
+            children.asScala.exists {
+              case child: Message => containsDispatch(child)
+              case _ => false
+            }
+          case _ => false
+        }
+    }
+    if (hasVariableWidthStructSubquery(expr) && containsDispatch(proto)) {
+      Some("JVM-dispatched consumers of variable-width struct scalar subqueries require Spark")
+    } else {
+      None
+    }
+  }
+
+  private def isTimestamp(dt: DataType): Boolean =
+    dt == TimestampType || dt == TimestampNTZType
+
+  private def isEpochCast(from: DataType, to: DataType): Boolean =
+    (isTimestamp(from) && to == LongType) || (from == LongType && isTimestamp(to))
+
+  private def hasStructSubquerySource(expr: Expression, inputs: Set[ExprId]): Boolean =
+    expr.references.exists(a => inputs.contains(a.exprId)) ||
+      (expr.containsPattern(PLAN_EXPRESSION) && expr.exists {
+        case subquery: ExecSubqueryExpression => subquery.dataType.isInstanceOf[StructType]
+        case _ => false
+      })
+
+  private def hasStructSubquery(expr: Expression): Boolean =
+    hasStructSubquerySource(expr, currentStructSubqueryInputs.value)
+
+  private def hasStructSubqueryContext(expr: Expression): Boolean =
+    currentPlanHasStructSubquery.value || hasStructSubquery(expr)
+
+  private def clockFallbackReason(
+      child: Expression,
+      timeZoneId: Option[String]): Option[String] = {
+    if (child.dataType == TimestampNTZType || CometTimeZone.isFixedOffset(timeZoneId)) {
+      None
+    } else {
+      Some(timezoneConsumerFallbackReason)
+    }
+  }
+
+  /**
+   * Admit only reviewed consumers of dates and timestamps on newly supported struct-subquery
+   * paths. Unknown consumers stay on Spark by default, including expressions whose result is not
+   * a calendar type. Transport, comparisons and epoch arithmetic do not interpret a calendar.
+   *
+   * Check the whole expression before serialization or codegen dispatch, including wrappers and
+   * whole-struct casts. A physical subquery may be reused, but it is still an
+   * [[ExecSubqueryExpression]]; its result must never be evaluated while planning this check.
+   */
+  private[serde] def consumerFallbackReason(expr: Expression): Option[String] = {
+    // Skip paths without struct subqueries. A newly admitted calendar consumer can be a
+    // sibling or ancestor of a struct-producing operator without using its result directly.
+    // Aliases still carry value provenance through the owning plan's ExprIds.
+    val derivedInput =
+      expr.references.exists(a => currentStructSubqueryInputs.value.contains(a.exprId))
+    if (!currentPlanHasStructSubquery.value && !derivedInput &&
+      (!expr.containsPattern(PLAN_EXPRESSION) || !ExecSubqueryExpression.hasSubquery(expr))) {
+      return None
+    }
+
+    // Native consumers may change batch boundaries to avoid repeating a large scalar field.
+    // Stateful consumers must retain Spark's evaluation order and their pre-existing fallback.
+    if (!expr.deterministic && hasVariableWidthStructSubquery(expr)) {
+      return Some(
+        "Nondeterministic consumers of variable-width struct scalar subqueries require Spark")
+    }
+
+    expr match {
+      // Dynamic nested IN stops after a batch-wide match in native execution. Keep row-dependent
+      // candidates on Spark rather than change ANSI/shared-expression evaluation by slicing.
+      // Literal candidates use the separate static IN implementation. Constant membership also
+      // needs sharing authorization: Spark may eagerly evaluate a shared, failing candidate.
+      case in: In
+          if hasStructSubqueryContext(in) &&
+            (in.value.dataType.isInstanceOf[StructType] ||
+              in.value.dataType.isInstanceOf[ArrayType]) &&
+            containsVariableWidth(in.value.dataType) &&
+            in.list.exists(!_.isInstanceOf[Literal]) &&
+            (in.references.nonEmpty || !QueryPlanSerde.canSkipEvaluation(in.list)) =>
+        return Some("Nested membership of struct scalar subqueries requires Spark")
+      case _ =>
+    }
+
+    val touchesCalendar =
+      containsCalendarType(expr.dataType) ||
+        expr.children.exists(child => containsCalendarType(child.dataType))
+
+    val reason = expr match {
+      // Preserve the existing guard for plain scalar date subqueries as well as struct fields.
+      case unix: UnixTimestamp
+          if unix.timeExp.dataType == DateType &&
+            (ExecSubqueryExpression.hasSubquery(unix.timeExp) || hasStructSubqueryContext(
+              unix.timeExp)) =>
+        Some(dateUnixTimestampFallbackReason)
+      // Retain timezone protection for plain scalar subqueries too.
+      case hour: Hour => clockFallbackReason(hour.child, hour.timeZoneId)
+      case minute: Minute => clockFallbackReason(minute.child, minute.timeZoneId)
+      case second: Second => clockFallbackReason(second.child, second.timeZoneId)
+      case _ if !hasStructSubqueryContext(expr) || !touchesCalendar => None
+      // These nodes only carry, select, compare or inspect the validity of raw values.
+      // Keep the list explicit: a new date-consuming expression must be reviewed before admission.
+      case _: Literal | _: Attribute | _: BoundReference | _: ScalarSubquery | _: Alias |
+          _: GetStructField | _: CreateNamedStruct | _: CreateArray | _: CreateMap |
+          _: GetArrayItem | _: GetArrayStructFields | _: GetMapValue | _: ElementAt | _: If |
+          _: CaseWhen | _: Coalesce | _: Greatest | _: Least | _: KnownNotNull |
+          _: KnownNullable | _: TryEval | _: SortOrder | _: IsNull | _: IsNotNull | _: In |
+          _: InSet | _: EqualTo | _: EqualNullSafe | _: LessThan | _: LessThanOrEqual |
+          _: GreaterThan | _: GreaterThanOrEqual =>
+        None
+      case cast: Cast
+          if cast.child.dataType == cast.dataType ||
+            isEpochCast(cast.child.dataType, cast.dataType) =>
+        None
+      case conversion: PreciseTimestampConversion
+          if isEpochCast(conversion.fromType, conversion.toType) =>
+        None
+      case _: UnixDate | _: DateFromUnixDate => None
+      // These two date fields use epoch-day arithmetic rather than chrono's calendar.
+      case _: DayOfWeek | _: WeekDay => None
+      // Timestamp-to-epoch conversions are arithmetic; dates first need calendar conversion.
+      case unix: UnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
+      case unix: ToUnixTimestamp if isTimestamp(unix.timeExp.dataType) => None
+      case _ => Some(calendarConsumerFallbackReason)
+    }
+
+    // An allowed wrapper must not hide an unreviewed consumer in its children.
+    reason.orElse {
+      expr.children.iterator.map(consumerFallbackReason).collectFirst { case Some(childReason) =>
+        childReason
+      }
+    }
+  }
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(
+    "Not all data types are supported for scalar subquery results",
+    "Struct fields must have supported types and distinct names at every nesting level")
+
+  // The shared type gate handles general capabilities. Only the Arrow IPC scalar-subquery
+  // bridge's additional struct-only and decimal-scale restrictions belong here.
+  private def supportedStructShape(dt: DataType): Boolean = dt match {
+    case s: StructType => s.fields.forall(f => supportedStructShape(f.dataType))
+    case _: ArrayType | _: MapType => false
+    case d: DecimalType => d.scale >= 0 && d.scale <= d.precision
+    case _ => true
+  }
+
+  override def getSupportLevel(expr: ScalarSubquery): SupportLevel = {
+    val supported = expr.dataType match {
+      case s: StructType =>
+        supportedDataType(
+          s,
+          allowComplex = true,
+          allowIntervals = false,
+          allowCalendarInterval = false,
+          allowTimeType = false,
+          allowAnyStringType = false,
+          allowDuplicateStructFieldNames = false) && supportedStructShape(s)
+      case dt => supportedDataType(dt)
+    }
+    if (supported) {
       Compatible()
     } else {
       Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
     }
+  }
 
   override def convert(
       expr: ScalarSubquery,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    // getSupportLevel has already screened the data type with `supportedDataType`. That is a
-    // different predicate from `serializeDataType`, which can still decline, so keep this check.
+    // getSupportLevel has already checked value-transfer support. Type serialization can still
+    // decline, so keep this separate check.
     val dataType = serializeDataType(expr.dataType)
     if (dataType.isEmpty) {
       withFallbackReason(

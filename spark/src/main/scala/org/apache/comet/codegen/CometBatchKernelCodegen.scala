@@ -168,7 +168,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    *
    * Checks every `BoundReference`'s data type and the root `expr.dataType` against
    * [[isSupportedDataType]], refuses a tree whose output can carry a map with a null key, rejects
-   * aggregates / generators / `Unevaluable`, and gates total nested-field count on
+   * aggregates / generators / subqueries / `Unevaluable`, and gates total nested-field count on
    * `spark.sql.codegen.maxFields`.
    */
   def canHandle(boundExpr: Expression): Option[String] = {

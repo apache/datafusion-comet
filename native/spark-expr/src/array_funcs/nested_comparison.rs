@@ -193,11 +193,17 @@ fn into_value(result: BooleanArray, scalar: bool) -> ColumnarValue {
 
 /// Equality and dynamic membership share the same SQL null and nested equality rules.
 #[derive(Debug, Eq)]
-struct NestedPredicate {
+pub(crate) struct NestedPredicate {
     value: Arc<dyn PhysicalExpr>,
     candidates: Vec<Arc<dyn PhysicalExpr>>,
     negated: bool,
     membership: bool,
+}
+
+impl NestedPredicate {
+    pub(crate) fn is_membership(&self) -> bool {
+        self.membership
+    }
 }
 
 impl PartialEq for NestedPredicate {

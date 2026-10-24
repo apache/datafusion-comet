@@ -21,8 +21,11 @@ package org.apache.spark.sql.comet;
 
 import java.util.HashMap;
 
+import org.apache.spark.sql.catalyst.InternalRow;
+import org.apache.spark.sql.comet.execution.arrow.CometArrowConverters$;
 import org.apache.spark.sql.execution.ScalarSubquery;
 import org.apache.spark.sql.types.Decimal;
+import org.apache.spark.sql.types.StructType;
 import org.apache.spark.unsafe.types.UTF8String;
 
 import org.apache.comet.CometRuntimeException;
@@ -118,5 +121,12 @@ public class CometScalarSubquery {
   /** Get the result of a subquery as a binary. Called from native code. */
   public static byte[] getBinary(long planId, long id) {
     return (byte[]) getSubquery(planId, id);
+  }
+
+  /** Get a struct subquery result as a one-row Arrow IPC stream. Called from native code. */
+  public static byte[] getStruct(long planId, long id) {
+    InternalRow result = (InternalRow) getSubquery(planId, id);
+    StructType dataType = (StructType) subqueryMap.get(planId).get(id).dataType();
+    return CometArrowConverters$.MODULE$.serializeScalarSubquery(result, dataType);
   }
 }

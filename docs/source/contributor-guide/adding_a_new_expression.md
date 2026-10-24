@@ -572,6 +572,20 @@ must return an empty array there, not a scalar. `IN` evaluates its candidates on
 decide whether they are constants, and uses the value of a candidate that returns a scalar there for
 every row.
 
+`GetStructField` expands a field of a scalar struct to an array of the consuming batch's length,
+including zero rows for an empty batch. This gives its consumers the same shape as a struct
+column and keeps whole-batch `IF` shortcuts from passing an unexpected scalar into a kernel.
+Kernels that also accept plain scalar subqueries or literals still need their scalar path.
+Bloom-filter construction evaluates its constant filter on one row with no input columns and
+accepts a single-element array as well as a scalar. A NULL filter skips the value expression only
+when Spark's shared-expression analysis permits it.
+
+The bounded consumer also tracks intermediate values whose size is not bounded by their inputs,
+such as `repeat`, padding, JSON, and growing lists. Row-dependent trees containing these producers
+are evaluated one row at a time before concatenating the final results, including when a constant
+producer sits inside an `IF`. This only applies to trees containing scalar structs; ordinary
+column-only trees retain batch evaluation.
+
 #### Producing strings from arbitrary bytes
 
 Spark's `StringType` may contain bytes that are not valid UTF-8 (Spark stores them verbatim), but

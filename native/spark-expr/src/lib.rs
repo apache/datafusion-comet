@@ -57,6 +57,8 @@ mod bloom_filter;
 pub use bloom_filter::{BloomFilterAgg, BloomFilterMightContain, SparkBloomFilterVersion};
 
 pub mod jvm_udf;
+mod scalar_subquery_consumer;
+pub use scalar_subquery_consumer::ScalarSubqueryConsumer;
 mod subquery;
 pub use subquery::Subquery;
 

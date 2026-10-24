@@ -18,7 +18,7 @@
 use arrow::array::builder::GenericStringBuilder;
 use arrow::array::cast::as_dictionary_array;
 use arrow::array::types::Int32Type;
-use arrow::array::{make_array, Array, AsArray, DictionaryArray};
+use arrow::array::{make_array, new_null_array, Array, AsArray, DictionaryArray};
 use arrow::array::{ArrayRef, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
@@ -47,7 +47,43 @@ fn spark_read_side_padding2(
     truncate: bool,
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
+    if let [ColumnarValue::Scalar(string @ (ScalarValue::Utf8(_) | ScalarValue::LargeUtf8(_))), length, ..] =
+        args
+    {
+        // Conditional expressions and serde rewrites can yield a scalar even when their
+        // Spark expression references columns. Reuse the array kernel for these values.
+        let rows = match length {
+            ColumnarValue::Array(array) => array.len(),
+            ColumnarValue::Scalar(_) => 1,
+        };
+        let mut array_args = args.to_vec();
+        array_args[0] = ColumnarValue::Array(string.to_array_of_size(rows)?);
+        let result = spark_read_side_padding2(&array_args, truncate, is_left_pad)?;
+        return match length {
+            ColumnarValue::Scalar(_) => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                &result.to_array(1)?,
+                0,
+            )?)),
+            ColumnarValue::Array(_) => Ok(result),
+        };
+    }
+
     match args {
+        [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None))]
+        | [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(None)), ColumnarValue::Scalar(ScalarValue::Utf8(_))] => {
+            Ok(ColumnarValue::Array(new_null_array(
+                array.data_type(),
+                array.len(),
+            )))
+        }
+        [ColumnarValue::Array(array), length, ColumnarValue::Scalar(ScalarValue::Utf8(None))]
+            if length.data_type() == DataType::Int32 =>
+        {
+            Ok(ColumnarValue::Array(new_null_array(
+                array.data_type(),
+                array.len(),
+            )))
+        }
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match array.data_type() {
                 DataType::Utf8 => spark_read_side_padding_internal::<i32>(
@@ -404,6 +440,129 @@ mod tests {
 
     fn len_array(lengths: &[Option<i32>]) -> ColumnarValue {
         ColumnarValue::Array(Arc::new(Int32Array::from(lengths.to_vec())) as ArrayRef)
+    }
+
+    #[test]
+    fn scalar_strings_match_array_kernel() {
+        for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
+            for large in [false, true] {
+                for text in [Some("abc"), Some("é🙂界"), Some(""), None] {
+                    let input = if large {
+                        ScalarValue::LargeUtf8(text.map(str::to_owned))
+                    } else {
+                        ScalarValue::Utf8(text.map(str::to_owned))
+                    };
+                    for length in [
+                        len_scalar(-1),
+                        len_scalar(0),
+                        len_scalar(2),
+                        len_scalar(8),
+                        ColumnarValue::Scalar(ScalarValue::Int32(None)),
+                        len_array(&[Some(-1), Some(0), Some(2), Some(8), None]),
+                        len_array(&[]),
+                    ] {
+                        let rows = match &length {
+                            ColumnarValue::Array(array) => array.len(),
+                            ColumnarValue::Scalar(_) => 1,
+                        };
+                        for padding in [
+                            None,
+                            Some(pad_scalar("ö🙂")),
+                            Some(pad_scalar("")),
+                            Some(ColumnarValue::Scalar(ScalarValue::Utf8(None))),
+                        ] {
+                            let mut args =
+                                vec![ColumnarValue::Scalar(input.clone()), length.clone()];
+                            args.extend(padding);
+                            let actual = pad(&args).unwrap();
+                            assert_eq!(
+                                matches!(&actual, ColumnarValue::Scalar(_)),
+                                matches!(&length, ColumnarValue::Scalar(_)),
+                                "unexpected result shape for {args:?}"
+                            );
+
+                            args[0] = ColumnarValue::Array(input.to_array_of_size(rows).unwrap());
+                            let expected = pad(&args).unwrap().to_array(rows).unwrap();
+                            let actual = actual.to_array(rows).unwrap();
+                            assert_eq!(
+                                actual.to_data(),
+                                expected.to_data(),
+                                "scalar and array padding differ for {args:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_unicode_padding_and_truncation() {
+        for large in [false, true] {
+            let string = |text: &str| {
+                if large {
+                    ScalarValue::LargeUtf8(Some(text.to_owned()))
+                } else {
+                    ScalarValue::Utf8(Some(text.to_owned()))
+                }
+            };
+            let scalar = |result| match result {
+                ColumnarValue::Scalar(value) => value,
+                ColumnarValue::Array(_) => panic!("expected scalar padding result"),
+            };
+            let mut args = vec![
+                ColumnarValue::Scalar(string("é🙂")),
+                len_scalar(5),
+                pad_scalar("界a"),
+            ];
+            assert_eq!(scalar(spark_lpad(&args).unwrap()), string("界a界é🙂"));
+            assert_eq!(scalar(spark_rpad(&args).unwrap()), string("é🙂界a界"));
+            assert_eq!(
+                scalar(spark_read_side_padding(&args).unwrap()),
+                string("é🙂界a界")
+            );
+
+            args[1] = len_scalar(1);
+            assert_eq!(scalar(spark_lpad(&args).unwrap()), string("é"));
+            assert_eq!(scalar(spark_rpad(&args).unwrap()), string("é"));
+            assert_eq!(
+                scalar(spark_read_side_padding(&args).unwrap()),
+                string("é🙂")
+            );
+        }
+    }
+
+    #[test]
+    fn column_strings_with_null_scalar_length_or_pad() {
+        for pad in [spark_lpad, spark_rpad, spark_read_side_padding] {
+            for strings in [vec![Some("abc"), None, Some("")], vec![]] {
+                for data_type in [DataType::Utf8, DataType::LargeUtf8] {
+                    let input = match data_type {
+                        DataType::Utf8 => Arc::new(StringArray::from(strings.clone())) as ArrayRef,
+                        _ => Arc::new(arrow::array::LargeStringArray::from(strings.clone()))
+                            as ArrayRef,
+                    };
+                    let null_length = ColumnarValue::Scalar(ScalarValue::Int32(None));
+                    let null_pad = ColumnarValue::Scalar(ScalarValue::Utf8(None));
+                    for rest in [
+                        vec![null_length.clone()],
+                        vec![null_length.clone(), pad_scalar("xy")],
+                        vec![null_length, null_pad.clone()],
+                        vec![len_scalar(5), null_pad.clone()],
+                        vec![len_array(&vec![Some(5); strings.len()]), null_pad],
+                    ] {
+                        let mut args = vec![ColumnarValue::Array(Arc::clone(&input))];
+                        args.extend(rest);
+                        let ColumnarValue::Array(result) = pad(&args).unwrap() else {
+                            panic!("expected array padding result");
+                        };
+                        assert_eq!(result.data_type(), &data_type);
+                        assert_eq!(result.len(), strings.len());
+                        assert_eq!(result.null_count(), strings.len());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
