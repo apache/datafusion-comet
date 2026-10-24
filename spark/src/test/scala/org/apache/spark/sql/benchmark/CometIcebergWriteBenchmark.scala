@@ -474,7 +474,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       require(actual == expected, s"${arm.name}: UUID checksum mismatch: $actual != $expected")
       val files = spark
         .sql(
-          s"SELECT count(*), sum(file_size_in_bytes) " +
+          "SELECT count(*), sum(file_size_in_bytes) " +
             s"FROM $targetTable.data_files")
         .head()
       benchmark.out.println(s"${arm.name}: ${files.getLong(0)} files, ${files.getLong(1)} bytes")
