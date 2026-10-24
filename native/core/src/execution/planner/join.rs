@@ -18,6 +18,8 @@
 //! Builders for the native join operators (hash join, sort-merge join, and broadcast nested loop
 //! join), and the join-key and join-filter planning they share.
 
+mod semi_join_reduction;
+
 use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema};
@@ -212,7 +214,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         let join = extract_op!(spark_plan, SortMergeJoin);
         let children = &spark_plan.children;
 
-        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+        let (mut join_params, scans, shuffle_scans) = planner.parse_join_parameters(
             inputs,
             children,
             &join.left_join_keys,
@@ -222,7 +224,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             partition_count,
         )?;
 
-        let sort_options = join
+        let sort_options: Vec<_> = join
             .sort_options
             .iter()
             .map(|sort_option| {
@@ -236,6 +238,14 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             })
             .collect();
 
+        let reducer = if join.right_key_reduction_enabled
+            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
+                if sort.fetch.is_none() && sort.skip.is_none())
+        {
+            semi_join_reduction::reduce_before_sort(&mut join_params, &sort_options)?
+        } else {
+            None
+        };
         let left = Arc::clone(&join_params.left.native_plan);
         let right = Arc::clone(&join_params.right.native_plan);
 
@@ -267,13 +277,11 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         Ok((
             scans,
             shuffle_scans,
-            Arc::new(SparkPlan::new(
+            Arc::new(SparkPlan::new_with_additional(
                 spark_plan.plan_id,
                 join,
-                vec![
-                    Arc::clone(&join_params.left),
-                    Arc::clone(&join_params.right),
-                ],
+                vec![join_params.left, join_params.right],
+                reducer.into_iter().collect(),
             )),
         ))
     }

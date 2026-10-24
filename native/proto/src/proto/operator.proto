@@ -1141,6 +1141,8 @@ message SortMergeJoin {
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
   optional spark.spark_expression.Expr condition = 5;
+  // The native planner also checks the right sort and key expressions before reducing rows.
+  bool right_key_reduction_enabled = 6;
 }
 
 message BroadcastNestedLoopJoin {

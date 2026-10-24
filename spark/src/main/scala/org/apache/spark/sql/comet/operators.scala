@@ -66,7 +66,7 @@ import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregat
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
-import org.apache.comet.shims.MergeRowsMetricsShim
+import org.apache.comet.shims.{MergeRowsMetricsShim, ShimCometStreaming}
 
 /**
  * Trait for injecting per-partition planning data into operator nodes.
@@ -3646,6 +3646,10 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       val joinBuilder = OperatorOuterClass.SortMergeJoin
         .newBuilder()
         .setJoinType(joinType)
+        .setRightKeyReductionEnabled(
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.get(join.conf) &&
+            join.joinType == LeftSemi && join.condition.isEmpty &&
+            !ShimCometStreaming.isStreamingPlan(join))
         .addAllSortOptions(sortOptions.map(_.get).asJava)
         .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
@@ -3736,8 +3740,14 @@ case class CometSortMergeJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.sortMergeJoinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.sortMergeJoinMetrics(sparkContext)
+    if (nativeOp.getSortMergeJoin.getRightKeyReductionEnabled) {
+      joinMetrics ++ CometMetricNode.rightKeyReductionMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometScanWrapper extends CometSink[SparkPlan] {
