@@ -533,7 +533,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
 
   test("native Arrow UDF error converts to PythonException") {
     val traceback = "Traceback (most recent call last):\nZeroDivisionError: division by zero"
-    val json = s"""{"errorType":"PythonException","errorClass":"PYTHON_EXCEPTION",""" +
+    val json = """{"errorType":"PythonException","errorClass":"PYTHON_EXCEPTION",""" +
       s""""params":{"traceback":"${traceback.replace("\n", "\\n")}"}}"""
     val converted =
       SparkErrorConverter.convertToSparkException(new CometQueryExecutionException(json))
