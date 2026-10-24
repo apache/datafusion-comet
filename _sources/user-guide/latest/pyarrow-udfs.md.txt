@@ -169,9 +169,10 @@ process. Killing a task does not interrupt a running Python call: Spark stops it
 `spark.python.task.killTimeout` after interrupting the task, but a native UDF runs on the task
 thread until it returns, so a cancelled job or the losing copy of a speculative task keeps its core
 and competes for the interpreter lock until then
-([#6811](https://github.com/apache/datafusion-comet/issues/6811)). A failing UDF reports its Python
-traceback in a Comet native error rather than in Spark's `PythonException`
-([#7177](https://github.com/apache/datafusion-comet/issues/7177)). The operator reports the time spent in
+([#6811](https://github.com/apache/datafusion-comet/issues/6811)). A failing UDF raises Spark's
+`PythonException` with its Python traceback, which PySpark raises as
+`pyspark.errors.PythonException`. Errors outside the UDF's own code, such as a result of the wrong
+length or type, are still reported as Comet native errors. The operator reports the time spent in
 Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
