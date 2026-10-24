@@ -1279,9 +1279,10 @@ object CometConf extends ShimCometConf {
           "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
           "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
           "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
-          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
-          "to this fraction of the off-heap size divided by the task's consumers, and the " +
-          s"greedy_unified pool ignores it. $TUNING_GUIDE.")
+          "to off-heap mode, where the fair_unified pool limits each task to this fraction " +
+          "of the off-heap size, which is tighter than Spark's own limit of an even share of " +
+          "the pool per running task only when it is below one over the number of running " +
+          s"tasks, and the greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
 
