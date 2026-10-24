@@ -86,6 +86,9 @@ it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a que
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
 
+Converting a Text scan with `FileSourceScan` or `BatchScan` in the list is deprecated in the same
+way, and logs the same warning. Use `spark.comet.convert.text.enabled` instead.
+
 ### Iceberg Writes
 
 Comet's Iceberg write path is now switched by one setting, `spark.comet.write.iceberg.enabled`,
@@ -106,6 +109,32 @@ Comet 1.1.0's Iceberg Writes guide documented it as the switch for the split pla
 that still sets it to `true` keeps the split plan, with iceberg-java writing the data files, and
 on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
 own operator.
+
+### Memory Pool Limits
+
+The `fair_unified` memory pool, which is the default for `spark.comet.exec.memoryPool`, limited each
+of a task's operators to a share of all of `spark.memory.offHeap.size`, while Spark limits each task
+to an even share of it among the running tasks. Whenever more than one task was running, the share
+was the looser limit, so one operator could take all of its task's memory, and another operator
+that cannot spill, such as the final merge of a sort, then failed the task
+([#7088](https://github.com/apache/datafusion-comet/issues/7088)). Spark retried such tasks, and the
+retries usually succeeded. Comet 1.2.0 divides `spark.memory.offHeap.size` among the tasks running
+native plans, as Spark does, and within a task limits only the operators that can spill, each to an
+even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
+writer can spill sooner when several of them run in one task, and the operators that cannot spill
+are limited only by Spark, unless the deprecated `spark.comet.exec.memoryPool.fraction` is below
+`1.0`. The native Iceberg fanout writer is one of the operators that can spill: it closes files
+rather than take memory from the others, so it can write more files.
+
+An operator's limit can now be well below what Spark would grant its task, and a sort can fail
+where it used to run. A sort fails with "Not enough memory to continue external sort" instead of
+spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
+small `spark.memory.offHeap.size` and several operators that can spill in one task make likelier.
+It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
+hold the whole of the task's share. To avoid either, give the executors more off-heap memory,
+lower `spark.comet.batchSize`, or leave every limit to Spark by setting
+`spark.comet.exec.memoryPool=greedy_unified`. See
+[Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
 
 ### Native Iceberg Scan File Concurrency
 

@@ -88,6 +88,20 @@ pub enum CometError {
     #[error("{0}")]
     IllegalState(String),
 
+    /// Must reach the JVM as `java.util.NoSuchElementException` carrying this exact message.
+    #[error("{0}")]
+    NoSuchElement(String),
+
+    /// `spark.comet.nativeUdf.enabled` or `spark.comet.nativeUdf.allowedPaths` refuses a native
+    /// UDF library. Surfaces as `CometNativeUdfNotAllowedException`.
+    #[error("{0}")]
+    NativeUdfNotAllowed(String),
+
+    /// A native UDF library reports the wrong ABI version or lacks a required symbol. Surfaces as
+    /// `CometNativeUdfAbiException`.
+    #[error("{0}")]
+    NativeUdfAbi(String),
+
     #[error(transparent)]
     Arrow {
         #[from]
@@ -227,7 +241,10 @@ impl From<CometError> for DataFusionError {
             // The same applies to the classifications that must keep their JVM exception class.
             value @ (CometError::JavaException { .. }
             | CometError::ShuffleSizeLimit(_)
-            | CometError::IllegalState(_)) => DataFusionError::External(Box::new(value)),
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)) => DataFusionError::External(Box::new(value)),
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
@@ -357,6 +374,18 @@ impl jni::errors::ToException for CometError {
             },
             CometError::IllegalState(message) => Exception {
                 class: "java/lang/IllegalStateException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NoSuchElement(message) => Exception {
+                class: "java/util/NoSuchElementException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfNotAllowed(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfNotAllowedException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfAbi(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfAbiException".to_string(),
                 msg: message.clone(),
             },
             _other => Exception {
@@ -765,8 +794,13 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
 fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exception> {
     let mut cause = Some(error);
     while let Some(error) = cause {
-        if let Some(typed @ (CometError::ShuffleSizeLimit(_) | CometError::IllegalState(_))) =
-            error.downcast_ref::<CometError>()
+        if let Some(
+            typed @ (CometError::ShuffleSizeLimit(_)
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)),
+        ) = error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
         }
@@ -1434,6 +1468,45 @@ mod tests {
         let (_, class, message, _) = classify(CometError::IllegalState("bad".to_string()));
         assert_eq!(class, "java/lang/IllegalStateException");
         assert_eq!(message, "bad");
+
+        let (_, class, message, _) = classify(CometError::NoSuchElement("gone".to_string()));
+        assert_eq!(class, "java/util/NoSuchElementException");
+        assert_eq!(message, "gone");
+    }
+
+    /// The native UDF failures `CometNativeUDF.register` reports keep their exception class and
+    /// exact message, also when DataFusion wraps them.
+    #[test]
+    fn native_udf_errors_keep_their_class_through_datafusion_wrappers() {
+        for (error, expected_class) in [
+            (
+                CometError::NativeUdfNotAllowed("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfNotAllowedException",
+            ),
+            (
+                CometError::NativeUdfAbi("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfAbiException",
+            ),
+            (
+                CometError::NoSuchElement("refused".to_string()),
+                "java/util/NoSuchElementException",
+            ),
+        ] {
+            let (status, class, message, _) = classify(error);
+            assert_eq!(status, NativeStatus::Error);
+            assert_eq!(class, expected_class);
+            assert_eq!(message, "refused");
+        }
+
+        let wrapped = CometError::from(DataFusionError::Context(
+            "planning".to_string(),
+            Box::new(DataFusionError::from(CometError::NativeUdfAbi(
+                "refused".to_string(),
+            ))),
+        ));
+        let (_, class, message, _) = classify(wrapped);
+        assert_eq!(class, "org/apache/comet/udf/CometNativeUdfAbiException");
+        assert_eq!(message, "refused");
     }
 
     #[test]
