@@ -3127,14 +3127,14 @@ pub(crate) mod test {
                         .collect();
                     let (batch, required) = if nested {
                         (
-                            struct_batch(physical, values.clone())?,
+                            struct_batch(physical, Arc::clone(&values) as ArrayRef)?,
                             struct_schema(requested),
                         )
                     } else {
                         (
                             RecordBatch::try_new(
                                 Arc::new(Schema::new(vec![physical])),
-                                vec![values.clone()],
+                                vec![Arc::clone(&values) as ArrayRef],
                             )?,
                             Arc::new(Schema::new(requested)),
                         )
