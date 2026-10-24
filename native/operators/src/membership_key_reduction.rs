@@ -268,14 +268,15 @@ fn sample_has_repeated_keys(batch: &RecordBatch) -> Result<bool> {
     const WINDOWS: usize = SAMPLE_ROWS / WINDOW_ROWS;
     debug_assert!(batch.num_rows() >= SAMPLE_ROWS);
     let state = RandomState::with_seed(0);
-    let mut hashes = [0; SAMPLE_ROWS];
-    for (i, window) in hashes.chunks_exact_mut(WINDOW_ROWS).enumerate() {
+    let mut windows = [[0; WINDOW_ROWS]; WINDOWS];
+    for (i, window) in windows.iter_mut().enumerate() {
         let start = i * batch.num_rows() / WINDOWS;
         let end = (i + 1) * batch.num_rows() / WINDOWS;
         let offset = start + state.hash_one(i) as usize % (end - start - WINDOW_ROWS + 1);
         let columns = batch.columns().iter().map(|c| c.slice(offset, WINDOW_ROWS));
         create_hashes(columns, &state, window)?;
     }
+    let hashes = windows.as_flattened_mut();
     hashes.sort_unstable();
     let repeats = hashes.windows(2).filter(|pair| pair[0] == pair[1]).count();
     // The sample only decides whether to try. Check the actual output size before emitting it.
