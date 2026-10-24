@@ -93,6 +93,7 @@ use crate::execution::operators::iceberg_partition_path::{
     partition_to_path, CometLocationGenerator,
 };
 use crate::execution::operators::iceberg_partition_value::PartitionValueCalculator;
+use crate::execution::operators::iceberg_uuid::UuidAlignment;
 
 /// The writer every partition gets: iceberg-rust's own data file writer, rolling Parquet files
 /// that report what they hold in memory.
@@ -1020,9 +1021,10 @@ async fn run_write_task(
         None,
         DataFileFormat::Parquet,
     );
-    // Build the field-id-decorated target schema once per task; every batch is cast against it.
+    // Build the field-id-decorated target schema and UUID conversion paths once per task.
     let target_schema =
         Arc::new(iceberg::arrow::schema_to_arrow_schema(&iceberg_schema).map_err(iceberg_err)?);
+    let alignment = UuidAlignment::new(&iceberg_schema, &target_schema);
     let slicer = RowSlicer::for_schema(&target_schema);
     let nests_floats = target_schema
         .fields()
@@ -1078,7 +1080,7 @@ async fn run_write_task(
 
     let outcome = async move {
         while let Some(batch) = input.try_next().await? {
-            let mut decorated = decorate_batch_with_field_ids(batch, &target_schema)?;
+            let mut decorated = alignment.convert(batch, &target_schema)?;
             if nests_floats {
                 decorated = drop_unwritten_values(decorated)?;
             }
@@ -1595,40 +1597,6 @@ fn build_output_schema() -> SchemaRef {
         Field::new("iceberg_manifest", DataType::Binary, false),
         Field::new("written_file_locations", DataType::Binary, false),
     ]))
-}
-
-/// Align an input batch with the field-id-decorated target schema by casting each column. The
-/// caller is responsible for building `target_schema` once per task via
-/// `iceberg::arrow::schema_to_arrow_schema` — it carries `PARQUET_FIELD_ID_META_KEY` on every
-/// nested field, and `arrow::compute::cast` rebuilds the column structure to match while
-/// reusing data buffers. This is the same conformance step the iceberg-rust DataFusion
-/// integration gets for free from DataFusion's `INSERT INTO` planner.
-fn decorate_batch_with_field_ids(
-    batch: RecordBatch,
-    target_schema: &SchemaRef,
-) -> DFResult<RecordBatch> {
-    if batch.num_columns() != target_schema.fields().len() {
-        return Err(DataFusionError::Plan(format!(
-            "Iceberg write column count mismatch: arrow batch has {} columns but schema has {}",
-            batch.num_columns(),
-            target_schema.fields().len()
-        )));
-    }
-    // safe:false so a lossy type divergence fails the task instead of writing silent NULLs.
-    let cast_options = arrow::compute::CastOptions {
-        safe: false,
-        ..Default::default()
-    };
-    let casted: Vec<ArrayRef> = batch
-        .columns()
-        .iter()
-        .zip(target_schema.fields().iter())
-        .map(|(col, target)| {
-            arrow::compute::cast_with_options(col, target.data_type(), &cast_options)
-        })
-        .collect::<Result<_, _>>()
-        .map_err(DataFusionError::from)?;
-    RecordBatch::try_new(Arc::clone(target_schema), casted).map_err(DataFusionError::from)
 }
 
 fn file_name_prefix(partition_id: i32, task_attempt_id: i64, operation_id: &str) -> String {
@@ -4560,7 +4528,9 @@ mod tests {
             let schema = iceberg_user_schema();
             let target = Arc::new(iceberg::arrow::schema_to_arrow_schema(&schema).unwrap());
             let original = batch(&[1, 2], &["a", "b"]);
-            let decorated = decorate_batch_with_field_ids(original, &target).unwrap();
+            let decorated = UuidAlignment::new(&schema, &target)
+                .convert(original, &target)
+                .unwrap();
             let arrow_schema = decorated.schema();
             assert_eq!(
                 arrow_schema
@@ -4590,7 +4560,9 @@ mod tests {
             let batch =
                 RecordBatch::try_new(arrow_schema, vec![Arc::new(Int32Array::from(vec![1]))])
                     .unwrap();
-            let err = decorate_batch_with_field_ids(batch, &target).unwrap_err();
+            let err = UuidAlignment::new(&schema, &target)
+                .convert(batch, &target)
+                .unwrap_err();
             assert!(format!("{err}").contains("column count mismatch"));
         }
 
@@ -5525,8 +5497,9 @@ mod tests {
         async fn an_open_file_gives_back_its_share_when_it_closes_or_is_dropped() {
             let schema = Arc::new(iceberg_user_schema());
             let target = Arc::new(iceberg::arrow::schema_to_arrow_schema(&schema).unwrap());
-            let rows =
-                decorate_batch_with_field_ids(round_robin_batch(ROWS_DIVISOR, 1), &target).unwrap();
+            let rows = UuidAlignment::new(&schema, &target)
+                .convert(round_robin_batch(ROWS_DIVISOR, 1), &target)
+                .unwrap();
             let file_io = FileIOBuilder::new(Arc::new(OpenDalStorageFactory::Memory)).build();
             let open_files = OpenFileMemory::default();
             let builder = MeteredParquetWriterBuilder {
@@ -5587,7 +5560,9 @@ mod tests {
                 // Units of about 40 KB, so a row group flushes every three or four.
                 for unit in 0..20 {
                     let rows = payload_batch_from("r0", unit * ROWS_DIVISOR, ROWS_DIVISOR, 32);
-                    let rows = decorate_batch_with_field_ids(rows, &target).unwrap();
+                    let rows = UuidAlignment::new(&schema, &target)
+                        .convert(rows, &target)
+                        .unwrap();
                     file.write(&rows).await.unwrap();
                     let share = open_files.bytes();
                     match storage {
