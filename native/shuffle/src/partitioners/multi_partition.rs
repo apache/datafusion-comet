@@ -180,7 +180,7 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn try_new(
         partition: usize,
-        partition_writer: T,
+        mut partition_writer: T,
         partitioning: CometPartitioning,
         metrics: ShufflePartitionerMetrics,
         runtime: Arc<RuntimeEnv>,
@@ -235,6 +235,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
         let reservation = MemoryConsumer::new(format!("ShuffleRepartitioner[{partition}]"))
             .with_can_spill(true)
             .register(&runtime.memory_pool);
+        // The writer's buffers share the consumer but not the reservation: `spill` frees this
+        // one and reports it as spilled memory, and the buffer limit is checked against it.
+        partition_writer.attach_buffer_reservation(reservation.new_empty())?;
 
         Ok(Self {
             buffered_batches: vec![],
@@ -644,8 +647,6 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
                     )
                 })
             };
-            self.partition_writer.write_burst_complete();
-
             // Count the input capacity released from buffering by this spill, including a
             // rejected reservation. Shared allocations are charged once within a spill, but
             // contribute again if buffered for a later spill, regardless of input batching.
@@ -653,6 +654,8 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
+            // After the free, so the writer can regrow buffers the pool cut short during the spill.
+            self.partition_writer.write_burst_complete();
             self.metrics.spill_count.add(1);
             write_result
         })
@@ -734,7 +737,11 @@ impl<T: PartitionWriter> Debug for MultiPartitionShuffleRepartitioner<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writers::LocalPartitionWriter;
+    use crate::{CompressionCodec, PartitionOffsets, ShuffleBlockWriter};
     use arrow::array::{ArrayRef, Int64Array};
+    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+    use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
 
     #[derive(Default)]
@@ -997,8 +1004,6 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_growth_counts_existing_reservation_and_unreserved_input() {
-        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
         for share_buffer in [false, true] {
             for (fail, consume_before_failure) in [(false, false), (true, false), (true, true)] {
                 let batch = RecordBatch::try_from_iter([(
@@ -1063,8 +1068,6 @@ mod tests {
     async fn heterogeneous_spill_metrics_do_not_depend_on_input_batching() {
         use arrow::array::{DictionaryArray, Int32Array, ListArray, StringArray, StringViewArray};
         use arrow::datatypes::{Int32Type, Int64Type};
-        use datafusion::physical_expr::expressions::Column;
-
         let num_rows = 64usize;
         let batch_size = 4usize;
         let strings = (0..num_rows)
@@ -1355,8 +1358,6 @@ mod tests {
     /// each partition still in input order.
     #[tokio::test]
     async fn positional_placement_survives_spilling() {
-        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-
         // Ragged, so that groups and slices straddle batch and spill boundaries.
         let framing = [300, 17, 683, 64, 1, 191];
         let (num_partitions, group_rows, start_partition, batch_size) = (8, 48, 3, 256);
@@ -1433,6 +1434,295 @@ mod tests {
         assert!(
             spread <= group_rows,
             "partition sizes {sizes:?} spread by {spread}, more than one group of {group_rows}"
+        );
+    }
+
+    fn runtime_with_pool(limit: usize) -> Arc<RuntimeEnv> {
+        Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_limit(limit, 1.0)
+                .build()
+                .unwrap(),
+        )
+    }
+
+    fn local_writer(
+        dir: &tempfile::TempDir,
+        num_partitions: usize,
+        write_buffer_size: usize,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
+        let block_writer = ShuffleBlockWriter::try_new(
+            int64_batch(0..1).schema().as_ref(),
+            CompressionCodec::Lz4Frame,
+        )
+        .unwrap();
+        LocalPartitionWriter::try_new(
+            dir.path().join("data.out").to_str().unwrap().to_string(),
+            Arc::new(PartitionOffsets::default()),
+            block_writer,
+            num_partitions,
+            1024,
+            write_buffer_size,
+            runtime,
+        )
+        .unwrap()
+    }
+
+    fn hash_repartitioner<W: PartitionWriter>(
+        writer: W,
+        num_partitions: usize,
+        runtime: Arc<RuntimeEnv>,
+        max_buffer_bytes: Option<usize>,
+    ) -> MultiPartitionShuffleRepartitioner<W> {
+        MultiPartitionShuffleRepartitioner::try_new(
+            0,
+            writer,
+            CometPartitioning::Hash(vec![Arc::new(Column::new("v", 0))], num_partitions),
+            ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0),
+            runtime,
+            1024,
+            false,
+            max_buffer_bytes,
+        )
+        .unwrap()
+    }
+
+    fn assert_local_buffers_charged(
+        repartitioner: &MultiPartitionShuffleRepartitioner<LocalPartitionWriter>,
+        runtime: &RuntimeEnv,
+    ) -> usize {
+        let writer = repartitioner.partition_writer();
+        let charged = writer.buffer_reservation_size();
+        assert_eq!(
+            charged,
+            writer.buffer_bytes_held(),
+            "reservation must equal the bytes held"
+        );
+        assert_eq!(
+            runtime.memory_pool.reserved(),
+            repartitioner.reservation.size() + charged
+        );
+        charged
+    }
+
+    #[tokio::test]
+    async fn local_writer_buffers_are_charged_and_released() {
+        let write_buffer_size = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with_pool(1 << 30);
+        let mut repartitioner = hash_repartitioner(
+            local_writer(&dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        assert_eq!(
+            assert_local_buffers_charged(&repartitioner, &runtime),
+            write_buffer_size,
+            "the data file buffer is charged when the writer attaches"
+        );
+
+        repartitioner
+            .insert_batch(int64_batch(0..4096))
+            .await
+            .unwrap();
+        repartitioner.spill(0).unwrap();
+        assert_eq!(repartitioner.reservation.size(), 0);
+        assert!(
+            assert_local_buffers_charged(&repartitioner, &runtime) >= 2 * write_buffer_size,
+            "the spill file buffer is charged after a spill"
+        );
+
+        repartitioner
+            .insert_batch(int64_batch(4096..8192))
+            .await
+            .unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert!(
+            assert_local_buffers_charged(&repartitioner, &runtime) >= 3 * write_buffer_size,
+            "the spill copy buffer is charged after the write"
+        );
+
+        drop(repartitioner);
+        assert_eq!(runtime.memory_pool.reserved(), 0);
+    }
+
+    async fn spill_every_chunk(
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+        write_buffer_size: usize,
+    ) -> (Vec<u8>, (usize, usize, usize)) {
+        let mut repartitioner = hash_repartitioner(
+            local_writer(dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            Some(1),
+        );
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        for start in (0..8192i64).step_by(4096) {
+            repartitioner
+                .insert_batch(int64_batch(start..start + 4096))
+                .await
+                .unwrap();
+            assert_local_buffers_charged(&repartitioner, &runtime);
+        }
+        repartitioner.shuffle_write().unwrap();
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        let capacities = repartitioner.partition_writer().buffer_capacities();
+        (
+            std::fs::read(dir.path().join("data.out")).unwrap(),
+            capacities,
+        )
+    }
+
+    #[tokio::test]
+    async fn refused_buffers_fall_back_to_small_buffers() {
+        let write_buffer_size = 1 << 20;
+        let fallback = 8 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let (baseline, capacities) =
+            spill_every_chunk(&dir, runtime_with_pool(1 << 30), write_buffer_size).await;
+        assert_eq!(
+            capacities,
+            (write_buffer_size, write_buffer_size, write_buffer_size)
+        );
+
+        for (limit, expected) in [
+            // room for the data file buffer only; the batches take the rest
+            (
+                write_buffer_size + 512 * 1024,
+                (write_buffer_size, fallback, fallback),
+            ),
+            // too small for any of them
+            (512 * 1024, (fallback, fallback, fallback)),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (output, capacities) =
+                spill_every_chunk(&dir, runtime_with_pool(limit), write_buffer_size).await;
+            assert_eq!(capacities, expected, "pool limit {limit}");
+            assert_eq!(output, baseline, "pool limit {limit} changed the output");
+        }
+    }
+
+    fn output_values(bytes: &[u8]) -> Vec<i64> {
+        let mut values = Vec::new();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
+            let batch = crate::read_ipc_compressed(&bytes[pos + 16..pos + 8 + len]).unwrap();
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            values.extend_from_slice(column.values());
+            pos += 8 + len;
+        }
+        values.sort_unstable();
+        values
+    }
+
+    /// 32 MiB of values, so even the 16 MiB pool below spills more than once.
+    const PRESSURE_ROWS: i64 = 4096 * 1024;
+
+    async fn spill_under_pressure(
+        dir: &tempfile::TempDir,
+        runtime: Arc<RuntimeEnv>,
+        write_buffer_size: usize,
+    ) -> (Vec<i64>, Vec<usize>) {
+        let mut repartitioner = hash_repartitioner(
+            local_writer(dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        let mut spill_buffers = Vec::new();
+        for start in (0..PRESSURE_ROWS).step_by(4096) {
+            let spills = repartitioner.spill_count();
+            repartitioner
+                .insert_batch(int64_batch(start..start + 4096))
+                .await
+                .unwrap();
+            if repartitioner.spill_count() > spills {
+                spill_buffers.push(repartitioner.partition_writer().buffer_capacities().1);
+                assert_local_buffers_charged(&repartitioner, &runtime);
+            }
+        }
+        repartitioner.shuffle_write().unwrap();
+        let bytes = std::fs::read(dir.path().join("data.out")).unwrap();
+        (output_values(&bytes), spill_buffers)
+    }
+
+    /// With no buffer limit every spill is a pressure spill, so the spill file buffer is taken
+    /// small while the batches still fill the pool.
+    #[tokio::test]
+    async fn pressure_spill_restores_the_spill_buffer() {
+        let write_buffer_size = 256 * 1024;
+        let expected: Vec<i64> = (0..PRESSURE_ROWS).collect();
+        for limit in [1 << 20, 4 << 20, 16 << 20] {
+            let dir = tempfile::tempdir().unwrap();
+            let (values, spill_buffers) =
+                spill_under_pressure(&dir, runtime_with_pool(limit), write_buffer_size).await;
+            assert!(
+                spill_buffers.len() >= 2,
+                "pool limit {limit}: {spill_buffers:?}"
+            );
+            assert!(
+                spill_buffers.iter().all(|&size| size == write_buffer_size),
+                "pool limit {limit}: spill buffer after each spill {spill_buffers:?}"
+            );
+            assert!(
+                values == expected,
+                "pool limit {limit} lost or repeated rows"
+            );
+        }
+    }
+
+    async fn spill_metrics_with_buffer_limit<W: PartitionWriter>(
+        writer: W,
+        runtime: Arc<RuntimeEnv>,
+    ) -> MultiPartitionShuffleRepartitioner<W> {
+        let mut repartitioner = hash_repartitioner(writer, 2, runtime, Some(8 * 1024));
+        for start in (0..8192i64).step_by(1024) {
+            repartitioner
+                .insert_batch(int64_batch(start..start + 1024))
+                .await
+                .unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+        repartitioner
+    }
+
+    #[tokio::test]
+    async fn buffer_charges_do_not_count_as_spilled_memory() {
+        let baseline = spill_metrics_with_buffer_limit(
+            FailingPartitionWriter::default(),
+            runtime_with_pool(1 << 30),
+        )
+        .await;
+        assert!(baseline.spill_count() > 0);
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with_pool(1 << 30);
+        let local = spill_metrics_with_buffer_limit(
+            local_writer(&dir, 2, 1 << 20, Arc::clone(&runtime)),
+            runtime,
+        )
+        .await;
+        assert!(
+            local.partition_writer().buffer_reservation_size() >= 1 << 20,
+            "the local writer must be charging its buffers for this to mean anything"
+        );
+        assert_eq!(
+            (
+                local.spill_count(),
+                local.metrics.memory_spilled_bytes.value()
+            ),
+            (
+                baseline.spill_count(),
+                baseline.metrics.memory_spilled_bytes.value()
+            )
         );
     }
 

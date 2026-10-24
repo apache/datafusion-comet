@@ -17,3 +17,18 @@
 
 pub(crate) mod local_partition_writer;
 mod spill;
+
+use datafusion::execution::memory_pool::MemoryReservation;
+
+const FALLBACK_BUFFER_SIZE: usize = 8 * 1024;
+
+/// Returns the capacity to allocate. A refused size falls back to a small buffer charged with
+/// `grow`, so the task carries on and the reservation still matches what is held.
+fn reserve_buffer(reservation: &MemoryReservation, size: usize) -> usize {
+    if reservation.try_grow(size).is_ok() {
+        return size;
+    }
+    let fallback = size.min(FALLBACK_BUFFER_SIZE);
+    reservation.grow(fallback);
+    fallback
+}
