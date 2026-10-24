@@ -165,25 +165,34 @@ fn criterion_benchmark(c: &mut Criterion) {
     // buffered writer per partition), which low counts barely exercise; compression
     // is disabled to isolate it. Few samples: each iteration is a full end-to-end
     // write across thousands of partitions.
+    //
+    // The Lz4Frame variant is what a wide shuffle runs by default. At 8000 partitions each
+    // partition gets about ten rows, so every block is tiny and still pays for a fresh LZ4
+    // frame encoder, its header and its end mark; comparing it with the None row at the same
+    // partition count shows how much of the write that per-block cost is.
     let mut high_partition_group = c.benchmark_group("shuffle_writer_high_partition");
     high_partition_group.sample_size(10);
     for num_partitions in [200usize, 2000, 8000] {
-        high_partition_group.bench_function(
-            format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
-            |b| {
-                bench_end_to_end(b, || {
-                    create_shuffle_writer_exec(
-                        CompressionCodec::None,
-                        CometPartitioning::Hash(
-                            vec![Arc::new(Column::new("a", 0))],
-                            num_partitions,
-                        ),
-                        8192,
-                        10,
-                    )
-                })
-            },
-        );
+        for compression_codec in [CompressionCodec::None, CompressionCodec::Lz4Frame] {
+            high_partition_group.bench_function(
+                format!(
+                    "shuffle_writer: end to end (partitions={num_partitions}, compression={compression_codec:?})"
+                ),
+                |b| {
+                    bench_end_to_end(b, || {
+                        create_shuffle_writer_exec(
+                            compression_codec.clone(),
+                            CometPartitioning::Hash(
+                                vec![Arc::new(Column::new("a", 0))],
+                                num_partitions,
+                            ),
+                            8192,
+                            10,
+                        )
+                    })
+                },
+            );
+        }
     }
     high_partition_group.finish();
 }
