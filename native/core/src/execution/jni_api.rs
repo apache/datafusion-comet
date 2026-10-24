@@ -173,11 +173,8 @@ fn log_native_allocated() {
 /// Used to sum memory reservations across all contexts for the memory usage log and tracing.
 ///
 /// Never read a pool's reservation while holding this registry's lock; copy the pools out with
-/// [`snapshot_registry`] and read them after it is released. `CometFairMemoryPool` holds its own
-/// lock across the JNI call that acquires memory from Spark, and Spark can park that call until
-/// another task frees memory. A finishing task frees its reservations only after `releasePlan` has
-/// taken this lock to unregister, so a reservation read under this lock can wait on a pool that is
-/// itself waiting on the lock.
+/// [`snapshot_registry`] and read them after it is released. `reserved()` takes the fair pool's
+/// `state` lock; keep the registry lock free of pool locks.
 type ThreadPoolMap = HashMap<u64, HashMap<i64, Arc<dyn MemoryPool>>>;
 
 static THREAD_MEMORY_POOLS: OnceLock<Mutex<ThreadPoolMap>> = OnceLock::new();
@@ -2853,8 +2850,7 @@ mod tests {
         assert_eq!(memory_usage().pools_reserved - before.pools_reserved, 3072);
     }
 
-    /// Stands in for a `CometFairMemoryPool` whose lock is held across a Spark acquire: it counts
-    /// its reservation reads, and notes whether the registry lock was held during any of them.
+    /// Counts its `reserved()` reads and notes whether the registry lock was held during any.
     #[derive(Debug, Default)]
     struct RegistryProbePool {
         reads: std::sync::atomic::AtomicUsize,
