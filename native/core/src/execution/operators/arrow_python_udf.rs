@@ -36,7 +36,7 @@ use datafusion::physical_plan::{
 use futures::stream;
 use futures::StreamExt;
 
-use crate::execution::python_udf::ArrowPythonUdf;
+use crate::execution::python_udf::{ArrowPythonUdf, TaskRegistration};
 
 #[derive(Debug, Clone)]
 pub struct ArrowPythonUdfSpec {
@@ -58,6 +58,8 @@ pub struct ArrowPythonUdfExec {
     max_records_per_batch: usize,
     max_bytes_per_batch: usize,
     accept_array_like_results: bool,
+    /// The Spark task attempt whose kill interrupts the UDF calls; `None` without a task.
+    task_attempt_id: Option<i64>,
     schema: SchemaRef,
     cache: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
@@ -70,6 +72,7 @@ impl ArrowPythonUdfExec {
         max_records_per_batch: i32,
         max_bytes_per_batch: i64,
         accept_array_like_results: bool,
+        task_attempt_id: Option<i64>,
     ) -> Result<Self> {
         if specs.is_empty() {
             return exec_err!("ArrowPythonUdfExec requires at least one UDF");
@@ -106,6 +109,7 @@ impl ArrowPythonUdfExec {
             max_records_per_batch: max_records_per_batch.max(0) as usize,
             max_bytes_per_batch: max_bytes_per_batch.max(0) as usize,
             accept_array_like_results,
+            task_attempt_id,
             schema,
             cache,
             metrics: ExecutionPlanMetricsSet::new(),
@@ -293,6 +297,7 @@ impl ExecutionPlan for ArrowPythonUdfExec {
             self.max_records_per_batch as i32,
             self.max_bytes_per_batch as i64,
             self.accept_array_like_results,
+            self.task_attempt_id,
         )?))
     }
 
@@ -302,6 +307,10 @@ impl ExecutionPlan for ArrowPythonUdfExec {
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
         let input = self.child.execute(partition, context)?;
+        // Dropped with the stream, when the native plan is released.
+        let task = self
+            .task_attempt_id
+            .map(|id| Arc::new(TaskRegistration::new(id)));
         let workers: Vec<_> = self
             .specs
             .iter()
@@ -314,6 +323,10 @@ impl ExecutionPlan for ArrowPythonUdfExec {
                     self.accept_array_like_results,
                     &spec.python_version,
                 )
+                .map(|worker| match &task {
+                    Some(task) => worker.with_task(Arc::clone(task)),
+                    None => worker,
+                })
             })
             .collect::<std::result::Result<_, _>>()?;
         let workers = Arc::new(workers);
@@ -465,6 +478,7 @@ mod tests {
             1,
             0,
             false,
+            None,
         )
         .unwrap();
         let results: Vec<_> = exec

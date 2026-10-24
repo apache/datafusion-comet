@@ -190,6 +190,23 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
     cfg!(feature = "python-udf")
 }
 
+/// Interrupts the Python UDF calls of a killed Spark task; see
+/// `execution::python_udf::interrupt_task`. Returns the number of calls interrupted.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_interruptPythonUdfs(
+    _: EnvUnowned,
+    _: JClass,
+    task_attempt_id: jni::sys::jlong,
+) -> jni::sys::jint {
+    #[cfg(feature = "python-udf")]
+    return execution::python_udf::interrupt_task(task_attempt_id) as jni::sys::jint;
+    #[cfg(not(feature = "python-udf"))]
+    {
+        let _ = task_attempt_id;
+        0
+    }
+}
+
 #[no_mangle]
 /// Releases the global Tokio runtime used by Comet native execution.
 pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {

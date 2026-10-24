@@ -19,19 +19,26 @@
 
 package org.apache.spark.sql.comet
 
+import java.io.File
 import java.util.{Base64, Collections}
+import java.util.concurrent.{CountDownLatch, TimeUnit}
 
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration._
 import scala.sys.process._
 
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.spark.{SparkException, TaskKilled}
 import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.python.{ArrowEvalPythonExec, UserDefinedPythonFunction}
 import org.apache.spark.sql.functions.{array, col, expr, length, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
+import org.apache.spark.util.ThreadUtils
 
 import org.apache.comet.{CometConf, CometExplainInfo, NativeBase}
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
@@ -525,6 +532,56 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       val message = intercept[Exception](df.collect()).getMessage
       assert(message.contains("Traceback (most recent call last)"), message)
       assert(message.contains("ZeroDivisionError"), message)
+    }
+  }
+
+  test("killing a task interrupts its running native Arrow UDF") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    withTempDir { dir =>
+      val started = new File(dir, "started")
+      // Loops in Python bytecode, where the interrupt takes effect, and survives a user
+      // `except Exception`.
+      val loop = "(lambda ns: (exec('def f(a):\\n" +
+        "    open(\"" + started.getCanonicalPath + "\", \"w\").close()\\n" +
+        "    n = 0\\n    while True:\\n        n += 1\\n        try:\\n" +
+        "            n %= 7\\n        except Exception:\\n            pass\\n', ns), " +
+        "ns['f'])[1])({})"
+      val udf = arrowUdf("loop", pickledCommand(loop, "LongType()"), LongType)
+      val killed = new CountDownLatch(1)
+      val listener = new SparkListener {
+        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = taskEnd.reason match {
+          case _: TaskKilled => killed.countDown()
+          case _ =>
+        }
+      }
+      spark.sparkContext.addSparkListener(listener)
+      try {
+        withSQLConf(
+          CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          val df = spark.range(0, 1, 1, 1).select(udf(col("id")))
+          assert(isNative(df))
+          val group = "comet-arrow-udf-kill"
+          val job = Future {
+            spark.sparkContext.setJobGroup(
+              group,
+              "native Arrow UDF loop",
+              interruptOnCancel = true)
+            df.collect()
+          }(ExecutionContext.global)
+          val deadline = 60.seconds.fromNow
+          while (!started.exists()) {
+            assert(deadline.hasTimeLeft(), "the UDF did not start")
+            Thread.sleep(50)
+          }
+          spark.sparkContext.cancelJobGroup(group)
+          assert(killed.await(30, TimeUnit.SECONDS), "the task running the UDF was not killed")
+          intercept[SparkException](ThreadUtils.awaitResult(job, 30.seconds))
+        }
+      } finally {
+        spark.sparkContext.removeSparkListener(listener)
+      }
     }
   }
 

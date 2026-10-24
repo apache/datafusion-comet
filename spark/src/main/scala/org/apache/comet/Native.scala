@@ -138,6 +138,14 @@ class Native extends NativeBase {
   @native def getShufflePartitionOffsets(plan: Long): Array[Long]
 
   /**
+   * Whether the native query plan runs a Python UDF in the embedded interpreter.
+   *
+   * @param plan
+   *   the address to native query plan.
+   */
+  @native def hasPythonUdf(plan: Long): Boolean
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
