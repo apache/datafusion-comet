@@ -20,13 +20,14 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
-import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.serde.QueryPlanSerde
 
 /**
  * What a range-partitioned exchange costs when its sort key has no Comet serde, which is the
@@ -58,8 +59,16 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
 
   /** Range partitioning, as in the reported shape, and hash partitioning for comparison. */
   private val rangeQuery = "SELECT * FROM parquetV1Table ORDER BY bump(a), b"
-  private val hashQuery =
-    "SELECT max(b) FROM parquetV1Table GROUP BY bump(a) ORDER BY 1 LIMIT 10"
+  // `GROUP BY bump(a)` would not do: Spark hoists the call into the partial aggregate and
+  // partitions on the resulting attribute, which serializes fine, so that exchange never meets
+  // the check this PR removes. `DISTRIBUTE BY` keeps the call in the partitioning itself.
+  private val hashQuery = "SELECT * FROM parquetV1Table DISTRIBUTE BY bump(a)"
+
+  // The same exchange, but with an operator above it that can consume Arrow batches directly.
+  // Every shape measured so far hands the exchange's output to Spark, which has to turn the
+  // batches back into rows; this is the shape where the columnar path could pay for itself.
+  private val hashCometConsumerQuery =
+    "SELECT max(b) FROM (SELECT * FROM parquetV1Table DISTRIBUTE BY bump(a)) t"
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     spark.udf.register("bump", (x: Int) => x + 1)
@@ -76,6 +85,7 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
         checkPlans()
         run("range partitioning on a key with no serde", rangeQuery)
         run("hash partitioning on a key with no serde", hashQuery)
+        run("hash partitioning, Comet operator above the exchange", hashCometConsumerQuery)
       }
     }
   }
@@ -112,30 +122,59 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
     CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
     CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "true")
 
+  private val queries =
+    Seq(rangeQuery, hashQuery, hashCometConsumerQuery)
+
+  /** Every shuffle exchange in `plan`, including the ones inside query stages. */
+  private def exchangesOf(plan: SparkPlan): Seq[ShuffleExchangeLike] = {
+    val stagePlans = collect(plan) { case s: QueryStageExec => s.plan }
+    (plan +: stagePlans).flatMap(p => collect(p) { case e: ShuffleExchangeLike => e })
+  }
+
   /**
-   * Fails unless each case really produces the exchange it is named for. Without this the
-   * benchmark could silently time the same plan twice.
+   * Whether the check this benchmark is about would have rejected `e`: the same `exprToProto`
+   * call the columnar path used to make. An exchange that passes it is routed by rules this PR
+   * does not touch, so timing it would say nothing about the change.
+   */
+  private def meetsRemovedCheck(e: ShuffleExchangeLike): Boolean = {
+    val inputs = e.child.output
+    val keyExprs = e.outputPartitioning match {
+      case HashPartitioning(expressions, _) => expressions
+      case RangePartitioning(orderings, _) => orderings
+      case _ => Nil
+    }
+    keyExprs.exists(expr => QueryPlanSerde.exprToProto(expr, inputs).isEmpty)
+  }
+
+  /**
+   * Fails unless each case really produces the exchange it is named for, and unless the
+   * exchange's key is one the removed check rejected. The exchange's node name alone does not
+   * establish the second: `GROUP BY f(x)` yields a `CometColumnarExchange` whose key is a plain
+   * attribute, which the old check admitted, so timing it would measure Comet's columnar shuffle
+   * against Spark's rather than anything this PR changes.
    */
   private def checkPlans(): Unit = {
-    for (query <- Seq(rangeQuery, hashQuery); c <- cases) {
+    for (query <- queries; c <- cases) {
       withSQLConf(configs(c): _*) {
         val df = spark.sql(query)
         df.noop()
         val plan = stripAQEPlan(df.queryExecution.executedPlan)
-        val stagePlans = collect(plan) { case s: QueryStageExec => s.plan }
-        val exchanges = (plan +: stagePlans).flatMap { p: SparkPlan =>
-          collect(p) {
-            case e: CometShuffleExchangeExec => e.nodeName
-            case e: ShuffleExchangeExec => e.nodeName
-          }
-        }
-        val comet = exchanges.count(_.startsWith("CometColumnarExchange"))
-        val spark0 = exchanges.count(_ == "Exchange")
-        val ok = if (c.cometShuffle) comet >= 1 else comet == 0 && spark0 >= 1
-        if (!ok) {
+        val exchanges = exchangesOf(plan)
+        val names = exchanges.map(_.nodeName)
+        val comet = names.count(_.startsWith("CometColumnarExchange"))
+        val sparkShuffles = names.count(_ == "Exchange")
+
+        if (if (c.cometShuffle) comet < 1 else comet > 0 || sparkShuffles < 1) {
           throw new IllegalStateException(
             s"${c.label}: expected ${if (c.cometShuffle) "a Comet columnar" else "a Spark"} " +
-              s"exchange but found $exchanges in:\n$plan")
+              s"exchange but found $names in:\n$plan")
+        }
+
+        if (!exchanges.exists(meetsRemovedCheck)) {
+          throw new IllegalStateException(
+            s"${c.label}: no exchange here has a partition key the removed check rejected, so " +
+              s"this case does not exercise the change. Partitionings: " +
+              s"${exchanges.map(_.outputPartitioning)} in:\n$plan")
         }
       }
     }

@@ -948,22 +948,13 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
   // verdict must not gate the exchange (#5971). Turning the dispatcher off is only a cheap and
   // stable way to obtain an unserializable partition key; any expression without a serde reaches
   // the same gate, and unlike the strictFloatingPoint cases above nothing here depends on strict
-  // mode.
+  // mode. The hash counterpart is the partition assignment test below, which covers the same
+  // routing and additionally compares where the rows land.
   test("range partitioning on an unserializable expression uses columnar shuffle") {
     withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
       withParquetTable((0 until 20).map(i => (i, i.toString)), "range_udf_tbl") {
         val bump = udf((x: Int) => x + 1)
         val df = sql("SELECT _1, _2 FROM range_udf_tbl").repartitionByRange(4, bump(col("_1")))
-        checkShuffleAnswer(df, 1)
-      }
-    }
-  }
-
-  test("hash partitioning on an unserializable expression uses columnar shuffle") {
-    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
-      withParquetTable((0 until 20).map(i => (i, i.toString)), "hash_udf_tbl") {
-        val bump = udf((x: Int) => x + 1)
-        val df = sql("SELECT _1, _2 FROM hash_udf_tbl").repartition(4, bump(col("_1")))
         checkShuffleAnswer(df, 1)
       }
     }
@@ -992,6 +983,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
    */
   private def checkPartitionAssignmentMatchesSpark(df: => DataFrame, clue: String): Unit = {
     checkCometExchange(df, 1, false)
+    checkSparkAnswer(df)
 
     def pids: Array[(Int, Int)] =
       df.select(col("_1"), spark_partition_id().as("pid"))
