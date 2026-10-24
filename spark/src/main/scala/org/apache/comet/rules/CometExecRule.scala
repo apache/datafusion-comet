@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -727,13 +727,71 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(refreshStaleShuffleScans(op))
+      val converted = convertNode(limitCollectProjectionInput(refreshStaleShuffleScans(op)))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * Spark's collect limit consumes at most `limit` rows per partition, but a native projection
+   * evaluates its whole input batch before that limit can stop reading. Limit the projection's
+   * input first so an expression on an unconsumed row cannot raise an error. Keep the outer
+   * limit: it still combines partitions and drops OFFSET rows, which Spark evaluates before
+   * dropping.
+   *
+   * Only handle an immediately adjacent native projection. A filter or join between the limit and
+   * projection can require more input rows, and a blocking operator must consume its input.
+   * Non-collect LocalLimit/GlobalLimit plans can still evaluate a projection before limiting its
+   * output. That preexisting gap and throwing filter predicates are tracked separately in
+   * https://github.com/apache/datafusion-comet/issues/7147.
+   */
+  private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
+    case limit: CollectLimitExec if limit.limit >= 0 =>
+      limit.child match {
+        case project: CometProjectExec =>
+          // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
+          // native planning can prune columns used only by the filter's predicate.
+          val onlyColumns = project.projectList.forall {
+            case _: Attribute | Alias(_: Attribute, _) => true
+            case _ => false
+          }
+          val alreadyCapped = project.child match {
+            case cap: CometLocalLimitExec => cap.limit <= limit.limit
+            case _ => false
+          }
+          if (onlyColumns || alreadyCapped) {
+            op
+          } else {
+            // Use normal config and serde gating for the synthetic limit. If conversion fails,
+            // its fallback tags are discarded with it and the original plan is retained.
+            val bounded = for {
+              cap <- convertToComet(
+                LocalLimitExec(limit.limit, project.child),
+                CometLocalLimitExec)
+              rebuilt <- convertToComet(
+                project.originalPlan.withNewChildren(Seq(cap)),
+                CometProjectExec)
+            } yield {
+              // AQE can link the current projection to a materialized logical query stage.
+              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
+              // (which only copies into an empty tag map) would not preserve the current link.
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
+              }
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
+              }
+              limit.withNewChildren(Seq(rebuilt))
+            }
+            bounded.getOrElse(op)
+          }
+        case _ => op
+      }
+    case _ => op
   }
 
   /**
