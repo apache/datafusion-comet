@@ -95,7 +95,6 @@ use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
-    errors::Result as JNIResult,
     objects::{
         Global, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
@@ -921,7 +920,7 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
             ));
         }
 
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
         register_shuffle_partition_pusher(exec_context, || {
             Ok(Arc::new(JavaShufflePartitionPusher::try_new(
                 env, &callback,
@@ -1408,7 +1407,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
 
         let tracing_enabled = exec_context.tracing_enabled;
         // Clone the label only when tracing is enabled. The clone is needed
@@ -1685,7 +1684,7 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 fn convert_datatype_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> CometResult<Vec<ArrowDataType>> {
     let array_len = serialized_datatypes.len(env)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
@@ -1693,20 +1692,32 @@ fn convert_datatype_arrays(
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
-        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(deserialize_arrow_datatype(bytes.as_slice(), i)?);
     }
 
     Ok(res)
 }
 
-fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
-    unsafe {
-        (id as *mut ExecutionContext)
-            .as_mut()
-            .expect("Comet execution context shouldn't be null!")
-    }
+/// Decodes the serialized Spark data type of column `index` into its Arrow data type.
+fn deserialize_arrow_datatype(bytes: &[u8], index: usize) -> CometResult<ArrowDataType> {
+    let data_type = serde::deserialize_data_type(bytes).map_err(|e| {
+        CometError::Internal(format!(
+            "Cannot deserialize the data type of column {index}: {e}"
+        ))
+    })?;
+    Ok(to_arrow_datatype(&data_type))
+}
+
+/// Reads the string argument `arg` of the JNI export `export`.
+fn string_arg(env: &Env, value: &JString, export: &str, arg: &str) -> CometResult<String> {
+    value
+        .try_to_string(env)
+        .map_err(|e| CometError::Internal(format!("Cannot read argument '{arg}' of {export}: {e}")))
+}
+
+fn get_execution_context<'a>(id: i64) -> CometResult<&'a mut ExecutionContext> {
+    unsafe { (id as *mut ExecutionContext).as_mut() }
+        .ok_or_else(|| CometError::Internal("Native execution context handle is null".to_string()))
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.
@@ -1720,7 +1731,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
     exec_context: jlong,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
-        let context = get_execution_context(exec_context);
+        let context = get_execution_context(exec_context)?;
         let root_plan = context.root_op.as_ref().map(|op| op.native_plan.as_ref());
         let offsets = shuffle_partition_offsets(root_plan)?;
 
@@ -1801,8 +1812,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
-                let output_path: String = file_path.try_to_string(env).unwrap();
-                let compression_codec: String = compression_codec.try_to_string(env).unwrap();
+                let output_path =
+                    string_arg(env, &file_path, "writeSortedFileNative", "file_path")?;
+                let compression_codec = string_arg(
+                    env,
+                    &compression_codec,
+                    "writeSortedFileNative",
+                    "compression_codec",
+                )?;
 
                 let results = write_sorted_file(
                     &row_addresses,
@@ -2224,7 +2241,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceBegin", "event")?;
         trace_begin(&name);
         Ok(())
     })
@@ -2239,7 +2256,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceEnd", "event")?;
         trace_end(&name);
         Ok(())
     })
@@ -2255,7 +2272,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = name.try_to_string(env).unwrap();
+        let name = string_arg(env, &name, "logMemoryUsage", "name")?;
         log_memory_usage(&name, value as u64);
         Ok(())
     })
@@ -3401,6 +3418,46 @@ mod tests {
         assert!(producer.next_batch().unwrap().is_some());
         assert!(producer.next_batch().unwrap().is_none());
         producer.stop().unwrap();
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_decodes_a_serialized_type() {
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+
+        let bytes = spark_expression::DataType {
+            type_id: DataTypeId::Int64 as i32,
+            type_info: None,
+        }
+        .encode_to_vec();
+        assert_eq!(
+            deserialize_arrow_datatype(&bytes, 0).unwrap(),
+            DataType::Int64
+        );
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_rejects_malformed_bytes() {
+        // Field 31 with the unused wire type 7, which protobuf cannot decode.
+        let error = deserialize_arrow_datatype(&[0xff], 2).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot deserialize the data type of column 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn get_execution_context_rejects_a_null_handle() {
+        let error = get_execution_context(0).map(|_| ()).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Native execution context handle is null"),
+            "{error}"
+        );
     }
 
     #[test]
