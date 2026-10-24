@@ -119,8 +119,14 @@ FROM ansi_element_at_null
 -- both operands are NULL on every row and Spark returns NULL without evaluating either index.
 -- The non-ANSI spelling stays native and is covered in element_at.sql.
 -- https://github.com/apache/datafusion-comet/issues/5544
-query expect_fallback(nullable nondeterministic array or map operand)
+query expect_dispatch(element_at)
 SELECT id,
        element_at(IF(monotonically_increasing_id() % 2 = 0, CAST(NULL AS ARRAY<INT>), array(1)), 1) AS v1,
        element_at(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), 1 + (id % (id - 2))) AS v2
+FROM ansi_element_at_null
+
+-- A calendar interval result falls back instead (#5279)
+query expect_fallback(holds a calendar interval)
+SELECT element_at(IF(monotonically_increasing_id() >= 0,
+  array(make_interval(0, 0, 0, 0, 0, 0, 10000000000.000000)), NULL), 1)
 FROM ansi_element_at_null

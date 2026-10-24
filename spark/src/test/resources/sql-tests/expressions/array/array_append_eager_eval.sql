@@ -51,24 +51,29 @@ FROM array_append_eager
 -- A column or literal item cannot raise, so it needs no extra evaluation
 query expect_native(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), _1) AS a,
-       array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 5) AS b
+       array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), 5) AS b,
+       array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), CAST(NULL AS INT)) AS c
 FROM array_append_eager
 
 -- A nondeterministic operand is declined when the array can be NULL: the native guard would
 -- serialize it more than once, and each copy would see only a subset of the rows. This covers the
 -- item and the array alike.
-query expect_fallback(nondeterministic operand)
+query expect_dispatch(array_append)
 SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)), CAST(rand(7L) * 3 AS INT)) AS a
 FROM array_append_eager
 
-query expect_fallback(nondeterministic operand)
-SELECT _1, array_append(IF(rand(7L) < 2, CAST(NULL AS ARRAY<INT>), array(1)), _1) AS a
+query expect_dispatch(array_append)
+SELECT _1, array_append(IF(rand(7) * 0.0D = 0.0D, CAST(NULL AS ARRAY<INT>), array(1)), _1) AS a
 FROM array_append_eager
 
 -- A non-nullable array needs no guard, so `convert` emits none and the item is evaluated once over
 -- the whole batch. A nondeterministic item therefore stays native and in step with Spark.
 query expect_native(array_append)
 SELECT _1, array_append(array(1, 2), CAST(rand(7L) * 3 AS INT)) AS a
+FROM array_append_eager
+
+query expect_native(array_append)
+SELECT _1, array_append(array(1), _1) AS a
 FROM array_append_eager
 
 -- A non-nullable array still raises for a throwing item
@@ -102,6 +107,18 @@ SELECT _1, array_append(arr, 1 / (_1 - 1)) AS a FROM array_append_no_null
 query expect_native(array_append)
 SELECT _1, array_append(arr, 1 / (_1 + 1)) AS a FROM array_append_no_null
 
+statement
+CREATE TABLE array_append_mixed_null(_1 INT, arr ARRAY<INT>) USING parquet
+
+statement
+INSERT INTO array_append_mixed_null SELECT /*+ COALESCE(1) */ * FROM VALUES (0, array(1)), (1, NULL), (2, array()), (3, array(4, 5))
+
+query expect_native(array_append)
+SELECT _1, array_append(arr, _1 + 1) AS a FROM array_append_mixed_null
+
+query expect_native(array_append)
+SELECT _1, array_append(array(1), _1 + 1) AS a FROM array_append_mixed_null
+
 -- Complex element types: the item is itself an array, and the ELSE branch's NULL has to be typed as
 -- the list of arrays that THEN returns. The item divides by zero only where the array is NULL.
 query expect_error_class(DIVIDE_BY_ZERO)
@@ -130,3 +147,42 @@ FROM array_append_eager
 
 query expect_native(array_append)
 SELECT _1, array_append(arr, _1 + 1) AS a FROM array_append_all_null
+
+-- `element_at` raises on index 0 even without ANSI, so the item raises on the NULL-array row
+query expect_error_class(INVALID_INDEX_OF_ZERO)
+SELECT _1, array_append(IF(_1 % 2 = 0, array(1), CAST(NULL AS ARRAY<INT>)),
+  element_at(array(1), _1 - 1)) AS a
+FROM array_append_eager
+
+query expect_error_class(INVALID_INDEX_OF_ZERO)
+SELECT _1, array_append(array(1), element_at(array(1), _1 - 1)) AS a
+FROM array_append_eager
+
+-- Control: the lookup raises on its own, so the queries above are not vacuous
+query expect_error_class(INVALID_INDEX_OF_ZERO)
+SELECT _1, element_at(array(1), _1 - 1) AS e
+FROM array_append_eager
+
+-- Spark's projection evaluates the shared `element_at(array(1), _1 - 1)` on every row, so it
+-- raises on the all-NULL row although each lookup skips its key on a NULL map
+statement
+CREATE TABLE array_append_shared_item(
+  _1 INT, a1 ARRAY<INT>, a2 ARRAY<INT>, m1 MAP<INT, INT>, m2 MAP<INT, INT>)
+USING parquet
+
+statement
+INSERT INTO array_append_shared_item VALUES
+  (1, CAST(NULL AS ARRAY<INT>), CAST(NULL AS ARRAY<INT>),
+   CAST(NULL AS MAP<INT, INT>), CAST(NULL AS MAP<INT, INT>)),
+  (2, array(2), array(3), map(1, 5), map(1, 6))
+
+query expect_error_class(INVALID_INDEX_OF_ZERO)
+SELECT array_append(a1, element_at(m1, element_at(array(1), _1 - 1))),
+  array_append(a2, element_at(m2, element_at(array(1), _1 - 1)))
+FROM array_append_shared_item
+
+query expect_native(array_append)
+SELECT array_append(a1, element_at(m1, element_at(array(1), _1 - 1))),
+  array_append(a2, element_at(m2, element_at(array(1), _1 - 1)))
+FROM array_append_shared_item
+WHERE _1 = 2

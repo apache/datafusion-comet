@@ -60,7 +60,39 @@ object CometArrayRemove
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
+/**
+ * The native NULL guard serializes a child twice, so a nondeterministic child is declined,
+ * nullable or not: a non-nullable one stays in step only through a DataFusion shortcut.
+ */
+private[serde] object NullGuardSupport {
+
+  val nondeterministicReason: String =
+    "Comet has no native path for a nondeterministic operand such as `rand()` or " +
+      "`monotonically_increasing_id()`, because the native `NULL` guard would evaluate it twice."
+
+  def nondeterministicChild(children: Seq[Expression]): Option[SupportLevel] =
+    children
+      .find(child => !child.deterministic)
+      .map(_ => Unsupported(Some(nondeterministicReason)))
+}
+
+/**
+ * Whether evaluating `expr` out of Spark's order, or not at all, is unobservable. A literal or
+ * column read cannot throw, carry state or have a side effect. `foldable` is not enough:
+ * ConstantFolding leaves a throwing foldable expression in a conditional branch.
+ */
+private[serde] object EvaluationOrder {
+
+  def isUnobservable(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+}
+
+object CometArrayAppend
+    extends CometExpressionSerde[ArrayAppend]
+    with ArraysBase
+    with GatedCodegenDispatchFallback {
 
   /**
    * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
@@ -74,19 +106,11 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
    * and evaluates each operand once over the whole batch, in order, whatever the operands are.
    */
   private val nondeterministicReason: String =
-    "array_append with a nullable array and a nondeterministic operand such as `rand()`: the " +
-      "native NULL guard evaluates the operands more than once, on subsets of the rows"
+    "With a nullable array, Comet has no native path for a nondeterministic operand such as " +
+      "`rand()` or `monotonically_increasing_id()`, because the native `NULL` guard would " +
+      "evaluate it twice."
 
   override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
-
-  /**
-   * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
-   * column read cannot throw. `foldable` is not usable here, see CometArrayJoin.orderInsensitive.
-   */
-  private def cannotThrow(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
 
   override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
     if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
@@ -146,7 +170,7 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBas
     // branch, so that it raises there as well, and still once per row. See
     // `nondeterministicReason` for why this is restricted to deterministic operands.
     val elseExprProto =
-      if (cannotThrow(expr.children(1))) {
+      if (EvaluationOrder.isUnobservable(expr.children(1))) {
         nullLiteralProto
       } else {
         for {
@@ -211,13 +235,6 @@ object CometArrayContains
     case _ => false
   }
 
-  // Whether evaluating `expr` earlier than Spark would is unobservable: a literal or column read
-  // cannot throw. See CometArrayJoin.orderInsensitive.
-  private def orderInsensitive(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
-
   override def getSupportLevel(expr: ArrayContains): SupportLevel = {
     val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
     if (hasNonDefaultStringCollation(elementType)) {
@@ -226,7 +243,7 @@ object CometArrayContains
     } else if (isFlatFloat(elementType)) {
       // Spark skips the value when the array is null, so a value that can throw (an ANSI cast,
       // say) must not run for a null array. The native kernel evaluates both arguments first.
-      if (expr.left.nullable && !orderInsensitive(expr.right)) {
+      if (expr.left.nullable && !EvaluationOrder.isUnobservable(expr.right)) {
         Incompatible(Some(eagerEvalReason))
       } else {
         Compatible()
@@ -548,23 +565,10 @@ object CometArrayJoin
     "array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits " +
       "past them (https://github.com/apache/datafusion-comet/issues/3178)"
 
-  /**
-   * Whether evaluating `expr` earlier than Spark would is unobservable.
-   *
-   * Spark skips ArrayJoin's later arguments once an earlier one is null, and `eval` and
-   * `doGenCode` disagree on that order, while DataFusion evaluates every argument up front. A
-   * literal or column read cannot throw, carry state or have a side effect, so ordering cannot be
-   * observed for it; anything else goes to the codegen dispatcher. `foldable` is not usable here:
-   * ConstantFolding leaves a throwing foldable expression unfolded in a conditional branch.
-   */
-  private def orderInsensitive(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _ => false
-  }
-
   override def getIncompatibleReasons(): Seq[String] = Seq(collationReason, eagerEvalReason)
 
   override def getSupportLevel(expr: ArrayJoin): SupportLevel = {
+    val laterArgs = expr.delimiter +: expr.nullReplacement.toSeq
     // Spark 4.0 widens ArrayJoin's input to StringTypeWithCollation. Concatenation itself is
     // collation-independent, so the joined value is always correct; only the output string's
     // collation metadata is dropped (Comet columns are UTF8_BINARY). Report Incompatible rather
@@ -572,7 +576,7 @@ object CometArrayJoin
     // array_join native and matching Spark, consistent with CometReverse's #2190 handling.
     if (hasNonDefaultStringCollation(expr.array.dataType)) {
       Incompatible(Some(collationReason))
-    } else if (!(expr.delimiter +: expr.nullReplacement.toSeq).forall(orderInsensitive)) {
+    } else if (!laterArgs.forall(EvaluationOrder.isUnobservable)) {
       Incompatible(Some(eagerEvalReason))
     } else {
       Compatible()
@@ -901,7 +905,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 }
 
-object CometElementAt extends CometExpressionSerde[ElementAt] {
+object CometElementAt extends CometExpressionSerde[ElementAt] with GatedCodegenDispatchFallback {
 
   /**
    * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
@@ -910,8 +914,9 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
    * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
    * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
    * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
-   * its state independently and silently move values and NULLs. Declining leaves the lookup on
-   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
+   * its state independently and silently move values and NULLs. Declining routes the lookup
+   * through the JVM codegen dispatcher, where Spark's own `doGenCode` evaluates the operand once.
+   * Lifting this needs a native lookup that evaluates the operand once and masks the index
    * evaluation with the result, at which point the guard becomes unnecessary for every operand.
    */
   private val eagerIndexReason: String =
@@ -921,6 +926,8 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
   /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
   private def needsNullGuard(expr: ElementAt): Boolean =
     expr.failOnError && expr.left.nullable
+
+  override def getUnsupportedReasons(): Seq[String] = eagerIndexReason +: MapKeySupport.reasons
 
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
     if (needsNullGuard(expr) && !expr.left.deterministic) {
@@ -1050,14 +1057,19 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
   }
 }
 
-object CometSize extends CometExpressionSerde[Size] {
+object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
 
   override def getSupportLevel(expr: Size): SupportLevel = {
-    expr.child.dataType match {
-      case _: ArrayType => Compatible()
-      case _: MapType => Compatible()
-      case other =>
-        Unsupported(Some(s"Unsupported child data type: $other"))
+    NullGuardSupport.nondeterministicChild(Seq(expr.child)).getOrElse {
+      expr.child.dataType match {
+        case _: ArrayType => Compatible()
+        case _: MapType => Compatible()
+        case other =>
+          Unsupported(Some(s"Unsupported child data type: $other"))
+      }
     }
   }
 
@@ -1128,10 +1140,13 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
   }
 }
 
-object CometArraysZip extends CometExpressionSerde[ArraysZip] {
+object CometArraysZip extends CometExpressionSerde[ArraysZip] with GatedCodegenDispatchFallback {
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
-    "Not all input data types are supported; falls back to Spark for unsupported types")
+    "An array whose element type is a map, a day-time or year-month interval, a variant, a " +
+      "`TIME` value or a user-defined type has no native `arrays_zip` kernel, and neither does " +
+      "a struct or inner array that holds one of those.",
+    NullGuardSupport.nondeterministicReason)
 
   private def isTypeSupported(dt: DataType): Boolean = {
     import DataTypes._
@@ -1147,13 +1162,13 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
   }
 
   override def getSupportLevel(expr: ArraysZip): SupportLevel = {
-    val inputTypes = expr.children.map(_.dataType).toSet
-    for (dt <- inputTypes) {
-      if (!isTypeSupported(dt)) {
-        return Unsupported(Some(s"Unsupported child data type: $dt"))
-      }
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
+      expr.children
+        .map(_.dataType)
+        .collectFirst { case dt if !isTypeSupported(dt) => dt }
+        .map(dt => Unsupported(Some(s"Unsupported child data type: $dt")))
+        .getOrElse(Compatible())
     }
-    Compatible()
   }
 
   override def convert(

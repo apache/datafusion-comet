@@ -46,6 +46,8 @@ private[serde] object MapKeySupport {
       "cannot reproduce Spark's equality for a complex key type (for example a `NULL` inside the " +
       "lookup key aborts the cast against a non-nullable nested component)."
 
+  val reasons: Seq[String] = Seq(floatingPointReason, collationReason, complexKeyReason)
+
   /**
    * The `SupportLevel` for a map-consuming expression whose stored-key type is `keyType`. Spark
    * finds a key with `TypeUtils.getInterpretedOrdering` over the map's stored keys, while native
@@ -115,7 +117,11 @@ object CometMapValues extends CometExpressionSerde[MapValues] {
   }
 }
 
-object CometMapExtract extends CometExpressionSerde[GetMapValue] {
+object CometMapExtract
+    extends CometExpressionSerde[GetMapValue]
+    with GatedCodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] = MapKeySupport.reasons
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
@@ -171,21 +177,26 @@ private object MapKeyDedupPolicySupport {
 
 object CometMapFromArrays
     extends CometExpressionSerde[MapFromArrays]
-    with CodegenDispatchFallback {
+    with GatedCodegenDispatchFallback {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(MapBuilderKeySupport.floatingPointReason, MapKeyDedupPolicySupport.incompatibleReason)
+
+  override def getUnsupportedReasons(): Seq[String] =
+    Seq(NullGuardSupport.nondeterministicReason)
 
   override def getCompatibleNotes(): Seq[String] =
     Seq(MapKeyDedupPolicySupport.nullKeyReason)
 
   override def getSupportLevel(expr: MapFromArrays): SupportLevel = {
-    if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
-      Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
-    } else if (MapKeyDedupPolicySupport.isLastWin) {
-      Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
-    } else {
-      Compatible(None)
+    NullGuardSupport.nondeterministicChild(expr.children).getOrElse {
+      if (MapBuilderKeySupport.hasFloatingPointKey(expr.dataType)) {
+        Incompatible(Some(MapBuilderKeySupport.floatingPointReason))
+      } else if (MapKeyDedupPolicySupport.isLastWin) {
+        Incompatible(Some(MapKeyDedupPolicySupport.incompatibleReason))
+      } else {
+        Compatible(None)
+      }
     }
   }
 

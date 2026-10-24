@@ -676,9 +676,12 @@ object CometShuffleExchangeExec
           reasons +=
             s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"
         }
-        for (expr <- expressions) {
-          if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
-            reasons += s"unsupported hash partitioning expression: $expr"
+        // The same scope as CometNativeShuffleWriter, which serializes the keys as one projection
+        QueryPlanSerde.withSharedSubexpressions(expressions) {
+          for (expr <- expressions) {
+            if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
+              reasons += s"unsupported hash partitioning expression: $expr"
+            }
           }
         }
         for (dt <- expressions.map(_.dataType).distinct) {
@@ -716,12 +719,15 @@ object CometShuffleExchangeExec
             s"${CometConf.COMET_SHUFFLE_NATIVE_RANGE_PARTITIONING_ENABLED.key} is disabled"
           return reasons.toSeq
         }
-        for (o <- orderings) {
-          val (result, expressionReasons) =
-            QueryPlanSerde.exprToProtoWithFallbackReasons(o, inputs)
-          if (result.isEmpty) {
-            reasons += s"unsupported range partitioning sort order: $o"
-            reasons ++= expressionReasons
+        // As for hash partitioning, the same scope as CometNativeShuffleWriter
+        QueryPlanSerde.withSharedSubexpressions(orderings.map(_.child)) {
+          for (o <- orderings) {
+            val (result, expressionReasons) =
+              QueryPlanSerde.exprToProtoWithFallbackReasons(o, inputs)
+            if (result.isEmpty) {
+              reasons += s"unsupported range partitioning sort order: $o"
+              reasons ++= expressionReasons
+            }
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
