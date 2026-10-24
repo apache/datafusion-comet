@@ -876,6 +876,15 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 <p>Comet does not provide a Rust-based JSON scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.json.enabled</span></code> is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.</p>
 </section>
+<section id="text">
+<h3>Text<a class="headerlink" href="#text" title="Link to this heading">#</a></h3>
+<p>Comet does not provide a Rust-based Text scan, but when <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> is enabled, data from Spark’s
+Text reader is immediately converted into Arrow format, allowing the Comet pipeline to take over after that. Spark’s Text
+reader keeps the bytes of each line as they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings
+that are not valid UTF-8. Arrow strings must be valid UTF-8, so the conversion replaces those bytes with <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>, and
+results that depend on the original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
+<a class="reference internal" href="compatibility/index.html#strings-with-non-utf-8-bytes"><span class="std std-ref">Strings with non-UTF-8 bytes</span></a>.</p>
+</section>
 <section id="other-spark-inputs">
 <h3>Other Spark inputs<a class="headerlink" href="#other-spark-inputs" title="Link to this heading">#</a></h3>
 <p>Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
@@ -894,11 +903,14 @@ clause, such as <code class="docutils literal notranslate"><span class="pre">SEL
 such as JDBC tables, which Spark scans with <code class="docutils literal notranslate"><span class="pre">RowDataSourceScanExec</span></code>.</p></li>
 </ul>
 <p>To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
-format other than Parquet, JSON and CSV, set <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and name the
-operator in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> by its Spark class name without the
-<code class="docutils literal notranslate"><span class="pre">Exec</span></code> suffix, such as <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> or <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code>.</p>
+format other than Parquet, JSON, CSV and Text, set <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and name
+the operator in <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> by its Spark class name without the
+<code class="docutils literal notranslate"><span class="pre">Exec</span></code> suffix, such as <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> or <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code>. Naming either to convert a Text scan still
+works but is deprecated, like naming <code class="docutils literal notranslate"><span class="pre">Range</span></code>, <code class="docutils literal notranslate"><span class="pre">InMemoryTableScan</span></code>, <code class="docutils literal notranslate"><span class="pre">RDDScan</span></code>, <code class="docutils literal notranslate"><span class="pre">OneRowRelation</span></code> or
+<code class="docutils literal notranslate"><span class="pre">RowDataSourceScan</span></code>, and will stop working in a future major release. Use
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> instead.</p>
 <p>One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
-or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+or V2 scan Comet cannot read natively - for example a small ORC lookup table - and every scan on
 the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
 runs natively over the large probe. This is controlled by
 <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.broadcastBuildSide.enabled</span></code>, which is <strong>on by default</strong>, unlike the switches
@@ -906,6 +918,9 @@ above. The build side is usually small, but an explicit <code class="docutils li
 the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
 a second time for the pruning subquery. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.broadcastBuildSide.enabled=false</span></code> to
 keep such build sides on Spark.</p>
+<p>Parquet, JSON, CSV and Text build sides are converted only by their own switches above. A Text file
+can hold bytes that are not valid UTF-8 (see <a class="reference internal" href="#text">Text</a>), so a Text lookup table stays on Spark
+unless <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> is set.</p>
 </section>
 <section id="spark-to-comet-conversion-types">
 <h3>Spark-to-Comet conversion types<a class="headerlink" href="#spark-to-comet-conversion-types" title="Link to this heading">#</a></h3>
@@ -1489,6 +1504,7 @@ The Hadoop ABFS configuration you already have (the <code class="docutils litera
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#apache-iceberg">Apache Iceberg</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#csv">CSV</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#json">JSON</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#text">Text</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#other-spark-inputs">Other Spark inputs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-to-comet-conversion-types">Spark-to-Comet conversion types</a></li>
 </ul>

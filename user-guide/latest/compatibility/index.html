@@ -920,9 +920,41 @@ strings that hold different bytes can become equal in Comet. For example, with <
 bytes) but <code class="docutils literal notranslate"><span class="pre">true</span></code> in Comet. Equality, joins, grouping, ordering, and byte-based string functions
 such as <code class="docutils literal notranslate"><span class="pre">contains</span></code> can therefore disagree with Spark when non-UTF-8 bytes are involved.</p></li>
 </ul>
-<p>Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
-string paths is tracked by
+<p>Both differences require string data that is not valid UTF-8. Comet’s native Parquet scan never
+produces such strings (it rejects them, see below), and neither do most string expressions. They can
+reach Comet in these ways, which are the ones to check before relying on a result:</p>
+<ul class="simple">
+<li><p><strong>Text files.</strong> Spark’s Text reader keeps the bytes of each line as they are, so a Text file in an
+encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
+them when it converts a Text scan to Arrow, which it does only when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled=true</span></code> (see <a class="reference internal" href="../datasources.html#text"><span class="std std-ref">Data sources</span></a>), or, as a
+deprecated alternative, when <code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.enabled=true</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.sparkToColumnar.supportedOperatorList</span></code> names the scan. For example, with a Text file
+holding the bytes <code class="docutils literal notranslate"><span class="pre">1</span> <span class="pre">caf\xE9</span></code>, <code class="docutils literal notranslate"><span class="pre">hex(value)</span></code> returns <code class="docutils literal notranslate"><span class="pre">3120636166EFBFBD</span></code> instead of Spark’s
+<code class="docutils literal notranslate"><span class="pre">3120636166E9</span></code>, and <code class="docutils literal notranslate"><span class="pre">length</span></code> of <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">na\xEFve</span></code> is 7 instead of 5. Spark decodes CSV files as it reads
+them, so they never hold such strings, and its JSON reader treats a line with such bytes as
+malformed, so only the corrupt record column keeps them. Spark’s ORC and Avro readers keep stored
+bytes without checking them, but those formats define strings as UTF-8, so only a malformed file is
+affected.</p></li>
+<li><p><strong>Comet columnar shuffle.</strong> When Comet shuffles rows that come from a Spark operator, such as a
+Text scan or a Spark partial aggregate, it converts them to Arrow and decodes their strings in the
+same way. It does this with the default <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=auto</span></code>, so, for example,
+repartitioning a Latin-1 Text table can return <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code> where Spark keeps the original bytes.
+Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code> keeps such shuffles on Spark.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CAST(binary</span> <span class="pre">AS</span> <span class="pre">STRING)</span></code>.</strong> Comet decodes the bytes where Spark keeps them. Because <code class="docutils literal notranslate"><span class="pre">min</span></code> and <code class="docutils literal notranslate"><span class="pre">max</span></code>
+over strings run natively, a cast below them is decoded before the comparison, and the two can swap.
+With <code class="docutils literal notranslate"><span class="pre">b</span></code> holding <code class="docutils literal notranslate"><span class="pre">X'80'</span></code> and <code class="docutils literal notranslate"><span class="pre">X'C3A9'</span></code>, Spark returns <code class="docutils literal notranslate"><span class="pre">min(CAST(b</span> <span class="pre">AS</span> <span class="pre">STRING))</span></code> = the <code class="docutils literal notranslate"><span class="pre">0x80</span></code> string
+and <code class="docutils literal notranslate"><span class="pre">max</span></code> = <code class="docutils literal notranslate"><span class="pre">é</span></code>, whereas Comet returns <code class="docutils literal notranslate"><span class="pre">min</span></code> = <code class="docutils literal notranslate"><span class="pre">é</span></code> and <code class="docutils literal notranslate"><span class="pre">max</span></code> = <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>. This is the ordering
+difference above. If the cast input can hold bytes that are not valid UTF-8, disable Comet for the
+query. When the cast is the direct argument of <code class="docutils literal notranslate"><span class="pre">min</span></code> or <code class="docutils literal notranslate"><span class="pre">max</span></code>, a narrower alternative is to set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Min.enabled=false</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.Max.enabled=false</span></code> and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode=native</span></code>. All three are needed: with only the first two, the aggregate
+runs in Spark, but Comet’s columnar shuffle still decodes its partial results. These settings are
+not enough when the cast is in a projection below the aggregate, for example
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">min(s)</span> <span class="pre">FROM</span> <span class="pre">(SELECT</span> <span class="pre">CAST(b</span> <span class="pre">AS</span> <span class="pre">STRING)</span> <span class="pre">AS</span> <span class="pre">s</span> <span class="pre">FROM</span> <span class="pre">t)</span></code>, because Comet runs that projection
+natively and decodes the bytes before the aggregate sees them.</p></li>
+</ul>
+<p>Consistent handling of invalid UTF-8 across all native string paths is tracked by
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>.</p>
 <p>Separately, Comet’s native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark

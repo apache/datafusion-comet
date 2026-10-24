@@ -923,6 +923,8 @@ without a <code class="docutils literal notranslate"><span class="pre">FROM</spa
 it. <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.oneRowRelation.enabled</span></code> is on by default, so such a query is now converted
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.</p>
+<p>Converting a Text scan with <code class="docutils literal notranslate"><span class="pre">FileSourceScan</span></code> or <code class="docutils literal notranslate"><span class="pre">BatchScan</span></code> in the list is deprecated in the same
+way, and logs the same warning. Use <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.text.enabled</span></code> instead.</p>
 </section>
 <section id="iceberg-writes">
 <h3>Iceberg Writes<a class="headerlink" href="#iceberg-writes" title="Link to this heading">#</a></h3>
