@@ -432,10 +432,11 @@ pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
 
 /// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
 /// from, or `None` when the file holds no such field, with Spark's `clipParquetGroupFields` rules
-/// as [`FieldResolver::resolve`] applies them: an id-bearing requested field matches only by id
+/// as [`FieldResolver::resolve_all`] applies them: an id-bearing requested field matches only by id
 /// when `use_field_id` is set, and every other field matches by name, folded with the same
 /// `toLowerCase(Locale.ROOT)` fold the top-level schema adapter uses when `case_sensitive` is
-/// false. A requested field that selects more than one file field is rejected.
+/// false. A requested field that selects more than one file field is rejected. Each file field
+/// belongs to its strongest claimant only; a losing requested field reads NULL.
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -461,9 +462,7 @@ pub(crate) fn match_struct_fields(
         parquet_options.case_sensitive,
         parquet_options.use_field_id,
     );
-    (0..to_fields.len())
-        .map(|to_pos| resolver.resolve(to_pos))
-        .collect()
+    resolver.resolve_all()
 }
 
 /// Cast between struct types based on logic in
@@ -2532,5 +2531,47 @@ mod tests {
             .downcast_ref::<Int32Array>()
             .unwrap();
         assert_eq!(col.value(0), 44);
+    }
+
+    #[test]
+    fn shadowed_struct_fields_follow_all_missing_null_policy() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field, Fields};
+        use datafusion_comet_spark_expr::EvalMode;
+        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+        use std::collections::HashMap;
+        use std::sync::Arc;
+
+        let parent_nulls = NullBuffer::from(vec![true, false, true]);
+        let from: ArrayRef = Arc::new(StructArray::new(
+            Fields::from(vec![Field::new("b", DataType::Int32, true)]),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            Some(parent_nulls.clone()),
+        ));
+        let to_type = DataType::Struct(Fields::from(vec![
+            Field::new("b", DataType::Int64, true).with_metadata(HashMap::from([(
+                PARQUET_FIELD_ID_META_KEY.to_string(),
+                "99".to_string(),
+            )])),
+            Field::new("B", DataType::Int32, true),
+        ]));
+        for null_struct in [false, true] {
+            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+            options.use_field_id = true;
+            options.return_null_struct_if_all_fields_missing = null_struct;
+            let converted = parquet_convert_array(Arc::clone(&from), &to_type, &options).unwrap();
+            let converted = converted.as_any().downcast_ref::<StructArray>().unwrap();
+            assert!(converted
+                .columns()
+                .iter()
+                .all(|column| column.null_count() == 3));
+            if null_struct {
+                assert_eq!(converted.null_count(), 3);
+            } else {
+                assert_eq!(converted.nulls(), Some(&parent_nulls));
+            }
+        }
     }
 }

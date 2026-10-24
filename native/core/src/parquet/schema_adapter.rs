@@ -20,7 +20,7 @@ use crate::parquet::datetime_rebase::{
     resolve_file_rebase_policies, wrap_datetime_rebase, FileRebasePolicies, RebaseReadMode,
     SessionRebaseModes,
 };
-use crate::parquet::field_resolver::{duplicate_name_error, FieldResolver, Selection};
+use crate::parquet::field_resolver::{duplicate_name_error, FieldClaim, FieldResolver};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
     duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
@@ -123,6 +123,7 @@ fn is_pure_structural_narrowing(
                 .iter()
                 .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
                 .collect::<DataFusionResult<_>>()?;
+            let mut claimed_names = HashSet::with_capacity(target_fields.len());
             for target_field in target_fields {
                 // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
                 // keeping it is only sound when Spark's configured resolver would pick the same
@@ -138,6 +139,11 @@ fn is_pure_structural_narrowing(
                 //    Spark and Comet's converter reject it, but DataFusion's cast would silently
                 //    return the exact-case field, so the cast must not be retained.
                 let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive)?;
+                // The generic cast can give one source to several targets. Comet keeps only
+                // the earliest equal-strength name claim, so that shape needs its converter.
+                if !claimed_names.insert(folded_target.clone()) {
+                    return Ok(false);
+                }
                 let resolver_matches = source_folded
                     .iter()
                     .filter(|&f| f == &folded_target)
@@ -183,77 +189,6 @@ fn is_pure_structural_narrowing(
     })
 }
 
-/// What the root remap does with one file column, strongest claim first. Spark's
-/// `clipParquetGroupFields` resolves every requested field on its own, but a rename gives a file
-/// column one name. A column that more than one requested field claims therefore takes the
-/// strongest claim, and between equal claims the earliest requested field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RootResolution {
-    /// Requested field `.0` selects the column by Parquet field id (Spark's `matchIdField`).
-    /// The column takes that field's name.
-    IdMatch(usize),
-    /// The column has the folded name of an id-bearing requested field that did not select it.
-    /// `matchIdField` never compares names, so the column takes a placeholder name (Spark's
-    /// `generateFakeColumnName`), which keeps DataFusion's name lookup from reaching it.
-    Shadowed,
-    /// Requested field `.0`, which carries no id or reads with id matching off, selects the
-    /// column by folded name. The column takes that field's name, which differs from the file
-    /// name at most in case.
-    NameMatch(usize),
-    /// No requested field claims the column. It keeps its file name.
-    Unchanged,
-}
-
-impl RootResolution {
-    fn strength(self) -> u8 {
-        match self {
-            RootResolution::IdMatch(_) => 3,
-            RootResolution::Shadowed => 2,
-            RootResolution::NameMatch(_) => 1,
-            RootResolution::Unchanged => 0,
-        }
-    }
-
-    /// Keep `claim` if it is stronger than the current resolution. Requested fields claim in
-    /// order, so the earliest one wins a tie.
-    fn claim(&mut self, claim: RootResolution) {
-        if claim.strength() > self.strength() {
-            *self = claim;
-        }
-    }
-}
-
-/// Resolve every root file column against the requested root fields. Raises Spark's
-/// `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" when an id-bearing logical field would
-/// resolve to more than one physical field. That check covers every logical field, which is the
-/// whole data schema rather than the projection, so it also fails a read that never references
-/// the field, where Spark reads the file (#7006). An ambiguous name fails only for a referenced
-/// column (see `check_duplicate_columns`).
-fn resolve_root_fields(resolver: &FieldResolver) -> DataFusionResult<Vec<RootResolution>> {
-    let mut resolutions = vec![RootResolution::Unchanged; resolver.file_fields().len()];
-    for requested in 0..resolver.requested_fields().len() {
-        match resolver.select(requested)? {
-            Selection::ById(matched) => {
-                if let Some(file) = matched {
-                    resolutions[file].claim(RootResolution::IdMatch(requested));
-                }
-                // All ID-bearing targets resolve by ID, even when a different file column has
-                // the requested name. Hide that shadowing column after giving its own ID match
-                // precedence, whether the target's ID was missing or resolved elsewhere.
-                for &file in resolver.name_matches(requested) {
-                    resolutions[file].claim(RootResolution::Shadowed);
-                }
-            }
-            Selection::ByName(matches) => {
-                for &file in matches {
-                    resolutions[file].claim(RootResolution::NameMatch(requested));
-                }
-            }
-        }
-    }
-    Ok(resolutions)
-}
-
 /// `field` under `name`, keeping everything else the file says about it.
 fn renamed_field(field: &FieldRef, name: impl Into<String>) -> FieldRef {
     Arc::new(field.as_ref().clone().with_name(name))
@@ -285,14 +220,14 @@ fn rename_to_logical(
 fn remap_physical_schema(
     resolver: &FieldResolver,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
-    let resolutions = resolve_root_fields(resolver)?;
+    let resolutions = resolver.file_claims()?;
 
     // Placeholder names for shadowed file columns, Spark's `generateFakeColumnName`. A
     // placeholder skips every folded logical and physical name, the names downstream lookups
     // compare, so no requested column can reach a shadowed column through its placeholder, even
     // one whose name differs from the placeholder only in case. Most reads shadow nothing, so
     // the reserved names are gathered only when one does.
-    let reserved: HashSet<&str> = if resolutions.contains(&RootResolution::Shadowed) {
+    let reserved: HashSet<&str> = if resolutions.contains(&FieldClaim::Shadowed) {
         resolver
             .requested_folded()
             .iter()
@@ -317,12 +252,12 @@ fn remap_physical_schema(
         .iter()
         .zip(resolutions)
         .map(|(field, resolution)| match resolution {
-            RootResolution::IdMatch(logical) | RootResolution::NameMatch(logical) => {
+            FieldClaim::IdMatch(logical) | FieldClaim::NameMatch(logical) => {
                 let logical_name = resolver.requested_fields()[logical].name();
                 rename_to_logical(field, logical_name, &mut name_map)
             }
-            RootResolution::Shadowed => renamed_field(field, placeholder()),
-            RootResolution::Unchanged => Arc::clone(field),
+            FieldClaim::Shadowed => renamed_field(field, placeholder()),
+            FieldClaim::Unchanged => Arc::clone(field),
         })
         .collect();
 
@@ -3100,6 +3035,134 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// The losing name claimant reads NULL even when converting that physical column to its
+    /// requested type would fail. This exercises both the file-open check and runtime adapter.
+    #[tokio::test]
+    async fn conflicting_field_claims_read_null_at_every_depth() -> Result<(), DataFusionError> {
+        use arrow::buffer::NullBuffer;
+
+        for depth in 0..=2 {
+            for reverse in [false, true] {
+                for losing_type in [DataType::Int64, DataType::Int32] {
+                    let values: ArrayRef =
+                        Arc::new(Int64Array::from(vec![Some(11), Some(22), None, Some(44)]));
+                    let mut batch = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![
+                            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1"))
+                        ])),
+                        vec![Arc::clone(&values)],
+                    )?;
+                    let mut fields = vec![
+                        Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                        Field::new("a", losing_type.clone(), true),
+                    ];
+                    let mut columns = vec![values, new_null_array(&losing_type, 4)];
+                    if reverse {
+                        fields.reverse();
+                        columns.reverse();
+                    }
+                    let mut expected =
+                        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+                    for level in 0..depth {
+                        let wrap = |batch: RecordBatch| -> Result<RecordBatch, DataFusionError> {
+                            let array = StructArray::try_new(
+                                batch.schema().fields().clone(),
+                                batch.columns().to_vec(),
+                                Some(NullBuffer::from(vec![true, false, true, true])),
+                            )?;
+                            Ok(RecordBatch::try_new(
+                                Arc::new(Schema::new(vec![Field::new(
+                                    format!("s{level}"),
+                                    array.data_type().clone(),
+                                    true,
+                                )])),
+                                vec![Arc::new(array)],
+                            )?)
+                        };
+                        batch = wrap(batch)?;
+                        expected = wrap(expected)?;
+                    }
+                    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+                    options.use_field_id = true;
+                    let mut stream = scan_parquet(&batch, expected.schema(), options)?;
+                    let read = stream.next().await.unwrap()?;
+                    assert_eq!(
+                        read, expected,
+                        "depth={depth}, reverse={reverse}, losing_type={losing_type}"
+                    );
+                    assert!(stream.next().await.is_none());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Spark parquet-mr assigns repeated requested ids to the last field. The first field's
+    /// incompatible type must not reject a read after that field loses its claim.
+    #[tokio::test]
+    async fn repeated_requested_ids_read_last_field_at_root_and_nested(
+    ) -> Result<(), DataFusionError> {
+        for count in [2, 3, 4] {
+            for nested in [false, true] {
+                for reverse in [false, true] {
+                    let values = Arc::new(Int64Array::from(vec![Some(11), Some(22), None]));
+                    let physical =
+                        Field::new("A", DataType::Int64, true).with_metadata(id_meta("1"));
+                    let mut names = vec!["x", "y", "z", "w"];
+                    names.truncate(count);
+                    if reverse {
+                        names.reverse();
+                    }
+                    let requested: Vec<_> = names
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| {
+                            let data_type = if index + 1 == count {
+                                DataType::Int64
+                            } else {
+                                DataType::Int32
+                            };
+                            Field::new(*name, data_type, true).with_metadata(id_meta("1"))
+                        })
+                        .collect();
+                    let (batch, required) = if nested {
+                        (
+                            struct_batch(physical, Arc::clone(&values) as ArrayRef)?,
+                            struct_schema(requested),
+                        )
+                    } else {
+                        (
+                            RecordBatch::try_new(
+                                Arc::new(Schema::new(vec![physical])),
+                                vec![Arc::clone(&values) as ArrayRef],
+                            )?,
+                            Arc::new(Schema::new(requested)),
+                        )
+                    };
+                    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+                    options.use_field_id = true;
+                    let mut stream = scan_parquet(&batch, required, options)?;
+                    let read = stream.next().await.unwrap()?;
+                    let columns = if nested {
+                        read.column(0).as_struct().columns()
+                    } else {
+                        read.columns()
+                    };
+                    for column in &columns[..count - 1] {
+                        assert_eq!(column.data_type(), &DataType::Int32);
+                        assert_eq!(column.null_count(), values.len());
+                    }
+                    assert_eq!(
+                        columns[count - 1].as_primitive::<Int64Type>(),
+                        values.as_ref()
+                    );
+                    assert!(stream.next().await.is_none());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Disallowed widening (`INT32 -> bigint` with `allow_type_promotion` off) inside a
     /// struct defers to `RejectOnNonEmpty`, like the top level: a non-empty file fails ...
     #[tokio::test]
@@ -4084,10 +4147,10 @@ pub(crate) mod test {
         );
     }
 
-    /// Between equal claims the earliest requested field wins, for an id match and for a name
-    /// match alike.
+    /// Repeated requested ids keep the last claimant, matching Spark parquet-mr's
+    /// ParquetRowConverter. Equal name claims retain the earliest claimant.
     #[test]
-    fn root_resolution_earliest_requested_field_wins_a_tie() {
+    fn root_resolution_id_ties_keep_last_and_name_ties_keep_first() {
         let logical = Arc::new(Schema::new(vec![
             Field::new("x", DataType::Int32, true).with_metadata(id_meta("1")),
             Field::new("y", DataType::Int32, true).with_metadata(id_meta("1")),
@@ -4099,7 +4162,7 @@ pub(crate) mod test {
             Field::new("AB", DataType::Int32, true),
         ]));
         let (remapped, _name_map) = remap(&logical, &physical, false, true);
-        assert_eq!(field_names(&remapped), ["x", "Ab"]);
+        assert_eq!(field_names(&remapped), ["y", "Ab"]);
     }
 
     /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)
@@ -4567,6 +4630,14 @@ pub(crate) mod test {
         let opts = default_options();
         let physical = struct_type(vec![("id", DataType::Int32)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
+        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
+    }
+
+    #[test]
+    fn is_pure_structural_narrowing_denies_conflicting_name_claims() {
+        let opts = default_options();
+        let physical = struct_type(vec![("a", DataType::Int32), ("b", DataType::Int32)]);
+        let target = struct_type(vec![("a", DataType::Int32), ("a", DataType::Int32)]);
         assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 
