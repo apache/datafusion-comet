@@ -53,7 +53,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "review_assert",
       (children: Seq[org.apache.spark.sql.catalyst.expressions.Expression]) =>
         AssertNotNull(children.head, children.tail.map(_.asInstanceOf[Literal].value.toString)),
-      "internal")
+      "built-in")
     try f
     finally {
       val _ = sql("DROP TEMPORARY FUNCTION IF EXISTS review_assert")
