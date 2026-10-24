@@ -678,9 +678,16 @@ Rust can shrink that filter toward the target FPP and produce more false positiv
 option off if your workload relies on that extra accuracy. This can happen with an overestimated
 NDV, skew, or a partly filled row group. With explicit NDV, `max-bytes` is a ceiling; a large cap alone does not enlarge the allocation.
 
-Even with the option enabled, unsupported settings use Java's writer, preserving Bloom filters.
-For configured Bloom columns, native caps are powers of two from 32 bytes through 128 MiB;
-other caps and unsupported NDV/FPP combinations fall back as described in the eligibility table.
+For configured Bloom columns, Comet uses Java's writer even with the option enabled when:
+
+- `max-bytes` is not a power of two from 32 bytes through 128 MiB.
+- `max-bytes=32` and explicit NDV/FPP settings request a larger filter, because Java ignores
+  that boundary as a maximum.
+- NDV is not a positive Java long or exceeds `Long.MAX_VALUE / 8`.
+- FPP is not finite and strictly between 0 and 1, or is too extreme to represent the required
+  native filter sizes.
+
+Java's normal validation applies to invalid values and can still fail the write.
 
 Byte parity also requires matching inserted values, physical encodings, and initial sizes.
 Boolean filters differ because Java does not populate them; dictionary-only chunks can have a
