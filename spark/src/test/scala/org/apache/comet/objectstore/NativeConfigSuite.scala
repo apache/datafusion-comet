@@ -553,6 +553,20 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       // ABFS keeps the container from the user info; WASB does not.
       Case(s"abfss://container@$account/k.parquet", "", "", s"abfss://container@$account", false),
       Case(s"abfs://container@$account/k.parquet", "", "", s"abfs://container@$account", false),
+      // The password never joins the key; credentials come from the configuration.
+      Case(
+        s"abfss://container:secret@$account/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account",
+        hdfs = false),
+      Case(s"abfss://:secret@$account/k.parquet", "", "", s"abfss://$account", hdfs = false),
+      Case(
+        s"abfss://container:secret@$account:8443/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account:8443",
+        hdfs = false),
       Case(
         "wasbs://container@account.blob.core.windows.net/k.parquet",
         "",
@@ -713,6 +727,38 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     assertDeclined(
       hadoopConf,
       Seq(abfsFile("data", "accta", "a.parquet"), abfsFile("data", "acctb", "b.parquet")))
+  }
+
+  test("extractScanObjectStoreOptions - a decline names ABFS stores without password or query") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    val uris = Seq("SECRET", "OTHER").map { password =>
+      new URI(s"abfss://data:$password@accta.dfs.core.windows.net/path/a.parquet?sig=SAS-MARKER")
+    }
+
+    def declineReason(uris: Seq[URI]): String =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+        case Left(reason) =>
+          Seq("SECRET", "OTHER", "SAS-MARKER", "/path").foreach { leaked =>
+            reason should not include leaked
+          }
+          reason
+        case Right(options) => fail(s"expected a decline, got $options")
+      }
+
+    declineReason(uris) should include(
+      "(abfss://data@accta.dfs.core.windows.net, with different user info)")
+    val otherContainer =
+      new URI("abfss://logs:OTHER@accta.dfs.core.windows.net/path/b.parquet?sig=SAS-MARKER")
+    declineReason(Seq(uris.head, otherContainer)) should include(
+      "(abfss://data@accta.dfs.core.windows.net and abfss://logs@accta.dfs.core.windows.net)")
+  }
+
+  test("displayAuthority - lowercase scheme and no password, path or query") {
+    NativeConfig.displayAuthority(
+      new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
+      "abfss://data@acct.dfs.core.windows.net:8443"
+    NativeConfig.displayAuthority(new URI("/tmp/t/k.parquet")) shouldBe "file://"
   }
 
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {

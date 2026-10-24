@@ -132,6 +132,19 @@ object NativeConfig {
     rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
   }
 
+  /** As in native, the user ends at the first `:` and the host follows the last `@`. */
+  private def authorityWithoutPassword(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    val at = rawAuthority.lastIndexOf('@')
+    val user = rawAuthority.take(at).takeWhile(_ != ':')
+    val host = rawAuthority.substring(at + 1)
+    if (user.isEmpty) host else s"$user@$host"
+  }
+
+  /** `scheme://[user@]host[:port]` of `uri`, for messages: no password, path or query. */
+  private[comet] def displayAuthority(uri: URI): String =
+    s"${lowerScheme(uri).getOrElse("file")}://${authorityWithoutPassword(uri)}"
+
   /**
    * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
    * when it is unset or blank, as native `is_hdfs_scheme` decides.
@@ -198,7 +211,7 @@ object NativeConfig {
     val scheme = lowerScheme(uri).getOrElse("file")
     val isLibhdfs = libhdfsSchemes.contains(scheme)
     val authority =
-      if (scheme == "abfs" || scheme == "abfss") Option(uri.getRawAuthority).getOrElse("")
+      if (scheme == "abfs" || scheme == "abfss") authorityWithoutPassword(uri)
       else hostAndPort(uri)
     val isS3Alias = !isLibhdfs &&
       (scheme == "s3a" ||
@@ -424,9 +437,12 @@ object NativeConfig {
             s"(${first.getScheme} and ${uri.getScheme})")
       }
       if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        // Hadoop reads the whole user info, password too, as the container.
+        val (a, b) = (displayAuthority(first), displayAuthority(uri))
+        val stores = if (a == b) s"$a, with different user info" else s"$a and $b"
         return Left(
           "Native scan does not support ABFS files from more than one container or account " +
-            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+            s"($stores)")
       }
     }
     if (firstIsAbfs) {

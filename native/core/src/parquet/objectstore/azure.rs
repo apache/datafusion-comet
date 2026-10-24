@@ -71,13 +71,15 @@
 
 use log::debug;
 use std::collections::HashMap;
-use url::{Position, Url};
+use url::Url;
 
 use object_store::{
     azure::{AzureConfigKey, MicrosoftAzureBuilder},
     path::Path,
     ObjectStore, ObjectStoreScheme,
 };
+
+use super::url_redaction::{display_authority, without_credentials, without_secrets};
 
 const MARKER_RESOLUTION: &str = "comet.azure.resolution";
 const MARKER_AUTH_TYPE: &str = "comet.azure.auth.type";
@@ -120,9 +122,12 @@ pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    let (scheme, path) = ObjectStoreScheme::parse(url)?;
+    let (scheme, path) = ObjectStoreScheme::parse(&without_credentials(url))?;
     if scheme != ObjectStoreScheme::MicrosoftAzure {
-        return Err(config_error(format!("Scheme of URL is not Azure: {url}")));
+        return Err(config_error(format!(
+            "Scheme of URL is not Azure: {}",
+            url.scheme()
+        )));
     }
     let path = Path::parse(path)?;
     let store = builder_for(url, configs)?.build()?;
@@ -137,17 +142,21 @@ fn builder_for(
     let marker = |key: &str| configs.get(key).map(String::as_str);
     match marker(MARKER_RESOLUTION) {
         Some("none") => {
-            debug!("Azure authentication for {url}: none configured in Hadoop, reading AZURE_*");
-            Ok(MicrosoftAzureBuilder::from_env().with_url(url.to_string()))
+            debug!(
+                "Azure authentication for {}: none configured in Hadoop, reading AZURE_*",
+                display_authority(url)
+            );
+            Ok(MicrosoftAzureBuilder::from_env().with_url(without_secrets(url).to_string()))
         }
         Some("resolved") => {
             let settings = resolved_settings(configs)?;
             debug!(
-                "Azure authentication for {url}: {} with keys {:?}",
+                "Azure authentication for {}: {} with keys {:?}",
+                display_authority(url),
                 marker(MARKER_AUTH_TYPE).unwrap_or_default(),
                 settings.iter().map(|(k, _)| k.as_ref()).collect::<Vec<_>>()
             );
-            let builder = MicrosoftAzureBuilder::new().with_url(url.to_string());
+            let builder = MicrosoftAzureBuilder::new().with_url(without_secrets(url).to_string());
             Ok(settings
                 .into_iter()
                 .fold(builder, |b, (key, value)| b.with_config(key, value)))
@@ -162,9 +171,8 @@ fn builder_for(
             ))
         }
         Some("error") => Err(config_error(format!(
-            "Hadoop ABFS authentication failed on the driver for {}://{}: {}: {}",
-            url.scheme(),
-            &url[Position::BeforeUsername..Position::AfterPort],
+            "Hadoop ABFS authentication failed on the driver for {}: {}: {}",
+            display_authority(url),
             marker(MARKER_ERROR_CLASS).unwrap_or("<unknown>"),
             marker(MARKER_ERROR_MESSAGE).unwrap_or("<unknown>"),
         ))),
@@ -530,6 +538,54 @@ mod tests {
     }
 
     #[test]
+    fn create_store_errors_do_not_echo_userinfo_or_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        let error_for = |raw: String| {
+            let url = Url::parse(&raw).unwrap();
+            let err = create_store(&url, &configs).unwrap_err().to_string();
+            for leaked in ["alice", SECRET, "SAS-MARKER"] {
+                assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+            }
+            err
+        };
+        let not_azure = error_for(format!(
+            "s3://alice:{SECRET}@bucket/dir/file.parquet?sig=SAS-MARKER"
+        ));
+        assert!(
+            not_azure.ends_with("Scheme of URL is not Azure: s3"),
+            "{not_azure}"
+        );
+        assert!(!not_azure.contains("bucket"), "host echoed: {not_azure}");
+        error_for(format!(
+            "foo://alice:{SECRET}@host/dir/file.parquet?sig=SAS-MARKER"
+        ));
+    }
+
+    #[test]
+    fn builder_errors_do_not_echo_the_password_or_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        // object_store recognises only the public cloud and Fabric hosts, and quotes the URL.
+        let url = Url::parse(&format!(
+            "abfss://data:{SECRET}@myacct.dfs.core.chinacloudapi.cn/path/file.parquet?sig=SAS-MARKER"
+        ))
+        .unwrap();
+        let err = create_store(&url, &configs).unwrap_err().to_string();
+        for leaked in [SECRET, "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+    }
+
+    #[test]
+    fn create_store_keeps_the_container_of_a_url_with_a_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        let url =
+            Url::parse("abfss://data@myacct.dfs.core.windows.net/path/file.parquet?sig=SAS-MARKER")
+                .unwrap();
+        let (_store, path) = create_store(&url, &configs).expect("store builds");
+        assert_eq!(path.as_ref(), "path/file.parquet");
+    }
+
+    #[test]
     fn client_creds_take_tenant_and_authority_host_from_the_endpoint_alone() {
         assert_exactly(
             &client_creds(),
@@ -843,6 +899,19 @@ mod tests {
              abfss://data@myacct.dfs.core.windows.net: \
              org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException: \
              Failure to initialize configuration"
+        );
+        let with_password = Url::parse(&format!(
+            "abfss://data:{SECRET}@myacct.dfs.core.windows.net/path/file.parquet"
+        ))
+        .unwrap();
+        let err = builder_for(&with_password, &configs)
+            .err()
+            .map(|e| e.to_string())
+            .expect("an error");
+        assert!(!err.contains(SECRET), "password echoed: {err}");
+        assert!(
+            err.contains("for abfss://data@myacct.dfs.core.windows.net: "),
+            "{err}"
         );
     }
 
