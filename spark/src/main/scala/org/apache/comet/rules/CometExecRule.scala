@@ -184,11 +184,13 @@ object CometExecRule {
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 
   /**
-   * Tag set on a `SerializeFromObjectExec` whose output an operator above it can stop reading
-   * early, naming that operator. See `tagPartiallyReadTypedDatasetOutputs`.
+   * A consumer that may skip input rows or defer projected fields until a row is selected. See
+   * `tagPartiallyReadOutputs`.
    */
-  private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
-    TreeNodeTag[String]("comet.typedDatasetPartialReader")
+  private case class PartialReader(description: String, canSkipInput: Boolean = true)
+
+  private val PARTIAL_READER: TreeNodeTag[PartialReader] =
+    TreeNodeTag[PartialReader]("comet.partialReader")
 
   /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
@@ -440,9 +442,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
     lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
 
-    if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
-      tagPartiallyReadTypedDatasetOutputs(plan)
-    }
+    tagPartiallyReadOutputs(plan)
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
@@ -555,18 +555,18 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // Arrow lets the operators above the typed operation run natively.
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
-        op.getTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER) match {
-          case Some(reader) =>
+        op.getTagValue(CometExecRule.PARTIAL_READER) match {
+          case Some(reader) if reader.canSkipInput =>
             withFallbackReason(
               op,
               "Comet does not convert the output of a typed Dataset operation when " +
-                s"$reader can stop reading it early, because filling an Arrow batch would " +
-                "run the user function on rows that Spark never reaches")
+                s"${reader.description} can stop reading it early, because filling an Arrow " +
+                "batch would run the user function on rows that Spark never reaches")
           // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
           // See shouldApplySparkToColumnar.
-          case None if readsInputFileBlock =>
+          case _ if readsInputFileBlock =>
             withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
-          case None =>
+          case _ =>
             convertTypedDatasetOutput(op)
         }
 
@@ -1247,10 +1247,96 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           serde.convert(op, builder)
         }
       }
-      return nativeOp.map { nativeOp =>
-        val exec = serde.createExec(nativeOp, op)
-        rollUpInfoMessages(op, exec)
-        exec
+      return nativeOp
+        .filter { proto =>
+          // A serde may emit several native nodes for one Spark operator. Inspect those nodes,
+          // but stop at real Spark children, whose consumption context was tagged independently.
+          def containsOwnAssertion(node: Operator): Boolean =
+            CometAssertNotNull.containsNativeAssertion(node.toBuilder.clearChildren().build()) ||
+              node.getChildrenList.asScala.exists { child =>
+                child.getPlanId == proto.getPlanId && containsOwnAssertion(child)
+              }
+
+          def hasNativeAssertion: Boolean = op match {
+            // TopK's sink proto omits its runtime projection over the selected rows.
+            case topK: TakeOrderedAndProjectExec =>
+              QueryPlanSerde.withSharedSubexpressions(topK.projectList) {
+                topK.projectList.exists { expression =>
+                  QueryPlanSerde
+                    .exprToProto(expression, topK.child.output)
+                    .exists(CometAssertNotNull.containsNativeAssertion)
+                }
+              }
+            case _: HashAggregateExec | _: ObjectHashAggregateExec =>
+              // Input/grouping expressions consume all rows; only the result projection is lazy.
+              proto.hasProjection && CometAssertNotNull.containsNativeAssertion(
+                proto.getProjection)
+            case _ => containsOwnAssertion(proto)
+          }
+          val fallback = nativeAssertionJoinFallback(proto).orElse {
+            op.getTagValue(CometExecRule.PARTIAL_READER)
+              .filter(_ => hasNativeAssertion)
+              .map(reader =>
+                s"Native AssertNotNull below ${reader.description} could change which values " +
+                  "Spark checks")
+          }
+          fallback.foreach(reason => withFallbackReason(op, reason))
+          fallback.isEmpty
+        }
+        .map { nativeOp =>
+          val exec = serde.createExec(nativeOp, op)
+          rollUpInfoMessages(op, exec)
+          exec
+        }
+    }
+    None
+  }
+
+  private def nativeAssertionJoinFallback(proto: Operator): Option[String] = {
+    import OperatorOuterClass.JoinType
+
+    // These consumers can skip candidates even without a LIMIT above the join. Inspect only
+    // the serialized condition. Child projections use the partial-reader tags independently;
+    // assertions captured inside opaque JVM dispatch keep their existing execution path.
+    val condition = if (proto.hasHashJoin) {
+      val join = proto.getHashJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else if (proto.hasSortMergeJoin) {
+      val join = proto.getSortMergeJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else if (proto.hasBroadcastNestedLoopJoin) {
+      val join = proto.getBroadcastNestedLoopJoin
+      Some(join.getJoinType -> join.getCondition)
+    } else None
+
+    if (condition.exists {
+        case (JoinType.LeftSemi | JoinType.LeftAnti, expression) =>
+          CometAssertNotNull.containsNativeAssertion(expression)
+        case _ => false
+      }) {
+      return Some(
+        "Native AssertNotNull in an early-exit join condition could check candidates Spark skips")
+    }
+
+    if (proto.hasHashJoin) {
+      val join = proto.getHashJoin
+      val leftKeys = join.getLeftJoinKeysList.asScala
+      val rightKeys = join.getRightJoinKeysList.asScala
+      // Empty and all-NULL build relations can skip different streamed keys in Spark and
+      // DataFusion. Null-aware anti joins also stop building at the first NULL key in Spark,
+      // while native execution builds on the opposite side and evaluates keys in batches.
+      val keys = if (join.getNullAwareAntiJoin) {
+        leftKeys ++ rightKeys
+      } else {
+        join.getJoinType match {
+          case JoinType.Inner | JoinType.LeftSemi | JoinType.LeftAnti =>
+            if (join.getBuildSide == OperatorOuterClass.BuildSide.BuildRight) leftKeys
+            else rightKeys
+          case _ => Seq.empty
+        }
+      }
+      if (keys.exists(CometAssertNotNull.containsNativeAssertion)) {
+        return Some("Native AssertNotNull in hash join keys could change which keys Spark checks")
       }
     }
     None
@@ -1397,37 +1483,74 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   /**
-   * Tags each `SerializeFromObjectExec` whose output an operator above it can stop reading early
-   * with that operator, so `transform` does not convert it. Spark computes the rows of a typed
-   * Dataset operation one at a time, as the operator above reads them, while the conversion fills
-   * a whole Arrow batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or
-   * code reading `Dataset.rdd`, the conversion would run the user function on rows Spark never
-   * reaches, and a function that throws on one of them would fail a query that succeeds in Spark.
-   * An operator that reads all of its input before it returns a row ends the search, since Spark
-   * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
-   * input that is not already sorted.
+   * Tags operators whose output a consumer can skip evaluating. Spark computes rows as the
+   * consumer reads them, while native expressions and typed Dataset conversion fill a whole Arrow
+   * batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or code reading
+   * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. Joins
+   * can also skip an input, and generated projections, filters, samples and joins can defer child
+   * fields until an expression needs them. Conversely, native joins can skip input Spark would
+   * evaluate. An operator that reads all of its input before it returns a row ends the search,
+   * since Spark computes every row below it anyway: an exchange, a sort, a hash aggregate, or a
+   * top-k over input that is not already sorted.
    *
    * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
-   * during transformUp, while an identity set would not.
+   * during transformUp, while an identity set would not. Retain established tags when AQE visits
+   * a fragment without its limiting ancestor.
    */
-  private def tagPartiallyReadTypedDatasetOutputs(plan: SparkPlan): Unit = {
-    def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
-      val childReader = op match {
-        case serialize: SerializeFromObjectExec =>
-          partialReader.foreach(
-            serialize.setTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER, _))
-          partialReader
-        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
+  private def tagPartiallyReadOutputs(plan: SparkPlan): Unit = {
+    import CometExecRule.PartialReader
+
+    def visit(op: SparkPlan, partialReader: Option[PartialReader]): Unit = {
+      // AQE can revisit a fragment without the ancestor that could skip whole rows. A new
+      // field-only reader must not weaken that established context or its child propagation.
+      val inheritedReader = op
+        .getTagValue(CometExecRule.PARTIAL_READER)
+        .filter(_.canSkipInput)
+        .orElse(partialReader)
+      // A repeated transform can already contain Comet limits and consumption barriers.
+      val original = op match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val childReader = original match {
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec =>
+          Some(PartialReader("a limit"))
         // A top-k reads only its first rows when its input is already sorted.
         case topK: TakeOrderedAndProjectExec
             if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
-          Some("a limit")
-        case _: MapPartitionsExec => Some("a mapPartitions function")
+          Some(PartialReader("a limit"))
+        // Global window limits can stop below an exchange, without an upper reader tag.
+        case w if ShimCometWindowGroupLimit.extract(w).exists(_.partitionSpec.isEmpty) =>
+          Some(PartialReader("a window group limit"))
+        case _: MapPartitionsExec => Some(PartialReader("a mapPartitions function"))
+        // These consumers defer projected fields, but still read every input object. Keep
+        // typed Dataset conversion eligible unless an ancestor can skip whole input rows.
+        case _: ProjectExec =>
+          inheritedReader.orElse(Some(PartialReader("a projection", canSkipInput = false)))
+        case _: FilterExec =>
+          inheritedReader.orElse(Some(PartialReader("a filter", canSkipInput = false)))
+        case _: SampleExec =>
+          inheritedReader.orElse(Some(PartialReader("a sample", canSkipInput = false)))
+        case _: BroadcastHashJoinExec | _: ShuffledHashJoinExec | _: SortMergeJoinExec |
+            _: BroadcastNestedLoopJoinExec =>
+          Some(PartialReader("a join"))
         case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
             _: TakeOrderedAndProjectExec =>
           None
-        case _ => partialReader
+        case _ => inheritedReader
       }
+      // TopK and aggregate result projections run after selection/aggregation. An external
+      // consumer can still skip their output rows, even though their input is fully consumed.
+      // Projections, filters, samples and joins introduce a context for their children only.
+      // A join's own keys and condition have separate checks for their evaluation order.
+      val ownReader = original match {
+        case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
+            _: ProjectExec | _: FilterExec | _: SampleExec | _: BroadcastHashJoinExec |
+            _: ShuffledHashJoinExec | _: SortMergeJoinExec | _: BroadcastNestedLoopJoinExec =>
+          inheritedReader
+        case _ => childReader
+      }
+      ownReader.foreach(op.setTagValue(CometExecRule.PARTIAL_READER, _))
       op.children.foreach(visit(_, childReader))
     }
     // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
@@ -1441,7 +1564,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
       case _ => false
     }
-    visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+    visit(
+      plan,
+      if (producesObjects(plan)) Some(PartialReader("code reading Dataset.rdd")) else None)
   }
 
   /**

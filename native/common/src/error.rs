@@ -178,8 +178,10 @@ pub enum SparkError {
     )]
     SequenceBatchTooLarge { total_elements: String },
 
-    #[error("[NOT_NULL_ASSERT_VIOLATION] The field `{field_name}` cannot be null.")]
-    NotNullAssertViolation { field_name: String },
+    #[error(
+        "[NOT_NULL_ASSERT_VIOLATION] NULL value appeared in non-nullable field: {walked_type_path}"
+    )]
+    NotNullAssertViolation { walked_type_path: String },
 
     #[error("[VALUE_IS_NULL] The value of field `{field_name}` at row {row_index} is null.")]
     ValueIsNull { field_name: String, row_index: i32 },
@@ -552,9 +554,9 @@ impl SparkError {
                     "totalElements": total_elements,
                 })
             }
-            SparkError::NotNullAssertViolation { field_name } => {
+            SparkError::NotNullAssertViolation { walked_type_path } => {
                 serde_json::json!({
-                    "fieldName": field_name,
+                    "walkedTypePath": walked_type_path,
                 })
             }
             SparkError::ValueIsNull {

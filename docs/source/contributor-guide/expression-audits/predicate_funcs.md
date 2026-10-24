@@ -84,6 +84,22 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## assertnotnull
+
+Internal Catalyst runtime nullability check, with no public SQL function. Native evaluation preserves the child value and checks its outer logical validity, including dictionary values. Structural and lazy conditional parents used by V2 writes are supported. Other native parents conservatively fall back to preserve Spark's evaluation order. Operators whose consumers may stop reading early also fall back for native assertions, so a limit does not check later rows in a batch. Full-consumption barriers end this restriction, while late TopK and aggregate result projections preserve any external partial consumer's row-by-row behavior. Assertions captured entirely in JVM codegen dispatch retain their existing execution path, including under native parents.
+
+Semi/anti join conditions fall back when their serialized expressions contain native assertions: Spark stops at the first matching candidate, while native filters can check later candidates, including already-matched rows in a sort-merge group. Hash inner/semi/anti streamed keys also fall back because empty and all-NULL build relations can skip different key evaluations. Null-aware anti joins extend that protection to both key lists because Spark stops building at the first NULL and native execution builds on the opposite side. These checks do not traverse opaque JVM dispatch. Separately, projections, filters, samples and joins mark their input operators as potentially partially evaluated. This keeps assertions in child projections on Spark, where generated execution may defer output-only fields until a conditional expression needs them, a row passes selection or joins successfully. It also preserves errors that native joins might suppress by skipping an input. Materializing exchanges and sorts end this child restriction; a broadcast build projection below its exchange remains native. Projections, filters and samples still read every input object, so they do not by themselves block typed Dataset output conversion; joins can skip input and do block it until a materialization barrier. A projection's own assertions remain eligible unless an ancestor introduces a partial reader.
+
+Aggregate arguments and filters also fall back when their serialized aggregate contains a native assertion. They are independent scalar roots, but Spark can skip their values during lazy updates (such as `first`), filtered updates and nullable-argument checks (such as `count`). Grouping and result expressions are outside this restriction, and opaque JVM-dispatched arguments keep their existing path.
+
+Native projections evaluate columns across a batch. If multiple asserted fields contain NULLs on different rows, the first reported field can differ from Spark's row-wise evaluation order. The query still fails with the corresponding field's nullability error; a globally identical first failing row or field is not guaranteed.
+
+- Spark 3.4.3 (audited 2026-10-22): full `NullPointerException` message and newline-delimited walked path. Nullable-source V2 writes to required columns are rejected during analysis.
+- Spark 3.5.9 (audited 2026-10-22): same expression error contract as 3.4.3. V2 writes insert runtime assertions for required fields.
+- Spark 4.0.4 (audited 2026-10-22): `SparkRuntimeException` with `NOT_NULL_ASSERT_VIOLATION` and `walkedTypePath`.
+- Spark 4.1.3 (audited 2026-10-22): same expression contract as 4.0.4.
+- Spark 4.2.0 (audited 2026-10-22): same expression contract as 4.0.4.
+
 ## AtLeastNNonNulls (DataFrame API)
 
 - Spark 3.4.3 (audited 2026-09-24): non-nullable Boolean predicate used by `DataFrame.na.drop`. Counts non-null, non-NaN children and stops evaluating a row once the threshold is reached. Non-positive thresholds return true without evaluating children.

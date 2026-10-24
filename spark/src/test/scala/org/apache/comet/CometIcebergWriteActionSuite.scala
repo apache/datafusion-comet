@@ -102,6 +102,185 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq(
+    "id INT NOT NULL, s STRUCT<a: INT NOT NULL, b: STRING>",
+    "id INT, s STRUCT<a: INT, b: STRING> NOT NULL").zipWithIndex.foreach { case (schema, index) =>
+    test(s"native AssertNotNull write from nullable input $index") {
+      assume(icebergAvailable && isSpark35Plus)
+      withIcebergCatalog { _ =>
+        withTempPath { path =>
+          sql("SELECT 1 AS id, named_struct('a', 2, 'b', 'value') AS s").write.parquet(
+            path.toString)
+          val input = spark.read.parquet(path.toString)
+          withTempView("assert_not_null_source") {
+            input.createOrReplaceTempView("assert_not_null_source")
+            Seq("", "PARTITIONED BY (bucket(4, id))").zipWithIndex.foreach {
+              case (partition, partIndex) =>
+                val table = s"assert_not_null_${index}_$partIndex"
+                sql(s"""CREATE TABLE cat.db.$table ($schema) USING iceberg $partition
+                    |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+                val snapshot = withNativeEnabled {
+                  captureWrite(table) {
+                    sql(s"INSERT INTO cat.db.$table SELECT * FROM assert_not_null_source")
+                    input.writeTo(s"cat.db.$table").append()
+                  }
+                }
+                assert(snapshot.snapshotDelta == 2)
+                assert(
+                  snapshot.plans.count(p =>
+                    collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+                      w
+                    }.nonEmpty) == 2,
+                  snapshot.plans.mkString("\n"))
+                checkAnswer(
+                  sql(s"SELECT * FROM cat.db.$table"),
+                  Seq.fill(2)(Row(1, Row(2, "value"))))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("native AssertNotNull writes scalar struct fields") {
+    assume(icebergAvailable && isSpark35Plus)
+    withIcebergCatalog { _ =>
+      withTempPath { path =>
+        sql("SELECT 1 AS id UNION ALL SELECT 2 UNION ALL SELECT 3")
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+        withTempView("assertion_scalar_source") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("assertion_scalar_source")
+          sql("""CREATE TABLE cat.db.assert_scalar_struct
+            |(id INT, s STRUCT<a: INT> NOT NULL) USING iceberg
+            |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+          val snapshot = withNativeEnabled {
+            captureWrite("assert_scalar_struct") {
+              sql("""INSERT INTO cat.db.assert_scalar_struct
+                |SELECT id, CASE WHEN (SELECT max(id) FROM assertion_scalar_source) > 0
+                |THEN named_struct('a', (SELECT max(id) FROM assertion_scalar_source))
+                |ELSE CAST(NULL AS STRUCT<a: INT>) END AS s
+                |FROM assertion_scalar_source""".stripMargin)
+            }
+          }
+          assert(snapshot.snapshotDelta == 1)
+          assert(snapshot.plans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.nonEmpty))
+          checkAnswer(
+            sql("SELECT * FROM cat.db.assert_scalar_struct"),
+            Seq(Row(1, Row(3)), Row(2, Row(3)), Row(3, Row(3))))
+        }
+      }
+    }
+  }
+
+  test("native AssertNotNull allows a null parent of a required nested field") {
+    assume(icebergAvailable && isSpark35Plus)
+    withIcebergCatalog { _ =>
+      withTempPath { path =>
+        sql("""SELECT 1 AS id, named_struct('a', 2, 'b', 'value') AS s
+          |UNION ALL SELECT 2, CAST(NULL AS STRUCT<a: INT, b: STRING>)""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+        sql("""CREATE TABLE cat.db.assert_null_parent
+          |(id INT NOT NULL, s STRUCT<a: INT NOT NULL, b: STRING>) USING iceberg
+          |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+        val snapshot = withNativeEnabled {
+          captureWrite("assert_null_parent") {
+            spark.read.parquet(path.toString).writeTo("cat.db.assert_null_parent").append()
+          }
+        }
+        assert(snapshot.snapshotDelta == 1)
+        assert(
+          snapshot.plans.exists(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+              w
+            }.nonEmpty),
+          snapshot.plans.mkString("\n"))
+        checkAnswer(
+          sql("SELECT * FROM cat.db.assert_null_parent"),
+          Seq(Row(1, Row(2, "value")), Row(2, null)))
+      }
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(s"native AssertNotNull respects limited write input with AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            sql("SELECT 1 AS id UNION ALL SELECT CAST(NULL AS INT)")
+              .coalesce(1)
+              .write
+              .parquet(path.toString)
+            val tableName = s"assert_limited_input_$adaptive"
+            sql(s"CREATE TABLE cat.db.$tableName (id INT NOT NULL) USING iceberg")
+            val snapshot = withNativeEnabled {
+              captureWrite(tableName) {
+                spark.read
+                  .parquet(path.toString)
+                  .limit(1)
+                  .writeTo(s"cat.db.$tableName")
+                  .append()
+              }
+            }
+            assert(snapshot.snapshotDelta == 1)
+            checkAnswer(sql(s"SELECT * FROM cat.db.$tableName"), Seq(Row(1)))
+          }
+        }
+      }
+    }
+  }
+
+  Seq(
+    ("id INT NOT NULL", "CAST(NULL AS INT) AS id"),
+    (
+      "s STRUCT<a: INT NOT NULL, b: STRING>",
+      "named_struct('a', CAST(NULL AS INT), 'b', 'value') AS s"),
+    (
+      "s STRUCT<a: INT, b: STRING> NOT NULL",
+      "CAST(NULL AS STRUCT<a: INT, b: STRING>) AS s")).zipWithIndex.foreach {
+    case ((schema, value), index) =>
+      test(s"native AssertNotNull rejects null input without a commit $index") {
+        assume(icebergAvailable && isSpark35Plus)
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            sql(s"SELECT $value").write.parquet(path.toString)
+            val nativeTable = s"assert_null_native_$index"
+            val jvmTable = s"assert_null_jvm_$index"
+            Seq(nativeTable, jvmTable).foreach { table =>
+              sql(s"""CREATE TABLE cat.db.$table ($schema) USING iceberg
+              |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+            }
+            val (nativeError, jvmError) = failedWrites(nativeTable, jvmTable) { table =>
+              // Disable Comet for the reference projection as well as its writer.
+              val enabled = table == nativeTable
+              withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+                spark.read.parquet(path.toString).writeTo(s"cat.db.$table").append()
+              }
+            }
+            def nullError(error: Throwable): Throwable = causeChain(error)
+              .find { e =>
+                e.isInstanceOf[NullPointerException] || (e match {
+                  case s: SparkThrowable => s.getErrorClass == "NOT_NULL_ASSERT_VIOLATION"
+                  case _ => false
+                })
+              }
+              .getOrElse(fail(s"Expected Spark's null assertion failure, got $error"))
+            assert(nullError(nativeError).getClass == nullError(jvmError).getClass)
+            assert(nullError(nativeError).getMessage == nullError(jvmError).getMessage)
+            Seq(nativeTable, jvmTable).foreach { table =>
+              assert(countSnapshots(table) == 0)
+              checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
+            }
+          }
+        }
+      }
+  }
+
   // Turning off Comet, or only its native execution as an application that uses Comet just for
   // scans or shuffle does, keeps Spark's own write operator.
   Seq(CometConf.COMET_ENABLED, CometConf.COMET_EXEC_ENABLED).foreach { flag =>

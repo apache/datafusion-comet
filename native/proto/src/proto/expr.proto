@@ -96,6 +96,7 @@ message Expr {
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
     AtLeastNNonNulls at_least_n_non_nulls = 76;
+    AssertNotNull assert_not_null = 77;
   }
 
   reserved 20;
@@ -767,6 +768,11 @@ message NativeScalarUdf {
   // to express a volatile one. The field is carried so that honoring it later
   // does not need a wire change.
   bool deterministic = 5;
+}
+
+message AssertNotNull {
+  Expr child = 1;
+  string walked_type_path = 2;
 }
 
 // Counts non-null and non-NaN children, with per-row short-circuit evaluation.

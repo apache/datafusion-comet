@@ -24,11 +24,14 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, EqualTo, FromUnixTime, GetStructField, In, InSet, IntegralDivide, Literal, Multiply, NamedExpression, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Sum}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
@@ -43,6 +46,375 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  test("AssertNotNull preserves values and runs natively") {
+    withTempPath { path =>
+      sql("""SELECT 1 AS i, 'value' AS s, CAST(1.25 AS DECIMAL(10, 2)) AS d,
+        |array(1, NULL) AS a, map('a', CAST(NULL AS INT)) AS m,
+        |named_struct('a', CAST(NULL AS INT)) AS st""".stripMargin).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val result = input.select(input.columns.toSeq.map { name =>
+        getColumnFromExpression(AssertNotNull(input.col(name).expr, Seq(name)))
+      }: _*)
+      assert(result.schema.forall(!_.nullable))
+      checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+    }
+  }
+
+  test("AssertNotNull preserves Spark's error and walked type path") {
+    withTempPath { path =>
+      Seq[Integer](1, null).toDF("a").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val expression = AssertNotNull(input.col("a").expr, Seq("s", "a"))
+      val expected = intercept[Exception] {
+        AssertNotNull(Literal.create(null, IntegerType), expression.walkedTypePath).eval()
+      }
+      val result = input.select(getColumnFromExpression(expression))
+      assert(result.queryExecution.executedPlan.collect { case p: CometProjectExec =>
+        p
+      }.nonEmpty)
+      val error = intercept[Exception](result.collect())
+      val actual = causeChain(error)
+        .find(_.getClass == expected.getClass)
+        .getOrElse(fail(s"Expected ${expected.getClass.getName}, got $error"))
+      assert(actual.getMessage == expected.getMessage)
+      if (isSpark40Plus) {
+        assert(actual.asInstanceOf[SparkThrowable].getErrorClass == "NOT_NULL_ASSERT_VIOLATION")
+        assert(
+          actual.asInstanceOf[SparkThrowable].getMessageParameters ==
+            expected.asInstanceOf[SparkThrowable].getMessageParameters)
+      }
+    }
+  }
+
+  test("AssertNotNull preserves scalar struct field projection") {
+    withTempPath { path =>
+      Seq(1, 2, 3).toDF("id").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      withTempView("assertion_scalar_source") {
+        input.createOrReplaceTempView("assertion_scalar_source")
+        val value = expr("""IF((SELECT max(id) FROM assertion_scalar_source) > 0,
+          |named_struct('a', (SELECT max(id) FROM assertion_scalar_source)),
+          |CAST(NULL AS STRUCT<a: INT>))""".stripMargin)
+        val checked = AssertNotNull(value.expr, Seq("s"))
+        val result =
+          input.select(input("id"), getColumnFromExpression(GetStructField(checked, 0)))
+        checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+      }
+    }
+  }
+
+  for (adaptive <- Seq(false, true); codegen <- Seq(false, true)) {
+    test(
+      s"AssertNotNull respects partial window group limit input: AQE=$adaptive, codegen=$codegen") {
+      assume(isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "16") {
+        val input = spark.range(0, 6, 1, 2)
+        val payload = when(input("id") % 3 < 2, input("id"))
+        val checked = getColumnFromExpression(AssertNotNull(payload.expr, Seq("checked")))
+        val projected = input.select(input("id"), checked.as("checked"), rand(0).as("nonce"))
+        val result = projected
+          .withColumn("r", rank().over(Window.orderBy("id")))
+          .where("r <= 1")
+          .select("id", "checked", "nonce")
+        checkSparkAnswerAndFallbackReason(
+          result,
+          "Native AssertNotNull below a window group limit could change which values Spark checks")
+      }
+    }
+  }
+
+  test("AssertNotNull evaluates only selected conditional rows") {
+    withTempPath { path =>
+      Seq[Integer](1, null, 2).toDF("a").coalesce(1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+      checkSparkAnswerAndImpl(
+        input.select(when(input.col("a").isNotNull, checked).otherwise(lit(-1))),
+        native = Seq("assertnotnull"))
+    }
+  }
+
+  Seq("and", "or", "add").foreach { operation =>
+    test(s"AssertNotNull preserves short circuit evaluation in $operation") {
+      withTempPath { path =>
+        sql("""SELECT false AS a, CAST(NULL AS BOOLEAN) AS b,
+          |CAST(NULL AS INT) AS x, CAST(NULL AS INT) AS y
+          |UNION ALL SELECT true, true, 1, 2""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        val boolean = getColumnFromExpression(AssertNotNull(input.col("b").expr))
+        val integer = getColumnFromExpression(AssertNotNull(input.col("y").expr))
+        val result = operation match {
+          case "and" => input.col("a") && boolean
+          case "or" => !input.col("a") || boolean
+          case "add" => input.col("x") + integer
+        }
+        val df = input.select(result)
+        assert(df.queryExecution.executedPlan.collect { case p: ProjectExec => p }.nonEmpty)
+        checkSparkAnswer(df)
+      }
+    }
+  }
+
+  Seq(false, true).foreach { codegen =>
+    test(s"AssertNotNull preserves AtLeastNNonNulls short circuit evaluation: codegen=$codegen") {
+      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempPath { path =>
+          Seq[(Integer, Integer)]((1, null)).toDF("a", "b").write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = AssertNotNull(input("b").expr, Seq("b"))
+          for (n <- Seq(1, 2)) {
+            val result = input.select(
+              getColumnFromExpression(AtLeastNNonNulls(n, Seq(input("a").expr, checked))))
+            val reasons =
+              new ExtendedExplainInfo().getFallbackReasons(result.queryExecution.executedPlan)
+            assert(reasons.exists(_.contains("cannot preserve Spark's evaluation order")))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(result)
+            assert(sparkError.isDefined == (n == 2))
+            assert(sparkError.isDefined == cometError.isDefined)
+            val expected = intercept[Exception] {
+              AssertNotNull(Literal.create(null, IntegerType), Seq("b")).eval()
+            }
+            for (error <- sparkError.toSeq ++ cometError.toSeq) {
+              assert(causeChain(error).exists { cause =>
+                cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull retains existing whole-tree codegen dispatch") {
+    withTempPath { path =>
+      Seq(1.25, 2.75).toDF("a").write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr))
+      checkSparkAnswerAndImpl(input.select(round(checked)), dispatched = Seq("round"))
+      checkSparkAnswerAndImpl(
+        input.select(round(checked) + lit(1.0)),
+        native = Seq("add"),
+        dispatched = Seq("round", "assertnotnull"))
+      checkSparkAnswerAndImpl(
+        input.select(round(checked) + lit(1.0)).limit(1),
+        native = Seq("add"),
+        dispatched = Seq("round", "assertnotnull"))
+      checkSparkAnswerAndImpl(
+        input.select(checked).repartition(1).limit(1),
+        native = Seq("assertnotnull"))
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(
+      s"AssertNotNull respects partially consumed blocking-operator output with AQE=$adaptive") {
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withTempPath { path =>
+          Seq[(Int, Integer)]((1, 1), (2, null))
+            .toDF("id", "a")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+          checkSparkAnswerAndImpl(
+            input.orderBy("id").limit(1).select(checked),
+            native = Seq("assertnotnull"))
+          val selected = input.orderBy("id").limit(2).select(checked)
+          checkSparkAnswerAndFallbackReason(
+            selected.as[Int].mapPartitions(_.take(1)).toDF(),
+            "Native AssertNotNull below a mapPartitions function could change which values Spark checks")
+          assert(selected.rdd.take(1).toSeq == Seq(Row(1)))
+          // Aggregate result expressions are another late projection inside a blocking operator.
+          // Keep all groups here because an aggregate does not promise an output order.
+          val grouped = input.groupBy("id").agg(max("id").as("m"))
+          val checkedResult =
+            getColumnFromExpression(AssertNotNull(grouped.col("m").expr, Seq("m")))
+          checkSparkAnswerAndFallbackReason(
+            grouped.select(checkedResult).limit(2),
+            "Native AssertNotNull below a limit could change which values Spark checks")
+        }
+      }
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(s"AssertNotNull respects partially consumed input with AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.key -> "false") {
+        withTempPath { path =>
+          Seq[Integer](1, null).toDF("a").coalesce(1).write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
+          checkSparkAnswerAndFallbackReason(
+            input.select(checked).limit(1),
+            "Native AssertNotNull below a limit could change which values Spark checks")
+        }
+      }
+    }
+  }
+
+  for (consumer <- Seq("filter", "sample");
+    codegen <- Seq(false, true); adaptive <- Seq(false, true)) {
+    test(s"AssertNotNull preserves deferred $consumer fields: codegen=$codegen, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempPath { path =>
+          Seq[(Int, Integer)]((0, null)).toDF("id", "value").write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val checked = getColumnFromExpression(AssertNotNull(input("value").expr))
+          // Keep the projection below the consumer; generated Spark defers the checked field.
+          val projected = input.select(input("id"), checked.as("value"), rand(0).as("nonce"))
+          val selected =
+            if (consumer == "filter") projected.filter(projected("id") < 0)
+            else projected.sample(withReplacement = false, fraction = 0.0, seed = 0L)
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+          assert(sparkError.isDefined == !codegen)
+          assert(sparkError.isDefined == cometError.isDefined)
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- sparkError.toSeq ++ cometError.toSeq) {
+            assert(causeChain(error).exists { cause =>
+              cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+            })
+          }
+        }
+      }
+    }
+  }
+
+  for (readChecked <- Seq(false, true);
+    codegen <- Seq(false, true); adaptive <- Seq(false, true)) {
+    test(
+      "AssertNotNull preserves deferred projection fields: " +
+        s"readChecked=$readChecked, codegen=$codegen, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+        val input = spark.range(1).repartition(1)
+        val checked = getColumnFromExpression(
+          AssertNotNull(
+            when(input("id") === 0L, lit(null).cast("long"))
+              .otherwise(input("id"))
+              .expr,
+            Seq("checked")))
+        // Keep both projections: Spark can defer checked until the outer IF needs it.
+        val projected = input.select(input("id"), checked.as("checked"), rand(0).as("nonce"))
+        val result =
+          if (readChecked) when(projected("id") === 0L, projected("checked")).otherwise(lit(0L))
+          else when(projected("id") === 0L, lit(0L)).otherwise(projected("checked"))
+        val selected = projected.select(result.as("result"), projected("nonce"))
+        assert(selected.queryExecution.optimizedPlan.collect {
+          case _: org.apache.spark.sql.catalyst.plans.logical.Project => true
+        }.size == 2)
+        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
+        assert(sparkError.isDefined == (readChecked || !codegen))
+        assert(
+          sparkError.isDefined == cometError.isDefined,
+          s"Spark: $sparkError, Comet: $cometError\n${selected.queryExecution.executedPlan}")
+        val expected = intercept[Exception] {
+          AssertNotNull(Literal.create(null, LongType), Seq("checked")).eval()
+        }
+        for (error <- sparkError.toSeq ++ cometError.toSeq) {
+          assert(causeChain(error).exists { cause =>
+            cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+          })
+        }
+      }
+    }
+  }
+
+  for (scenario <- Seq(
+      "first",
+      "first-ignore-nulls",
+      "filtered-global",
+      "filtered-grouped",
+      "count");
+    codegen <- Seq(false, true)) {
+    test(s"AssertNotNull preserves aggregate argument evaluation: $scenario, codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1") {
+        withTempPath { path =>
+          Seq[(Int, Integer, Integer)]((0, 1, 1), (1, null, 1))
+            .toDF("id", "a", "b")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val assertion = AssertNotNull(input("a").expr)
+          val checked = getColumnFromExpression(assertion)
+          val filteredSum = getColumnFromExpression(
+            AggregateExpression(
+              Sum(assertion),
+              Complete,
+              isDistinct = false,
+              filter = Some(EqualTo(input("id").expr, Literal(0))),
+              resultId = NamedExpression.newExprId))
+          val aggregated = scenario match {
+            case "first" => input.agg(first(checked, ignoreNulls = false))
+            case "first-ignore-nulls" => input.agg(first(checked, ignoreNulls = true))
+            case "filtered-global" => input.agg(filteredSum)
+            case "filtered-grouped" => input.groupBy("id").agg(filteredSum)
+            // Spark COUNT only checks nullable children; the assertion reports non-nullable.
+            case "count" =>
+              input.agg(
+                getColumnFromExpression(
+                  Count(Seq(input("b").expr, assertion)).toAggregateExpression()))
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(aggregated.queryExecution.executedPlan)
+          assert(reasons.exists(_.contains(
+            "Native AssertNotNull in aggregate arguments or filters could change which values " +
+              "Spark checks")))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(aggregated)
+          assert(sparkError.isDefined == cometError.isDefined)
+          if (scenario != "first-ignore-nulls") assert(sparkError.isEmpty)
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (error <- sparkError.toSeq ++ cometError.toSeq) {
+            assert(causeChain(error).exists { cause =>
+              cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+            })
+          }
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull retains native aggregate grouping, results and opaque arguments") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { path =>
+        Seq(1, 2).toDF("id").write.parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        val checked = getColumnFromExpression(AssertNotNull(input("id").expr))
+        checkSparkAnswerAndImpl(input.groupBy(checked).count(), native = Seq("assertnotnull"))
+        val aggregated = input.agg(sum("id").as("total"))
+        checkSparkAnswerAndImpl(
+          aggregated.select(getColumnFromExpression(AssertNotNull(aggregated("total").expr))),
+          native = Seq("assertnotnull"))
+        val checkedDouble =
+          getColumnFromExpression(AssertNotNull(input("id").cast("double").expr))
+        checkSparkAnswerAndImpl(
+          input.agg(sum(round(checkedDouble))),
+          dispatched = Seq("round", "assertnotnull"))
+      }
+    }
+  }
 
   private def arithmeticError(error: Throwable): SparkThrowable =
     causeChain(error)

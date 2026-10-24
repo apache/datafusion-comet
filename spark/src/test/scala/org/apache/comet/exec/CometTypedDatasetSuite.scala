@@ -154,14 +154,22 @@ class CometTypedDatasetSuite extends CometTestBase {
     checkConverted(ds.groupBy("b").agg(sum("a")))
   }
 
-  convertTest("a broadcast join above the typed operation runs natively") {
+  convertTest("a broadcast join materializes typed build input before running natively") {
     withRecs() { ds =>
       withParquetTable((0 until 13).map(i => (i.toString, s"name$i")), "dim") {
         val dim = spark.table("dim").toDF("b", "name")
-        val plan = checkConverted(ds.map(r => TypedDsRec(r.a * 2, r.b)).join(broadcast(dim), "b"))
+        val mapped = ds.map(r => TypedDsRec(r.a * 2, r.b))
+        val plan = checkConverted(dim.join(broadcast(mapped), "b"))
         assert(
           collectWithSubqueries(plan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty,
           plan)
+        // A join can skip streamed input, so converting it to batches could evaluate a user
+        // function on rows that Spark skips. Its broadcast build is fully materialized.
+        val (_, streamedPlan) = checkSparkAnswerAndFallbackReason(
+          mapped.join(broadcast(dim), "b"),
+          "Comet does not convert the output of a typed Dataset operation when a join can " +
+            "stop reading it early")
+        assert(conversions(streamedPlan).isEmpty)
       }
     }
   }
