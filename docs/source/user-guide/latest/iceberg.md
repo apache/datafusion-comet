@@ -655,10 +655,9 @@ unchanged.
 
 ### Native Bloom-filter writes
 
-Comet's native Iceberg writer supports tables with column Bloom filters and can produce
-byte-identical filters to Java for compatible settings. Other setups produce different filters
-because parquet-rs enables folding by default, while Iceberg's non-adaptive parquet-java writer
-does not.
+Comet's native Iceberg writer supports tables with column Bloom filters. However, byte-identical
+behavior to classic Spark cannot be guaranteed for all settings: parquet-rs enables folding by
+default, while Spark's non-adaptive parquet-java writer does not.
 
 Folding automatically shrinks a filter when its initial NDV- or max-bytes-based allocation is
 larger than the actual values need at the requested false-positive probability (FPP). It saves
