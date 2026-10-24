@@ -65,6 +65,13 @@ Text files are a common source of ill-formed UTF-8. The native reader replaces i
 Unicode replacement character (U+FFFD), so byte-level comparisons and functions can differ from Spark on those rows;
 see [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes) in the compatibility guide.
 
+Separately, `spark.comet.convert.text.enabled` converts data from Spark's own Text reader into Arrow format
+immediately, allowing the Comet pipeline to take over after that. Spark's Text reader keeps the bytes of each line as
+they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Arrow
+strings must be valid UTF-8, so the conversion replaces those bytes with `U+FFFD`, and results that depend on the
+original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
+[Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
+
 ### Other Spark inputs
 
 Comet can also convert the output of these Spark inputs to Arrow format, so that the operators
@@ -83,12 +90,15 @@ because the row it converts has no columns.
   such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
 
 To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
-format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
-operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
-`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+format other than Parquet, JSON, CSV and Text, set `spark.comet.sparkToColumnar.enabled=true` and name
+the operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`. Naming either to convert a Text scan still
+works but is deprecated, like naming `Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or
+`RowDataSourceScan`, and will stop working in a future major release. Use
+`spark.comet.convert.text.enabled` instead.
 
 One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
-or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+or V2 scan Comet cannot read natively - for example a small ORC lookup table - and every scan on
 the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
 runs natively over the large probe. This is controlled by
 `spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
@@ -96,6 +106,10 @@ above. The build side is usually small, but an explicit `BROADCAST` hint or a se
 the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
 a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
 keep such build sides on Spark.
+
+Parquet, JSON, CSV and Text build sides are converted only by their own switches above. A Text file
+can hold bytes that are not valid UTF-8 (see [Text](#text)), so a Text lookup table stays on Spark
+unless `spark.comet.convert.text.enabled` is set.
 
 ### Spark-to-Comet conversion types
 

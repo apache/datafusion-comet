@@ -612,6 +612,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     off_heap_mode: jboolean,
     memory_pool_type: JString,
     memory_limit: jlong,
+    off_heap_size: jlong,
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
@@ -687,6 +688,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 off_heap_mode: off_heap_mode != JNI_FALSE,
                 memory_pool_type,
                 memory_limit,
+                off_heap_size,
                 task_attempt_id,
                 task_cpus: task_cpus as usize,
                 local_dirs: local_dirs_vec,
@@ -755,6 +757,7 @@ struct PlanInputs {
     off_heap_mode: bool,
     memory_pool_type: String,
     memory_limit: i64,
+    off_heap_size: i64,
     task_attempt_id: i64,
     task_cpus: usize,
     local_dirs: Vec<String>,
@@ -794,6 +797,7 @@ fn create_execution_context(
         off_heap_mode,
         memory_pool_type,
         memory_limit,
+        off_heap_size,
         task_attempt_id,
         task_cpus,
         local_dirs,
@@ -807,7 +811,7 @@ fn create_execution_context(
 
     // Create DataFusion memory pool
     let memory_pool_config =
-        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit)?;
+        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit, off_heap_size)?;
     let memory_pool = memory_pool_for(&memory_pool_config);
 
     // Register the shared base pool before wrapping it for per-plan debug logging. The
@@ -4166,6 +4170,7 @@ mod tests {
             off_heap_mode: true,
             memory_pool_type: "greedy_unified".to_string(),
             memory_limit: 1 << 30,
+            off_heap_size: 1 << 30,
             task_attempt_id: -6201,
             task_cpus: 1,
             local_dirs: vec![std::env::temp_dir().to_str().unwrap().to_string()],
