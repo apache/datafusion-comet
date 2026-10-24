@@ -142,6 +142,90 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  Seq(false, true).foreach { adaptive =>
+    test(s"AssertNotNull preserves first required-write error: AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withIcebergCatalog { _ =>
+        withTempPath { path =>
+          sql("SELECT CAST(NULL AS BIGINT) AS den UNION ALL SELECT 0L")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val errors = Seq(false, true).map { enabled =>
+            val table = s"required_error_${adaptive}_$enabled"
+            sql(s"""CREATE TABLE cat.db.$table (id BIGINT NOT NULL) USING iceberg
+              |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+            var failure: Throwable = null
+            val plans = withNativeEnabled {
+              withSQLConf(
+                CometConf.COMET_ENABLED.key -> enabled.toString,
+                SQLConf.ANSI_ENABLED.key -> "true",
+                SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+                capturePlans(spark, includeFailures = true) {
+                  failure = intercept[Exception] {
+                    spark.read
+                      .parquet(path.toString)
+                      .selectExpr("10L DIV den AS id")
+                      .writeTo(s"cat.db.$table")
+                      .append()
+                  }
+                }
+              }
+            }
+            if (enabled) {
+              val reasons = plans.flatMap(new ExtendedExplainInfo().getFallbackReasons(_))
+              assert(reasons.exists(_.contains("child could throw")), reasons)
+            }
+            assert(countSnapshots(table) == 0)
+            checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
+            causeChain(failure).last
+          }
+          assert(errors.last.getClass == errors.head.getClass)
+          assert(errors.last.getMessage == errors.head.getMessage)
+        }
+      }
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(s"AssertNotNull aborts a row-converted write after a valid prefix: AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_BATCH_SIZE.key -> "16") {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            spark
+              .range(0, 64, 1, 1)
+              .selectExpr("id AS a", "IF(id=63, CAST(NULL AS BIGINT), id) AS b")
+              .write
+              .parquet(path.toString)
+            val tables = Seq(s"prefix_native_$adaptive", s"prefix_jvm_$adaptive")
+            tables.foreach { table =>
+              sql(s"""CREATE TABLE cat.db.$table (a BIGINT NOT NULL, b BIGINT NOT NULL)
+                |USING iceberg TBLPROPERTIES
+                |('write.distribution-mode'='none', 'write.target-file-size-bytes'='1')""".stripMargin)
+            }
+            val (nativeError, jvmError) = failedWrites(tables.head, tables.last) { table =>
+              withSQLConf(CometConf.COMET_ENABLED.key -> (table == tables.head).toString) {
+                spark.read.parquet(path.toString).writeTo(s"cat.db.$table").append()
+              }
+            }
+            val expected = causeChain(jvmError).last
+            val actual = causeChain(nativeError).last
+            assert(actual.getClass == expected.getClass)
+            assert(actual.getMessage == expected.getMessage)
+            tables.foreach { table =>
+              assert(countSnapshots(table) == 0)
+              assert(parquetFiles(dataDir(table)).isEmpty)
+              checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("native AssertNotNull writes scalar struct fields") {
     assume(icebergAvailable && isSpark35Plus)
     withIcebergCatalog { _ =>

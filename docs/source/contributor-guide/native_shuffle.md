@@ -84,6 +84,13 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
 
+Hash partitioning with an `AssertNotNull` key stays off native shuffle when there is only one
+reducer, because that path drops the key evaluation. JVM columnar shuffle can still evaluate the
+key. With no data columns, both Comet shuffle implementations skip hash keys, so an asserted key
+requires Spark shuffle instead. Ordinary keys retain these fast paths.
+Native hash keys also fall back when array evaluation could report an assertion from a later row
+before an earlier error in another key. JVM columnar shuffle evaluates these keys row by row.
+
 ## Architecture
 
 ```

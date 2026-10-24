@@ -35,6 +35,7 @@ import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
+import org.apache.spark.TaskKilledException
 import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
@@ -53,6 +54,92 @@ import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
  * suite covers the boundary contract independently of any specific function.
  */
 class CometArrowStreamSuite extends AnyFunSuite with Matchers {
+
+  test("row reader emits a successful prefix before a later input error") {
+    for (failInHasNext <- Seq(false, true); successfulRows <- Seq(0, 2)) {
+      val allocator = new RootAllocator(Long.MaxValue)
+      val schema = StructType(Seq(StructField("v", IntegerType)))
+      val failure = new IllegalArgumentException("later row failed")
+      var reads = 0
+      val rows = new Iterator[org.apache.spark.sql.catalyst.InternalRow] {
+        override def hasNext: Boolean = {
+          if (failInHasNext && reads == successfulRows) throw failure
+          true
+        }
+        override def next(): org.apache.spark.sql.catalyst.InternalRow = {
+          if (reads == successfulRows) throw failure
+          reads += 1
+          new GenericInternalRow(Array[Any](reads))
+        }
+      }
+      val reader = new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, 4)
+      try {
+        if (successfulRows > 0) {
+          reader.loadNextBatch() shouldBe true
+          reader.getVectorSchemaRoot.getRowCount shouldBe successfulRows
+          reader.getVectorSchemaRoot.getVector(0).asInstanceOf[IntVector].get(1) shouldBe 2
+        }
+        intercept[IllegalArgumentException](
+          reader.loadNextBatch()) should be theSameInstanceAs failure
+      } finally {
+        reader.close()
+        allocator.getAllocatedMemory shouldBe 0L
+        allocator.close()
+      }
+    }
+  }
+
+  test("row reader does not read past a full batch or defer cancellation") {
+    for (batchSize <- Seq(1, 4)) {
+      val allocator = new RootAllocator(Long.MaxValue)
+      val schema = StructType(Seq(StructField("v", IntegerType)))
+      var reads = 0
+      val failure = new TaskKilledException("cancelled")
+      val rows = new Iterator[org.apache.spark.sql.catalyst.InternalRow] {
+        override def hasNext: Boolean = {
+          if (reads == 1) throw failure
+          true
+        }
+        override def next(): org.apache.spark.sql.catalyst.InternalRow = {
+          reads += 1
+          new GenericInternalRow(Array[Any](reads))
+        }
+      }
+      val reader =
+        new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, batchSize)
+      try {
+        if (batchSize == 1) reader.loadNextBatch() shouldBe true
+        intercept[TaskKilledException](reader.loadNextBatch()) should be theSameInstanceAs failure
+        reads shouldBe 1
+      } finally {
+        reader.close()
+        allocator.getAllocatedMemory shouldBe 0L
+        allocator.close()
+      }
+    }
+  }
+
+  test("row reader does not emit a batch when encoding a later row fails") {
+    val allocator = new RootAllocator(Long.MaxValue)
+    val schema = StructType(Seq(StructField("a", IntegerType), StructField("b", IntegerType)))
+    val failure = new IllegalArgumentException("second column failed")
+    val invalid = new GenericInternalRow(Array[Any](3, 4)) {
+      override def getInt(ordinal: Int): Int = {
+        if (ordinal == 1) throw failure
+        super.getInt(ordinal)
+      }
+    }
+    val rows = Iterator(new GenericInternalRow(Array[Any](1, 2)), invalid)
+    val reader = new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, 4)
+    try {
+      intercept[IllegalArgumentException](
+        reader.loadNextBatch()) should be theSameInstanceAs failure
+    } finally {
+      reader.close()
+      allocator.getAllocatedMemory shouldBe 0L
+      allocator.close()
+    }
+  }
 
   private def expectedSchema(types: (String, ArrowType)*): Schema = {
     val fields = types.map { case (name, t) =>

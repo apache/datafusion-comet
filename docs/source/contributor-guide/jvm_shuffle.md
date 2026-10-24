@@ -56,6 +56,10 @@ JVM shuffle (`CometColumnarExchange`) is used instead of native shuffle (`CometE
    [Supported partition key types](native_shuffle.md#when-native-shuffle-is-used) for the exact
    rules. Complex types are fully supported as data columns in both implementations.
 
+An `AssertNotNull` hash key with one reducer can use JVM columnar shuffle even though native
+shuffle would skip that key. If the shuffle has no data columns, the JVM empty-schema path also
+skips keys, so an asserted hash key falls back to Spark shuffle.
+
 ## Input Handling
 
 ### Spark Row-Based Input

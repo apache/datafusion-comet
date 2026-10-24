@@ -902,7 +902,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       // Aggregate arguments are serialized as independent roots, so the scalar parent guard
       // cannot see their consumer. Spark can skip them in lazy updates (for example First),
       // filtered updates or null checks, while native aggregates can evaluate whole arrays.
-      if (CometAssertNotNull.containsNativeAssertion(result)) {
+      if (CometAssertNotNull.hasAssertionCandidate(aggExpr) &&
+        CometAssertNotNull.containsNativeAssertion(result)) {
         withFallbackReason(
           aggExpr,
           "Native AssertNotNull in aggregate arguments or filters could change which values " +

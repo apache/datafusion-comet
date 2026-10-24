@@ -54,7 +54,7 @@ import com.google.common.base.Objects
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
-import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometAssertNotNull, Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.{CometTypeShim, ShimCometShuffleExchangeExec}
 
@@ -492,6 +492,18 @@ object CometShuffleExchangeExec
     // inconsistent plans across passes (see #3949).
     if (hasFallbackReason(s)) return None
 
+    // Both shuffle implementations elide hash keys for empty rows. Spark still evaluates them.
+    s.outputPartitioning match {
+      case HashPartitioning(keys, _)
+          if s.child.output.isEmpty &&
+            keys.exists(CometAssertNotNull.hasAssertionCandidate) =>
+        withFallbackReasons(
+          s,
+          Set("Comet shuffle could skip AssertNotNull in degenerate hash partitioning"))
+        return None
+      case _ =>
+    }
+
     isCometShuffleEnabledReason(s) match {
       case Some(reason) =>
         withFallbackReasons(s, Set(reason))
@@ -671,7 +683,16 @@ object CometShuffleExchangeExec
 
     val partitioning = s.outputPartitioning
     partitioning match {
-      case HashPartitioning(expressions, _) =>
+      case HashPartitioning(expressions, partitions) =>
+        // Native partitioning becomes SinglePartition with one reducer and drops its keys.
+        // The JVM columnar shuffle still evaluates them and remains eligible here.
+        if (partitions == 1 && expressions.exists(CometAssertNotNull.hasAssertionCandidate)) {
+          reasons += "Native shuffle could skip AssertNotNull with one hash partition"
+        }
+        if (expressions.exists(CometAssertNotNull.hasAssertionCandidate) &&
+          !CometAssertNotNull.canEvaluateInBatch(expressions)) {
+          reasons += "Native hash shuffle keys could change the first assertion error"
+        }
         if (!CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.get(conf)) {
           reasons +=
             s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"

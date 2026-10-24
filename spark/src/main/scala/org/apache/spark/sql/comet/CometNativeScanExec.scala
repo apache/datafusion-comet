@@ -38,6 +38,7 @@ import org.apache.spark.util.collection._
 import com.google.common.base.Objects
 
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.serde.CometAssertNotNull
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 import org.apache.comet.shims.ShimFileFormat
@@ -184,6 +185,7 @@ case class CometNativeScanExec(
       val base = nativeOp.getNativeScan.getCommon
       val scalarSubqueryFilters = dataFilters
         .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+        .filterNot(CometAssertNotNull.hasAssertionCandidate)
       scalarSubqueryFilters.foreach { f =>
         f.foreach {
           case s: ExecScalarSubquery =>

@@ -2293,19 +2293,19 @@ class CometJoinSuite extends CometTestBase {
         val checked = getColumnFromExpression(AssertNotNull(right("ok").expr))
         val condition = when(left("id") === right("id"), checked).otherwise(lit(false))
         checkSparkAnswerAndImpl(
-          left.join(right, condition, "inner"),
+          left.join(right, condition, "inner").repartition(1),
           native = Seq("assertnotnull"))
         val checkedRight = getColumnFromExpression(AssertNotNull(right("id").expr))
-        checkSparkAnswerAndImpl(
-          left.join(right, left("id") === checkedRight, "inner"),
-          native = Seq("assertnotnull"))
+        checkSparkAnswerAndFallbackReason(
+          left.join(right, left("id") === checkedRight, "inner").repartition(1),
+          "Native AssertNotNull in broadcast build keys could skip broadcast-time checks")
         val checkedLeft = getColumnFromExpression(AssertNotNull(left("id").expr))
         checkSparkAnswerAndImpl(
-          left.join(right, checkedLeft === right("id"), "left_outer"),
+          left.join(right, checkedLeft === right("id"), "left_outer").repartition(1),
           native = Seq("assertnotnull"))
         val projected = right.select(checkedRight.as("id")).hint("broadcast")
         checkSparkAnswerAndImpl(
-          left.join(projected, left("id") === projected("id"), "left_semi"),
+          left.join(projected, left("id") === projected("id"), "left_semi").repartition(1),
           native = Seq("assertnotnull"))
         val checkedDouble =
           getColumnFromExpression(AssertNotNull(left("id").cast("double").expr))
@@ -2315,6 +2315,56 @@ class CometJoinSuite extends CometTestBase {
             org.apache.spark.sql.functions.round(checkedDouble) === right("id"),
             "inner"),
           dispatched = Seq("round", "assertnotnull"))
+      }
+    }
+  }
+
+  for (codegen <- Seq(false, true)) {
+    test(s"AssertNotNull preserves packed outer keys: codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          Seq((Option.empty[Int], Option.empty[Int])).toDF("a", "b").write.parquet(s"$dir/left")
+          Seq((1, 2)).toDF("c", "d").write.parquet(s"$dir/right")
+          val left = spark.read.parquet(s"$dir/left")
+          val right = spark.read.parquet(s"$dir/right").hint("broadcast")
+          val checked = getColumnFromExpression(AssertNotNull(left("b").expr))
+          checkSparkAnswer(
+            left
+              .join(right, left("a") === right("c") && checked === right("d"), "left_outer")
+              .repartition(1))
+        }
+      }
+    }
+
+    test(s"AssertNotNull checks broadcast build with zero probe tasks: codegen=$codegen") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+        withTempDir { dir =>
+          val empty = new java.io.File(dir, "empty")
+          assert(empty.mkdir())
+          val schema = new StructType().add("k", IntegerType)
+          val left = spark.read.schema(schema).parquet(empty.toString)
+          assert(left.rdd.getNumPartitions == 0)
+          Seq(Option.empty[Int]).toDF("k").write.parquet(s"$dir/build")
+          val right = spark.read.parquet(s"$dir/build").hint("broadcast")
+          val checked = getColumnFromExpression(AssertNotNull(right("k").expr))
+          val expected = intercept[Exception] {
+            AssertNotNull(Literal.create(null, IntegerType)).eval()
+          }
+          for (probe <- Seq(left, spark.read.parquet(s"$dir/build"))) {
+            val query = probe.join(right, probe("k") === checked, "inner").repartition(1)
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(query)
+            for (error <- Seq(sparkError, cometError)) {
+              assert(error.isDefined)
+              assert(causeChain(error.get).exists { cause =>
+                cause.getClass == expected.getClass && cause.getMessage == expected.getMessage
+              })
+            }
+          }
+        }
       }
     }
   }

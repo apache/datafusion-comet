@@ -41,6 +41,7 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.collection._
 
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.serde.CometAssertNotNull
 
 /**
  * Comet physical scan node for DataSource V1. This node is created by CometScanRule as a planning
@@ -152,6 +153,8 @@ case class CometScanExec(
     dataFilters
       .filterNot(isDynamicPruningFilter)
       .filterNot(isNullCheckOnArrayColumn)
+      // Keep throwing checks in the residual filter, with Spark's consumption and error path.
+      .filterNot(CometAssertNotNull.hasAssertionCandidate)
   }
 
   /**

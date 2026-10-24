@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression,
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.expressions.Window
@@ -47,6 +48,257 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
+  private def withReviewAssertion(f: => Unit): Unit = {
+    val id = new org.apache.spark.sql.catalyst.FunctionIdentifier("review_assert")
+    spark.sessionState.functionRegistry.registerFunction(
+      id,
+      new org.apache.spark.sql.catalyst.expressions.ExpressionInfo(
+        classOf[AssertNotNull].getName,
+        "review_assert"),
+      (children: Seq[org.apache.spark.sql.catalyst.expressions.Expression]) =>
+        AssertNotNull(children.head))
+    try f
+    finally spark.sessionState.functionRegistry.dropFunction(id)
+  }
+
+  private def checkReviewError(df: => DataFrame, errorClass: String): Unit = {
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+    assert(sparkError.nonEmpty, "Spark must evaluate the asserted expression")
+    assert(cometError.nonEmpty, "Comet must preserve Spark's error")
+    if (!isSpark40Plus && errorClass == "NOT_NULL_ASSERT_VIOLATION") {
+      val expected = causeChain(sparkError.get).collectFirst { case e: NullPointerException =>
+        e
+      }.get
+      val actual = causeChain(cometError.get).collectFirst { case e: NullPointerException =>
+        e
+      }.get
+      assert(actual.getMessage == expected.getMessage)
+      return
+    }
+    def structured(error: Throwable): SparkThrowable with Throwable =
+      causeChain(error).collect { case e: SparkThrowable with Throwable => e }.last
+    val expected = structured(sparkError.get)
+    val actual = structured(cometError.get)
+    println(
+      s"R9_ERROR expected=${expected.getErrorClass}/${expected.getSqlState} " +
+        s"actual=${actual.getErrorClass}/${actual.getSqlState}")
+    assert(expected.getErrorClass == errorClass)
+    assert(actual.getClass == expected.getClass)
+    assert(actual.getErrorClass == expected.getErrorClass)
+    assert(actual.getSqlState == expected.getSqlState)
+    assert(actual.getMessageParameters == expected.getMessageParameters)
+  }
+
+  for (scenario <- Seq("sibling", "branches", "two assertions")) {
+    test(s"AssertNotNull preserves error order across $scenario") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withTempPath { path =>
+          Seq[(Integer, Integer, Int)]((1, null, 0), (null, 2, 1))
+            .toDF("a", "b", "den")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val first =
+            getColumnFromExpression(AssertNotNull(input("a").cast("long").expr, Seq("a")))
+          val second = getColumnFromExpression(AssertNotNull(input("b").expr, Seq("b")))
+          val division = expr("10 DIV den")
+          val query = scenario match {
+            case "sibling" => input.select(first, division)
+            case "branches" => input.select(when(input("den") > 0, first).otherwise(division))
+            case "two assertions" => input.select(first, second)
+          }
+          checkReviewError(
+            query.repartition(1),
+            if (scenario == "two assertions") "NOT_NULL_ASSERT_VIOLATION" else "DIVIDE_BY_ZERO")
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull preserves first error before later throwing child") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTempPath { path =>
+        Seq[java.lang.Long](null, 0L).toDF("den").coalesce(1).write.parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        def firstError(enabled: Boolean): Throwable = {
+          withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+            val result =
+              input.select(getColumnFromExpression(AssertNotNull(expr("10L DIV den").expr)))
+            val error = intercept[Exception](result.collect())
+            causeChain(error).last
+          }
+        }
+        val expected = firstError(false)
+        val actual = firstError(true)
+        assert(actual.getClass == expected.getClass)
+        assert(actual.getMessage == expected.getMessage)
+      }
+    }
+  }
+
+  for (consumer <- Seq("group keys", "group update", "shuffle keys", "sort keys")) {
+    test(s"AssertNotNull preserves evaluation in $consumer") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+        withTempPath { path =>
+          val values = if (consumer == "group update") {
+            Seq[(Integer, Integer, Long)]((1, 1, Long.MaxValue), (1, 2, 1L), (null, 3, 0L))
+          } else if (consumer == "sort keys") {
+            Seq[(Integer, Integer, Long)]((1, null, 0L), (2, 2, 0L))
+          } else {
+            Seq[(Integer, Integer, Long)]((1, null, 0L), (null, 2, 0L))
+          }
+          values.toDF("a", "b", "v").coalesce(1).write.parquet(path.toString)
+          val input = spark.read.parquet(path.toString)
+          val a = getColumnFromExpression(AssertNotNull(input("a").expr, Seq("a")))
+          val b = getColumnFromExpression(AssertNotNull(input("b").expr, Seq("b")))
+          consumer match {
+            case "group keys" =>
+              checkReviewError(
+                input.groupBy(a, b).count().select("count"),
+                "NOT_NULL_ASSERT_VIOLATION")
+            case "group update" =>
+              checkReviewError(input.groupBy(a).agg(sum("v")), "ARITHMETIC_OVERFLOW")
+            case "shuffle keys" =>
+              checkReviewError(input.repartition(2, a, b), "NOT_NULL_ASSERT_VIOLATION")
+            case "sort keys" =>
+              checkSparkAnswer(input.sortWithinPartitions(input("a"), b).repartition(1))
+          }
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull leaves late Parquet predicates to residual filter") {
+    withReviewAssertion {
+      withSQLConf(
+        "spark.comet.parquet.rowFilterPushdown.enabled" -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        withTempPath { path =>
+          Seq((0, Some(true)), (1, None))
+            .toDF("id", "flag")
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          withTempView("review_predicate") {
+            spark.read.parquet(path.toString).createOrReplaceTempView("review_predicate")
+            for (predicate <- Seq(
+                "IF((SELECT max(id) FROM review_predicate)>0, review_assert(flag), true)",
+                "review_assert(flag)")) {
+              checkSparkAnswer(sql(s"SELECT id FROM review_predicate WHERE $predicate LIMIT 1"))
+              checkReviewError(
+                sql(s"SELECT id FROM review_predicate WHERE $predicate"),
+                "NOT_NULL_ASSERT_VIOLATION")
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull evaluates empty-schema shuffle keys") {
+    withReviewAssertion {
+      for (mode <- Seq("native", "jvm")) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+          CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> mode) {
+          val query = sql("""SELECT count(*) FROM
+          |(SELECT 1 FROM range(0,3,1,1)
+          |DISTRIBUTE BY review_assert(CAST(NULL AS INT))) q""".stripMargin)
+          checkReviewError(query, "NOT_NULL_ASSERT_VIOLATION")
+        }
+      }
+    }
+  }
+
+  test("AssertNotNull retains ordinary and nondegenerate native shuffle") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      withTempPath { path =>
+        Seq(1, 2).toDF("k").write.parquet(path.toString)
+        val input = spark.read.parquet(path.toString)
+        val checked = getColumnFromExpression(AssertNotNull(input("k").expr))
+        checkSparkAnswerAndImpl(input.repartition(2, checked), native = Seq("assertnotnull"))
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(
+            input.groupBy(checked).agg(sum("k")),
+            native = Seq("assertnotnull"))
+        }
+        for (partitions <- Seq(1, 2)) {
+          val query = input.repartition(partitions, input("k"))
+          checkSparkAnswer(query)
+          assert(
+            query.queryExecution.executedPlan.exists(_.isInstanceOf[CometShuffleExchangeExec]))
+        }
+      }
+      val emptySchema = sql("""SELECT count(*) FROM
+        |(SELECT 1 FROM range(0,3,1,1) DISTRIBUTE BY 0) q""".stripMargin)
+      checkSparkAnswer(emptySchema)
+      assert(
+        emptySchema.queryExecution.executedPlan.exists(_.isInstanceOf[CometShuffleExchangeExec]))
+    }
+  }
+
+  test("AssertNotNull evaluates one-reducer shuffle keys") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      withTempDir { dir =>
+        Seq((Option.empty[Int], Option.empty[Int])).toDF("a", "b").write.parquet(s"$dir/left")
+        Seq((1, 2)).toDF("c", "d").write.parquet(s"$dir/right")
+        val left = spark.read.parquet(s"$dir/left")
+        val right = spark.read.parquet(s"$dir/right").where("c < 0").hint("shuffle_hash")
+        val checked = getColumnFromExpression(AssertNotNull(left("b").expr))
+        val query = left
+          .join(right, left("a") === right("c") && checked === right("d"), "left_outer")
+          .select(left("a"))
+        checkReviewError(query, "NOT_NULL_ASSERT_VIOLATION")
+      }
+    }
+  }
+
+  test("AssertNotNull preserves scalar subquery cardinality error") {
+    withReviewAssertion {
+      withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+        val query = sql("""SELECT (SELECT review_assert(
+          |IF(id<2,id,CAST(NULL AS BIGINT))) FROM range(0,3,1,1))""".stripMargin)
+        checkReviewError(query, "SCALAR_SUBQUERY_TOO_MANY_ROWS")
+      }
+    }
+  }
+
+  test("AssertNotNull preserves partial javaToPython export") {
+    withTempPath { path =>
+      spark.range(0, 2048, 1, 1).write.parquet(path.toString)
+      val input = spark.read.parquet(path.toString)
+      val checked =
+        getColumnFromExpression(AssertNotNull(when(input("id") < 2047, input("id")).expr))
+      val query = input.select(
+        checked.as("v"),
+        concat(input("id").cast("string"), repeat(lit("p"), 65536)).as("pad"))
+      def exported(enabled: Boolean): org.apache.spark.api.java.JavaRDD[Array[Byte]] =
+        withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+          val fresh = datasetOfRows(spark, extractLogicalPlan(query))
+          fresh.getClass
+            .getMethod("javaToPython")
+            .invoke(fresh)
+            .asInstanceOf[org.apache.spark.api.java.JavaRDD[Array[Byte]]]
+        }
+      assert(exported(false).take(1).size() == 1)
+      assert(exported(true).take(1).size() == 1)
+    }
+  }
+
   test("AssertNotNull preserves values and runs natively") {
     withTempPath { path =>
       sql("""SELECT 1 AS i, 'value' AS s, CAST(1.25 AS DECIMAL(10, 2)) AS d,
@@ -57,7 +309,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         getColumnFromExpression(AssertNotNull(input.col(name).expr, Seq(name)))
       }: _*)
       assert(result.schema.forall(!_.nullable))
-      checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+      checkSparkAnswer(result)
+      // Each individual check has one possible error; distinct checks must preserve row order.
+      for (name <- input.columns) {
+        val checked = getColumnFromExpression(AssertNotNull(input.col(name).expr, Seq(name)))
+        checkSparkAnswerAndImpl(
+          input.select(checked).repartition(1),
+          native = Seq("assertnotnull"))
+        checkSparkAnswerAndImpl(
+          input.select(checked.as("x"), checked.as("y")).repartition(1),
+          native = Seq("assertnotnull"))
+      }
     }
   }
 
@@ -69,9 +331,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val expected = intercept[Exception] {
         AssertNotNull(Literal.create(null, IntegerType), expression.walkedTypePath).eval()
       }
-      val result = input.select(getColumnFromExpression(expression))
-      assert(result.queryExecution.executedPlan.collect { case p: CometProjectExec =>
-        p
+      val result = input.select(getColumnFromExpression(expression)).repartition(1)
+      assert(collectWithSubqueries(result.queryExecution.executedPlan) {
+        case p: CometProjectExec =>
+          p
       }.nonEmpty)
       val error = intercept[Exception](result.collect())
       val actual = causeChain(error)
@@ -99,7 +362,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val checked = AssertNotNull(value.expr, Seq("s"))
         val result =
           input.select(input("id"), getColumnFromExpression(GetStructField(checked, 0)))
-        checkSparkAnswerAndImpl(result, native = Seq("assertnotnull"))
+        checkSparkAnswerAndImpl(result.repartition(1), native = Seq("assertnotnull"))
       }
     }
   }
@@ -134,7 +397,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val input = spark.read.parquet(path.toString)
       val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
       checkSparkAnswerAndImpl(
-        input.select(when(input.col("a").isNotNull, checked).otherwise(lit(-1))),
+        input.select(when(input.col("a").isNotNull, checked).otherwise(lit(-1))).repartition(1),
         native = Seq("assertnotnull"))
     }
   }
@@ -226,7 +489,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val input = spark.read.parquet(path.toString)
           val checked = getColumnFromExpression(AssertNotNull(input.col("a").expr, Seq("a")))
           checkSparkAnswerAndImpl(
-            input.orderBy("id").limit(1).select(checked),
+            input.orderBy("id").limit(1).select(checked).repartition(1),
             native = Seq("assertnotnull"))
           val selected = input.orderBy("id").limit(2).select(checked)
           checkSparkAnswerAndFallbackReason(
@@ -405,7 +668,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         checkSparkAnswerAndImpl(input.groupBy(checked).count(), native = Seq("assertnotnull"))
         val aggregated = input.agg(sum("id").as("total"))
         checkSparkAnswerAndImpl(
-          aggregated.select(getColumnFromExpression(AssertNotNull(aggregated("total").expr))),
+          aggregated
+            .select(getColumnFromExpression(AssertNotNull(aggregated("total").expr)))
+            .repartition(1),
           native = Seq("assertnotnull"))
         val checkedDouble =
           getColumnFromExpression(AssertNotNull(input("id").cast("double").expr))

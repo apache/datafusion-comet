@@ -22,12 +22,15 @@ package org.apache.comet.exec
 import java.util.concurrent.atomic.AtomicLong
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
+import org.apache.spark.sql.catalyst.expressions.Literal
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.functions.{broadcast, col, size, sum}
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.IntegerType
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
 
@@ -117,6 +120,114 @@ class CometTypedDatasetSuite extends CometTestBase {
     collectWithSubqueries(plan) {
       case a: CometHashAggregateExec if a.modes.contains(Partial) => a
     }
+
+  convertTest("AssertNotNull preserves fully consumed outer join conversion") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      val left = spark
+        .range(0, 20000, 1, 1)
+        .map(id => (id + 1, (id % 5000).toString))
+        .toDF("k", "label")
+      val right = broadcast(spark.range(2048))
+      val query = left
+        .join(right, left("k") % 2048 === right("id"), "left_outer")
+        .groupBy("label")
+        .agg(sum(right("id") + 7))
+      val plan = checkConverted(query)
+      assert(collectWithSubqueries(plan) { case j: CometBroadcastHashJoinExec => j }.nonEmpty)
+      assert(nativePartialAggregates(plan).nonEmpty)
+    }
+  }
+
+  convertTest("AssertNotNull preserves partial outer join input") {
+    for (adaptive <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+        val left = spark
+          .range(0, 64, 1, 1)
+          .map { id =>
+            require(id != 30, "unexpected evaluation of row 30")
+            (id, id.toString)
+          }
+          .toDF("k", "label")
+        val right = broadcast(spark.range(10))
+        val query = left.join(right, left("k") === right("id"), "left_outer").limit(1)
+        checkSparkAnswer(query)
+        val plan = query.queryExecution.executedPlan
+        assert(conversions(plan).isEmpty, plan)
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+        assert(reasons.exists(_.contains("a limit can stop reading it early")), reasons)
+      }
+    }
+  }
+
+  convertTest("AssertNotNull preserves typed javaToPython prefix") {
+    withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      val query = spark
+        .range(0, 64, 1, 1)
+        .map { id =>
+          require(id != 30, "unexpected evaluation of row 30")
+          id
+        }
+        .toDF()
+        .selectExpr("value + 1 AS value")
+      for (enabled <- Seq(false, true)) {
+        val exported = withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+          val fresh = datasetOfRows(spark, extractLogicalPlan(query))
+          fresh.getClass
+            .getMethod("javaToPython")
+            .invoke(fresh)
+            .asInstanceOf[org.apache.spark.api.java.JavaRDD[Array[Byte]]]
+        }
+        assert(exported.take(1).size() == 1)
+      }
+    }
+  }
+
+  convertTest("AssertNotNull preserves an update error before a later user error") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      val input = spark
+        .range(0, 3, 1, 1)
+        .map { id =>
+          require(id != 2, "later user error")
+          (1, if (id == 0) Long.MaxValue else 1L)
+        }
+        .toDF("k", "v")
+      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(input.groupBy("k").sum("v"))
+      assert(sparkError.nonEmpty && cometError.nonEmpty)
+      val expected = causeChain(sparkError.get).last
+      val actual = causeChain(cometError.get).last
+      assert(actual.getClass == expected.getClass, s"Spark: $expected; Comet: $actual")
+      assert(actual.getMessage == expected.getMessage)
+    }
+  }
+
+  convertTest("AssertNotNull preserves a shuffle key error before a later user error") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native") {
+      val input = spark
+        .range(0, 3, 1, 1)
+        .map { id =>
+          require(id != 2, "later user error")
+          id
+        }
+        .toDF()
+      val checked = getColumnFromExpression(AssertNotNull(Literal.create(null, IntegerType)))
+      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(input.repartition(2, checked))
+      assert(sparkError.nonEmpty && cometError.nonEmpty)
+      val expected = causeChain(sparkError.get).last
+      val actual = causeChain(cometError.get).last
+      assert(actual.getClass == expected.getClass, s"Spark: $expected; Comet: $actual")
+      assert(actual.getMessage == expected.getMessage)
+    }
+  }
 
   convertTest("the aggregate and the shuffle above a map run natively") {
     withRecs() { ds =>
