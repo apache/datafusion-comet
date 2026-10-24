@@ -465,7 +465,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       Seq("32", "524288", "1048576", "134217728").zipWithIndex.foreach { case (value, index) =>
         val table = s"bloom_max_ok_$index"
         createTable(
-          dir,
           table,
           partitionSpec = "",
           properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
@@ -476,7 +475,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         .foreach { case (value, index) =>
           val table = s"bloom_max_bad_$index"
           createTable(
-            dir,
             table,
             partitionSpec = "",
             properties = Some(
@@ -493,11 +491,25 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     withDetectionCatalog { dir =>
       val nonPowerOfTwoMaxBytes = 100
       createTable(
-        dir,
         "unused_bloom_max",
         partitionSpec = "",
         properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$nonPowerOfTwoMaxBytes'"))
       assertSupportLevelIs[Compatible]("unused_bloom_max")
+    }
+  }
+
+  test("unused bloom-filter max-bytes preserves Java validation") {
+    withDetectionCatalog { _ =>
+      Seq("0", "-1").zipWithIndex.foreach { case (value, index) =>
+        val table = s"unused_bloom_invalid_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+        assertUnsupportedContainsAllowingWriteFailure(
+          table,
+          "write.parquet.bloom-filter-max-bytes")
+      }
     }
   }
 
@@ -508,14 +520,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       val bindingFpp = 0.0001
       val bindingNdv = 1000000
       createTable(
-        dir,
         "without_ndv",
         partitionSpec = "",
         properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
       assertSupportLevelIs[Compatible]("without_ndv")
 
       createTable(
-        dir,
         "natural_minimum",
         partitionSpec = "",
         properties = Some(
@@ -525,7 +535,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assertSupportLevelIs[Compatible]("natural_minimum")
 
       createTable(
-        dir,
         "ignored_minimum_cap",
         partitionSpec = "",
         properties = Some(
@@ -555,7 +564,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       cases.zipWithIndex.foreach { case ((ndv, compatible), index) =>
         val table = s"bloom_ndv_overflow_$index"
         createTable(
-          dir,
           table,
           partitionSpec = "",
           properties = Some(
@@ -576,7 +584,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     withDetectionCatalog { dir =>
       val configuredNdv = 1000
       createTable(
-        dir,
         "false_with_ndv",
         partitionSpec = "",
         properties = Some(
@@ -585,7 +592,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       assertSupportLevelIs[Compatible]("false_with_ndv")
 
       createTable(
-        dir,
         "false_with_bad_ndv",
         partitionSpec = "",
         properties = Some(
@@ -604,7 +610,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("bloom-filter enabled=false still validates FPP") {
     withDetectionCatalog { dir =>
       createTable(
-        dir,
         "false_with_bad_fpp",
         partitionSpec = "",
         properties = Some(
@@ -636,7 +641,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         .foreach { case ((property, interpreted), index) =>
           val table = s"bloom_shape_bad_$index"
           createTable(
-            dir,
             table,
             partitionSpec = "",
             properties =
@@ -652,7 +656,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("Compatible when a per-column bloom filter is enabled") {
     withDetectionCatalog { _ =>
-
       createTable(
         "bloom_col",
         partitionSpec = "",
@@ -664,7 +667,6 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   test("Bloom-filter folding must be explicitly enabled for native writes") {
     withDetectionCatalog { dir =>
       createTable(
-        dir,
         "bloom_folding_opt_in",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))

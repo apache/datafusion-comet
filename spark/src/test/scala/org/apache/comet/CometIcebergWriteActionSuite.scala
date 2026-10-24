@@ -1454,7 +1454,6 @@ class CometIcebergWriteActionSuite
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       createTable(
-        warehouseDir,
         "native_bloom",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
@@ -1476,8 +1475,8 @@ class CometIcebergWriteActionSuite
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
-      createTable(warehouseDir, "bloom_folding_enabled", partitionSpec = "", properties)
-      createTable(warehouseDir, "bloom_folding_disabled", partitionSpec = "", properties)
+      createTable("bloom_folding_enabled", partitionSpec = "", properties)
+      createTable("bloom_folding_disabled", partitionSpec = "", properties)
 
       assertNativeWriteEngages("bloom_folding_enabled", Seq(1)) {
         spark.sql("INSERT INTO cat.db.bloom_folding_enabled VALUES (1, 'region', 1.0)")
@@ -1502,8 +1501,8 @@ class CometIcebergWriteActionSuite
         "'write.parquet.bloom-filter-enabled.column.id'='false', " +
           s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
           s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
-      createTable(warehouseDir, "bloom_false_ndv_native", partitionSpec = "", properties)
-      createTable(warehouseDir, "bloom_false_ndv_jvm", partitionSpec = "", properties)
+      createTable("bloom_false_ndv_native", partitionSpec = "", properties)
+      createTable("bloom_false_ndv_jvm", partitionSpec = "", properties)
 
       def insert(table: String): Unit = spark.sql(
         s"INSERT INTO cat.db.$table " +
@@ -1546,7 +1545,7 @@ class CometIcebergWriteActionSuite
           val nativeTable = s"bloom_false_bad_${suffix}_native"
           val jvmTable = s"bloom_false_bad_${suffix}_jvm"
           Seq(nativeTable, jvmTable).foreach { table =>
-            createTable(warehouseDir, table, partitionSpec = "", properties = properties)
+            createTable(table, partitionSpec = "", properties = properties)
           }
 
           def insert(table: String): Unit =
@@ -1590,14 +1589,12 @@ class CometIcebergWriteActionSuite
       val parquetMrBindingBytes = 4 * 1024 * 1024
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
       createTable(
-        warehouseDir,
         "bloom_minimum_native",
         partitionSpec = "",
         properties = Some(
           enabled + s"'write.parquet.bloom-filter-ndv.column.id'='$naturallyMinimumNdv', " +
             s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
       createTable(
-        warehouseDir,
         "bloom_minimum_fallback",
         partitionSpec = "",
         properties = Some(
@@ -1804,8 +1801,8 @@ class CometIcebergWriteActionSuite
           "'write.parquet.bloom-filter-fpp.column.id'='0.01', " +
           s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv', " +
           s"'write.parquet.bloom-filter-max-bytes'='$bindingMaxBytes'")
-      createTable(warehouseDir, "bloom_identity_native", partitionSpec = "", properties)
-      createTable(warehouseDir, "bloom_identity_jvm", partitionSpec = "", properties)
+      createTable("bloom_identity_native", partitionSpec = "", properties)
+      createTable("bloom_identity_jvm", partitionSpec = "", properties)
 
       def insert(table: String): Unit = spark.sql(
         s"INSERT INTO cat.db.$table " +
@@ -1868,7 +1865,7 @@ class CometIcebergWriteActionSuite
         val nativeTable = s"bloom_shape_${suffix}_native"
         val jvmTable = s"bloom_shape_${suffix}_jvm"
         Seq(nativeTable, jvmTable).foreach { table =>
-          createTable(warehouseDir, table, partitionSpec = "", properties = Some(properties))
+          createTable(table, partitionSpec = "", properties = Some(properties))
         }
         // Keep the explicit-NDV cases at their estimated cardinality so parquet-rs does not
         // fold their allocation before byte-parity is checked.
@@ -1918,8 +1915,8 @@ class CometIcebergWriteActionSuite
           "'write.parquet.bloom-filter-fpp.column.id'='0.01', " +
           "'write.parquet.bloom-filter-ndv.column.id'='10', " +
           "'write.parquet.bloom-filter-max-bytes'='67108864'")
-      createTable(warehouseDir, "bloom_low_ndv_native", partitionSpec = "", properties)
-      createTable(warehouseDir, "bloom_low_ndv_jvm", partitionSpec = "", properties)
+      createTable("bloom_low_ndv_native", partitionSpec = "", properties)
+      createTable("bloom_low_ndv_jvm", partitionSpec = "", properties)
 
       def insert(table: String): Unit = spark.sql(
         s"INSERT INTO cat.db.$table " +
@@ -1956,8 +1953,8 @@ class CometIcebergWriteActionSuite
         "'write.parquet.bloom-filter-enabled.column.id'='true', " +
           s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
           s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
-      createTable(warehouseDir, "bloom_explicit_ndv_fold_native", partitionSpec = "", properties)
-      createTable(warehouseDir, "bloom_explicit_ndv_fold_jvm", partitionSpec = "", properties)
+      createTable("bloom_explicit_ndv_fold_native", partitionSpec = "", properties)
+      createTable("bloom_explicit_ndv_fold_jvm", partitionSpec = "", properties)
 
       def insert(table: String): Unit = spark.sql(
         s"INSERT INTO cat.db.$table " +
@@ -2000,12 +1997,10 @@ class CometIcebergWriteActionSuite
       val powerOfTwo = 64 * 1024 * 1024
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
       createTable(
-        warehouseDir,
         "bloom_large_native",
         partitionSpec = "",
         properties = Some(enabled + s"'write.parquet.bloom-filter-max-bytes'='$powerOfTwo'"))
       createTable(
-        warehouseDir,
         "bloom_large_jvm",
         partitionSpec = "",
         properties =
@@ -2037,7 +2032,6 @@ class CometIcebergWriteActionSuite
       // through the JVM writer with a cap equal to the observed folded size. Power-of-two folding
       // must produce exactly the same SBBF bitset as hashing directly into that final allocation.
       createTable(
-        warehouseDir,
         "bloom_large_folded_jvm",
         partitionSpec = "",
         properties = Some(enabled + s"'write.parquet.bloom-filter-max-bytes'='$nativeSize'"))
@@ -2067,7 +2061,6 @@ class CometIcebergWriteActionSuite
       val max = "134217729"
       val table = "bloom_range_fallback"
       createTable(
-        warehouseDir,
         table,
         partitionSpec = "",
         properties = Some(enabledWithSmallNdv + s"'write.parquet.bloom-filter-max-bytes'='$max'"))
@@ -5931,7 +5924,7 @@ class CometIcebergWriteActionSuite
       .map(_.getString(0))
     val conf = spark.sparkContext.hadoopConfiguration
     paths.toSeq.flatMap { path =>
-      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
       val reader = ParquetFileReader.open(input)
       try {
         reader.getFooter.getBlocks.asScala.flatMap { block =>
@@ -5958,7 +5951,7 @@ class CometIcebergWriteActionSuite
       .map(_.getString(0))
     val conf = spark.sparkContext.hadoopConfiguration
     val present = paths.toSeq.flatMap { path =>
-      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
       val reader = ParquetFileReader.open(input)
       try {
         reader.getFooter.getBlocks.asScala.flatMap { block =>
@@ -5984,7 +5977,7 @@ class CometIcebergWriteActionSuite
       .map(_.getString(0))
     val conf = spark.sparkContext.hadoopConfiguration
     val counts = paths.toSeq.flatMap { path =>
-      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
       val reader = ParquetFileReader.open(input)
       try {
         reader.getFooter.getBlocks.asScala.flatMap { block =>
@@ -6014,7 +6007,7 @@ class CometIcebergWriteActionSuite
       .map(_.getString(0))
     val conf = spark.sparkContext.hadoopConfiguration
     paths.foreach { path =>
-      val input = HadoopInputFile.fromPath(new Path(path.stripPrefix("file:")), conf)
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
       val reader = ParquetFileReader.open(input)
       try {
         reader.getFooter.getBlocks.asScala.foreach { block =>

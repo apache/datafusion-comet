@@ -545,7 +545,9 @@ A write is eligible only when ALL of the following hold:
 | `write.parquet.page-version`                                                                                                                | unset or `v1`, spelled exactly; any other value falls back on every Iceberg version (Iceberg 1.11 reads this property and rejects spellings such as `V1`, while earlier versions ignore it and always write v1 pages)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `write.parquet.shred-variants`                                                                                                              | any value (iceberg-java shreds only top-level `variant` columns, and a `variant` column falls back on its type)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `write.parquet.variant-inference-buffer-size`                                                                                               | any value (only meaningful when shredding a `variant` column, which falls back)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | unset or `false`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `write.parquet.bloom-filter-enabled.column.<col>`                                                                                           | `true` or `false`; on Iceberg 1.11+, an explicit NDV enables the column even when this value is `false`. Enabled columns use the native writer when `spark.comet.write.iceberg.bloomFilterFolding.enabled=true`                                                                                                                                                                                                                                                                 |
+| `write.parquet.bloom-filter-fpp.column.<col>` / `write.parquet.bloom-filter-ndv.column.<col>`                                               | Interpretation depends on the Iceberg runtime: Iceberg 1.5.2 ignores both prefixes, Iceberg 1.8.1 through 1.10.x interprets FPP but ignores NDV, and Iceberg 1.11 interprets both. For every interpreted property on a column named by an `enabled` property, FPP must be a finite double strictly between 0 and 1 and NDV must be a positive Java long no greater than `Long.MAX_VALUE / 8`; the Iceberg FPP default is `0.01`                                                 |
+| `write.parquet.bloom-filter-max-bytes`                                                                                                      | With a configured Bloom column: unset (1 MiB) or a power of two from 32 bytes through 128 MiB. Java writes other settings, including a 32-byte cap that it ignores for a larger explicit NDV/FPP request. With no configured Bloom column: any positive Java int.                                                                                                                                                                                                               |
 | `write.metadata.metrics.*`                                                                                                                  | any value (manifest metrics are re-derived on the JVM with Iceberg's own logic)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `write.spark.fanout.enabled`                                                                                                                | any value (the native writer implements both clustered and fanout modes)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -557,7 +559,7 @@ A write is eligible only when ALL of the following hold:
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`), the v3 types `variant`, `timestamp_ns`, `geometry` and `geography`, `unknown` inside a nested type, and a table whose columns are all `unknown`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 
 Within `write.parquet.*`, everything not listed above must be absent: unvetted keys (e.g.
-`bloom-filter-max-bytes`, `stats-enabled.column.*`, keys added by future Iceberg versions) fall
+`stats-enabled.column.*`, keys added by future Iceberg versions) fall
 back. iceberg-java builds its Parquet writer's settings from `write.parquet.*` keys. Of the
 `parquet.*` keys, only `parquet.columnindex.truncate.length` changes its data files beyond their
 compressed bytes, whether it is set as a table or write property or in the Hadoop configuration
@@ -843,6 +845,53 @@ failure during the driver-side commit itself behaves exactly as on the stock pat
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
 unchanged.
+
+### Native Bloom-filter writes
+
+Set `spark.comet.write.iceberg.bloomFilterFolding.enabled=true` together with
+`spark.comet.write.iceberg.enabled=true` to use native writes for Bloom-enabled tables. The
+Bloom option defaults to `false`, which selects Iceberg's Java writer when a Bloom column is
+enabled. It selects the writer; it cannot turn folding off inside the pinned parquet-rs writer.
+
+Native Bloom filters offer a file-size versus pruning tradeoff. After inserting values,
+parquet-rs can fold a sparse filter into fewer bytes while targeting the configured false-positive
+probability (FPP). Iceberg's non-adaptive Java writer retains its initial allocation, which can
+have a lower realized FPP and prune more row groups. Sparse filters can arise from ordinary skew,
+an overestimated distinct-value count (NDV), or a partially filled final row group. Keeping the
+option off can be useful when preserving Java's stronger pruning for those row groups matters
+more than reducing serialized filter size. Turning it on accepts that tradeoff. Folding preserves
+inserted-value membership; it does not introduce false negatives. It retains the original buffer
+capacity, so smaller serialized filters do not imply lower peak writer memory.
+
+Boolean filters also differ: parquet-java leaves their bitsets empty, whereas parquet-rs inserts
+boolean values. This difference is covered by the same opt-in. Applications comparing Bloom
+bytes across writers should account for it separately from folding.
+
+Java also omits Bloom filters for column chunks whose data pages are entirely dictionary encoded,
+while the pinned Rust writer can retain them. This changes filter presence and serialized space
+independently of folding.
+
+Comet matches Java's initial allocation decision for native-eligible settings: without NDV it
+allocates `write.parquet.bloom-filter-max-bytes` (default 1 MiB); with NDV it sizes from NDV and FPP
+(default `0.01`) and applies the cap. A binding cap can make the requested FPP unattainable on
+either writer. Iceberg 1.10 interprets per-column FPP and ignores NDV; Iceberg 1.11 interprets both.
+Comet follows the loaded Iceberg runtime, including its defaults and ignored properties.
+
+The eligibility table above describes settings that use the native writer. Configured Bloom
+columns use power-of-two caps from 32 bytes to 128 MiB; other caps use Java's writer, as do NDVs
+above `Long.MAX_VALUE / 8` and explicit NDV/FPP requests for which Java ignores a 32-byte cap.
+With no configured Bloom column, any positive Java-int cap is accepted because it does not affect
+the file. Malformed or non-positive caps follow Java's validation through fallback.
+
+Iceberg 1.10 and newer versions use canonical Iceberg column names. Earlier Iceberg runtimes
+need no separate user setting: Comet resolves raw physical Parquet paths before Iceberg 1.8,
+field-name aliases in 1.8/1.9, and canonical names in 1.10 and newer, matching each Java writer.
+
+The upstream [folding option request](https://github.com/apache/arrow-rs/issues/11891) tracks a
+way to retain the initial allocation in parquet-rs, implemented in
+[arrow-rs #11892](https://github.com/apache/arrow-rs/pull/11892). Disabling folding addresses one source of
+byte differences; physical value encodings, initial sizing, and other writer settings still
+need to match for byte identity.
 
 ### Accepted divergences
 
