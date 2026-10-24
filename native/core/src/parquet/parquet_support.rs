@@ -22,7 +22,7 @@ use arrow::array::{
     make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
 };
 use arrow::buffer::NullBuffer;
-use arrow::compute::can_cast_types;
+use arrow::compute::{can_cast_types, take};
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
@@ -40,7 +40,7 @@ use datafusion::execution::object_store::{
 };
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
 use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
@@ -329,6 +329,33 @@ fn parquet_convert_array_impl(
                 .collect();
 
             Ok(Arc::new(string_array))
+        }
+        // Unannotated BINARY read as a string. Spark's cast replaces malformed UTF-8 with
+        // U+FFFD, where Arrow's safe cast below would return NULL. Top-level columns don't
+        // reach this arm (#7032). The reader keeps a file's ARROW:schema types, so an Arrow
+        // writer's `LargeBinary` or `BinaryView` arrives as is; Spark's cast takes only
+        // `Binary`, and converting `LargeBinary` reuses its value buffer.
+        (Binary | LargeBinary | BinaryView, Utf8) => {
+            let array = match from_type {
+                Binary => array,
+                _ => cast_with_options(&array, &Binary, &PARQUET_OPTIONS)?,
+            };
+            // Binary to Utf8 reads only the binary output style, which a scan leaves unset.
+            let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
+            let len = array.len();
+            spark_cast(ColumnarValue::Array(array), to_type, &cast_options)?.into_array(len)
+        }
+        // The same schema can dictionary-encode such a value. Decode each dictionary value once
+        // through the arm above, then expand the keys, as Arrow's cast would.
+        (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
+            let dictionary = array.as_any_dictionary();
+            let values = parquet_convert_array_impl(
+                Arc::clone(dictionary.values()),
+                to_type,
+                parquet_options,
+                None,
+            )?;
+            Ok(take(values.as_ref(), dictionary.keys(), None)?)
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
@@ -1087,6 +1114,31 @@ mod tests {
                 "{path} with aliases {aliases:?} and libhdfs {libhdfs:?}"
             );
         }
+    }
+
+    #[test]
+    fn nested_binary_to_string_decodes_invalid_utf8_like_spark() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{ArrayRef, AsArray, BinaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let values = BinaryArray::from(vec![Some(b"one".as_slice()), Some(&[0xff])]);
+        let input: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("element", DataType::Binary, true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            Arc::new(values),
+            None,
+        ));
+        let to_type = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+
+        let result = parquet_convert_array(input, &to_type, &options).unwrap();
+        let strings = result.as_list::<i32>().values().as_string::<i32>();
+        assert_eq!(strings.value(0), "one");
+        assert_eq!(strings.value(1), "\u{fffd}");
     }
 
     /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
