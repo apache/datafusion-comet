@@ -1724,8 +1724,9 @@ object IcebergReflection extends Logging {
           getMethod(schema.getClass, "findField", classOf[Int])
             .invoke(schema, Int.box(id))).flatMap { source =>
           val tpe = getMethod(source.getClass, "type").invoke(source)
-          val typeId = getMethod(tpe.getClass, "typeId").invoke(tpe).asInstanceOf[Enum[_]]
-          if (typeId.name() == "UUID") {
+          val typeIdName =
+            getMethod(tpe.getClass, "typeId").invoke(tpe).asInstanceOf[Enum[_]].name()
+          if (typeIdName == "UUID") {
             Some(
               getMethod(schema.getClass, "findColumnName", classOf[Int])
                 .invoke(schema, Int.box(id))
