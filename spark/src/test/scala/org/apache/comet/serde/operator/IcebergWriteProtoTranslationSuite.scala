@@ -19,6 +19,8 @@
 
 package org.apache.comet.serde.operator
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, IcebergWriterMode}
@@ -174,6 +176,112 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(settings.getPageSizeBytes == 65536L)
     assert(settings.getDictSizeBytes == 1048576L)
     assert(settings.getPageRowLimit == 1000)
+  }
+
+  test("per-column bloom filter properties are translated deterministically") {
+    val prefix = Keys.ParquetBloomFilterColumnEnabledPrefix
+    val settings = buildParquetSettings(
+      Map(
+        s"${prefix}region" -> "TRUE",
+        s"${prefix}id" -> "true",
+        s"${prefix}amount" -> "false",
+        s"${Keys.ParquetBloomFilterColumnFppPrefix}region" -> "0.02",
+        s"${Keys.ParquetBloomFilterColumnNdvPrefix}id" -> "1234"),
+      TestCreatedBy)
+    assert(settings.getBloomFiltersList.asScala.map(_.getParquetPath) == Seq("id", "region"))
+    val bloomFilters = settings.getBloomFiltersList.asScala.map(p => p.getParquetPath -> p).toMap
+    assert(bloomFilters.keySet == Set("id", "region"))
+    assert(settings.getBloomFilterMaxBytes == 1024L * 1024L)
+    assert(bloomFilters("id").getFpp == 0.01d)
+    assert(bloomFilters("region").getFpp == 0.02d)
+    assert(bloomFilters("id").getNdv == 1234L)
+    assert(!bloomFilters("region").hasNdv)
+    assert(!bloomFilters.contains("amount"))
+  }
+
+  test("an explicit NDV re-enables a bloom filter after enabled=false") {
+    val prefix = Keys.ParquetBloomFilterColumnEnabledPrefix
+    val configuredFpp = 0.02d
+    val configuredNdv = 1234L
+    val settings = buildParquetSettings(
+      Map(
+        s"${prefix}id" -> "false",
+        s"${Keys.ParquetBloomFilterColumnFppPrefix}id" -> configuredFpp.toString,
+        s"${Keys.ParquetBloomFilterColumnNdvPrefix}id" -> configuredNdv.toString),
+      TestCreatedBy)
+
+    val bloomFilter = settings.getBloomFilters(0)
+    assert(bloomFilter.getParquetPath == "id")
+    assert(bloomFilter.getFpp == configuredFpp)
+    assert(bloomFilter.getNdv == configuredNdv)
+  }
+
+  test("bloom filter properties use physical Parquet paths for list and map leaves") {
+    val prefix = Keys.ParquetBloomFilterColumnEnabledPrefix
+    val settings = buildParquetSettings(
+      Map(
+        s"${prefix}tags.element" -> "true",
+        s"${prefix}attrs.key" -> "true",
+        s"${prefix}attrs.value" -> "true",
+        s"${prefix}missing" -> "true",
+        s"${Keys.ParquetBloomFilterColumnFppPrefix}tags.element" -> "0.02",
+        s"${Keys.ParquetBloomFilterColumnNdvPrefix}attrs.value" -> "1234"),
+      TestCreatedBy,
+      Map(
+        "tags.element" -> "tags.list.element",
+        "attrs.key" -> "attrs.key_value.key",
+        "attrs.value" -> "attrs.key_value.value"))
+
+    val bloomFilters = settings.getBloomFiltersList.asScala.map(p => p.getParquetPath -> p).toMap
+    assert(
+      bloomFilters.keySet ==
+        Set("attrs.key_value.key", "attrs.key_value.value", "tags.list.element"))
+    assert(bloomFilters("tags.list.element").getFpp == 0.02d)
+    assert(bloomFilters("attrs.key_value.value").getNdv == 1234L)
+    assert(!bloomFilters.contains("missing"))
+  }
+
+  test("Iceberg bloom filter defaults and explicit max are translated exactly") {
+    val enabled = Keys.ParquetBloomFilterColumnEnabledPrefix + "id"
+    val defaults = buildParquetSettings(Map(enabled -> "true"), TestCreatedBy)
+    assert(defaults.getBloomFilterMaxBytes == Defaults.BloomFilterMaxBytes)
+    assert(Defaults.BloomFilterMaxBytes == 1024 * 1024)
+    assert(defaults.getBloomFilters(0).getFpp == Defaults.BloomFilterFpp)
+    assert(Defaults.BloomFilterFpp == 0.01d)
+
+    val explicit = buildParquetSettings(
+      Map(enabled -> "true", Keys.ParquetBloomFilterMaxBytes -> "67108864"),
+      TestCreatedBy)
+    assert(explicit.getBloomFilterMaxBytes == 64L * 1024L * 1024L)
+  }
+
+  test("Bloom sizing arithmetic stays aligned with the native writer") {
+    import CometIcebergNativeWrite.{bloomFilterSizesRepresentable, MinBloomFilterBytes, parquetMrBloomFilterBytes}
+
+    val kibibyte = 1024
+    val mebibyte = kibibyte * kibibyte
+    val twiceMinimum = 2 * MinBloomFilterBytes
+    // Keep this table in sync with BLOOM_FILTER_SIZING_CASES in iceberg_write.rs. These fixed
+    // expectations make JVM planning and native task sizing fail independently if either drifts.
+    val cases = Seq(
+      (None, 0.01d, mebibyte, mebibyte),
+      (Some(1L), 0.01d, mebibyte, MinBloomFilterBytes),
+      (Some(1000L), 0.01d, mebibyte, 2 * kibibyte),
+      (Some(1000L), 0.005d, mebibyte, 2 * kibibyte),
+      (Some(1000000L), 0.0001d, twiceMinimum, twiceMinimum),
+      (Some(100000000L), 0.01d, 4 * kibibyte, 4 * kibibyte))
+
+    cases.foreach { case (ndv, fpp, maxBytes, expectedBytes) =>
+      assert(
+        parquetMrBloomFilterBytes(ndv, fpp, maxBytes) == expectedBytes,
+        s"ndv=$ndv fpp=$fpp maxBytes=$maxBytes")
+      assert(
+        bloomFilterSizesRepresentable(maxBytes, fpp),
+        s"ndv=$ndv fpp=$fpp maxBytes=$maxBytes")
+    }
+    assert(
+      !bloomFilterSizesRepresentable(mebibyte, java.lang.Double.MIN_NORMAL),
+      "the gate must reject a target for which native synthetic-NDV sizing fails")
   }
 
   test("size properties are parsed with Java Integer.parseInt semantics") {

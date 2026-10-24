@@ -144,6 +144,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.write.iceberg.bloomFilterFolding.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Whether Bloom-filter-enabled Iceberg writes may use Comet's native writer. The " +
+        "Apache Arrow Rust parquet writer folds sparse Bloom filters after insertion, which " +
+        "can reduce serialized size while raising realized FPP toward the configured target. " +
+        "When false, these writes use Iceberg's Java writer. This option selects the writer; " +
+        "it cannot disable folding inside parquet-rs. Boolean filters also differ: Java leaves " +
+        "them empty while Rust inserts values. Requires spark.comet.write.iceberg.enabled. " +
+        "Off by default.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)

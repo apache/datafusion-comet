@@ -54,6 +54,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key, "true")
+      .set(CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key, "true")
   }
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
@@ -377,26 +378,222 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: write.parquet.bloom-filter-max-bytes set") {
-    withDetectionCatalog { _ =>
-      createTable(
-        "bloom_max",
-        partitionSpec = "",
-        properties = Some("'write.parquet.bloom-filter-max-bytes'='524288'"))
-      assertUnsupportedContains("bloom_max", "write.parquet.bloom-filter-max-bytes")
+  test("bloom-filter max-bytes accepts only representable power-of-two values") {
+    withDetectionCatalog { dir =>
+      Seq("32", "524288", "1048576", "134217728").zipWithIndex.foreach { case (value, index) =>
+        val table = s"bloom_max_ok_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+        assertSupportLevelIs[Compatible](table)
+      }
+
+      Seq("31", "33", "100", "134217729", "0", "-1", " 32", "garbage", "2147483648").zipWithIndex
+        .foreach { case (value, index) =>
+          val table = s"bloom_max_bad_$index"
+          createTable(
+            table,
+            partitionSpec = "",
+            properties = Some(
+              "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+                s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+          assertUnsupportedContainsAllowingWriteFailure(
+            table,
+            "write.parquet.bloom-filter-max-bytes")
+        }
     }
   }
 
-  test("fall-back: per-column bloom filter enabled") {
+  test("unused bloom-filter max-bytes does not force fallback") {
+    withDetectionCatalog { dir =>
+      val nonPowerOfTwoMaxBytes = 100
+      createTable(
+        "unused_bloom_max",
+        partitionSpec = "",
+        properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$nonPowerOfTwoMaxBytes'"))
+      assertSupportLevelIs[Compatible]("unused_bloom_max")
+    }
+  }
+
+  test("unused bloom-filter max-bytes preserves Java validation") {
+    withDetectionCatalog { _ =>
+      Seq("0", "-1").zipWithIndex.foreach { case (value, index) =>
+        val table = s"unused_bloom_invalid_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$value'"))
+        assertUnsupportedContainsAllowingWriteFailure(
+          table,
+          "write.parquet.bloom-filter-max-bytes")
+      }
+    }
+  }
+
+  test("bloom-filter max-bytes=32 falls back only when parquet-mr ignores the cap") {
+    withDetectionCatalog { dir =>
+      val minimumBytes = 32
+      val naturallyMinimumNdv = 1
+      val bindingFpp = 0.0001
+      val bindingNdv = 1000000
+      createTable(
+        "without_ndv",
+        partitionSpec = "",
+        properties = Some(s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      assertSupportLevelIs[Compatible]("without_ndv")
+
+      createTable(
+        "natural_minimum",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+            s"'write.parquet.bloom-filter-ndv.column.id'='$naturallyMinimumNdv', " +
+            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      assertSupportLevelIs[Compatible]("natural_minimum")
+
+      createTable(
+        "ignored_minimum_cap",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+            s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', " +
+            s"'write.parquet.bloom-filter-ndv.column.id'='$bindingNdv', " +
+            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      if (icebergSupportsBloomFpp && icebergSupportsBloomNdv) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "ignored_minimum_cap",
+          "write.parquet.bloom-filter-max-bytes")
+      } else {
+        assertSupportLevelIs[Compatible]("ignored_minimum_cap")
+      }
+    }
+  }
+
+  test("fall-back: bloom-filter NDV values that overflow parquet-mr sizing arithmetic") {
+    withDetectionCatalog { dir =>
+      val largestNonOverflowingNdv = Long.MaxValue / 8L
+      val cases = Seq(
+        (largestNonOverflowingNdv, true),
+        (largestNonOverflowingNdv + 1L, false),
+        (1L << 61, false),
+        (Long.MaxValue, false))
+
+      cases.zipWithIndex.foreach { case ((ndv, compatible), index) =>
+        val table = s"bloom_ndv_overflow_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(
+            "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+              s"'write.parquet.bloom-filter-ndv.column.id'='$ndv'"))
+        if (compatible || !icebergSupportsBloomNdv) {
+          assertSupportLevelIs[Compatible](table)
+        } else {
+          assertUnsupportedContainsAllowingWriteFailure(
+            table,
+            "write.parquet.bloom-filter-ndv.column.id")
+        }
+      }
+    }
+  }
+
+  test("bloom-filter enabled=false with NDV follows runtime support and validates NDV") {
+    withDetectionCatalog { dir =>
+      val configuredNdv = 1000
+      createTable(
+        "false_with_ndv",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+            s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'"))
+      assertSupportLevelIs[Compatible]("false_with_ndv")
+
+      createTable(
+        "false_with_bad_ndv",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+            "'write.parquet.bloom-filter-ndv.column.id'='garbage'"))
+      if (icebergSupportsBloomNdv) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "false_with_bad_ndv",
+          "write.parquet.bloom-filter-ndv")
+      } else {
+        assertSupportLevelIs[Compatible]("false_with_bad_ndv")
+      }
+    }
+  }
+
+  test("bloom-filter enabled=false still validates FPP") {
+    withDetectionCatalog { dir =>
+      createTable(
+        "false_with_bad_fpp",
+        partitionSpec = "",
+        properties = Some(
+          "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+            "'write.parquet.bloom-filter-fpp.column.id'='garbage'"))
+      if (icebergSupportsBloomFpp) {
+        assertUnsupportedContainsAllowingWriteFailure(
+          "false_with_bad_fpp",
+          "write.parquet.bloom-filter-fpp")
+      } else {
+        assertSupportLevelIs[Compatible]("false_with_bad_fpp")
+      }
+    }
+  }
+
+  test("fall-back: invalid enabled-column FPP and NDV") {
+    withDetectionCatalog { dir =>
+      Seq(
+        ("'write.parquet.bloom-filter-fpp.column.id'='0'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-fpp.column.id'='1'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-fpp.column.id'='NaN'", icebergSupportsBloomFpp),
+        // Positive and below one, but too small for any integer NDV to encode the requested
+        // power-of-two allocation through parquet-rs's NDV/FPP API.
+        ("'write.parquet.bloom-filter-fpp.column.id'='4.9E-324'", icebergSupportsBloomFpp),
+        ("'write.parquet.bloom-filter-ndv.column.id'='0'", icebergSupportsBloomNdv),
+        (
+          "'write.parquet.bloom-filter-ndv.column.id'='garbage'",
+          icebergSupportsBloomNdv)).zipWithIndex
+        .foreach { case ((property, interpreted), index) =>
+          val table = s"bloom_shape_bad_$index"
+          createTable(
+            table,
+            partitionSpec = "",
+            properties =
+              Some(s"'write.parquet.bloom-filter-enabled.column.id'='true', $property"))
+          if (interpreted) {
+            assertUnsupportedContainsAllowingWriteFailure(table, "write.parquet.bloom-filter")
+          } else {
+            assertSupportLevelIs[Compatible](table)
+          }
+        }
+    }
+  }
+
+  test("Compatible when a per-column bloom filter is enabled") {
     withDetectionCatalog { _ =>
       createTable(
         "bloom_col",
         partitionSpec = "",
         properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
-      assertUnsupportedContains(
-        "bloom_col",
-        "write.parquet.bloom-filter-enabled.column.id",
-        "true")
+      assertSupportLevelIs[Compatible]("bloom_col")
+    }
+  }
+
+  test("Bloom-filter folding must be explicitly enabled for native writes") {
+    withDetectionCatalog { dir =>
+      createTable(
+        "bloom_folding_opt_in",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+      withSQLConf(
+        CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key -> "false") {
+        assertUnsupportedContains(
+          "bloom_folding_opt_in",
+          CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key)
+      }
     }
   }
 
@@ -1777,6 +1974,16 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         fail(s"expected Unsupported for $tableName, got $other")
     }
   }
+
+  private def icebergSupportsBloomFpp: Boolean =
+    IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX")
+      .isDefined
+
+  private def icebergSupportsBloomNdv: Boolean =
+    IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX")
+      .isDefined
 
   /**
    * Runs Spark's transition insertion followed by [[EliminateRedundantTransitions]] over a
