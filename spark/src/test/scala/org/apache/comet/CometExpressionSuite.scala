@@ -49,16 +49,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
 
   private def withReviewAssertion(f: => Unit): Unit = {
-    val id = new org.apache.spark.sql.catalyst.FunctionIdentifier("review_assert")
-    spark.sessionState.functionRegistry.registerFunction(
-      id,
-      new org.apache.spark.sql.catalyst.expressions.ExpressionInfo(
-        classOf[AssertNotNull].getName,
-        "review_assert"),
+    spark.sessionState.functionRegistry.createOrReplaceTempFunction(
+      "review_assert",
       (children: Seq[org.apache.spark.sql.catalyst.expressions.Expression]) =>
-        AssertNotNull(children.head, children.tail.map(_.asInstanceOf[Literal].value.toString)))
+        AssertNotNull(children.head, children.tail.map(_.asInstanceOf[Literal].value.toString)),
+      "internal")
     try f
-    finally spark.sessionState.functionRegistry.dropFunction(id)
+    finally {
+      val _ = sql("DROP TEMPORARY FUNCTION IF EXISTS review_assert")
+    }
   }
 
   private def checkReviewError(df: => DataFrame, errorClass: String): Unit = {
