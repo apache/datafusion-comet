@@ -329,6 +329,23 @@ public abstract class NativeBase {
     }
   }
 
+  private static native String nativePythonUdfVersion();
+
+  /**
+   * The {@code major.minor} version of the embedded Python interpreter that runs native Arrow UDFs,
+   * or an empty string when this native library lacks the in-process Python UDF feature.
+   */
+  public static String pythonUdfVersion() {
+    if (!supportsPythonUdf()) {
+      return "";
+    }
+    try {
+      return nativePythonUdfVersion();
+    } catch (UnsatisfiedLinkError ignored) {
+      return "";
+    }
+  }
+
   /** Release native resources through JNI */
   static native void release();
 

@@ -179,7 +179,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       Collections.emptyMap[String, String](),
       Collections.emptyList[String](),
       "python3",
-      "3.13",
+      NativeBase.pythonUdfVersion(),
       Collections.emptyList(),
       null)
     val udf = UserDefinedPythonFunction(
@@ -208,7 +208,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         Collections.emptyMap[String, String](),
         Collections.emptyList[String](),
         "python3",
-        "3.13",
+        NativeBase.pythonUdfVersion(),
         Collections.emptyList(),
         null)
       val otherUdf = UserDefinedPythonFunction(
@@ -320,7 +320,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       Collections.emptyMap[String, String](),
       Collections.emptyList[String](),
       "python3",
-      "3.11",
+      NativeBase.pythonUdfVersion(),
       Collections.emptyList(),
       null)
     def arrowUdf(returnType: org.apache.spark.sql.types.DataType) = UserDefinedPythonFunction(
@@ -358,6 +358,25 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         val plan = source.select(arrowUdf(LongType)(source.col("id"))).queryExecution.executedPlan
         assert(plan.collect { case _: CometArrowEvalPythonExec => true }.isEmpty)
       }
+      val otherPython = SimplePythonFunction(
+        Array.emptyByteArray,
+        Collections.emptyMap[String, String](),
+        Collections.emptyList[String](),
+        "python3",
+        "2.7",
+        Collections.emptyList(),
+        null)
+      val otherPythonUdf = UserDefinedPythonFunction(
+        "planning_only",
+        otherPython,
+        LongType,
+        PythonEvalType.SQL_SCALAR_ARROW_UDF,
+        udfDeterministic = true)
+      val otherPythonPlan = source.select(otherPythonUdf(source.col("id")))
+      assert(!isNative(otherPythonPlan))
+      assert(
+        fallbackReasons(otherPythonPlan).exists(_.contains("requires Python 2.7")),
+        fallbackReasons(otherPythonPlan))
       withSQLConf(SQLConf.PYTHON_WORKER_LOGGING_ENABLED.key -> "true") {
         val df = source.select(arrowUdf(LongType)(source.col("id")))
         assert(!isNative(df))
@@ -372,7 +391,7 @@ class CometArrowPythonUdfSuite extends CometTestBase {
           env,
           Collections.emptyList[String](),
           "python3",
-          "3.11",
+          NativeBase.pythonUdfVersion(),
           Collections.emptyList(),
           null)
         val udf = UserDefinedPythonFunction(
