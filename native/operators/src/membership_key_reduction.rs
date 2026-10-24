@@ -179,7 +179,11 @@ where
     T::Native: Eq + Hash,
 {
     let rows = column.len();
-    let limit = rows.div_ceil(3);
+    // A low-cardinality shuffle can put just one key in a partition. Its copied
+    // one-row output needs no full-sized table or index vector.
+    let constant = column.null_count() == rows
+        || (column.null_count() == 0 && column.values()[1..] == column.values()[..rows - 1]);
+    let limit = if constant { 1 } else { rows.div_ceil(3) };
     let reservation = MemoryConsumer::new("MembershipKeyReduction batch")
         .with_can_spill(true)
         .register(context.memory_pool());
@@ -190,9 +194,7 @@ where
         table_bytes + limit * (size_of::<u32>() + size_of::<T::Native>()) + limit.div_ceil(8),
     )?;
 
-    let indices = if column.null_count() == rows
-        || (column.null_count() == 0 && column.values()[1..] == column.values()[..rows - 1])
-    {
+    let indices = if constant {
         vec![0]
     } else {
         let mut seen = HashSet::with_capacity(limit + 1);
@@ -247,8 +249,15 @@ mod tests {
 
     #[test]
     fn keeps_a_different_key_at_the_end_of_an_otherwise_constant_batch() {
-        let context = SessionContext::new().task_ctx();
         for last in [0, 1] {
+            // A constant batch only needs room for its one-row output.
+            let limit = if last == 0 { 2048 } else { usize::MAX };
+            let runtime = RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(GreedyMemoryPool::new(limit)))
+                .build_arc()
+                .unwrap();
+            let context =
+                SessionContext::new_with_config_rt(SessionConfig::new(), runtime).task_ctx();
             let input = batch((0..1024).map(|i| if i == 1023 { last } else { 0 }));
             let output = try_reduce_batch(&input, &context, &Time::new())
                 .unwrap()
