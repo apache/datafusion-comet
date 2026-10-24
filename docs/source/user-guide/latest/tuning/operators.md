@@ -39,6 +39,16 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+### Left-semi sort-merge joins
+
+A left-semi join returns each left row if any right row matches. When the right input
+has many duplicate integer keys, set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to discard repeated right-side rows in each batch before the native sort. This option is off
+by default. It applies to batch joins with no residual condition and a compatible right-side
+sort. Duplicate left rows are preserved. The reducer bypasses small batches, mostly unique
+inputs, and attempts that cannot reserve enough memory. Compare the right-side reduction input
+and output row counts on the join to see how many rows the sort saved.
+
 ### Broadcast Joins
 
 Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
