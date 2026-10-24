@@ -31,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Coalesce, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, IsNull, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -3566,20 +3566,14 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
     case _ => false
   }
 
-  // The shuffle must contain only the membership columns. Spark expands a <=> b into a
-  // comparison of (coalesce(key, default), isnull(key)) before serializing the join.
-  private def canReduceRightKeys(join: SortMergeJoinExec): Boolean = join.right match {
-    case sort: CometSortExec
-        if readsCometShuffle(sort.child) &&
-          sort.output.forall(_.dataType.isInstanceOf[IntegralType]) =>
-      val columns = join.rightKeys.collect {
-        case a: Attribute => a
-        case Coalesce(Seq(a: Attribute, _: Literal)) => a
-        case IsNull(a: Attribute) => a
-      }
-      columns.size == join.rightKeys.size && AttributeSet(columns) == sort.outputSet
-    case _ => false
-  }
+  // A sort on one integer column uses DataFusion's primitive merge cursor.
+  private def canReduceRightKey(join: SortMergeJoinExec): Boolean =
+    (join.right, join.rightKeys) match {
+      case (sort: CometSortExec, Seq(key: Attribute)) =>
+        key.dataType.isInstanceOf[IntegralType] && sort.output.size == 1 &&
+        key.semanticEquals(sort.output.head) && readsCometShuffle(sort.child)
+      case _ => false
+    }
 
   override def convert(
       join: SortMergeJoinExec,
@@ -3675,7 +3669,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
         .setJoinType(joinType)
         .setRightKeyReductionEnabled(
           CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.get(join.conf) &&
-            join.joinType == LeftSemi && join.condition.isEmpty && canReduceRightKeys(join))
+            join.joinType == LeftSemi && join.condition.isEmpty && canReduceRightKey(join))
         .addAllSortOptions(sortOptions.map(_.get).asJava)
         .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)

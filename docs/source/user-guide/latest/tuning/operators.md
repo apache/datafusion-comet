@@ -41,16 +41,15 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 
 ### Left-semi sort-merge joins
 
-A left-semi join returns each left row if any right row matches. If the right input has many
-duplicate integer keys, set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
-to keep one copy of each key per batch before the native sort. Duplicate left rows are
-preserved. The option is off by default and applies to unfiltered batch joins whose right
-sort reads directly from a Comet shuffle.
+A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle.
 
 The reducer forwards whole batches until it has seen at least 8,192 rows in the partition.
-It then tries batches of 1,024 to 65,536 rows and skips smaller batches. If more than about
-a third of a batch would remain, the batch is too large, or the reducer reaches its memory
-or hash-probing budget, it sends that batch and the rest of the partition to the native sort.
+It then tries batches of 1,024 to 65,536 rows. If more than about a third of a batch would
+remain, it forwards that batch and waits for a larger batch before trying again. A refused
+memory reservation sends the rest of that partition directly to the native sort.
 Compare the join's reduction input and output counts to see how many rows the sort saved.
 Reduction time includes unsuccessful attempts.
 

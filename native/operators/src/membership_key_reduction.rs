@@ -15,18 +15,20 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Keep the first occurrence of each complete integer row in a duplicate-heavy shuffle batch.
+//! Keep the first occurrence of each integer key in a duplicate-heavy shuffle batch.
 //! A left-semi join only needs to know whether a right-side key exists.
 
 use std::fmt::Formatter;
+use std::hash::Hash;
 use std::sync::Arc;
 
-use arrow::array::{make_comparator, UInt32Array};
+use arrow::array::{downcast_integer_array, Array, PrimitiveArray, UInt32Array};
 use arrow::compute::take_record_batch;
+use arrow::datatypes::ArrowPrimitiveType;
 use arrow::record_batch::RecordBatch;
-use datafusion::common::hash_utils::{create_hashes, RandomState};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{DataFusionError, Result};
+use datafusion::common::utils::memory::estimate_memory_size;
+use datafusion::common::{DataFusionError, HashSet, Result};
 use datafusion::execution::memory_pool::MemoryConsumer;
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
@@ -51,8 +53,7 @@ pub struct MembershipKeyReductionExec {
 }
 
 impl MembershipKeyReductionExec {
-    /// The join planner supplies a fresh shuffle batch of signed integer columns. Equal
-    /// rows must produce the same membership key without side effects.
+    /// The join planner supplies a fresh shuffle batch containing one signed integer key.
     pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             input,
@@ -120,13 +121,13 @@ impl ExecutionPlan for MembershipKeyReductionExec {
         let time =
             MetricBuilder::new(&self.metrics).subset_time("right_key_reduction_time", partition);
         let mut seen = 0usize;
-        let mut bypass = false;
+        let mut min_rows = MIN_BATCH_ROWS;
         let stream = input.map(move |batch| {
             let batch = batch?;
             let rows = batch.num_rows();
             input_rows.add(rows);
             // Avoid the setup cost on short partitions, including a single large batch.
-            let attempt = !bypass && seen >= PREFIX_ROWS && rows >= MIN_BATCH_ROWS;
+            let attempt = seen >= PREFIX_ROWS && (min_rows..=MAX_BATCH_ROWS).contains(&rows);
             seen = seen.saturating_add(rows);
             if attempt {
                 match try_reduce_batch(&batch, &context, &time) {
@@ -134,11 +135,14 @@ impl ExecutionPlan for MembershipKeyReductionExec {
                         output_rows.add(reduced.num_rows());
                         return Ok(reduced);
                     }
-                    Ok(None) => {}
-                    Err(e) if matches!(e.find_root(), DataFusionError::ResourcesExhausted(_)) => {}
+                    // A short shuffle frame may have too few repeats while a later full
+                    // batch is worth reducing. Retry only at the next larger batch size.
+                    Ok(None) => min_rows = (rows + 1).next_power_of_two(),
+                    Err(e) if matches!(e.find_root(), DataFusionError::ResourcesExhausted(_)) => {
+                        min_rows = MAX_BATCH_ROWS + 1;
+                    }
                     Err(e) => return Err(e),
                 }
-                bypass = true;
             }
             bypass_rows.add(rows);
             output_rows.add(rows);
@@ -161,67 +165,48 @@ fn try_reduce_batch(
     time: &Time,
 ) -> Result<Option<RecordBatch>> {
     let _timer = time.timer();
-    let rows = batch.num_rows();
-    if rows > MAX_BATCH_ROWS {
-        return Ok(None);
-    }
+    let column = batch.column(0).as_ref();
+    downcast_integer_array!(column => reduce_integer(column, batch, context),
+        data_type => datafusion::common::internal_err!("Expected an integer membership key, got {data_type}"))
+}
 
-    let max_distinct = rows.div_ceil(3);
-    let slots = rows.next_power_of_two();
-    let row_width: usize = batch
-        .schema_ref()
-        .fields()
-        .iter()
-        .map(|field| field.data_type().primitive_width().unwrap())
-        .sum();
-    // Reserve before allocating. Arrow take materializes at most max_distinct values
-    // per column. Allow one validity bitmap and 1 KiB per column for the comparator,
-    // array and buffer headers, pointer vectors and alignment.
-    let scratch_bytes = rows * size_of::<u64>() + (slots + max_distinct) * size_of::<u32>();
-    let output_bytes =
-        row_width * max_distinct + batch.num_columns() * (max_distinct.div_ceil(8) + 1024);
+fn reduce_integer<T: ArrowPrimitiveType>(
+    column: &PrimitiveArray<T>,
+    batch: &RecordBatch,
+    context: &TaskContext,
+) -> Result<Option<RecordBatch>>
+where
+    T::Native: Eq + Hash,
+{
+    let rows = column.len();
+    let limit = rows.div_ceil(3);
     let reservation = MemoryConsumer::new("MembershipKeyReduction batch")
         .with_can_spill(true)
         .register(context.memory_pool());
-    reservation.try_grow(scratch_bytes + output_bytes)?;
+    // The first key past the limit is inserted before it triggers bypass. Budget the
+    // Arrow value and validity buffers, scratch indices, and array/buffer headers.
+    let table_bytes = estimate_memory_size::<Option<T::Native>>(limit + 1, 1024)?;
+    reservation.try_grow(
+        table_bytes + limit * (size_of::<u32>() + size_of::<T::Native>()) + limit.div_ceil(8),
+    )?;
 
-    let mut hashes = vec![0; rows];
-    create_hashes(batch.columns(), &RandomState::with_seed(0), &mut hashes)?;
-    let comparators = batch
-        .columns()
-        .iter()
-        .map(|column| make_comparator(column.as_ref(), column.as_ref(), Default::default()))
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut table = vec![u32::MAX; slots];
-    let mut indices = Vec::with_capacity(max_distinct);
-    // DataFusion skips null integers when hashing. Different null placements can have
-    // identical hashes, so bound total collision probes to one extra probe per input row.
-    let mut remaining_collisions = rows;
-    for (row, &hash) in hashes.iter().enumerate() {
-        let mut slot = hash as usize & (slots - 1);
-        loop {
-            let previous = table[slot];
-            if previous == u32::MAX {
-                if indices.len() == max_distinct {
+    let indices = if column.null_count() == rows
+        || (column.null_count() == 0 && column.values()[1..] == column.values()[..rows - 1])
+    {
+        vec![0]
+    } else {
+        let mut seen = HashSet::with_capacity(limit + 1);
+        let mut indices = Vec::with_capacity(limit);
+        for (row, value) in column.iter().enumerate() {
+            if seen.insert(value) {
+                if indices.len() == limit {
                     return Ok(None);
                 }
-                table[slot] = row as u32;
                 indices.push(row as u32);
-                break;
             }
-            let previous = previous as usize;
-            if hashes[previous] == hash && comparators.iter().all(|cmp| cmp(previous, row).is_eq())
-            {
-                break;
-            }
-            if remaining_collisions == 0 {
-                return Ok(None);
-            }
-            remaining_collisions -= 1;
-            slot = (slot + 1) & (slots - 1);
         }
-    }
-
+        indices
+    };
     Ok(Some(take_record_batch(batch, &UInt32Array::from(indices))?))
 }
 
@@ -244,29 +229,14 @@ mod tests {
     }
 
     #[test]
-    fn keeps_complete_nullable_keys_in_input_order() {
-        // The two null placements can hash alike. Only equal tuples may be removed.
-        let keys = [
-            (None, Some(-1)),
-            (Some(-1), None),
-            (None, None),
-            (Some(i32::MIN), Some(-1)),
-            (Some(0), Some(0)),
-        ];
-        let input = RecordBatch::try_from_iter([
-            (
-                "a",
-                Arc::new(Int32Array::from_iter(
-                    (0..1025).map(|i| keys[i % keys.len()].0),
-                )) as ArrayRef,
-            ),
-            (
-                "b",
-                Arc::new(Int32Array::from_iter(
-                    (0..1025).map(|i| keys[i % keys.len()].1),
-                )) as ArrayRef,
-            ),
-        ])
+    fn keeps_distinct_nullable_keys_in_input_order() {
+        let keys = [None, Some(i32::MIN), Some(0), Some(-1)];
+        let input = RecordBatch::try_from_iter([(
+            "k",
+            Arc::new(Int32Array::from_iter(
+                (0..1025).map(|i| keys[i % keys.len()]),
+            )) as ArrayRef,
+        )])
         .unwrap()
         .slice(1, 1024);
         let reduced = try_reduce_batch(&input, &SessionContext::new().task_ctx(), &Time::new())
@@ -276,16 +246,19 @@ mod tests {
     }
 
     #[test]
-    fn reduces_four_copies_of_each_key() {
-        let input = batch((0..8192).map(|i| (i * 1031) % 2048));
-        let reduced = try_reduce_batch(&input, &SessionContext::new().task_ctx(), &Time::new())
-            .unwrap()
-            .unwrap();
-        assert_eq!(reduced, input.slice(0, 2048));
+    fn keeps_a_different_key_at_the_end_of_an_otherwise_constant_batch() {
+        let context = SessionContext::new().task_ctx();
+        for last in [0, 1] {
+            let input = batch((0..1024).map(|i| if i == 1023 { last } else { 0 }));
+            let output = try_reduce_batch(&input, &context, &Time::new())
+                .unwrap()
+                .unwrap();
+            assert_eq!(output, batch(0..=last));
+        }
     }
 
     #[tokio::test]
-    async fn bypasses_the_rest_of_the_partition_after_a_refusal() {
+    async fn short_frames_do_not_disable_larger_batches() {
         let prefix = batch(0..PREFIX_ROWS as i32);
         let hot = batch((0..2048).map(|i| i % 8));
         for (limit, attempted) in [(1, hot.clone()), (usize::MAX, batch(0..2048))] {
@@ -294,7 +267,8 @@ mod tests {
                 .with_memory_pool(Arc::clone(&pool) as Arc<dyn MemoryPool>)
                 .build_arc()
                 .unwrap();
-            let input = vec![prefix.clone(), attempted, hot.clone()];
+            let full = batch((0..8192).map(|i| (i * 1031) % 2048));
+            let input = vec![prefix.clone(), attempted, hot.clone(), full.clone()];
             let source = MemorySourceConfig::try_new_exec(
                 std::slice::from_ref(&input),
                 prefix.schema(),
@@ -304,7 +278,15 @@ mod tests {
             let reducer = MembershipKeyReductionExec::new(source);
             let ctx = SessionContext::new_with_config_rt(SessionConfig::new(), runtime).task_ctx();
             let output = collect(reducer.execute(0, ctx).unwrap()).await.unwrap();
-            assert_eq!(output, input);
+            assert_eq!(output[..3], input[..3]);
+            assert_eq!(
+                output[3],
+                if limit == 1 {
+                    full
+                } else {
+                    full.slice(0, 2048)
+                }
+            );
             assert_eq!(pool.reserved(), 0);
         }
     }

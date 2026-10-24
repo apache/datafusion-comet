@@ -204,7 +204,7 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
-/// Spark enables reduction only for simple integer membership keys read from a Comet shuffle.
+/// Spark enables reduction only for a single integer key read from a Comet shuffle.
 /// Its IPC frames can arrive through either the JVM Arrow stream or the direct shuffle reader.
 fn reduce_before_sort(
     params: &mut JoinParameters,
@@ -217,15 +217,18 @@ fn reduce_before_sort(
         return Ok(None);
     };
     let input = sort.input();
-    let ordering = sort.expr();
+    let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
+        return Ok(None);
+    };
+    let schema = input.schema();
+    let order = sort.expr().first();
     if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
-        || ordering.len() != params.join_on.len()
-        || ordering.len() != sort_options.len()
-        || !ordering
-            .iter()
-            .zip(&params.join_on)
-            .zip(sort_options)
-            .all(|((order, (_, key)), options)| order.options == *options && order.expr.eq(key))
+        || schema.fields().len() != 1
+        || !schema.field(0).data_type().is_signed_integer()
+        || !key.is::<Column>()
+        || sort.expr().len() != 1
+        || order.options != *options
+        || !order.expr.eq(key)
     {
         return Ok(None);
     }

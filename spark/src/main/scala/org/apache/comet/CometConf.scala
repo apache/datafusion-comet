@@ -365,8 +365,8 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Reduce duplicate integer rows when an unfiltered left-semi sort-merge join sorts its " +
-          s"right input directly from a Comet shuffle. $TUNING_GUIDE.")
+        "Reduce duplicate keys when an unfiltered left-semi sort-merge join reads its single " +
+          s"integer equality key directly from a Comet shuffle. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =

@@ -174,7 +174,7 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
                     val bypass = join.longMetric("right_key_reduction_bypass_rows").value
                     require(in == buildRows && out == sortRows)
                     if (shouldReduce) {
-                      require(out > 0 && out < in)
+                      require(out > 0 && out <= in * 3 / 4)
                     } else {
                       require(out == in && bypass == in)
                     }
