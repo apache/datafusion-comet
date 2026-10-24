@@ -727,7 +727,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(limitCollectProjectionInput(refreshStaleShuffleScans(op)))
+      val converted = convertNode(limitProjectionInput(refreshStaleShuffleScans(op)))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
@@ -737,22 +737,29 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Spark's collect limit consumes at most `limit` rows per partition, but a native projection
-   * evaluates its whole input batch before that limit can stop reading. Limit the projection's
-   * input first so an expression on an unconsumed row cannot raise an error. Keep the outer
-   * limit: it still combines partitions and drops OFFSET rows, which Spark evaluates before
-   * dropping.
+   * Spark's limits stop consuming rows, but a native limit slices a projection's output after the
+   * whole input batch has been evaluated. Cap the projection's input first so expressions on
+   * unconsumed rows cannot raise an error. The cap includes the OFFSET prefix; the outer limit
+   * still applies the offset and, for collect/global limits, preserves the single-partition
+   * result. Keep local limits too, preserving their plan shape and AQE links.
    *
    * Only handle an immediately adjacent native projection. A filter or join between the limit and
    * projection can require more input rows, and a blocking operator must consume its input.
-   * Non-collect LocalLimit/GlobalLimit plans can still evaluate a projection before limiting its
-   * output. That preexisting gap and throwing filter predicates are tracked separately in
+   * Throwing filter predicates and other partial-consumption gaps remain tracked in
    * https://github.com/apache/datafusion-comet/issues/7147.
    */
-  private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
-    case limit: CollectLimitExec if limit.limit >= 0 =>
-      limit.child match {
-        case project: CometProjectExec =>
+  private def limitProjectionInput(op: SparkPlan): SparkPlan = {
+    val rows = op match {
+      case limit: CollectLimitExec => limit.limit
+      case limit: LocalLimitExec => limit.limit
+      case limit: GlobalLimitExec => limit.limit
+      case _ => -1
+    }
+    if (rows < 0) {
+      op
+    } else {
+      op.children match {
+        case Seq(project: CometProjectExec) =>
           // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
           // native planning can prune columns used only by the filter's predicate.
           val onlyColumns = project.projectList.forall {
@@ -760,7 +767,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _ => false
           }
           val alreadyCapped = project.child match {
-            case cap: CometLocalLimitExec => cap.limit <= limit.limit
+            case cap: CometLocalLimitExec => cap.limit <= rows
             case _ => false
           }
           if (onlyColumns || alreadyCapped) {
@@ -769,9 +776,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             // Use normal config and serde gating for the synthetic limit. If conversion fails,
             // its fallback tags are discarded with it and the original plan is retained.
             val bounded = for {
-              cap <- convertToComet(
-                LocalLimitExec(limit.limit, project.child),
-                CometLocalLimitExec)
+              cap <- convertToComet(LocalLimitExec(rows, project.child), CometLocalLimitExec)
               rebuilt <- convertToComet(
                 project.originalPlan.withNewChildren(Seq(cap)),
                 CometProjectExec)
@@ -785,13 +790,13 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
                 rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
               }
-              limit.withNewChildren(Seq(rebuilt))
+              op.withNewChildren(Seq(rebuilt))
             }
             bounded.getOrElse(op)
           }
         case _ => op
       }
-    case _ => op
+    }
   }
 
   /**
