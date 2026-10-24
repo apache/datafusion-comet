@@ -23,15 +23,7 @@ use datafusion_comet_common::{SparkError, SparkErrorWithContext};
 use jni::errors::{Exception, ToException};
 use regex::Regex;
 
-use std::{
-    any::Any,
-    convert,
-    fmt::Write,
-    panic::UnwindSafe,
-    result, str,
-    str::Utf8Error,
-    sync::{Arc, Mutex},
-};
+use std::{any::Any, convert, panic::UnwindSafe, result, str, str::Utf8Error};
 
 // This is just a pointer. We'll be returning it from our function. We
 // can't return one of the objects with lifetime information because the
@@ -42,11 +34,6 @@ use jni::objects::{Global, JThrowable};
 use jni::{strings::JNIString, Env, EnvUnowned, Outcome};
 use lazy_static::lazy_static;
 use parquet::errors::ParquetError;
-use thiserror::Error;
-
-lazy_static! {
-    static ref PANIC_BACKTRACE: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-}
 
 /// Error returned during executing operators.
 #[derive(thiserror::Error, Debug)]
@@ -100,6 +87,20 @@ pub enum CometError {
     /// exception that library raises. Internal invariants belong in [`CometError::Internal`].
     #[error("{0}")]
     IllegalState(String),
+
+    /// Must reach the JVM as `java.util.NoSuchElementException` carrying this exact message.
+    #[error("{0}")]
+    NoSuchElement(String),
+
+    /// `spark.comet.nativeUdf.enabled` or `spark.comet.nativeUdf.allowedPaths` refuses a native
+    /// UDF library. Surfaces as `CometNativeUdfNotAllowedException`.
+    #[error("{0}")]
+    NativeUdfNotAllowed(String),
+
+    /// A native UDF library reports the wrong ABI version or lacks a required symbol. Surfaces as
+    /// `CometNativeUdfAbiException`.
+    #[error("{0}")]
+    NativeUdfAbi(String),
 
     #[error(transparent)]
     Arrow {
@@ -184,13 +185,25 @@ pub enum CometError {
 
 pub fn init() {
     std::panic::set_hook(Box::new(|panic_info| {
-        // Log the panic message and location to stderr so it is visible in CI logs
-        // even if the exception message is lost crossing the FFI boundary
-        eprintln!("Comet native panic: {panic_info}");
-        // Capture the backtrace for a panic
-        *PANIC_BACKTRACE.lock().unwrap() =
-            Some(std::backtrace::Backtrace::force_capture().to_string());
+        // Log the panic message, location and backtrace to stderr, on the thread that panicked,
+        // so they are in the executor log even if the exception message is lost crossing the
+        // FFI boundary. The backtrace is not attached to the JVM exception, because a panic can
+        // reach the JNI boundary on another thread: DataFusion resumes the panics of its spawned
+        // tasks on the consuming thread with `resume_unwind`, which does not run this hook. The
+        // boundary therefore cannot tell which captured backtrace belongs to the panic it
+        // reports.
+        //
+        // The report is formatted before it is written: the backtrace resolves its symbols when it
+        // is displayed, which can be slow, and `eprintln!` holds the stderr lock while it formats
+        // its arguments. One write keeps a panic's lines together when threads panic at once.
+        let report = panic_report(panic_info, std::backtrace::Backtrace::force_capture());
+        eprintln!("{report}");
     }));
+}
+
+/// What the panic hook logs for a panic: its message and location, then its backtrace.
+fn panic_report(panic: impl std::fmt::Display, backtrace: impl std::fmt::Display) -> String {
+    format!("Comet native panic: {panic}\n{backtrace}")
 }
 
 /// Converts the results from `panic::catch_unwind` (e.g. a panic) to a `CometError`
@@ -228,7 +241,10 @@ impl From<CometError> for DataFusionError {
             // The same applies to the classifications that must keep their JVM exception class.
             value @ (CometError::JavaException { .. }
             | CometError::ShuffleSizeLimit(_)
-            | CometError::IllegalState(_)) => DataFusionError::External(Box::new(value)),
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)) => DataFusionError::External(Box::new(value)),
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
@@ -358,6 +374,18 @@ impl jni::errors::ToException for CometError {
             },
             CometError::IllegalState(message) => Exception {
                 class: "java/lang/IllegalStateException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NoSuchElement(message) => Exception {
+                class: "java/util/NoSuchElementException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfNotAllowed(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfNotAllowedException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfAbi(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfAbiException".to_string(),
                 msg: message.clone(),
             },
             _other => Exception {
@@ -528,7 +556,7 @@ impl NativeStatus {
 }
 
 /// Version of the JSON document produced by [`NativeError::to_payload`].
-pub const NATIVE_ERROR_PAYLOAD_VERSION: u32 = 1;
+pub const NATIVE_ERROR_PAYLOAD_VERSION: u32 = 2;
 
 /// JVM exception carrying a JSON-serialized `SparkError`, which `SparkErrorConverter` turns into
 /// the Spark exception with its error class and parameters.
@@ -557,19 +585,15 @@ pub enum JvmException<'a> {
 pub struct NativeError<'a> {
     pub status: NativeStatus,
     pub exception: JvmException<'a>,
-    /// The captured Rust backtrace of a panic. When the exception carries it, it is already folded
-    /// into the message, so this field is informational.
-    pub backtrace: Option<String>,
     /// The `Display` of each error in the Rust `source()` chain, outermost first. Diagnostic only:
     /// no Java cause is attached to the thrown exception.
     pub causes: Vec<String>,
 }
 
 impl<'a> NativeError<'a> {
-    /// Classifies `error` into the JVM exception it must surface as. `backtrace` is the captured
-    /// backtrace of a panic, if any.
-    pub fn from_comet_error(error: &'a CometError, backtrace: Option<String>) -> Self {
-        let exception = jvm_exception(error, backtrace.as_deref());
+    /// Classifies `error` into the JVM exception it must surface as.
+    pub fn from_comet_error(error: &'a CometError) -> Self {
+        let exception = jvm_exception(error);
         let status = match (&exception, error) {
             (JvmException::Rethrow { .. }, _) => NativeStatus::JavaThrowable,
             (_, CometError::Panic { .. }) => NativeStatus::Panic,
@@ -584,7 +608,6 @@ impl<'a> NativeError<'a> {
         NativeError {
             status,
             exception,
-            backtrace,
             causes,
         }
     }
@@ -626,34 +649,28 @@ impl<'a> NativeError<'a> {
             "exceptionClass": self.exception_class(),
             "message": self.message(),
             "sparkError": spark_error,
-            "backtrace": self.backtrace,
             "causes": self.causes,
         })
         .to_string()
     }
 }
 
-/// A failed native call caught at the boundary: the error and, for a panic, its captured
-/// backtrace.
+/// A failed native call caught at the boundary. A panic's backtrace is logged by the panic hook
+/// rather than carried here; see [`init`].
 #[derive(Debug)]
 pub struct NativeFailure {
     pub error: CometError,
-    pub backtrace: Option<String>,
 }
 
 impl From<CometError> for NativeFailure {
     fn from(error: CometError) -> Self {
-        let backtrace = match error {
-            CometError::Panic { .. } => PANIC_BACKTRACE.lock().unwrap().take(),
-            _ => None,
-        };
-        NativeFailure { error, backtrace }
+        NativeFailure { error }
     }
 }
 
 impl NativeFailure {
     pub fn native_error(&self) -> NativeError<'_> {
-        NativeError::from_comet_error(&self.error, self.backtrace.clone())
+        NativeError::from_comet_error(&self.error)
     }
 }
 
@@ -691,7 +708,7 @@ fn throw_native_error(env: &mut Env, error: &NativeError) {
 }
 
 /// The JVM exception `error` surfaces as.
-fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmException<'a> {
+fn jvm_exception(error: &CometError) -> JvmException<'_> {
     // DataFusion operators can wrap the original failure in Context, Shared, or External
     // errors. Keep the classifications that own their JVM exception class typed across those
     // wrappers and the JNI boundary.
@@ -748,7 +765,7 @@ fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmExcep
                 spark_exception(&spark_error)
             } else {
                 // Not a SparkError, use generic exception
-                natural_exception(error, backtrace)
+                natural_exception(error)
             }
         }
         // Typed file-read errors (corrupt/truncated parquet, object_store) raised by the native
@@ -761,12 +778,12 @@ fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmExcep
             } else if let Some(spark_error) = try_classify_file_read_error(source) {
                 spark_exception(&spark_error)
             } else {
-                generic_exception(error, backtrace)
+                generic_exception(error)
             }
         }
         // Handle direct SparkError - serialize to JSON
         CometError::Spark(spark_error) => spark_exception(spark_error),
-        _ => generic_exception(error, backtrace),
+        _ => generic_exception(error),
     }
 }
 
@@ -777,8 +794,13 @@ fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmExcep
 fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exception> {
     let mut cause = Some(error);
     while let Some(error) = cause {
-        if let Some(typed @ (CometError::ShuffleSizeLimit(_) | CometError::IllegalState(_))) =
-            error.downcast_ref::<CometError>()
+        if let Some(
+            typed @ (CometError::ShuffleSizeLimit(_)
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)),
+        ) = error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
         }
@@ -789,8 +811,8 @@ fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exce
 
 /// Generic fallback for an error that isn't a structured `SparkError`. Recognises a file-not-found
 /// arriving through non-typed wrapping paths and duplicate-field errors; otherwise the error's
-/// natural JVM exception (with the captured backtrace when available).
-fn generic_exception(error: &CometError, backtrace: Option<&str>) -> JvmException<'static> {
+/// natural JVM exception.
+fn generic_exception(error: &CometError) -> JvmException<'static> {
     let error_msg = error.to_string();
     // A file-not-found that arrived through a non-typed wrapping path (the typed classification
     // is handled by `try_classify_file_read_error`).
@@ -800,23 +822,16 @@ fn generic_exception(error: &CometError, backtrace: Option<&str>) -> JvmExceptio
     } else if let Some(spark_error) = try_convert_duplicate_field_error(&error_msg) {
         spark_exception(&spark_error)
     } else {
-        natural_exception(error, backtrace)
+        natural_exception(error)
     }
 }
 
-/// The error's own JVM exception from `to_exception`, with the backtrace formatted into the
-/// message as a stack trace when available.
-fn natural_exception(error: &CometError, backtrace: Option<&str>) -> JvmException<'static> {
+/// The error's own JVM exception from `to_exception`.
+fn natural_exception(error: &CometError) -> JvmException<'static> {
     let exception = error.to_exception();
-    let message = match backtrace {
-        Some(backtrace_string) => {
-            to_stacktrace_string(exception.msg, backtrace_string.to_string()).unwrap()
-        }
-        None => exception.msg,
-    };
     JvmException::New {
         class: exception.class,
-        message,
+        message: exception.msg,
     }
 }
 
@@ -1026,53 +1041,6 @@ fn try_convert_duplicate_field_error(error_msg: &str) -> Option<SparkError> {
     }
 }
 
-#[derive(Debug, Error)]
-enum StacktraceError {
-    #[error("Unable to initialize message: {0}")]
-    Message(String),
-    #[error("Unable to initialize backtrace regex: {0}")]
-    Regex(#[from] regex::Error),
-    #[error("Required field missing: {0}")]
-    #[allow(non_camel_case_types)]
-    Required_Field(String),
-    #[error("Unable to format stacktrace element: {0}")]
-    Element(#[from] std::fmt::Error),
-}
-
-fn to_stacktrace_string(msg: String, backtrace_string: String) -> Result<String, StacktraceError> {
-    let mut res = String::new();
-    write!(&mut res, "{msg}").map_err(|error| StacktraceError::Message(error.to_string()))?;
-
-    // Use multi-line mode and named capture groups to identify the following stacktrace fields:
-    // - dc = declaredClass
-    // - mn = methodName
-    // - fn = fileName (optional)
-    // - line = file line number (optional)
-    // - col = file col number within the line (optional)
-    let re = Regex::new(
-        r"(?m)^\s*\d+: (?<dc>.*?)(?<mn>[^:]+)\n(\s*at\s+(?<fn>[^:]+):(?<line>\d+):(?<col>\d+)$)?",
-    )?;
-    for c in re.captures_iter(backtrace_string.as_str()) {
-        write!(
-            &mut res,
-            "\n        at {}{}({}:{})",
-            c.name("dc")
-                .ok_or_else(|| StacktraceError::Required_Field("declared class".to_string()))?
-                .as_str(),
-            c.name("mn")
-                .ok_or_else(|| StacktraceError::Required_Field("method name".to_string()))?
-                .as_str(),
-            // There are internal calls within the backtrace that don't provide file information
-            c.name("fn").map(|m| m.as_str()).unwrap_or("__internal__"),
-            c.name("line")
-                .map(|m| m.as_str().parse().expect("numeric line number"))
-                .unwrap_or(0)
-        )?;
-    }
-
-    Ok(res)
-}
-
 // It is currently undefined behavior to unwind from Rust code into foreign code, so we can wrap
 // our JNI functions and turn these panics into a `RuntimeException`.
 pub fn try_unwrap_or_throw<T, F>(env: &EnvUnowned, f: F) -> T
@@ -1099,9 +1067,7 @@ where
 mod tests {
     use super::*;
     use std::{
-        fs::File,
         io,
-        io::Read,
         path::PathBuf,
         sync::{Arc, Once},
     };
@@ -1118,7 +1084,7 @@ mod tests {
         static mut JVM: Option<Arc<JavaVM>> = None;
         static INIT: Once = Once::new();
 
-        // Capture panic backtraces
+        // Install the panic hook
         init();
 
         INIT.call_once(|| {
@@ -1391,44 +1357,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Test that conversion of a serialized backtrace to an equivalent stacktrace message.
-    ///
-    /// See [`object_panic_exception`] for a test which involves generating a panic and verifying
-    /// that the resulting stack trace includes the offending call.
-    #[test]
-    #[cfg_attr(miri, ignore)] // miri can't call foreign function `dlopen`
-    pub fn stacktrace_string() {
-        // Setup: Start with a backtrace that includes all of the expected scenarios, including
-        // cases where the file and location are not provided as part of the backtrace capture
-        let backtrace_string = read_resource("testdata/backtrace.txt").expect("backtrace content");
-
-        // Test: Reformat the serialized backtrace as a multi-line message which includes the
-        // backtrace formatted as a stacktrace
-        let stacktrace_string =
-            to_stacktrace_string("Some Error Message".to_string(), backtrace_string).unwrap();
-
-        // Verify: The message matches the expected output.  Trim the expected string to remove
-        // the carriage return
-        let expected_string = read_resource("testdata/stacktrace.txt").expect("stacktrace content");
-        assert_eq!(expected_string.trim(), stacktrace_string.as_str());
-    }
-
-    fn read_resource(path: &str) -> Result<String, io::Error> {
-        let mut path_buf = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        path_buf.push(path);
-
-        let mut f = File::open(path_buf.as_path())?;
-        let mut s = String::new();
-        f.read_to_string(&mut s)?;
-        Ok(s)
-    }
-
     /// Classifies `error` and returns (status, class, message, payload).
-    fn classify(
-        error: CometError,
-        backtrace: Option<String>,
-    ) -> (NativeStatus, String, String, serde_json::Value) {
-        let native_error = NativeError::from_comet_error(&error, backtrace);
+    fn classify(error: CometError) -> (NativeStatus, String, String, serde_json::Value) {
+        let native_error = NativeError::from_comet_error(&error);
         let payload: serde_json::Value =
             serde_json::from_str(&native_error.to_payload()).expect("payload is JSON");
         (
@@ -1446,7 +1377,7 @@ mod tests {
     fn native_error_spark_error() {
         let spark_error = SparkError::DivideByZero;
         let json = spark_error.to_json();
-        let (status, class, message, payload) = classify(CometError::Spark(spark_error), None);
+        let (status, class, message, payload) = classify(CometError::Spark(spark_error));
         assert_eq!(status, NativeStatus::Error);
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(message, json);
@@ -1460,16 +1391,13 @@ mod tests {
         let with_context = SparkErrorWithContext::new(SparkError::DivideByZero);
         let json = with_context.to_json();
         let (_, class, message, _) =
-            classify(CometError::from(DataFusionError::from(with_context)), None);
+            classify(CometError::from(DataFusionError::from(with_context)));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(message, json);
 
-        let (_, class, message, _) = classify(
-            CometError::from(DataFusionError::External(Box::new(
-                SparkError::DivideByZero,
-            ))),
-            None,
-        );
+        let (_, class, message, _) = classify(CometError::from(DataFusionError::External(
+            Box::new(SparkError::DivideByZero),
+        )));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(message, SparkError::DivideByZero.to_json());
     }
@@ -1478,10 +1406,9 @@ mod tests {
     fn native_error_read_ancient_datetime_through_datafusion() {
         let spark_error = SparkError::read_ancient_datetime("d", false);
         let json = spark_error.to_json();
-        let (status, class, message, payload) = classify(
-            CometError::from(DataFusionError::External(Box::new(spark_error))),
-            None,
-        );
+        let (status, class, message, payload) = classify(CometError::from(
+            DataFusionError::External(Box::new(spark_error)),
+        ));
         assert_eq!(status, NativeStatus::Error);
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(message, json);
@@ -1501,7 +1428,7 @@ mod tests {
                 ParquetError::General("Invalid Parquet file. Corrupt footer".to_string()),
             ))),
         ));
-        let (status, class, _, payload) = classify(error, None);
+        let (status, class, _, payload) = classify(error);
         assert_eq!(status, NativeStatus::Error);
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(payload["sparkError"]["errorType"], "CannotReadFile");
@@ -1516,7 +1443,7 @@ mod tests {
                 message.to_string(),
             ))),
         ))));
-        let (status, class, actual_message, payload) = classify(error, None);
+        let (status, class, actual_message, payload) = classify(error);
         assert_eq!(status, NativeStatus::Error);
         assert_eq!(class, "org/apache/comet/CometShuffleSizeLimitException");
         assert_eq!(actual_message, message);
@@ -1526,62 +1453,86 @@ mod tests {
 
     #[test]
     fn native_error_natural_exception_classes() {
-        let (_, class, message, _) = classify(CometError::Internal("oops".to_string()), None);
+        let (_, class, message, _) = classify(CometError::Internal("oops".to_string()));
         assert_eq!(class, "org/apache/comet/CometNativeException");
         assert_eq!(message, "Comet Internal Error: oops");
 
         let parse_error = "x".parse::<i32>().unwrap_err();
-        let (_, class, message, _) = classify(CometError::from(parse_error.clone()), None);
+        let (_, class, message, _) = classify(CometError::from(parse_error.clone()));
         assert_eq!(class, "java/lang/NumberFormatException");
         assert_eq!(message, parse_error.to_string());
 
-        let (_, class, _, _) = classify(CometError::from(std::io::Error::other("disk gone")), None);
+        let (_, class, _, _) = classify(CometError::from(std::io::Error::other("disk gone")));
         assert_eq!(class, "java/io/IOException");
 
-        let (_, class, message, _) = classify(CometError::IllegalState("bad".to_string()), None);
+        let (_, class, message, _) = classify(CometError::IllegalState("bad".to_string()));
         assert_eq!(class, "java/lang/IllegalStateException");
         assert_eq!(message, "bad");
+
+        let (_, class, message, _) = classify(CometError::NoSuchElement("gone".to_string()));
+        assert_eq!(class, "java/util/NoSuchElementException");
+        assert_eq!(message, "gone");
+    }
+
+    /// The native UDF failures `CometNativeUDF.register` reports keep their exception class and
+    /// exact message, also when DataFusion wraps them.
+    #[test]
+    fn native_udf_errors_keep_their_class_through_datafusion_wrappers() {
+        for (error, expected_class) in [
+            (
+                CometError::NativeUdfNotAllowed("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfNotAllowedException",
+            ),
+            (
+                CometError::NativeUdfAbi("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfAbiException",
+            ),
+            (
+                CometError::NoSuchElement("refused".to_string()),
+                "java/util/NoSuchElementException",
+            ),
+        ] {
+            let (status, class, message, _) = classify(error);
+            assert_eq!(status, NativeStatus::Error);
+            assert_eq!(class, expected_class);
+            assert_eq!(message, "refused");
+        }
+
+        let wrapped = CometError::from(DataFusionError::Context(
+            "planning".to_string(),
+            Box::new(DataFusionError::from(CometError::NativeUdfAbi(
+                "refused".to_string(),
+            ))),
+        ));
+        let (_, class, message, _) = classify(wrapped);
+        assert_eq!(class, "org/apache/comet/udf/CometNativeUdfAbiException");
+        assert_eq!(message, "refused");
     }
 
     #[test]
     fn native_error_message_based_fallbacks() {
-        let (_, class, _, payload) = classify(
-            CometError::Internal("file not found: No such file or directory".to_string()),
-            None,
-        );
+        let (_, class, _, payload) = classify(CometError::Internal(
+            "file not found: No such file or directory".to_string(),
+        ));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
         assert_eq!(payload["sparkError"]["errorType"], "FileNotFound");
 
-        let (_, class, _, _) = classify(
-            CometError::from(DataFusionError::Execution(
-                r#"Unable to get field named "b". Valid fields: ["A", "B"]"#.to_string(),
-            )),
-            None,
-        );
+        let (_, class, _, _) = classify(CometError::from(DataFusionError::Execution(
+            r#"Unable to get field named "b". Valid fields: ["A", "B"]"#.to_string(),
+        )));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
     }
 
     #[test]
-    fn native_error_panic_folds_backtrace_into_message() {
-        let backtrace = read_resource("testdata/backtrace.txt").expect("backtrace content");
-        let expected = read_resource("testdata/stacktrace.txt").expect("stacktrace content");
+    fn native_error_panic() {
         let panic = CometError::Panic {
             msg: "Some Error Message".to_string(),
         };
-        let (status, class, message, payload) = classify(panic, Some(backtrace.clone()));
+        let (status, class, message, payload) = classify(panic);
         assert_eq!(status, NativeStatus::Panic);
         assert_eq!(class, "org/apache/comet/CometNativeException");
-        assert_eq!(message, expected.trim());
-        assert_eq!(payload["status"], "Panic");
-        assert_eq!(payload["backtrace"], backtrace);
-
-        // Without a captured backtrace the message is the panic message alone.
-        let panic = CometError::Panic {
-            msg: "Some Error Message".to_string(),
-        };
-        let (_, _, message, payload) = classify(panic, None);
         assert_eq!(message, "Some Error Message");
-        assert!(payload["backtrace"].is_null());
+        assert_eq!(payload["status"], "Panic");
     }
 
     #[test]
@@ -1590,7 +1541,7 @@ mod tests {
             "outer".to_string(),
             Box::new(DataFusionError::Execution("inner".to_string())),
         ));
-        let native_error = NativeError::from_comet_error(&error, None);
+        let native_error = NativeError::from_comet_error(&error);
         let payload: serde_json::Value = serde_json::from_str(&native_error.to_payload()).unwrap();
         assert_eq!(payload["version"], NATIVE_ERROR_PAYLOAD_VERSION);
         assert_eq!(payload["status"], "Error");
@@ -1622,7 +1573,6 @@ mod tests {
         let failure =
             catch_native(|| -> CometResult<()> { Err(CometError::Internal("oops".to_string())) })
                 .unwrap_err();
-        assert!(failure.backtrace.is_none());
         let native_error = failure.native_error();
         assert_eq!(native_error.status, NativeStatus::Error);
         assert_eq!(native_error.message(), "Comet Internal Error: oops");
@@ -1635,6 +1585,52 @@ mod tests {
             "org/apache/comet/CometNativeException"
         );
         assert!(native_error.message().starts_with("boom"));
+    }
+
+    /// Resumes on this thread a panic raised on another one, as DataFusion does with the panics
+    /// of its spawned tasks. `resume_unwind` does not run the panic hook.
+    fn resume_panic_from_another_thread() -> CometResult<()> {
+        let payload = std::thread::spawn(|| panic!("spawned thread"))
+            .join()
+            .expect_err("the spawned thread panics");
+        std::panic::resume_unwind(payload)
+    }
+
+    /// A panic's exception carries its own message, also when it is resumed from another thread
+    /// after this thread handled a panic with the same message. The hook logs the backtrace.
+    #[test]
+    fn panic_exception_carries_only_its_message() {
+        init();
+        type Call = fn() -> CometResult<()>;
+        let cases: [(&str, Call); 2] = [
+            ("spawned thread", resume_panic_from_another_thread),
+            // A panic with the same message handled during the call.
+            ("spawned thread", || {
+                let handled = std::panic::catch_unwind(|| panic!("spawned thread"));
+                assert!(handled.is_err());
+                resume_panic_from_another_thread()
+            }),
+        ];
+        for (message, call) in cases {
+            let failure = catch_native(call).unwrap_err();
+            let native_error = failure.native_error();
+            assert_eq!(native_error.status, NativeStatus::Panic);
+            assert_eq!(native_error.message(), message);
+        }
+    }
+
+    /// The hook logs a panic's message and location, then its backtrace, in one report. The hook
+    /// itself is not run here: `PanicHookInfo` cannot be built outside a panic.
+    #[test]
+    fn panic_report_has_the_panic_and_its_backtrace() {
+        let report = panic_report(
+            "panicked at src/lib.rs:7:9:\nboom",
+            "   0: comet::f\n   1: comet::g",
+        );
+        assert_eq!(
+            report,
+            "Comet native panic: panicked at src/lib.rs:7:9:\nboom\n   0: comet::f\n   1: comet::g"
+        );
     }
 
     /// A throwable captured during an upcall is rethrown as the same object.
@@ -1655,7 +1651,7 @@ mod tests {
                     msg: "from jvm".to_string(),
                     throwable: env.new_global_ref(throwable)?,
                 };
-                let native_error = NativeError::from_comet_error(&error, None);
+                let native_error = NativeError::from_comet_error(&error);
                 assert_eq!(native_error.status, NativeStatus::JavaThrowable);
                 let payload: serde_json::Value =
                     serde_json::from_str(&native_error.to_payload()).unwrap();
@@ -1799,8 +1795,6 @@ mod tests {
         let message_string = unsafe { JString::from_raw(env, message.into_raw()) };
         let msg_rust: String = message_string.try_to_string(env).unwrap();
         println!("{msg_rust}");
-        // Since panics result in multi-line messages which include the backtrace, just use the
-        // first line.
         assert_starts_with!(msg_rust, expected_message);
     }
 

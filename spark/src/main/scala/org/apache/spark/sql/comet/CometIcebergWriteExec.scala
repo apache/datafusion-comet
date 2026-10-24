@@ -126,15 +126,18 @@ case class CometIcebergWriteExec(
 
   // Names mirror Spark's stock `BatchWriteHelper` metrics (`numFiles` / `numOutputRows` /
   // `numOutputBytes`) so the Spark SQL UI shows the same row as it would for a non-Comet
-  // Iceberg write. `write_time` is pushed from the native operator by name (see
-  // `iceberg_write.rs`).
+  // Iceberg write. `write_time` and `files_closed_early` are pushed from the native operator by
+  // name (see `iceberg_write.rs`).
   override lazy val metrics: Map[String, SQLMetric] = Map(
     "numFiles" -> SQLMetrics.createMetric(sparkContext, "number of files written"),
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numOutputBytes" -> SQLMetrics.createSizeMetric(sparkContext, "written output"),
     "write_time" -> SQLMetrics.createNanoTimingMetric(
       sparkContext,
-      "time in native Iceberg writer"))
+      "time in native Iceberg writer"),
+    "files_closed_early" -> SQLMetrics.createMetric(
+      sparkContext,
+      "files closed early to free memory"))
 
   override def doExecute(): RDD[InternalRow] = {
     val columnarRdd = doExecuteColumnar()
@@ -171,6 +174,7 @@ case class CometIcebergWriteExec(
       .getSortOrderById(table, sortOrderId)
       .getOrElse(
         throw new IllegalStateException(s"Native Iceberg write: no sort order id=$sortOrderId"))
+    val schedulerProbe = IcebergSchedulerTestProbe.current
     columnarRdd.mapPartitionsInternal { batches =>
       // Per-task: drain the native output (one row carrying one V2 data manifest and the locations
       // the task wrote), decode the manifest via Iceberg's `ManifestFiles.read` to recover
@@ -193,7 +197,7 @@ case class CometIcebergWriteExec(
       // native writer, or before its output reaches us, are cleaned up on the native side.
       val cleanup = new CometIcebergWriteExec.WrittenFileCleanup(tableIO)
       Option(TaskContext.get()).foreach(_.addTaskFailureListener(cleanup))
-      val manifestBytes = drainNativePayload(batches, cleanup)
+      val manifestBytes = drainNativePayload(batches, cleanup, schedulerProbe)
       val proj = UnsafeProjection.create(schemaTypes)
       val decoded =
         if (manifestBytes.isEmpty) new java.util.ArrayList[AnyRef]()
@@ -225,7 +229,8 @@ case class CometIcebergWriteExec(
   }
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val childRDD = if (child.supportsColumnar) {
+    val schedulerProbe = IcebergSchedulerTestProbe.current
+    val inputRDD = if (child.supportsColumnar) {
       child.executeColumnar()
     } else {
       throw new UnsupportedOperationException(
@@ -233,6 +238,14 @@ case class CometIcebergWriteExec(
           child.getClass.getName)
     }
 
+    val childRDD = schedulerProbe
+      .map(probe =>
+        new IcebergSchedulerProbeRDD(
+          inputRDD,
+          probe,
+          nativeOp.getIcebergWrite.getCommon.getDataLocation,
+          nativeOp.getIcebergWrite.getCommon.getOperationId))
+      .getOrElse(inputRDD)
     val numPartitions = childRDD.getNumPartitions
     // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
     // column each (see `build_output_schema` in `iceberg_write.rs`).
@@ -252,10 +265,10 @@ case class CometIcebergWriteExec(
       val nativeMetrics = CometMetricNode(metrics, Nil)
 
       val taskNativeOp = {
-        val icebergWrite = capturedNativeOp.getIcebergWrite.toBuilder
+        val builder = capturedNativeOp.getIcebergWrite.toBuilder
           .setPartitionId(partitionId)
           .setTaskAttemptId(taskAttemptId)
-          .build()
+        val icebergWrite = builder.build()
         capturedNativeOp.toBuilder.setIcebergWrite(icebergWrite).build()
       }
 
@@ -294,7 +307,8 @@ case class CometIcebergWriteExec(
    */
   private def drainNativePayload(
       batches: Iterator[ColumnarBatch],
-      cleanup: CometIcebergWriteExec.WrittenFileCleanup): Array[Byte] = {
+      cleanup: CometIcebergWriteExec.WrittenFileCleanup,
+      schedulerProbe: Option[IcebergSchedulerTestProbe]): Array[Byte] = {
     require(batches.hasNext, "iceberg_write produced no output batch for this task")
     val batch = batches.next()
     val payload =
@@ -308,6 +322,7 @@ case class CometIcebergWriteExec(
         CometIcebergWriteExec.beforeNativeHandoff()
         val locations = CometIcebergWriteExec.decodeLocations(batch.column(1).getBinary(0))
         cleanup.own(locations)
+        schedulerProbe.foreach(_.afterHandoff(locations))
         CometIcebergWriteExec.afterNativeHandoff(locations)
         batch.column(0).getBinary(0)
       } finally {

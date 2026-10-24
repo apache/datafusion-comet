@@ -158,6 +158,7 @@ CometNativeUDF.register(
 
 Registration loads the library on the driver and verifies that a function with that name exists, so
 a bad path or a missing function fails immediately with a clear error rather than at execution time.
+It also checks that Comet can carry the argument and return types natively.
 
 The function is then callable from SQL or the DataFrame API like any other:
 
@@ -177,9 +178,43 @@ rather than accept a function whose volatility it would go on to ignore.
 `libraryPath` is passed to the platform's dynamic loader. An absolute path is what you want in
 practice, and it is what the rest of this page assumes, but a bare library name resolves the same
 way it would for any other shared object, through `LD_LIBRARY_PATH` on Linux and
-`DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: Comet does not restrict which
-paths may be loaded, so it makes no difference to the trust decision described under
-[Limitations](#limitations).
+`DYLD_LIBRARY_PATH` on macOS. That is a convenience, not a sandbox: unless you set the configs
+below, Comet does not restrict which paths may be loaded, so it makes no difference to the trust
+decision described under [Limitations](#limitations).
+
+## Restricting which libraries can be loaded
+
+Loading a library runs its code with the privileges of the JVM, so an operator can limit it:
+
+| Config                               | Default | Effect                                                       |
+| ------------------------------------ | ------- | ------------------------------------------------------------ |
+| `spark.comet.nativeUdf.enabled`      | `true`  | When `false`, no native UDF library is loaded.               |
+| `spark.comet.nativeUdf.allowedPaths` | empty   | Comma-separated directories a library must be under, if set. |
+
+With `allowedPaths` set, a library is loaded only if its path is absolute and, once symlinks and
+`..` are resolved, lies under one of the listed directories (which are resolved the same way). A bare
+library name is refused, because the dynamic loader's search path is not something Comet can check.
+The check applies on the driver, where `register` fails with `CometNativeUdfNotAllowedException`,
+and again on each executor before it loads a library named in a plan.
+
+These are ordinary Spark configs, so they are set in the cluster's defaults and are not a defense
+against a user who can change session configuration: such a user can set them back. The allow-list
+limits which files Comet will load, not what the code in them does, and a file that is replaced
+between the check and the load is not detected. List only directories that are writable by users
+you trust.
+
+### When Spark evaluates the call
+
+A call runs only inside Comet's native execution. Spark cannot run the function, so wherever Spark
+has to evaluate the call itself, the query fails with `CometUdfNotEvaluatedException`. That happens:
+
+- when Comet does not take the operator holding the call, for example because another expression
+  in it is not supported, or because the call is an argument of an ordinary Scala or Java UDF. The
+  query's extended explain output gives the reason.
+- while Spark plans the query: over local data such as `VALUES`, which the optimizer evaluates
+  eagerly, in a filter on partition columns, which Spark evaluates to prune partitions, and in the
+  sort keys of a global sort, which Spark evaluates on a sample of rows to choose range bounds. To
+  sort on a UDF's result, select it as a column and sort on that column instead.
 
 ## Return types
 
@@ -277,6 +312,9 @@ the first panic, and the SDK cannot prevent it.
 This feature is at an early stage. The current limitations are:
 
 - **Scalar functions only.** Aggregate, window, and table functions are not supported.
+- **Spark cannot evaluate a call.** A query fails wherever Spark would have to run the function
+  itself, which includes a few places while it plans the query. See
+  [When Spark evaluates the call](#when-spark-evaluates-the-call).
 - **Immutable functions only.** A UDF must return the same output for the same input. Comet plans
   every Rust UDF with DataFusion's `Volatility::Immutable`, so a function that reads a clock, draws
   from an RNG, or carries state across batches may be folded at plan time, evaluated once and
@@ -293,7 +331,9 @@ This feature is at an early stage. The current limitations are:
   layout.
 - **Loading a library is loading native code.** It runs with the full privileges of the executor
   process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
-  Only register libraries you trust and control.
+  Only register libraries you trust and control. See
+  [Restricting which libraries can be loaded](#restricting-which-libraries-can-be-loaded) for the
+  configs that turn the feature off or limit the directories libraries may come from.
 - Once loaded, a library stays loaded for the life of the process, and `register` loads it on the
   driver as well as on the executors. To deploy a new build, write it to a new path and register
   that, or restart the executors and the driver. Never copy a new build over a library that is

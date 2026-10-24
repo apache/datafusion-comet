@@ -77,7 +77,8 @@ Follow `adding_a_new_expression.md`:
 2. Register it in the matching map in `QueryPlanSerde.scala`.
 3. If the function name collides with a DataFusion built-in that has a different signature, use `scalarFunctionExprToProtoWithReturnType` (see "When to set the return type explicitly").
 4. For a new scalar function, add a match case in `native/spark-expr/src/comet_scalar_funcs.rs::create_comet_physical_fun`. If step 2 found an upstream implementation, wire that in. Otherwise implement the function under `native/spark-expr/src/`.
-5. Add at least one Comet SQL Test at `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql` exercising column references, literals, and `NULL`.
+5. If Spark's behavior differs between versions, resolve the version in the serde or a shim and pass native code a parameter named for the behavior (`wrap_second_millisecond_overflow`), not the version (`spark_420_plus`). See "Name the behavior, not the Spark version" in `adding_a_new_expression.md`.
+6. Add at least one Comet SQL Test at `spark/src/test/resources/sql-tests/expressions/<category>/$ARGUMENTS.sql` exercising column references, literals, and `NULL`.
 
 Build and smoke-test:
 

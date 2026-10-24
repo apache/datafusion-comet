@@ -21,6 +21,7 @@ package org.apache.comet.objectstore
 
 import java.net.URI
 import java.util.Locale
+import java.util.regex.Pattern
 
 import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
@@ -37,12 +38,10 @@ object NativeConfig {
     "s3a" -> Seq("fs.s3a."),
     // Google Cloud Storage configurations
     "gs" -> Seq("fs.gs."),
-    // Azure Blob Storage configurations (can use both prefixes)
+    // Azure Blob Storage configurations (can use both prefixes). ABFS (abfs, abfss) is not
+    // forwarded by prefix: `AbfsAuthResolver` resolves its authentication for the one account.
     "wasb" -> Seq("fs.azure.", "fs.wasb."),
-    "wasbs" -> Seq("fs.azure.", "fs.wasb."),
-    // Azure Data Lake Storage Gen2 (ABFS) configurations. Hadoop ABFS authentication keys
-    "abfs" -> Seq("fs.azure.", "fs.abfs."),
-    "abfss" -> Seq("fs.azure.", "fs.abfss.", "fs.abfs."))
+    "wasbs" -> Seq("fs.azure.", "fs.wasb."))
 
   // Some alias filesystems report the literal authority "default" when the URI has none (e.g.
   // `scheme:///bucket/key`); the real bucket is then promoted from the URL path. Keys under this
@@ -89,7 +88,7 @@ object NativeConfig {
   // (comma-separated, trimmed, lowercased, empty/missing => none). The native gate no longer
   // claims them, so the opt-in is resolved wherever the Hadoop config is available: the scan gate
   // (CometScanRule) and the Iceberg write path's data-bucket resolution.
-  private[comet] def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
+  def resolveS3CompliantSchemes(hadoopConf: Configuration): Set[String] =
     parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
 
   /**
@@ -103,19 +102,19 @@ object NativeConfig {
   }
 
   /**
-   * The S3 bucket a URI addresses: its authority, or the first path segment for the authorityless
-   * `blob:///bucket/key` form (matching the native rewrite that promotes it into the host).
-   * Returns None for a non-S3-family scheme, so a local Hadoop-catalog
-   * `file:///tmp/warehouse/...` or a `gs://` location yields no bucket rather than a surprising
-   * `tmp`: only `s3`/`s3a`/`s3n` and the opted-in `s3CompliantSchemes` share the `fs.s3a.*`
-   * per-bucket surface. Callers therefore need no scheme check of their own.
+   * The S3 bucket a URI addresses: its host, as native reads it (the raw authority without user
+   * info or port), or the first path segment for the authorityless `blob:///bucket/key` form
+   * (matching the native rewrite that promotes it into the host). Returns None for a
+   * non-S3-family scheme, so a local Hadoop-catalog `file:///tmp/warehouse/...` or a `gs://`
+   * location yields no bucket rather than a surprising `tmp`: only `s3`/`s3a`/`s3n` and the
+   * opted-in `s3CompliantSchemes` share the `fs.s3a.*` per-bucket surface. Callers therefore need
+   * no scheme check of their own.
    */
-  private[comet] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
+  private[apache] def bucketForUri(uri: URI, s3CompliantSchemes: Set[String]): Option[String] = {
     if (!lowerScheme(uri).exists(isS3FamilyScheme(_, s3CompliantSchemes))) {
       None
     } else {
-      Option(uri.getAuthority)
-        .map(_.trim)
+      Some(trailingPort.matcher(hostAndPort(uri)).replaceFirst(""))
         .filter(_.nonEmpty)
         .orElse(
           Option(uri.getPath)
@@ -125,8 +124,100 @@ object NativeConfig {
     }
   }
 
+  private val trailingPort = Pattern.compile(":[0-9]*$")
+
+  /** The raw authority without user info, which native drops from every non-ABFS URI. */
+  private def hostAndPort(uri: URI): String = {
+    val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
+    rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
+  }
+
+  /**
+   * The schemes native reads through libhdfs: the `fs.comet.libhdfs.schemes` list, or only `hdfs`
+   * when it is unset or blank, as native `is_hdfs_scheme` decides.
+   */
+  def resolveLibhdfsSchemes(hadoopConf: Configuration): Set[String] = {
+    val raw = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
+    if (StringUtils.isBlank(raw)) Set("hdfs") else parseSchemeSet(raw)
+  }
+
+  /**
+   * The libhdfs schemes of one scan. `libhdfs` holds those both the session and the scan list,
+   * which native reads through libhdfs. `scanOnly` holds those listed only through the scan's
+   * reader options, which the scan gates decline.
+   */
+  private[comet] case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
+
+  /**
+   * Splits the `fs.comet.libhdfs.schemes` lists of `sessionConf` (the session's Hadoop conf) and
+   * `scanConf` (the same plus the scan's reader options). Native routes a scheme to libhdfs by
+   * the scan's list, but libhdfs builds its configuration from the executor classpath
+   * (`core-site.xml`), not the scan's options, so a reader option cannot add a libhdfs scheme.
+   */
+  private[comet] def resolveScanLibhdfsSchemes(
+      sessionConf: Configuration,
+      scanConf: Configuration): ScanLibhdfsSchemes =
+    resolveScanLibhdfsSchemes(resolveLibhdfsSchemes(sessionConf), scanConf)
+
+  /**
+   * As above, with the session's list already resolved by [[resolveLibhdfsSchemes]], so a caller
+   * planning many scans copies the session's Hadoop conf once.
+   */
+  private[comet] def resolveScanLibhdfsSchemes(
+      sessionSchemes: Set[String],
+      scanConf: Configuration): ScanLibhdfsSchemes = {
+    val scan = resolveLibhdfsSchemes(scanConf)
+    ScanLibhdfsSchemes(sessionSchemes.intersect(scan), scan -- sessionSchemes)
+  }
+
+  // Schemes the URL standard treats as special: never an S3 alias, and their host is lowercased.
+  private val urlSpecialSchemes = Set("file", "http", "https", "ftp", "ws", "wss")
+
+  /**
+   * A native object store: its registry key, `scheme://authority`, and whether libhdfs serves it.
+   * Native planning tells stores apart by both, since `s3` routed through libhdfs and native
+   * `s3a` share a key.
+   */
+  case class ObjectStoreKey(key: String, isLibhdfs: Boolean) {
+    override def toString: String = if (isLibhdfs) s"$key (libhdfs)" else key
+  }
+
+  /**
+   * The object store native planning resolves for `uri`. Mirrors native
+   * `normalize_object_store_url` followed by `object_store_url_key`: a libhdfs scheme (decided on
+   * the scheme as written) keeps its spelling, `s3a` and opted-in aliases become `s3` with a
+   * hostless bucket promoted from the path, user info is dropped except for ABFS containers, and
+   * a path without a scheme is local. The one divergence is a default port of a special scheme
+   * (`https://host:443`), which native drops; that only splits files across more partitions.
+   * Files with different keys cannot share a native partition.
+   */
+  def objectStoreKey(
+      uri: URI,
+      s3CompliantSchemes: Set[String],
+      libhdfsSchemes: Set[String]): ObjectStoreKey = {
+    val scheme = lowerScheme(uri).getOrElse("file")
+    val isLibhdfs = libhdfsSchemes.contains(scheme)
+    val authority =
+      if (scheme == "abfs" || scheme == "abfss") Option(uri.getRawAuthority).getOrElse("")
+      else hostAndPort(uri)
+    val isS3Alias = !isLibhdfs &&
+      (scheme == "s3a" ||
+        (s3CompliantSchemes.contains(scheme) && !urlSpecialSchemes.contains(scheme)))
+    val key = if (isS3Alias) {
+      val bucket =
+        if (authority.nonEmpty) authority
+        else Option(uri.getRawPath).getOrElse("").stripPrefix("/").takeWhile(_ != '/')
+      s"s3://$bucket"
+    } else if (urlSpecialSchemes.contains(scheme)) {
+      s"$scheme://${authority.toLowerCase(Locale.ROOT)}"
+    } else {
+      s"$scheme://$authority"
+    }
+    ObjectStoreKey(key, isLibhdfs)
+  }
+
   // s3/s3a/s3n and any opted-in alias share the authorityless path-promotion semantics above.
-  private def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
+  private[apache] def isS3FamilyScheme(scheme: String, s3CompliantSchemes: Set[String]): Boolean =
     scheme == "s3" || scheme == "s3a" || scheme == "s3n" || s3CompliantSchemes.contains(scheme)
 
   /**
@@ -188,6 +279,10 @@ object NativeConfig {
    * Extract object store configs (S3, GCS, Azure, ...) from the Hadoop configuration for native
    * DataFusion. Captures global and per-bucket keys; native code prefers per-bucket.
    *
+   * For `abfs`/`abfss` the `fs.azure.*` namespace is not copied. [[AbfsAuthResolver]] asks the
+   * classpath's hadoop-azure which mechanism and values apply to the URI's account and forwards
+   * them as `comet.azure.*` markers plus global-named keys.
+   *
    * A scheme listed in `COMET_S3_COMPLIANT_SCHEMES_KEY` reuses the `fs.s3a.*` surface, and its
    * vendor `fs.<scheme>.<authority>.*` keys are translated to `fs.s3a.*` (see
    * `translateVendorKeys`) AFTER the `fs.s3a.*` pass, so real vendor values override conflicting
@@ -197,6 +292,52 @@ object NativeConfig {
    * The result feeds object_store's parse_url_opts natively.
    */
   def extractObjectStoreOptions(hadoopConf: Configuration, uri: URI): Map[String, String] = {
+    val (options, aliasOptions) = objectStoreOptionsAndAliasOptions(hadoopConf, uri)
+    options ++ aliasOptions
+  }
+
+  /**
+   * The object store options for a scan of `uris`: `extractObjectStoreOptions` of one URI per
+   * scheme, and of one per bucket for an opted-in alias. Each scheme forwards keys under its own
+   * prefixes. An alias bucket keeps only the settings translated for that bucket, applied after
+   * every scheme's own keys so that they win over a raw `fs.s3a.bucket.<bucket>.*` key. An alias
+   * read through libhdfs translates nothing, since only a native S3 store reads those keys. ABFS
+   * forwards one account's resolution under global keys, so scans go through
+   * `extractScanObjectStoreOptions`, which never unions ABFS files.
+   */
+  private[objectstore] def extractObjectStoreOptions(
+      hadoopConf: Configuration,
+      uris: Iterable[URI]): Map[String, String] = {
+    val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)
+    val libhdfsSchemes = resolveLibhdfsSchemes(hadoopConf)
+    val representatives = scala.collection.mutable.LinkedHashMap[(String, Option[String]), URI]()
+    uris.foreach { uri =>
+      val scheme = lowerScheme(uri).getOrElse("file")
+      val aliasBucket =
+        if (s3CompliantSchemes.contains(scheme)) bucketForUri(uri, s3CompliantSchemes) else None
+      representatives.getOrElseUpdate((scheme, aliasBucket), uri)
+    }
+    val parts = representatives.values.toSeq.map { uri =>
+      val (options, aliasOptions) = objectStoreOptionsAndAliasOptions(hadoopConf, uri)
+      val scope = bucketForUri(uri, s3CompliantSchemes)
+        .map(bucket => s"fs.s3a.bucket.$bucket")
+        .getOrElse("fs.s3a")
+      val ownKeys =
+        if (objectStoreKey(uri, s3CompliantSchemes, libhdfsSchemes).isLibhdfs) Set.empty[String]
+        else vendorPropertyToS3aSuffix.values.map(suffix => s"$scope.$suffix").toSet
+      (options, aliasOptions.filter { case (key, _) => ownKeys.contains(key) })
+    }
+    parts.map(_._1).foldLeft(Map.empty[String, String])(_ ++ _) ++
+      parts.map(_._2).foldLeft(Map.empty[String, String])(_ ++ _)
+  }
+
+  /**
+   * The options `extractObjectStoreOptions` forwards for `uri`, as the keys copied from the
+   * Hadoop configuration and the alias settings translated over them.
+   */
+  private def objectStoreOptionsAndAliasOptions(
+      hadoopConf: Configuration,
+      uri: URI): (Map[String, String], Map[String, String]) = {
     val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
 
     import scala.jdk.CollectionConverters._
@@ -214,12 +355,20 @@ object NativeConfig {
     }
     val s3CompliantSchemes = parseSchemeSet(s3CompliantRaw)
 
+    // ABFS: Hadoop resolves the mechanism and values for this URI's account on the driver, and
+    // only those travel to native (never another account's keys, never the whole namespace).
+    if (scheme == "abfs" || scheme == "abfss") {
+      return (
+        options.toMap ++ AbfsAuthResolver.toOptions(AbfsAuthResolver.resolve(hadoopConf, uri)),
+        Map.empty)
+    }
+
     // Prefixes for this scheme; a configured S3-compliant alias reuses the fs.s3a.* surface.
     val prefixes = objectStoreConfigPrefixes.get(scheme).orElse {
       if (s3CompliantSchemes.contains(scheme)) objectStoreConfigPrefixes.get("s3a") else None
     }
     if (prefixes.isEmpty) {
-      return options.toMap
+      return (options.toMap, Map.empty)
     }
 
     // A configured S3-compliant alias also contributes vendor keys, but those must be applied
@@ -242,13 +391,53 @@ object NativeConfig {
     }
 
     // Pass the resolved bucket so `fs.<scheme>.default.*` lands at that bucket's scope.
-    if (vendorEntries.nonEmpty) {
-      translateVendorKeys(vendorEntries.toSeq, options, bucketForUri(uri, s3CompliantSchemes))
-        .foreach { case (k, v) => options(k) = v }
-    }
+    val defaultBucket = bucketForUri(uri, s3CompliantSchemes)
+    val aliasOptions =
+      if (vendorEntries.isEmpty) Map.empty[String, String]
+      else translateVendorKeys(vendorEntries.toSeq, options, defaultBucket)
 
-    options.toMap
+    (options.toMap, aliasOptions)
   }
+
+  /**
+   * The object store options for a scan over `uris`, or the reason the native scan cannot read
+   * them. A scan without ABFS files forwards the options of every scheme it reads (see
+   * `extractObjectStoreOptions` over a scan's files). ABFS authentication is resolved for the
+   * container and account of one URI and forwarded under global key names, so a scan whose ABFS
+   * files span more than one container or account, or that mixes ABFS and other schemes, is
+   * declined, and one that stays in a single container forwards the resolution of its first file.
+   */
+  def extractScanObjectStoreOptions(
+      hadoopConf: Configuration,
+      uris: Iterable[URI]): Either[String, Map[String, String]] = {
+    val iter = uris.iterator
+    if (!iter.hasNext) {
+      return Right(Map.empty)
+    }
+    val first = iter.next()
+    val firstIsAbfs = isAbfs(first)
+    while (iter.hasNext) {
+      val uri = iter.next()
+      if (isAbfs(uri) != firstIsAbfs) {
+        return Left(
+          "Native scan does not support a scan that mixes ABFS and other file systems " +
+            s"(${first.getScheme} and ${uri.getScheme})")
+      }
+      if (firstIsAbfs && uri.getRawAuthority != first.getRawAuthority) {
+        return Left(
+          "Native scan does not support ABFS files from more than one container or account " +
+            s"(${first.getRawAuthority} and ${uri.getRawAuthority})")
+      }
+    }
+    if (firstIsAbfs) {
+      Right(extractObjectStoreOptions(hadoopConf, first))
+    } else {
+      Right(extractObjectStoreOptions(hadoopConf, uris))
+    }
+  }
+
+  private def isAbfs(uri: URI): Boolean =
+    lowerScheme(uri).exists(scheme => scheme == "abfs" || scheme == "abfss")
 
   /**
    * The value Hadoop's own consumers observe for `key`. `Configuration#get` expands any `${...}`

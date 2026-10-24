@@ -172,6 +172,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
               org.apache.comet.CometIcebergWriteActionSuite
@@ -190,6 +191,7 @@ jobs:
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
               org.apache.comet.exec.CometNativeColumnarToRowSuite
+              org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
               org.apache.comet.shuffle.CelebornShufflePartitionPusherSuite
@@ -231,8 +233,10 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
+              org.apache.comet.DirectColumnarToRowConverterSuite
               org.apache.comet.CometConfSuite
               org.apache.comet.CometPublicApiSuite
               org.apache.comet.QueryContextInternerSuite
@@ -253,6 +257,7 @@ jobs:
               org.apache.comet.rules.CometScanRuleSuite
               org.apache.comet.rules.CometScanContribSuite
               org.apache.comet.rules.CometScanSchemeFallbackSuite
+              org.apache.comet.rules.CometMultiStoreScanSuite
               org.apache.comet.rules.CometExecRuleSuite
               org.apache.spark.sql.comet.CometPlanEqualitySuite
               org.apache.comet.rules.CometEmptyRelationExecRuleSuite
@@ -264,18 +269,24 @@ jobs:
               org.apache.spark.sql.comet.CometTPCDSV1_4_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTPCDSV2_7_PlanStabilitySuite
               org.apache.spark.sql.comet.CometTaskMetricsSuite
+              org.apache.spark.sql.comet.CometUnsafeProjectionSuite
               org.apache.spark.sql.comet.CometDppFallbackRepro3949Suite
               org.apache.spark.sql.comet.CometShuffleFallbackStickinessSuite
               org.apache.spark.sql.comet.PlanDataInjectorSuite
               org.apache.spark.sql.comet.PlanDataInjectorShuffleLifecycleSuite
               org.apache.spark.sql.comet.CometDecimalArithmeticViewSuite
               org.apache.spark.sql.comet.CometDecimalPromotionSuite
+              org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.spark.sql.comet.CometBroadcastValueSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.udf.CometUdfBridgeSuite
               org.apache.comet.objectstore.NativeConfigSuite
+              org.apache.comet.objectstore.AbfsAuthResolverSuite
+              org.apache.comet.objectstore.AbfsAuthParitySuite
+              org.apache.comet.objectstore.AbfsScanFallbackSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite

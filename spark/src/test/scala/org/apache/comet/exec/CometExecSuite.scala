@@ -110,6 +110,12 @@ class CometExecSuite extends CometTestBase {
       assert(resolved.get(CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE.key) == "10737418240")
       flags.foreach(flag => assert(resolved.get(flag.key) == "true", flag.key))
     }
+
+    // CometTestBase turns this one on, so it has no default to check here. An explicitly set
+    // value crosses verbatim, so only the resolved list turns `TRUE` into `true`.
+    withSQLConf(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key -> "TRUE") {
+      assert(entries.get(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key) == "true")
+    }
   }
 
   test("native sort spill files are compressed with the default spill codec") {
@@ -1279,6 +1285,153 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // AQE runs CoalesceShufflePartitions before CometPlanAdaptiveDynamicPruningFilters. When that
+  // rule changes a stage, AQE validates the stage by reading outputPartitioning on every node in
+  // it. With Spark's UnionExec, the aggregate's shuffle read shares the final stage with the DPP
+  // scan and gets coalesced, so the scan is asked for its partitioning while its DPP subquery is
+  // still the adaptive placeholder. Answering must not run that subquery.
+  test("AQE DPP: shuffle coalescing in the scan's stage keeps DPP working") {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as store_id", "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .parquet(s"$path/fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .parquet(s"$path/dim")
+        spark
+          .range(100)
+          .selectExpr("cast(id % 7 as int) as k", "cast(id as int) as v")
+          .write
+          .parquet(s"$path/other")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+        SQLConf.COALESCE_PARTITIONS_PARALLELISM_FIRST.key -> "false",
+        CometConf.COMET_EXEC_UNION_ENABLED.key -> "false") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_coalesce_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_coalesce_dim")
+        spark.read.parquet(s"$path/other").createOrReplaceTempView("dpp_coalesce_other")
+
+        val df = spark.sql("""SELECT f.amount AS a, f.store_id AS b
+            |FROM dpp_coalesce_fact f JOIN dpp_coalesce_dim d ON f.store_id = d.store_id
+            |WHERE d.country = '3'
+            |UNION ALL
+            |SELECT k AS a, CAST(count(*) AS INT) AS b
+            |FROM dpp_coalesce_other GROUP BY k""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        if (isSpark35Plus) {
+          val dppScans = collect(cometPlan) {
+            case s: CometNativeScanExec
+                if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(dppScans.size == 1, s"Expected one DPP native scan:\n${cometPlan.treeString}")
+          // The test only covers the bug if coalescing changed the stage holding the DPP scan.
+          // That is the final stage, and TreeNode.collect stops at its query stage leaves.
+          val finalStage = stripAQEPlan(cometPlan)
+          assert(
+            finalStage.find(_ eq dppScans.head).nonEmpty &&
+              finalStage.collect {
+                case r: AQEShuffleReadExec if r.isCoalescedRead => r
+              }.nonEmpty,
+            "Expected the DPP scan and a coalesced shuffle read in the final stage:\n" +
+              cometPlan.treeString)
+          assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
+          // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
+          assert(
+            dppScans.head.metrics("numPartitions").value == 1,
+            s"Expected DPP to prune to 1 partition:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
+  // A bucketed scan reports its bucket layout, which DPP does not change. The sort-merge join on
+  // the bucket column keeps relying on it, so neither join side is shuffled, while DPP from the
+  // broadcast dimension join still prunes the fact table's partitions.
+  test("AQE DPP: bucketed scan keeps its partitioning for a sort-merge join") {
+    withTable("dpp_bucket_fact", "dpp_bucket_dim", "dpp_bucket_other") {
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr(
+            "cast(id % 10 as int) as store_id",
+            "cast(id % 7 as int) as k",
+            "cast(id as int) as amount")
+          .write
+          .partitionBy("store_id")
+          .bucketBy(4, "k")
+          .format("parquet")
+          .saveAsTable("dpp_bucket_fact")
+        spark
+          .range(10)
+          .selectExpr("cast(id as int) as store_id", "cast(id as string) as country")
+          .write
+          .format("parquet")
+          .saveAsTable("dpp_bucket_dim")
+        spark
+          .range(50)
+          .selectExpr("cast(id % 7 as int) as k", "cast(id as int) as v")
+          .write
+          .bucketBy(4, "k")
+          .format("parquet")
+          .saveAsTable("dpp_bucket_other")
+      }
+
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+        SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+        SQLConf.BUCKETING_ENABLED.key -> "true") {
+        val df = sql("""SELECT /*+ BROADCAST(d), MERGE(o) */ f.amount, f.store_id, o.v
+            |FROM dpp_bucket_fact f
+            |JOIN dpp_bucket_dim d ON f.store_id = d.store_id
+            |JOIN dpp_bucket_other o ON f.k = o.k
+            |WHERE d.country = '3'""".stripMargin)
+        val (_, cometPlan) = checkSparkAnswer(df)
+
+        val smjs = collect(cometPlan) {
+          case j: SortMergeJoinExec => j
+          case j: CometSortMergeJoinExec => j
+        }
+        assert(smjs.size == 1, s"Expected one sort-merge join:\n${cometPlan.treeString}")
+        val shuffles = collect(cometPlan) { case s: ShuffleExchangeLike => s }
+        assert(
+          shuffles.isEmpty,
+          s"Expected no shuffle around the bucketed join:\n${cometPlan.treeString}")
+
+        if (isSpark35Plus) {
+          val dppScans = collect(cometPlan) {
+            case s: CometNativeScanExec
+                if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+              s
+          }
+          assert(dppScans.size == 1, s"Expected one DPP native scan:\n${cometPlan.treeString}")
+          assert(
+            dppScans.head.bucketedScan,
+            s"Expected a bucketed scan:\n${cometPlan.treeString}")
+          assertAqeDppShape(cometPlan, expectedCometSubqueryBroadcasts = Some(1))
+          // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 partitions.
+          assert(
+            dppScans.head.metrics("numPartitions").value == 1,
+            s"Expected DPP to prune to 1 partition:\n${cometPlan.treeString}")
+        }
+      }
+    }
+  }
+
   // DPP subquery reuses the join's broadcast via AQE stageCache.
   test("AQE DPP: broadcast exchange reuse") {
     withDppTables {
@@ -1612,6 +1765,129 @@ class CometExecSuite extends CometTestBase {
           reusedExchanges.size == 1,
           s"Expected 1 ReusedExchangeExec, got ${reusedExchanges.size}.\n" +
             s"Plan:\n${cometPlan.treeString}")
+      }
+    }
+  }
+
+  // Tables for the #6264 tests. The fact table has 10 store partitions. Dimension group 'a' keeps
+  // store 1 and group 'b' keeps stores 2 to 4, so the two DPP scans prune to 1 and 3 partitions.
+  private def withDppBranchTables(f: => Unit): Unit = {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(1000)
+        .selectExpr(
+          "cast(id % 10 as int) as store_id",
+          "cast(id % 13 as int) as item",
+          "cast(id as int) as amount")
+        .write
+        .partitionBy("store_id")
+        .parquet(s"$path/fact")
+      spark
+        .range(10)
+        .selectExpr(
+          "cast(id as int) as store_id",
+          "case when id = 1 then 'a' when id in (2, 3, 4) then 'b' else 'c' end as grp")
+        .write
+        .parquet(s"$path/dim")
+      spark
+        .range(13)
+        .selectExpr("cast(id as int) as item", "cast(id * 10 as int) as w")
+        .write
+        .parquet(s"$path/other")
+      withTempView("dpp_branch_fact", "dpp_branch_dim", "dpp_branch_other") {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_branch_fact")
+        spark.read.parquet(s"$path/dim").createOrReplaceTempView("dpp_branch_dim")
+        spark.read.parquet(s"$path/other").createOrReplaceTempView("dpp_branch_other")
+        f
+      }
+    }
+  }
+
+  // Coalescing is off: a coalesced shuffle read carries per-partition sizes that would keep the two
+  // branches' parent exchanges apart and hide a wrong reuse.
+  private def withDppBranchConf(f: => Unit): Unit = {
+    withSQLConf(
+      SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")(f)
+  }
+
+  private val dppScan: PartialFunction[SparkPlan, CometNativeScanExec] = {
+    case s: CometNativeScanExec
+        if s.partitionFilters.exists(_.isInstanceOf[DynamicPruningExpression]) =>
+      s
+  }
+
+  // A UNION ALL of one CTE joined to dimension groups grp1 and grp2, with a shuffle stage over each
+  // DPP scan.
+  private def dppShuffleQuery(grp1: String, grp2: String): String =
+    s"""WITH x AS (
+       |  SELECT store_id, item, sum(amount) AS s FROM dpp_branch_fact GROUP BY store_id, item),
+       |y AS (SELECT store_id, s % 7 AS b, count(*) AS c FROM x GROUP BY store_id, s % 7)
+       |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+       |WHERE d.grp = '$grp1'
+       |UNION ALL
+       |SELECT y.store_id, y.b, y.c FROM y JOIN dpp_branch_dim d ON y.store_id = d.store_id
+       |WHERE d.grp = '$grp2'""".stripMargin
+
+  // Runs a UNION ALL of one CTE joined to dimension group 'a' and to group 'b'.
+  private def checkDppBranchesKeepTheirRows(query: String): Unit = {
+    withDppBranchConf {
+      if (isSpark35Plus) {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(sql(query))
+        assert(
+          collect(cometPlan)(dppScan).map(_.metrics("numPartitions").value).sorted ==
+            Seq(1L, 3L),
+          "Expected one DPP scan per branch, pruned to 1 and 3 partitions:\n" +
+            cometPlan.treeString)
+        assertNoReusedExchangeOverDppScan(cometPlan)(dppScan)
+      } else {
+        // On 3.4, AQE DPP falls back to Spark.
+        checkSparkAnswer(sql(query))
+      }
+    }
+  }
+
+  // TPC-DS q64 shape: a broadcast of (fact SMJ other), with the dimension join above it. The two
+  // broadcasts differ only in the DPP filter of the fact scan inside a child shuffle stage.
+  test("AQE DPP: broadcast over a join of DPP scans is not reused across branches (#6264)") {
+    withDppBranchTables {
+      checkDppBranchesKeepTheirRows("""WITH x AS (
+          |  SELECT /*+ MERGE(f, o) */ f.store_id, f.item, f.amount, o.w
+          |  FROM dpp_branch_fact f JOIN dpp_branch_other o ON f.item = o.item)
+          |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+          |FROM dpp_branch_other o2 JOIN x ON o2.item = x.item
+          |JOIN dpp_branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'a'
+          |UNION ALL
+          |SELECT /*+ BROADCAST(x) */ o2.item, x.store_id, x.amount, x.w
+          |FROM dpp_branch_other o2 JOIN x ON o2.item = x.item
+          |JOIN dpp_branch_dim d ON x.store_id = d.store_id WHERE d.grp = 'b'""".stripMargin)
+    }
+  }
+
+  test("AQE DPP: shuffle over a DPP scan stage is not reused across branches (#6264)") {
+    withDppBranchTables {
+      checkDppBranchesKeepTheirRows(dppShuffleQuery("a", "b"))
+    }
+  }
+
+  // With the same dimension filter in both branches, AQE's stage cache lookup after the DPP
+  // placeholder is converted finds the first branch's stage, so the shuffles are reused as in
+  // Spark. This fails if the scan's canonical form keeps too much, such as originalPlan's DPP
+  // filters or unnormalized partition filters.
+  test("AQE DPP: shuffle over scans with the same DPP filter is reused across branches (#6264)") {
+    withDppBranchTables {
+      withDppBranchConf {
+        val df = sql(dppShuffleQuery("a", "a"))
+        val (sparkPlan, cometPlan) =
+          if (isSpark35Plus) checkSparkAnswerAndOperator(df) else checkSparkAnswer(df)
+        assertSameExchangeReuseAsSpark(sparkPlan, cometPlan)
+        if (isSpark35Plus) {
+          assertExchangeReuseOver(cometPlan, "Expected the shuffle over a DPP scan to be reused")(
+            dppScan)
+        }
       }
     }
   }
@@ -2540,10 +2816,13 @@ class CometExecSuite extends CometTestBase {
             "scan_io_footer_reads",
             "scan_io_footer_bytes",
             "scan_io_object_store_get_calls",
+            "scan_io_http_observed_gets",
+            "scan_io_http_retries",
             "scan_io_object_store_get_requested_bytes",
             "scan_io_object_store_response_bytes_read",
             "scan_io_metadata_cache_hits",
-            "scan_io_metadata_cache_misses").foreach { name =>
+            "scan_io_metadata_cache_misses",
+            "scan_io_metadata_prefetches").foreach { name =>
             assert(metrics.contains(name), s"Missing $name. Available: ${metrics.keys}")
           }
           assert(
@@ -2555,6 +2834,8 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("scan_io_footer_reads").value > 0)
           assert(metrics("scan_io_footer_bytes").value > 0)
           assert(metrics("scan_io_object_store_get_calls").value == 0)
+          assert(metrics("scan_io_http_observed_gets").value == 0)
+          assert(metrics("scan_io_http_retries").value == 0)
           assert(metrics("scan_io_object_store_get_requested_bytes").value == 0)
           assert(metrics("scan_io_object_store_response_bytes_read").value == 0)
           assert(metrics("scan_io_metadata_cache_misses").value > 0)
@@ -2566,6 +2847,32 @@ class CometExecSuite extends CometTestBase {
           assert(
             metrics("time_elapsed_scanning_until_data").value > 0,
             "time_elapsed_scanning_until_data should be > 0")
+        }
+      }
+    }
+  }
+
+  test("native scan loads the next file's metadata while it reads the current file") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark.range(0, 4000, 1, 4).toDF("id").write.parquet(path)
+      Seq(true, false).foreach { prefetch =>
+        withSQLConf(
+          CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED.key -> prefetch.toString,
+          // Pack the four files into one task.
+          SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+          SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1") {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(spark.read.parquet(path))
+          val scan = find(cometPlan)(_.isInstanceOf[CometNativeScanExec])
+          assert(scan.isDefined, "Expected to find a CometNativeScanExec")
+          assert(scan.get.executeColumnar().getNumPartitions == 1)
+          val metrics = scan.get.metrics
+          // Every file is read from storage either way. With the prefetch, each open after the
+          // first finds its metadata already loaded.
+          assert(metrics("scan_io_metadata_cache_misses").value == 4)
+          assert(metrics("scan_io_metadata_cache_hits").value == 0)
+          assert(metrics("scan_io_metadata_prefetches").value == (if (prefetch) 3 else 0))
+          assert(metrics("scan_io_footer_reads").value == 4)
         }
       }
     }
@@ -4785,6 +5092,33 @@ class CometExecSuite extends CometTestBase {
           .json("src/test/resources/test-data/json-test-1.ndjson")
           .createOrReplaceTempView("tbl")
         checkSparkAnswerAndOperator("SELECT a, b.c, b.d FROM tbl")
+      }
+    }
+  }
+
+  test("read Text file") {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 10).selectExpr("CAST(id AS STRING)").write.text(dir.toString)
+      }
+      Seq("", "text").foreach { v1List =>
+        withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> v1List) {
+          spark.read.text(dir.toString).createOrReplaceTempView("tbl")
+          val query = "SELECT CAST(value AS INT) + 1 FROM tbl"
+          // Off by default, because a Text file can hold bytes that are not valid UTF-8.
+          val (_, plan) = checkSparkAnswer(query)
+          assert(collect(plan) { case c: CometSparkToColumnarExec => c }.isEmpty)
+          withSQLConf(CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "true") {
+            checkSparkAnswerAndOperator(query)
+          }
+          // The general switch still converts Text, as it did before Text had a config (deprecated).
+          val operatorList = CometConf.COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST.key
+          withSQLConf(
+            CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true",
+            operatorList -> "FileSourceScan,BatchScan") {
+            checkSparkAnswerAndOperator(query)
+          }
+        }
       }
     }
   }

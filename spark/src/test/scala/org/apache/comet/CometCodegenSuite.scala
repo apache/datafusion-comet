@@ -28,10 +28,10 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, Literal, MapConcat, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, EvalMode, Expression, GenericInternalRow, Hypot, If, IsNull, LessThan, Literal, MapConcat, MapKeys, MonotonicallyIncreasingID, Or, Rand, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MapData}
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
@@ -41,7 +41,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.{ByteArray, UTF8String}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.codegen.CometBatchKernelCodegen
+import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
@@ -624,6 +624,43 @@ class CometCodegenSuite
         .contains(Set("hypot", "cast", "checkoverflow", "add")))
   }
 
+  test("non-deterministic dispatched subtrees serialize per occurrence") {
+    // The dispatcher keys its per-task kernel cache on the digest the serde ships, so two
+    // identical non-deterministic occurrences must ship distinct bytes, digested after tagging,
+    // to get distinct state. A deterministic tree is shipped untouched, so identical occurrences
+    // keep sharing one kernel.
+    def payload(e: Expression, attrs: Seq[AttributeReference]): (Array[Byte], Array[Byte]) = {
+      val proto = QueryPlanSerde.exprToProto(Alias(e, "v")(), attrs).get
+      assert(proto.hasJvmScalarUdf, s"expected $e to dispatch, got $proto")
+      val args = proto.getJvmScalarUdf.getArgsList
+      (
+        args.get(0).getLiteral.getBytesVal.toByteArray,
+        args.get(1).getLiteral.getBytesVal.toByteArray)
+    }
+    def nondeterministic(): Expression =
+      Hypot(Cast(MonotonicallyIncreasingID(), DoubleType), Literal(4.0d))
+    val (firstDigest, firstBytes) = payload(nondeterministic(), Nil)
+    val (secondDigest, secondBytes) = payload(nondeterministic(), Nil)
+    assert(!firstBytes.sameElements(secondBytes))
+    assert(!firstDigest.sameElements(secondDigest))
+    assert(firstDigest.sameElements(CometScalaUDFCodegen.digest(firstBytes)))
+
+    // Fresh instances per call: the serde tags the root it dispatched, and tree tags serialize.
+    val x = AttributeReference("x", LongType, nullable = false)()
+    def deterministic(): Expression = Hypot(Cast(x, DoubleType), Literal(4.0d))
+    val bound = BindReferences.bindReference(deterministic(), AttributeSeq(Seq(x)))
+    val serializer = SparkEnv.get.closureSerializer.newInstance()
+    val buffer = serializer.serialize(bound)
+    val plain = new Array[Byte](buffer.remaining())
+    buffer.get(plain)
+    val (detDigest, detBytes) = payload(deterministic(), Seq(x))
+    val (againDigest, againBytes) = payload(deterministic(), Seq(x))
+    assert(detBytes.sameElements(plain))
+    assert(detBytes.sameElements(againBytes))
+    assert(detDigest.sameElements(againDigest))
+    assert(DispatchOccurrence.tag(bound) eq bound)
+  }
+
   test("the serde ships a digest of the serialized expression at arg 0 (#6705)") {
     // The dispatcher trusts a cache hit on the digest without comparing the bytes, so the digest
     // the serde ships must be the digest of the bytes it ships next to it. Calling the dispatcher
@@ -814,6 +851,150 @@ class CometCodegenSuite
           sql("SELECT replace(repeat('x', 262144), 'notfound', r) FROM t"),
           expectDispatcher = true,
           "expected dispatcher path for oversized source literal")
+      }
+    }
+  }
+
+  test("replace with safe literal arguments runs natively by default") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('aaaa'), ('你好你好'), (''), (NULL)")
+
+        Seq(
+          "SELECT replace(s, 'aa', 'x') FROM t",
+          "SELECT replace(s, '你好', '世界') FROM t",
+          "SELECT replace(s, 'aa', 'aaa') FROM t",
+          "SELECT replace(s, 'missing', '') FROM t").foreach { query =>
+          val df = sql(query)
+          assertReplaceDispatch(df, expectDispatcher = false, query)
+          val plan = df.queryExecution.executedPlan
+          val info = new ExtendedExplainInfo()
+          assert(
+            info.getNativeExpressions(plan).contains("replace"),
+            s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+        }
+      }
+    }
+  }
+
+  test("replace literal arguments route at the 64 KiB boundary") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('other'), (NULL), (repeat('b', 65536))")
+
+        Seq(
+          ("SELECT replace(s, repeat('b', 65536), 'x') FROM t", false),
+          ("SELECT replace(s, repeat('b', 65537), 'x') FROM t", true),
+          ("SELECT replace(s, 'a', repeat('x', 65536)) FROM t", false),
+          ("SELECT replace(s, 'a', repeat('x', 65537)) FROM t", true)).foreach {
+          case (query, expectDispatcher) =>
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher, query)
+            if (!expectDispatcher) {
+              val plan = df.queryExecution.executedPlan
+              val info = new ExtendedExplainInfo()
+              assert(
+                info.getNativeExpressions(plan).contains("replace"),
+                s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+            }
+        }
+      }
+    }
+  }
+
+  test("replace with a literal search and replacement column runs natively by default") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING, r STRING, search STRING) USING parquet")
+        sql("""INSERT INTO t VALUES
+          |('aaaa', 'x', 'aa'), ('你好你好', '世界', '你好'),
+          |('nomatch', 'z', 'm'), ('aaaa', '', ''),
+          |('', 'x', ''), (NULL, 'q', 'a'), ('aaa', NULL, 'a')""".stripMargin)
+
+        Seq(
+          "SELECT replace(s, 'aa', r) FROM t",
+          "SELECT replace(s, '你好', r) FROM t",
+          "SELECT replace(s, repeat('a', 256), r) FROM t").foreach { query =>
+          val df = sql(query)
+          assertReplaceDispatch(df, expectDispatcher = false, query)
+          val plan = df.queryExecution.executedPlan
+          val info = new ExtendedExplainInfo()
+          assert(
+            info.getNativeExpressions(plan).contains("replace"),
+            s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+        }
+
+        Seq(
+          "SELECT replace(s, '', r) FROM t",
+          "SELECT replace(s, search, r) FROM t",
+          "SELECT replace(s, repeat('a', 257), r) FROM t",
+          "SELECT replace(s, repeat('a', 1024), r) FROM t").foreach { query =>
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65536") {
+          val query = "SELECT replace(s, repeat('a', 256), r) FROM t"
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+
+        if (isSpark41Plus) {
+          val query = "SELECT replace(s COLLATE UTF8_LCASE, 'aa', r) FROM t"
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+      }
+    }
+  }
+
+  test("replace broadcast limit routes actual large batches at 8 MiB") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTempPath { dir =>
+        spark
+          .range(0, 32769, 1, numPartitions = 1)
+          .selectExpr("repeat('a', 256) AS s", "CASE WHEN id % 2 = 0 THEN 'x' ELSE 'yz' END AS r")
+          .write
+          .parquet(dir.getCanonicalPath)
+        withTable("t") {
+          sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+          val query = "SELECT replace(s, repeat('a', 256), r) FROM t"
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32768") {
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher = false, query)
+            val plan = df.queryExecution.executedPlan
+            val info = new ExtendedExplainInfo()
+            assert(
+              info.getNativeExpressions(plan).contains("replace"),
+              s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+          }
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32769") {
+            assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+          }
+        }
       }
     }
   }
@@ -1025,6 +1206,229 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  test("canHandle refuses a TRY cast whose map key cast can fail") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    def refused(from: DataType, to: DataType, mode: EvalMode.Value = EvalMode.TRY): Boolean =
+      CometBatchKernelCodegen
+        .canHandle(Cast(BoundReference(0, from, nullable = true), to, None, mode))
+        .exists(_.contains("null map key"))
+    def map(k: DataType): MapType = MapType(k, IntegerType)
+
+    // Narrowing can overflow, and date to timestamp can overflow for extreme dates even though
+    // Spark counts it as an upcast.
+    assert(refused(map(LongType), map(IntegerType)))
+    assert(refused(map(DateType), map(TimestampType)))
+    assert(refused(map(StringType), map(IntegerType)))
+    // Widening numeric, integral to a wide enough decimal, and numeric to string cannot fail.
+    assert(!refused(map(IntegerType), map(LongType)))
+    assert(!refused(map(LongType), map(DecimalType(20, 0))))
+    assert(!refused(map(IntegerType), map(StringType)))
+    // The list takes a long as 20 digits, as Spark's own `DecimalType.forType` does, so
+    // decimal(19, 0) is refused even though every long fits. That is only conservative.
+    assert(refused(map(LongType), map(DecimalType(19, 0))))
+    // Only TRY turns a failing key cast into a null key.
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.LEGACY))
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.ANSI))
+    // Reached at any depth: inside an array, a struct field and a map value.
+    assert(refused(ArrayType(map(LongType)), ArrayType(map(IntegerType))))
+    assert(
+      refused(
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(LongType)))),
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType))))))
+    assert(refused(MapType(IntegerType, map(LongType)), MapType(IntegerType, map(IntegerType))))
+    // Only refused when the output can carry a map. Inside the kernel it is Spark's own code.
+    val narrowing =
+      Cast(
+        BoundReference(0, map(LongType), nullable = true),
+        map(IntegerType),
+        None,
+        EvalMode.TRY)
+    assert(CometBatchKernelCodegen.canHandle(MapKeys(narrowing)).isEmpty)
+
+    // A TRY cast over a foldable map is folded into a literal that already holds the null key.
+    def nullKeyMap: MapData =
+      new ArrayBasedMapData(
+        new GenericArrayData(Array[Any](1, null)),
+        new GenericArrayData(Array[Any](10, 20)))
+    def literalRefused(lit: Literal): Boolean =
+      CometBatchKernelCodegen.canHandle(lit).exists(_.contains("null map key"))
+    assert(literalRefused(Literal(nullKeyMap, map(IntegerType))))
+    assert(
+      literalRefused(
+        Literal(new GenericArrayData(Array[Any](nullKeyMap)), ArrayType(map(IntegerType)))))
+    assert(
+      literalRefused(
+        Literal(
+          InternalRow(1, nullKeyMap),
+          StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType)))))))
+    assert(
+      !literalRefused(
+        Literal(
+          new ArrayBasedMapData(
+            new GenericArrayData(Array[Any](1, 2)),
+            new GenericArrayData(Array[Any](10, 20))),
+          map(IntegerType))))
+  }
+
+  test("a TRY cast over a foldable map with a failing key falls back") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    // `ConstantFolding` turns the cast into a literal that already holds the null key, so no
+    // `Cast` is left for the guard. The SQL file tests run with constant folding off.
+    withTable("t") {
+      sql("CREATE TABLE t(id int) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2)")
+      checkSparkAnswerAndFallbackReason(
+        """SELECT id, map_keys(transform_values(
+          |  try_cast(map(1L, 10, 9999999999L, 20) AS map<int, int>), (k, v) -> v + id))
+          |FROM t ORDER BY id""".stripMargin,
+        "the output can carry a null map key")
+    }
+  }
+
+  test("a primitive ScalaUDF's null guard runs in the UDF's kernel (#6704)") {
+    // Spark's `HandleNullInputsForUDF` wraps each call below as
+    // `if (isnull(a) or ...) null else f(knownnotnull(a), ...)`. Run natively, the `if` is a
+    // `CASE` that splits each batch on the predicate and merges the two halves back, so the guard
+    // goes to the kernel with the call, and neither `if` nor `isnull` is native.
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    spark.udf.register("combine", (a: Long, b: Int, s: String) => s"$s:${a + b}")
+    spark.udf.register("addBoth", (x: Long, y: Long) => x + y)
+    spark.udf.register("addThree", (x: Long, y: Int, z: Long) => x + y + z)
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b INT, s STRING) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (1, 10, 'x'), (NULL, 20, 'y'), (3, NULL, 'z'), " +
+          "(NULL, NULL, NULL), (-5, 7, NULL)")
+      val guard = Seq("if", "isnull")
+      checkSparkAnswerAndImpl(sql("SELECT plusOne(a) FROM t"), dispatched = "plusone" +: guard)
+      checkSparkAnswerAndImpl(
+        sql("SELECT max(plusOne(a)), count(plusOne(a)) FROM t"),
+        dispatched = "plusone" +: guard)
+      // An argument that is an expression is checked as it is.
+      checkSparkAnswerAndImpl(
+        sql("SELECT plusOne(a * 2) FROM t"),
+        dispatched = "plusone" +: guard)
+      // One `isnull` per primitive parameter, joined by `or`. The `String` one is not checked.
+      checkSparkAnswerAndImpl(
+        sql("SELECT combine(a, b, s) FROM t"),
+        dispatched = Seq("combine", "or") ++ guard)
+      // The optimizer drops a repeated `isnull`, so a column passed twice is checked once.
+      checkSparkAnswerAndImpl(sql("SELECT addBoth(a, a) FROM t"), dispatched = "addboth" +: guard)
+      checkSparkAnswerAndImpl(
+        sql("SELECT addThree(a, b, a) FROM t"),
+        dispatched = Seq("addthree", "or") ++ guard)
+      // An argument that cannot be null gets no `isnull`.
+      checkSparkAnswerAndImpl(
+        sql("SELECT addBoth(a, 1L) FROM t"),
+        dispatched = "addboth" +: guard)
+    }
+  }
+
+  test("a boolean ScalaUDF's null guard runs in the kernel with false for null (#6704)") {
+    // In a filter, and in the predicate of a conditional, `ReplaceNullWithFalseInPredicate`
+    // rewrites the guard to `if (isnull(a)) false else f(knownnotnull(a))`.
+    spark.udf.register("isPositive", (x: Long) => x > 0)
+    withTypedCol("BIGINT", "1", "NULL", "-3", "0", "7") {
+      checkSparkAnswerAndImpl(
+        sql("SELECT c FROM t WHERE isPositive(c)"),
+        dispatched = Seq("ispositive", "if", "isnull"))
+      // The query's own `if` is native, so only the guard's `isnull` is checked.
+      checkSparkAnswerAndImpl(
+        sql("SELECT IF(isPositive(c), 'yes', 'no') FROM t"),
+        dispatched = Seq("ispositive", "isnull"))
+    }
+  }
+
+  test("a nondeterministic ScalaUDF under its guard is called only for non-null rows (#6704)") {
+    // Each result counts the calls made so far in the task, so a call on a null row would shift
+    // every result after it.
+    import org.apache.spark.sql.functions.udf
+    var calls = 0L
+    val countCalls = udf { (x: Long) =>
+      calls += 1
+      x * 1000 + calls
+    }
+    spark.udf.register("countCalls", countCalls.asNondeterministic())
+    withTypedCol("BIGINT", "1", "NULL", "2", "NULL", "NULL", "3") {
+      checkSparkAnswerAndImpl(
+        sql("SELECT countCalls(c) FROM t"),
+        dispatched = Seq("countcalls", "if", "isnull"))
+    }
+  }
+
+  test("a null guard the dispatcher cannot take whole stays native around its UDF (#6704)") {
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    withTypedCol("BIGINT", "1", "NULL", "-3") {
+      // `canHandle` counts each reference to a column against `maxFields`, and the guard reads
+      // `c` a second time: the UDF alone counts its output and one input, 2, and the guard 3. At
+      // 2 the guard is refused while the UDF is not, so the guard has to stay a native `if`
+      // around the dispatched UDF rather than take the projection to Spark.
+      withSQLConf("spark.sql.codegen.maxFields" -> "2") {
+        checkSparkAnswerAndImpl(
+          sql("SELECT plusOne(c) FROM t"),
+          native = Seq("if", "isnull"),
+          dispatched = Seq("plusone"))
+      }
+      // With the dispatcher off, the fallback reason is the UDF's own, and none is recorded for
+      // a guard that the query does not contain.
+      withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
+          sql("SELECT plusOne(c) FROM t"),
+          s"plusone: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(cometPlan)
+        assert(!reasons.exists(_.startsWith("if:")), s"unexpected fallback reasons: $reasons")
+      }
+    }
+  }
+
+  test("a disabled expression in a null guard keeps the guard native (#6704)") {
+    // Converting the guard natively checks `spark.comet.expression.<name>.enabled` on the UDF and
+    // on each node of the predicate, the guarded argument's included, and a disabled one takes
+    // the projection to Spark. Dispatching the guard has to make the same checks.
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    spark.udf.register("addBoth", (a: Long, b: Long) => a + b)
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b BIGINT) USING parquet")
+      sql("INSERT INTO t VALUES (1, 10), (NULL, 20), (-3, NULL)")
+      Seq(
+        "ScalaUDF" -> "SELECT plusOne(a) FROM t",
+        "IsNull" -> "SELECT plusOne(a) FROM t",
+        "Or" -> "SELECT addBoth(a, b) FROM t",
+        "Multiply" -> "SELECT plusOne(a * 2) FROM t").foreach { case (name, query) =>
+        val key = CometConf.getExprEnabledConfigKey(name)
+        withSQLConf(key -> "false") {
+          val (_, cometPlan) = checkSparkAnswerAndFallbackReason(sql(query), s"Set $key=true")
+          assert(
+            collect(cometPlan) { case p: CometProjectExec => p }.isEmpty,
+            s"$query stayed in Comet with $key=false:\n$cometPlan")
+        }
+      }
+    }
+  }
+
+  test("only the null guard Spark builds goes to the kernel with its UDF (#6704)") {
+    spark.udf.register("plusOne", (x: Long) => x + 1)
+    withTable("t") {
+      sql("CREATE TABLE t (a BIGINT, b BIGINT) USING parquet")
+      val plan = sql("SELECT plusOne(a), b FROM t").queryExecution.optimizedPlan
+      val guard = plan.expressions.flatMap(_.collect { case g: If => g }).head
+      val Seq(a, b) = plan.collectLeaves().head.output
+      def root(expr: Expression): ExprStructCase =
+        QueryPlanSerde.exprToProto(expr, Seq(a, b)).get.getExprStructCase
+      assert(root(guard) == ExprStructCase.JVM_SCALAR_UDF)
+      // A predicate that checks a column the call does not read, or one besides its arguments.
+      assert(root(guard.copy(predicate = IsNull(b))) == ExprStructCase.IF)
+      assert(root(guard.copy(predicate = Or(guard.predicate, IsNull(b)))) == ExprStructCase.IF)
+      // A branch that is not null.
+      assert(root(guard.copy(trueValue = Literal(0L))) == ExprStructCase.IF)
+      // A nondeterministic argument, which the guard and the call would each evaluate.
+      val random = guard.transformUp { case r: AttributeReference =>
+        If(LessThan(Rand(Literal(1L)), Literal(2.0)), r, Literal(null, LongType))
+      }
+      assert(root(random) == ExprStructCase.IF)
     }
   }
 
@@ -2384,6 +2788,49 @@ class CometCodegenSuite
       exprVec.close()
       timeVec.close()
     }
+  }
+
+  test("dispatcher keeps one kernel per occurrence id and its state across batches") {
+    // Driven directly: two payloads that differ only in their `DispatchOccurrence` id must get
+    // two cache entries with their own counters, while the same id seen again hits the first
+    // entry and continues its counter. Outside a task `init` runs with partition 0, so the ids
+    // count from 0.
+    def payload(occurrence: Long): Array[Byte] = {
+      val expr = DispatchOccurrence(MonotonicallyIncreasingID(), occurrence)
+      val serialized = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+      val bytes = new Array[Byte](serialized.remaining())
+      serialized.get(bytes)
+      bytes
+    }
+    val dispatcher = new CometScalaUDFCodegen()
+    def ids(bytes: Array[Byte], n: Int): Seq[Long] = {
+      val digestVec = new VarBinaryVector("digest", CometArrowAllocator)
+      val exprVec = new VarBinaryVector("expr", CometArrowAllocator)
+      var out: ValueVector = null
+      try {
+        digestVec.allocateNew()
+        digestVec.setSafe(0, CometScalaUDFCodegen.digest(bytes))
+        digestVec.setValueCount(1)
+        exprVec.allocateNew()
+        exprVec.setSafe(0, bytes)
+        exprVec.setValueCount(1)
+        out = dispatcher.evaluate(Array(digestVec, exprVec), n)
+        val comet = CometVector.getVector(out.asInstanceOf[FieldVector], null)
+        (0 until n).map(comet.getLong)
+      } finally {
+        if (out != null) out.close()
+        digestVec.close()
+        exprVec.close()
+      }
+    }
+    CometScalaUDFCodegen.resetStats()
+    val first = payload(1L)
+    assert(ids(first, 4) === Seq(0L, 1L, 2L, 3L))
+    assert(ids(payload(2L), 4) === Seq(0L, 1L, 2L, 3L))
+    assert(ids(first, 4) === Seq(4L, 5L, 6L, 7L))
+    val stats = CometScalaUDFCodegen.stats()
+    assert(stats.compileCount === 2, s"expected one entry per occurrence id, got $stats")
+    assert(stats.cacheHitCount === 1, s"expected the repeated id to hit its entry, got $stats")
   }
 
   test("dispatcher finds a compiled kernel by the expression digest alone (#6705)") {
