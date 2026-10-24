@@ -47,6 +47,43 @@ pub(crate) enum Selection<'a> {
     ByName(&'a [usize]),
 }
 
+/// The strongest claim on one file field. Root remapping and nested conversion give a file
+/// field to this claimant only. Repeated id claims keep the last requested field, matching
+/// Spark parquet-mr's `ParquetRowConverter` id-to-index `toMap`. Equal name claims keep the
+/// earliest requested field, retaining the root remap's name-matching behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FieldClaim {
+    /// The requested field selects this file field by Parquet field id.
+    IdMatch(usize),
+    /// An id-bearing requested field has this file field's folded name. It must not reach this
+    /// field by name when its id is missing or selects a different field. Only an id match can
+    /// override this claim. The root hides it with a placeholder; nested fields read NULL.
+    Shadowed,
+    /// The requested field selects this file field by folded name.
+    NameMatch(usize),
+    /// No requested field claims this file field. The root keeps its original name.
+    Unchanged,
+}
+
+impl FieldClaim {
+    fn strength(self) -> u8 {
+        match self {
+            Self::IdMatch(_) => 3,
+            Self::Shadowed => 2,
+            Self::NameMatch(_) => 1,
+            Self::Unchanged => 0,
+        }
+    }
+
+    fn claim(&mut self, claim: Self) {
+        if claim.strength() > self.strength()
+            || matches!((*self, claim), (Self::IdMatch(_), Self::IdMatch(_)))
+        {
+            *self = claim;
+        }
+    }
+}
+
 /// Resolves the requested fields of one group against the file fields of the same group, as
 /// Spark's `clipParquetGroupFields` does. The caller folds both sides' names once (see
 /// `name_fold`) and passes them in, parallel to the fields.
@@ -204,6 +241,55 @@ impl<'a> FieldResolver<'a> {
             )),
         }
     }
+
+    /// Resolve claims in file order, with id matches ahead of shadows and name matches.
+    /// Repeated requested ids keep the last claimant, as Spark parquet-mr does. Duplicate file ids are
+    /// checked across the whole requested group, including unprojected root fields (#7006).
+    /// Name ambiguity is left to the caller: the root checks referenced columns only, whereas
+    /// nested conversion validates every requested field in [`Self::resolve_all`].
+    pub(crate) fn file_claims(&self) -> DataFusionResult<Vec<FieldClaim>> {
+        let mut claims = vec![FieldClaim::Unchanged; self.file.len()];
+        for requested in 0..self.requested.len() {
+            match self.select(requested)? {
+                Selection::ById(matched) => {
+                    if let Some(file) = matched {
+                        claims[file].claim(FieldClaim::IdMatch(requested));
+                    }
+                    for &file in self.name_matches(requested) {
+                        claims[file].claim(FieldClaim::Shadowed);
+                    }
+                }
+                Selection::ByName(matches) => {
+                    for &file in matches {
+                        claims[file].claim(FieldClaim::NameMatch(requested));
+                    }
+                }
+            }
+        }
+        Ok(claims)
+    }
+
+    /// Resolve a nested group in requested order, giving each file field to its strongest
+    /// claimant only. Missing and losing fields read NULL. Validate independent selections
+    /// first, in requested order, so arbitration cannot hide ambiguity or change which of
+    /// several invalid selections reports its error first.
+    pub(crate) fn resolve_all(&self) -> DataFusionResult<Vec<Option<usize>>> {
+        let mut resolved = (0..self.requested.len())
+            .map(|requested| self.resolve(requested))
+            .collect::<DataFusionResult<Vec<_>>>()?;
+        let claims = self.file_claims()?;
+        for (requested, file) in resolved.iter_mut().enumerate() {
+            if let Some(index) = *file {
+                if !matches!(
+                    claims[index],
+                    FieldClaim::IdMatch(owner) | FieldClaim::NameMatch(owner) if owner == requested
+                ) {
+                    *file = None;
+                }
+            }
+        }
+        Ok(resolved)
+    }
 }
 
 /// The error for requested field `name` when the file fields at `matches` all share its folded
@@ -260,7 +346,7 @@ impl Indices {
 
 #[cfg(test)]
 mod test {
-    use super::{FieldResolver, Selection};
+    use super::{FieldClaim, FieldResolver, Selection};
     use crate::parquet::name_fold::fold_names;
     use arrow::datatypes::{DataType, Field, FieldRef};
     use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
@@ -347,6 +433,189 @@ mod test {
         let file = [field("x", Some(1)), field("a", Some(2))];
         with_resolver(&requested, &file, false, false, |resolver| {
             assert_eq!(resolver.select(0).unwrap(), Selection::ByName(&[1]));
+        });
+    }
+
+    #[test]
+    fn conflicting_claims_prefer_id_in_either_requested_order() {
+        for file_name in ["A", "a"] {
+            for case_sensitive in [false, true] {
+                for use_field_id in [false, true] {
+                    for reverse in [false, true] {
+                        let mut requested = [field("x", Some(1)), field("a", None)];
+                        if reverse {
+                            requested.reverse();
+                        }
+                        let file = [field(file_name, Some(1))];
+                        with_resolver(
+                            &requested,
+                            &file,
+                            case_sensitive,
+                            use_field_id,
+                            |resolver| {
+                                let mut expected = if use_field_id {
+                                    vec![Some(0), None]
+                                } else {
+                                    vec![None, (!case_sensitive || file_name == "a").then_some(0)]
+                                };
+                                if reverse {
+                                    expected.reverse();
+                                }
+                                assert_eq!(resolver.resolve_all().unwrap(), expected);
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_claims_include_shadowing_and_unclaimed_fields() {
+        let requested = [
+            field("x", Some(1)),
+            field("a", None),
+            field("b", Some(2)),
+            field("B", None),
+            field("C", None),
+        ];
+        let file = [
+            field("A", Some(1)),
+            field("B", None),
+            field("c", None),
+            field("d", None),
+        ];
+        with_resolver(&requested, &file, false, true, |resolver| {
+            assert_eq!(
+                resolver.file_claims().unwrap(),
+                vec![
+                    FieldClaim::IdMatch(0),
+                    FieldClaim::Shadowed,
+                    FieldClaim::NameMatch(4),
+                    FieldClaim::Unchanged,
+                ]
+            );
+            assert_eq!(
+                resolver.resolve_all().unwrap(),
+                vec![Some(0), None, None, None, Some(2)]
+            );
+        });
+    }
+
+    #[test]
+    fn shadowing_respects_case_sensitivity_and_a_stronger_id_claim() {
+        // A's id resolves elsewhere, but its name still shadows a name-only claimant of `a`.
+        // An independent id claimant of `a` can override that shadow in either order.
+        for reverse in [false, true] {
+            for case_sensitive in [false, true] {
+                for claim_by_id in [false, true] {
+                    let mut requested = [
+                        field("A", Some(1)),
+                        field("a", None),
+                        field("z", claim_by_id.then_some(2)),
+                    ];
+                    let mut expected = vec![
+                        Some(1),
+                        (case_sensitive && !claim_by_id).then_some(0),
+                        claim_by_id.then_some(0),
+                    ];
+                    if reverse {
+                        requested.reverse();
+                        expected.reverse();
+                    }
+                    let file = [field("a", Some(2)), field("b", Some(1))];
+                    with_resolver(&requested, &file, case_sensitive, true, |resolver| {
+                        assert_eq!(resolver.resolve_all().unwrap(), expected);
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn id_ties_keep_last_and_name_ties_keep_first() {
+        for use_field_id in [false, true] {
+            for reverse in [false, true] {
+                let mut requested = [
+                    field("x", Some(1)),
+                    field("y", Some(1)),
+                    field("Ab", None),
+                    field("aB", None),
+                ];
+                if reverse {
+                    requested.reverse();
+                }
+                let file = [field("p", Some(1)), field("AB", None)];
+                with_resolver(&requested, &file, false, use_field_id, |resolver| {
+                    let expected = match (reverse, use_field_id) {
+                        (false, true) => vec![None, Some(0), Some(1), None],
+                        (false, false) => vec![None, None, Some(1), None],
+                        (true, true) => vec![Some(1), None, None, Some(0)],
+                        (true, false) => vec![Some(1), None, None, None],
+                    };
+                    assert_eq!(resolver.resolve_all().unwrap(), expected);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn three_or_more_id_claims_keep_last_over_name_and_shadow() {
+        for count in [3, 4] {
+            for reverse in [false, true] {
+                let mut requested: Vec<_> = ["x", "y", "A", "z"][..count]
+                    .iter()
+                    .map(|name| field(name, Some(1)))
+                    .collect();
+                requested.insert(1, field("a", None));
+                requested.push(field("b", None));
+                let mut expected = vec![None; requested.len()];
+                expected[count] = Some(0);
+                expected[count + 1] = Some(1);
+                if reverse {
+                    requested.reverse();
+                    // Reversal changes the winning id claimant to x, now at the last position.
+                    expected.fill(None);
+                    expected[0] = Some(1);
+                    expected[count + 1] = Some(0);
+                }
+                let file = [field("a", Some(1)), field("b", None)];
+                with_resolver(&requested, &file, false, true, |resolver| {
+                    assert_eq!(resolver.resolve_all().unwrap(), expected);
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn arbitration_does_not_hide_ambiguous_name_or_reorder_errors() {
+        let file = [
+            field("a", Some(1)),
+            field("A", Some(2)),
+            field("b", Some(1)),
+        ];
+        for reverse in [false, true] {
+            let mut requested = [field("a", None), field("x", Some(1))];
+            if reverse {
+                requested.reverse();
+            }
+            with_resolver(&requested, &file, false, true, |resolver| {
+                let first_error = resolver.resolve(0).unwrap_err().to_string();
+                assert_eq!(resolver.resolve_all().unwrap_err().to_string(), first_error);
+            });
+        }
+        // Both physical fields are owned by id claimants, but the independent name selection
+        // is still ambiguous. Root claims allow it so the root can defer its name check.
+        let requested = [field("x", Some(1)), field("y", Some(2)), field("a", None)];
+        with_resolver(&requested, &file[..2], false, true, |resolver| {
+            assert_eq!(
+                resolver.file_claims().unwrap(),
+                vec![FieldClaim::IdMatch(0), FieldClaim::IdMatch(1)]
+            );
+            assert_eq!(
+                resolver.resolve_all().unwrap_err().to_string(),
+                resolver.resolve(2).unwrap_err().to_string()
+            );
         });
     }
 }
