@@ -118,8 +118,10 @@ use tokio::runtime::{Handle, Runtime};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+// Re-exported for local execution, whose memory pool is the one `createPlan` creates.
+pub(crate) use crate::execution::memory_pools::create_memory_pool;
 use crate::execution::memory_pools::{
-    create_memory_pool, overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
+    overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
@@ -526,7 +528,7 @@ fn collect_op_names<'a>(op: &'a Operator, names: &mut std::collections::BTreeSet
 }
 
 /// Comet native execution context. Kept alive across JNI calls.
-struct ExecutionContext {
+pub(crate) struct ExecutionContext {
     /// The id of the execution context.
     pub id: i64,
     /// The deserialized Spark plan
@@ -711,9 +713,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     })
 }
 
+impl ExecutionContext {
+    /// The planner that creates this plan's operators for `partition`.
+    pub(crate) fn planner(&self, partition: i32) -> PhysicalPlanner {
+        PhysicalPlanner::new(Arc::clone(&self.session_ctx), partition)
+            .with_exec_id(self.id)
+            .with_strict_timestamp_labels(self.strict_timestamp_labels)
+            .with_sql_text_pool(&self.spark_plan)
+            .with_task_context(self.task_context.clone())
+            .with_class_loader(self.class_loader.clone())
+            .with_shuffle_partition_pusher(self.shuffle_partition_pusher.clone())
+    }
+}
+
 /// What `createPlan` takes from the Spark configs.
-struct PlanSettings {
-    spark_config: HashMap<String, String>,
+pub(crate) struct PlanSettings {
+    pub(crate) spark_config: HashMap<String, String>,
     debug_native: bool,
     strict_timestamp_labels: bool,
     explain_native: bool,
@@ -724,7 +739,7 @@ struct PlanSettings {
 
 /// Deserializes the Spark configs of a plan and initializes the Tokio runtime from them. The
 /// first step of `Native.createPlan`, before its trace span opens.
-fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSettings> {
+pub(crate) fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSettings> {
     let spark_configs = serde::deserialize_config(serialized_spark_configs)?;
     let spark_config: HashMap<String, String> = spark_configs.entries.into_iter().collect();
 
@@ -747,34 +762,35 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
 }
 
 /// The arguments of `Native.createPlan`, converted from JNI.
-struct PlanInputs {
-    id: i64,
-    settings: PlanSettings,
-    serialized_plan: Vec<u8>,
-    partition_count: usize,
-    batch_size: usize,
-    off_heap_mode: bool,
-    memory_pool_type: String,
-    memory_limit: i64,
-    off_heap_size: i64,
-    task_attempt_id: i64,
-    task_cpus: usize,
-    local_dirs: Vec<String>,
+pub(crate) struct PlanInputs {
+    pub(crate) id: i64,
+    pub(crate) settings: PlanSettings,
+    pub(crate) serialized_plan: Vec<u8>,
+    pub(crate) partition_count: usize,
+    pub(crate) batch_size: usize,
+    pub(crate) off_heap_mode: bool,
+    pub(crate) memory_pool_type: String,
+    pub(crate) memory_limit: i64,
+    pub(crate) off_heap_size: i64,
+    pub(crate) task_attempt_id: i64,
+    pub(crate) task_cpus: usize,
+    pub(crate) local_dirs: Vec<String>,
     /// In milliseconds; zero or less publishes metrics only when the plan is released.
-    metrics_update_interval: i64,
+    pub(crate) metrics_update_interval: i64,
     /// When plan creation started, the start of `ExecutionContext::plan_creation_time`.
-    start: Instant,
-    jvm: PlanJvmRefs,
+    pub(crate) start: Instant,
+    pub(crate) jvm: PlanJvmRefs,
 }
 
 /// The JVM objects a plan calls back into, as JNI global references. Each is `None` or empty
 /// only without a JVM (unit tests) or when Spark passes none.
-struct PlanJvmRefs {
-    metrics: Option<Arc<Global<JObject<'static>>>>,
-    input_sources: Vec<Arc<Global<JObject<'static>>>>,
-    key_unwrapper: Option<Arc<Global<JObject<'static>>>>,
-    task_context: Option<Arc<Global<JObject<'static>>>>,
-    class_loader: Option<Arc<Global<JObject<'static>>>>,
+#[derive(Default)]
+pub(crate) struct PlanJvmRefs {
+    pub(crate) metrics: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) input_sources: Vec<Arc<Global<JObject<'static>>>>,
+    pub(crate) key_unwrapper: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) task_context: Option<Arc<Global<JObject<'static>>>>,
+    pub(crate) class_loader: Option<Arc<Global<JObject<'static>>>>,
 }
 
 /// Creates the execution context of a native plan: deserializes the plan, sets up its memory
@@ -783,7 +799,7 @@ struct PlanJvmRefs {
 ///
 /// `memory_pool_for` builds the pool every reservation of the plan goes through from its
 /// config; `Native.createPlan` builds one that acquires memory from Spark.
-fn create_execution_context(
+pub(crate) fn create_execution_context(
     inputs: PlanInputs,
     memory_pool_for: impl FnOnce(&MemoryPoolConfig) -> Arc<dyn MemoryPool>,
 ) -> CometResult<Box<ExecutionContext>> {
@@ -1139,7 +1155,7 @@ fn register_datafusion_spark_function(session_ctx: &SessionContext) {
 }
 
 /// Prepares arrow arrays for output.
-fn prepare_output(
+pub(crate) fn prepare_output(
     env: &mut Env,
     array_addrs: JLongArray,
     schema_addrs: JLongArray,
@@ -1471,20 +1487,12 @@ fn execute_plan(
     partition: i32,
     publish_metrics: &mut PublishMetrics,
 ) -> CometResult<Option<RecordBatch>> {
-    let exec_context_id = exec_context.id;
-
     // Initialize the execution stream.
     // Because we don't know if input arrays are dictionary-encoded when we create
     // query plan, we need to defer stream initialization to first time execution.
     if exec_context.root_op.is_none() {
         let start = Instant::now();
-        let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
-            .with_exec_id(exec_context_id)
-            .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
-            .with_sql_text_pool(&exec_context.spark_plan)
-            .with_task_context(exec_context.task_context.clone())
-            .with_class_loader(exec_context.class_loader.clone())
-            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone());
+        let planner = exec_context.planner(partition);
         let (scans, shuffle_scans, root_op) = planner.create_plan(
             &exec_context.spark_plan,
             &mut exec_context.input_sources.clone(),

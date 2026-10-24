@@ -1998,6 +1998,7 @@ dependencies = [
  "datafusion",
  "datafusion-comet-common",
  "datafusion-comet-jni-bridge",
+ "datafusion-comet-local",
  "datafusion-comet-operators",
  "datafusion-comet-proto",
  "datafusion-comet-shuffle",
@@ -2078,6 +2079,15 @@ dependencies = [
  "regex",
  "serde_json",
  "thiserror",
+]
+
+[[package]]
+name = "datafusion-comet-local"
+version = "1.2.0"
+dependencies = [
+ "datafusion",
+ "futures",
+ "tokio",
 ]
 
 [[package]]
