@@ -274,9 +274,14 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
   `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
   held rows then go through `RowPacer`, so the roll grid does not move.
-- **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
+- **Field ids and casting.** `UuidAlignment` casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
-  mismatch fails the task instead of writing NULLs.
+  mismatch fails the task instead of writing NULLs. It identifies UUID leaves by Iceberg field
+  id and parses their strings with Java-compatible UUID semantics into 16 big-endian bytes.
+  Conversion descriptors are built once per task; UUID-free subtrees keep the ordinary cast path.
+  Struct validity and list/map offset windows mask invisible values before parsing, including
+  required children under null parents. Invalid visible UUIDs fail through the existing abort
+  guard. `fixed(16)` is not treated as UUID.
 - **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
   `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
   partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them
@@ -460,6 +465,27 @@ for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg
 (`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
 and partition path spelling, needs a test that runs on each.
+
+The native writer's UUID parser is pinned against fixtures generated with JDK 17 and 21;
+`dev/GenerateIcebergUuidOracle.java` records Java's acceptance and 16-byte output, plus
+`Character.digit` for the entire BMP. Regeneration instructions and the exact tested JDK versions
+are in `native/core/src/execution/operators/testdata/README.md`.
+
+Select the UUID writer benchmark separately with:
+
+```sh
+PROFILES=-Pspark-4.1 SPARK_GENERATE_BENCHMARK_FILES=1 \
+  make benchmark-org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark uuid
+```
+
+It uses real Iceberg UUID columns, four million rows, eight source Parquet files, and three
+corpora: canonical UUIDs, canonical UUIDs with one null in eight, and Java-compatible shortened
+groups. Source generation and table creation are untimed. It rejects native fallback, checks
+normalized checksums, and reports five or more measured iterations with median, range, rows/s,
+writer factor, file count and output bytes. The default benchmark selection remains the non-UUID
+control (`control` selects only its unpartitioned insert). Comparing that control before and
+after a change requires matching builds and settings;
+the UUID writer factor alone is not evidence of a regression-free non-UUID path.
 
 When writing a native-write test:
 
