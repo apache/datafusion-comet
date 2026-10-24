@@ -135,13 +135,14 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
             CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native")
           withSQLConf(settings.toSeq: _*) {
-            val benchmark = new Benchmark("left semi, integer keys", buildRows, output = output)
+            val benchmark =
+              new Benchmark("left semi, integer keys", buildRows.toLong, output = output)
             val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
             for {
               (table, distinctKeys) <- Seq("build_repeated" -> 128, "build" -> buildRows)
               enabled <- Seq(false, true)
             } {
-              val query = s"SELECT /*+ MERGE(b) */ count(*) FROM probe p " +
+              val query = "SELECT /*+ MERGE(b) */ count(*) FROM probe p " +
                 s"LEFT SEMI JOIN $table b ON p.k = b.k"
               // Check the result and the actual reducer work outside the timed section.
               withSQLConf(flag -> enabled.toString) {
