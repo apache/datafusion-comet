@@ -832,9 +832,6 @@ The physical differences that every native data file has, and why they are safe,
   ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
-- **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
-  letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
-  ([#5540](https://github.com/apache/datafusion-comet/issues/5540)).
 - **Iceberg tables whose metadata location has no host.** The native Iceberg scan skips the
   credential provider configured with `s3.comet.credential.provider.class`
   ([#6536](https://github.com/apache/datafusion-comet/issues/6536)).

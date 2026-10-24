@@ -2732,7 +2732,9 @@ fn parse_file_scan_tasks_from_common(
                 .with_partition_spec(partition_spec)
                 .with_name_mapping(name_mapping)
                 .with_unified_partition_type(unified_partition_type_for_task)
-                .with_case_sensitive(false)
+                // Only the equality-delete bind reads this, and iceberg-rust already renamed those
+                // columns by field id; folding case would merge columns that differ only in case.
+                .with_case_sensitive(true)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
                 .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
