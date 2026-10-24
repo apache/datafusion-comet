@@ -26,10 +26,13 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -654,6 +657,81 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /**
+   * Declares the HDFS nameservices among `authorities` for iceberg-rust's HDFS backend. That
+   * backend dials an authority with a port as written, but resolves a portless one
+   * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
+   * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
+   * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
+   * NameNode, becomes `hdfs.name-node.<ns>` with its NameNodes in declaration order. Any other is
+   * left out, and [[undeclaredHdfsNameservice]] then declines the scan.
+   */
+  def hadoopToIcebergHdfsProperties(
+      hadoopConf: Configuration,
+      authorities: Set[String]): Map[String, String] =
+    hdfsNameservices(authorities).flatMap { ns =>
+      val nameNodes = hadoopConf
+        .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
+        .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
+      if (nameNodes.nonEmpty && nameNodes.forall(hasPort)) {
+        Some(s"hdfs.name-node.$ns" -> nameNodes.mkString(","))
+      } else {
+        None
+      }
+    }.toMap
+
+  /**
+   * The first portless HDFS authority among `authorities` that `properties` declares neither with
+   * iceberg-rust's `hdfs.name-node.<ns>` nor with Hadoop's `dfs.ha.namenodes.<ns>`.
+   */
+  def undeclaredHdfsNameservice(
+      authorities: Set[String],
+      properties: Map[String, String]): Option[String] =
+    hdfsNameservices(authorities).find { ns =>
+      !properties.contains(s"hdfs.name-node.$ns") &&
+      !properties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+    }
+
+  private def hdfsNameservices(authorities: Set[String]): Seq[String] =
+    authorities.filterNot(hasPort).toSeq.sorted
+
+  /**
+   * The first of `directories`, HDFS directories of data and delete files, that lies in an HDFS
+   * encryption zone, or whose status could not be read. iceberg-rust's HDFS client is built
+   * without KMS support and rejects every file of a zone, so such a scan must not be claimed. The
+   * NameNode flags each path inside a zone as encrypted, directories included, so one
+   * `getFileStatus` per directory decides. It is only asked on a cluster that can hold a zone at
+   * all: one whose NameNode advertises a key provider (a client-cached call) or whose session
+   * configures one.
+   */
+  def hdfsEncryptedDirectory(
+      hadoopConf: Configuration,
+      directories: Set[String]): Option[String] = {
+    val configuredProvider =
+      Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
+        .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    directories.toSeq.sorted.find { dir =>
+      try {
+        val path = new Path(dir)
+        val fs = path.getFileSystem(hadoopConf)
+        val nameNodeProvider =
+          Option(fs.getServerDefaults(path).getKeyProviderUri).exists(_.trim.nonEmpty)
+        (configuredProvider || nameNodeProvider) && fs.getFileStatus(path).isEncrypted
+      } catch {
+        case NonFatal(e) =>
+          logWarning(s"Could not tell whether HDFS directory $dir is encrypted", e)
+          true
+      }
+    }
+  }
+
+  private def hasPort(address: String): Boolean =
+    address != null && {
+      val colon = address.lastIndexOf(':')
+      colon > address.lastIndexOf(']') && colon < address.length - 1 &&
+      address.substring(colon + 1).forall(_.isDigit)
+    }
 
   /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
   def ioTimeoutProperty(): (String, String) =
