@@ -2561,10 +2561,37 @@ class CometNativeCastSuite
     Seq(EvalMode.LEGACY, EvalMode.ANSI).foreach { mode =>
       assert(level(narrowing._1, narrowing._2, mode).isInstanceOf[Compatible])
     }
-    // A widening key cast cannot fail.
+    // A widening key cast cannot fail, and neither can these.
     assert(
       level(MapType(IntegerType, IntegerType), MapType(LongType, LongType))
         .isInstanceOf[Compatible])
+    Seq(
+      BooleanType -> IntegerType,
+      StringType -> BinaryType,
+      ArrayType(LongType) -> ArrayType(IntegerType)).foreach { case (from, to) =>
+      assert(
+        level(MapType(from, IntegerType), MapType(to, IntegerType)).isInstanceOf[Compatible],
+        s"$from")
+    }
+    val structKey = (
+      StructType(Seq(StructField("a", LongType))),
+      StructType(Seq(StructField("a", IntegerType))))
+    assert(
+      level(MapType(structKey._1, IntegerType), MapType(structKey._2, IntegerType))
+        .isInstanceOf[Compatible])
+    // These have no native path, but are no longer refused for a null key.
+    Seq(BooleanType -> DecimalType(2, 0), IntegerType -> BinaryType).foreach { case (from, to) =>
+      assert(level(MapType(from, IntegerType), MapType(to, IntegerType)) != expected, s"$from")
+    }
+    // A map inside an array key can still get a null key.
+    assert(
+      level(
+        MapType(ArrayType(MapType(LongType, IntegerType)), IntegerType),
+        MapType(ArrayType(MapType(IntegerType, IntegerType)), IntegerType)) == expected)
+    // A boolean key does not fit a decimal with no integral digits.
+    assert(
+      level(MapType(BooleanType, IntegerType), MapType(DecimalType(1, 1), IntegerType)) ==
+        expected)
     // Date to timestamp is an upcast in Spark, but it overflows for extreme dates.
     assert(level(MapType(DateType, IntegerType), MapType(TimestampType, IntegerType)) == expected)
     // A map nested in an array and in a map value.

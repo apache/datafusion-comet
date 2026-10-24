@@ -583,7 +583,9 @@ object CometCast
   private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
-        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromValue, toValue)
+        // An array or struct key cannot itself become null, but a map inside it still can.
+        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromKey, toKey) ||
+        mayNullMapKey(fromValue, toValue)
       case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
         mayNullMapKey(fromElement, toElement)
       case (StructType(fromFields), StructType(toFields)) =>
@@ -618,6 +620,16 @@ object CometCast
   private def keyCastCannotFail(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case _ if fromType == toType => true
+      // TRY casts each element on its own, so a failing element becomes a null element and the
+      // array or struct key itself is never null.
+      case (_: ArrayType, _: ArrayType) | (_: StructType, _: StructType) => true
+      case (DataTypes.BooleanType, to: DecimalType) => to.precision - to.scale >= 1
+      case (DataTypes.BooleanType, _: NumericType) => true
+      case (
+            DataTypes.StringType | DataTypes.ByteType | DataTypes.ShortType |
+            DataTypes.IntegerType | DataTypes.LongType,
+            DataTypes.BinaryType) =>
+        true
       case (from, to) if numericWidening.contains(from) && numericWidening.contains(to) =>
         numericWidening.indexOf(from) < numericWidening.indexOf(to)
       case (from, to: DecimalType) if integralDigits(from).isDefined =>

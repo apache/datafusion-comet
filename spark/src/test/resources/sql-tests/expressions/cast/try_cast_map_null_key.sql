@@ -52,6 +52,26 @@ INSERT INTO test_try_cast_map_key_widen VALUES (1, map(1, 10, 2147483647, 20)), 
 query expect_native(try_cast)
 SELECT id, try_cast(m AS map<bigint, bigint>) FROM test_try_cast_map_key_widen ORDER BY id
 
+-- These key casts cannot fail either, so they stay native
+statement
+CREATE TABLE test_try_cast_map_key_safe(
+  id int, b map<boolean, int>, s map<string, int>, a map<array<bigint>, int>) USING parquet
+
+statement
+INSERT INTO test_try_cast_map_key_safe VALUES
+  (1, map(false, 10, true, 20), map('x', 10), map(array(1, 9999999999), 10)),
+  (2, NULL, NULL, NULL)
+
+query expect_native(try_cast)
+SELECT id, try_cast(b AS map<int, int>) FROM test_try_cast_map_key_safe ORDER BY id
+
+query expect_native(try_cast)
+SELECT id, try_cast(s AS map<binary, int>) FROM test_try_cast_map_key_safe ORDER BY id
+
+-- A failing element of an array key becomes a null element, so the key itself is never null
+query expect_native(try_cast)
+SELECT id, try_cast(a AS map<array<int>, int>) FROM test_try_cast_map_key_safe ORDER BY id
+
 -- Spark counts date to timestamp as an upcast, but it overflows for extreme dates and so can
 -- still produce a null key under TRY
 statement
