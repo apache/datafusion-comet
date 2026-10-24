@@ -692,8 +692,7 @@ Java's normal validation applies to invalid values and can still fail the write.
 Byte parity also requires matching inserted values, physical encodings, and initial sizes.
 Boolean filters differ because Java does not populate them; dictionary-only chunks can have a
 native filter where Java omits it. Comet follows the loaded runtime's properties: Iceberg 1.10
-ignores NDV, while 1.11 interprets it. The upstream [folding option PR](https://github.com/apache/arrow-rs/pull/11892)
-([issue](https://github.com/apache/arrow-rs/issues/11891)) addresses retaining the initial Rust allocation.
+ignores NDV, while 1.11 interprets it.
 
 ### Accepted divergences
 
