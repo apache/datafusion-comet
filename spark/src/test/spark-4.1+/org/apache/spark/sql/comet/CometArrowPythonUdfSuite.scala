@@ -26,15 +26,16 @@ import scala.sys.process._
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.api.python.{PythonEvalType, SimplePythonFunction}
+import org.apache.spark.api.python.{PythonEvalType, PythonException, SimplePythonFunction}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.execution.python.{ArrowEvalPythonExec, UserDefinedPythonFunction}
 import org.apache.spark.sql.functions.{array, col, expr, length, lit, map, struct, when}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, TimeType, VariantType, YearMonthIntervalType}
 
-import org.apache.comet.{CometConf, CometExplainInfo, NativeBase}
+import org.apache.comet.{CometConf, CometExplainInfo, NativeBase, SparkErrorConverter}
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
+import org.apache.comet.exceptions.CometQueryExecutionException
 
 class CometArrowPythonUdfSuite extends CometTestBase {
 
@@ -532,18 +533,53 @@ class CometArrowPythonUdfSuite extends CometTestBase {
     }
   }
 
-  test("native Arrow UDF errors include the Python traceback") {
+  /**
+   * The `PythonException` that PySpark's `convert_exception` raises as
+   * `pyspark.errors.PythonException` for a failed job. Spark 4.2 fails the job with it. Spark 4.1
+   * fails the job with a `SparkException` caused by it, and PySpark 4.1 then also requires one of
+   * its frames to be in `org.apache.spark.sql.execution.python`.
+   */
+  private def pysparkPythonException(jobFailure: Throwable): Option[Throwable] = {
+    def isPythonException(e: Throwable) = e.isInstanceOf[PythonException]
+    if (isSpark42Plus) {
+      Some(jobFailure).filter(isPythonException)
+    } else {
+      Option(jobFailure.getCause).filter(cause =>
+        isPythonException(cause) && cause.getStackTrace.exists(
+          _.toString.contains("org.apache.spark.sql.execution.python")))
+    }
+  }
+
+  test("native Arrow UDF error converts to PythonException") {
+    val traceback = "Traceback (most recent call last):\nZeroDivisionError: division by zero"
+    val json = """{"errorType":"PythonException","errorClass":"PYTHON_EXCEPTION",""" +
+      s""""params":{"traceback":"${traceback.replace("\n", "\\n")}"}}"""
+    val converted =
+      SparkErrorConverter.convertToSparkException(new CometQueryExecutionException(json))
+    assert(converted.isInstanceOf[PythonException], converted)
+    assert(converted.getMessage.contains(traceback), converted.getMessage)
+    assert(
+      converted.getStackTrace.exists(
+        _.toString.contains("org.apache.spark.sql.execution.python")))
+  }
+
+  test("native Arrow UDF errors raise Spark's PythonException with the Python traceback") {
     assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
 
     val failing = arrowUdf("failing", pickledCommand("lambda a: 1 // 0", "LongType()"), LongType)
-    withSQLConf(
-      CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-      val df = spark.range(1).select(failing(col("id")))
-      assert(isNative(df))
-      val message = intercept[Exception](df.collect()).getMessage
-      assert(message.contains("Traceback (most recent call last)"), message)
-      assert(message.contains("ZeroDivisionError"), message)
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      for (native <- Seq(false, true)) {
+        withSQLConf(CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> native.toString) {
+          val df = spark.range(1).select(failing(col("id")))
+          if (native) assert(isNative(df))
+          val failure = intercept[Exception](df.collect())
+          val python = pysparkPythonException(failure).getOrElse(
+            fail(s"Expected a PythonException PySpark recognizes (native=$native)", failure))
+          val message = python.getMessage
+          assert(message.contains("Traceback (most recent call last)"), message)
+          assert(message.contains("ZeroDivisionError"), message)
+        }
+      }
     }
   }
 
