@@ -45,9 +45,14 @@ A left-semi join returns each left row if any right row matches. When the right 
 has many duplicate integer keys, set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
 to discard repeated right-side rows in each batch before the native sort. This option is off
 by default. It applies to batch joins with no residual condition and a compatible right-side
-sort. Duplicate left rows are preserved. The reducer bypasses small batches, mostly unique
-inputs, and attempts that cannot reserve enough memory. Compare the right-side reduction input
-and output row counts on the join to see how many rows the sort saved.
+sort. Duplicate left rows are preserved.
+
+The reducer skips small batches and whole batches within the first 8,192 rows of each partition.
+It samples eligible batches for repeated keys before grouping them. If the sample finds too few
+repeats, grouping keeps at least half the rows, or the reducer lacks memory to finish, it sends
+the original batch and the rest of the partition directly to the sort. Compare the join's
+right-side reduction input and output row counts to see how many rows the sort saved. Reduction
+time includes work spent on attempts that fell back.
 
 ### Broadcast Joins
 
