@@ -57,8 +57,16 @@ unsafe extern "C" {
 struct TaskCalls {
     plans: usize,
     killed: bool,
-    /// Python thread ids of the calls running now, one entry per call.
-    threads: Vec<c_ulong>,
+    /// The calls running now.
+    calls: Vec<Call>,
+}
+
+struct Call {
+    /// Python thread id of the thread running the call.
+    thread: c_ulong,
+    /// Whether [`interrupt_task`] has raised in the call. It raises once, so that a second
+    /// exception does not abort the cleanup the first one started.
+    interrupted: bool,
 }
 
 // Holders of this lock never wait for the GIL, so a thread attached to Python may take it.
@@ -123,7 +131,10 @@ impl<'a> RunningCall<'a> {
         if calls.killed {
             return Err(task.killed_error());
         }
-        calls.threads.push(thread);
+        calls.calls.push(Call {
+            thread,
+            interrupted: false,
+        });
         Ok(Self { task, thread })
     }
 }
@@ -134,10 +145,10 @@ impl Drop for RunningCall<'_> {
         let Some(calls) = tasks.get_mut(&self.task.task_attempt_id) else {
             return;
         };
-        if let Some(index) = calls.threads.iter().position(|t| *t == self.thread) {
-            calls.threads.swap_remove(index);
-        }
-        if calls.killed {
+        let Some(index) = calls.calls.iter().position(|c| c.thread == self.thread) else {
+            return;
+        };
+        if calls.calls.swap_remove(index).interrupted {
             // An interrupt that arrived as the callable returned is still pending on this
             // thread. Nothing can set another one now that the call is unrecorded, so clear
             // it rather than let it fire in later Python code on this thread.
@@ -150,9 +161,9 @@ impl Drop for RunningCall<'_> {
 }
 
 /// Marks a Spark task attempt as killed and raises [`TaskKilled`] in its running Arrow UDF
-/// calls. Later calls of the task fail without entering Python. Returns the number of calls
-/// interrupted. A task with no registered plan is not recorded, so the caller repeats this
-/// until the task completes.
+/// calls that it has not interrupted yet. Later calls of the task fail without entering
+/// Python. Returns the number of calls interrupted. A task with no registered plan is not
+/// recorded, so the caller repeats this until the task completes.
 ///
 /// The exception takes effect when the thread next runs Python bytecode: a call blocked in
 /// native code that released the GIL is interrupted only when that code returns.
@@ -160,7 +171,7 @@ pub fn interrupt_task(task_attempt_id: i64) -> usize {
     let running = match tasks().get_mut(&task_attempt_id) {
         Some(task) => {
             task.killed = true;
-            !task.threads.is_empty()
+            task.calls.iter().any(|call| !call.interrupted)
         }
         None => false,
     };
@@ -170,20 +181,22 @@ pub fn interrupt_task(task_attempt_id: i64) -> usize {
     // Calls cannot start after the flag is set, so only calls recorded before it remain.
     Python::attach(|py| {
         let exception = TaskKilled::type_object(py);
-        let tasks = tasks();
-        let Some(task) = tasks.get(&task_attempt_id) else {
+        let mut tasks = tasks();
+        let Some(task) = tasks.get_mut(&task_attempt_id) else {
             return 0;
         };
-        task.threads
-            .iter()
-            .map(|thread| {
-                // SAFETY: attached to the interpreter, and `exception` is a live type object.
-                let set = unsafe {
-                    pyo3::ffi::PyThreadState_SetAsyncExc(*thread as c_long, exception.as_ptr())
-                };
-                set.max(0) as usize
-            })
-            .sum()
+        let mut interrupted = 0;
+        for call in task.calls.iter_mut().filter(|call| !call.interrupted) {
+            // SAFETY: attached to the interpreter, and `exception` is a live type object.
+            let set = unsafe {
+                pyo3::ffi::PyThreadState_SetAsyncExc(call.thread as c_long, exception.as_ptr())
+            };
+            if set > 0 {
+                call.interrupted = true;
+                interrupted += 1;
+            }
+        }
+        interrupted
     })
 }
 
@@ -763,7 +776,7 @@ mod tests {
     }
 
     fn running_calls(task_attempt_id: i64) -> Option<usize> {
-        tasks().get(&task_attempt_id).map(|task| task.threads.len())
+        tasks().get(&task_attempt_id).map(|task| task.calls.len())
     }
 
     #[test]
@@ -810,6 +823,72 @@ mod tests {
         drop(udf);
         drop(task);
         assert_eq!(running_calls(TASK), None);
+    }
+
+    #[test]
+    fn interrupts_a_call_once_so_its_cleanup_runs() {
+        const TASK: i64 = -6812;
+        initialize_python().unwrap();
+        let command = Python::attach(|py| {
+            let sys = py.import("sys").unwrap();
+            let lock = py
+                .import("threading")
+                .unwrap()
+                .call_method0("Lock")
+                .unwrap();
+            sys.setattr("comet_cleanup_lock", lock).unwrap();
+            sys.setattr("comet_cleaning", false).unwrap();
+            // The cleanup outlasts the monitor's 100 ms polling interval.
+            cloudpickled_lambda(
+                py,
+                c"(lambda ns: (exec('def f(a):\\n    import sys, time\\n    sys.comet_cleanup_lock.acquire()\\n    try:\\n        n = 0\\n        while True:\\n            n += 1\\n    finally:\\n        sys.comet_cleaning = True\\n        time.sleep(0.4)\\n        sys.comet_cleanup_lock.release()\\n', ns), ns['f'])[1])({})",
+            )
+        });
+        let sys_attr = |expression: &std::ffi::CStr| -> bool {
+            Python::attach(|py| {
+                let sys = py.import("sys").unwrap();
+                let locals = pyo3::types::PyDict::new(py);
+                locals.set_item("sys", sys).unwrap();
+                py.eval(expression, None, Some(&locals))
+                    .unwrap()
+                    .extract()
+                    .unwrap()
+            })
+        };
+        let task = Arc::new(TaskRegistration::new(TASK));
+        let udf = Arc::new(
+            ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+                .unwrap()
+                .with_task(Arc::clone(&task)),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        {
+            let udf = Arc::clone(&udf);
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+            std::thread::spawn(move || sender.send(udf.evaluate(&[input], 1)));
+        }
+        let start = std::time::Instant::now();
+        while running_calls(TASK) != Some(1) {
+            assert!(start.elapsed().as_secs() < 30, "the UDF call did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(interrupt_task(TASK), 1);
+        while !sys_attr(c"sys.comet_cleaning") {
+            assert!(start.elapsed().as_secs() < 30, "the cleanup did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // A later poll while the call cleans up must not raise in it again.
+        assert_eq!(interrupt_task(TASK), 0);
+        let error = receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the interrupted call did not return")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("TaskKilled"), "{error}");
+        assert!(
+            !sys_attr(c"sys.comet_cleanup_lock.locked()"),
+            "the cleanup did not release its lock"
+        );
     }
 
     const UNBUFFERED_CHILD: &str = "COMET_ARROW_UDF_UNBUFFERED_CHILD";

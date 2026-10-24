@@ -29,14 +29,15 @@ import org.apache.spark.internal.Logging
  * `MonitorThread` that destroys the worker of a killed task. A native UDF runs in the embedded
  * interpreter on the task thread instead, where neither a Java interrupt nor a stopped input
  * reaches it. So one daemon thread per task polls its kill state and, while the task is killed
- * but still running, raises an exception in the task's running Python calls. Calls that start
- * after the first interrupt fail without entering Python.
+ * but still running, raises an exception in the task's running Python calls, once per call so
+ * that its cleanup can run. Calls that start after the first interrupt fail without entering
+ * Python.
  */
 object PythonUdfMonitor extends Logging {
 
   // Raising the exception is cheap and lets the call unwind on its own, so unlike Spark's
   // monitor this one does not wait `spark.python.task.killTimeout` before acting. Repeating it
-  // reaches calls that start after an earlier attempt and calls that caught the exception.
+  // reaches calls of plans that the task registers after an earlier attempt.
   private val PollIntervalMs = 100L
 
   private val watchedTasks = ConcurrentHashMap.newKeySet[java.lang.Long]()
@@ -58,7 +59,7 @@ object PythonUdfMonitor extends Logging {
               Thread.sleep(PollIntervalMs)
             }
           } finally {
-            watchedTasks.remove(taskAttemptId)
+            val _ = watchedTasks.remove(taskAttemptId)
           }
         }
       }

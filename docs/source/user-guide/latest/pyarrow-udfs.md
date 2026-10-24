@@ -165,11 +165,13 @@ paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.T
 returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
 process. Killing a task interrupts its running Python call by raising `comet.TaskKilled`, a
 `BaseException` that an `except Exception` block does not catch, in the thread running it, within
-about 100 ms and without waiting for `spark.python.task.killTimeout`. Python handles the exception
-only when it next runs Python bytecode, so a call blocked in native code, such as a long PyArrow
-kernel that released the interpreter lock, keeps the task's core until that code returns. A
-failing UDF reports its Python traceback in a Comet native error rather than in Spark's
-`PythonException`. The operator reports the time spent in
+about 100 ms and without waiting for `spark.python.task.killTimeout`. It is raised once per call,
+so `finally` blocks and context managers can clean up, and a call that catches it and keeps
+running is not interrupted again. Python handles the exception only when it next runs Python
+bytecode, so a call blocked in native code, such as a long PyArrow kernel that released the
+interpreter lock, keeps the task's core until that code returns. A failing UDF reports its Python
+traceback in a Comet native error rather than in Spark's `PythonException`. The operator reports
+the time spent in
 Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
