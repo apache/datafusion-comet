@@ -26,7 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.trees.TreePattern.NULL_CHECK
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType, NumericType}
 
 import com.google.protobuf.Message
 
@@ -524,7 +524,12 @@ object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
         _: EqualNullSafe | _: EqualTo | _: GreaterThan | _: GreaterThanOrEqual | _: LessThan |
         _: LessThanOrEqual | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or =>
       true
-    case cast: Cast => Cast.canUpCast(cast.child.dataType, cast.dataType)
+    case cast: Cast =>
+      val from = cast.child.dataType
+      val to = cast.dataType
+      // canUpCast also admits temporal and nested conversions that can overflow.
+      from == to || (from.isInstanceOf[NumericType] && to.isInstanceOf[NumericType] &&
+        Cast.canUpCast(from, to))
     case Remainder(_, Literal(value: Int, _), _) => value > 0
     case Remainder(_, Literal(value: Long, _), _) => value > 0
     // The scalar value is prepared before either Spark or native row evaluation begins.

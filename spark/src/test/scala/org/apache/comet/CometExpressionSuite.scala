@@ -66,7 +66,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df: => DataFrame,
       errorClass: String,
       checkPlan: SparkPlan => Unit = _ => ()): Unit = {
-    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df, checkPlan)
+    val (sparkError, cometError) =
+      checkSparkAnswerMaybeThrows(df, actual => checkPlan(actual.queryExecution.executedPlan))
     assert(sparkError.nonEmpty, "Spark must evaluate the asserted expression")
     assert(cometError.nonEmpty, "Comet must preserve Spark's error")
     if (!isSpark40Plus && errorClass == "NOT_NULL_ASSERT_VIOLATION") {
@@ -91,6 +92,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(actual.getErrorClass == expected.getErrorClass)
     assert(actual.getSqlState == expected.getSqlState)
     assert(actual.getMessageParameters == expected.getMessageParameters)
+  }
+
+  test("AssertNotNull error helper captures setup failures but not route assertion failures") {
+    val setupFailure = new IllegalArgumentException("query setup failed")
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(throw setupFailure)
+    assert(sparkError.contains(setupFailure) && cometError.contains(setupFailure))
+    val missingQuery = intercept[org.scalatest.exceptions.TestFailedException] {
+      checkSparkAnswerMaybeThrows(throw setupFailure, _ => ())
+    }
+    assert(missingQuery.getMessage.contains("before route validation"))
+    val routeFailure = new AssertionError("route check failed")
+    val actual = intercept[AssertionError] {
+      checkSparkAnswerMaybeThrows(spark.range(1).toDF(), _ => throw routeFailure)
+    }
+    assert(actual eq routeFailure)
   }
 
   for (scenario <- Seq("sibling", "branches", "two assertions")) {
@@ -139,6 +155,78 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val actual = firstError(true)
         assert(actual.getClass == expected.getClass)
         assert(actual.getMessage == expected.getMessage)
+      }
+    }
+  }
+
+  test("AssertNotNull does not treat temporal or nested upcasts as nonthrowing") {
+    val unsafe = Seq(
+      DateType -> TimestampType,
+      DateType -> TimestampNTZType,
+      TimestampType -> TimestampNTZType,
+      TimestampNTZType -> TimestampType,
+      ArrayType(DateType) -> ArrayType(TimestampNTZType),
+      StructType(Seq(StructField("d", DateType))) ->
+        StructType(Seq(StructField("d", TimestampNTZType))),
+      MapType(IntegerType, DateType) -> MapType(IntegerType, TimestampNTZType))
+    unsafe.foreach { case (from, to) =>
+      assert(!CometAssertNotNull.isNonThrowing(Cast(AttributeReference("v", from)(), to)))
+    }
+    Seq(
+      IntegerType -> LongType,
+      FloatType -> DoubleType,
+      IntegerType -> DecimalType(20, 2),
+      DecimalType(10, 2) -> DecimalType(20, 4),
+      TimestampNTZType -> TimestampNTZType).foreach { case (from, to) =>
+      assert(CometAssertNotNull.isNonThrowing(Cast(AttributeReference("v", from)(), to)))
+    }
+  }
+
+  for (codegen <- Seq(false, true); shape <- Seq("child", "nested child", "sibling")) {
+    test(s"AssertNotNull preserves first NULL before temporal upcast overflow: $shape $codegen") {
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString,
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        withTempPath { path =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val dates = Seq[Integer](null, 106751992)
+              .toDF("days")
+              .select(expr("date_from_unix_date(days)").as("d"))
+            dates
+              .select(col("d"), when(col("d").isNotNull, struct(col("d"))).as("s"))
+              .coalesce(1)
+              .write
+              .parquet(path.toString)
+          }
+          val input = spark.read.parquet(path.toString)
+          val temporal = input("d").cast(TimestampNTZType)
+          val checked = shape match {
+            case "child" => AssertNotNull(temporal.expr, Seq("d"))
+            case "nested child" =>
+              AssertNotNull(
+                input("s").cast(StructType(Seq(StructField("d", TimestampNTZType)))).expr,
+                Seq("s"))
+            case "sibling" => AssertNotNull(input("d").expr, Seq("d"))
+          }
+          val fields = Seq(getColumnFromExpression(checked)) ++
+            (if (shape == "sibling") Seq(temporal) else Seq.empty)
+          checkReviewError(
+            input.select(fields: _*).repartition(1),
+            "NOT_NULL_ASSERT_VIOLATION",
+            plan => {
+              assert(
+                collectWithSubqueries(plan) {
+                  case p: ProjectExec
+                      if p.projectList.exists(CometAssertNotNull.hasAssertionCandidate) =>
+                    p
+                }.nonEmpty,
+                plan)
+              val info = new ExtendedExplainInfo()
+              assert(!info.getNativeExpressions(plan).contains("assertnotnull"), plan)
+              assert(info.getFallbackReasons(plan).exists(_.contains("AssertNotNull")), plan)
+            })
+        }
       }
     }
   }

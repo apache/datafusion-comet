@@ -201,7 +201,8 @@ class CometTypedDatasetSuite extends CometTestBase {
         .toDF("k", "v")
       val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
         input.groupBy("k").sum("v"),
-        plan => {
+        actual => {
+          val plan = actual.queryExecution.executedPlan
           assert(
             conversions(plan).exists(c =>
               collectWithSubqueries(c.child) { case s: SerializeFromObjectExec => s }.nonEmpty),
@@ -232,7 +233,8 @@ class CometTypedDatasetSuite extends CometTestBase {
       val checked = getColumnFromExpression(AssertNotNull(Literal.create(null, IntegerType)))
       val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
         input.repartition(2, checked),
-        plan => {
+        actual => {
+          val plan = actual.queryExecution.executedPlan
           assert(
             conversions(plan).exists(c =>
               collectWithSubqueries(c.child) { case s: SerializeFromObjectExec => s }.nonEmpty),

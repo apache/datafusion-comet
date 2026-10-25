@@ -3720,7 +3720,8 @@ class CometJoinSuite extends CometTestBase {
           val query = left.join(right, condition, "left_outer").repartition(1)
           val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
             query,
-            plan => {
+            actual => {
+              val plan = actual.queryExecution.executedPlan
               if (scenario == "single") {
                 assert(
                   collectWithSubqueries(plan) { case j: CometBroadcastHashJoinExec =>

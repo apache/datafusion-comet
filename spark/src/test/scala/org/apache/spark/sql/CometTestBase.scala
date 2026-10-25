@@ -493,20 +493,32 @@ abstract class CometTestBase
    */
   protected def checkSparkAnswerMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
-    checkSparkAnswerMaybeThrows(df, _ => ())
+    checkSparkAnswerMaybeThrows(df, None)
   }
 
-  /** Check the actual executed (or failed) plan outside the expected-error capture. */
+  /** Inspect the actual query outside error capture, without replanning for default callers. */
   protected def checkSparkAnswerMaybeThrows(
       df: => DataFrame,
-      checkPlan: SparkPlan => Unit): (Option[Throwable], Option[Throwable]) = {
+      checkQuery: DataFrame => Unit): (Option[Throwable], Option[Throwable]) = {
+    checkSparkAnswerMaybeThrows(df, Some(checkQuery))
+  }
+
+  private def checkSparkAnswerMaybeThrows(
+      df: => DataFrame,
+      checkQuery: Option[DataFrame => Unit]): (Option[Throwable], Option[Throwable]) = {
     var expected: Try[Array[Row]] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       expected = Try(datasetOfRows(spark, df.logicalPlan).collect())
     }
-    val cometDf = datasetOfRows(spark, df.logicalPlan)
-    val actual = Try(cometDf.collect())
-    checkPlan(cometDf.queryExecution.executedPlan)
+    var cometDf: DataFrame = null
+    val actual = Try {
+      cometDf = datasetOfRows(spark, df.logicalPlan)
+      cometDf.collect()
+    }
+    checkQuery.foreach { check =>
+      assert(cometDf != null, "Comet query construction failed before route validation")
+      check(cometDf)
+    }
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>

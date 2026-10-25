@@ -150,10 +150,13 @@ object CometAssertNotNullBenchmark extends CometBenchmarkBase {
           var expected: Option[(Long, Long)] = None
           modes.foreach { comet =>
             val label = if (comet) "Comet native" else "Spark"
-            def run(verify: Boolean): (Long, Long) = withSQLConf(configs(comet): _*) {
-              val df = spark.sql(s"SELECT $checked AS c FROM $source").repartition(2)
-              val result = consume(df)
-              if (verify) verifyRoute(Seq(df.queryExecution.executedPlan), comet)
+            def run(verify: Boolean): (Long, Long) = {
+              var result = (0L, 0L)
+              withSQLConf(configs(comet): _*) {
+                val df = spark.sql(s"SELECT $checked AS c FROM $source").repartition(2)
+                result = consume(df)
+                if (verify) verifyRoute(Seq(df.queryExecution.executedPlan), comet)
+              }
               result
             }
             val result = run(verify = true)
