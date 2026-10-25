@@ -28,12 +28,14 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
+import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.{BitVector, FieldVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector}
+import org.apache.arrow.vector.complex.ListVector
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
-import org.apache.arrow.vector.types.pojo.ArrowType
+import org.apache.arrow.vector.types.pojo.{ArrowType, FieldType}
 import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
@@ -2818,6 +2820,91 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  /** The bytes the cache writer stores for a batch of `vector` alone. */
+  private def payloadSize(vector: FieldVector, codec: CompressionCodec): Long = {
+    val column = CometVector.getVector(vector, new CDataDictionaryProvider)
+    val batch = new ColumnarBatch(Array[ColumnVector](column), vector.getValueCount)
+    CometCachedBatchHelper.payloadSize(
+      CometCachedBatchHelper.cachedBatch(
+        CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator),
+        batch.numRows()))
+  }
+
+  test("Comet in-memory cache writes a sliced list of strings as its own values") {
+    // A list slice has offsets past zero in two places: its own, and its child's once the child
+    // is sliced too. Only the list's start past zero here, over a child that holds every element,
+    // which is how a native slice of a list reaches the JVM.
+    val values: Seq[Seq[String]] = (0 until 24).map { i =>
+      if (i % 5 == 0) null else (0 until i % 4).map(j => s"element-$i-$j")
+    }
+    val skip = 8
+
+    def lists(allocator: BufferAllocator, vs: Seq[Seq[String]]): ListVector = {
+      val list = ListVector.empty("l", allocator)
+      val child = list
+        .addOrGetVector[VarCharVector](FieldType.nullable(ArrowType.Utf8.INSTANCE))
+        .getVector
+      child.allocateNew()
+      var position = 0
+      vs.zipWithIndex.foreach { case (elements, i) =>
+        if (elements == null) {
+          list.setNull(i)
+        } else {
+          list.startNewValue(i)
+          elements.foreach { e =>
+            child.setSafe(position, e.getBytes(StandardCharsets.UTF_8))
+            position += 1
+          }
+          list.endValue(i, elements.length)
+        }
+      }
+      child.setValueCount(position)
+      list.setValueCount(vs.length)
+      list
+    }
+
+    def sliced(allocator: BufferAllocator): ListVector = {
+      val full = lists(allocator, values)
+      try {
+        val length = values.length - skip
+        val list =
+          new ListVector("l", allocator, FieldType.nullable(ArrowType.List.INSTANCE), null)
+        list.initializeChildrenFromFields(full.getField.getChildren)
+        list.loadFieldBuffers(
+          new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
+          Seq(
+            full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
+            full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L)).asJava)
+        val fullChild = full.getDataVector.asInstanceOf[VarCharVector]
+        list.getDataVector.loadFieldBuffers(
+          new ArrowFieldNode(fullChild.getValueCount.toLong, 0L),
+          Seq(
+            fullChild.getValidityBuffer,
+            fullChild.getOffsetBuffer,
+            fullChild.getDataBuffer).asJava)
+        list
+      } finally {
+        full.close()
+      }
+    }
+
+    val codec = CometCachedBatchHelper.compressionCodec("none")
+    val allocator = CometArrowAllocator.newChildAllocator("sliced-list-write", 0, Long.MaxValue)
+    try {
+      val vector = sliced(allocator)
+      val fresh = lists(allocator, values.drop(skip))
+      try {
+        assert(vector.getOffsetBuffer.getInt(0) > 0, "the test needs offsets past zero")
+        assert(payloadSize(vector, codec) == payloadSize(fresh, codec))
+      } finally {
+        fresh.close()
+        vector.close()
+      }
+    } finally {
+      allocator.close()
+    }
+  }
+
   test("Comet in-memory cache writes a sliced string vector as its own values and releases it") {
     // The rebased copy of a sliced vector shares the batch's buffers, so it has to be closed
     // whether the write succeeds or fails, or the batch's data outlives the batch.
@@ -2853,15 +2940,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
       }
     }
 
-    def payload(vector: VarCharVector, codec: CompressionCodec): Long = {
-      val batch =
-        new ColumnarBatch(Array[ColumnVector](new CometPlainVector(vector)), vector.getValueCount)
-      CometCachedBatchHelper.payloadSize(
-        CometCachedBatchHelper.cachedBatch(
-          CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator),
-          batch.numRows()))
-    }
-
     val codec = CometCachedBatchHelper.compressionCodec("none")
     // Closing a child allocator that still holds a buffer throws, which is the leak check.
     val allocator = CometArrowAllocator.newChildAllocator("sliced-write", 0, Long.MaxValue)
@@ -2871,11 +2949,15 @@ class CometInMemoryCacheSuite extends CometTestBase {
       val failed = sliced(allocator)
       try {
         assert(vector.getOffsetBuffer.getInt(0) > 0, "the test needs offsets past zero")
-        assert(payload(vector, codec) == payload(fresh, codec))
+        assert(payloadSize(vector, codec) == payloadSize(fresh, codec))
 
         // The write fails after the slice has rebased its offsets into a buffer of its own.
         val failing = new FailAfterCompressionCodec(succeedFor = 1)
-        intercept[Exception](payload(failed, failing))
+        val thrown = intercept[Exception](payloadSize(failed, failing))
+        assert(
+          causeChain(thrown).exists(t =>
+            Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+          s"a compression failure must surface as itself: $thrown")
       } finally {
         fresh.close()
         vector.close()
