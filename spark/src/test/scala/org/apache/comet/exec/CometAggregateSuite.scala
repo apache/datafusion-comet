@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometBatchScanExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometNativeScanExec, CometProjectExec, CometScanExec, CometSortAggregateExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SortExec}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
@@ -504,6 +504,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               Seq(classOf[CometBaseAggregateExec]),
               classOf[ObjectHashAggregateExec],
               classOf[SortAggregateExec],
+              classOf[SortExec],
               classOf[LocalTableScanExec])
           } else {
             checkSparkAnswerAndFallbackReason(
@@ -520,12 +521,15 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             assert(collect(plan) { case s: LocalTableScanExec => s }.nonEmpty, plan)
           }
           val nativeAggregates = collect(plan) { case a: CometBaseAggregateExec => a }
+          val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
           if (isSpark42Plus) {
             assert(nativeAggregates.exists(_.modes.contains(PartialMerge)), plan)
+            assert(nativeAggregates.exists(_.modes.contains(Final)), plan)
             assert(nativeAggregates.exists(_.modes == Seq(Partial)) == nativeInput, plan)
+            assert(sparkAggregates.isEmpty == nativeInput, plan)
+            assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
           } else {
             assert(nativeAggregates.isEmpty, plan)
-            val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
             assert(sparkAggregates.exists(_.aggregateExpressions.exists(_.mode == Partial)), plan)
             assert(
               sparkAggregates.exists(_.aggregateExpressions.exists(_.mode == PartialMerge)),
