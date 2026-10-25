@@ -675,6 +675,7 @@ native writes for configured Bloom columns require all of the following:
 
 - `spark.comet.write.iceberg.enabled=true`.
 - `spark.comet.write.iceberg.bloomFilterFolding.enabled=true`.
+- The Iceberg runtime reports an identifiable version so Comet can match its column-name rules.
 - The effective `write.parquet.bloom-filter-max-bytes` (default 1 MiB) is a power of two from
   32 bytes through 128 MiB.
 - An interpreted NDV is absent or a positive Java long no greater than `Long.MAX_VALUE / 8`.

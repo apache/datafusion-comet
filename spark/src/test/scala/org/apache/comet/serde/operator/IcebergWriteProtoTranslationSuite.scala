@@ -23,6 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.comet.iceberg.IcebergReflection
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, IcebergWriterMode}
 
 /**
@@ -34,6 +35,48 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   import IcebergWriteProtoTranslation._
 
   private val TestCreatedBy = "Apache DataFusion Comet (test)"
+
+  test("Bloom path resolution rejects unidentified Iceberg naming conventions") {
+    val resolution = IcebergReflection.ParquetPathResolution(
+      Map("tags.element.a" -> "tags.list.element.a"),
+      Map(1 -> "tags.list.element.a"),
+      Set("tags.list.element.a"),
+      Set.empty,
+      Set.empty)
+    Seq("unknown", "", "vendor-build", "1.8.bad", "1.10", "2.0.0").foreach { version =>
+      val error = intercept[IllegalArgumentException] {
+        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), null, resolution, version)
+      }
+      assert(error.getMessage.contains("Cannot determine Iceberg Bloom column-name convention"))
+      assert(error.getMessage.contains(s"'$version'"))
+    }
+  }
+
+  test("Bloom path resolution preserves recognized runtime naming conventions") {
+    val physicalPath = "tags.list.element.a"
+    val resolution = IcebergReflection.ParquetPathResolution(
+      Map("tags.element.a" -> physicalPath, "order id" -> "order_x20id"),
+      Map(1 -> physicalPath),
+      Set(physicalPath, "order_x20id"),
+      Set("order_x20id"),
+      Set.empty)
+    Seq("1.5.2", "1.5.2-SNAPSHOT").foreach { version =>
+      assert(
+        CometIcebergNativeWrite.bloomFilterParquetPaths(
+          Seq(physicalPath, "tags.element.a"),
+          null,
+          resolution,
+          version) == Map(physicalPath -> physicalPath))
+    }
+    Seq("1.10.0", "1.11.0", "1.11.0-SNAPSHOT", "1.11.0+vendor").foreach { version =>
+      assert(
+        CometIcebergNativeWrite.bloomFilterParquetPaths(
+          Seq("tags.element.a", "tags.a"),
+          null,
+          resolution,
+          version) == Map("tags.element.a" -> physicalPath))
+    }
+  }
 
   // -- compression -----------------------------------------------------------
 
