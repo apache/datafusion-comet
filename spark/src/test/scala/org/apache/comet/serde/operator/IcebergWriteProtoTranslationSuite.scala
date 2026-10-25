@@ -78,6 +78,28 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     }
   }
 
+  test(
+    "legacy raw Bloom paths normalize trailing empty components without losing property names") {
+    val resolution = IcebergReflection.ParquetPathResolution(
+      Map("id" -> "id"),
+      Map(1 -> "id"),
+      Set("id", "tags.list.element.a"),
+      Set.empty,
+      Set.empty)
+    Seq("id", "id.", "id..").foreach { name =>
+      assert(CometIcebergNativeWrite
+        .bloomFilterParquetPaths(Seq(name, "missing"), resolution, "1.5.2") == Map(name -> "id"))
+    }
+    assert(
+      CometIcebergNativeWrite
+        .bloomFilterParquetPaths(Seq("tags.list.element.a."), resolution, "1.5.2") ==
+        Map("tags.list.element.a." -> "tags.list.element.a"))
+    val error = intercept[IllegalArgumentException] {
+      CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("id", "id."), resolution, "1.5.2")
+    }
+    assert(error.getMessage.contains("same Parquet leaf"))
+  }
+
   // -- compression -----------------------------------------------------------
 
   test("compression defaults to zstd at parquet-mr's level 3 when no property is set") {
