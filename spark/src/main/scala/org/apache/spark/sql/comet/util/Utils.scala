@@ -310,7 +310,7 @@ object Utils extends CometTypeShim with Logging {
    * that start past zero. The rows before the slice stay at the front of its data buffer, or of
    * its child vector for a list or map.
    */
-  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
+  private[comet] def offsetsStartAtZero(vector: FieldVector): Boolean = {
     val firstOffset = vector match {
       case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
       case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)

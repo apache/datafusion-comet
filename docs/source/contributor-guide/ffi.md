@@ -247,9 +247,10 @@ rows before the slice still at the front of the data buffer, or of the child vec
 through the offsets is correct, but Arrow Java 18.3's `VectorSchemaRootAppender` assumes offsets that start at zero and
 folds those rows into the first value it appends, and `VectorUnloader` writes them into an IPC stream. So
 `Utils.serializeBatches` rebases a broadcast batch's offsets with `VectorSchemaRoot.slice` before
-`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and code that
-appends imported vectors has to rebase them too. The in-memory cache serializer still writes the earlier rows
-([#6995](https://github.com/apache/datafusion-comet/issues/6995)).
+`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and
+`CachedBatchIpc.serialize` does the same before the in-memory cache writes a batch, so that a cached slice neither
+stores nor reports the rows before it ([#6995](https://github.com/apache/datafusion-comet/issues/6995)). Code that
+appends or writes imported vectors has to rebase them too.
 
 ### Ownership and Lifecycle
 
