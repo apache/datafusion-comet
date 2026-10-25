@@ -378,6 +378,39 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("legacy runtime rejects every configured Bloom entry before filtering disabled names") {
+    assume(!icebergVersionAtLeast(1, 10), "legacy runtime only")
+    withDetectionCatalog { _ =>
+      Seq(
+        ("id", "true"),
+        ("id", "false"),
+        ("", "true"),
+        ("", "false"),
+        ("missing", "true")).zipWithIndex.foreach { case ((column, enabled), index) =>
+        val table = s"legacy_bloom_setting_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-enabled.column.$column'='$enabled'"))
+        assertUnsupportedContainsAllowingWriteFailure(table, "Iceberg 1.10 or later")
+      }
+    }
+  }
+
+  test("legacy runtime also falls back for standalone Bloom shape properties") {
+    assume(!icebergVersionAtLeast(1, 10), "legacy runtime only")
+    withDetectionCatalog { _ =>
+      Seq("fpp", "ndv").zipWithIndex.foreach { case (shape, index) =>
+        val table = s"legacy_bloom_shape_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-$shape.column.id'='garbage'"))
+        assertUnsupportedContainsAllowingWriteFailure(table, "Iceberg 1.10 or later")
+      }
+    }
+  }
+
   test("bloom-filter max-bytes accepts only representable power-of-two values") {
     withDetectionCatalog { dir =>
       Seq("32", "524288", "1048576", "134217728").zipWithIndex.foreach { case (value, index) =>
@@ -400,7 +433,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
                 s"'write.parquet.bloom-filter-max-bytes'='$value'"))
           assertUnsupportedContainsAllowingWriteFailure(
             table,
-            "write.parquet.bloom-filter-max-bytes")
+            if (icebergVersionAtLeast(1, 10)) "write.parquet.bloom-filter-max-bytes"
+            else "Iceberg 1.10 or later")
         }
     }
   }
@@ -432,6 +466,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("bloom-filter max-bytes=32 falls back only when parquet-mr ignores the cap") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       val minimumBytes = 32
       val naturallyMinimumNdv = 1
@@ -471,6 +506,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: bloom-filter NDV values that overflow parquet-mr sizing arithmetic") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       val largestNonOverflowingNdv = Long.MaxValue / 8L
       val cases = Seq(
@@ -499,6 +535,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("bloom-filter enabled=false with NDV follows runtime support and validates NDV") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       val configuredNdv = 1000
       createTable(
@@ -526,6 +563,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("bloom-filter enabled=false still validates FPP") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       createTable(
         "false_with_bad_fpp",
@@ -544,6 +582,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("fall-back: invalid enabled-column FPP and NDV") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       Seq(
         ("'write.parquet.bloom-filter-fpp.column.id'='0'", icebergSupportsBloomFpp),
@@ -573,6 +612,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Compatible when a per-column bloom filter is enabled") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { _ =>
       createTable(
         "bloom_col",
@@ -583,6 +623,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("floating-point Bloom detection reports top-level and nested affected leaves") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { _ =>
       val columns = Seq(
         "amount" -> "amount",
@@ -603,6 +644,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("floating-point Bloom detection preserves native eligibility for unaffected columns") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { _ =>
       val stringKey = if (icebergSupportsBloomFpp) "attrs.key" else "attrs.key_value.key"
       val integerValue = if (icebergSupportsBloomFpp) "lookup.value" else "lookup.key_value.value"
@@ -630,6 +672,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("Bloom-filter folding must be explicitly enabled for native writes") {
+    assumeNativeBloomRuntime()
     withDetectionCatalog { dir =>
       createTable(
         "bloom_folding_opt_in",
@@ -2035,6 +2078,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         fail(s"expected Unsupported for $tableName, got $other")
     }
   }
+
+  private def assumeNativeBloomRuntime(): Unit =
+    assume(icebergVersionAtLeast(1, 10), "Native Bloom writes require Iceberg 1.10 or later")
 
   private def icebergSupportsBloomFpp: Boolean =
     IcebergReflection

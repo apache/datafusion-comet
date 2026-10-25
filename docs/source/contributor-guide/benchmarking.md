@@ -46,7 +46,7 @@ These can also be run as a suite on a dedicated machine, see
 ## Iceberg Bloom-filter writes
 
 `CometIcebergWriteBenchmark` compares Spark and Comet Iceberg writers. Its `bloom` mode compares
-native writes with Bloom filters off/on, using the same prepared Parquet source in eight files. Both cases enable native writes and the Bloom folding opt-in; only the table's Bloom
+native writes with Bloom filters off/on (requiring Iceberg 1.10+), using the same prepared Parquet source in eight files. Both cases enable native writes and the Bloom folding opt-in; only the table's Bloom
 properties differ. Filters cover the bigint, string, and binary columns at the default 1 MiB cap,
 without explicit NDV/FPP. The benchmark checks the native plan, row count, and filter presence
 before measuring. Table creation and source preparation are outside the timed insert; the Iceberg
