@@ -162,14 +162,13 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 
     // High partition counts stress the per-partition write path (one short-lived
-    // buffered writer per partition), which low counts barely exercise; compression
-    // is disabled to isolate it. Few samples: each iteration is a full end-to-end
-    // write across thousands of partitions.
-    //
-    // The Lz4Frame variant is what a wide shuffle runs by default. At 8000 partitions each
-    // partition gets about ten rows, so every block is tiny and still pays for a fresh LZ4
-    // frame encoder, its header and its end mark; comparing it with the None row at the same
-    // partition count shows how much of the write that per-block cost is.
+    // buffered writer per partition), which low counts barely exercise. The None rows
+    // isolate that path. The Lz4Frame rows, what a wide shuffle runs by default, add the
+    // per-block codec cost on top: at 8000 partitions each partition gets about ten rows,
+    // so every block is tiny and still pays for a fresh LZ4 frame encoder, its header and
+    // its end mark. Comparing the two rows at the same partition count shows that cost;
+    // at low counts the smaller compressed output can outweigh it. Few samples: each
+    // iteration is a full end-to-end write across thousands of partitions.
     let mut high_partition_group = c.benchmark_group("shuffle_writer_high_partition");
     high_partition_group.sample_size(10);
     for num_partitions in [200usize, 2000, 8000] {
