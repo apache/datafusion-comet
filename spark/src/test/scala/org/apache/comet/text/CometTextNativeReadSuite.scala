@@ -22,14 +22,27 @@ package org.apache.comet.text
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.GZIPOutputStream
 
-import org.apache.spark.sql.CometTestBase
+import org.scalatest.concurrent.Eventually._
+import org.scalatest.time.{Millis, Seconds, Span}
+
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.io.compress.GzipCodec
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
+import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.comet.CometTextNativeScanExec
 import org.apache.spark.sql.functions.input_file_name
 import org.apache.spark.sql.internal.SQLConf
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
+/** A gzip codec whose file extension holds a space, to test codec lookup on decoded paths. */
+class SpacedGzipCodec extends GzipCodec {
+  override def getDefaultExtension: String = ".packed gz"
+}
 
 class CometTextNativeReadSuite extends CometTestBase {
   private val TEST_TEXT_PATH = "src/test/resources/test-data/text-test-1.txt"
@@ -485,6 +498,183 @@ class CometTextNativeReadSuite extends CometTestBase {
           val joined = facts.join(lookupDf.hint("broadcast"), facts("_2") === lookupDf("value"))
           checkSparkAnswerAndOperator(joined)
         }
+      }
+    }
+  }
+
+  // Plan only: asserts the scan stays on Spark and records why, without running a query that
+  // Spark itself would fail.
+  private def assertFallsBack(df: DataFrame, reason: String): Unit = {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val plan = df.queryExecution.executedPlan
+      assert(plan.collect { case s: CometTextNativeScanExec => s }.isEmpty, plan)
+      val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+      assert(reasons.exists(_.contains(reason)), reasons)
+    }
+  }
+
+  test("native text read - falls back for a local file with a Hadoop checksum file") {
+    withTempDir { dir =>
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      val path = new Path(new File(dir, "checked.txt").getAbsolutePath)
+      // Hadoop's local filesystem writes a `.checked.txt.crc` next to the data.
+      val out = FileSystem.getLocal(hadoopConf).create(path)
+      out.write("one\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      assert(new File(dir, ".checked.txt.crc").exists())
+      // Replace the data without updating the checksum: Spark raises a ChecksumException on read.
+      Files.write(new File(dir, "checked.txt").toPath, "two\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        assertFallsBack(spark.read.text(path.toString), "Hadoop checksum")
+      }
+    }
+  }
+
+  test("native text read - codec lookup uses the decoded file name") {
+    withTempDir { dir =>
+      val file = new File(dir, "small.packed gz")
+      val out = new GZIPOutputStream(Files.newOutputStream(file.toPath))
+      out.write("one\ntwo\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      val key = "io.compression.codecs"
+      val previous = hadoopConf.get(key)
+      hadoopConf.set(key, classOf[SpacedGzipCodec].getName)
+      try {
+        withTextConf {
+          // The URL-encoded name `small.packed%20gz` hides the registered `.packed gz` suffix.
+          checkSparkAnswerAndFallbackReason(
+            spark.read.text(file.getAbsolutePath),
+            "compressed text files")
+        }
+      } finally {
+        if (previous == null) hadoopConf.unset(key) else hadoopConf.set(key, previous)
+      }
+    }
+  }
+
+  test("native text read - a compressed file in a pruned partition does not block native") {
+    withTempDir { dir =>
+      val hot = new File(dir, "p=hot")
+      val cold = new File(dir, "p=cold")
+      hot.mkdirs()
+      cold.mkdirs()
+      Files.write(new File(hot, "a.txt").toPath, "alpha\n".getBytes(StandardCharsets.UTF_8))
+      val out = new GZIPOutputStream(Files.newOutputStream(new File(cold, "b.txt.gz").toPath))
+      out.write("beta\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      withTextConf {
+        val df = spark.read.text(dir.getAbsolutePath).where("p = 'hot'").select("value")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometTextNativeScanExec]))
+      }
+    }
+  }
+
+  test("native text read - a listed file whose name object_store rejects falls back") {
+    withTempDir { dir =>
+      // Legal for Hadoop, rejected by object_store. The directory root alone looks fine.
+      Files.write(new File(dir, "a\tb.txt").toPath, "expected\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(dir.getAbsolutePath),
+          "cannot open path")
+      }
+    }
+  }
+
+  test("native text read - falls back for mandatory file-open options in line mode") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines.txt")
+      Files.write(file.toPath, "alpha\nbeta\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        assertFallsBack(
+          spark.read
+            .option("mapreduce.job.input.file.must.fs.s3a.readahead.range", "64K")
+            .text(file.getAbsolutePath),
+          "mapreduce.job.input.file.must")
+      }
+    }
+  }
+
+  test("native text read - wholetext ignores line.maxlength") {
+    withTempDir { dir =>
+      val file = new File(dir, "whole.txt")
+      Files.write(file.toPath, "alpha\nbeta".getBytes(StandardCharsets.UTF_8))
+      val key = "mapreduce.input.linerecordreader.line.maxlength"
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      try {
+        withTextConf {
+          // Spark's whole-file reader never reads this setting, so neither a finite limit nor a
+          // value that is not an integer may fail or fall back a wholetext query.
+          Seq("5", "64k").foreach { value =>
+            hadoopConf.set(key, value)
+            checkSparkAnswerAndOperator(
+              spark.read.option("wholetext", "true").text(file.getAbsolutePath))
+          }
+        }
+      } finally {
+        hadoopConf.unset(key)
+      }
+    }
+  }
+
+  test("native text read - scans of the same file compare equal") {
+    withTempDir { dir =>
+      val file = new File(dir, "lookup.txt")
+      Files.write(file.toPath, "a\nb\nc\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          def scan: CometTextNativeScanExec =
+            spark.read
+              .text(file.getAbsolutePath)
+              .queryExecution
+              .executedPlan
+              .collect { case s: CometTextNativeScanExec => s }
+              .head
+          // Equal canonical forms let Spark reuse the exchanges and stages of a repeated lookup.
+          assert(scan.sameResult(scan))
+        }
+      }
+    }
+  }
+
+  test("native text read - reports input bytes and records to the task metrics") {
+    withTempDir { dir =>
+      (0 until 4).foreach { i =>
+        Files.write(
+          new File(dir, s"part-$i.txt").toPath,
+          "a\nb\nc\n".getBytes(StandardCharsets.UTF_8))
+      }
+      val bytes = new AtomicLong(0)
+      val records = new AtomicLong(0)
+      val listener = new SparkListener {
+        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+          if (taskEnd.taskMetrics != null) {
+            bytes.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+            records.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+          }
+        }
+      }
+      spark.sparkContext.addSparkListener(listener)
+      try {
+        withTextConf {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val df = spark.read.text(dir.getAbsolutePath)
+            // Run only the native query: a Spark pass would add the same bytes and hide a
+            // missing metric.
+            assert(df.queryExecution.executedPlan.collect { case s: CometTextNativeScanExec =>
+              s
+            }.nonEmpty)
+            assert(df.collect().length == 12)
+          }
+        }
+        // The listener bus is asynchronous, so wait for the four tasks' totals.
+        eventually(timeout(Span(10, Seconds)), interval(Span(100, Millis))) {
+          assert(bytes.get() == 24L, s"bytesRead=${bytes.get()}")
+          assert(records.get() == 12L, s"recordsRead=${records.get()}")
+        }
+      } finally {
+        spark.sparkContext.removeSparkListener(listener)
       }
     }
   }

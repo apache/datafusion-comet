@@ -58,7 +58,9 @@ text through the V1 API by default, so also remove `text` from `spark.sql.source
 falls back to Spark for cases it does not handle -- including compressed files, files larger than
 `spark.comet.scan.text.maxFileSize` (64MB by default, since the reader loads each file whole), files Spark splits
 into byte ranges, unsupported filesystem schemes, and `input_file_name()` or
-`ignoreCorruptFiles`/`ignoreMissingFiles` usage. It targets small lookup tables such as a broadcast join's build side.
+`ignoreCorruptFiles`/`ignoreMissingFiles` usage. It also falls back for local files that have a Hadoop checksum
+(`.crc`) file, such as data Spark itself wrote to the local filesystem, because Hadoop verifies the checksum on read and
+the native reader does not. It targets small lookup tables such as a broadcast join's build side.
 Reading a partition column from a partitioned directory falls back to Spark, but selecting only `value` stays native.
 
 Text files are a common source of ill-formed UTF-8. The native reader replaces invalid byte sequences with the

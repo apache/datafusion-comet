@@ -475,20 +475,38 @@ case class CometScanRule(session: SparkSession)
           fallbackReasons += "Comet native Text scan does not read files larger than " +
             s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxTextFileSize bytes)"
         }
-        // Comet's native plan does not carry a compression codec, so the native reader would feed
-        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension.
-        // Use the options-aware Hadoop conf, built from the case-preserving option map like
+        // Build the Hadoop conf from the scan's read options with their case preserved, like
         // Spark's TextScan.createReaderFactory (Hadoop keys are case sensitive, but the scan's
-        // option map lowercases them), so a per-read codec option is honored, and the
-        // version-aware ShimFileFormat.isCompressedFile, which on Spark 4.1+ also catches the
-        // non-standard .gzip/.zstd extensions that CompressionCodecFactory alone misses.
+        // option map lowercases them).
         val hadoopConf = session.sessionState.newHadoopConfWithOptions(
           scan.options.asCaseSensitiveMap.asScala.toMap)
-        val hasCompressedFile = scan.fileIndex.inputFiles.exists { path =>
-          ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(path))
+        val textOptions =
+          new org.apache.spark.sql.execution.datasources.text.TextOptions(
+            scan.options.asScala.toMap)
+        // The files this scan reads. `fileIndex.inputFiles` also lists files that partition
+        // pruning dropped, so the per-file checks below use the selected partitions instead.
+        val selectedFiles = scanExec.inputPartitions.flatMap {
+          case fp: FilePartition => fp.files.toSeq
+          case _ => Seq.empty
+        }
+        // Comet's native plan does not carry a compression codec, so the native reader would feed
+        // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension,
+        // from the decoded path (`Path(URI)`), so a name like `a b.gz` keeps its suffix. The
+        // version-aware ShimFileFormat.isCompressedFile also catches the non-standard .gzip/.zstd
+        // extensions on Spark 4.1+ that CompressionCodecFactory alone misses.
+        val hasCompressedFile = selectedFiles.exists { file =>
+          ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(file.pathUri))
         }
         if (hasCompressedFile) {
           fallbackReasons += "Comet does not support compressed text files"
+        }
+        // Hadoop's local filesystem verifies a `.<name>.crc` checksum file when one exists and
+        // raises a ChecksumException if the data no longer matches it. The native reader reads the
+        // file directly and would return the altered rows, so fall back for such files.
+        if (selectedFiles.exists(file =>
+            CometScanRule.hasLocalChecksumFile(hadoopConf, file.pathUri))) {
+          fallbackReasons += "Comet native Text scan does not support local files that have a " +
+            "Hadoop checksum (.crc) file"
         }
         // Spark skips unreadable/missing files when these are set; the native reader's DataFusion
         // FileStream fails the whole scan instead (OnError::Fail). Fall back to match Spark.
@@ -502,32 +520,36 @@ case class CometScanRule(session: SparkSession)
             false)) {
           fallbackReasons += "Comet native Text scan does not support ignoreMissingFiles"
         }
-        // Spark's line reader skips any line at or over
-        // mapreduce.input.linerecordreader.line.maxlength (default unlimited); the key can come
-        // from spark.hadoop.*, core-site.xml, or a read option. The native reader does not
-        // truncate, so fall back when a finite limit is set.
-        if (hadoopConf.getInt("mapreduce.input.linerecordreader.line.maxlength", Int.MaxValue)
-            != Int.MaxValue) {
-          fallbackReasons += "Comet native Text scan does not support " +
-            "mapreduce.input.linerecordreader.line.maxlength"
-        }
-        // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
-        // split-file guard above does not bound it. Reading a very large file whole is unbounded
-        // memory, and the whole file becomes one Arrow string value. Because a lossy UTF-8 decode
-        // can expand ill-formed bytes up to 3x, cap the raw file size at Int.MaxValue/3 so the
-        // decoded value stays under Arrow's 2GB 32-bit string-offset limit; fall back above that.
-        // (The native reader also fails cleanly rather than panicking if a value still overflows.)
-        val textOptions =
-          new org.apache.spark.sql.execution.datasources.text.TextOptions(
-            scan.options.asScala.toMap)
-        // Spark reads a custom line separator with Hadoop's LineReader.readCustomLine, which on a
-        // mismatch backtracks only one byte instead of following the separator's own prefix
-        // overlap. For a separator that overlaps itself (e.g. "aab", whose "aa" prefix can restart
-        // a match) that reader can split differently from the native reader's exact substring
-        // scan, and the difference depends on where the separator falls across Hadoop's input
-        // buffer boundaries. wholetext ignores the separator, so only guard line mode. Fall back
-        // so the two always agree.
+        // Only Spark's line reader consults the settings below. The wholetext reader does not,
+        // so a value it never reads must not fail or fall back a wholetext query.
         if (!textOptions.wholeText) {
+          // Spark's line reader skips any line at or over
+          // mapreduce.input.linerecordreader.line.maxlength (default unlimited); the key can come
+          // from spark.hadoop.*, core-site.xml, or a read option. The native reader does not
+          // truncate, so fall back when a finite limit is set. A value that is not an integer
+          // fails Spark's reader, so fall back and let Spark report it.
+          val maxLineLength = scala.util.Try(
+            hadoopConf.getInt("mapreduce.input.linerecordreader.line.maxlength", Int.MaxValue))
+          if (maxLineLength.map(_ != Int.MaxValue).getOrElse(true)) {
+            fallbackReasons += "Comet native Text scan does not support " +
+              "mapreduce.input.linerecordreader.line.maxlength"
+          }
+          // Spark passes `mapreduce.job.input.file.must.*` to the filesystem's open call as
+          // mandatory options, and the read fails if the filesystem cannot honor one. The native
+          // reader opens files itself and cannot enforce them, so fall back and let Spark decide.
+          if (hadoopConf
+              .iterator()
+              .asScala
+              .exists(_.getKey.startsWith("mapreduce.job.input.file.must."))) {
+            fallbackReasons += "Comet native Text scan does not support mandatory file-open " +
+              "options (mapreduce.job.input.file.must.*)"
+          }
+          // Spark reads a custom line separator with Hadoop's LineReader.readCustomLine, which on
+          // a mismatch backtracks only one byte instead of following the separator's own prefix
+          // overlap. For a separator that overlaps itself (e.g. "aab", whose "aa" prefix can
+          // restart a match) that reader can split differently from the native reader's exact
+          // substring scan, and the difference depends on where the separator falls across
+          // Hadoop's input buffer boundaries. Fall back so the two always agree.
           textOptions.lineSeparatorInRead.foreach { sep =>
             if (CometScanRule.separatorSelfOverlaps(sep)) {
               fallbackReasons += "Comet native Text scan does not support a self-overlapping " +
@@ -535,6 +557,12 @@ case class CometScanRule(session: SparkSession)
             }
           }
         }
+        // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
+        // split-file guard above does not bound it. Reading a very large file whole is unbounded
+        // memory, and the whole file becomes one Arrow string value. Because a lossy UTF-8 decode
+        // can expand ill-formed bytes up to 3x, cap the raw file size at Int.MaxValue/3 so the
+        // decoded value stays under Arrow's 2GB 32-bit string-offset limit; fall back above that.
+        // (The native reader also fails cleanly rather than panicking if a value still overflows.)
         if (textOptions.wholeText) {
           val maxWholeTextBytes =
             math.min(session.sessionState.conf.filesMaxPartitionBytes, Int.MaxValue.toLong / 3)
@@ -551,11 +579,14 @@ case class CometScanRule(session: SparkSession)
         // set of URL schemes. A text file on a custom Hadoop scheme (viewfs://, oss://, ...) or a
         // path object_store rejects would be claimed here then hard-fail at execution, whereas
         // Spark reads it via the Hadoop FS API. Use the same shared gate as the native Parquet
-        // path. A scan that spans several object stores is split per store in the serde.
+        // path, on the selected files rather than the root paths: a legal Hadoop filename inside
+        // a directory (for example one with a tab in its name) can pass for its parent and still
+        // be rejected by object_store. A scan that spans several object stores is split per store
+        // in the serde.
         CometScanRule
           .rootPathFallbackReason(
             "Native Text scan",
-            scan.fileIndex.rootPaths.map(_.toUri),
+            selectedFiles.map(_.pathUri).distinct,
             NativeConfig.resolveLibhdfsSchemes(session.sessionState.newHadoopConf()),
             hadoopConf,
             isBucketedScan = false)
@@ -1433,6 +1464,26 @@ object CometScanRule extends Logging {
         isLibhdfs = scheme.exists(libhdfsSchemes.contains),
         isAlias = scheme.exists(s3CompliantSchemes.contains))
     }
+
+  /**
+   * True when a local file has a Hadoop checksum file (`.<name>.crc`) next to it. Hadoop's local
+   * filesystem verifies the data against that file on every read, which the native reader does
+   * not. Only local paths are checked; other filesystems are not asked, because creating one is
+   * costly. If the filesystem cannot be asked, assume a checksum file exists.
+   */
+  private[rules] def hasLocalChecksumFile(hadoopConf: Configuration, uri: URI): Boolean = {
+    val isLocal = Option(uri.getScheme).forall(_.equalsIgnoreCase("file"))
+    isLocal && scala.util
+      .Try {
+        val path = new org.apache.hadoop.fs.Path(uri)
+        path.getFileSystem(hadoopConf) match {
+          case fs: org.apache.hadoop.fs.ChecksumFileSystem =>
+            fs.getRawFileSystem.exists(fs.getChecksumFile(path))
+          case _ => false
+        }
+      }
+      .getOrElse(true)
+  }
 
   /**
    * Why a native scan of `rootUris` must fall back because of the filesystem scheme or path, or

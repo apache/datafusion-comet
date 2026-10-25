@@ -22,12 +22,14 @@ package org.apache.spark.sql.comet
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.datasources.text.TextOptions
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
+import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 
 import com.google.common.base.Objects
 
@@ -63,8 +65,21 @@ case class CometTextNativeScanExec(
 
   override def outputOrdering: Seq[SortOrder] = Nil
 
+  // The scan reports the bytes it fetched as `bytes_scanned`, which CometMetricNode turns into the
+  // task's input bytes and records, so they show on the stage UI like any other scan.
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext) +
+      ("bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"))
+
+  // Two scans of the same files must compare equal so Spark reuses their exchanges and stages.
+  // That needs normalized output attribute ids and the wrapped scan's canonical form, and no
+  // serialization state, which differs between otherwise identical copies.
   override protected def doCanonicalize(): SparkPlan = {
-    CometTextNativeScanExec(nativeOp, output, originalPlan, serializedPlanOpt)
+    CometTextNativeScanExec(
+      nativeOp,
+      output.map(QueryPlan.normalizeExpressions(_, output)),
+      if (originalPlan == null) null else originalPlan.doCanonicalize(),
+      SerializedPlan(None))
   }
 
   override def equals(obj: Any): Boolean = {
@@ -101,7 +116,12 @@ object CometTextNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val hadoopConf =
       sessionState.newHadoopConfWithOptions(textScan.options.asCaseSensitiveMap.asScala.toMap)
     val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    // The scan gate already declined schemes that only the read options route through libhdfs.
+    val libhdfsSchemes = NativeConfig
+      .resolveScanLibhdfsSchemes(
+        NativeConfig.resolveLibhdfsSchemes(sessionState.newHadoopConf()),
+        hadoopConf)
+      .libhdfs
     val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
     val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
       "Native Text scan",

@@ -102,8 +102,27 @@ object CometCsvNativeScanExec extends CometOperatorSerde[CometBatchScanExec] {
     val hadoopConf =
       sessionState.newHadoopConfWithOptions(csvScan.options.asCaseSensitiveMap.asScala.toMap)
     val s3CompliantSchemes = NativeConfig.resolveS3CompliantSchemes(hadoopConf)
-    val libhdfsSchemes = NativeConfig.resolveLibhdfsSchemes(hadoopConf)
+    // A read option can list a scheme for libhdfs that the session does not. Native reads through
+    // libhdfs with the executor classpath's configuration, not the read options, so a scheme
+    // that only the options route there cannot be read natively. Decline those, as the native
+    // Parquet scan does.
+    val scanLibhdfs = NativeConfig.resolveScanLibhdfsSchemes(
+      NativeConfig.resolveLibhdfsSchemes(sessionState.newHadoopConf()),
+      hadoopConf)
+    val libhdfsSchemes = scanLibhdfs.libhdfs
     val inputPartitions = op.inputPartitions.map(_.asInstanceOf[FilePartition])
+    val scanOnlyLibhdfsSchemes = inputPartitions.view
+      .flatMap(_.files.view.flatMap(file => NativeConfig.lowerScheme(file.pathUri)))
+      .filter(scanLibhdfs.scanOnly.contains)
+      .toSet
+    if (scanOnlyLibhdfsSchemes.nonEmpty) {
+      val reason = "Native CSV scan does not support filesystem scheme(s) " +
+        s"${scanOnlyLibhdfsSchemes.toSeq.sorted.mkString(", ")} listed for libhdfs only " +
+        "through reader options"
+      withFallbackReason(op, reason)
+      withFallbackReason(op.wrapped, reason)
+      return None
+    }
     val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
       "Native CSV scan",
       inputPartitions.view.flatMap(_.files.view.map(_.pathUri)),

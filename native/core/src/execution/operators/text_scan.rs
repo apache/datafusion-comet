@@ -30,7 +30,7 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::Result;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::projection::ProjectionExprs;
-use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricBuilder};
 use datafusion::physical_plan::DisplayFormatType;
 use datafusion_comet_common::decode_utf8_spark_lossy;
 use datafusion_comet_proto::spark_operator::TextOptions;
@@ -224,11 +224,15 @@ impl FileOpener for TextOpener {
         let whole_text = self.whole_text;
         let line_sep = self.line_sep.clone();
         let baseline_metrics = BaselineMetrics::new(&self.metrics, self.partition_index);
+        // Feeds the task's input bytes in the Spark UI (see CometMetricNode.reportScanInputMetrics).
+        let bytes_scanned =
+            MetricBuilder::new(&self.metrics).counter("bytes_scanned", self.partition_index);
 
         Ok(Box::pin(async move {
             let range = partitioned_file.range.clone();
             let location = partitioned_file.object_meta.location;
             let raw = store.get(&location).await?.bytes().await?;
+            bytes_scanned.add(raw.len());
 
             // Decompress only when the file is actually compressed. On Comet's plan config the file
             // is always UNCOMPRESSED (CometScanRule falls back for compressed files), so we borrow
