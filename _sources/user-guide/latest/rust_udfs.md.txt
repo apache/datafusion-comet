@@ -49,7 +49,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 arrow = "59"
-comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet", tag = "1.2.0-SNAPSHOT" }
+comet-udf-sdk = { git = "https://github.com/apache/datafusion-comet", tag = "1.3.0-SNAPSHOT" }
 ```
 
 Pin `tag` to the Comet release your cluster runs. The SDK is not published to crates.io, and a
