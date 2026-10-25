@@ -19,7 +19,7 @@
 
 package org.apache.comet.iceberg
 
-import java.lang.reflect.{Constructor, Method}
+import java.lang.reflect.{Constructor, InvocationTargetException, Method}
 import java.util.concurrent.ConcurrentHashMap
 
 import scala.util.control.NonFatal
@@ -886,7 +886,12 @@ object IcebergReflection extends Logging {
   /** Resolve runtime-supported names without treating lookup failures as missing fields. */
   def findFieldIdByName(schema: Any, name: String): Option[Int] = {
     val method = getMethod(schema.getClass, "findField", classOf[String])
-    Option(method.invoke(schema, name)).map { field =>
+    val field =
+      try method.invoke(schema, name)
+      catch {
+        case e: InvocationTargetException => throw e.getCause
+      }
+    Option(field).map { field =>
       getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
     }
   }
