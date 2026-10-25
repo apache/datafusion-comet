@@ -2766,7 +2766,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // string array reaches the JVM with offsets that start past zero and the rows before it still
     // at the front of its data buffer. Written as it stands, the k-th slice is cached with the
     // bytes of the k - 1 slices before it, and the relation reports them in its size.
-    val rows = 1000
+    val rows = 1000L
     withTempPath { dir =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
