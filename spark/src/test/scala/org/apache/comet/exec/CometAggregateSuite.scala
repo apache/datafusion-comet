@@ -301,6 +301,47 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("PartialMerge over input sorted on a prefix of its keys spills (issue #6880)") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("0L AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path)
+      // The repartition on g satisfies the PartialMerge keyed by (g, k), so the sort, the partial
+      // aggregate and the PartialMerge run in one native plan with no exchange between them, and
+      // the PartialMerge sees its input sorted on g. In 2 and 8 MiB pools, the PartialMerge's
+      // spill asked for more than its share before it planned as an ordered final aggregate.
+      for (poolMiB <- Seq(2, 8)) {
+        withSQLConf(
+          SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName,
+          CometConf.COMET_BATCH_SIZE.key -> "1024",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (poolMiB / 2048.0).toString) {
+          withClue(s"With a $poolMiB MiB pool: ") {
+            val df = spark.read
+              .parquet(path)
+              .repartition(1, col("g"))
+              .sortWithinPartitions("g")
+              .groupBy("g")
+              .agg(expr("max(v)"), count_distinct(col("k")))
+            QueryTest.sameRows(Seq(Row(0L, 124999L, 62500L)), df.collect().toSeq).foreach(fail(_))
+
+            assert(
+              spilledAggregates(df, PartialMerge).exists(_.child match {
+                case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
+                case _ => false
+              }),
+              "Expected a native PartialMerge over a partial aggregate over a sort:\n" +
+                df.queryExecution.executedPlan)
+          }
+        }
+      }
+    }
+  }
+
   test("collect_list PartialMerge short of memory keeps one row per key (issue #6857)") {
     // The collect_list states fill the PartialMerge's memory too. Over a Spark partial, the
     // PartialMerge decodes Spark's buffers as it merges them, but reads back the native states

@@ -21,10 +21,10 @@
 //! replays them through an `OrderedFinalAggregateStream` that has no way to spill, so a refused
 //! memory request there fails the task. `FinalHashAggregateStream` does this, and so does
 //! `OrderedFinalAggregateStream` itself, which DataFusion uses when the input is sorted on some of
-//! the grouping keys. So does `SingleHashAggregateStream`, which Comet runs for a Spark
-//! PartialMerge (#6857). The merge reserves read buffers for as many spill files as fit, and those
-//! buffers belong to the same consumer, so the replay often finds the consumer's share already
-//! taken.
+//! the grouping keys, and which Comet also runs for a Spark PartialMerge over such input (#6880).
+//! So does `SingleHashAggregateStream`, which Comet runs for other Spark PartialMerges (#6857).
+//! The merge reserves read buffers for as many spill files as fit, and those buffers belong to the
+//! same consumer, so the replay often finds the consumer's share already taken.
 //!
 //! [`SpillReplayPool`] wraps a Comet pool. When the pool refuses a request from the replay, it
 //! records the request with the pool's `grow` instead, which ignores `CometFairMemoryPool`'s limits
