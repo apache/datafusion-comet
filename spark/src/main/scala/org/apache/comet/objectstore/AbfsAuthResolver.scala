@@ -41,7 +41,9 @@ import org.apache.comet.objectstore.AbfsReflection.Handles
  * (container-, account- or globally-scoped keys, credential providers, `${...}` references). The
  * resolver forwards the resolved values under the global key names plus `comet.azure.*` markers,
  * never a key for another account, and never the environment. Anything Hadoop throws becomes an
- * error marker: the native scan fails with it instead of trying a lookup of its own.
+ * error marker instead of a lookup of its own. A scan whose resolution the native store cannot
+ * use falls back to Spark (see [[nativeFallbackReason]]); the markers still carry the outcome to
+ * native for the other callers, which fail with it.
  *
  * `AbfsAuthParitySuite` pins the outcome of every configuration shape per hadoop-azure version
  * (`spark/src/test/resources/abfs-auth-parity/expected-<version>.json`) and cross-checks it
@@ -465,6 +467,35 @@ private[comet] object AbfsAuthResolver extends Logging {
         Markers.RESOLUTION -> Markers.ERROR,
         Markers.ERROR_CLASS -> exceptionClass,
         Markers.ERROR_MESSAGE -> message)
+  }
+
+  /**
+   * Why the native store cannot read `uri` under `outcome`, or None when it can: a mechanism
+   * Hadoop named that runs Java code per request, a built-in OAuth provider with no
+   * `object_store` counterpart, or a resolution that failed. All are known on the driver, so the
+   * scan falls back to Spark's own reader, which authenticates through hadoop-azure, instead of
+   * planning natively and failing every task.
+   */
+  def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
+    def unsupported(mechanism: String): String =
+      s"Native scan does not support ABFS authentication $mechanism for " +
+        s"${uri.getScheme}://${uri.getRawAuthority}"
+    outcome match {
+      case Declined(authType, providerClass, assertionProviderClass) =>
+        val classes = providerClass.map(c => s" with provider $c").getOrElse("") +
+          assertionProviderClass.map(c => s" and client assertion provider $c").getOrElse("")
+        Some(unsupported(s"auth type $authType$classes"))
+      case Resolved(
+            AuthTypes.OAUTH,
+            Some(c @ (Providers.REFRESH_TOKEN | Providers.USER_PASSWORD)),
+            _) =>
+        Some(unsupported(s"auth type ${AuthTypes.OAUTH} with provider $c"))
+      case Failed(_, message) =>
+        Some(
+          "Hadoop ABFS authentication failed on the driver for " +
+            s"${uri.getScheme}://${uri.getRawAuthority}: $message")
+      case _: Resolved | Unconfigured => None
+    }
   }
 
   private def providerMarker(authType: String): String =

@@ -27,6 +27,7 @@ import org.scalatest.matchers.should.Matchers
 import org.apache.hadoop.conf.Configuration
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
+import org.apache.comet.objectstore.AbfsAuthResolver.{Keys, Markers, Providers}
 
 class NativeConfigSuite extends AnyFunSuite with Matchers {
 
@@ -753,6 +754,85 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
         }
       }
     }
+  }
+
+  private def abfsScanConf(pairs: (String, String)*): Configuration = {
+    val hadoopConf = new Configuration()
+    pairs.foreach { case (key, value) =>
+      hadoopConf.set(s"$key.accta.dfs.core.windows.net", value)
+    }
+    hadoopConf
+  }
+
+  private def assertFallsBack(hadoopConf: Configuration, expected: String*): Unit = {
+    val uris = Seq(abfsFile("data", "accta", "a.parquet"), abfsFile("data", "accta", "b.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+      case Left(reason) =>
+        reason should include("abfss://data@accta.dfs.core.windows.net")
+        expected.foreach(text => reason should include(text))
+      case Right(options) => fail(s"expected a fallback, got $options")
+    }
+  }
+
+  test("extractScanObjectStoreOptions - a Custom ABFS auth type falls back to Spark") {
+    assertFallsBack(
+      abfsScanConf(
+        Keys.AUTH_TYPE -> "Custom",
+        Keys.OAUTH_PROVIDER_TYPE -> classOf[NeverInstantiatedAccessTokenProvider].getName),
+      "auth type Custom")
+  }
+
+  test("extractScanObjectStoreOptions - a custom SAS token provider falls back to Spark") {
+    val providerClass = classOf[NeverInstantiatedSasTokenProvider].getName
+    assertFallsBack(
+      abfsScanConf(Keys.AUTH_TYPE -> "SAS", Keys.SAS_TOKEN_PROVIDER_TYPE -> providerClass),
+      "auth type SAS",
+      providerClass)
+  }
+
+  test("extractScanObjectStoreOptions - RefreshToken and UserPassword OAuth fall back to Spark") {
+    assertFallsBack(
+      abfsScanConf(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.REFRESH_TOKEN,
+        Keys.REFRESH_TOKEN -> "refresh-token-value",
+        Keys.CLIENT_ID -> "client-123"),
+      Providers.REFRESH_TOKEN)
+    assertFallsBack(
+      abfsScanConf(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.USER_PASSWORD,
+        Keys.CLIENT_ENDPOINT -> "https://login.microsoftonline.com/tenant/oauth2/token",
+        Keys.USER_NAME -> "user@example.com",
+        Keys.USER_PASSWORD -> "user-password-value"),
+      Providers.USER_PASSWORD)
+  }
+
+  test("extractScanObjectStoreOptions - a failed ABFS resolution falls back to Spark") {
+    assertFallsBack(
+      abfsScanConf(Keys.AUTH_TYPE -> "NotAnAuthType"),
+      "failed on the driver",
+      "No enum constant")
+  }
+
+  test("extractScanObjectStoreOptions - hadoop-azure the driver cannot load falls back") {
+    // Also covers a configuration that sets no fs.azure.* key: the handles load first.
+    val hadoopConf = new Configuration()
+    hadoopConf.setClassLoader(new FlippingLoader(getClass.getClassLoader))
+    assertFallsBack(hadoopConf, "hadoop-azure is not on the driver classpath")
+  }
+
+  test("extractScanObjectStoreOptions - unconfigured and resolved ABFS stay native") {
+    val uris = Seq(abfsFile("data", "accta", "a.parquet"))
+    val hadoopConf = new Configuration()
+    hadoopConf.set(COMET_LIBHDFS_SCHEMES_KEY, "hdfs,viewfs")
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) shouldBe Right(
+      Map(COMET_LIBHDFS_SCHEMES_KEY -> "hdfs,viewfs", Markers.RESOLUTION -> Markers.NONE))
+
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    val options = NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris).toOption.get
+    options shouldBe NativeConfig.extractObjectStoreOptions(hadoopConf, uris.head)
+    options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
   }
 
   test("extractScanObjectStoreOptions - non-abfs scans forward every scheme's options") {

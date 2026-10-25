@@ -37,6 +37,9 @@
 //! - `error`: an error carrying the driver's exception class and message.
 //! - missing or anything else: an error, so a plan that did not run the resolver cannot pass.
 //!
+//! Scans never reach the `declined` and `error` arms, or the providers `resolved_settings`
+//! rejects: the driver plans those on Spark instead. Native writes still fail with them.
+//!
 //! `comet.azure.auth.type` is Hadoop's `AuthType` name, `comet.azure.oauth.provider.class` the
 //! OAuth provider class, `comet.azure.sas.provider.class` a custom SAS provider and
 //! `comet.azure.oauth.assertion.provider.class` a Workload Identity client assertion provider.
