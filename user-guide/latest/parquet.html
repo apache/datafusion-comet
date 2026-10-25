@@ -986,6 +986,21 @@ reader produces. Code that catches <code class="docutils literal notranslate"><s
 vanilla Spark. See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4354">#4354</a>.</p></li>
 </ul>
 </section>
+<section id="read-error-wrapping">
+<h3>Read Error Wrapping<a class="headerlink" href="#read-error-wrapping" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p><strong>Spark 3.x: <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_MILLIS</span></code> overflow past the first batch is wrapped in a file-read error</strong>.
+When a Parquet <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_MILLIS</span></code> value overflows on conversion to microseconds, Spark’s reader
+throws <code class="docutils literal notranslate"><span class="pre">ArithmeticException:</span> <span class="pre">long</span> <span class="pre">overflow</span></code>. Spark 3.4 and 3.5 wrap a reader error in a
+<code class="docutils literal notranslate"><span class="pre">SparkException</span></code> that names the file only while reading the first batch of each file split. For
+the vectorized reader, that batch is the first <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.columnarReaderBatchSize</span></code> rows
+(4096 by default), or the first row group if that is smaller. An overflow in a later batch fails
+the task with the bare <code class="docutils literal notranslate"><span class="pre">ArithmeticException</span></code>. Spark 4.0+ wraps errors from every batch, and so does
+Comet on every Spark version. So on Spark 3.x, an overflow past the first batch produces a Comet
+error that names the file and has one more <code class="docutils literal notranslate"><span class="pre">SparkException</span></code> above the <code class="docutils literal notranslate"><span class="pre">ArithmeticException</span></code> in
+its cause chain than Spark’s error.</p></li>
+</ul>
+</section>
 </section>
 <section id="writing">
 <h2>Writing<a class="headerlink" href="#writing" title="Link to this heading">#</a></h2>
@@ -1258,6 +1273,7 @@ Comet resolves the fields by id.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unsupported-features-fall-back-to-spark">Unsupported features: fall back to Spark</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unsupported-features-error-at-scan-time">Unsupported features: error at scan time</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#schema-mismatch-handling">Schema Mismatch Handling</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#read-error-wrapping">Read Error Wrapping</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing">Writing</a></li>
