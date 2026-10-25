@@ -733,7 +733,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       PropertyKeys.ParquetBloomFilterColumnFppPrefix,
       PropertyKeys.ParquetBloomFilterColumnNdvPrefix)
     if (ctx.properties.keys.exists(key => prefixes.exists(key.startsWith))) {
-      bloomFilterRuntimeRejection(IcebergReflection.icebergVersion())
+      bloomFilterRuntimeRejection(IcebergReflection.icebergVersion(), ctx.properties)
     } else {
       None
     }
@@ -748,8 +748,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
-  private[operator] def bloomFilterRuntimeRejection(icebergVersion: String): Option[String] = {
+  private[operator] def bloomFilterRuntimeRejection(
+      icebergVersion: String,
+      properties: Map[String, String] = Map.empty): Option[String] = {
     bloomFilterVersion(icebergVersion) match {
+      case Some((1, minor))
+          if (minor == 6 || minor == 7) && properties.keys.exists(
+            _.startsWith(PropertyKeys.ParquetBloomFilterColumnFppPrefix)) =>
+        Some(
+          s"Iceberg $icebergVersion applies ${PropertyKeys.ParquetBloomFilterColumnFppPrefix}* " +
+            "independently; these settings require Java validation")
       case Some((1, minor)) if minor >= 10 => None
       case Some((1, _)) =>
         Some(s"Native Bloom writes require Iceberg 1.10 or later; found '$icebergVersion'")

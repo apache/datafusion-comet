@@ -172,6 +172,25 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(error.getMessage.contains("lookup failed: id"))
   }
 
+  test("Iceberg 1.6 and 1.7 retain independent FPP validation even without enabled columns") {
+    val fpp = Map("write.parquet.bloom-filter-fpp.column.missing" -> "garbage")
+    Seq("1.6.1", "1.7.2").foreach { version =>
+      Seq(fpp, fpp + ("write.parquet.bloom-filter-enabled.column.id" -> "false")).foreach {
+        props =>
+          assert(
+            CometIcebergNativeWrite
+              .bloomFilterRuntimeRejection(version, props)
+              .exists(_.contains("independently")))
+      }
+    }
+    Seq("1.5.2", "1.8.1", "1.10.0", "1.11.0").foreach { version =>
+      assert(
+        !CometIcebergNativeWrite
+          .bloomFilterRuntimeRejection(version, fpp)
+          .exists(_.contains("independently")))
+    }
+  }
+
   // -- compression -----------------------------------------------------------
 
   test("compression defaults to zstd at parquet-mr's level 3 when no property is set") {
