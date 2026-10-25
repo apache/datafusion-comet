@@ -793,6 +793,37 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("extractScanObjectStoreOptions - a URL password stays out of a Hadoop message") {
+    // Hadoop reads `data:url-password` as the container and rejects the short account name with
+    // a message that quotes the whole URI.
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta", "a2V5LWE=")
+    val uri = new URI("abfss://data:url-password@accta/path/a.parquet")
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq(uri)) match {
+      case Left(reason) =>
+        reason should include("account name is not fully qualified")
+        reason should include("abfss://data@accta")
+        reason should not include "url-password"
+      case Right(options) => fail(s"expected a fallback, got $options")
+    }
+  }
+
+  test("nativeFallbackReason - names the classes of a declined Workload Identity and SAS") {
+    val uri = abfsFile("data", "accta", "a.parquet")
+    val assertion = AbfsAuthResolver.Declined(
+      "OAuth",
+      Some(Providers.WORKLOAD_IDENTITY),
+      Some("com.example.Assertion"))
+    val reason = AbfsAuthResolver.nativeFallbackReason(uri, assertion).get
+    reason should include("auth type OAuth")
+    reason should include(s"with provider ${Providers.WORKLOAD_IDENTITY}")
+    reason should include("and client assertion provider com.example.Assertion")
+
+    val userbound = AbfsAuthResolver.Declined("UserboundSASWithOAuth", None)
+    AbfsAuthResolver.nativeFallbackReason(uri, userbound).get should include(
+      "auth type UserboundSASWithOAuth")
+  }
+
   test("extractScanObjectStoreOptions - a custom SAS token provider falls back to Spark") {
     val providerClass = classOf[NeverInstantiatedSasTokenProvider].getName
     assertFallsBack(
@@ -844,6 +875,43 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     val options = NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris).toOption.get
     options shouldBe NativeConfig.extractObjectStoreOptions(hadoopConf, uris.head)
     options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
+  }
+
+  test("extractScanObjectStoreOptions - every supported OAuth and SAS mechanism stays native") {
+    val handles = AbfsReflection.handles(getClass.getClassLoader).get
+    val clientEndpoint = "https://login.microsoftonline.com/tenant/oauth2/token"
+    val supported = Seq(
+      "ClientCredsTokenProvider" -> Seq(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.CLIENT_CREDS,
+        Keys.CLIENT_ENDPOINT -> clientEndpoint,
+        Keys.CLIENT_ID -> "client-123",
+        Keys.CLIENT_SECRET -> "client-secret-value"),
+      "MsiTokenProvider" -> Seq(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.MSI,
+        Keys.MSI_TENANT -> "tenant-abc",
+        Keys.CLIENT_ID -> "client-123"))
+    val needsNewerHadoop = Seq(
+      "WorkloadIdentityTokenProvider" -> Seq(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.WORKLOAD_IDENTITY,
+        Keys.MSI_TENANT -> "tenant-abc",
+        Keys.CLIENT_ID -> "client-123"),
+      "fixed SAS token" -> Seq(
+        Keys.AUTH_TYPE -> "SAS",
+        Keys.SAS_FIXED_TOKEN -> "sv=2020-08-04&sig=fixed-signature"))
+    val cases = supported ++ (if (handles.hasFixedSasTokenProvider) needsNewerHadoop else Nil)
+    val uris = Seq(abfsFile("data", "accta", "a.parquet"))
+    cases.foreach { case (name, pairs) =>
+      withClue(s"$name: ") {
+        val hadoopConf = abfsScanConf(pairs: _*)
+        NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+          case Right(options) => options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
+          case Left(reason) => fail(s"expected native options, got a fallback: $reason")
+        }
+      }
+    }
   }
 
   test("extractScanObjectStoreOptions - non-abfs scans forward every scheme's options") {

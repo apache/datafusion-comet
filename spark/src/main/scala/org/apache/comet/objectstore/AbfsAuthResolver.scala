@@ -480,9 +480,10 @@ private[comet] object AbfsAuthResolver extends Logging {
     // The container and host only: a password in the user info stays out of the reason.
     val authority = Option(uri.getRawAuthority).getOrElse("")
     val at = authority.lastIndexOf('@')
-    val location = s"${uri.getScheme}://" +
-      (if (at < 0) authority
-       else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at))
+    val safeAuthority =
+      if (at < 0) authority
+      else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at)
+    val location = s"${uri.getScheme}://$safeAuthority"
     def unsupported(mechanism: String): String =
       s"Native scan does not support ABFS authentication $mechanism for $location"
     outcome match {
@@ -496,7 +497,10 @@ private[comet] object AbfsAuthResolver extends Logging {
             _) =>
         Some(unsupported(s"auth type ${AuthTypes.OAUTH} with provider $c"))
       case Failed(_, message) =>
-        Some(s"Hadoop ABFS authentication failed on the driver for $location: $message")
+        // Some of Hadoop's own messages quote the whole URI, user info included.
+        val safeMessage =
+          if (authority.isEmpty) message else message.replace(authority, safeAuthority)
+        Some(s"Hadoop ABFS authentication failed on the driver for $location: $safeMessage")
       case _: Resolved | Unconfigured => None
     }
   }
