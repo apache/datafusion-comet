@@ -21,11 +21,13 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast, Divide}
+import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, supportedDataType, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -119,6 +121,62 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     withSharedSubexpressions(Seq(contains, position)) {
       assert(!canShortCircuitNulls(contains))
       assert(!canShortCircuitNulls(position))
+    }
+  }
+
+  test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType)
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val contains = ArrayContains(array, cast)
+    val shared = Seq(contains, ArrayPosition(array, cast))
+
+    def withSubexpressionElimination(enabled: Boolean)(f: => Unit): Unit = {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        assert(SQLConf.get.subexpressionEliminationEnabled == enabled)
+        f
+      }
+    }
+
+    withSubexpressionElimination(enabled = false) {
+      withSharedSubexpressions(shared) {
+        assert(canShortCircuitNulls(contains))
+      }
+      withSharedSubexpressions(shared, alwaysShared = true) {
+        assert(!canShortCircuitNulls(contains))
+      }
+      // Outside an operator's conversion what they share is still unknown
+      assert(!canShortCircuitNulls(contains))
+    }
+  }
+
+  test("canSkipEvaluation recognizes shared subexpressions across decimal promotion") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val cast = Cast(Divide(left, right), IntegerType)
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val contains = ArrayContains(array, cast)
+    val position = ArrayPosition(array, cast)
+    val promoted = DecimalPrecision.promote(cast)
+    assert(!cast.semanticEquals(promoted))
+
+    for (enabled <- Seq(false, true); alwaysShared <- Seq(false, true)) {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        withSharedSubexpressions(Seq(contains, position), alwaysShared) {
+          val canSkip = !(enabled || alwaysShared)
+          assert(canSkipEvaluation(Seq(cast)) == canSkip)
+          assert(canSkipEvaluation(Seq(promoted)) == canSkip)
+          assert(canShortCircuitNulls(contains) == canSkip)
+          assert(canShortCircuitNulls(DecimalPrecision.promote(contains)) == canSkip)
+        }
+        withSharedSubexpressions(Seq(contains), alwaysShared) {
+          assert(canSkipEvaluation(Seq(cast)))
+          assert(canSkipEvaluation(Seq(promoted)))
+        }
+      }
     }
   }
 }

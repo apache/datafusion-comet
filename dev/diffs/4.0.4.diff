@@ -39,7 +39,7 @@ index 6c51bd4ff2e..e72ec1d26e2 100644
        withSpark(sc) { sc =>
          TestUtils.waitUntilExecutorsUp(sc, 2, 60000)
 diff --git a/pom.xml b/pom.xml
-index 046f357ff79..7c6fd199e41 100644
+index 046f357ff79..fdebc0904d5 100644
 --- a/pom.xml
 +++ b/pom.xml
 @@ -148,6 +148,8 @@
@@ -47,7 +47,7 @@ index 046f357ff79..7c6fd199e41 100644
      <ivy.version>2.5.3</ivy.version>
      <oro.version>2.0.8</oro.version>
 +    <spark.version.short>4.0</spark.version.short>
-+    <comet.version>1.2.0-SNAPSHOT</comet.version>
++    <comet.version>1.3.0-SNAPSHOT</comet.version>
      <!--
      If you change codahale.metrics.version, you also need to change
      the link to metrics.dropwizard.io in docs/monitoring.md.
@@ -78,7 +78,7 @@ index 046f357ff79..7c6fd199e41 100644
        <dependency>
          <groupId>org.apache.datasketches</groupId>
 diff --git a/project/SparkBuild.scala b/project/SparkBuild.scala
-index 9c2312ed256..09026e8dc8a 100644
+index 9c2312ed256..6bc184ca650 100644
 --- a/project/SparkBuild.scala
 +++ b/project/SparkBuild.scala
 @@ -414,9 +414,11 @@ object SparkBuild extends PomBuild {
@@ -93,7 +93,7 @@ index 9c2312ed256..09026e8dc8a 100644
  
    enable(HiveThriftServer.settings)(hiveThriftServer)
  
-@@ -1183,6 +1185,35 @@ object SQL {
+@@ -1183,6 +1185,37 @@ object SQL {
    }
  }
  
@@ -101,10 +101,11 @@ index 9c2312ed256..09026e8dc8a 100644
 + * Comet disables itself when its shuffle manager is not registered. When Comet is enabled, make
 + * that shuffle manager the default for every test SparkConf in the modules that have Comet on
 + * their classpath, so that suites which build their own SparkSession or SparkContext run Comet
-+ * too, not just the ones that go through SharedSparkSession or TestHive. Comet's cache serializer
-+ * is made the default the same way. Spark keeps the first cache serializer it loads for the rest
-+ * of the JVM, so a suite that caches through a session of its own would otherwise leave the
-+ * suites after it in Spark's cache format.
++ * too, not just the ones that go through SharedSparkSession or TestHive. Comet's in-memory
++ * cache, which is disabled by default, is turned on the same way, and its serializer made the
++ * default. Spark keeps the first cache serializer it loads for the rest of the JVM, so a suite
++ * that caches through a session of its own would otherwise leave the suites after it in Spark's
++ * cache format.
 + */
 +object CometTestSettings {
 +  private val cometEnabled =
@@ -113,6 +114,7 @@ index 9c2312ed256..09026e8dc8a 100644
 +  private val defaults = Seq(
 +    "spark.shuffle.manager" ->
 +      "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager",
++    "spark.comet.exec.inMemoryCache.enabled" -> "true",
 +    "spark.sql.cache.serializer" ->
 +      "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +
@@ -4482,10 +4484,10 @@ index f0f3f94b811..b7d18771314 100644
  
      spark.internalCreateDataFrame(withoutFilters.execute(), schema)
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-index 720b13b812e..388dad6b4f3 100644
+index 720b13b812e..34950a76bde 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/test/SharedSparkSession.scala
-@@ -98,6 +98,25 @@ trait SharedSparkSessionBase
+@@ -98,6 +98,28 @@ trait SharedSparkSessionBase
        // this rule may potentially block testing of other optimization rules such as
        // ConstantPropagation etc.
        .set(SQLConf.OPTIMIZER_EXCLUDED_RULES.key, ConvertToLocalRelation.ruleName)
@@ -4502,11 +4504,14 @@ index 720b13b812e..388dad6b4f3 100644
 +          "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +        .set("spark.comet.shuffle.enabled", "true")
 +
-+      // CometDriverPlugin installs Comet's cache serializer when
-+      // spark.comet.exec.inMemoryCache.enabled is on, as it is by default. These sessions do not
-+      // load the plugin, so install it here.
-+      conf.set("spark.sql.cache.serializer",
-+        "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
++      // Comet's in-memory cache is disabled by default, so turn it on to run these suites
++      // against Comet's cache format. CometDriverPlugin installs Comet's cache serializer when
++      // spark.comet.exec.inMemoryCache.enabled is on, but these sessions do not load the plugin,
++      // so install it here.
++      conf
++        .set("spark.comet.exec.inMemoryCache.enabled", "true")
++        .set("spark.sql.cache.serializer",
++          "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +    }
      conf.set(
        StaticSQLConf.WAREHOUSE_PATH,
@@ -4629,10 +4634,10 @@ index b67370f6eb9..746b3974b29 100644
    override def beforeEach(): Unit = {
      super.beforeEach()
 diff --git a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-index a394d0b7393..9c626b05ab2 100644
+index a394d0b7393..d59a3bf7f0f 100644
 --- a/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
 +++ b/sql/hive/src/test/scala/org/apache/spark/sql/hive/test/TestHive.scala
-@@ -53,24 +53,38 @@ object TestHive
+@@ -53,24 +53,41 @@ object TestHive
      new SparkContext(
        System.getProperty("spark.sql.test.master", "local[1]"),
        "TestSQLContext",
@@ -4678,9 +4683,12 @@ index a394d0b7393..9c626b05ab2 100644
 +              "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
 +            .set("spark.comet.shuffle.enabled", "true")
 +
-+          // As in SharedSparkSession: what CometDriverPlugin would install.
-+          conf.set("spark.sql.cache.serializer",
-+            "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
++          // As in SharedSparkSession: Comet's in-memory cache, and the serializer
++          // CometDriverPlugin would install for it.
++          conf
++            .set("spark.comet.exec.inMemoryCache.enabled", "true")
++            .set("spark.sql.cache.serializer",
++              "org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer")
 +        }
 +
 +        conf

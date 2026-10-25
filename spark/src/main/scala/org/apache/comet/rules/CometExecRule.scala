@@ -25,15 +25,16 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Expression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.comet.shims.{ShimCometEmptyRelation, ShimCometOneRowRelation}
+import org.apache.spark.sql.comet.shims.{ShimCometArrowEvalPythonExec, ShimCometEmptyRelation, ShimCometOneRowRelation}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, BroadcastQueryStageExec, LogicalQueryStage, QueryStageExec, ShuffleQueryStageExec}
@@ -44,10 +45,12 @@ import org.apache.spark.sql.execution.datasources.{InsertIntoHadoopFsRelationCom
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
 import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.text.TextFileFormat
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, V2CommandExec}
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
 import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
+import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
@@ -125,6 +128,7 @@ object CometExecRule {
       classOf[WindowExec] -> CometWindowExec) ++
       // EmptyRelationExec was introduced in Spark 4.0.
       ShimCometEmptyRelation.emptyRelationClass.map(_ -> CometEmptyRelationExec) ++
+      ShimCometArrowEvalPythonExec.nativeOperator ++
       // WindowGroupLimitExec exists only on Spark 3.5+; the shim returns None on 3.4.
       ShimCometWindowGroupLimit.windowGroupLimitClass.map(_ -> CometWindowGroupLimitExec) ++
       // MergeRowsExec exists only on Spark 3.5+; the shim is empty on 3.4.
@@ -190,6 +194,26 @@ object CometExecRule {
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
     "Spark to Arrow conversion is not compatible with input_file_name, " +
       "input_file_block_start, or input_file_block_length"
+
+  /**
+   * Why Comet does not bridge a Text scan on a broadcast build side. A Text file can hold bytes
+   * that are not valid UTF-8, and the conversion replaces them with U+FFFD. See issue #7118.
+   */
+  private val TEXT_BUILD_SIDE_FALLBACK_REASON: String =
+    "Comet converts a Text scan on a broadcast build side to Arrow only when " +
+      s"${CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key}=true, because a Text " +
+      "file can hold bytes that are not valid UTF-8"
+
+  /**
+   * Tag set on a scan leaf that sits on a broadcast join's build side. When
+   * `spark.comet.convert.broadcastBuildSide.enabled` is on, such a scan is bridged to Arrow with
+   * `CometSparkToColumnarExec` even when the general sparkToColumnar path is off, so the build
+   * branch and the broadcast join can run natively. The build side is usually small, so the row
+   * to Arrow copy is usually cheap - see `tagBroadcastBuildSideLeaves` for the caveats. See issue
+   * #6008.
+   */
+  val BROADCAST_BUILD_SIDE_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
+    org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.broadcastBuildSideLeaf")
 }
 
 /**
@@ -441,6 +465,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case scan: CometBatchScanExec if scan.nativeIcebergScanMetadata.isDefined =>
         convertToComet(scan, CometIcebergNativeScan).getOrElse(scan)
 
+      // A declined native CSV scan falls back to Spark's scan, which produces rows.
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 
@@ -611,7 +636,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             newPlan
               .getTagValue(CometExplainInfo.FALLBACK_REASONS)
               .foreach(reasons => withFallbackReasons(plan, reasons))
-            // return the original plan
+            // The join stays on Spark. Any #6008 build-side bridge we inserted is left under a
+            // plain Spark BroadcastExchangeExec here; clearWastedBuildSideBridges undoes it after
+            // the transform. See issue #6008.
             plan
           }
         } else {
@@ -700,13 +727,71 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(refreshStaleShuffleScans(op))
+      val converted = convertNode(limitCollectProjectionInput(refreshStaleShuffleScans(op)))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
       // will have the same CometBroadcastExchangeExec type and canonical form.
       convertSubqueryBroadcasts(converted)
     }
+  }
+
+  /**
+   * Spark's collect limit consumes at most `limit` rows per partition, but a native projection
+   * evaluates its whole input batch before that limit can stop reading. Limit the projection's
+   * input first so an expression on an unconsumed row cannot raise an error. Keep the outer
+   * limit: it still combines partitions and drops OFFSET rows, which Spark evaluates before
+   * dropping.
+   *
+   * Only handle an immediately adjacent native projection. A filter or join between the limit and
+   * projection can require more input rows, and a blocking operator must consume its input.
+   * Non-collect LocalLimit/GlobalLimit plans can still evaluate a projection before limiting its
+   * output. That preexisting gap and throwing filter predicates are tracked separately in
+   * https://github.com/apache/datafusion-comet/issues/7147.
+   */
+  private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
+    case limit: CollectLimitExec if limit.limit >= 0 =>
+      limit.child match {
+        case project: CometProjectExec =>
+          // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
+          // native planning can prune columns used only by the filter's predicate.
+          val onlyColumns = project.projectList.forall {
+            case _: Attribute | Alias(_: Attribute, _) => true
+            case _ => false
+          }
+          val alreadyCapped = project.child match {
+            case cap: CometLocalLimitExec => cap.limit <= limit.limit
+            case _ => false
+          }
+          if (onlyColumns || alreadyCapped) {
+            op
+          } else {
+            // Use normal config and serde gating for the synthetic limit. If conversion fails,
+            // its fallback tags are discarded with it and the original plan is retained.
+            val bounded = for {
+              cap <- convertToComet(
+                LocalLimitExec(limit.limit, project.child),
+                CometLocalLimitExec)
+              rebuilt <- convertToComet(
+                project.originalPlan.withNewChildren(Seq(cap)),
+                CometProjectExec)
+            } yield {
+              // AQE can link the current projection to a materialized logical query stage.
+              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
+              // (which only copies into an empty tag map) would not preserve the current link.
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
+              }
+              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
+                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
+              }
+              limit.withNewChildren(Seq(rebuilt))
+            }
+            bounded.getOrElse(op)
+          }
+        case _ => op
+      }
+    case _ => op
   }
 
   /**
@@ -973,7 +1058,19 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // during the bottom-up conversion. Tags persist through AQE stage creation.
       tagUnsafePartialAggregates(planWithJoinRewritten)
 
-      var newPlan = revertUnsafePartialAggregates(transform(planWithJoinRewritten))
+      // Tag leaves on broadcast join build sides so shouldApplySparkToColumnar can bridge an
+      // unsupported build-side scan (e.g. ORC) to Arrow and let the join run natively (#6008).
+      tagBroadcastBuildSideLeaves(planWithJoinRewritten)
+
+      var transformed = transform(planWithJoinRewritten)
+      // A build-side bridge is only worth keeping when its broadcast join went native. Where the
+      // join stayed on Spark, clearWastedBuildSideBridges clears the tag from those scans and we
+      // transform once more so the build side rebuilds exactly as it would without the feature.
+      // See issue #6008.
+      if (clearWastedBuildSideBridges(transformed)) {
+        transformed = transform(planWithJoinRewritten)
+      }
+      var newPlan = revertUnsafePartialAggregates(transformed)
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
@@ -1087,20 +1184,21 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /** Convert a Spark plan to a Comet plan using the specified serde handler */
-  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] = {
-    val converted = tryConvertToComet(op, handler)
-    if (converted.isEmpty) {
-      // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
-      // reasons recorded on its expressions onto the operator itself - see
-      // `rollUpFallbackReasons` for why this is needed - and then make sure something was
-      // recorded. The order is required, not incidental: `reportUnexplainedFallback` inspects only
-      // the operator's own tag, so a reason still sitting on an expression would look like no
-      // reason at all and trip the strict check.
-      rollUpFallbackReasons(op)
-      reportUnexplainedFallback(op)
+  private def convertToComet(op: SparkPlan, handler: CometOperatorSerde[_]): Option[SparkPlan] =
+    CometExplainInfo.withFallbackReasonScope {
+      val converted = tryConvertToComet(op, handler)
+      if (converted.isEmpty) {
+        // Comet looked at this operator and declined it, so it stays in the Spark plan. Lift any
+        // reasons recorded on its expressions onto the operator itself - see
+        // `rollUpFallbackReasons` for why this is needed - and then make sure something was
+        // recorded. `reportUnexplainedFallback` inspects only the operator's own tag, so a reason
+        // still sitting on an expression would look like no reason at all and trip the strict
+        // check. Keep these two calls together and in this order.
+        rollUpFallbackReasons(op)
+        reportUnexplainedFallback(op)
+      }
+      converted
     }
-    converted
-  }
 
   private def tryConvertToComet(
       op: SparkPlan,
@@ -1135,8 +1233,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
       val builder = OperatorOuterClass.Operator.newBuilder().setPlanId(op.id)
       // Which subexpressions Spark evaluates for every row decides where native execution may
-      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`)
-      val nativeOp = QueryPlanSerde.withSharedSubexpressions(op.expressions) {
+      // skip a function's arguments (see `QueryPlanSerde.canShortCircuitNulls`). Spark's
+      // generated code for an aggregate shares them whatever
+      // spark.sql.subexpressionElimination.enabled says, and other operators only when it is on.
+      val nativeOp = QueryPlanSerde.withSharedSubexpressions(
+        op.expressions,
+        alwaysShared = op.isInstanceOf[BaseAggregateExec]) {
         if (op.children.nonEmpty && op.children.forall(_.isInstanceOf[CometNativeExec])) {
           val childOp = op.children.map(_.asInstanceOf[CometNativeExec].nativeOp)
           childOp.foreach(builder.addChildren)
@@ -1164,8 +1266,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * used to be hand-written at every serde call site (see
    * https://github.com/apache/datafusion-comet/issues/5230).
    *
-   * Only child *expressions* are collected, not child operators: reasons on a child operator are
-   * already reachable by the explain traversal via `children`.
+   * Only reasons recorded for these expression instances during this conversion are collected.
+   * Tags alone are insufficient: Catalyst may have copied one onto a shared singleton. Only child
+   * *expressions* are collected, not child operators: reasons on a child operator are already
+   * reachable by the explain traversal via `children`.
    *
    * Called only when `op` was left in the Spark plan, which scopes the roll-up to the operator
    * that actually failed conversion. That matters because some expression instances
@@ -1174,11 +1278,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    *
    * [[reportUnexplainedFallback]] relies on this having run first; the two must not be separated.
    */
-  private def rollUpFallbackReasons(op: SparkPlan): Unit = {
+  private[comet] def rollUpFallbackReasons(op: SparkPlan): Unit = {
     val reasons = op.expressions
       .flatMap(_.collect { case e: Expression => e })
-      .flatMap(_.getTagValue(CometExplainInfo.FALLBACK_REASONS))
-      .flatten
+      .flatMap(CometExplainInfo.currentFallbackReasons)
       .toSet
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(op, reasons)
@@ -1428,7 +1531,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _: CSVFileFormat => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
             case _: JsonFileFormat => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
             case _: ParquetFileFormat => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
-            case _ => isSparkToArrowEnabled(conf, op)
+            case _: TextFileFormat => shouldConvertTextScan(conf, op)
+            // Unsupported format (e.g. ORC): bridge it if the general opt-in is on or it feeds a
+            // broadcast build side. The per-format arms above keep honoring their own switches.
+            case _ => shouldBridgeUnsupportedScan(conf, op)
           }
         // Convert Spark DS v2 scan to Arrow format
         case scan: BatchScanExec =>
@@ -1436,7 +1542,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _: CSVScan => CometConf.COMET_CONVERT_FROM_CSV_ENABLED.get(conf)
             case _: JsonScan => CometConf.COMET_CONVERT_FROM_JSON_ENABLED.get(conf)
             case _: ParquetScan => CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.get(conf)
-            case _ => isSparkToArrowEnabled(conf, op)
+            case _: TextScan => shouldConvertTextScan(conf, op)
+            case _ => shouldBridgeUnsupportedScan(conf, op)
           }
         case _: RangeExec =>
           isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_RANGE_ENABLED)
@@ -1478,6 +1585,216 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
       deprecated
     }
+  }
+
+  /**
+   * An unsupported file-source scan is bridged to Arrow when the general sparkToColumnar opt-in
+   * covers it, or when it feeds a broadcast join's build side (see issue #6008). This is only
+   * reached from the unsupported-format arms, so the per-format `COMET_CONVERT_FROM_*` switches
+   * for CSV/JSON/Parquet/Text still take precedence.
+   */
+  private def shouldBridgeUnsupportedScan(conf: SQLConf, op: SparkPlan): Boolean =
+    isSparkToArrowEnabled(conf, op) || isBroadcastBuildSideLeaf(op)
+
+  /**
+   * A Text scan is converted only by `spark.comet.convert.text.enabled`, like CSV, JSON and
+   * Parquet, and so is a Text scan on a broadcast build side: a Text file can hold bytes that are
+   * not valid UTF-8, for example a Latin-1 file, and the conversion replaces them with U+FFFD, so
+   * results that depend on the original bytes would differ from Spark. A Text build side that the
+   * bridge would otherwise convert records why it did not, so the explain output names the
+   * config. See issue #7118.
+   */
+  private def shouldConvertTextScan(conf: SQLConf, op: SparkPlan): Boolean =
+    isConversionEnabled(conf, op, CometConf.COMET_CONVERT_FROM_TEXT_ENABLED) || {
+      if (isBroadcastBuildSideLeaf(op)) {
+        withFallbackReason(op, CometExecRule.TEXT_BUILD_SIDE_FALLBACK_REASON)
+      }
+      false
+    }
+
+  /**
+   * True when the build-side auto-bridge should run: its own config is on and Comet broadcast
+   * exchange conversion is enabled. Without the latter the `BroadcastExchangeExec` cannot become
+   * a `CometBroadcastExchangeExec`, so bridging the build side would only add a row to Arrow copy
+   * for no native join. This does not also check the join serdes
+   * (COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED / COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED): if
+   * the exchange converts but the join does not, `clearWastedBuildSideBridges` clears the tag
+   * after the transform and a second transform rebuilds the Spark build side, so a leftover copy
+   * never reaches runtime. See issue #6008.
+   */
+  private def broadcastBuildSideBridgeEnabled: Boolean =
+    CometConf.COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED.get(conf) &&
+      CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf)
+
+  /**
+   * True when `op` is a scan on a broadcast join's build side and build-side bridging is enabled.
+   * `tagBroadcastBuildSideLeaves` only sets the tag when bridging is enabled, but the tag lives
+   * on the physical node and can survive onto a reused instance, so re-check here: a stale tag
+   * must not bridge a scan once the feature is turned off. A tagged scan is bridged to Arrow even
+   * when the general sparkToColumnar path is off, letting the build branch and the join run
+   * natively. See issue #6008.
+   */
+  private def isBroadcastBuildSideLeaf(op: SparkPlan): Boolean =
+    broadcastBuildSideBridgeEnabled &&
+      op.getTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG).isDefined
+
+  /**
+   * Tag the file-source scan leaves on a broadcast join's build side so
+   * shouldApplySparkToColumnar can bridge an unsupported build-side scan (e.g. an ORC scan) to
+   * Arrow, letting the whole join run natively. The build side is usually small (auto-broadcasts
+   * are capped by the broadcast threshold), so the row to Arrow copy is usually cheap - but that
+   * is a heuristic, not a bound: an explicit BROADCAST hint can force a larger build side, and a
+   * selective filter above the scan means the bridge copies the pre-filter scan output. See issue
+   * #6008.
+   *
+   * The bridge is applied ONLY when the probe side is already natively scannable, i.e. the join
+   * can actually become a fully native CometBroadcastHashJoinExec. Bridging a build side under a
+   * join that stays on Spark is pure overhead and, worse, it rewrites the build broadcast's
+   * subtree to Comet and breaks Spark's DPP broadcast reuse (the DPP subquery keeps an unbridged
+   * copy of the same scan, so the two exchanges no longer share a canonical form). CometScanRule
+   * has already run by this point, so a native probe scan is a Comet scan and an unsupported
+   * probe scan is still a plain Spark scan - see `hasOnlyNativeScans`.
+   *
+   * Only `FileSourceScanExec` / `BatchScanExec` are tagged - the scan types the per-format arms
+   * of shouldApplySparkToColumnar handle. A natively scannable file (e.g. Parquet) is normally
+   * already a `CometScanExec` here; if native scan conversion did not take, its
+   * `FileSourceScanExec` is still tagged, but the tag is harmless because the per-format arm
+   * decides that scan before isBroadcastBuildSideLeaf is ever consulted. DPP subquery broadcasts
+   * live in expressions, not `children`, so `foreach` never reaches them - that scope is
+   * intentional.
+   */
+  private def tagBroadcastBuildSideLeaves(plan: SparkPlan): Unit = {
+    if (!broadcastBuildSideBridgeEnabled) {
+      return
+    }
+    plan.foreach {
+      case j: BroadcastHashJoinExec =>
+        tagBuildIfProbeNative(
+          j.buildSide,
+          j.left,
+          j.right,
+          CometConf.COMET_EXEC_BROADCAST_HASH_JOIN_ENABLED)
+      case j: BroadcastNestedLoopJoinExec =>
+        tagBuildIfProbeNative(
+          j.buildSide,
+          j.left,
+          j.right,
+          CometConf.COMET_EXEC_BROADCAST_NESTED_LOOP_JOIN_ENABLED)
+      case _ =>
+    }
+  }
+
+  /**
+   * Tag the build side's file-source scans, but only when the join looks like it can become a
+   * native Comet broadcast join: the probe side is natively scannable and the join's own serde is
+   * enabled. This is a best-effort gate that avoids inserting a bridge we would only tear down
+   * again - it cannot see every reason a join stays on Spark (an unsupported operator above a
+   * native probe scan, or a join type the serde declines), so `clearWastedBuildSideBridges` is
+   * the backstop that undoes any bridge left under a Spark `BroadcastExchangeExec` after the
+   * transform. Skipping here still matters because a bridge under a Spark broadcast breaks
+   * Spark's DPP broadcast reuse until it is torn down (the DPP subquery keeps an unbridged copy).
+   * We skip when:
+   *   - the join's own serde is disabled (`joinEnabled`), so it will stay on Spark; or
+   *   - the build-side `BroadcastExchangeExec` carries `SKIP_COMET_BROADCAST_TAG`, which
+   *     `CometSpark34AqeDppFallbackRule` sets on Spark 3.4 to keep the broadcast Spark-native so
+   *     `PlanAdaptiveDynamicPruningFilters` can match it (bridging it would turn DPP off). See
+   *     issue #6008.
+   */
+  private def tagBuildIfProbeNative(
+      buildSide: BuildSide,
+      left: SparkPlan,
+      right: SparkPlan,
+      joinEnabled: ConfigEntry[Boolean]): Unit = {
+    if (!joinEnabled.get(conf)) {
+      return
+    }
+    val (buildPlan, probePlan) = buildSide match {
+      case BuildLeft => (left, right)
+      case BuildRight => (right, left)
+    }
+    val skipForDpp = buildPlan match {
+      case b: BroadcastExchangeExec =>
+        b.getTagValue(CometExecRule.SKIP_COMET_BROADCAST_TAG).isDefined
+      case _ => false
+    }
+    if (!skipForDpp && hasOnlyNativeScans(probePlan)) {
+      tagBuildSideScans(buildPlan)
+    }
+  }
+
+  /**
+   * Tag the broadcast dimension's own file-source scans, descending through its filters, projects
+   * and aggregations (incl. the aggregate's shuffle) but stopping at a nested join. A nested
+   * join's inputs are not the bounded broadcast dimension - its streamed side can be far larger
+   * than the broadcast output - so bridging them would copy a large input to Arrow for no reason.
+   * That nested join is tagged by its own pre-pass visit based on its own probe. See issue #6008.
+   */
+  private def tagBuildSideScans(plan: SparkPlan): Unit = plan match {
+    case scan @ (_: FileSourceScanExec | _: BatchScanExec) =>
+      scan.setTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG, ())
+    case _: BroadcastHashJoinExec | _: BroadcastNestedLoopJoinExec | _: ShuffledHashJoinExec |
+        _: SortMergeJoinExec =>
+    case other => other.children.foreach(tagBuildSideScans)
+  }
+
+  /**
+   * True when `plan` has at least one scan and none of its scan leaves is an unsupported plain
+   * Spark scan - i.e. every scan is already a Comet scan (CometScanRule ran before this rule).
+   * Used to decide whether a broadcast join's probe side can feed a native join. A probe that
+   * itself contains an unsupported scan (e.g. a DSv2 `InMemoryTableWithV2Filter` fact) keeps the
+   * join on Spark, so bridging its build side would only break DPP reuse.
+   */
+  private def hasOnlyNativeScans(plan: SparkPlan): Boolean = {
+    var sawNativeScan = false
+    var sawUnsupportedScan = false
+    plan.foreach {
+      case _: CometScanExec | _: CometNativeScanExec | _: CometBatchScanExec =>
+        sawNativeScan = true
+      case _: FileSourceScanExec | _: BatchScanExec =>
+        sawUnsupportedScan = true
+      case _ =>
+    }
+    sawNativeScan && !sawUnsupportedScan
+  }
+
+  /**
+   * After the main transform, a #6008 build-side bridge is left under a plain Spark
+   * `BroadcastExchangeExec` only when its broadcast join did not go native - an unsupported join
+   * type (e.g. a full outer `BroadcastNestedLoopJoinExec`), a build side the serde declined, or a
+   * probe that is not fully native (e.g. an unsupported operator above a native scan). Clear
+   * `BROADCAST_BUILD_SIDE_TAG` from every scan under such a broadcast so a second transform
+   * rebuilds that build side exactly as it would without the feature, and so a later AQE stage
+   * pass - which prepares the build stage on its own, without the join above it - does not bridge
+   * the scan again. Returns true if any tag was cleared.
+   *
+   * Two guards keep the walk honest. It stops at a `CometBroadcastExchangeExec` - a nested
+   * broadcast join that went native keeps its bridge. And it only clears a tag (and so asks for a
+   * second transform) when the tagged scan sits under a `CometSparkToColumnarExec`, i.e. it was
+   * actually bridged. A CSV/JSON/Parquet/Text scan whose per-format arm left it on Spark still
+   * carries the tag but was never bridged, so touching it would force a pointless second
+   * transform. The descent enters `CometScanWrapper`'s wrapped `originalPlan` by hand because it
+   * is a leaf, so a plain `foreach` would never reach the bridged scan inside it. See issue
+   * #6008.
+   */
+  private def clearWastedBuildSideBridges(plan: SparkPlan): Boolean = {
+    var cleared = false
+    def clearScanTags(node: SparkPlan, underBridge: Boolean): Unit = node match {
+      // A nested broadcast join that went native keeps its bridge.
+      case _: CometBroadcastExchangeExec =>
+      case w: CometScanWrapper => clearScanTags(w.originalPlan, underBridge)
+      case bridge: CometSparkToColumnarExec => clearScanTags(bridge.child, underBridge = true)
+      case other =>
+        if (underBridge && other.getTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG).isDefined) {
+          other.unsetTagValue(CometExecRule.BROADCAST_BUILD_SIDE_TAG)
+          cleared = true
+        }
+        other.children.foreach(clearScanTags(_, underBridge))
+    }
+    plan.foreach {
+      case b: BroadcastExchangeExec => clearScanTags(b, underBridge = false)
+      case _ =>
+    }
+    cleared
   }
 
   private def isSparkToArrowEnabled(conf: SQLConf, op: SparkPlan) = {
@@ -1714,7 +2031,22 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
    * shared predicate helper would be preferable.
    */
-  private def canAggregateBeConverted(
+  private[rules] def canAggregateBeConverted(
+      agg: BaseAggregateExec,
+      expectedMode: AggregateMode): Boolean =
+    CometExplainInfo.withFallbackReasonScope {
+      val convertible = checkAggregateConversion(agg, expectedMode)
+      if (!convertible) {
+        // This preflight may discover an expression failure that actual conversion never reaches:
+        // the child can stay in Spark, making conversion decline on buffer compatibility first.
+        // Preserve this probe's diagnostics on their operator before discarding its journal.
+        // Reading only the journal keeps copied or stale expression tags out of the explanation.
+        rollUpFallbackReasons(agg)
+      }
+      convertible
+    }
+
+  private def checkAggregateConversion(
       agg: BaseAggregateExec,
       expectedMode: AggregateMode): Boolean = {
     val handler = allExecs.get(agg.getClass)
@@ -1724,8 +2056,6 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
-
-    if (groupingExpressions.isEmpty && aggregateExpressions.isEmpty) return false
 
     if (groupingExpressions.exists(e =>
         SupportLevel.containsType(e.dataType, classOf[MapType]))) {

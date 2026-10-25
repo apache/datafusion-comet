@@ -230,12 +230,17 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
 | `scan_io_metadata_cache_misses`            | Successful, cache-eligible metadata opens requiring storage reads. Failed opens and encrypted opens, which bypass this shared cache, increment neither cache counter.                                                        |
+| `scan_io_metadata_prefetches`              | Opens that used a load which read storage ahead of them, started when the previous file opened (`spark.comet.parquet.prefetchNextFileMetadata.enabled`). Each also counts as a cache miss.                                   |
 | `row_groups_pruned_dynamic_filter`         | Row groups skipped by a runtime predicate whose value changes during execution, such as a local TopK threshold.                                                                                                              |
 
 Reader-level and object-store bytes are two views of the same reads; do not add them together.
 Likewise, footer bytes are a subset of metadata bytes, not a third reader-level category. A warm
-metadata-cache hit contributes no new metadata or footer I/O. A valid plaintext footer followed by
-a page-index failure still contributes footer bytes; an invalid plaintext footer does not.
+metadata-cache hit contributes no new metadata or footer I/O. A prefetched load's footer and
+metadata bytes count when the prefetch reads them, so a prefetch that no open uses, because the
+scan stopped early or pruned the file before opening it, adds bytes with no matching cache miss and
+no `scan_io_metadata_prefetches`.
+A valid plaintext footer followed by a page-index failure still contributes footer bytes; an
+invalid plaintext footer does not.
 
 Remote counters follow the backend selected during object-store construction, including native
 S3 (`s3`/`s3a`), GCS (`gs`), Azure (`az`, `adl`, `azure`, `abfs`, `abfss`), and HTTP(S) stores.
@@ -250,6 +255,30 @@ coalescing and metadata overhead. For a metadata-only scan, data bytes are zero:
 metadata and remote totals instead of dividing by zero. Cancellation can leave late asynchronous
 work outside the final metric snapshot; these counters are not a guarantee of complete network
 traffic accounting after cancellation.
+
+### S3 HTTP attempts and retries
+
+Native Parquet scans of S3 paths also count the GETs observed by the HTTP connector and their
+retries, after range coalescing, without changing the retry policy:
+
+| Metric suffix        | Meaning                                              |
+| -------------------- | ---------------------------------------------------- |
+| `http_observed_gets` | GETs reaching the instrumented HTTP connector.       |
+| `http_retries`       | Calls after the first attempt for each observed GET. |
+
+The total number of HTTP attempts is `scan_io_http_observed_gets` plus `scan_io_http_retries`.
+Each scan counts only its own requests, even when scans share an S3 client.
+Retries include HTTP-status retries, interrupted-body resumes, and Comet's location-scoped
+re-routing after a permission error refreshes the credential locations. A nonzero retry count
+can therefore reflect stale location credentials as well as S3 throttling or network failures.
+HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
+handled inside reqwest are not counted.
+
+Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+HDFS scans always report zero, which does not mean their requests were never retried. This also
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a native S3 scan,
+`scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the number of
+GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 

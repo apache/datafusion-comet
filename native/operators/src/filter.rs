@@ -15,198 +15,48 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A DataFusion filter whose metrics remain owned by its Spark plan node.
-//!
-//! Comet normally keeps a one-to-one Spark/native plan tree so native metric
-//! handles map back to the corresponding Spark operator. Some execution-local
-//! rewrites need to replace a filter's child. DataFusion gives that replacement
-//! a new private metric set, so this adapter owns the stable metric set and
-//! registers the handles from the filter that actually executes.
+//! A DataFusion filter backed by the shared [MetricOwningExec] adapter.
 
-use std::fmt::Formatter;
 use std::sync::Arc;
 
-use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_err, Result, Statistics};
-use datafusion::execution::TaskContext;
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_plan::execution_plan::{
-    CardinalityEffect, ChildrenPropertiesMode, ReplaceChildrenOptions,
-};
 use datafusion::physical_plan::filter::FilterExec;
-use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricsSet};
-use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
-use datafusion::physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-};
+use datafusion::physical_plan::ExecutionPlan;
 
-#[derive(Debug)]
-pub struct CometFilterExec {
-    filter: FilterExec,
-    metrics: ExecutionPlanMetricsSet,
+use crate::metric_owning::{MetricOwningExec, UnaryExec};
+
+pub type CometFilterExec = MetricOwningExec<FilterExec>;
+
+/// Comet settings that a filter keeps through every rebuild.
+#[derive(Clone, Debug, Default)]
+pub struct FilterSettings {
+    allow_runtime_filter_pushdown: bool,
+}
+
+impl UnaryExec for FilterExec {
+    type Settings = FilterSettings;
+
+    fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        FilterExec::input(self)
+    }
 }
 
 impl CometFilterExec {
-    pub fn from_datafusion(filter: FilterExec) -> Self {
-        Self {
-            filter,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }
+    pub fn with_runtime_filter_pushdown(mut self, allowed: bool) -> Self {
+        self.settings_mut().allow_runtime_filter_pushdown = allowed;
+        self
     }
 
-    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
-        self.filter.input()
+    pub fn allows_runtime_filter_pushdown(&self) -> bool {
+        self.settings().allow_runtime_filter_pushdown
     }
 
     pub fn predicate(&self) -> &Arc<dyn PhysicalExpr> {
-        self.filter.predicate()
+        self.inner().predicate()
     }
 
     pub fn has_projection(&self) -> bool {
-        self.filter.projection().is_some()
-    }
-
-    fn replace_input(
-        &self,
-        input: Arc<dyn ExecutionPlan>,
-        options: ReplaceChildrenOptions,
-    ) -> Result<FilterExec> {
-        let replaced = Arc::new(self.filter.clone()).replace_children(vec![input], options)?;
-        let Some(filter) = replaced.downcast_ref::<FilterExec>() else {
-            return internal_err!("FilterExec child replacement changed its plan type");
-        };
-        Ok(filter.clone())
-    }
-
-    /// Replace the child for one execution while keeping the metric identity
-    /// owned by the permanent Spark filter node.
-    pub fn with_execution_input(
-        &self,
-        input: Arc<dyn ExecutionPlan>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        Ok(Arc::new(Self {
-            filter: self.replace_input(
-                input,
-                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-            )?,
-            metrics: self.metrics.clone(),
-        }))
-    }
-}
-
-impl DisplayAs for CometFilterExec {
-    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
-        self.filter.fmt_as(t, f)
-    }
-}
-
-impl ExecutionPlan for CometFilterExec {
-    fn name(&self) -> &str {
-        self.filter.name()
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        self.filter.properties()
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![self.filter.input()]
-    }
-
-    fn apply_expressions(
-        &self,
-        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        self.filter.apply_expressions(f)
-    }
-
-    fn maintains_input_order(&self) -> Vec<bool> {
-        self.filter.maintains_input_order()
-    }
-
-    fn replace_children(
-        self: Arc<Self>,
-        mut children: Vec<Arc<dyn ExecutionPlan>>,
-        options: ReplaceChildrenOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        if children.len() != 1 {
-            return internal_err!("CometFilterExec requires one child");
-        }
-        Ok(Arc::new(Self {
-            filter: self.replace_input(children.remove(0), options)?,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }))
-    }
-
-    fn with_new_children(
-        self: Arc<Self>,
-        children: Vec<Arc<dyn ExecutionPlan>>,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        self.replace_children(
-            children,
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )
-    }
-
-    fn execute(
-        &self,
-        partition: usize,
-        context: Arc<TaskContext>,
-    ) -> Result<SendableRecordBatchStream> {
-        // Every execution gets fresh DataFusion filter metrics. Register their
-        // handles on the stable set before returning the stream, including when
-        // opening the child fails.
-        let filter = self.replace_input(
-            Arc::clone(self.filter.input()),
-            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-        )?;
-        let result = filter.execute(partition, context);
-        for metric in filter.metrics().unwrap_or_default().iter() {
-            self.metrics.register(Arc::clone(metric));
-        }
-        result
-    }
-
-    fn metrics(&self) -> Option<MetricsSet> {
-        Some(self.metrics.clone_inner())
-    }
-
-    fn child_stats_requests(&self, partition: Option<usize>) -> Vec<ChildStats> {
-        self.filter.child_stats_requests(partition)
-    }
-
-    fn statistics_from_inputs(
-        &self,
-        input_stats: &[Arc<Statistics>],
-        args: &StatisticsArgs,
-    ) -> Result<Arc<Statistics>> {
-        self.filter.statistics_from_inputs(input_stats, args)
-    }
-
-    fn cardinality_effect(&self) -> CardinalityEffect {
-        self.filter.cardinality_effect()
-    }
-
-    fn fetch(&self) -> Option<usize> {
-        self.filter.fetch()
-    }
-
-    fn with_fetch(&self, fetch: Option<usize>) -> Option<Arc<dyn ExecutionPlan>> {
-        let filter = self.filter.with_fetch(fetch)?;
-        let filter = filter.downcast_ref::<FilterExec>()?.clone();
-        Some(Arc::new(Self {
-            filter,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }))
-    }
-
-    fn with_preserve_order(&self, preserve_order: bool) -> Option<Arc<dyn ExecutionPlan>> {
-        let filter = self.filter.with_preserve_order(preserve_order)?;
-        let filter = filter.downcast_ref::<FilterExec>()?.clone();
-        Some(Arc::new(Self {
-            filter,
-            metrics: ExecutionPlanMetricsSet::new(),
-        }))
+        self.inner().projection().is_some()
     }
 }
 
@@ -218,10 +68,15 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use datafusion::common::stats::Precision;
+    use datafusion::common::tree_node::TreeNodeRecursion;
+    use datafusion::common::Result;
     use datafusion::datasource::memory::MemorySourceConfig;
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{binary, col, lit};
-    use datafusion::physical_plan::statistics::StatisticsContext;
+    use datafusion::physical_plan::execution_plan::{
+        ChildrenPropertiesMode, ReplaceChildrenOptions,
+    };
+    use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 
     fn filter() -> Result<FilterExec> {
         let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
@@ -238,6 +93,29 @@ mod tests {
         let input = MemorySourceConfig::try_new_exec(&partitions, Arc::clone(&schema), None)?;
         let predicate = binary(col("key", &schema)?, Operator::Gt, lit(5i32), &schema)?;
         FilterExec::try_new(predicate, input)
+    }
+
+    #[test]
+    fn runtime_filter_permission_survives_rebuilding() -> Result<()> {
+        assert!(!CometFilterExec::from_datafusion(filter()?).allows_runtime_filter_pushdown());
+        for allowed in [false, true] {
+            let filter = Arc::new(
+                CometFilterExec::from_datafusion(filter()?).with_runtime_filter_pushdown(allowed),
+            );
+            for rebuilt in [
+                filter.with_execution_input(Arc::clone(filter.input()))?,
+                Arc::clone(&filter).replace_children(
+                    vec![Arc::clone(filter.input())],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?,
+                filter.with_fetch(Some(1)).unwrap(),
+            ] {
+                let rebuilt = rebuilt.downcast_ref::<CometFilterExec>().unwrap();
+                assert_eq!(rebuilt.allows_runtime_filter_pushdown(), allowed);
+                assert!(Arc::ptr_eq(rebuilt.predicate(), filter.predicate()));
+            }
+        }
+        Ok(())
     }
 
     #[test]
