@@ -1546,7 +1546,8 @@ fn timestamp_parser<T: TimeZone>(
 ///   "+HHMM"   -> +H*3600+M*60  (4 digits, no colon)
 ///   "+H:M"    -> same (with colon, any digit count 1-2 each)
 ///   "+HH:MM"  -> same
-///   "+HH:MM:SS" -> +H*3600+M*60+S (two digits each)
+///   "+H:MM:SS" -> +H*3600+M*60+S (1-2 digit hour, two-digit minutes and seconds; Spark pads
+///               a one-digit hour before calling `ZoneId.of`)
 ///   (negative with '-' analogously)
 ///
 /// Hours must be 0–18 and minutes 0–59, with a maximum absolute offset of 18:00.
@@ -1568,12 +1569,13 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
     let (h, m, sec) = if let Some(colon_pos) = rest.find(':') {
         let h_str = &rest[..colon_pos];
         let mut m_str = &rest[colon_pos + 1..];
-        // "+HH:MM:SS": java.time.ZoneOffset accepts a seconds field with two digits each.
+        // "+HH:MM:SS": java.time.ZoneOffset accepts a seconds field with two-digit minutes and
+        // seconds. Spark's `getZoneId` pads a one-digit hour first, so "+8:00:00" is valid too.
         let mut sec = 0;
         if let Some(sec_pos) = m_str.find(':') {
             let s_str = &m_str[sec_pos + 1..];
             m_str = &m_str[..sec_pos];
-            if h_str.len() != 2 || m_str.len() != 2 || s_str.len() != 2 {
+            if !(1..=2).contains(&h_str.len()) || m_str.len() != 2 || s_str.len() != 2 {
                 return None;
             }
             sec = s_str.parse::<i32>().ok()?;
@@ -1608,8 +1610,9 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
 /// Constructs a [`Tz`] from an offset measured in seconds.
 /// E.g. `+7*3600 + 30*60` -> `"+07:30"`.
 fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
-    // `Tz` offsets have minute precision, so an offset with a seconds part cannot be
-    // represented. Returning `None` leaves the value unparsed.
+    // `Tz` offsets have minute precision, so an offset with a non-zero seconds part such as
+    // "+08:00:30" cannot be represented. Returning `None` leaves the value unparsed, while
+    // Spark accepts it: https://github.com/apache/datafusion-comet/issues/7224
     if secs % 60 != 0 {
         return None;
     }
@@ -1618,18 +1621,6 @@ fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
     let m = (abs % 3600) / 60;
     let sign = if secs >= 0 { '+' } else { '-' };
     Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
-}
-
-/// Returns the last (rightmost) byte position where `needle` starts inside `haystack`.
-fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
-    let hb = haystack.as_bytes();
-    let nb = needle.as_bytes();
-    if nb.len() > hb.len() {
-        return None;
-    }
-    (0..=(hb.len() - nb.len()))
-        .rev()
-        .find(|&i| hb[i..].starts_with(nb))
 }
 
 /// `java.time.ZoneId.SHORT_IDS`, which Spark passes to `ZoneId.of` when it parses the zone
@@ -1699,11 +1690,12 @@ fn extract_zone_id_suffix(value: &str) -> Option<(&str, Tz)> {
 ///
 /// Recognised forms (in matching priority order):
 ///   Z                  -> UTC+0
-///   Region id          -> e.g. " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu"
-///   Java SHORT_IDS     -> e.g. " PST" (America/Los_Angeles), " EST" (-05:00)
 ///   UTC / " UTC"       -> UTC+0  (or UTC +/- offset, e.g. "UTC+0", " UTC+07:30")
 ///   GMT / " GMT"       -> UTC+0  (or GMT +/- offset)
 ///   UT  / " UT"        -> UTC+0  (or UT +/- offset)
+///                         (not when the name follows a '/', as in "Etc/UTC" or "Etc/GMT+8")
+///   Region id          -> e.g. " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu"
+///   Java SHORT_IDS     -> e.g. " PST" (America/Los_Angeles), " EST" (-05:00)
 ///   Bare +/-offset       -> e.g. "+07:30", "-1:0", "+0730"
 ///
 /// **The caller must ensure the value does not already match a base timestamp pattern.**
@@ -1714,24 +1706,33 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
         return Some((stripped, tz_from_offset_secs(0)?));
     }
 
-    // 2. Region ids and Java `ZoneId.SHORT_IDS` aliases, with or without a leading space:
-    //    " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu", " Etc/GMT+8", " PST".
-    //    This runs before the "GMT" prefix rule so that "Etc/GMT+8" (UTC-8) is not read
-    //    as "GMT+8" (UTC+8).
-    if let Some((prefix, tz)) = extract_zone_id_suffix(value) {
-        return Some((prefix, tz));
-    }
-
-    // 3. Named text-prefix forms: "UTC", "GMT", "UT" (optionally space-prefixed),
+    // 2. Named text-prefix forms: "UTC", "GMT", "UT" (optionally space-prefixed),
     //    each optionally followed by a bare +/-offset.
-    //    Longest first so " UTC" is tried before " UT", etc.
-    for prefix in &[" UTC", "UTC", " GMT", "GMT", " UT", "UT"] {
-        if let Some(pos) = rfind_str(value, prefix) {
-            let offset_str = &value[pos + prefix.len()..];
+    //    These are the most common named suffixes, so they are matched before the region
+    //    lookup below. The offset can only contain signs, digits and colons, so the name
+    //    must end right where that trailing run starts. A name that follows a '/' is part of
+    //    a region id such as "Etc/UTC" or "Etc/GMT+8" (UTC-8, not UTC+8) and is left to the
+    //    region lookup.
+    let name_end = value
+        .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | ':'))
+        .len();
+    let (head, offset_str) = value.split_at(name_end);
+    if let Some(before) = ["UTC", "GMT", "UT"]
+        .iter()
+        .find_map(|name| head.strip_suffix(name))
+    {
+        if !before.ends_with('/') {
             if let Some(secs) = parse_sign_offset(offset_str) {
-                return Some((&value[..pos], tz_from_offset_secs(secs)?));
+                let before = before.strip_suffix(' ').unwrap_or(before);
+                return Some((before, tz_from_offset_secs(secs)?));
             }
         }
+    }
+
+    // 3. Region ids and Java `ZoneId.SHORT_IDS` aliases, with or without a leading space:
+    //    " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu", " Etc/GMT+8", " PST".
+    if let Some((prefix, tz)) = extract_zone_id_suffix(value) {
+        return Some((prefix, tz));
     }
 
     // 4. Bare +/-offset: find the rightmost '+' or '-' and try to parse everything
@@ -3580,9 +3581,24 @@ mod tests {
             // Etc/GMT+8 is UTC-8; it must not be read as the "GMT+8" prefix form
             ("2020-01-01 12:34:56 Etc/GMT+8", Some(utc + 8 * hour)),
             ("2020-01-01 12:34:56 Etc/GMT-8", Some(utc - 8 * hour)),
-            // Offset with a seconds field
+            // Offset with a seconds field, including a one-digit hour as Spark pads it
             ("2020-01-01 12:34:56 +08:00:00", Some(utc - 8 * hour)),
             ("2020-01-01 12:34:56-08:00:00", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 +8:00:00", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56-8:00:00", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 UTC+8:00:00", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56 GMT-8:00:00", Some(utc + 8 * hour)),
+            // A non-zero seconds part is not supported yet (`Tz` has minute precision),
+            // see https://github.com/apache/datafusion-comet/issues/7224
+            ("2020-01-01 12:34:56 +08:00:30", None),
+            // UTC/GMT/UT names, and region ids with those names after a '/'
+            ("2020-01-01 12:34:56 UTC", Some(utc)),
+            ("2020-01-01 12:34:56UTC", Some(utc)),
+            ("2020-01-01 12:34:56 GMT", Some(utc)),
+            ("2020-01-01 12:34:56 Etc/UTC", Some(utc)),
+            ("2020-01-01 12:34:56 Etc/GMT", Some(utc)),
+            ("2020-01-01 12:34:56 UT-1", Some(utc + hour)),
+            ("2020-01-01 12:34:56Etc/GMT+8", Some(utc + 8 * hour)),
             // Prefix forms still go through the UTC/GMT/UT rule
             ("2020-01-01 12:34:56 GMT+8", Some(utc - 8 * hour)),
             ("2020-01-01 12:34:56 UTC-08:00", Some(utc + 8 * hour)),
@@ -3590,6 +3606,8 @@ mod tests {
             ("2020-01-01 12:34:56 pst", None),
             ("2020-01-01 12:34:56 XYZ", None),
             ("2020-01-01 12:34:56 +08:00:0", None),
+            ("2020-01-01 12:34:56 +8:0:00", None),
+            ("2020-01-01 12:34:56 +108:00:00", None),
         ];
         for (input, expected) in cases {
             assert_eq!(
@@ -3598,6 +3616,51 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_parser_short_id_summer_test() {
+        // In summer the SHORT_IDS aliases that map to a region follow its daylight saving
+        // time, while the fixed-offset ones do not: PST is America/Los_Angeles (PDT, -07:00),
+        // but EST is always -05:00.
+        let tz = &Tz::from_str("UTC").unwrap();
+        // 2020-07-01T12:34:56Z
+        let utc: i64 = 1593606896000000;
+        let hour: i64 = 3600 * 1_000_000;
+        let cases = [
+            ("2020-07-01 12:34:56 PST", Some(utc + 7 * hour)),
+            ("2020-07-01 12:34:56 CST", Some(utc + 5 * hour)),
+            ("2020-07-01 12:34:56 ECT", Some(utc - 2 * hour)),
+            ("2020-07-01 12:34:56 EST", Some(utc + 5 * hour)),
+            ("2020-07-01 12:34:56 MST", Some(utc + 7 * hour)),
+            ("2020-07-01 12:34:56 HST", Some(utc + 10 * hour)),
+            (
+                "2020-07-01 12:34:56 America/Los_Angeles",
+                Some(utc + 7 * hour),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                timestamp_parser(input, EvalMode::Legacy, tz, true).unwrap(),
+                expected,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn java_short_ids_resolve_test() {
+        // Every SHORT_IDS target must resolve through `Tz`, so that a tz database rename
+        // cannot silently turn an alias into NULL.
+        for (alias, target) in JAVA_SHORT_IDS {
+            assert!(
+                Tz::from_str(target).is_ok(),
+                "SHORT_IDS alias {alias} maps to {target}, which Tz cannot resolve"
+            );
+            assert!(zone_id_to_tz(alias).is_some(), "{alias}");
+        }
+        assert_eq!(JAVA_SHORT_IDS.len(), 28);
     }
 
     #[test]
