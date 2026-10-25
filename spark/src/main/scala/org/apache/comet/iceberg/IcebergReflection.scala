@@ -883,6 +883,14 @@ object IcebergReflection extends Logging {
       .toMap
   }
 
+  /** Resolve runtime-supported names without treating lookup failures as missing fields. */
+  def findFieldIdByName(schema: Any, name: String): Option[Int] = {
+    val method = getMethod(schema.getClass, "findField", classOf[String])
+    Option(method.invoke(schema, name)).map { field =>
+      getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
+    }
+  }
+
   /**
    * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
    */
