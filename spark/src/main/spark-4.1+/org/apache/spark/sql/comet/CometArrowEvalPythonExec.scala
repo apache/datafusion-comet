@@ -118,7 +118,15 @@ object CometArrowEvalPythonExec extends CometOperatorSerde[ArrowEvalPythonExec] 
       op.resultAttrs.exists(attr => !hasCompatibleArrowSchema(attr.dataType))) {
       return Unsupported(Some("Arrow UDF type is outside the verified native Arrow schema set"))
     }
+    // The embedded interpreter is fixed when libcomet is built, while Spark only requires the
+    // workers' Python to match the driver's, so a Python upgrade can leave them apart.
+    val embeddedPython = NativeBase.pythonUdfVersion()
     op.udfs.collectFirst {
+      case udf
+          if udf.func.pythonVer != null && udf.func.pythonVer.nonEmpty &&
+            udf.func.pythonVer != embeddedPython =>
+        s"Arrow UDF requires Python ${udf.func.pythonVer}, but the embedded interpreter " +
+          s"is Python $embeddedPython"
       case udf if udf.func.broadcastVars != null && !udf.func.broadcastVars.isEmpty =>
         "Arrow UDF broadcast variables are not supported in-process"
       case udf if udf.func.pythonIncludes != null && !udf.func.pythonIncludes.isEmpty =>
