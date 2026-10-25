@@ -52,31 +52,37 @@ without explicit NDV/FPP. The benchmark checks the native plan, row count, and f
 before measuring. Table creation and source preparation are outside the timed insert; the Iceberg
 commit is included.
 
-Build once, then run the comparison in separate JVMs to collect peak RSS:
-
-```shell
-make release PROFILES=-Pspark-4.1
-python3 benchmarks/micro/iceberg_bloom_writes.py --spark-profile spark-4.1 --heap 8g
-```
-
-The runner reuses the micro-benchmark runner's Maven/JVM settings without rebuilding. Each case
-warms up and measures at least five writes of 4,194,304 rows. It prints Spark's timing row and
-whole-process peak RSS, and writes individual logs and `summary.json` to the reported directory.
-Use `--output-dir` to choose that directory. RSS includes Maven, source generation, validation,
-warmup, and writes; it is not the writer's allocation or its peak alone. The cases run in fresh
-processes because RSS high-water marks and retained native buffers cannot be reset between cases.
-The warehouse is local, so these results do not include object-store latency.
-
-For a quick functional check after a development build, pass
-`--allow-debug --rows 32768 --iterations 1`. These runs are marked as smoke checks and do not
-provide release-performance measurements. For timing alone, pass `bloom`, `bloom-off`, or
-`bloom-on` to the existing benchmark target, optionally followed by rows and minimum iterations:
+Use the existing benchmark target for timing, optionally followed by rows and minimum iterations:
 
 ```shell
 make benchmark-org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark bloom
 ```
 
-Do not measure RSS around that `make` command: its release-build prerequisite includes compilation.
+Each case warms up and measures at least five writes of 4,194,304 rows by default. Use
+`bloom-off` or `bloom-on` to select a single case, or append `32768 1` for a quick functional
+check. Performance comparisons require a release build.
+
+To collect peak RSS, build once and run each case in a separate JVM using the existing Maven
+invocation. Obtain the shared JVM options from the Makefile:
+
+```shell
+make release PROFILES=-Pspark-4.1
+export COMET_CONF_DIR="$PWD/conf"
+export MAVEN_OPTS="$(make --no-print-directory print-benchmark-args PROFILES=-Pspark-4.1 BENCH_HEAP=8g | sed -n 's/^MAVEN_OPTS=//p')"
+cd spark
+/usr/bin/time -v ../mvnw exec:java -Dexec.classpathScope=test \
+  -Dexec.cleanupDaemonThreads=false \
+  -Dexec.mainClass=org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark \
+  -Dexec.args="bloom-off" -Pspark-4.1
+```
+
+Repeat with `bloom-on`. On macOS, use `/usr/bin/time -l` instead of `-v`; its maximum RSS is in
+bytes, while GNU time reports KiB. The reported RSS includes Maven, source generation, validation,
+warmup, and writes; it is not the writer's allocation or its peak alone. Fresh processes avoid
+carrying an earlier case's RSS high-water mark and retained native buffers into the next case.
+The warehouse is local, so these results do not include object-store latency.
+
+Do not measure RSS around `make benchmark-*`: its release-build prerequisite includes compilation.
 
 ```{toctree}
 :hidden:
