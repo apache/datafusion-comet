@@ -25,7 +25,6 @@ import scala.concurrent.duration._
 import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.fs.Path
-import org.apache.parquet.column.Encoding
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.benchmark.Benchmark
@@ -96,14 +95,17 @@ object CometAssertNotNullBenchmark extends CometBenchmarkBase {
     (result.length.toLong, result.iterator.map(_.hashCode().toLong).sum)
   }
 
-  private def hasDictionary(path: File): Boolean = {
+  private def hasDictionary(path: File, bench: Benchmark): Boolean = {
     val conf = spark.sparkContext.hadoopConfiguration
     val files = new Path(path.toURI).getFileSystem(conf).listStatus(new Path(path.toURI))
     files.filter(_.getPath.getName.endsWith(".parquet")).exists { file =>
       val reader = ParquetFileReader.open(HadoopInputFile.fromPath(file.getPath, conf))
       try {
         reader.getFooter.getBlocks.asScala.exists(_.getColumns.asScala.exists { column =>
-          column.getEncodings.contains(Encoding.RLE_DICTIONARY)
+          val dictionary = Option(column.getEncodingStats).exists(_.hasDictionaryEncodedPages)
+          bench.out.println(s"Parquet column=${column.getPath.toDotString}, " +
+            s"encodings=${column.getEncodings}, dictionary pages=$dictionary")
+          column.getPath.toDotString == "c" && dictionary
         })
       } finally reader.close()
     }
@@ -111,13 +113,19 @@ object CometAssertNotNullBenchmark extends CometBenchmarkBase {
 
   private def projections(rows: Long, modes: Seq[Boolean]): Unit = {
     val shapes = Seq(
-      ("primitive", "id", false),
-      ("dictionary string", "CAST(id % 8 AS STRING)", true),
+      ("primitive", "id", false, Seq(0, 12, 50)),
+      ("dictionary string", "CAST(id % 8 AS STRING)", true, Seq(0, 12, 50)),
+      (
+        "wide string (256 bytes)",
+        "concat(lpad(CAST(id AS STRING), 16, '0'), repeat('x', 240))",
+        false,
+        Seq(0)),
       (
         "struct with nullable children",
         "named_struct('i', id, 's', IF(id % 8 = 0, NULL, 'x'))",
-        false))
-    for ((name, value, dictionary) <- shapes; nullPercent <- Seq(0, 12, 50)) {
+        false,
+        Seq(0, 12, 50)))
+    for ((name, value, dictionary, nullPercents) <- shapes; nullPercent <- nullPercents) {
       withTempPath { path =>
         withTempTable(source) {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
@@ -132,12 +140,13 @@ object CometAssertNotNullBenchmark extends CometBenchmarkBase {
           val input = spark.read.parquet(path.getCanonicalPath)
           require(input.schema("c").nullable, "The assertion needs a nullable input schema")
           input.createOrReplaceTempView(source)
-          if (dictionary) require(hasDictionary(path), "Expected dictionary-encoded Parquet")
+          val bench = benchmark(s"AssertNotNull: $name, $nullPercent% parent NULL", rows)
+          if (dictionary)
+            require(hasDictionary(path, bench), "Expected dictionary-encoded Parquet")
           val checked =
             if (nullPercent == 0) s"$function(c)"
             else
               s"IF(c IS NULL, NULL, $function(c))"
-          val bench = benchmark(s"AssertNotNull: $name, $nullPercent% parent NULL", rows)
           var expected: Option[(Long, Long)] = None
           modes.foreach { comet =>
             val label = if (comet) "Comet native" else "Spark"
