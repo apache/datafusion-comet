@@ -221,10 +221,8 @@ private[comet] object CachedBatchIpc {
       // A column sliced on the native side reaches the JVM with offsets that start past zero, and
       // VectorUnloader writes the bytes before the first offset too. A grouped aggregate emits its
       // groups as slices of one batch, so each slice would be cached with the bytes of the slices
-      // before it, and columnSizes would report them. A slice of the root rebases the offsets to
-      // zero and shares the other buffers.
-      val written =
-        if (vectors.forall(Utils.offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
+      // before it, and columnSizes would report them.
+      val written = Utils.rebasedForWrite(root)
       try {
         // Unloaded plain and compressed afterwards rather than by handing the codec to the
         // unloader; see compressed for why.
@@ -239,7 +237,7 @@ private[comet] object CachedBatchIpc {
           }
         try {
           // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
-          // own buffers by now, so this does not touch it.
+          // own buffers by now, and so does the slice, so this does not touch either.
           root.clear()
 
           val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
@@ -254,8 +252,6 @@ private[comet] object CachedBatchIpc {
           recordBatch.close()
         }
       } finally {
-        // The slice holds its own references on the batch's buffers, so it is closed even when the
-        // write fails.
         if (written ne root) written.close()
       }
     } finally {

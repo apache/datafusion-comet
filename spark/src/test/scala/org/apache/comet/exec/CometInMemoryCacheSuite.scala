@@ -2779,7 +2779,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           .write
           .parquet(dir.getCanonicalPath)
 
-        def cachedSize(name: String, df: DataFrame): Long = {
+        def cachedSize(name: String, df: DataFrame): (Long, Int) = {
           df.createOrReplaceTempView(name)
           spark.catalog.cacheTable(name)
           assert(spark.table(name).count() == rows)
@@ -2790,22 +2790,25 @@ class CometInMemoryCacheSuite extends CometTestBase {
           val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
           assert(batches.forall(
             _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
-          relation.computeStats().sizeInBytes.toLong
+          (relation.computeStats().sizeInBytes.toLong, batches.length)
         }
 
         try {
           val scanned = spark.read.parquet(dir.getCanonicalPath)
           val distinct = scanned.distinct()
-          // The aggregate has to emit more than one slice for the bytes before a slice to matter.
-          val plan = distinct.queryExecution.executedPlan
-          assert(collect(plan) { case a: CometHashAggregateExec => a }.nonEmpty)
+          assert(collect(distinct.queryExecution.executedPlan) { case a: CometHashAggregateExec =>
+            a
+          }.nonEmpty)
 
-          val scannedSize = cachedSize("scanned_cache", scanned)
-          val distinctSize = cachedSize("distinct_cache", distinct)
+          // The aggregate is cached first, so that it reads the Parquet scan and not a cached copy
+          // of it. It has to emit more than one slice for the bytes before a slice to matter.
+          val (distinctSize, distinctBatches) = cachedSize("distinct_cache", distinct)
+          assert(distinctBatches > 1, s"the aggregate emitted $distinctBatches batches")
+          val (scannedSize, _) = cachedSize("scanned_cache", scanned)
           // The same rows, so the same bytes of string data. A slice that carried the bytes before
           // it would make this about 20 times larger, one for each of the 40 slices.
           assert(
-            distinctSize < scannedSize * 1.5,
+            distinctSize < scannedSize * 1.1,
             s"the aggregate's cache is $distinctSize bytes, a scan's of the same rows $scannedSize")
           checkAnswer(spark.table("distinct_cache"), scanned)
         } finally {

@@ -273,8 +273,7 @@ object Utils extends CometTypeShim with Logging {
         // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
         // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
         // rebases the offsets to zero and leaves those bytes out.
-        val written =
-          if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
+        val written = rebasedForWrite(root)
         try {
           val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
           writer.start()
@@ -303,6 +302,16 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
+   * `root` itself when every offset buffer in it starts at zero, otherwise a slice of it with the
+   * offsets rebased to zero and the bytes before the first of them left out. The slice shares the
+   * other buffers and holds its own references on them, so the caller closes it whenever it is
+   * not `root`, even when the write fails.
+   */
+  private[comet] def rebasedForWrite(root: VectorSchemaRoot): VectorSchemaRoot =
+    if (root.getFieldVectors.asScala.forall(offsetsStartAtZero)) root
+    else root.slice(0, root.getRowCount)
+
+  /**
    * Whether every offset buffer in `vector`, its children included, starts at zero.
    *
    * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
@@ -310,7 +319,7 @@ object Utils extends CometTypeShim with Logging {
    * that start past zero. The rows before the slice stay at the front of its data buffer, or of
    * its child vector for a list or map.
    */
-  private[comet] def offsetsStartAtZero(vector: FieldVector): Boolean = {
+  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
     val firstOffset = vector match {
       case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
       case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
