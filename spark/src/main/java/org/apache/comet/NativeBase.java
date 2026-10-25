@@ -25,8 +25,6 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.time.zone.ZoneRulesProvider;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -136,38 +134,14 @@ public abstract class NativeBase {
               + ". Please try building from source.");
     }
 
-    File tempLib = null;
-    File tempLibLock = null;
-    try {
-      // Create the .lck file first to avoid a race condition
-      // with other concurrently running Java processes using Comet.
-      tempLibLock = File.createTempFile(searchPattern, "." + os().libExtension + ".lck");
-      tempLib = new File(tempLibLock.getAbsolutePath().replaceFirst(".lck$", ""));
-      // copy to tempLib
-      Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
-      System.load(tempLib.getAbsolutePath());
+    try (InputStream resource = is;
+        NativeLibrary library = NativeLibrary.extract(resource, "libcomet." + os().libExtension)) {
+      System.load(library.path().toString());
+      library.deleteOnExit();
+      bundledLibrary = library.path().toFile();
       loaded = true;
-      bundledLibrary = tempLib;
     } catch (IOException e) {
-      throw new IllegalStateException("Cannot unpack libcomet: " + e);
-    } finally {
-      if (!loaded) {
-        if (tempLib != null && tempLib.exists()) {
-          if (!tempLib.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary native library " + tempLib);
-          }
-        }
-        if (tempLibLock != null && tempLibLock.exists()) {
-          if (!tempLibLock.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary lock file " + tempLibLock);
-          }
-        }
-      } else {
-        tempLib.deleteOnExit();
-        tempLibLock.deleteOnExit();
-      }
+      throw new IllegalStateException("Cannot unpack libcomet", e);
     }
   }
 
@@ -340,6 +314,37 @@ public abstract class NativeBase {
    * @param logConfPath location to the native log configuration file
    */
   static native void init(String logConfPath, String logLevel);
+
+  private static native boolean nativeSupportsPythonUdf();
+
+  /** Whether this native library was built with the in-process Python UDF feature. */
+  public static boolean supportsPythonUdf() {
+    if (!loaded) {
+      return false;
+    }
+    try {
+      return nativeSupportsPythonUdf();
+    } catch (UnsatisfiedLinkError ignored) {
+      return false;
+    }
+  }
+
+  private static native String nativePythonUdfVersion();
+
+  /**
+   * The {@code major.minor} version of the embedded Python interpreter that runs native Arrow UDFs,
+   * or an empty string when this native library lacks the in-process Python UDF feature.
+   */
+  public static String pythonUdfVersion() {
+    if (!supportsPythonUdf()) {
+      return "";
+    }
+    try {
+      return nativePythonUdfVersion();
+    } catch (UnsatisfiedLinkError ignored) {
+      return "";
+    }
+  }
 
   /** Release native resources through JNI */
   static native void release();

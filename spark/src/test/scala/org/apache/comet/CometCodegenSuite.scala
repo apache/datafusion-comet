@@ -28,10 +28,10 @@ import org.apache.spark.{SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.api.java.UDF1
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, Expression, GenericInternalRow, Hypot, If, IsNull, LessThan, Literal, MapConcat, MonotonicallyIncreasingID, Or, Rand, ScalaUDF}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ApplyFunctionExpression, AttributeReference, AttributeSeq, BindReferences, BoundReference, Cast, CreateArray, CreateMap, CreateNamedStruct, EvalMode, Expression, GenericInternalRow, Hypot, If, IsNull, LessThan, Literal, MapConcat, MapKeys, MonotonicallyIncreasingID, Or, Rand, ScalaUDF}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.util.GenericArrayData
+import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData, MapData}
 import org.apache.spark.sql.comet.{CometFilterExec, CometHashAggregateExec, CometProjectExec}
 import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.connector.catalog.functions.{BoundFunction, ScalarFunction, UnboundFunction}
@@ -855,6 +855,150 @@ class CometCodegenSuite
     }
   }
 
+  test("replace with safe literal arguments runs natively by default") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('aaaa'), ('你好你好'), (''), (NULL)")
+
+        Seq(
+          "SELECT replace(s, 'aa', 'x') FROM t",
+          "SELECT replace(s, '你好', '世界') FROM t",
+          "SELECT replace(s, 'aa', 'aaa') FROM t",
+          "SELECT replace(s, 'missing', '') FROM t").foreach { query =>
+          val df = sql(query)
+          assertReplaceDispatch(df, expectDispatcher = false, query)
+          val plan = df.queryExecution.executedPlan
+          val info = new ExtendedExplainInfo()
+          assert(
+            info.getNativeExpressions(plan).contains("replace"),
+            s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+        }
+      }
+    }
+  }
+
+  test("replace literal arguments route at the 64 KiB boundary") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING) USING parquet")
+        sql("INSERT INTO t VALUES ('a'), ('other'), (NULL), (repeat('b', 65536))")
+
+        Seq(
+          ("SELECT replace(s, repeat('b', 65536), 'x') FROM t", false),
+          ("SELECT replace(s, repeat('b', 65537), 'x') FROM t", true),
+          ("SELECT replace(s, 'a', repeat('x', 65536)) FROM t", false),
+          ("SELECT replace(s, 'a', repeat('x', 65537)) FROM t", true)).foreach {
+          case (query, expectDispatcher) =>
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher, query)
+            if (!expectDispatcher) {
+              val plan = df.queryExecution.executedPlan
+              val info = new ExtendedExplainInfo()
+              assert(
+                info.getNativeExpressions(plan).contains("replace"),
+                s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+            }
+        }
+      }
+    }
+  }
+
+  test("replace with a literal search and replacement column runs natively by default") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTable("t") {
+        sql("CREATE TABLE t (s STRING, r STRING, search STRING) USING parquet")
+        sql("""INSERT INTO t VALUES
+          |('aaaa', 'x', 'aa'), ('你好你好', '世界', '你好'),
+          |('nomatch', 'z', 'm'), ('aaaa', '', ''),
+          |('', 'x', ''), (NULL, 'q', 'a'), ('aaa', NULL, 'a')""".stripMargin)
+
+        Seq(
+          "SELECT replace(s, 'aa', r) FROM t",
+          "SELECT replace(s, '你好', r) FROM t",
+          "SELECT replace(s, repeat('a', 256), r) FROM t").foreach { query =>
+          val df = sql(query)
+          assertReplaceDispatch(df, expectDispatcher = false, query)
+          val plan = df.queryExecution.executedPlan
+          val info = new ExtendedExplainInfo()
+          assert(
+            info.getNativeExpressions(plan).contains("replace"),
+            s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+        }
+
+        Seq(
+          "SELECT replace(s, '', r) FROM t",
+          "SELECT replace(s, search, r) FROM t",
+          "SELECT replace(s, repeat('a', 257), r) FROM t",
+          "SELECT replace(s, repeat('a', 1024), r) FROM t").foreach { query =>
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65536") {
+          val query = "SELECT replace(s, repeat('a', 256), r) FROM t"
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+
+        if (isSpark41Plus) {
+          val query = "SELECT replace(s COLLATE UTF8_LCASE, 'aa', r) FROM t"
+          assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+        }
+      }
+    }
+  }
+
+  test("replace broadcast limit routes actual large batches at 8 MiB") {
+    withSQLConf(
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXPLAIN_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "true",
+      CometConf.COMET_EXTENDED_EXPLAIN_FORMAT.key ->
+        CometConf.COMET_EXTENDED_EXPLAIN_FORMAT_VERBOSE,
+      CometConf.getExprAllowIncompatConfigKey("StringReplace") -> "false") {
+      withTempPath { dir =>
+        spark
+          .range(0, 32769, 1, numPartitions = 1)
+          .selectExpr("repeat('a', 256) AS s", "CASE WHEN id % 2 = 0 THEN 'x' ELSE 'yz' END AS r")
+          .write
+          .parquet(dir.getCanonicalPath)
+        withTable("t") {
+          sql(s"CREATE TABLE t USING parquet LOCATION '${dir.getCanonicalPath}'")
+          val query = "SELECT replace(s, repeat('a', 256), r) FROM t"
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32768") {
+            val df = sql(query)
+            assertReplaceDispatch(df, expectDispatcher = false, query)
+            val plan = df.queryExecution.executedPlan
+            val info = new ExtendedExplainInfo()
+            assert(
+              info.getNativeExpressions(plan).contains("replace"),
+              s"expected native replace for $query:\n${info.generateExtendedInfo(plan)}")
+          }
+          withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "32769") {
+            assertReplaceDispatch(sql(query), expectDispatcher = true, query)
+          }
+        }
+      }
+    }
+  }
+
   test("codegen dispatch fallback reasons name the expression") {
     // Flag-off short-circuit tags the expression `<name>: <reason>` so distinct expressions
     // don't collapse in the `Set[String]` roll-up.
@@ -1062,6 +1206,85 @@ class CometCodegenSuite
         checkSparkAnswerAndOperator(sql("SELECT javaLen(s) FROM t"))
       }
       assertKernelSignaturePresent(Seq(classOf[VarCharVector]), IntegerType)
+    }
+  }
+
+  test("canHandle refuses a TRY cast whose map key cast can fail") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    def refused(from: DataType, to: DataType, mode: EvalMode.Value = EvalMode.TRY): Boolean =
+      CometBatchKernelCodegen
+        .canHandle(Cast(BoundReference(0, from, nullable = true), to, None, mode))
+        .exists(_.contains("null map key"))
+    def map(k: DataType): MapType = MapType(k, IntegerType)
+
+    // Narrowing can overflow, and date to timestamp can overflow for extreme dates even though
+    // Spark counts it as an upcast.
+    assert(refused(map(LongType), map(IntegerType)))
+    assert(refused(map(DateType), map(TimestampType)))
+    assert(refused(map(StringType), map(IntegerType)))
+    // Widening numeric, integral to a wide enough decimal, and numeric to string cannot fail.
+    assert(!refused(map(IntegerType), map(LongType)))
+    assert(!refused(map(LongType), map(DecimalType(20, 0))))
+    assert(!refused(map(IntegerType), map(StringType)))
+    // The list takes a long as 20 digits, as Spark's own `DecimalType.forType` does, so
+    // decimal(19, 0) is refused even though every long fits. That is only conservative.
+    assert(refused(map(LongType), map(DecimalType(19, 0))))
+    // Only TRY turns a failing key cast into a null key.
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.LEGACY))
+    assert(!refused(map(LongType), map(IntegerType), EvalMode.ANSI))
+    // Reached at any depth: inside an array, a struct field and a map value.
+    assert(refused(ArrayType(map(LongType)), ArrayType(map(IntegerType))))
+    assert(
+      refused(
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(LongType)))),
+        StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType))))))
+    assert(refused(MapType(IntegerType, map(LongType)), MapType(IntegerType, map(IntegerType))))
+    // Only refused when the output can carry a map. Inside the kernel it is Spark's own code.
+    val narrowing =
+      Cast(
+        BoundReference(0, map(LongType), nullable = true),
+        map(IntegerType),
+        None,
+        EvalMode.TRY)
+    assert(CometBatchKernelCodegen.canHandle(MapKeys(narrowing)).isEmpty)
+
+    // A TRY cast over a foldable map is folded into a literal that already holds the null key.
+    def nullKeyMap: MapData =
+      new ArrayBasedMapData(
+        new GenericArrayData(Array[Any](1, null)),
+        new GenericArrayData(Array[Any](10, 20)))
+    def literalRefused(lit: Literal): Boolean =
+      CometBatchKernelCodegen.canHandle(lit).exists(_.contains("null map key"))
+    assert(literalRefused(Literal(nullKeyMap, map(IntegerType))))
+    assert(
+      literalRefused(
+        Literal(new GenericArrayData(Array[Any](nullKeyMap)), ArrayType(map(IntegerType)))))
+    assert(
+      literalRefused(
+        Literal(
+          InternalRow(1, nullKeyMap),
+          StructType(Seq(StructField("a", IntegerType), StructField("m", map(IntegerType)))))))
+    assert(
+      !literalRefused(
+        Literal(
+          new ArrayBasedMapData(
+            new GenericArrayData(Array[Any](1, 2)),
+            new GenericArrayData(Array[Any](10, 20))),
+          map(IntegerType))))
+  }
+
+  test("a TRY cast over a foldable map with a failing key falls back") {
+    // https://github.com/apache/datafusion-comet/issues/6172
+    // `ConstantFolding` turns the cast into a literal that already holds the null key, so no
+    // `Cast` is left for the guard. The SQL file tests run with constant folding off.
+    withTable("t") {
+      sql("CREATE TABLE t(id int) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2)")
+      checkSparkAnswerAndFallbackReason(
+        """SELECT id, map_keys(transform_values(
+          |  try_cast(map(1L, 10, 9999999999L, 20) AS map<int, int>), (k, v) -> v + id))
+          |FROM t ORDER BY id""".stripMargin,
+        "the output can carry a null map key")
     }
   }
 

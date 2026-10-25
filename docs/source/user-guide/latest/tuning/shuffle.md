@@ -53,17 +53,6 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
-Hash partitioning into multiple partitions on decimal keys with precision greater than 18 falls back because native
-hashing does not match Spark's partition assignments. Mixing the two partitioners can silently lose join rows.
-The restriction also applies to decimal leaves in nested hash keys. Wider decimals remain supported as payload
-columns, range partitioning keys, and in single-partition shuffles, including one-partition hash exchanges.
-
-With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible, adding a columnar-to-row-to-columnar
-conversion. With `native`, it uses Spark shuffle, which can also restore aggregates such as `collect_list` and
-`collect_set` to Spark to preserve buffer compatibility. Celeborn uses Spark/Celeborn shuffle for unsupported native
-keys because it has no Comet columnar fallback. Spark-compatible native decimal hashing is tracked in
-[#5994](https://github.com/apache/datafusion-comet/issues/5994).
-
 ### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and
@@ -82,9 +71,9 @@ converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do f
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
 all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
-`map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
-string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
-the JVM outside Comet's memory pools. The setting is disabled by default.
+`map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
+that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
+The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 

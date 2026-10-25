@@ -33,7 +33,7 @@ import org.apache.iceberg.spark.Spark3Util
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
+import org.apache.spark.sql.catalyst.expressions.{Ascending, DynamicPruningExpression, SortOrder}
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{InSubqueryExec, LocalTableScanExec, ReusedSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec, SubqueryBroadcastExec, SubqueryExec}
@@ -47,6 +47,7 @@ import org.apache.spark.sql.types.{ArrayType, IntegerType, StringType, StructTyp
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
@@ -1208,6 +1209,65 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan("SELECT id, data FROM test_cat.db.eq_delete_evolution ORDER BY id")
 
         spark.sql("DROP TABLE test_cat.db.eq_delete_evolution")
+      }
+    }
+  }
+
+  // The key `s.k` is nested, which iceberg-rust cannot look up, so the scan must fall back.
+  test("equality delete keyed on a nested field falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_eq_delete"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id INT, s STRUCT<k: INT, a: INT>) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '2')")
+          spark.sql(
+            s"INSERT INTO $table SELECT CAST(id AS INT), " +
+              "named_struct('k', CAST(id % 10 AS INT), 'a', CAST(id AS INT)) FROM range(100)")
+
+          val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+          val deleteRowSchema = icebergTable.schema().select("s.k")
+          val struct = org.apache.iceberg.data.GenericRecord
+            .create(deleteRowSchema.findField("s").`type`().asStructType())
+          struct.setField("k", Integer.valueOf(3))
+          val row = org.apache.iceberg.data.GenericRecord.create(deleteRowSchema)
+          row.setField("s", struct)
+          val out = icebergTable
+            .io()
+            .newOutputFile(
+              new File(warehouseDir, s"eq-delete-${System.nanoTime()}.parquet").toString)
+          val deleteFile = org.apache.iceberg.data.CometEqualityDeletes.write(
+            icebergTable,
+            out,
+            null,
+            java.util.Collections.singletonList[org.apache.iceberg.data.Record](row),
+            deleteRowSchema,
+            Some(Array(icebergTable.schema().findField("s.k").fieldId())))
+          icebergTable.newRowDelta().addDeletes(deleteFile).commit()
+
+          // Select the key: if the query leaves it out, even Spark returns the wrong rows.
+          val df = spark.sql(s"SELECT count(*), sum(s.k), sum(s.a) FROM $table")
+          checkAnswer(df, Row(90L, 420L, 4470L))
+          val plan = df.queryExecution.executedPlan
+          assert(
+            collectIcebergNativeScans(plan).isEmpty,
+            "A nested equality-delete key must prevent the native Iceberg scan")
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains("Equality delete on nested field 'k'")),
+            s"Expected nested equality-delete fallback, found: ${fallbackReasons.mkString(", ")}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
       }
     }
   }
@@ -8026,6 +8086,187 @@ class CometIcebergNativeSuite
           // transform outright, in Spark's analyzer, with or without Comet. A bare relation scan is
           // therefore the whole of what any reader can do with such a table.
           checkIcebergNativeScan(spark.read.format("iceberg").load(tableDir.getAbsolutePath))
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("fall back to Spark when Iceberg reports an output ordering") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.sorted_table"
+        try {
+          // Partition the table and give it a sort order. Iceberg only reports an output ordering
+          // when the grouping key is non-empty (a partitioned table with preserve-data-grouping)
+          // and the table has a sort order, so both are needed to exercise the real fallback path.
+          spark.sql(s"""
+            CREATE TABLE $table (
+              id INT,
+              category STRING
+            ) USING iceberg
+            PARTITIONED BY (category)
+          """)
+          // Set the sort order via the Java API; the SQL form (WRITE ORDERED BY) needs Iceberg's
+          // SQL extensions, which the test session does not register.
+          setIcebergSortOrderAsc(table, "id")
+
+          // Write several files into the same partition so a sorted read needs a k-way merge.
+          spark.sql(s"INSERT INTO $table VALUES (3, 'x'), (1, 'x')")
+          spark.sql(s"INSERT INTO $table VALUES (4, 'x'), (2, 'x')")
+
+          val query = s"SELECT * FROM $table ORDER BY id"
+
+          // Baseline: the preserve-data-grouping and preserve-data-ordering configs are off, so
+          // Iceberg reports no ordering and the native scan takes over.
+          checkIcebergNativeScan(query)
+
+          // The ordering-based fallback can only be exercised on Iceberg runtimes that actually
+          // report an ordering (they ship SortOrderAnalyzer). Other releases do not, so skip
+          // there rather than fail; the assert below still fires loudly on a capable runtime that
+          // stops reporting the ordering.
+          assume(
+            icebergReportsOrdering,
+            "Iceberg runtime does not report output ordering (no SortOrderAnalyzer)")
+
+          // With k-way merge on, Iceberg reports an output ordering that this build cannot
+          // preserve. Comet must stay on Spark, or a reported ordering is silently violated.
+          withSQLConf(
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            "spark.sql.iceberg.planning.preserve-data-ordering" -> "true") {
+
+            // Confirm Iceberg actually reports the ordering first, so the test fails loudly rather
+            // than going silently vacuous if a future Iceberg bump changes when ordering is
+            // reported. (This planning step is Comet-disabled and does not execute the query.)
+            var sparkPlan: SparkPlan = null
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              sparkPlan = spark.sql(query).queryExecution.executedPlan
+            }
+            val orderedScans = collect(sparkPlan) {
+              case b: BatchScanExec if b.ordering.exists(_.nonEmpty) => b
+            }
+            assert(
+              orderedScans.nonEmpty,
+              s"Expected Iceberg BatchScanExec to report an ordering. Plan:\n$sparkPlan")
+
+            checkIcebergNativeScanFallback(query, "Iceberg reports an output ordering")
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("stay native when Iceberg cannot report an ordering despite k-way merge configs") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.unsorted_table"
+        try {
+          // Unpartitioned and no sort order, so Iceberg cannot report an ordering even with both
+          // k-way merge configs on. The fallback keys off a reported ordering, not the configs,
+          // so turning the configs on must not push a plain read onto Spark. Runs on every
+          // profile since it needs no ordering.
+          spark.sql(s"""
+            CREATE TABLE $table (
+              id INT,
+              name STRING
+            ) USING iceberg
+          """)
+          spark.sql(s"INSERT INTO $table VALUES (3, 'c'), (1, 'a')")
+          spark.sql(s"INSERT INTO $table VALUES (4, 'd'), (2, 'b')")
+
+          val query = s"SELECT * FROM $table ORDER BY id"
+
+          withSQLConf(
+            "spark.sql.iceberg.planning.preserve-data-grouping" -> "true",
+            "spark.sql.iceberg.planning.preserve-data-ordering" -> "true") {
+            checkIcebergNativeScan(query)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
+  test("CometScanRule falls back for an Iceberg scan that carries an ordering") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.sort_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.sort_cat.type" -> "hadoop",
+        "spark.sql.catalog.sort_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        val table = "sort_cat.db.ordered_scan_table"
+        try {
+          spark.sql(s"CREATE TABLE $table (id INT, name STRING) USING iceberg")
+          spark.sql(s"INSERT INTO $table VALUES (3, 'c'), (1, 'a')")
+
+          // Plan the query with Comet off, then give the Iceberg scan the ordering that a
+          // reporting Iceberg runtime would attach. No Iceberg release reports one yet, so this is
+          // the only way to reach the guard on every profile.
+          var sparkPlan: SparkPlan = null
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkPlan =
+              stripAQEPlan(spark.sql(s"SELECT * FROM $table").queryExecution.executedPlan)
+          }
+          val scan = collect(sparkPlan) { case b: BatchScanExec => b }.head
+
+          // Apply the rule to the scan alone. BatchScanExec.equals ignores `ordering`, so
+          // TreeNode.transform would treat the copy as unchanged and keep the original.
+          def withOrdering(ordering: Option[Seq[SortOrder]]): SparkPlan =
+            scan.copy(ordering = ordering)
+
+          val ordered = Some(Seq(SortOrder(scan.output.head, Ascending)))
+
+          // CometScanRule marks an accepted Iceberg scan as a CometBatchScanExec. CometExecRule
+          // turns that into the native scan later. The unmodified scan and one with an empty
+          // ordering are both accepted, so the assertion below is not passing for some unrelated
+          // reason.
+          for (ordering <- Seq(None, Some(Seq.empty[SortOrder]))) {
+            val transformed = CometScanRule(spark).apply(withOrdering(ordering))
+            assert(
+              collect(transformed) { case s: CometBatchScanExec => s }.length == 1,
+              s"Expected the scan to be accepted for ordering $ordering. Plan:\n$transformed")
+          }
+
+          val input = withOrdering(ordered)
+          assert(
+            collect(input) { case b: BatchScanExec => b.ordering }.head.exists(_.nonEmpty),
+            s"Expected the copied scan to carry an ordering. Plan:\n$input")
+          val transformed = CometScanRule(spark).apply(input)
+          assert(
+            collect(transformed) { case s: CometBatchScanExec => s }.isEmpty,
+            s"Expected the ordered scan to stay on Spark. Plan:\n$transformed")
+          assert(collect(transformed) { case b: BatchScanExec => b }.length == 1)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(transformed)
+          assert(
+            reasons.exists(_.contains("Iceberg reports an output ordering")),
+            s"Expected the ordering fallback reason but found: $reasons")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }
