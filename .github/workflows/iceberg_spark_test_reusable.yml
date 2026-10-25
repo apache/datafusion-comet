@@ -155,7 +155,7 @@ jobs:
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
           # COMET_ICEBERG_WRITE_REPORT_DIR records which writer ran each Iceberg
           # write; see dev/ci/summarize-iceberg-writes.py.
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1 COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
             ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             --init-script ../dev/ci/iceberg-test-shards.gradle \
@@ -238,7 +238,7 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1 COMET_ICEBERG_WRITE_REPORT_DIR="$PWD/build/comet-iceberg-writes" \
             ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-extensions-${{ inputs.spark-short }}_${{ inputs.scala }}:test \
             --init-script ../dev/ci/iceberg-test-shards.gradle \
@@ -320,6 +320,6 @@ jobs:
         run: |
           cd apache-iceberg
           rm -rf /root/.m2/repository/org/apache/parquet # somehow parquet cache requires cleanups
-          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
+          ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1 ./gradlew -DsparkVersions=${{ inputs.spark-short }} -DscalaVersion=${{ inputs.scala }} -DflinkVersions= -DkafkaVersions= \
             :iceberg-spark:iceberg-spark-runtime-${{ inputs.spark-short }}_${{ inputs.scala }}:integrationTest \
             -Pquick=true -x javadoc

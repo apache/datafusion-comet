@@ -6,8 +6,6 @@
 .claude/skills
 CLAUDE.md
 native/Cargo.lock
-native/jni-bridge/testdata/backtrace.txt
-native/jni-bridge/testdata/stacktrace.txt
 dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt
@@ -33,3 +31,4 @@ spark/src/test/resources/test-data/*.ndjson
 spark/src/test/resources/abfs-auth-parity/*.json
 spark/inspections/CometTPC*results.txt
 benchmarks/tpc/queries/**/*.sql
+benchmarks/nested/queries/*.sql

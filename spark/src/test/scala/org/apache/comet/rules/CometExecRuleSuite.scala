@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.{ConcurrentLinkedQueue, FutureTask, TimeUnit}
 
 import scala.jdk.CollectionConverters._
 import scala.util.Random
@@ -29,8 +29,9 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.FunctionIdentifier
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, ExpressionInfo, In, InSet, KnownFloatingPointNormalized, Literal, Not}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
@@ -200,7 +201,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val original =
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)")
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)")
         val partial = original.collectFirst {
           case agg: HashAggregateExec if agg.aggregateExpressions.forall(_.mode == Partial) => agg
         }.get
@@ -215,7 +218,7 @@ class CometExecRuleSuite extends CometTestBase {
         }
 
         // The Partial initially converts, but its upper hash shuffle cannot. Repair restores
-        // Spark's AVG buffer producer and revisits the already wrapped round-robin input stage.
+        // Spark's decimal AVG buffer producer and revisits the wrapped round-robin input stage.
         val result = applyCometExecRule(staged)
         assert(result.collect { case agg: HashAggregateExec => agg }.size == 2)
         assert(!result.exists(_.isInstanceOf[CometHashAggregateExec]))
@@ -245,11 +248,13 @@ class CometExecRuleSuite extends CometTestBase {
       val data = Seq((1, Some(10)), (1, Some(20)), (2, None), (2, Some(40)), (3, None))
       withParquetTable(data, "test_data") {
         val df = sql("""
-            |SELECT k, AVG(v) FROM
+            |SELECT k, AVG(CAST(v AS DECIMAL(20, 2))) FROM
             |  (SELECT /*+ REPARTITION(4) */ _1 AS k, _2 AS v FROM test_data)
             |GROUP BY k
             |""".stripMargin)
-        QueryTest.checkAnswer(df, Seq(Row(1, 15.0), Row(2, 40.0), Row(3, null)))
+        QueryTest.checkAnswer(
+          df,
+          Seq(Row(1, BigDecimal("15.000000")), Row(2, BigDecimal("40.000000")), Row(3, null)))
         val plan = df.queryExecution.executedPlan
         assert(plan.asInstanceOf[AdaptiveSparkPlanExec].isFinalPlan)
         val nativeShuffles = collect(plan) { case s: CometShuffleExchangeExec => s }
@@ -296,6 +301,96 @@ class CometExecRuleSuite extends CometTestBase {
             assert(current.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq logicalStage))
           }
         }
+      }
+    }
+  }
+
+  test("collect limit preserves filter column pruning for column-only projections") {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((0, "a", 1), (1, "b", 2), (2, "c", 3)), "limit_columns") {
+        for (projection <- Seq("_1", "_1 AS value", "_3 AS a, _1 AS b, _3 AS c")) {
+          val df = sql(s"""SELECT $projection FROM limit_columns
+              |WHERE _1 % 2 = 0 AND length(_2) > 0 AND _3 > 0 LIMIT 1""".stripMargin)
+          val (_, plan) = checkSparkAnswerAndOperator(
+            df,
+            includeClasses = Seq(classOf[CometProjectExec], classOf[CometFilterExec]))
+          val project = plan.collectFirst { case p: CometProjectExec => p }.get
+          // Native filter output pruning requires a direct Project -> Filter edge, including
+          // aliases, reordered columns, and duplicates that outnumber the distinct inputs.
+          assert(project.child.isInstanceOf[CometFilterExec])
+          assert(project.child.output.size > project.references.size)
+          val serialized =
+            OperatorOuterClass.Operator.parseFrom(project.serializedPlanOpt.plan.get)
+          assert(serialized.getChildren(0).hasFilter)
+        }
+      }
+    }
+  }
+
+  test("collect limit projection input cap respects disabled native local limits") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.key -> "false") {
+      val original =
+        createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1) LIMIT 2")
+      val result = applyCometExecRule(original)
+      assert(result.collect { case p: CometProjectExec => p }.size == 1)
+      assert(!result.exists(_.isInstanceOf[ProjectExec]))
+      assert(!result.exists(_.isInstanceOf[CometLocalLimitExec]))
+      assert(result.executeCollect().map(_.getLong(0)).toSeq == Seq(1L, 2L))
+    }
+  }
+
+  test("collect limit projection input cap preserves AQE links and repeated planning") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      val original = createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1)")
+      val project = applyCometExecRule(original).asInstanceOf[CometProjectExec]
+      val stage = LogicalQueryStage(project.originalPlan.logicalLink.get, project)
+      val reused = spark.sessionState.planner.plan(stage).next()
+      assert(reused eq project)
+
+      val result = applyCometExecRule(CollectLimitExec(2, reused))
+      val bounded = result.collectFirst { case p: CometProjectExec => p }.get
+      assert(bounded.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq stage))
+      assert(bounded.child.asInstanceOf[CometLocalLimitExec].limit == 2)
+      assert(bounded.nativeOp.getChildren(0).getLimit.getLimit == 2)
+      val serialized = OperatorOuterClass.Operator.parseFrom(bounded.serializedPlanOpt.plan.get)
+      assert(serialized.getChildren(0).getLimit.getLimit == 2)
+
+      // AQE may wrap a previously converted projection in a newly planned collect limit.
+      val repeated = applyCometExecRule(CollectLimitExec(2, bounded))
+      val again = repeated.collectFirst { case p: CometProjectExec => p }.get
+      assert(again.nativeOp eq bounded.nativeOp)
+      assert(again.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).exists(_ eq stage))
+      assert(repeated.collect { case cap: CometLocalLimitExec => cap }.size == 1)
+    }
+  }
+
+  test("collect limit projection input cap does not cross a filter or sort") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      Seq(false, true).foreach { sorted =>
+        val original = createSparkPlan(spark, "SELECT id + 1 AS value FROM range(0, 10, 1, 1)")
+        val project = applyCometExecRule(original).asInstanceOf[CometProjectExec]
+        val child = if (sorted) {
+          SortExec(
+            Seq(SortOrder(project.output.head, Descending)),
+            global = false,
+            child = project)
+        } else {
+          FilterExec(GreaterThan(project.output.head, Literal(2L)), project)
+        }
+        val result = applyCometExecRule(CollectLimitExec(1, child))
+        assert(!result.exists(_.isInstanceOf[CometLocalLimitExec]))
+        val expected = if (sorted) 10L else 3L
+        assert(result.executeCollect().map(_.getLong(0)).toSeq == Seq(expected))
       }
     }
   }
@@ -869,6 +964,239 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  if (isSpark40Plus) {
+    Seq(
+      ("StructsToJson", "to_json(named_struct('value', id))"),
+      ("ParseUrl", "parse_url(concat('https://example.com/', id), 'HOST')"),
+      ("LengthOfJsonArray", "json_array_length(concat('[', id, ']'))")).foreach {
+      case (name, sqlExpression) =>
+        test(s"issue #5499: $name shim retains current fallback reasons on its wrapper") {
+          val plan = sql(s"SELECT $sqlExpression FROM range(2)").queryExecution.analyzed
+          val original = plan.expressions
+            .flatMap(_.collect {
+              case expr: RuntimeReplaceable if expr.getClass.getSimpleName == name => expr
+            })
+            .head
+          val wrapper = original.replacement
+          if (name == "LengthOfJsonArray") assert(wrapper.isInstanceOf[StaticInvoke])
+          else assert(wrapper.isInstanceOf[Invoke])
+          val tag = CometExplainInfo.FALLBACK_REASONS
+          wrapper.setTagValue(tag, Set("unrelated conversion"))
+          val key = CometConf.getExprEnabledConfigKey(name)
+          val expected = Set(s"Expression support is disabled. Set $key=true to enable it.")
+          withSQLConf(key -> "false") {
+            CometExplainInfo.withFallbackReasonScope {
+              // Call the shim directly so the generic Invoke handler cannot supply an unrelated
+              // reason and make this test pass when copy-back is broken.
+              assert(
+                QueryPlanSerde
+                  .sparkVersionSpecificExprToProtoInternal(
+                    wrapper,
+                    plan.children.head.output,
+                    binding = true)
+                  .isEmpty)
+              assert(wrapper.getTagValue(tag).contains(expected))
+              assert(CometExplainInfo.currentFallbackReasons(wrapper) == expected)
+            }
+          }
+        }
+    }
+  }
+
+  test("fallback reasons accumulate on unscoped expressions and remain sticky on operators") {
+    val expr = Literal(42)
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    withFallbackReason(expr, "unscoped first")
+    withFallbackReason(expr, "unscoped second")
+    assert(expr.getTagValue(tag).contains(Set("unscoped first", "unscoped second")))
+
+    val op = spark.sessionState.planner.plan(LocalRelation(Seq.empty[Attribute])).next()
+    withFallbackReason(op, "prior rule veto")
+    CometExplainInfo.withFallbackReasonScope {
+      withFallbackReason(expr, "current expression reason")
+      withFallbackReason(expr, "another expression reason")
+      val current = Set("current expression reason", "another expression reason")
+      assert(expr.getTagValue(tag).contains(current))
+      assert(CometExplainInfo.currentFallbackReasons(expr) == current)
+      withFallbackReason(op, "current operator reason")
+      assert(op.getTagValue(tag).contains(Set("prior rule veto", "current operator reason")))
+    }
+    withFallbackReason(expr, "after scope")
+    assert(
+      expr
+        .getTagValue(tag)
+        .contains(Set("current expression reason", "another expression reason", "after scope")))
+  }
+
+  test("issue #5499: child threads do not inherit expression fallback reasons") {
+    val source = Literal(true)
+    val reason = "parent conversion only"
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    CometExplainInfo.withFallbackReasonScope {
+      withFallbackReason(source, reason)
+      // Create the child while the parent scope is active: an inheritable ThreadLocal would
+      // expose the parent's journal and retain it beyond the parent's conversion.
+      val task = new FutureTask[Set[String]](() => {
+        CometExplainInfo.withExpressionFallbackReasonScope {
+          val owner = Alias(source, "child")()
+          QueryPlanSerde.liftFallbackReasons(source, owner)
+          owner.getTagValue(tag).getOrElse(Set.empty[String])
+        }
+      })
+      val thread = new Thread(task, "comet-fallback-provenance")
+      thread.setDaemon(true)
+      thread.start()
+      try assert(task.get(10, TimeUnit.SECONDS).isEmpty)
+      finally thread.join(10000)
+      val owner = Alias(source, "parent")()
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).contains(Set(reason)))
+    }
+  }
+
+  test("issue #5499: aggregate preflight retains current reasons without importing stale tags") {
+    withObjectHashAggPlan { plan =>
+      val agg = partialObjectHashAgg(plan)
+      val tag = CometExplainInfo.FALLBACK_REASONS
+      val expression = agg.aggregateExpressions.head
+      val key =
+        CometConf.getExprEnabledConfigKey(expression.aggregateFunction.getClass.getSimpleName)
+      val stale = "issue-5499-stale-aggregate-preflight"
+      expression.setTagValue(tag, Set(stale))
+      expression.aggregateFunction.setTagValue(tag, Set(stale))
+      val expected = s"Expression support is disabled. Set $key=true to enable it."
+      val rule = CometExecRule(spark)
+      withSQLConf(key -> "false") {
+        CometExplainInfo.withFallbackReasonScope {
+          val outer = Literal(true)
+          withFallbackReason(outer, "outer conversion")
+          assert(!rule.canAggregateBeConverted(agg, Partial))
+          assert(agg.getTagValue(tag).contains(Set(expected)))
+          assert(new ExtendedExplainInfo().generateExtendedInfo(agg).contains(expected))
+          assert(CometExplainInfo.currentFallbackReasons(outer) == Set("outer conversion"))
+          assert(CometExplainInfo.currentFallbackReasons(expression).isEmpty)
+        }
+      }
+    }
+    withObjectHashAggPlan { plan =>
+      val agg = partialObjectHashAgg(plan)
+      agg.aggregateExpressions.head.setTagValue(
+        CometExplainInfo.FALLBACK_REASONS,
+        Set("issue-5499-stale-successful-preflight"))
+      assert(CometExecRule(spark).canAggregateBeConverted(agg, Partial))
+      assert(agg.getTagValue(CometExplainInfo.FALLBACK_REASONS).isEmpty)
+    }
+  }
+
+  test("issue #5499: outermost conversion exceptions do not leak fallback reasons") {
+    val source = Literal(true)
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    intercept[IllegalArgumentException] {
+      CometExplainInfo.withFallbackReasonScope {
+        withFallbackReason(source, "failed conversion")
+        throw new IllegalArgumentException("conversion failed")
+      }
+    }
+    // Reuse the calling thread and source node after the exception, with its old tag intact.
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      val owner = Alias(source, "next_conversion")()
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).isEmpty)
+      withFallbackReason(source, "current conversion")
+      QueryPlanSerde.liftFallbackReasons(source, owner)
+      assert(owner.getTagValue(tag).contains(Set("current conversion")))
+    }
+  }
+
+  test("issue #5499: stale expression reasons cannot satisfy strict fallback checking") {
+    val literal = Literal.TrueLiteral
+    val tag = CometExplainInfo.FALLBACK_REASONS
+    val previous = literal.getTagValue(tag)
+    val stale = "issue-5499-unrelated-query"
+    try {
+      literal.setTagValue(tag, Set(stale))
+      withTempView("fallback_provenance") {
+        createTestDataFrame.createOrReplaceTempView("fallback_provenance")
+        val sparkPlan = createSparkPlan(spark, "SELECT id * 2 FROM fallback_provenance")
+        withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+          val nativeChild = stripAQEPlan(applyCometExecRule(sparkPlan)).collectFirst {
+            case op: CometNativeExec => op
+          }.get
+          val rule = CometExecRule(spark)
+          def operator = ProjectExec(Seq(Alias(literal, "value")()), nativeChild)
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            rule.rollUpFallbackReasons(op)
+            assert(op.getTagValue(tag).isEmpty)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(op))
+            withSQLConf(CometConf.COMET_STRICT_FALLBACK_REASONS.key -> "false") {
+              rule.reportUnexplainedFallback(op)
+              assert(op.getTagValue(tag).contains(Set(s"${op.nodeName} is not supported")))
+            }
+            // A copied tag is not a current reason, even if its source was tagged in this scope.
+            val source = Literal(true)
+            withFallbackReason(source, stale)
+            val copy = Literal(true)
+            assert(source == copy && !(source eq copy))
+            copy.copyTagsFrom(source)
+            val copied = Alias(copy, "copied")()
+            val copiedProject = ProjectExec(Seq(copied), nativeChild)
+            rule.rollUpFallbackReasons(copiedProject)
+            assert(copiedProject.getTagValue(tag).isEmpty)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(copiedProject))
+          }
+          // A current reason equal to the stale string must still count.
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            withFallbackReason(literal, stale)
+            intercept[IllegalArgumentException] {
+              CometExplainInfo.withFallbackReasonScope {
+                withFallbackReason(literal, "nested conversion")
+                throw new IllegalArgumentException("conversion failed")
+              }
+            }
+            rule.rollUpFallbackReasons(op)
+            assert(op.getTagValue(tag).contains(Set(stale)))
+            rule.reportUnexplainedFallback(op)
+          }
+          CometExplainInfo.withFallbackReasonScope {
+            val op = operator
+            rule.rollUpFallbackReasons(op)
+            intercept[IllegalStateException](rule.reportUnexplainedFallback(op))
+          }
+          // Legitimate literal failures must survive both serialization and operator roll-up.
+          val unsupported =
+            Literal.create(new Object, org.apache.spark.sql.types.ObjectType(classOf[Object]))
+          val disabledKey = CometConf.getExprEnabledConfigKey("Literal")
+          Seq(unsupported -> Seq.empty[(String, String)], literal -> Seq(disabledKey -> "false"))
+            .foreach { case (value, configs) =>
+              withSQLConf(configs: _*) {
+                CometExplainInfo.withFallbackReasonScope {
+                  val op = ProjectExec(Seq(Alias(value, "value")()), nativeChild)
+                  assert(
+                    QueryPlanSerde.exprToProto(op.projectList.head, nativeChild.output).isEmpty)
+                  rule.rollUpFallbackReasons(op)
+                  val expected = if (value eq literal) {
+                    s"Expression support is disabled. Set $disabledKey=true to enable it."
+                  } else {
+                    s"Unsupported data type ${unsupported.dataType}"
+                  }
+                  assert(op.getTagValue(tag).contains(Set(expected)))
+                  assert(new ExtendedExplainInfo().generateExtendedInfo(op).contains(expected))
+                  rule.reportUnexplainedFallback(op)
+                }
+              }
+            }
+        }
+      }
+    } finally {
+      previous match {
+        case Some(reasons) => literal.setTagValue(tag, reasons)
+        case None => literal.unsetTagValue(tag)
+      }
+    }
+  }
+
   test("strict mode fails an operator that Comet declined without recording a reason") {
     // The bug this guards against is a serde returning None and forgetting to say why, which the
     // generic "<operator> is not supported" message used to hide. No serde in the tree is in that
@@ -1214,7 +1542,7 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule should not allow AVG Comet partial and Spark final before buffer repair") {
+  test("CometExecRule should allow AVG mixed Comet partial and Spark final") {
     withTempView("test_data") {
       createTestDataFrame.createOrReplaceTempView("test_data")
       val sparkPlan =
@@ -1224,9 +1552,8 @@ class CometExecRuleSuite extends CometTestBase {
         CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE.key -> "false",
         CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
         val transformedPlan = applyCometExecRule(sparkPlan)
-        // Matching field types do not make native AVG's empty (null, 0) state safe for Spark.
-        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 2)
-        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 0)
+        assert(countOperators(transformedPlan, classOf[HashAggregateExec]) == 1) // final
+        assert(countOperators(transformedPlan, classOf[CometHashAggregateExec]) == 1) // partial
       }
     }
   }
@@ -1278,7 +1605,8 @@ class CometExecRuleSuite extends CometTestBase {
       s"unsafe aggregate buffers fall back when native shuffle is ineligible (distinct=$distinct)") {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
-        val aggregates = "AVG(id)" + (if (distinct) ", SUM(DISTINCT id)" else "")
+        val aggregates = "AVG(CAST(id AS DECIMAL(20, 2)))" +
+          (if (distinct) ", SUM(DISTINCT id)" else "")
 
         for (fallback <- Seq("disabled hash partitioning", "prior shuffle fallback", "none")) {
           withSQLConf(
@@ -1354,7 +1682,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val plan = applyCometExecRule(
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)"))
         val partial = plan.collectFirst {
           case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
         }.get
@@ -1388,7 +1718,9 @@ class CometExecRuleSuite extends CometTestBase {
       withTempView("test_data") {
         createTestDataFrame.createOrReplaceTempView("test_data")
         val plan = applyCometExecRule(
-          createSparkPlan(spark, "SELECT AVG(id) FROM test_data GROUP BY (id % 3)"))
+          createSparkPlan(
+            spark,
+            "SELECT AVG(CAST(id AS DECIMAL(20, 2))) FROM test_data GROUP BY (id % 3)"))
         val partial = plan.collectFirst {
           case agg: CometHashAggregateExec if agg.modes == Seq(Partial) => agg
         }.get
