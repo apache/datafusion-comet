@@ -127,6 +127,7 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
+            64L << 20,
             taskAttemptId,
             1L,
             null,
@@ -298,9 +299,10 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
 
   test("a plan fed only by native scans returns its memory when it spilled and stops early") {
     // With a tiny pool the sort spills, and the merge that reads the spill files back holds its
-    // memory in the plan's own stream.
+    // memory in the plan's own stream. The sort's share is the 2 MiB pool less its merge's
+    // reservation, which its rows do not fit in.
     withSQLConf(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.001",
       CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
       "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
       assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = true)
@@ -683,6 +685,21 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
         == fourGiB)
   }
 
+  test("the memory pool limit is the fraction of the off-heap size that the tasks share") {
+    import CometExecIterator.getMemoryConfig
+    val fourGiB = 4L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "4g")
+    // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.5") {
+      val config = getMemoryConfig(offHeap)
+      assert(config.memoryLimit == fourGiB / 2)
+      assert(config.offHeapSize == fourGiB)
+    }
+  }
+
   private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
 
   test("the native memory limit is the container's memory outside the JVM heap") {
@@ -824,6 +841,39 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+
+  test("the native runtime gets a worker thread for every core the executor runs tasks on") {
+    import CometExecIterator.numDriverOrExecutorCores
+    def cores(master: String, executorCores: Option[String] = None): Option[Int] =
+      numDriverOrExecutorCores(master, executorCores, availableProcessors = 12)
+
+    // Local mode runs tasks on the master's threads and ignores spark.executor.cores.
+    assert(cores("local") == Some(1))
+    assert(cores("local[4]") == Some(4))
+    assert(cores("local[*]") == Some(12))
+    assert(cores("local[4, 3]") == Some(4))
+    assert(cores("local[*,3]") == Some(12))
+    assert(cores("local[4]", executorCores = Some("2")) == Some(4))
+
+    // Elsewhere spark.executor.cores is the executor's core count when it is set.
+    assert(cores("spark://host:7077", executorCores = Some("3")) == Some(3))
+    assert(cores("local-cluster[2, 3, 1024]", executorCores = Some("1")) == Some(1))
+    assert(cores("yarn", executorCores = Some("8")) == Some(8))
+    assert(cores("k8s://https://host:6443", executorCores = Some("8")) == Some(8))
+    assert(cores("mesos://host:5050", executorCores = Some("8")) == Some(8))
+
+    // Without it, a standalone executor takes every core its worker offers: the master's cores
+    // per worker in local-cluster mode, and by default all of the machine's processors.
+    assert(cores("local-cluster[2, 3, 1024]") == Some(3))
+    assert(cores("local-cluster[2,3,1024]") == Some(3))
+    assert(cores("spark://host:7077") == Some(12))
+    assert(cores("spark://host1:7077,host2:7077") == Some(12))
+    // YARN and Kubernetes executors default to one core.
+    assert(cores("yarn") == Some(1))
+    assert(cores("k8s://https://host:6443") == Some(1))
+    // Other cluster managers do not tell.
+    assert(cores("mesos://host:5050").isEmpty)
   }
 
   /**

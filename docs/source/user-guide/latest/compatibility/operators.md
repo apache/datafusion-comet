@@ -65,32 +65,33 @@ it draws from a Poisson distribution that Comet does not implement natively
 ## Sort
 
 Spark orders a null element of an array sort key, or a null field of a struct sort key, below
-every other value, whatever the key's `NULLS FIRST` or `NULLS LAST`. Comet's native sort places it
-by the key's null order instead. So a sort, TopK, or window order key whose type can hold a null
-element or field falls back to Spark under `ASC NULLS LAST` or `DESC NULLS FIRST`
-([#6476](https://github.com/apache/datafusion-comet/issues/6476)). The default null orders,
-`ASC NULLS FIRST` and `DESC NULLS LAST`, place it where Spark does and run natively, and so does a
-key whose type cannot hold a null element or field, such as `array(coalesce(x, 0))`. Set
-`spark.comet.expression.SortOrder.allowIncompatible=true` to run the other null orders natively
-anyway.
+every other value, whatever the root key's `NULLS FIRST` or `NULLS LAST`. Comet compares nested
+values by Spark's order and applies the requested null placement only to the root key. Sort,
+TopK, and ranking window order keys run natively under both default and nondefault null orders
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
+searches boundaries over a nullable nested key still runs on Spark
+([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
 ## Hash Aggregation
 
-Decimal `avg` with input precision 25 or more falls back to Spark, except over `DECIMAL(38, 38)`.
-The native average rescales the sum within 38 digits before dividing it by the count, so a large
-sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark rejects with
-`NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL`
-([#7007](https://github.com/apache/datafusion-comet/issues/7007)). Set
-`spark.comet.expression.Average.allowIncompatible=true` to run it natively anyway.
+Ungrouped `AVG` and `TRY_AVG` on `DECIMAL(p, s)` fall back to Spark when the intermediate sum
+has reached precision 38 (`p >= 28`). Spark's generated aggregation code can retain a wider
+intermediate sum and check precision after dividing by the count. Comet instead records an
+overflow while accumulating that sum, which can discard a valid average. A wider scalar AVG
+accumulator, following the decimal SUM implementation, is tracked in
+[#7116](https://github.com/apache/datafusion-comet/issues/7116).
 
-From input precision 28, Spark keeps the running sum of a decimal `avg` at precision 38, which can
-overflow even when the average fits. In an aggregate without grouping keys, and in an
-`ObjectHashAggregateExec`, the native average does not handle that overflow the way Spark does, so
-such an `avg` falls back to Spark whatever `allowIncompatible` is set to
-([#5418](https://github.com/apache/datafusion-comet/issues/5418),
-[#5509](https://github.com/apache/datafusion-comet/issues/5509)). A grouped `HashAggregateExec`
-runs it natively, since both engines return `NULL` for the group, or raise under ANSI, once its
-running sum overflows.
+This fallback applies to the whole aggregate operator: a single wide-decimal `AVG` or `TRY_AVG`
+also moves sibling aggregates such as `MIN`, `MAX`, `COUNT`, and `SUM` to Spark. Both partial and
+final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
+ungrouped decimal averages remain eligible for native execution.
+
+Grouped decimal `AVG` remains eligible for native execution with hash aggregation. With Spark's
+object aggregation, decimal `AVG` and `TRY_AVG` fall back when their intermediate sum has precision
+38, because Spark's object buffer can recover after an intermediate overflow. As with the ungrouped
+case, the whole aggregate operator falls back. Native finalization can raise an
+ANSI overflow for a group that Spark would never consume after `LIMIT`; this error-timing difference
+is documented under [known divergences](index.md#known-result-value-divergences).
 
 ## Sort Aggregation
 
@@ -116,6 +117,34 @@ streamed side without keeping that side's order. When Spark reports the streamed
 for example the output of a window, a sort-merge join, or a cached table sorted within its
 partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
 strength of that order is not lost.
+
+### Output Order
+
+Spark reports the sort order of a hash join's streamed side as the join's own, and drops a sort
+above the join that this order satisfies. Comet's native hash joins keep that order where Comet can
+show that it holds. That includes a left or right outer join over a streamed side that was sorted
+outside the native plan, such as a sorted relation read from the [in-memory cache](#in-memory-cache).
+
+Comet passes the order to the native join as sort keys, and an outer join needs at least the first
+key to be one that Comet can express natively. Declaring any leading part of the order keeps the
+rows in place, so the join does not need the rest. An outer join whose first sort key Comet cannot
+express falls back to Spark and records a fallback reason (see
+[Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
+an operator above the join relies on the order.
+
+An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
+reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
+in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+`spark.comet.convert.rdd.enabled=true`, which defaults to `false`. Without that setting the
+checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
+outer hash join whose own probe input was not a scan
+([#6922](https://github.com/apache/datafusion-comet/issues/6922)). The output of a nested loop
+join can already be out of order when it reaches the join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
+
+When the order Comet cannot check comes only from another native hash join in the same plan, the
+join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
+it can see there.
 
 ## Window Functions
 
@@ -145,11 +174,9 @@ incorrect result. When any single window expression in a `WindowExec` falls back
   functions.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
-- `avg` on `DECIMAL` with precision 25 or more. Up to precision 27 it runs natively with
-  `spark.comet.expression.Average.allowIncompatible=true`, as in an aggregate
-  ([#7007](https://github.com/apache/datafusion-comet/issues/7007)). From precision 28 the native average also
-  differs from Spark once the running sum overflows precision 38
-  ([#5418](https://github.com/apache/datafusion-comet/issues/5418)).
+- `avg` or `try_avg` on `DECIMAL(p, s)` with an expanding frame when `p >= 28`, because Spark can preserve
+  a wider intermediate sum until division, as described under hash aggregation above. Removing this restriction
+  with a wider scalar accumulator is tracked in [#7116](https://github.com/apache/datafusion-comet/issues/7116).
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset

@@ -33,11 +33,11 @@ use crate::{
     spark_isnan, spark_lpad, spark_make_decimal, spark_month_name, spark_read_side_padding,
     spark_round, spark_rpad, spark_sequence, spark_to_time, spark_unhex, spark_unscaled_value,
     EvalMode, SparkArrayExtrema, SparkArrayPositionFunc, SparkArrayRemove, SparkArraySetOp,
-    SparkArraySlice, SparkArraysOverlap, SparkContains, SparkDateDiff, SparkDateFromUnixDate,
-    SparkDateTrunc, SparkDayOfWeek, SparkFlatten, SparkFloatArrayContains, SparkIcebergBucket,
-    SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate, SparkMakeInterval,
-    SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp, SparkSizeFunc,
-    SparkSortArray, SparkWeekDay,
+    SparkArraySlice, SparkArraySort, SparkArraysOverlap, SparkContains, SparkDateDiff,
+    SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkFlatten, SparkFloatArrayContains,
+    SparkIcebergBucket, SparkIcebergTemporalTransform, SparkIcebergTruncate, SparkMakeDate,
+    SparkMakeInterval, SparkMakeTime, SparkMapExtract, SparkNextDay, SparkSecondsToTimestamp,
+    SparkSizeFunc, SparkSortArray, SparkWeekDay,
 };
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
@@ -349,7 +349,9 @@ fn all_scalar_functions() -> Vec<Arc<ScalarUDF>> {
         Arc::new(ScalarUDF::new_from_impl(SparkFloatArrayContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraySlice::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraysOverlap::normalized())),
         Arc::new(ScalarUDF::new_from_impl(SparkSortArray::default())),
+        Arc::new(ScalarUDF::new_from_impl(SparkArraySort::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkContains::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateDiff::default())),
         Arc::new(ScalarUDF::new_from_impl(SparkDateFromUnixDate::default())),
