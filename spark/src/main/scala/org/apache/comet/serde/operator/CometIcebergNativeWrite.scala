@@ -794,6 +794,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           if (resolution.physicalPaths.contains(path)) Some(name -> path) else None
         }.toMap
       case Some((1, minor)) if minor >= 8 && minor < 10 =>
+        require(
+          configuredColumns.forall(_.nonEmpty),
+          "Empty Bloom column name requires Java validation")
         configuredColumns.flatMap { name =>
           IcebergReflection
             .findFieldIdByName(schema, name)
