@@ -20,6 +20,7 @@
 package org.apache.comet
 
 import java.io.{ByteArrayOutputStream, File}
+import java.nio.ByteBuffer
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
@@ -38,6 +39,7 @@ import org.json4s.jackson.JsonMethods.parse
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.parquet.io.api.Binary
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -1702,6 +1704,122 @@ class CometIcebergWriteActionSuite
       assert(
         native.zip(jvm).forall { case (left, right) => java.util.Arrays.equals(left, right) },
         "expected byte-identical capped SBBF bitsets for identical values and allocation")
+    }
+  }
+
+  test("native bloom filters match Java bytes and membership across physical types") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      case class BloomColumn(
+          name: String,
+          sqlType: String,
+          expression: String,
+          physicalType: String,
+          encodedValue: Int => Any)
+      val columns = Seq(
+        BloomColumn(
+          "big",
+          "BIGINT",
+          "(id - 5000) * 1000000007",
+          "INT64",
+          id => (id - 5000).toLong * 1000000007L),
+        BloomColumn(
+          "text",
+          "STRING",
+          "concat('bloom-', cast(id - 5000 AS STRING), 'é')",
+          "BINARY",
+          id => Binary.fromString(s"bloom-${id - 5000}é")),
+        BloomColumn(
+          "bytes",
+          "BINARY",
+          "unhex(concat('00FF', lpad(hex(id), 8, '0')))",
+          "BINARY",
+          id =>
+            Binary.fromConstantByteArray(
+              ByteBuffer
+                .allocate(6)
+                .put(0.toByte)
+                .put(0xff.toByte)
+                .putInt(id)
+                .array())),
+        BloomColumn(
+          "day",
+          "DATE",
+          "date_add(DATE '1970-01-01', cast(id - 5000 AS INT))",
+          "INT32",
+          id => id - 5000),
+        BloomColumn(
+          "ts",
+          "TIMESTAMP",
+          "timestamp_micros((id - 5000) * 1000003)",
+          "INT64",
+          id => (id - 5000).toLong * 1000003L),
+        BloomColumn(
+          "decimal_int32",
+          "DECIMAL(9, 2)",
+          "cast((id - 5000) / 100.0 AS DECIMAL(9, 2))",
+          "INT32",
+          id => id - 5000),
+        BloomColumn(
+          "decimal_int64",
+          "DECIMAL(18, 2)",
+          "cast((id - 5000) * 10000000000 AS DECIMAL(18, 2))",
+          "INT64",
+          id => (id - 5000).toLong * 1000000000000L),
+        BloomColumn(
+          "decimal_fixed",
+          "DECIMAL(38, 2)",
+          "cast((id - 5000) * 10000000000000000000000 AS DECIMAL(38, 2))",
+          "FIXED_LEN_BYTE_ARRAY",
+          id => {
+            val unscaled = BigInt(id - 5000) * BigInt(10).pow(24)
+            val bytes = unscaled.toByteArray
+            val padding = Array.fill[Byte](16 - bytes.length)(
+              if (unscaled.signum < 0) 0xff.toByte else 0.toByte)
+            Binary.fromConstantByteArray(padding ++ bytes)
+          }))
+      // Java can suppress filters for dictionary-only chunks. Force plain pages so every
+      // configured type contributes a filter to the cross-writer comparison.
+      val properties = (Seq(
+        "'write.parquet.bloom-filter-max-bytes'='4096'",
+        "'write.parquet.dict-size-bytes'='1'") ++ columns.map { column =>
+        s"'write.parquet.bloom-filter-enabled.column.${column.name}'='true'"
+      }).mkString(", ")
+      Seq("bloom_types_native", "bloom_types_jvm").foreach { table =>
+        val fields = columns.map(column => s"${column.name} ${column.sqlType}").mkString(", ")
+        spark.sql(
+          s"CREATE TABLE $catalog.$ns.$table (id INT, $fields) " +
+            s"USING iceberg TBLPROPERTIES ($properties)")
+      }
+      def insert(table: String): Unit = {
+        val values = columns.map(_.expression).mkString(", ")
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.$table SELECT cast(id AS INT), $values " +
+            "FROM range(0, 10000, 1, 1)")
+      }
+      // No NDV/FPP properties: this fixture also runs on Iceberg 1.5.2. Ten thousand distinct
+      // values keep the 4 KiB filters dense enough to prevent Rust's post-insert folding.
+      // FLOAT/DOUBLE have separate fallback coverage because their Bloom writes use Java.
+      assertNativeWriteEngages("bloom_types_native", 0 until 10000)(insert("bloom_types_native"))
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_types_jvm")
+      }
+      columns.foreach { column =>
+        val native = parquetBloomFilterBytes("bloom_types_native", column.name)
+        val jvm = parquetBloomFilterBytes("bloom_types_jvm", column.name)
+        assert(native.size == 1 && jvm.size == 1, s"expected one filter for ${column.name}")
+        assert(native.head.length == 4096 && jvm.head.length == 4096)
+        assert(
+          java.util.Arrays.equals(native.head, jvm.head),
+          s"expected byte-identical Bloom filters for ${column.name}")
+        Seq("bloom_types_native", "bloom_types_jvm").foreach { table =>
+          assertParquetBloomContainsValues(
+            table,
+            column.name,
+            column.physicalType,
+            (0 until 10000).map(column.encodedValue))
+        }
+      }
     }
   }
 
@@ -5642,6 +5760,42 @@ class CometIcebergWriteActionSuite
     }
     assert(counts.size == 1, s"expected one Bloom filter for $columnName, got ${counts.size}")
     counts.head
+  }
+
+  private def assertParquetBloomContainsValues(
+      tableName: String,
+      columnName: String,
+      physicalType: String,
+      values: Seq[Any]): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .map(_.getString(0))
+    assert(paths.length == 1, s"expected one data file for $tableName")
+    val conf = spark.sparkContext.hadoopConfiguration
+    val input = HadoopInputFile.fromPath(new HadoopPath(paths.head.stripPrefix("file:")), conf)
+    val reader = ParquetFileReader.open(input)
+    try {
+      val chunks = reader.getFooter.getBlocks.asScala
+        .flatMap(_.getColumns.asScala)
+        .filter(_.getPath.toDotString == columnName)
+      assert(chunks.size == 1, s"expected one column chunk for $columnName in $tableName")
+      val column = chunks.head
+      assert(column.getPrimitiveType.getPrimitiveTypeName.name() == physicalType)
+      val bloom = reader.readBloomFilter(column)
+      assert(bloom != null, s"expected Bloom filter for $columnName in $tableName")
+      values.foreach { value =>
+        val hash = value match {
+          case v: Int => bloom.hash(v)
+          case v: Long => bloom.hash(v)
+          case v: Binary => bloom.hash(v)
+          case other => fail(s"unsupported Bloom membership value: $other")
+        }
+        assert(bloom.findHash(hash), s"Bloom false negative for $columnName=$value in $tableName")
+      }
+    } finally {
+      reader.close()
+    }
   }
 
   private def assertParquetBloomContainsInts(
