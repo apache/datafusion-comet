@@ -28,7 +28,8 @@
 //! outputs state, that gives merge semantics with state output. Under `Single` mode, which
 //! spills rather than emit a group twice, the planner unpacks the struct into the state columns.
 //! It does the same under `Final` mode, which DataFusion 55 runs with an ordered aggregate that
-//! spills when the input is sorted on some of the grouping keys, where `Single` can't (#6880).
+//! spills when the input is sorted on some of the grouping keys. There, `Single` falls back to a
+//! stream whose spill can ask for more than its share of memory (#6880).
 
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};

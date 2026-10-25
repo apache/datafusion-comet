@@ -327,7 +327,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               .sortWithinPartitions("g")
               .groupBy("g")
               .agg(expr("max(v)"), count_distinct(col("k")))
-            QueryTest.sameRows(Seq(Row(0L, 124999L, 62500L)), df.collect().toSeq).foreach(fail(_))
+            checkCometAnswer(df, Seq(Row(0L, 124999L, 62500L)))
 
             assert(
               spilledAggregates(df, PartialMerge).exists(_.child match {

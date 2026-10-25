@@ -41,7 +41,7 @@ use datafusion::{
         aggregates::{AggregateMode as DFAggregateMode, PhysicalGroupBy},
         projection::ProjectionExec,
         sorts::sort::SortExec,
-        ExecutionPlan, ExecutionPlanProperties, InputOrderMode,
+        ExecutionPlan, ExecutionPlanProperties,
     },
 };
 use datafusion_comet_proto::{
@@ -247,37 +247,42 @@ impl OperatorBuilder for HashAggBuilder {
             })
             .collect();
 
-        let filter_exprs = filter_exprs?;
-        let mut aggregate = datafusion::physical_plan::aggregates::AggregateExec::try_new(
-            mode,
-            group_by.clone(),
-            aggr_expr.clone(),
-            filter_exprs.clone(),
-            Arc::clone(&child.native_plan),
-            Arc::clone(&schema),
-        )?;
-
         // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
         // GroupedHashAggregateStream, whose spill can ask for more than its share of the pool
         // (#6880). Its Final runs an OrderedFinalAggregateStream there instead, which spills, and
         // MergeAsPartial evaluates to its state under Final too. Final reads each state from the
         // columns after the keys and spills its groups in the input's types, so plan the
         // PartialMerge as Final only when its input is its keys followed by native states.
-        if proto_mode == ProtoAggregateMode::PartialMerge
-            && *aggregate.input_order_mode() != InputOrderMode::Linear
+        // One over Spark's binary collect buffers keeps Single and can still fail this way.
+        // DataFusion 56 replaces the legacy stream with an OrderedSingleAggregateStream, so
+        // recheck this on that upgrade (#6410).
+        let input_sorted_on_a_key = !child
+            .native_plan
+            .equivalence_properties()
+            .find_longest_permutation(&group_by.input_exprs())?
+            .1
+            .is_empty();
+        let mode = if proto_mode == ProtoAggregateMode::PartialMerge
+            && input_sorted_on_a_key
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
         {
-            aggregate = datafusion::physical_plan::aggregates::AggregateExec::try_new(
-                DFAggregateMode::Final,
+            DFAggregateMode::Final
+        } else {
+            mode
+        };
+
+        let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+            datafusion::physical_plan::aggregates::AggregateExec::try_new(
+                mode,
                 group_by,
                 aggr_expr,
-                filter_exprs,
+                filter_exprs?,
                 Arc::clone(&child.native_plan),
                 Arc::clone(&schema),
-            )?;
-        }
+            )?,
+        );
 
-        let mut output: Arc<dyn ExecutionPlan> = Arc::new(aggregate);
+        let mut output = aggregate;
         let mut additional_native_plans = vec![];
         if proto_mode == ProtoAggregateMode::PartialMerge {
             additional_native_plans.push(Arc::clone(&output));
@@ -344,16 +349,17 @@ fn input_is_keys_then_states(
     if !keys_lead {
         return Ok(false);
     }
-    let mut state_types = vec![];
-    for expr in aggr_expr {
-        let state_fields = expr
-            .state_fields()
-            .map_err(|e| ExecutionError::DataFusionError(e.to_string()))?;
-        state_types.extend(state_fields.iter().map(|f| f.data_type().clone()));
-    }
-    let input_types = input_schema.fields().iter().map(|f| f.data_type());
-    Ok(input_schema.fields().len() == num_keys + state_types.len()
-        && input_types.skip(num_keys).eq(state_types.iter()))
+    let state_fields = aggr_expr
+        .iter()
+        .map(|expr| expr.state_fields())
+        .collect::<datafusion::common::Result<Vec<_>>>()?
+        .concat();
+    let input_types = input_schema
+        .fields()
+        .iter()
+        .skip(num_keys)
+        .map(|f| f.data_type());
+    Ok(input_types.eq(state_fields.iter().map(|f| f.data_type())))
 }
 
 impl PhysicalPlanner {
