@@ -210,10 +210,10 @@ message DeltaSparkScanCommon {
   string table_root = 1;
   // Column mapping mode: "none", "name", or "id".
   string column_mapping_mode = 2;
-  // Key for split-mode plan-data injection. Derived from (table root, snapshot
-  // version, scan hash) so two scans of the same table in one plan (self-join,
-  // MERGE) don't collide -- same lesson as IcebergScan's
-  // (metadata_location, scan_hash_code) key.
+  // Key for split-mode plan-data injection: a hash of the table root, required
+  // schema, data filters, projection and fields, prefixed with common.source and
+  // ending with the scan op's plan_id, so two scans of one table in one native
+  // plan get distinct keys. Read only on the JVM side.
   string source_key = 3;
   // Effective datetime rebase read modes (LegacyBehaviorPolicy values of
   // spark.sql.parquet.datetimeRebaseModeInRead / int96RebaseModeInRead, resolved
