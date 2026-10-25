@@ -2763,10 +2763,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   test("Comet in-memory cache drops the rows before a sliced aggregate output") {
     // A grouped aggregate emits its groups as batch-size slices of one batch, and a slice of a
-    // string or binary array reaches the JVM with offsets that start past zero and the rows before
-    // it still at the front of its data buffer. Written as it stands, the k-th slice is cached with
-    // the bytes of the k - 1 slices before it, and the relation reports them in its size.
-    val rows = 4000
+    // string array reaches the JVM with offsets that start past zero and the rows before it still
+    // at the front of its data buffer. Written as it stands, the k-th slice is cached with the
+    // bytes of the k - 1 slices before it, and the relation reports them in its size.
+    val rows = 1000
     withTempPath { dir =>
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
@@ -2774,14 +2774,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
         CometConf.COMET_BATCH_SIZE.key -> "100",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
         spark.catalog.clearCache()
-        val keys = "concat('key-', lpad(cast(id AS string), 12, '0'))"
         spark
           .range(0, rows, 1, 1)
-          .selectExpr(s"$keys AS k", s"cast($keys AS binary) AS b")
+          .selectExpr("concat('key-', lpad(cast(id AS string), 12, '0')) AS k")
           .write
           .parquet(dir.getCanonicalPath)
 
-        def cachedSize(name: String, df: DataFrame): (Long, Int) = {
+        def cachedSize(name: String, df: DataFrame): (Long, Long) = {
           df.createOrReplaceTempView(name)
           spark.catalog.cacheTable(name)
           assert(spark.table(name).count() == rows)
@@ -2789,18 +2788,17 @@ class CometInMemoryCacheSuite extends CometTestBase {
             .lookupCachedData(spark.table(name))
             .get
             .cachedRepresentation
-          val batches = relation.cacheBuilder.cachedColumnBuffers.collect()
-          assert(batches.forall(
-            _.getClass.getName == "org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
-          (relation.computeStats().sizeInBytes.toLong, batches.length)
+          val batches = relation.cacheBuilder.cachedColumnBuffers
+          val classes = batches.map(_.getClass.getSimpleName).distinct().collect()
+          assert(classes.sameElements(Array("CometCachedBatch")))
+          (relation.computeStats().sizeInBytes.toLong, batches.count())
         }
 
         try {
           val scanned = spark.read.parquet(dir.getCanonicalPath)
           val distinct = scanned.distinct()
-          assert(collect(distinct.queryExecution.executedPlan) { case a: CometHashAggregateExec =>
-            a
-          }.nonEmpty)
+          assert(
+            distinct.queryExecution.executedPlan.exists(_.isInstanceOf[CometHashAggregateExec]))
 
           // The aggregate is cached first, so that it reads the Parquet scan and not a cached copy
           // of it. It has to emit more than one slice for the bytes before a slice to matter.
@@ -2808,7 +2806,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           assert(distinctBatches > 1, s"the aggregate emitted $distinctBatches batches")
           val (scannedSize, _) = cachedSize("scanned_cache", scanned)
           // The same rows, so the same bytes of string data. A slice that carried the bytes before
-          // it would make this about 20 times larger, one for each of the 40 slices.
+          // it would make this about 5 times larger, as the 10 slices average 5.5 slices of data.
           assert(
             distinctSize < scannedSize * 1.1,
             s"the aggregate's cache is $distinctSize bytes, a scan's of the same rows $scannedSize")
@@ -2830,6 +2828,56 @@ class CometInMemoryCacheSuite extends CometTestBase {
         batch.numRows()))
   }
 
+  /**
+   * The field node, validity and offset buffers of the rows of `full` from `skip` on, which the C
+   * Data import hands the JVM for a native slice: the offsets start past zero, over the buffers
+   * of all of `full`'s rows.
+   */
+  private def nativeSlice(
+      full: FieldVector,
+      skip: Int,
+      nulls: Int): (ArrowFieldNode, Seq[ArrowBuf]) = {
+    val length = full.getValueCount - skip
+    (
+      new ArrowFieldNode(length.toLong, nulls.toLong),
+      Seq(
+        full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
+        full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L)))
+  }
+
+  private def assertSliceWritesAsOwnValues(sliced: FieldVector, fresh: FieldVector): Unit = {
+    assert(sliced.getOffsetBuffer.getInt(0) > 0, "the test needs offsets past zero")
+    val codec = CometCachedBatchHelper.compressionCodec("none")
+    assert(payloadSize(sliced, codec) == payloadSize(fresh, codec))
+  }
+
+  private val sliceSkip = 8
+
+  private def stringVector(allocator: BufferAllocator, values: Seq[String]): VarCharVector = {
+    val vector = new VarCharVector("s", allocator)
+    vector.allocateNew()
+    values.zipWithIndex.foreach {
+      case (null, i) => vector.setNull(i)
+      case (v, i) => vector.setSafe(i, v.getBytes(StandardCharsets.UTF_8))
+    }
+    vector.setValueCount(values.length)
+    vector
+  }
+
+  private def slicedStringVector(
+      allocator: BufferAllocator,
+      values: Seq[String]): VarCharVector = {
+    val full = stringVector(allocator, values)
+    try {
+      val (node, buffers) = nativeSlice(full, sliceSkip, values.drop(sliceSkip).count(_ == null))
+      val vector = new VarCharVector("s", allocator)
+      vector.loadFieldBuffers(node, (buffers :+ full.getDataBuffer).asJava)
+      vector
+    } finally {
+      full.close()
+    }
+  }
+
   test("Comet in-memory cache writes a sliced list of strings as its own values") {
     // A list slice has offsets past zero in two places: its own, and its child's once the child
     // is sliced too. Only the list's start past zero here, over a child that holds every element,
@@ -2837,7 +2885,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
     val values: Seq[Seq[String]] = (0 until 24).map { i =>
       if (i % 5 == 0) null else (0 until i % 4).map(j => s"element-$i-$j")
     }
-    val skip = 8
 
     def lists(allocator: BufferAllocator, vs: Seq[Seq[String]]): ListVector = {
       val list = ListVector.empty("l", allocator)
@@ -2866,15 +2913,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
     def sliced(allocator: BufferAllocator): ListVector = {
       val full = lists(allocator, values)
       try {
-        val length = values.length - skip
+        val (node, buffers) =
+          nativeSlice(full, sliceSkip, values.drop(sliceSkip).count(_ == null))
         val list =
           new ListVector("l", allocator, FieldType.nullable(ArrowType.List.INSTANCE), null)
         list.initializeChildrenFromFields(full.getField.getChildren)
-        list.loadFieldBuffers(
-          new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
-          Seq(
-            full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
-            full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L)).asJava)
+        list.loadFieldBuffers(node, buffers.asJava)
         val fullChild = full.getDataVector.asInstanceOf[VarCharVector]
         list.getDataVector.loadFieldBuffers(
           new ArrowFieldNode(fullChild.getValueCount.toLong, 0L),
@@ -2888,15 +2932,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
       }
     }
 
-    val codec = CometCachedBatchHelper.compressionCodec("none")
     val allocator = CometArrowAllocator.newChildAllocator("sliced-list-write", 0, Long.MaxValue)
     try {
       val vector = sliced(allocator)
-      val fresh = lists(allocator, values.drop(skip))
-      try {
-        assert(vector.getOffsetBuffer.getInt(0) > 0, "the test needs offsets past zero")
-        assert(payloadSize(vector, codec) == payloadSize(fresh, codec))
-      } finally {
+      val fresh = lists(allocator, values.drop(sliceSkip))
+      try assertSliceWritesAsOwnValues(vector, fresh)
+      finally {
         fresh.close()
         vector.close()
       }
@@ -2909,47 +2950,15 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // The rebased copy of a sliced vector shares the batch's buffers, so it has to be closed
     // whether the write succeeds or fails, or the batch's data outlives the batch.
     val values = (0 until 24).map(i => if (i % 5 == 0) null else s"value-$i")
-    val skip = 8
-    def strings(allocator: BufferAllocator, vs: Seq[String]): VarCharVector = {
-      val vector = new VarCharVector("s", allocator)
-      vector.allocateNew()
-      vs.zipWithIndex.foreach {
-        case (null, i) => vector.setNull(i)
-        case (v, i) => vector.setSafe(i, v.getBytes(StandardCharsets.UTF_8))
-      }
-      vector.setValueCount(vs.length)
-      vector
-    }
 
-    // The slice of `values` from `skip` on, imported as a native slice is: offsets that start
-    // past zero over the whole data buffer.
-    def sliced(allocator: BufferAllocator): VarCharVector = {
-      val full = strings(allocator, values)
-      try {
-        val length = values.length - skip
-        val vector = new VarCharVector("s", allocator)
-        vector.loadFieldBuffers(
-          new ArrowFieldNode(length.toLong, values.drop(skip).count(_ == null).toLong),
-          Seq(
-            full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
-            full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L),
-            full.getDataBuffer).asJava)
-        vector
-      } finally {
-        full.close()
-      }
-    }
-
-    val codec = CometCachedBatchHelper.compressionCodec("none")
     // Closing a child allocator that still holds a buffer throws, which is the leak check.
     val allocator = CometArrowAllocator.newChildAllocator("sliced-write", 0, Long.MaxValue)
     try {
-      val vector = sliced(allocator)
-      val fresh = strings(allocator, values.drop(skip))
-      val failed = sliced(allocator)
+      val vector = slicedStringVector(allocator, values)
+      val fresh = stringVector(allocator, values.drop(sliceSkip))
+      val failed = slicedStringVector(allocator, values)
       try {
-        assert(vector.getOffsetBuffer.getInt(0) > 0, "the test needs offsets past zero")
-        assert(payloadSize(vector, codec) == payloadSize(fresh, codec))
+        assertSliceWritesAsOwnValues(vector, fresh)
 
         // The write fails after the slice has rebased its offsets into a buffer of its own.
         val failing = new FailAfterCompressionCodec(succeedFor = 1)

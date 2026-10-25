@@ -218,12 +218,10 @@ private[comet] object CachedBatchIpc {
         root.setRowCount(batch.numRows())
       }
 
-      // A column sliced on the native side reaches the JVM with offsets that start past zero, and
-      // VectorUnloader writes the bytes before the first offset too. A grouped aggregate emits its
-      // groups as slices of one batch, so each slice would be cached with the bytes of the slices
-      // before it, and columnSizes would report them.
-      val written = Utils.rebasedForWrite(root)
-      try {
+      // A grouped aggregate emits its groups as slices of one batch, which reach the JVM with
+      // offsets that start past zero. Unloaded as they are, each slice would be cached, and
+      // reported by columnSizes, with the bytes of the slices before it.
+      Utils.withRebasedOffsets(root) { written =>
         // Unloaded plain and compressed afterwards rather than by handing the codec to the
         // unloader; see compressed for why.
         val fields = vectors.map(_.getField)
@@ -251,8 +249,6 @@ private[comet] object CachedBatchIpc {
         } finally {
           recordBatch.close()
         }
-      } finally {
-        if (written ne root) written.close()
       }
     } finally {
       // Only the vectors allocated for this write. The rest belong to the input batch.

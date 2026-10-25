@@ -271,19 +271,13 @@ object Utils extends CometTypeShim with Logging {
         val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
         // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
-        // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
-        // rebases the offsets to zero and leaves those bytes out.
-        val written = rebasedForWrite(root)
-        try {
+        // at zero.
+        withRebasedOffsets(root) { written =>
           val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
           writer.start()
           writer.writeBatch()
           root.clear()
           writer.close()
-        } finally {
-          // The slice holds its own references on the batch's buffers, so it is closed even when
-          // the write fails, as it does when a cancelled broadcast interrupts the task.
-          if (written ne root) written.close()
         }
       } catch {
         case NonFatal(e) =>
@@ -302,14 +296,20 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * `root` itself when every offset buffer in it starts at zero, otherwise a slice of it with the
-   * offsets rebased to zero and the bytes before the first of them left out. The slice shares the
-   * other buffers and holds its own references on them, so the caller closes it whenever it is
-   * not `root`, even when the write fails.
+   * Runs `write` on `root` itself when every offset buffer in it starts at zero, and otherwise on
+   * a slice of it that rebases the offsets to zero and leaves out the bytes before the first of
+   * them, which Arrow Java would write. The slice shares the other buffers and holds its own
+   * references on them, so it is closed whether `write` returns or fails, as it does when a
+   * cancelled broadcast interrupts the task.
    */
-  private[comet] def rebasedForWrite(root: VectorSchemaRoot): VectorSchemaRoot =
-    if (root.getFieldVectors.asScala.forall(offsetsStartAtZero)) root
-    else root.slice(0, root.getRowCount)
+  private[comet] def withRebasedOffsets[T](root: VectorSchemaRoot)(
+      write: VectorSchemaRoot => T): T = {
+    val written =
+      if (root.getFieldVectors.asScala.forall(offsetsStartAtZero)) root
+      else root.slice(0, root.getRowCount)
+    try write(written)
+    finally if (written ne root) written.close()
+  }
 
   /**
    * Whether every offset buffer in `vector`, its children included, starts at zero.
