@@ -1313,6 +1313,30 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("legacy independent FPP validation selects Java even without enabled columns") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 6) && !icebergVersionAtLeast(1, 8))
+    withIcebergCatalog { _ =>
+      Seq("independent_fpp_native", "independent_fpp_java").foreach { table =>
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some("'write.parquet.bloom-filter-fpp.column.missing'='garbage'"))
+      }
+      def insert(table: String): Unit =
+        spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+      val nativeError = intercept[Throwable](withNativeEnabled(insert("independent_fpp_native")))
+      val javaError = intercept[Throwable] {
+        withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+          insert("independent_fpp_java")
+        }
+      }
+      assert(exceptionChain(nativeError).last.getClass == exceptionChain(javaError).last.getClass)
+      assert(
+        exceptionChain(nativeError).last.getMessage == exceptionChain(javaError).last.getMessage)
+    }
+  }
+
   test("legacy empty Bloom names preserve Java validation errors even when disabled") {
     assumeNativeAcceleration()
     assume(icebergVersionAtLeast(1, 8) && !icebergVersionAtLeast(1, 10))
@@ -1449,11 +1473,9 @@ class CometIcebergWriteActionSuite
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
-      val configuredFpp = 0.01
       val configuredNdv = 1000
       val properties = Some(
         "'write.parquet.bloom-filter-enabled.column.id'='false', " +
-          s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
           s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
       createTable("bloom_false_ndv_native", partitionSpec = "", properties)
       createTable("bloom_false_ndv_jvm", partitionSpec = "", properties)
@@ -1534,7 +1556,6 @@ class CometIcebergWriteActionSuite
 
   test("max-bytes=32 falls back only when parquet-mr ignores the cap") {
     assumeNativeAcceleration()
-    assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
       val minimumBytes = 32
       val naturallyMinimumNdv = 1
@@ -1542,6 +1563,10 @@ class CometIcebergWriteActionSuite
       val bindingFpp = 0.0001
       val parquetMrBindingBytes = 4 * 1024 * 1024
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
+      val interpretedFpp =
+        if (icebergSupportsBloomNdv)
+          s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', "
+        else ""
       createTable(
         "bloom_minimum_native",
         partitionSpec = "",
@@ -1552,22 +1577,27 @@ class CometIcebergWriteActionSuite
         "bloom_minimum_fallback",
         partitionSpec = "",
         properties = Some(
-          enabled + s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', " +
+          enabled + interpretedFpp +
             s"'write.parquet.bloom-filter-ndv.column.id'='$bindingNdv', " +
             s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
 
       assertNativeWriteEngages("bloom_minimum_native", Seq(1)) {
         spark.sql("INSERT INTO cat.db.bloom_minimum_native VALUES (1, 'region', 1.0)")
       }
-      assertNativeWriteDoesNotEngage("bloom_minimum_fallback", Seq(1)) {
+      def insertBinding(): Unit =
         spark.sql("INSERT INTO cat.db.bloom_minimum_fallback VALUES (1, 'region', 1.0)")
+      if (icebergSupportsBloomNdv) {
+        assertNativeWriteDoesNotEngage("bloom_minimum_fallback", Seq(1))(insertBinding())
+      } else {
+        assertNativeWriteEngages("bloom_minimum_fallback", Seq(1))(insertBinding())
       }
 
       assert(
         parquetBloomFilterBytes("bloom_minimum_native", "id").forall(_.length == minimumBytes))
       assert(
         parquetBloomFilterBytes("bloom_minimum_fallback", "id")
-          .forall(_.length == parquetMrBindingBytes))
+          .forall(
+            _.length == (if (icebergSupportsBloomNdv) parquetMrBindingBytes else minimumBytes)))
     }
   }
 
@@ -1966,8 +1996,10 @@ class CometIcebergWriteActionSuite
           spark.sql(s"INSERT INTO cat.db.$table SELECT CAST(id AS INT), 'region', " +
             s"CAST(id AS DOUBLE) FROM range(${ids.start}, ${ids.end}, 1, 1)")
 
-        assertNativeWriteEngages(nativeTable, ids) {
-          insert(nativeTable)
+        if (suffix == "fpp_only" && icebergVersionAtLeast(1, 6) && !icebergVersionAtLeast(1, 8)) {
+          assertNativeWriteDoesNotEngage(nativeTable, ids)(insert(nativeTable))
+        } else {
+          assertNativeWriteEngages(nativeTable, ids)(insert(nativeTable))
         }
         withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
           insert(jvmTable)
@@ -2140,23 +2172,40 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("out-of-range bloom max uses the classic writer when a bloom column is configured") {
+  test("out-of-range bloom max uses Java without requiring NDV support") {
     assumeNativeAcceleration()
-    assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
-      // A tiny explicit NDV keeps the fallback writer's allocation small even for the oversized
-      // maximum. Without a configured Bloom column, the maximum is unused and stays native.
-      val enabledWithSmallNdv =
-        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
-          "'write.parquet.bloom-filter-ndv.column.id'='1', "
-      val max = "134217729"
-      val table = "bloom_range_fallback"
-      createTable(
-        table,
-        partitionSpec = "",
-        properties = Some(enabledWithSmallNdv + s"'write.parquet.bloom-filter-max-bytes'='$max'"))
-      assertNativeWriteDoesNotEngage(table, Seq(1)) {
-        spark.sql(s"INSERT INTO cat.db.$table VALUES (1, 'region', 1.0)")
+    withIcebergCatalog { _ =>
+      Seq("31", "33", "100").foreach { max =>
+        val nativeTable = s"bloom_range_fallback_$max"
+        val javaTable = s"bloom_range_java_$max"
+        Seq(nativeTable, javaTable).foreach { table =>
+          createTable(
+            table,
+            partitionSpec = "",
+            properties = Some(
+              "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+                s"'write.parquet.bloom-filter-max-bytes'='$max'"))
+        }
+        def insert(table: String): Unit =
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+        // Java versions differ at caps below 32: older releases clamp, newer ones reject.
+        // Preserve the installed writer's result rather than assume every positive cap works.
+        val javaFailure =
+          try {
+            withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false")(
+              insert(javaTable))
+            None
+          } catch {
+            case NonFatal(error) => Some(error)
+          }
+        javaFailure match {
+          case None => assertNativeWriteDoesNotEngage(nativeTable, Seq(1))(insert(nativeTable))
+          case Some(expected) =>
+            val actual = intercept[Throwable](withNativeEnabled(insert(nativeTable)))
+            assert(exceptionChain(actual).last.getClass == exceptionChain(expected).last.getClass)
+            assert(
+              exceptionChain(actual).last.getMessage == exceptionChain(expected).last.getMessage)
+        }
       }
     }
   }
