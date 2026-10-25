@@ -250,21 +250,26 @@ impl OperatorBuilder for HashAggBuilder {
         // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
         // GroupedHashAggregateStream, whose spill can ask for more than its share of the pool
         // (#6880). Its Final runs an OrderedFinalAggregateStream there instead, which spills, and
-        // MergeAsPartial evaluates to its state under Final too. Final reads each state from the
-        // columns after the keys and spills its groups in the input's types, so plan the
-        // PartialMerge as Final only when its input is its keys followed by native states.
-        // One over Spark's binary collect buffers keeps Single and can still fail this way.
+        // MergeAsPartial evaluates to its state under Final too. Two things make the task succeed
+        // there: the new stream's spill path, and the fair pool exempting every consumer named
+        // OrderedFinalAggregateStream from its fair limit (`limited_to_its_share`), the limit the
+        // legacy stream's spill failed against. So this PartialMerge is checked only against the
+        // pool and Spark's grant.
+        // Final reads each state from the columns after the keys and spills its groups in the
+        // input's types, so plan the PartialMerge as Final only when its input is its keys
+        // followed by native states. A PartialMerge over Spark's binary collect buffers keeps
+        // Single, but that input arrives through a ScanExec with no ordering, so it is not
+        // expected to be sorted on a key.
         // DataFusion 56 replaces the legacy stream with an OrderedSingleAggregateStream, so
         // recheck this on that upgrade (#6410).
-        let input_sorted_on_a_key = !child
-            .native_plan
-            .equivalence_properties()
-            .find_longest_permutation(&group_by.input_exprs())?
-            .1
-            .is_empty();
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
-            && input_sorted_on_a_key
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
+            && !child
+                .native_plan
+                .equivalence_properties()
+                .find_longest_permutation(&group_by.input_exprs())?
+                .1
+                .is_empty()
         {
             DFAggregateMode::Final
         } else {

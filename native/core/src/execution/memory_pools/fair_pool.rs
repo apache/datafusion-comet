@@ -163,6 +163,11 @@ impl Display for CometFairMemoryPool {
 /// refused request fails the query. So its requests are checked only against the pool, like those
 /// of a consumer that cannot spill. The partially sorted stream still spills when Spark refuses it.
 ///
+/// The exemption goes by name, so it covers every `OrderedFinalAggregateStream`, including a
+/// pure `PartialMerge` that the planner runs as `Final` over input sorted on some of its keys
+/// (#6880). That one is not a `CometSortAggregateExec` and its input is only partially sorted, but
+/// it is checked only against the pool as well.
+///
 /// Only the check differs. The aggregate still counts as a consumer that can spill everywhere
 /// else, so it is one of `num_spill` and its bytes are not `unspillable`. A sort below it then
 /// stays limited to its fair share and leaves the aggregate the rest.
