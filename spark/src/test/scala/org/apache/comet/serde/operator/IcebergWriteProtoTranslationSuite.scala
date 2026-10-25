@@ -100,6 +100,41 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     assert(error.getMessage.contains("same Parquet leaf"))
   }
 
+  test("legacy list and map aliases resolve by field ID and colliding spellings use Java") {
+    val version = IcebergReflection.icebergVersion().split("[.-]", 3)
+    assume(version.length >= 2 && scala.util.Try(version(1).toInt >= 8).getOrElse(false))
+    val json = """{"type":"struct","schema-id":0,"fields":[
+      {"id":1,"name":"tags","required":false,"type":{"type":"list","element-id":2,
+        "element-required":false,"element":{"type":"struct","fields":[
+          {"id":3,"name":"a","required":false,"type":"int"}]}}},
+      {"id":4,"name":"attrs","required":false,"type":{"type":"map","key-id":5,
+        "key":"string","value-id":6,"value-required":false,
+        "value":{"type":"struct","fields":[
+          {"id":7,"name":"b","required":false,"type":"int"}]}}}]}"""
+    val schema = IcebergReflection
+      .loadClass("org.apache.iceberg.SchemaParser")
+      .getMethod("fromJson", classOf[String])
+      .invoke(null, json)
+    val resolution = IcebergReflection.getParquetPathResolution(schema).get
+    Seq(
+      ("tags.a", "tags.element.a", "tags.list.element.a"),
+      ("attrs.b", "attrs.value.b", "attrs.key_value.value.b")).foreach {
+      case (short, canonical, physical) =>
+        assert(
+          CometIcebergNativeWrite
+            .bloomFilterParquetPaths(Seq(short, "missing"), resolution, "1.8.1", schema) == Map(
+            short -> physical))
+        val error = intercept[IllegalArgumentException] {
+          CometIcebergNativeWrite.bloomFilterParquetPaths(
+            Seq(short, canonical),
+            resolution,
+            "1.8.1",
+            schema)
+        }
+        assert(error.getMessage.contains("same Parquet leaf"))
+    }
+  }
+
   // -- compression -----------------------------------------------------------
 
   test("compression defaults to zstd at parquet-mr's level 3 when no property is set") {
