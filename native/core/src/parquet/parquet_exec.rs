@@ -18,6 +18,7 @@
 use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
+use crate::parquet::int96_coercion::{COERCE_INT96_TZ, COERCE_INT96_UNIT};
 use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
@@ -416,12 +417,12 @@ fn get_options(
     table_parquet_options.global.pruning = session_parquet_options.pruning;
 
     // Hardcoded for Spark compatibility, not session-overridable.
-    table_parquet_options.global.coerce_int96 = Some("us".to_string());
+    table_parquet_options.global.coerce_int96 = Some(COERCE_INT96_UNIT.to_string());
     // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
     // preserves that signal at the Arrow level so the schema adapter can
     // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
     // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
-    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
+    table_parquet_options.global.coerce_int96_tz = Some(COERCE_INT96_TZ.to_string());
     let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, session_timezone);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
@@ -2135,5 +2136,223 @@ mod tests {
                 0
             );
         }
+    }
+
+    /// Seconds since the epoch of the timestamps the legacy-list tests store, one single-element
+    /// list per row: 9999-12-31 23:59:59, 1600-01-01, 2263-01-01 and 1000-01-01 (all outside the
+    /// nanosecond range, the last also before the 1582 calendar cutover) and 2020-01-01.
+    const LEGACY_LIST_SECONDS: [i64; 5] = [
+        253_402_300_799,
+        -11_676_096_000,
+        9_246_182_400,
+        -30_610_224_000,
+        1_577_836_800,
+    ];
+
+    /// Writes a file whose one column is a list of INT96 timestamps in the layout Spark writes
+    /// under `spark.sql.parquet.writeLegacyFormat=true` (`bag` / `array`, not `list` /
+    /// `element`), optionally encrypted with a uniform key, and returns its path.
+    fn write_legacy_list_int96_file(encryption: Option<Arc<FileEncryptionProperties>>) -> String {
+        use parquet::data_type::{Int96, Int96Type};
+        use parquet::file::writer::SerializedFileWriter;
+        use parquet::schema::parser::parse_message_type;
+
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let parquet_schema = Arc::new(
+            parse_message_type(
+                "message m { optional group at (LIST) { repeated group bag { optional int96 array; } } }",
+            )
+            .unwrap(),
+        );
+        let mut properties = WriterProperties::builder();
+        if let Some(encryption) = encryption {
+            properties = properties.with_file_encryption_properties(encryption);
+        }
+        let file = File::create(&filename).unwrap();
+        let mut writer =
+            SerializedFileWriter::new(file, parquet_schema, Arc::new(properties.build())).unwrap();
+        let values: Vec<Int96> = LEGACY_LIST_SECONDS
+            .iter()
+            .map(|seconds| {
+                let nanos_of_day = seconds.rem_euclid(86_400) * 1_000_000_000;
+                let mut value = Int96::new();
+                value.set_data(
+                    nanos_of_day as u32,
+                    (nanos_of_day >> 32) as u32,
+                    (seconds.div_euclid(86_400) + 2_440_588) as u32,
+                );
+                value
+            })
+            .collect();
+        let mut row_group = writer.next_row_group().unwrap();
+        let mut col = row_group.next_column().unwrap().unwrap();
+        col.typed::<Int96Type>()
+            .write_batch(
+                &values,
+                Some(&vec![3; values.len()]),
+                Some(&vec![0; values.len()]),
+            )
+            .unwrap();
+        col.close().unwrap();
+        row_group.close().unwrap();
+        writer.close().unwrap();
+        filename
+    }
+
+    fn has_arrow_schema_hint(metadata: &parquet::file::metadata::ParquetMetaData) -> bool {
+        metadata
+            .file_metadata()
+            .key_value_metadata()
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .any(|entry| entry.key == parquet::arrow::ARROW_SCHEMA_META_KEY)
+            })
+    }
+
+    /// An INT96 timestamp in a legacy list layout reads as the stored instant, not as the wrapped
+    /// 64-bit nanosecond count DataFusion's coercion leaves behind for a layout it does not
+    /// recognize (apache/datafusion-comet#7029).
+    #[tokio::test]
+    async fn int96_in_a_legacy_list_layout_scans_as_microseconds() {
+        use arrow::array::AsArray;
+        use arrow::datatypes::TimestampMicrosecondType;
+
+        let filename = write_legacy_list_int96_file(None);
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "at",
+            DataType::List(Arc::new(Field::new("element", ts_type, true))),
+            true,
+        )]));
+        let session_ctx = Arc::new(SessionContext::new());
+        let scan = init_datasource_exec(
+            Arc::clone(&schema),
+            None,
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![PartitionedFile::from_path(filename).unwrap()]],
+            None,
+            None,
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            &session_ctx,
+            false,
+            false,
+            false,
+            false,
+            "",
+            "",
+        )
+        .unwrap();
+
+        let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+        let mut micros = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let lists = batch.column(0).as_list::<i32>();
+            micros.extend(
+                lists
+                    .values()
+                    .as_primitive::<TimestampMicrosecondType>()
+                    .values()
+                    .iter()
+                    .copied(),
+            );
+        }
+        assert_eq!(
+            micros,
+            LEGACY_LIST_SECONDS
+                .iter()
+                .map(|seconds| seconds * 1_000_000)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The reader hands the opener a footer with the coercion hint, but the shared metadata cache
+    /// keeps the footer as read, so another scan of the file in the same plan is unaffected.
+    #[tokio::test]
+    async fn int96_hint_is_on_the_returned_footer_and_not_in_the_cache() {
+        use parquet::arrow::async_reader::AsyncFileReader;
+
+        let partitioned_file =
+            PartitionedFile::from_path(write_legacy_list_int96_file(None)).unwrap();
+        let location = partitioned_file.object_meta.location.clone();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metadata_cache = runtime_env.cache_manager.get_file_metadata_cache();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            Arc::clone(&metadata_cache),
+            ScanIoSource::Local,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(0, partitioned_file, Some(512 * 1024), &metrics)
+            .unwrap();
+
+        let returned = reader.get_metadata(None).await.unwrap();
+
+        assert!(has_arrow_schema_hint(&returned));
+        let cached = metadata_cache
+            .get(&location)
+            .expect("file metadata should be cached");
+        let cached = cached
+            .file_metadata
+            .as_any()
+            .downcast_ref::<CachedParquetMetaData>()
+            .expect("cached entry should hold Parquet metadata")
+            .parquet_metadata();
+        assert!(!has_arrow_schema_hint(cached));
+    }
+
+    /// An open that supplies decryption properties cannot be rebuilt without losing its
+    /// decryptor, so it is returned as read.
+    #[tokio::test]
+    async fn int96_hint_is_skipped_for_an_open_with_decryption_properties() {
+        use parquet::arrow::async_reader::AsyncFileReader;
+
+        let key = b"0123456789012345".to_vec();
+        let encryption = FileEncryptionProperties::builder(key.clone())
+            .build()
+            .unwrap();
+        let partitioned_file =
+            PartitionedFile::from_path(write_legacy_list_int96_file(Some(encryption))).unwrap();
+        let session_ctx = Arc::new(SessionContext::new());
+        let runtime_env = session_ctx.runtime_env();
+        let store = runtime_env
+            .object_store(ObjectStoreUrl::local_filesystem())
+            .unwrap();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            store,
+            runtime_env.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::Local,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(0, partitioned_file, Some(512 * 1024), &metrics)
+            .unwrap();
+        let decryption = FileDecryptionProperties::builder(key).build().unwrap();
+        let options = ArrowReaderOptions::new().with_file_decryption_properties(decryption);
+
+        let returned = reader.get_metadata(Some(&options)).await.unwrap();
+
+        assert!(!has_arrow_schema_hint(&returned));
     }
 }
