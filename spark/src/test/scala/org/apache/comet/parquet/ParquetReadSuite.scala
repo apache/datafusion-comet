@@ -52,7 +52,7 @@ import org.apache.spark.sql.types._
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -2330,6 +2330,102 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
         val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
         checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  Seq(false, true).foreach { arrayOfStruct =>
+    val shape = if (arrayOfStruct) "array of struct" else "struct"
+    test(s"pruned Parquet field ids follow the scan schema for a renamed root $shape") {
+      val inner = new StructType()
+        .add("a", IntegerType, true, withId(11))
+        .add("b", IntegerType, true, withId(12))
+      val dataType = if (arrayOfStruct) ArrayType(inner) else inner
+      val writeSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("original", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val readSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("renamed", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val nestedRows = if (arrayOfStruct) {
+        Seq(
+          Row(Seq(Row(1, 10), null, Row(null, 30))),
+          Row(Seq(Row(2, 20))),
+          Row(Seq.empty),
+          Row(null),
+          Row(Seq(Row(3, 40))))
+      } else {
+        Seq(Row(Row(1, 10)), Row(Row(2, 20)), Row(Row(null, 30)), Row(null), Row(Row(3, 40)))
+      }
+      val rows = nestedRows.zipWithIndex.map { case (row, id) => Row(id, row.get(0), id % 2) }
+      val projected = if (arrayOfStruct) {
+        Seq(Row(Seq(1, null, null)), Row(Seq(2)), Row(Seq.empty), Row(null), Row(Seq(3)))
+      } else {
+        Seq(Row(1), Row(2), Row(null), Row(null), Row(3))
+      }
+      val predicate = if (arrayOfStruct) "array_contains(renamed.a, 2)" else "renamed.a > 1"
+      val filtered = if (arrayOfStruct) Seq(Row(Seq(2))) else Seq(Row(2), Row(3))
+      val filteredIds = if (arrayOfStruct) Seq(Row(1, 1)) else Seq(Row(1, 1), Row(4, 0))
+      val nonNullCount = if (arrayOfStruct) 4L else 3L
+
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+            .write
+            .partitionBy("part")
+            .parquet(dir.getCanonicalPath)
+          Seq(false, true).foreach { pruning =>
+            withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> pruning.toString) {
+              withClue(s"nested schema pruning $pruning: ") {
+                // Spark 3.4 keeps the root id in requiredSchema. From 3.5, pruning removes it
+                // while scan.output still carries it. With no id, the renamed root is absent
+                // from the file by name, so Spark reads null even though its output has an id.
+                val hasRootId = !pruning || !isSpark35Plus
+                def read(): DataFrame =
+                  spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+                def checkRead(query: => DataFrame, expected: Seq[Row]): Unit = {
+                  val (_, plan) = checkSparkAnswerAndOperator(query)
+                  val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+                  assert(scans.size == 1, s"expected one CometNativeScanExec:\n$plan")
+                  val root = scans.head.requiredSchema("renamed")
+                  assert(root.metadata.contains(ParquetUtils.FIELD_ID_METADATA_KEY) == hasRootId)
+                  val requestedInner = root.dataType match {
+                    case ArrayType(elementType: StructType, _) => elementType
+                    case struct: StructType => struct
+                    case other => fail(s"unexpected root type: $other")
+                  }
+                  assert(
+                    requestedInner.fieldNames.toSeq == (if (pruning) Seq("a") else Seq("a", "b")))
+                  checkAnswer(query, expected)
+                }
+
+                checkRead(
+                  read().select("renamed.a"),
+                  if (hasRootId) projected else Seq.fill(rows.size)(Row(null)))
+                checkRead(
+                  read().where(predicate).select("renamed.a"),
+                  if (hasRootId) filtered else Seq.empty)
+                // A filter-only nested root must not shift the data or partition outputs.
+                checkRead(
+                  read().where(predicate).select("id", "part"),
+                  if (hasRootId) filteredIds else Seq.empty)
+                checkRead(
+                  read().selectExpr("count(renamed.a)"),
+                  Seq(Row(if (hasRootId) nonNullCount else 0L)))
+                if (pruning) {
+                  withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+                    checkRead(read().select("renamed.a"), Seq.fill(rows.size)(Row(null)))
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -98,6 +98,9 @@ allowed_expr+="|^org/apache/spark/sql/execution/$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/CometColumnarPythonInput.*$"
 allowed_expr+="|^org/apache/spark/sql/execution/python/CometArrowPythonRunner.*$"
+# Builds Spark's PythonException for native Python UDFs. PySpark 4.1 recognizes it only when
+# one of its stack frames is in this package.
+allowed_expr+="|^org/apache/spark/sql/execution/python/CometPythonException.*$"
 allowed_expr+="|^org/apache/spark/CometPlugin.class$"
 allowed_expr+="|^org/apache/spark/CometDriverPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometExecutorPlugin.*$"

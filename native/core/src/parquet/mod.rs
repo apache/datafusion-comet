@@ -25,6 +25,7 @@ pub mod util;
 
 mod cast_column;
 mod datetime_rebase;
+mod field_resolver;
 pub(crate) mod file_error_context;
 mod name_fold;
 pub(crate) mod objectstore;

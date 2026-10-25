@@ -44,7 +44,10 @@ mod lance_scan;
 
 use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
+use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
+#[cfg(feature = "python-udf")]
+use crate::execution::operators::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 use crate::execution::{
     operators::{ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
@@ -71,7 +74,7 @@ use datafusion::{
     },
     prelude::SessionContext,
 };
-use datafusion_comet_operators::{range_exec, ExpandExec, SampleExec};
+use datafusion_comet_operators::{range_exec, range_sort_expr, ExpandExec, SampleExec};
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
     BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
@@ -112,18 +115,18 @@ use datafusion_comet_proto::{
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
-    coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
-    spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, IfExpr,
-    ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions,
-    ToJson, UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
+    coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
+    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats,
+    NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 pub type PlanCreationResult =
@@ -1083,6 +1086,14 @@ impl PhysicalPlanner {
                     csv_write_options,
                 )))
             }
+            ExprStruct::AtLeastNNonNulls(expr) => {
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(AtLeastNNonNulls::new(expr.n, children)))
+            }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
                     return Err(GeneralError(
@@ -1137,6 +1148,20 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
+
+                // The driver checked this when the function was registered, but the path arrives
+                // in the plan, so this side applies the policy too.
+                let policy = self
+                    .session_ctx
+                    .state_ref()
+                    .read()
+                    .config()
+                    .get_extension::<crate::execution::c_udf::policy::NativeUdfPolicy>();
+                if let Some(policy) = policy {
+                    policy
+                        .check(&call.library_path)
+                        .map_err(|e| GeneralError(e.to_string()))?;
+                }
 
                 let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
                     |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
@@ -1360,14 +1385,16 @@ impl PhysicalPlanner {
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
+            // `decimal128_add_sub_width` computes the width in `i16`; see its doc comment for
+            // why a `u8` computation panicked on a negative scale in a debug build.
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                    >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                && decimal128_add_sub_width(p1, s1, p2, s2) >= DECIMAL128_MAX_PRECISION as i16)
+                || (op == DataFusionOperator::Multiply
+                    && p1 as i16 + p2 as i16 >= DECIMAL128_MAX_PRECISION as i16) =>
             {
                 let data_type = required_return_type()?;
                 let (p_out, s_out) = match &data_type {
@@ -1604,6 +1631,57 @@ impl PhysicalPlanner {
         // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
+            #[cfg(feature = "python-udf")]
+            OpStruct::ArrowPythonUdf(udf) => {
+                if children.len() != 1 {
+                    return Err(ExecutionError::GeneralError(
+                        "ArrowPythonUdf requires one child".to_string(),
+                    ));
+                }
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let specs = udf
+                    .functions
+                    .iter()
+                    .map(|function| {
+                        let args = function
+                            .args
+                            .iter()
+                            .map(|arg| self.create_expr(arg, child.schema()))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let return_type = to_arrow_datatype(function.return_type.as_ref().ok_or_else(|| {
+                            ExecutionError::GeneralError(
+                                "ArrowPythonUdf missing return type".to_string(),
+                            )
+                        })?);
+                        Ok(ArrowPythonUdfSpec {
+                            command: function.command.clone(),
+                            args,
+                            arg_names: function.arg_names.clone(),
+                            return_type,
+                            return_name: function.return_name.clone(),
+                            python_version: function.python_version.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+                let native_plan = Arc::new(ArrowPythonUdfExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    specs,
+                    udf.max_records_per_batch,
+                    udf.max_bytes_per_batch,
+                    udf.accept_array_like_results,
+                )?);
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, native_plan, vec![child])),
+                ))
+            }
+            #[cfg(not(feature = "python-udf"))]
+            OpStruct::ArrowPythonUdf(_) => Err(ExecutionError::GeneralError(
+                "Native Arrow Python UDF support was not compiled in; rebuild with --features python-udf"
+                    .to_string(),
+            )),
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -1658,7 +1736,7 @@ impl PhysicalPlanner {
             }
             OpStruct::RangeScan(range) => {
                 // A leaf with no JVM input: each task produces its own partition of the range.
-                let range: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
+                let source: Arc<dyn ExecutionPlan> = Arc::new(range_exec(
                     range.start,
                     range.step,
                     range.num_elements,
@@ -1666,10 +1744,17 @@ impl PhysicalPlanner {
                     self.partition,
                     self.session_ctx.copied_config().batch_size(),
                 )?);
+                // The range's order is real, and Spark's `RangeExec` reports it, so declare it
+                // for the operators above, a hash join in particular: see `SortedInputExec`.
+                let ordering = LexOrdering::new([range_sort_expr(range.step)]);
+                let source: Arc<dyn ExecutionPlan> = match ordering {
+                    Some(ordering) => Arc::new(SortedInputExec::new(source, ordering)),
+                    None => source,
+                };
                 Ok((
                     vec![],
                     vec![],
-                    Arc::new(SparkPlan::new(spark_plan.plan_id, range, vec![])),
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, source, vec![])),
                 ))
             }
             OpStruct::Sample(sample) => {
@@ -3034,6 +3119,7 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
+    use datafusion::execution::SendableRecordBatchStream;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::logical_expr::{AggregateUDF, EmitTo};
     use datafusion::physical_expr::expressions::Column;
@@ -3049,7 +3135,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        operators::{InputBatch, ScanExec},
+        planner::PhysicalPlanner,
+    };
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
@@ -3788,6 +3877,7 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
+                ..Default::default()
             })),
         }
     }
@@ -3930,6 +4020,7 @@ mod tests {
                 build_side: 0,
                 null_aware_anti_join: false,
                 dynamic_filter_enabled: false,
+                streamed_sort_orders: vec![],
             })),
         };
 
@@ -3942,6 +4033,239 @@ mod tests {
         assert_eq!(2, hash_join_exec.children.len());
         assert_eq!("ScanExec", hash_join_exec.children[0].native_plan.name());
         assert_eq!("ScanExec", hash_join_exec.children[1].native_plan.name());
+    }
+
+    /// The hash join in `plan`, under the projection that `swap_inputs` adds when Spark builds
+    /// on the right.
+    fn planned_hash_join(
+        plan: &Arc<dyn ExecutionPlan>,
+    ) -> &datafusion::physical_plan::joins::HashJoinExec {
+        let join = if plan.is::<datafusion::physical_plan::projection::ProjectionExec>() {
+            plan.children()[0]
+        } else {
+            plan
+        };
+        join.downcast_ref::<datafusion::physical_plan::joins::HashJoinExec>()
+            .expect("a hash join")
+    }
+
+    fn sorted_outer_hash_join(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        children: Vec<Operator>,
+    ) -> Operator {
+        Operator {
+            children,
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                streamed_sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_streamed_order_on_probe_input() {
+        // The two outer joins Comet sends the streamed side's order for both run as DataFusion's
+        // right join, whose probe input is its right one, whichever side Spark builds on.
+        for (join_type, build_side) in [
+            (
+                spark_operator::JoinType::RightOuter,
+                spark_operator::BuildSide::BuildLeft,
+            ),
+            (
+                spark_operator::JoinType::LeftOuter,
+                spark_operator::BuildSide::BuildRight,
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(join_type, build_side, vec![create_scan(), create_scan()]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let join = planned_hash_join(&planned.native_plan);
+            assert_eq!(&datafusion::common::JoinType::Right, join.join_type());
+            assert_eq!("ScanExec", join.left().name());
+            let probe = join.right();
+            let sorted = probe
+                .downcast_ref::<crate::execution::operators::SortedInputExec>()
+                .expect("the probe input declares the streamed side's order");
+            assert_eq!("ScanExec", sorted.children()[0].name());
+            assert_eq!(
+                "col_0@0 ASC",
+                probe.properties().output_ordering().unwrap().to_string()
+            );
+            // The join keeps the order in its own output, so the operators above it see it too.
+            assert!(planned.native_plan.properties().output_ordering().is_some());
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_order_through_operators_that_keep_it() {
+        let projection = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Projection(spark_operator::Projection {
+                project_list: vec![create_bound_reference(0)],
+            })),
+            ..Default::default()
+        };
+        let operator = sorted_outer_hash_join(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            vec![create_scan(), projection],
+        );
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(&operator, &mut vec![], 1)
+            .unwrap();
+        let probe = planned_hash_join(&planned.native_plan).right();
+        assert_eq!("SortedInputExec", probe.name());
+        assert_eq!("ProjectionExec", probe.children()[0].name());
+    }
+
+    /// A hash join over two scans, for use as the probe input of the join under test.
+    fn hash_join_over_scans(
+        join_type: spark_operator::JoinType,
+        build_side: spark_operator::BuildSide,
+        null_aware_anti_join: bool,
+    ) -> Operator {
+        Operator {
+            children: vec![create_scan(), create_scan()],
+            op_struct: Some(OpStruct::HashJoin(spark_operator::HashJoin {
+                left_join_keys: vec![create_bound_reference(0)],
+                right_join_keys: vec![create_bound_reference(0)],
+                join_type: join_type as i32,
+                build_side: build_side as i32,
+                null_aware_anti_join,
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_order_through_joins_that_keep_probe_order() {
+        // An inner join emits its matches probe row by probe row, and a right semi, anti or mark
+        // join emits its probe indices in ascending order. None of them depends on the probe
+        // declaring an order, so the order Spark reports for the outer join's streamed side
+        // still holds above them.
+        use datafusion::common::JoinType as DF;
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{Existence, Inner, LeftAnti, LeftSemi};
+        for (join_type, build_side, planned_type) in [
+            (Inner, BuildLeft, DF::Inner),
+            (Inner, BuildRight, DF::Inner),
+            (LeftSemi, BuildRight, DF::RightSemi),
+            (LeftAnti, BuildRight, DF::RightAnti),
+            (Existence, BuildRight, DF::RightMark),
+        ] {
+            let operator = sorted_outer_hash_join(
+                spark_operator::JoinType::RightOuter,
+                BuildLeft,
+                vec![
+                    create_scan(),
+                    hash_join_over_scans(join_type, build_side, false),
+                ],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let probe = planned_hash_join(&planned.native_plan).right();
+            assert_eq!(
+                "SortedInputExec",
+                probe.name(),
+                "{join_type:?} {build_side:?}"
+            );
+            let declared = planned_hash_join(probe.children()[0]);
+            assert_eq!(&planned_type, declared.join_type());
+        }
+    }
+
+    #[test]
+    fn hash_join_declares_no_order_over_an_operator_that_may_move_rows() {
+        use spark_operator::BuildSide::{BuildLeft, BuildRight};
+        use spark_operator::JoinType::{FullOuter, LeftAnti, LeftSemi, RightOuter};
+        for (probe_input, reason) in [
+            // Comet builds a null-aware anti join on Spark's streamed side, so its output is not
+            // in the order Spark reports for it.
+            (
+                hash_join_over_scans(LeftAnti, BuildRight, true),
+                "a null-aware anti join",
+            ),
+            // A right join whose probe declares no order moves its unmatched rows, although
+            // DataFusion reports it as keeping its probe order.
+            (
+                hash_join_over_scans(RightOuter, BuildLeft, false),
+                "a right outer join",
+            ),
+            // The remaining types keep no probe order at all: a left semi join built on the left
+            // emits build rows, and a full outer join emits its unmatched build rows last.
+            (
+                hash_join_over_scans(LeftSemi, BuildLeft, false),
+                "a left semi join",
+            ),
+            (
+                hash_join_over_scans(FullOuter, BuildLeft, false),
+                "a full outer join",
+            ),
+        ] {
+            let operator =
+                sorted_outer_hash_join(RightOuter, BuildLeft, vec![create_scan(), probe_input]);
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let probe = planned_hash_join(&planned.native_plan).right();
+            assert_eq!("HashJoinExec", probe.name(), "{reason}");
+        }
+    }
+
+    #[test]
+    fn hash_join_keeps_probe_input_that_declares_an_order() {
+        // A probe input that already declares an order, such as a sort in the native plan, is
+        // left as it is.
+        let sort = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let operator = sorted_outer_hash_join(
+            spark_operator::JoinType::RightOuter,
+            spark_operator::BuildSide::BuildLeft,
+            vec![create_scan(), sort],
+        );
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(&operator, &mut vec![], 1)
+            .unwrap();
+        assert_eq!(
+            "SortExec",
+            planned_hash_join(&planned.native_plan).right().name()
+        );
+    }
+
+    #[test]
+    fn declared_order_reaches_a_scan_of_one_file_group() {
+        // A scan of files reads the files of its one file group one after the other, so the order
+        // Spark reports for it, a sorted bucketed table's, holds. With more than one file group,
+        // DataFusion may hand a file to another partition.
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, true)]));
+        let scan = |groups: usize| -> Arc<dyn ExecutionPlan> {
+            let source = Arc::new(ParquetSource::new(Arc::clone(&schema))) as Arc<dyn FileSource>;
+            let file_groups = (0..groups)
+                .map(|i| FileGroup::new(vec![PartitionedFile::new(format!("f{i}.parquet"), 8)]))
+                .collect();
+            let config = FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source)
+                .with_file_groups(file_groups)
+                .build();
+            Arc::new(DataSourceExec::new(Arc::new(config)))
+        };
+        assert!(PhysicalPlanner::keeps_source_order(&scan(1)));
+        assert!(!PhysicalPlanner::keeps_source_order(&scan(2)));
     }
 
     #[tokio::test]
@@ -3989,27 +4313,9 @@ mod tests {
                         .collect::<Vec<_>>()
                         .into_iter()
                 });
-                let mut stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
-                let mut output_rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() {
-                        for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
-                            if scan.batch.try_lock().unwrap().is_none() {
-                                if let Some(batch) = input.next() {
-                                    scan.set_input_batch(batch);
-                                    cx.waker().wake_by_ref();
-                                }
-                            }
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    output_rows += batch.unwrap().num_rows();
-                }
-                assert_eq!(output_rows, 4);
+                let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+                let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+                assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 4);
                 let metrics = to_native_metric_node(&planned).unwrap();
                 assert_eq!(metrics.children.len(), 2);
                 assert_eq!(metrics.metrics["output_rows"], 4);
@@ -4027,6 +4333,102 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn window_cast_projection_reports_window_time() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+        use spark_operator::{
+            lower_window_frame_bound::LowerFrameBoundStruct,
+            upper_window_frame_bound::UpperFrameBoundStruct, CurrentRow, LowerWindowFrameBound,
+            UnboundedPreceding, UpperWindowFrameBound, WindowExpr, WindowFrame, WindowFrameType,
+            WindowSpecDefinition,
+        };
+
+        let session = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
+        // casting projection above the window.
+        let row_number = WindowExpr {
+            built_in_window_function: Some(Expr {
+                expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
+                    func: "row_number".to_string(),
+                    ..Default::default()
+                })),
+                query_context: None,
+                expr_id: None,
+            }),
+            spec: Some(WindowSpecDefinition {
+                frame_specification: Some(WindowFrame {
+                    frame_type: WindowFrameType::Rows as i32,
+                    lower_bound: Some(LowerWindowFrameBound {
+                        lower_frame_bound_struct: Some(LowerFrameBoundStruct::UnboundedPreceding(
+                            UnboundedPreceding {},
+                        )),
+                    }),
+                    upper_bound: Some(UpperWindowFrameBound {
+                        upper_frame_bound_struct: Some(UpperFrameBoundStruct::CurrentRow(
+                            CurrentRow {},
+                        )),
+                    }),
+                }),
+                ..Default::default()
+            }),
+            result_type: Some(create_proto_datatype()),
+            ..Default::default()
+        };
+        let operator = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                window_expr: vec![row_number],
+                order_by_list: vec![Expr {
+                    expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                        child: Some(Box::new(create_bound_reference(0))),
+                        direction: 0,
+                        null_ordering: 0,
+                    }))),
+                    query_context: None,
+                    expr_id: None,
+                }],
+                ..Default::default()
+            }))),
+            ..Default::default()
+        };
+        let (mut scans, _, planned) = planner.create_plan(&operator, &mut vec![], 1).unwrap();
+        assert_eq!(planned.additional_native_plans.len(), 1);
+
+        let rows = 100;
+        let mut inputs = [vec![
+            InputBatch::Batch(
+                vec![Arc::new(Int32Array::from((0..rows).collect::<Vec<_>>())) as ArrayRef],
+                rows as usize,
+            ),
+            InputBatch::EOF,
+        ]
+        .into_iter()];
+        let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+        let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+        assert_eq!(
+            batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+            rows as usize
+        );
+
+        let elapsed = |plan: &Arc<dyn ExecutionPlan>| {
+            plan.metrics()
+                .and_then(|m| m.elapsed_compute())
+                .unwrap_or(0) as i64
+        };
+        let window_time = elapsed(&planned.additional_native_plans[0]);
+        let projection_time = elapsed(&planned.native_plan);
+        assert!(window_time > 0);
+
+        let metrics = to_native_metric_node(&planned).unwrap();
+        // Output rows come from the projection only, and the time covers both operators.
+        assert_eq!(metrics.metrics["output_rows"], rows as i64);
+        assert_eq!(
+            metrics.metrics["elapsed_compute"],
+            window_time + projection_time
+        );
     }
 
     #[test]
@@ -4501,30 +4903,18 @@ mod tests {
                     Arc::new(Int32Array::from(vec![20, 21, 22])) as ArrayRef,
                     Arc::new(Int32Array::from(vec![30, 31, 32])) as ArrayRef,
                 ];
-                let mut input = vec![
+                let mut inputs = [vec![
                     InputBatch::Batch(columns.clone(), 3),
                     InputBatch::Batch(columns, 3),
                     InputBatch::EOF,
                 ]
-                .into_iter();
-                let mut stream = planned
+                .into_iter()];
+                let stream = planned
                     .native_plan
                     .execute(0, SessionContext::new().task_ctx())
                     .unwrap();
                 let mut rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
-                        if let Some(batch) = input.next() {
-                            scans[0].set_input_batch(batch);
-                            cx.waker().wake_by_ref();
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    let batch = batch.unwrap();
+                for batch in collect_with_inputs(stream, &mut scans, &mut inputs).await {
                     assert_eq!(batch.num_columns(), indices.len());
                     for row in 0..batch.num_rows() {
                         for (column, &source) in indices.iter().enumerate() {
@@ -4571,6 +4961,35 @@ mod tests {
             query_context: None,
             expr_id: None,
         }
+    }
+
+    /// Drives `stream` to completion, feeding each scan its next input batch whenever the stream
+    /// is pending and that scan has none, and returns the output batches.
+    async fn collect_with_inputs(
+        mut stream: SendableRecordBatchStream,
+        scans: &mut [ScanExec],
+        inputs: &mut [std::vec::IntoIter<InputBatch>],
+    ) -> Vec<RecordBatch> {
+        let mut batches = vec![];
+        while let Some(batch) = futures::future::poll_fn(|cx| {
+            let result = stream.poll_next_unpin(cx);
+            if result.is_pending() {
+                for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
+                    if scan.batch.try_lock().unwrap().is_none() {
+                        if let Some(batch) = input.next() {
+                            scan.set_input_batch(batch);
+                            cx.waker().wake_by_ref();
+                        }
+                    }
+                }
+            }
+            result
+        })
+        .await
+        {
+            batches.push(batch.unwrap());
+        }
+        batches
     }
 
     fn create_scan() -> Operator {
@@ -6464,5 +6883,61 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
         let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
         assert_eq!(out.data_type(), &promised);
+    }
+
+    /// The executor applies the native UDF policy to the library path in the plan, whatever the
+    /// driver that built the plan did.
+    #[test]
+    fn native_scalar_udf_load_follows_the_session_policy() {
+        use crate::execution::c_udf::policy::NativeUdfPolicy;
+        use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+
+        let int64 = || spark_expression::DataType {
+            type_id: 4, // INT64
+            type_info: None,
+        };
+        let library = test_udfs_path();
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "add_one_c".to_string(),
+                library_path: library.to_string_lossy().into_owned(),
+                args: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64()),
+                    })),
+                    ..Default::default()
+                }],
+                return_type: Some(int64()),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let plan_with = |policy: NativeUdfPolicy| {
+            let config = SessionConfig::new().with_extension(Arc::new(policy));
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0)
+                .create_expr(&call, Arc::clone(&schema))
+        };
+
+        plan_with(NativeUdfPolicy::default()).expect(BUILD_HINT);
+
+        let err = plan_with(NativeUdfPolicy::new(false, "")).unwrap_err();
+        assert!(err.to_string().contains("disabled"), "unexpected: {err}");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let err = plan_with(NativeUdfPolicy::new(
+            true,
+            elsewhere.path().to_str().unwrap(),
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("spark.comet.nativeUdf.allowedPaths"),
+            "unexpected: {err}"
+        );
+
+        let allowed = library.parent().unwrap().to_str().unwrap().to_string();
+        plan_with(NativeUdfPolicy::new(true, &allowed)).expect(BUILD_HINT);
     }
 }

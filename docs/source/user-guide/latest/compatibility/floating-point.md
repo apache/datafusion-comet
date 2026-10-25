@@ -84,10 +84,10 @@ stay native under strict mode, whether the floats in them are scalar or nested.
 
 That includes a key that nests floats in an array or struct whose type can hold a null element or
 field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
-`NULLS LAST`, so Comet falls back in every mode, not only in strict mode, for the two shapes where
-the native sort or window frame would place it differently: `ASC NULLS LAST` or `DESC NULLS FIRST`
-on such a key ([#6476](https://github.com/apache/datafusion-comet/issues/6476)), and a `RANGE`
-window frame that has to find a row's peers over it
+`NULLS LAST`. Comet keeps the key's root null placement separate from its nested comparison, so
+sorts and ranking windows stay native under either null order
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
+has to find a row's peers over such a key still falls back to Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). The
 [operator compatibility notes](operators.md) describe both.
 
@@ -147,6 +147,18 @@ differences are acceptable for your data.
 
 The check uses the Spark version number, not the changes a build contains. A vendor build that
 reports an older version but includes SPARK-54918 or SPARK-59602 still falls back.
+
+## `arrays_overlap`
+
+`arrays_overlap` runs natively on every Spark version and follows that version's rule for `FLOAT`
+and `DOUBLE` elements in a flat array. Spark 4.0.5+, 4.1.4+, and 4.2+ treat `-0.0` and `0.0` as one
+value (SPARK-54918, SPARK-59602), and earlier releases keep them apart. Every NaN representation is
+one value on every version, and nested arrays and structs compare their elements in Spark's order,
+in which the two zeros are equal.
+
+Comet chooses the rule by the Spark version number. On a vendor build that reports an older
+version but includes SPARK-59602, Comet returns `false` for two flat arrays whose only common value
+is a zero of opposite sign, where Spark returns `true`.
 
 ## `array_contains`, `array_remove` and `sort_array`
 
