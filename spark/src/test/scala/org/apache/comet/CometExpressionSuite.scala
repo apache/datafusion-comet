@@ -19,6 +19,7 @@
 
 package org.apache.comet
 
+import scala.jdk.CollectionConverters._
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -28,10 +29,11 @@ import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, 
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Complete, Count, Sum}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometFilterExec, CometNativeScanExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
+import org.apache.spark.sql.execution.{FilterExec, LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -39,7 +41,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
+import org.apache.comet.serde.{CometAdd, CometAssertNotNull, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, OperatorOuterClass, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -60,8 +62,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  private def checkReviewError(df: => DataFrame, errorClass: String): Unit = {
-    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+  private def checkReviewError(
+      df: => DataFrame,
+      errorClass: String,
+      checkPlan: SparkPlan => Unit = _ => ()): Unit = {
+    val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df, checkPlan)
     assert(sparkError.nonEmpty, "Spark must evaluate the asserted expression")
     assert(cometError.nonEmpty, "Comet must preserve Spark's error")
     if (!isSpark40Plus && errorClass == "NOT_NULL_ASSERT_VIOLATION") {
@@ -260,13 +265,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .parquet(path.toString)
           withTempView("review_predicate") {
             spark.read.parquet(path.toString).createOrReplaceTempView("review_predicate")
+            def checkResidual(plan: SparkPlan): Unit = {
+              val scans = collectWithSubqueries(plan) { case s: CometNativeScanExec => s }
+              assert(scans.nonEmpty, plan)
+              assert(
+                collectWithSubqueries(plan) {
+                  case f: FilterExec if CometAssertNotNull.hasAssertionCandidate(f.condition) => f
+                }.nonEmpty,
+                plan)
+              scans.foreach { scan =>
+                // commonData is the final payload, including any late subquery predicates.
+                val common = OperatorOuterClass.NativeScanCommon.parseFrom(scan.commonData)
+                assert(
+                  !common.getDataFiltersList.asScala.exists(
+                    CometAssertNotNull.containsNativeAssertion),
+                  plan)
+              }
+            }
             for (predicate <- Seq(
                 "IF((SELECT max(id) FROM review_predicate)>0, review_assert(flag), true)",
                 "review_assert(flag)")) {
-              checkSparkAnswer(sql(s"SELECT id FROM review_predicate WHERE $predicate LIMIT 1"))
+              val (_, limited) =
+                checkSparkAnswer(sql(s"SELECT id FROM review_predicate WHERE $predicate LIMIT 1"))
+              checkResidual(limited)
               checkReviewError(
                 sql(s"SELECT id FROM review_predicate WHERE $predicate"),
-                "NOT_NULL_ASSERT_VIOLATION")
+                "NOT_NULL_ASSERT_VIOLATION",
+                checkResidual)
             }
           }
         }
@@ -286,7 +311,18 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           val query = sql("""SELECT count(*) FROM
           |(SELECT 1 FROM range(0,3,1,1)
           |DISTRIBUTE BY review_assert(CAST(NULL AS INT))) q""".stripMargin)
-          checkReviewError(query, "NOT_NULL_ASSERT_VIOLATION")
+          checkReviewError(
+            query,
+            "NOT_NULL_ASSERT_VIOLATION",
+            plan => {
+              assert(
+                collectWithSubqueries(plan) {
+                  case s: ShuffleExchangeExec if s.child.output.isEmpty => s
+                }.nonEmpty,
+                plan)
+              val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+              assert(reasons.exists(_.contains("degenerate hash partitioning")), reasons)
+            })
         }
       }
     }
@@ -337,7 +373,16 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val query = left
           .join(right, left("a") === right("c") && checked === right("d"), "left_outer")
           .select(left("a"))
-        checkReviewError(query, "NOT_NULL_ASSERT_VIOLATION")
+        checkReviewError(
+          query,
+          "NOT_NULL_ASSERT_VIOLATION",
+          plan => {
+            assert(
+              collectWithSubqueries(plan) { case s: ShuffleExchangeExec => s }.nonEmpty,
+              plan)
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains("one hash partition")), reasons)
+          })
       }
     }
   }
@@ -347,7 +392,23 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withSQLConf(CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
         val query = sql("""SELECT (SELECT review_assert(
           |IF(id<2,id,CAST(NULL AS BIGINT))) FROM range(0,3,1,1))""".stripMargin)
-        checkReviewError(query, "SCALAR_SUBQUERY_TOO_MANY_ROWS")
+        checkReviewError(
+          query,
+          "SCALAR_SUBQUERY_TOO_MANY_ROWS",
+          plan => {
+            assert(
+              collectWithSubqueries(plan) {
+                case p: ProjectExec
+                    if p.projectList.exists(CometAssertNotNull.hasAssertionCandidate) =>
+                  p
+              }.nonEmpty,
+              plan)
+            // The row assertion lets EliminateRedundantTransitions restore Spark's Range.
+            assert(
+              !new ExtendedExplainInfo().getNativeExpressions(plan).contains("assertnotnull"))
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains("an external row consumer")), reasons)
+          })
       }
     }
   }
@@ -361,19 +422,33 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       val query = input.select(
         checked.as("v"),
         concat(input("id").cast("string"), repeat(lit("p"), 65536)).as("pad"))
-      def exported(enabled: Boolean): org.apache.spark.api.java.JavaRDD[Array[Byte]] = {
-        var result: org.apache.spark.api.java.JavaRDD[Array[Byte]] = null
+      def checkExport(enabled: Boolean): Unit = {
         withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
           val fresh = datasetOfRows(spark, extractLogicalPlan(query))
-          result = fresh.getClass
+          val exported = fresh.getClass
             .getMethod("javaToPython")
             .invoke(fresh)
             .asInstanceOf[org.apache.spark.api.java.JavaRDD[Array[Byte]]]
+          assert(exported.take(1).size() == 1)
+          if (enabled) {
+            val plan = fresh.queryExecution.executedPlan
+            assert(
+              collectWithSubqueries(plan) { case s: CometNativeScanExec => s }.nonEmpty,
+              plan)
+            assert(
+              collectWithSubqueries(plan) {
+                case p: ProjectExec
+                    if p.projectList.exists(CometAssertNotNull.hasAssertionCandidate) =>
+                  p
+              }.nonEmpty,
+              plan)
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains("an external row consumer")), reasons)
+          }
         }
-        result
       }
-      assert(exported(false).take(1).size() == 1)
-      assert(exported(true).take(1).size() == 1)
+      checkExport(false)
+      checkExport(true)
     }
   }
 

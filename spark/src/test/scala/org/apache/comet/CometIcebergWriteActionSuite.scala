@@ -46,10 +46,10 @@ import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, CometSparkToColumnarExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
@@ -176,6 +176,23 @@ class CometIcebergWriteActionSuite
             if (enabled) {
               val reasons = plans.flatMap(new ExtendedExplainInfo().getFallbackReasons(_))
               assert(reasons.exists(_.contains("child could throw")), reasons)
+              val writers = plans.flatMap(p =>
+                collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+                  w
+                })
+              assert(writers.nonEmpty, plans.mkString("\n"))
+              assert(
+                writers.exists(w =>
+                  collectWithSubqueries(w) {
+                    case c: CometSparkToColumnarExec if collectWithSubqueries(c.child) {
+                          case p: ProjectExec
+                              if p.projectList.exists(
+                                org.apache.comet.serde.CometAssertNotNull.hasAssertionCandidate) =>
+                            p
+                        }.nonEmpty =>
+                      c
+                  }.nonEmpty),
+                plans.mkString("\n"))
             }
             assert(countSnapshots(table) == 0)
             checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
@@ -313,6 +330,12 @@ class CometIcebergWriteActionSuite
               }
             }
             assert(snapshot.snapshotDelta == 1)
+            assert(
+              snapshot.plans.exists(p =>
+                collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+                  w
+                }.nonEmpty),
+              snapshot.plans.mkString("\n"))
             checkAnswer(sql(s"SELECT * FROM cat.db.$tableName"), Seq(Row(1)))
           }
         }

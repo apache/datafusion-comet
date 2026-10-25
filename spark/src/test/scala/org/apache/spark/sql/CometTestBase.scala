@@ -493,11 +493,20 @@ abstract class CometTestBase
    */
   protected def checkSparkAnswerMaybeThrows(
       df: => DataFrame): (Option[Throwable], Option[Throwable]) = {
+    checkSparkAnswerMaybeThrows(df, _ => ())
+  }
+
+  /** Check the actual executed (or failed) plan outside the expected-error capture. */
+  protected def checkSparkAnswerMaybeThrows(
+      df: => DataFrame,
+      checkPlan: SparkPlan => Unit): (Option[Throwable], Option[Throwable]) = {
     var expected: Try[Array[Row]] = null
     withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
       expected = Try(datasetOfRows(spark, df.logicalPlan).collect())
     }
-    val actual = Try(datasetOfRows(spark, df.logicalPlan).collect())
+    val cometDf = datasetOfRows(spark, df.logicalPlan)
+    val actual = Try(cometDf.collect())
+    checkPlan(cometDf.queryExecution.executedPlan)
 
     (expected, actual) match {
       case (Success(_), Success(_)) =>

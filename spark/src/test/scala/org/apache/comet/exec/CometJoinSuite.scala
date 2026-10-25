@@ -3718,7 +3718,26 @@ class CometJoinSuite extends CometTestBase {
               a === right("d") && expr("10L DIV b") === right("e") && left("c") === right("f")
           }
           val query = left.join(right, condition, "left_outer").repartition(1)
-          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(query)
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+            query,
+            plan => {
+              if (scenario == "single") {
+                assert(
+                  collectWithSubqueries(plan) { case j: CometBroadcastHashJoinExec =>
+                    j
+                  }.nonEmpty,
+                  plan)
+                assertExpressionImpl(plan, native = Seq("assertnotnull"), dispatched = Seq.empty)
+              } else {
+                assert(
+                  collectWithSubqueries(plan) { case j: BroadcastHashJoinExec =>
+                    j
+                  }.nonEmpty,
+                  plan)
+                val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+                assert(reasons.exists(_.contains("could change the first key error")), reasons)
+              }
+            })
           assert(sparkError.nonEmpty && cometError.nonEmpty)
           val expected = causeChain(sparkError.get).last
           val actual = causeChain(cometError.get).last

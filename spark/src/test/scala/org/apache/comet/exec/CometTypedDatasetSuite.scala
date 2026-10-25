@@ -199,7 +199,16 @@ class CometTypedDatasetSuite extends CometTestBase {
           (1, if (id == 0) Long.MaxValue else 1L)
         }
         .toDF("k", "v")
-      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(input.groupBy("k").sum("v"))
+      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+        input.groupBy("k").sum("v"),
+        plan => {
+          assert(
+            conversions(plan).exists(c =>
+              collectWithSubqueries(c.child) { case s: SerializeFromObjectExec => s }.nonEmpty),
+            plan)
+          assert(nativePartialAggregates(plan).nonEmpty, plan)
+          assertRowOperatorsReadThroughTransitions(plan)
+        })
       assert(sparkError.nonEmpty && cometError.nonEmpty)
       val expected = causeChain(sparkError.get).last
       val actual = causeChain(cometError.get).last
@@ -221,7 +230,21 @@ class CometTypedDatasetSuite extends CometTestBase {
         }
         .toDF()
       val checked = getColumnFromExpression(AssertNotNull(Literal.create(null, IntegerType)))
-      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(input.repartition(2, checked))
+      val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+        input.repartition(2, checked),
+        plan => {
+          assert(
+            conversions(plan).exists(c =>
+              collectWithSubqueries(c.child) { case s: SerializeFromObjectExec => s }.nonEmpty),
+            plan)
+          assert(
+            collectWithSubqueries(plan) {
+              case s: CometShuffleExchangeExec if s.shuffleType == CometNativeShuffle => s
+            }.nonEmpty,
+            plan)
+          assertExpressionImpl(plan, native = Seq("assertnotnull"), dispatched = Seq.empty)
+          assertRowOperatorsReadThroughTransitions(plan)
+        })
       assert(sparkError.nonEmpty && cometError.nonEmpty)
       val expected = causeChain(sparkError.get).last
       val actual = causeChain(cometError.get).last
