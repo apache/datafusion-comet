@@ -818,9 +818,11 @@ message IcebergParquetWriteSettings {
   // Per-column Bloom-filter settings. The JVM driver translates Iceberg logical names to the
   // physical Parquet leaf paths used by list/map encodings and resolves effective defaults.
   repeated IcebergColumnBloomFilterProps bloom_filters = 8;
-  // Iceberg `write.parquet.bloom-filter-max-bytes` (default 1 MiB). Native eligibility only
-  // admits powers of two in [32, 128 MiB] when a Bloom column is configured. With no Bloom
-  // columns, any positive Java int is accepted because it does not affect the file.
+  // Iceberg `write.parquet.bloom-filter-max-bytes` (default 1 MiB). If any
+  // `write.parquet.bloom-filter-enabled.column.*` key is present (even false), native
+  // eligibility admits only powers of two in [32, 128 MiB]. With no such key, an unset cap
+  // or any positive Java int (including 100) is accepted because it does not affect the file.
+  // Malformed or non-positive caps fall back to Java, which rejects them during validation.
   uint64 bloom_filter_max_bytes = 9;
 }
 
