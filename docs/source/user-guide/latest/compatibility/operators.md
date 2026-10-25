@@ -133,18 +133,25 @@ express falls back to Spark and records a fallback reason (see
 an operator above the join relies on the order.
 
 An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
-reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
-in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+reaches the join through an input from the JVM. Spark keeps the rows in the order they arrive. One
+such input is an RDD checkpoint. It reaches a native join only with
 `spark.comet.convert.rdd.enabled=true`, which defaults to `false`. Without that setting the
 checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
 outer hash join whose own probe input was not a scan
-([#6922](https://github.com/apache/datafusion-comet/issues/6922)). The output of a nested loop
-join can already be out of order when it reaches the join
+([#6922](https://github.com/apache/datafusion-comet/issues/6922)).
+
+The native nested loop join falls back to Spark when Spark reports an output order for it, since
+it emits its rows build row by build row
 ([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
 
 When the order Comet cannot check comes only from another native hash join in the same plan, the
 join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
 it can see there.
+
+Hash joins of the other types that report an order, such as inner joins, keep their streamed rows
+in place either way. They declare the order when Comet can check and express it, so a native
+operator above them, a window for instance, sees it. Otherwise they declare nothing and still run
+natively.
 
 ## Window Functions
 

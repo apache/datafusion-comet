@@ -2010,3 +2010,98 @@ fn early_filter_stops_at_intermediate_join_fetch() {
         &place_early_filter(&wrapped, predicate, &ExecutionPlanMetricsSet::new()).unwrap()
     ));
 }
+
+/// An order that `key@index` declares, as the planner declares a sorted probe's.
+fn declared_order(input: Arc<dyn ExecutionPlan>, index: usize) -> Arc<dyn ExecutionPlan> {
+    use crate::execution::operators::SortedInputExec;
+    use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+    let key = Arc::new(Column::new(input.schema().field(index).name(), index));
+    let ordering = LexOrdering::new([PhysicalSortExpr::new_default(key)]).unwrap();
+    Arc::new(SortedInputExec::new(input, ordering))
+}
+
+#[test]
+fn reader_filter_crosses_a_declared_probe_order() {
+    // The order wrapper only passes rows through, so the reader below it can drop rows too.
+    let session = Arc::new(SessionContext::new_with_config(
+        SessionConfig::new().with_target_partitions(1),
+    ));
+    let (_file, scan) = parquet_probe((0..400).collect(), &session, 100);
+    let probe = declared_order(filtered_probe(&scan), 0);
+    let ordering = probe.properties().output_ordering().unwrap().to_string();
+    let join = single_key_join_plans(two_batch_build(), probe, PartitionMode::Partitioned);
+    let wrapper =
+        DynamicFilterJoinExec::new(&join, session.copied_config().options().as_ref().clone())
+            .unwrap();
+    let runtime = wrapper.build_runtime_join().unwrap();
+    assert!(runtime.reader_filter_attached);
+    let consumer = runtime
+        .join
+        .right()
+        .downcast_ref::<DynamicFilterExec>()
+        .unwrap();
+    let sorted = consumer.children()[0];
+    assert_eq!("SortedInputExec", sorted.name());
+    assert_eq!(
+        ordering,
+        sorted.properties().output_ordering().unwrap().to_string()
+    );
+    let filter = sorted.children()[0]
+        .downcast_ref::<CometFilterExec>()
+        .unwrap();
+    let reader = filter.input().downcast_ref::<DataSourceExec>().unwrap();
+    let (_, source) = reader.downcast_to_file_source::<ParquetSource>().unwrap();
+    let reader_filter = source.filter().unwrap();
+    let reader_filter = find_dynamic_filter(&reader_filter).unwrap();
+    assert_eq!(
+        reader_filter.expression_id().unwrap(),
+        produced_join_filter(&runtime.join).expression_id().unwrap()
+    );
+    // The rebuilt join still keeps the declared order in its own output.
+    assert!(runtime.join.properties().output_ordering().is_some());
+}
+
+#[tokio::test]
+async fn ancestor_filter_crosses_a_declared_probe_order() {
+    // As in the test above without the wrapper: the ancestor's filter still reaches the
+    // intermediate join's probe.
+    let ctx = SessionContext::new();
+    let fact = input(
+        vec![Some(0), Some(1), Some(2), Some(2), Some(3), None],
+        &DataType::Int32,
+        0,
+    );
+    let dimension = input(
+        vec![Some(0), Some(1), Some(2), Some(2), Some(3)],
+        &DataType::Int32,
+        0,
+    );
+    let ancestor_build = input(vec![Some(2), Some(2)], &DataType::Int32, 0);
+    let inner = chain_join(dimension, fact, 0, 0);
+    let inner = Arc::new(
+        DynamicFilterJoinExec::try_new(&inner, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let probe = declared_order(inner, 2);
+    let outer = chain_join(ancestor_build, probe, 0, 2);
+    let expected = collect(
+        Arc::new(outer.builder().reset_state().build().unwrap()),
+        ctx.task_ctx(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(row_count(&expected), 8);
+    let outer = Arc::new(
+        DynamicFilterJoinExec::try_new(&outer, ctx.copied_config().options())
+            .unwrap()
+            .unwrap(),
+    ) as Arc<dyn ExecutionPlan>;
+    let actual = collect(Arc::clone(&outer), ctx.task_ctx()).await.unwrap();
+    assert_eq!(
+        batches_to_sort_string(&actual),
+        batches_to_sort_string(&expected)
+    );
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_evaluated"), 6);
+    assert_eq!(metric(&outer, "dynamic_filter_early_rows_pruned"), 4);
+}

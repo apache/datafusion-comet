@@ -100,7 +100,8 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     case _ => false
   }
 
-  // AQE's NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH are outside JoinStrategyHint.strategies.
+  // AQE's NO_BROADCAST_HASH and PREFER_SHUFFLE_HASH are outside JoinStrategyHint.strategies, so
+  // the join stays with this strategy, which builds on the side PREFER_SHUFFLE_HASH names.
   private def hasStrategyHint(hint: JoinHint): Boolean =
     Seq(hint.leftHint, hint.rightHint).exists(
       _.exists(_.strategy.exists(JoinStrategyHint.strategies.contains)))
@@ -115,10 +116,16 @@ case class CometShuffledHashJoinStrategy(session: SparkSession)
     planned
   }
 
+  // When AQE hints only one side to build on, that side wins, much as in
+  // getShuffleHashJoinBuildSide.
   private def buildSide(join: Join): Option[BuildSide] = {
     val leftBuildable = canBuildShuffledHashJoinLeft(join.joinType)
     val rightBuildable = canBuildShuffledHashJoinRight(join.joinType)
-    if (leftBuildable && rightBuildable) {
+    val leftHinted = leftBuildable && hintToPreferShuffleHashJoinLeft(join.hint)
+    val rightHinted = rightBuildable && hintToPreferShuffleHashJoinRight(join.hint)
+    if (leftHinted != rightHinted) {
+      Some(if (leftHinted) BuildLeft else BuildRight)
+    } else if (leftBuildable && rightBuildable) {
       Some(optimalBuildSide(join))
     } else if (leftBuildable) {
       Some(BuildLeft)
