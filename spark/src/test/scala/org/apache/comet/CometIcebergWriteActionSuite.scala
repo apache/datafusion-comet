@@ -1283,6 +1283,69 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("floating-point Bloom writes fall back and preserve NaN predicate results") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val table = "floating_bloom_nan"
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.$table (
+          id INT, region STRING, amount DOUBLE, f FLOAT
+        ) USING iceberg TBLPROPERTIES (
+          'write.parquet.bloom-filter-enabled.column.amount'='true',
+          'write.parquet.bloom-filter-enabled.column.f'='true',
+          'write.parquet.dict-size-bytes'='1'
+        )
+      """)
+      val count = 4096
+      assertNativeWriteDoesNotEngage(table, 0 until count) {
+        spark.sql(s"""
+          INSERT INTO $catalog.$ns.$table
+          SELECT CAST(id AS INT), 'region', CAST('NaN' AS DOUBLE), CAST('NaN' AS FLOAT)
+          FROM range(0, $count, 1, 1)
+        """)
+      }
+      val paths = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.data_files")
+        .collect()
+        .map(_.getString(0))
+      assert(paths.nonEmpty)
+      val conf = spark.sparkContext.hadoopConfiguration
+      val bloomKey = "parquet.filter.bloom.enabled"
+      val previous = Option(conf.get(bloomKey))
+      try {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          Seq(false, true).foreach { enabled =>
+            conf.setBoolean(bloomKey, enabled)
+            val written = spark.read.parquet(paths: _*)
+            assert(written.filter("amount = CAST('NaN' AS DOUBLE)").count() == count)
+            assert(written.filter("f = CAST('NaN' AS FLOAT)").count() == count)
+          }
+        }
+      } finally {
+        previous match {
+          case Some(value) => conf.set(bloomKey, value)
+          case None => conf.unset(bloomKey)
+        }
+      }
+    }
+  }
+
+  test("floating-point columns without Bloom filters keep native writes") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      createTable(
+        "unfiltered_floating_column",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+      assertNativeWriteEngages("unfiltered_floating_column", Seq(1)) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.unfiltered_floating_column " +
+            "VALUES (1, 'region', CAST('NaN' AS DOUBLE))")
+      }
+      assertParquetBloomFilters("unfiltered_floating_column", enabledColumns = Set("id"))
+    }
+  }
+
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>

@@ -683,12 +683,16 @@ native writes for configured Bloom columns require all of the following:
 - With a 32-byte cap and interpreted explicit NDV, the NDV/FPP request fits in 32 bytes, because
   Java ignores that boundary as a maximum for larger requests.
 - Bloom-filter columns use physical Parquet paths supported by the native writer.
+- Bloom-filter columns are not FLOAT or DOUBLE, including nested leaves. Floating-point columns
+  without Bloom filters remain eligible for native writes.
 
 The Bloom option defaults to `false`, selecting Java's writer. Enabling it accepts byte differences
 and the pruning tradeoff below; it cannot turn folding off inside the pinned parquet-rs writer.
 Enabling it is generally safe when the requested FPP meets your pruning needs: folding preserves
 inserted-value membership and introduces no false negatives. Unsupported settings select Java's
-writer, where normal property validation applies.
+writer, where normal property validation applies. FLOAT/DOUBLE Bloom writes use Java until native
+writes handle NaN equality consistently with Spark. The fallback is decided from the schema and
+effective write properties before execution, and its reason identifies the affected columns.
 
 Pruning can regress when existing Java-written filters are oversized for their actual values
 and therefore have a much lower FPP than requested. For example, with no explicit NDV, a 64-MiB
