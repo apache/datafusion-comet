@@ -78,8 +78,8 @@ import org.apache.comet.CometSparkSessionExtensions
  * }}}
  * Results will be written to "spark/benchmarks/CometIcebergWriteBenchmark-**results.txt". Pass
  * `bloom`, `bloom-off`, or `bloom-on`, followed optionally by row count and iteration count, to
- * compare native writes without and with Bloom filters. For isolated peak-RSS measurements, use
- * `benchmarks/micro/iceberg_bloom_writes.py` after building Comet.
+ * compare native writes without and with Bloom filters. The contributor benchmarking guide
+ * describes collecting peak RSS in separate JVMs with the operating system's time utility.
  */
 object CometIcebergWriteBenchmark extends CometBenchmarkBase {
 
