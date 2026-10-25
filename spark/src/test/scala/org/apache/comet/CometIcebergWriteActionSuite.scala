@@ -1652,6 +1652,7 @@ class CometIcebergWriteActionSuite
 
   test("quoted bloom-filter columns renamed by Iceberg fall back to the JVM footer") {
     assumeNativeAcceleration()
+    val configuredColumn = if (icebergVersionAtLeast(1, 8)) "order id" else "order_x20id"
     withIcebergCatalog { _ =>
       Seq("bloom_quoted_name", "bloom_quoted_name_jvm").foreach { table =>
         spark.sql(s"""
@@ -1659,7 +1660,8 @@ class CometIcebergWriteActionSuite
             `order id` INT
           ) USING iceberg
           TBLPROPERTIES (
-            'write.parquet.bloom-filter-enabled.column.order id'='true'
+            'write.parquet.bloom-filter-enabled.column.$configuredColumn'='true',
+            'write.parquet.dict-size-bytes'='1'
           )
         """)
       }
@@ -1684,9 +1686,7 @@ class CometIcebergWriteActionSuite
       assert(
         fallbackHasBloom == jvmHasBloom,
         "expected the fallback write to match the Parquet Java footer")
-      if (icebergSupportsBloomFpp) {
-        assert(jvmHasBloom, "expected this Iceberg version to write the quoted-column filter")
-      }
+      assert(jvmHasBloom, "expected the configured physical leaf to have a Java Bloom filter")
     }
   }
 
