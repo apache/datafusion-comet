@@ -1454,25 +1454,105 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("legacy Bloom settings use Java despite the native folding opt-in") {
+  test("legacy trailing-dot Bloom paths match Java filters") {
     assumeNativeAcceleration()
-    assume(!icebergVersionAtLeast(1, 10), "legacy runtime only")
+    assume(!icebergVersionAtLeast(1, 8))
+    withIcebergCatalog { _ =>
+      Seq("id.", "id..").zipWithIndex.foreach { case (column, index) =>
+        val nativeTable = s"legacy_trailing_native_$index"
+        val javaTable = s"legacy_trailing_java_$index"
+        val props = Some(
+          s"'write.parquet.bloom-filter-enabled.column.$column'='true', " +
+            "'write.parquet.bloom-filter-max-bytes'='4096', 'write.parquet.dict-size-bytes'='1'")
+        Seq(nativeTable, javaTable).foreach(
+          createTable(_, partitionSpec = "", properties = props))
+        def insert(table: String): Unit = spark.sql(
+          s"INSERT INTO $catalog.$ns.$table " +
+            "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) FROM range(0, 10000, 1, 1)")
+        assertNativeWriteEngages(nativeTable, 0 until 10000)(insert(nativeTable))
+        withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false")(
+          insert(javaTable))
+        val native = parquetBloomFilterBytes(nativeTable, "id")
+        val javaBytes = parquetBloomFilterBytes(javaTable, "id")
+        assert(native.size == 1 && javaBytes.size == 1)
+        assert(java.util.Arrays.equals(native.head, javaBytes.head))
+        Seq(nativeTable, javaTable).foreach(
+          assertParquetBloomContainsInts(_, "id", 0 until 10000))
+      }
+    }
+  }
+
+  test("legacy colliding list and map Bloom aliases preserve the Java footer") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 8) && !icebergVersionAtLeast(1, 10))
+    withIcebergCatalog { _ =>
+      Seq(
+        ("tags.a", "tags.element.a", "tags.list.element.a"),
+        ("attrs.b", "attrs.value.b", "attrs.key_value.value.b")).zipWithIndex.foreach {
+        case ((short, canonical, physical), group) =>
+          Seq("true", "false").zipWithIndex.foreach { case (enabled, index) =>
+            val nativeTable = s"legacy_alias_native_${group}_$index"
+            val javaTable = s"legacy_alias_java_${group}_$index"
+            Seq(nativeTable, javaTable).foreach { table =>
+              spark.sql(s"""CREATE TABLE $catalog.$ns.$table (
+                id INT, tags ARRAY<STRUCT<a: INT>>, attrs MAP<STRING, STRUCT<b: INT>>)
+                USING iceberg TBLPROPERTIES (
+                  'write.parquet.bloom-filter-enabled.column.$short'='true',
+                  'write.parquet.bloom-filter-enabled.column.$canonical'='$enabled',
+                  'write.parquet.bloom-filter-fpp.column.$short'='0.0001',
+                  'write.parquet.bloom-filter-max-bytes'='4096',
+                  'write.parquet.dict-size-bytes'='1')""")
+            }
+            def insert(table: String): Unit = spark.sql(s"""INSERT INTO $catalog.$ns.$table
+              SELECT CAST(id AS INT), array(named_struct('a', CAST(id AS INT))),
+                map('key', named_struct('b', CAST(id AS INT))) FROM range(0, 10000, 1, 1)""")
+            assertNativeWriteDoesNotEngage(nativeTable, 0 until 10000)(insert(nativeTable))
+            withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false")(
+              insert(javaTable))
+            val present = parquetBloomFilterPresent(javaTable, physical)
+            assert(parquetBloomFilterPresent(nativeTable, physical) == present)
+            if (present) {
+              val native = parquetBloomFilterBytes(nativeTable, physical)
+              val javaBytes = parquetBloomFilterBytes(javaTable, physical)
+              assert(native.size == 1 && javaBytes.size == 1)
+              assert(java.util.Arrays.equals(native.head, javaBytes.head))
+              Seq(nativeTable, javaTable).foreach(
+                assertParquetBloomContainsInts(_, physical, 0 until 10000))
+            }
+          }
+      }
+    }
+  }
+
+  test("legacy empty Bloom names preserve Java validation errors even when disabled") {
+    assumeNativeAcceleration()
+    assume(icebergVersionAtLeast(1, 8) && !icebergVersionAtLeast(1, 10))
     withIcebergCatalog { _ =>
       Seq("true", "false").zipWithIndex.foreach { case (enabled, index) =>
-        val table = s"legacy_bloom_$index"
-        createTable(
-          table,
-          partitionSpec = "",
-          properties = Some(s"'write.parquet.bloom-filter-enabled.column.id'='$enabled'"))
-        assertNativeWriteDoesNotEngage(table, Seq(1)) {
+        val nativeTable = s"legacy_empty_native_$index"
+        val javaTable = s"legacy_empty_java_$index"
+        val props = Some(
+          s"'write.parquet.bloom-filter-enabled.column.'='$enabled', " +
+            "'write.parquet.bloom-filter-fpp.column.'='0.01'")
+        Seq(nativeTable, javaTable).foreach(
+          createTable(_, partitionSpec = "", properties = props))
+        def insert(table: String): Unit =
           spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+        val nativeError = intercept[Throwable](withNativeEnabled(insert(nativeTable)))
+        val javaError = intercept[Throwable] {
+          withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false")(
+            insert(javaTable))
         }
+        val actual = exceptionChain(nativeError).last
+        val expected = exceptionChain(javaError).last
+        assert(actual.getClass == expected.getClass)
+        assert(actual.getMessage == expected.getMessage)
+        assert(actual.getMessage.toLowerCase(java.util.Locale.ROOT).contains("empty"))
       }
     }
   }
 
   test("native acceleration: writes configured Iceberg Parquet bloom filters") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       createTable(
@@ -1494,7 +1574,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("Bloom-filter folding config selects the native or JVM Iceberg writer") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
@@ -1563,7 +1642,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("floating-point columns without Bloom filters keep native writes") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       createTable(
@@ -1580,7 +1658,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val configuredFpp = 0.01
@@ -1622,7 +1699,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("enabled=false preserves JVM validation errors for malformed FPP and NDV") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq(
@@ -1668,7 +1744,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("max-bytes=32 falls back only when parquet-mr ignores the cap") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { _ =>
@@ -1708,7 +1783,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filters resolve list and map leaves to physical Parquet paths") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq("native_nested_bloom", "native_nested_bloom_jvm").foreach { table =>
@@ -1752,7 +1826,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("short nested bloom aliases match the Iceberg runtime footer") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq("nested_alias_native", "nested_alias_jvm").foreach { table =>
@@ -1795,11 +1868,11 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("Iceberg 1.5 physical nested bloom paths use the JVM writer") {
+  test("legacy physical nested bloom paths execute natively and match Java") {
     assumeNativeAcceleration()
     assume(
       !icebergVersionAtLeast(1, 8),
-      "physical-path Bloom properties are specific to Iceberg 1.5")
+      "raw physical-path Bloom properties apply before Iceberg 1.8")
     withIcebergCatalog { _ =>
       Seq("physical_path_native", "physical_path_jvm").foreach { table =>
         spark.sql(s"""
@@ -1821,7 +1894,7 @@ class CometIcebergWriteActionSuite
           (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
       """)
 
-      assertNativeWriteDoesNotEngage("physical_path_native", Seq(1, 2)) {
+      assertNativeWriteEngages("physical_path_native", Seq(1, 2)) {
         insert("physical_path_native")
       }
       withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
@@ -1840,7 +1913,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("unconfigured quoted columns preserve native Bloom writes") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       spark.sql(s"""
@@ -1902,7 +1974,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filter is byte-identical to parquet-mr when max-bytes binds") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { _ =>
@@ -1946,7 +2017,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filters match Java bytes and membership across physical types") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       case class BloomColumn(
@@ -2063,7 +2133,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom sizing matches JVM for shape properties supported by the Iceberg runtime") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true'"
@@ -2137,7 +2206,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("explicit underestimated NDV retains parquet-mr allocation precedence") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { _ =>
@@ -2173,7 +2241,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("overestimated explicit NDV folds and exposes the realized-FPP tradeoff") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { _ =>
@@ -2227,7 +2294,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("large representable max folds natively while adjacent non-power-of-two falls back") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       val powerOfTwo = 64 * 1024 * 1024
@@ -2286,7 +2352,6 @@ class CometIcebergWriteActionSuite
   }
 
   test("out-of-range bloom max uses the classic writer when a bloom column is configured") {
-    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { _ =>
@@ -6228,9 +6293,6 @@ class CometIcebergWriteActionSuite
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
   }
-
-  private def assumeNativeBloomRuntime(): Unit =
-    assume(icebergVersionAtLeast(1, 10), "Native Bloom writes require Iceberg 1.10 or later")
 
   private def assumeIcebergBloomShapeProperties(): Unit = {
     assume(

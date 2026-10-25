@@ -70,11 +70,11 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
   }
 
   test("Bloom writes reject older runtimes even when the version is identifiable") {
-    Seq("1.5.2", "1.8.1", "1.9.1", "1.8.1-SNAPSHOT").foreach { version =>
+    Seq("1.0.0", "1.4.2", "1.4.2-SNAPSHOT").foreach { version =>
       assert(
         CometIcebergNativeWrite
           .bloomFilterRuntimeRejection(version)
-          .exists(_.contains("Iceberg 1.10 or later")))
+          .exists(_.contains("Iceberg 1.5 or later")))
     }
   }
 
