@@ -2420,9 +2420,9 @@ fn synthetic_ndv_for_bloom_filter_bytes(target_bytes: usize, fpp: f64) -> DFResu
     }
 
     // Rust's standard binary-search helpers operate on materialized slices; this is a lower-bound
-    // search over the implicit NDV domain `1..=u64::MAX`, so keep the numeric search explicit.
+    // search over the implicit NDV domain `1..=u64::MAX / 8`, so keep the numeric search explicit.
     let mut low = 1_u64;
-    let mut high = u64::MAX;
+    let mut high = u64::MAX >> 3;
     while low < high {
         let mid = low + (high - low) / 2;
         if parquet_rs_bloom_filter_bytes(mid, fpp) < target_bytes {
