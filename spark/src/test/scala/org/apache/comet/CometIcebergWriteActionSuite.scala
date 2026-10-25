@@ -1243,7 +1243,25 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("legacy Bloom settings use Java despite the native folding opt-in") {
+    assumeNativeAcceleration()
+    assume(!icebergVersionAtLeast(1, 10), "legacy runtime only")
+    withIcebergCatalog { _ =>
+      Seq("true", "false").zipWithIndex.foreach { case (enabled, index) =>
+        val table = s"legacy_bloom_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-enabled.column.id'='$enabled'"))
+        assertNativeWriteDoesNotEngage(table, Seq(1)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+        }
+      }
+    }
+  }
+
   test("native acceleration: writes configured Iceberg Parquet bloom filters") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       createTable(
@@ -1265,6 +1283,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("Bloom-filter folding config selects the native or JVM Iceberg writer") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
@@ -1333,6 +1352,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("floating-point columns without Bloom filters keep native writes") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       createTable(
@@ -1349,6 +1369,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val configuredFpp = 0.01
@@ -1390,6 +1411,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("enabled=false preserves JVM validation errors for malformed FPP and NDV") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       Seq(
@@ -1435,6 +1457,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("max-bytes=32 falls back only when parquet-mr ignores the cap") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
@@ -1474,6 +1497,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filters resolve list and map leaves to physical Parquet paths") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq("native_nested_bloom", "native_nested_bloom_jvm").foreach { table =>
@@ -1517,6 +1541,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("short nested bloom aliases match the Iceberg runtime footer") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq("nested_alias_native", "nested_alias_jvm").foreach { table =>
@@ -1559,7 +1584,7 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  test("Iceberg 1.5 physical nested bloom paths execute natively and match the JVM footer") {
+  test("Iceberg 1.5 physical nested bloom paths use the JVM writer") {
     assumeNativeAcceleration()
     assume(
       !icebergVersionAtLeast(1, 8),
@@ -1585,7 +1610,7 @@ class CometIcebergWriteActionSuite
           (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
       """)
 
-      assertNativeWriteEngages("physical_path_native", Seq(1, 2)) {
+      assertNativeWriteDoesNotEngage("physical_path_native", Seq(1, 2)) {
         insert("physical_path_native")
       }
       withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
@@ -1595,7 +1620,7 @@ class CometIcebergWriteActionSuite
       Seq("tags.list.element.a", "attrs.key_value.value.b").foreach { physicalColumn =>
         assert(
           parquetBloomFilterPresent("physical_path_native", physicalColumn),
-          s"expected native Bloom filter for $physicalColumn")
+          s"expected preserved Bloom filter for $physicalColumn")
         assert(
           parquetBloomFilterPresent("physical_path_jvm", physicalColumn),
           s"expected JVM Bloom filter for $physicalColumn")
@@ -1604,6 +1629,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("unconfigured quoted columns preserve native Bloom writes") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       spark.sql(s"""
@@ -1665,6 +1691,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filter is byte-identical to parquet-mr when max-bytes binds") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
@@ -1708,6 +1735,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom filters match Java bytes and membership across physical types") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       case class BloomColumn(
@@ -1824,6 +1852,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("native bloom sizing matches JVM for shape properties supported by the Iceberg runtime") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true'"
@@ -1897,6 +1926,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("explicit underestimated NDV retains parquet-mr allocation precedence") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
@@ -1932,6 +1962,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("overestimated explicit NDV folds and exposes the realized-FPP tradeoff") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
@@ -1985,6 +2016,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("large representable max folds natively while adjacent non-power-of-two falls back") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     withIcebergCatalog { warehouseDir =>
       val powerOfTwo = 64 * 1024 * 1024
@@ -2043,6 +2075,7 @@ class CometIcebergWriteActionSuite
   }
 
   test("out-of-range bloom max uses the classic writer when a bloom column is configured") {
+    assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
     withIcebergCatalog { warehouseDir =>
@@ -5834,6 +5867,9 @@ class CometIcebergWriteActionSuite
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
   }
+
+  private def assumeNativeBloomRuntime(): Unit =
+    assume(icebergVersionAtLeast(1, 10), "Native Bloom writes require Iceberg 1.10 or later")
 
   private def assumeIcebergBloomShapeProperties(): Unit = {
     assume(

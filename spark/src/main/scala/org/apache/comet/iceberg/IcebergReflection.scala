@@ -884,20 +884,6 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Returns the field id resolved by Iceberg's name lookup, including runtime-supported aliases.
-   */
-  def findFieldIdByName(schema: Any, name: String): Option[Int] = {
-    try {
-      val findFieldMethod = getMethod(schema.getClass, "findField", classOf[String])
-      Option(findFieldMethod.invoke(schema, name)).map { field =>
-        getMethod(field.getClass, "fieldId").invoke(field).asInstanceOf[Int]
-      }
-    } catch {
-      case _: Exception => None
-    }
-  }
-
-  /**
    * The fields of `schema` at any depth, as id, name, and the type of a field with no children.
    */
   private def fieldsAtAnyDepth(schema: Any): Seq[(Int, String, Option[Any])] = {

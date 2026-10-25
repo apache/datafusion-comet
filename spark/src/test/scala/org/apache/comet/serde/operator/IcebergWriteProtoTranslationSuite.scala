@@ -45,7 +45,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty)
     Seq("unknown", "", "vendor-build", "1.8.bad", "1.10", "2.0.0").foreach { version =>
       val error = intercept[IllegalArgumentException] {
-        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), null, resolution, version)
+        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), resolution, version)
       }
       assert(error.getMessage.contains("Cannot determine Iceberg Bloom column-name convention"))
       assert(error.getMessage.contains(s"'$version'"))
@@ -60,21 +60,21 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set(physicalPath, "order_x20id"),
       Set("order_x20id"),
       Set.empty)
-    Seq("1.5.2", "1.5.2-SNAPSHOT").foreach { version =>
-      assert(
-        CometIcebergNativeWrite.bloomFilterParquetPaths(
-          Seq(physicalPath, "tags.element.a"),
-          null,
-          resolution,
-          version) == Map(physicalPath -> physicalPath))
-    }
     Seq("1.10.0", "1.11.0", "1.11.0-SNAPSHOT", "1.11.0+vendor").foreach { version =>
       assert(
         CometIcebergNativeWrite.bloomFilterParquetPaths(
           Seq("tags.element.a", "tags.a"),
-          null,
           resolution,
           version) == Map("tags.element.a" -> physicalPath))
+    }
+  }
+
+  test("Bloom writes reject older runtimes even when the version is identifiable") {
+    Seq("1.5.2", "1.8.1", "1.9.1", "1.8.1-SNAPSHOT").foreach { version =>
+      assert(
+        CometIcebergNativeWrite
+          .bloomFilterRuntimeRejection(version)
+          .exists(_.contains("Iceberg 1.10 or later")))
     }
   }
 

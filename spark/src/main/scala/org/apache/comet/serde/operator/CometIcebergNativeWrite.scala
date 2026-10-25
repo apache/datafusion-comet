@@ -436,6 +436,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireParquetPageVersionDefault,
     requireShredVariantsDisabled,
     requireNativeSupportedCompressionLevel,
+    requireSupportedBloomFilterRuntime,
     requireNativeSupportedBloomFilterProperties,
     requireBloomFilterFoldingOptIn,
     requireNoFloatingPointBloomFilters,
@@ -725,40 +726,45 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
-  private[operator] def bloomFilterParquetPaths(
-      configuredColumns: Seq[String],
-      schema: Any,
-      resolution: IcebergReflection.ParquetPathResolution,
-      icebergVersion: String = IcebergReflection.icebergVersion()): Map[String, String] = {
+  private val requireSupportedBloomFilterRuntime: TriggerRule = ctx => {
+    val prefixes = Seq(
+      PropertyKeys.BloomFilterColumnEnabledPrefix,
+      PropertyKeys.ParquetBloomFilterColumnFppPrefix,
+      PropertyKeys.ParquetBloomFilterColumnNdvPrefix)
+    if (ctx.properties.keys.exists(key => prefixes.exists(key.startsWith))) {
+      bloomFilterRuntimeRejection(IcebergReflection.icebergVersion())
+    } else {
+      None
+    }
+  }
+
+  private[operator] def bloomFilterRuntimeRejection(icebergVersion: String): Option[String] = {
     val version =
       if (Option(icebergVersion).exists(_.matches("\\d+\\.\\d+\\.\\d+(?:[-+].+)?"))) {
-        val versionParts = icebergVersion.split("[.-]", 3)
-        scala.util.Try((versionParts(0).toInt, versionParts(1).toInt)).toOption
+        val parts = icebergVersion.split("[.-]", 3)
+        scala.util.Try((parts(0).toInt, parts(1).toInt)).toOption
       } else {
         None
       }
     version match {
-      case Some((1, minor)) if minor < 8 =>
-        // Iceberg 1.5 passes the configured name straight to parquet-mr.
-        configuredColumns.filter(resolution.physicalPaths).map(path => path -> path).toMap
-      case Some((1, minor)) if minor < 10 =>
-        // Iceberg 1.8 resolves canonical and short collection aliases through field ids.
-        configuredColumns.flatMap { configuredName =>
-          IcebergReflection
-            .findFieldIdByName(schema, configuredName)
-            .flatMap(resolution.pathByFieldId.get)
-            .map(configuredName -> _)
-        }.toMap
-      case Some((1, minor)) if minor >= 10 =>
-        // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
-        resolution.pathByIcebergColumnName.filter { case (column, _) =>
-          configuredColumns.contains(column)
-        }
+      case Some((1, minor)) if minor >= 10 => None
+      case Some((1, _)) =>
+        Some(s"Native Bloom writes require Iceberg 1.10 or later; found '$icebergVersion'")
       case _ =>
-        // getSupportLevel catches this during planning and keeps the write on Java. Guessing
-        // canonical naming for repackaged runtimes could silently omit requested filters.
-        throw new IllegalArgumentException(
+        Some(
           s"Cannot determine Iceberg Bloom column-name convention for version '$icebergVersion'")
+    }
+  }
+
+  private[operator] def bloomFilterParquetPaths(
+      configuredColumns: Seq[String],
+      resolution: IcebergReflection.ParquetPathResolution,
+      icebergVersion: String = IcebergReflection.icebergVersion()): Map[String, String] = {
+    bloomFilterRuntimeRejection(icebergVersion).foreach { reason =>
+      throw new IllegalArgumentException(reason)
+    }
+    resolution.pathByIcebergColumnName.filter { case (column, _) =>
+      configuredColumns.contains(column)
     }
   }
 
@@ -779,7 +785,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         .getOrElse(
           throw new IllegalStateException(
             "could not resolve Parquet paths for Bloom type checking"))
-      val paths = bloomFilterParquetPaths(columns, schema, resolution)
+      val paths = bloomFilterParquetPaths(columns, resolution)
       val affected = columns.filter { column =>
         paths.get(column).exists(resolution.floatingPointPhysicalPaths.contains)
       }
@@ -1396,7 +1402,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }
         val configuredColumns =
           IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties)
-        val resolvedPaths = bloomFilterParquetPaths(configuredColumns, writeSchema, resolution)
+        val resolvedPaths = bloomFilterParquetPaths(configuredColumns, resolution)
         val renamedColumns = resolvedPaths.collect {
           case (configuredName, path) if resolution.renamedPhysicalPaths.contains(path) =>
             configuredName
