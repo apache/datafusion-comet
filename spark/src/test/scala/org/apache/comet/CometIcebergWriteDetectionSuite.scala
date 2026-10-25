@@ -582,6 +582,53 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("floating-point Bloom detection reports top-level and nested affected leaves") {
+    withDetectionCatalog { _ =>
+      val columns = Seq(
+        "amount" -> "amount",
+        "f" -> "f",
+        "detail.value" -> "detail.value",
+        "samples.element" -> "samples.list.element",
+        "attrs.value" -> "attrs.key_value.value",
+        "lookup.key" -> "lookup.key_value.key")
+      columns.zipWithIndex.foreach { case ((logical, physical), index) =>
+        val column = if (icebergSupportsBloomFpp) logical else physical
+        val table = s"floating_bloom_$index"
+        val write = floatingBloomWriteExec(
+          table,
+          s"'write.parquet.bloom-filter-enabled.column.$column'='true'")
+        assertUnsupportedContains(write, table, "FLOAT/DOUBLE", column, "NaN equality")
+      }
+    }
+  }
+
+  test("floating-point Bloom detection preserves native eligibility for unaffected columns") {
+    withDetectionCatalog { _ =>
+      val stringKey = if (icebergSupportsBloomFpp) "attrs.key" else "attrs.key_value.key"
+      val integerValue = if (icebergSupportsBloomFpp) "lookup.value" else "lookup.key_value.value"
+      val cases = Seq(
+        "'write.parquet.bloom-filter-enabled.column.id'='true'",
+        s"'write.parquet.bloom-filter-enabled.column.$stringKey'='true'",
+        s"'write.parquet.bloom-filter-enabled.column.$integerValue'='true'",
+        "'write.parquet.bloom-filter-enabled.column.missing'='true'",
+        "'write.parquet.bloom-filter-enabled.column.amount'='false'")
+      cases.zipWithIndex.foreach { case (properties, index) =>
+        val write = floatingBloomWriteExec(s"unaffected_bloom_$index", properties)
+        assert(CometIcebergNativeWrite.getSupportLevel(write).isInstanceOf[Compatible])
+      }
+      val table = "floating_bloom_false_ndv"
+      val write = floatingBloomWriteExec(
+        table,
+        "'write.parquet.bloom-filter-enabled.column.amount'='false', " +
+          "'write.parquet.bloom-filter-ndv.column.amount'='1000'")
+      if (icebergSupportsBloomNdv) {
+        assertUnsupportedContains(write, table, "FLOAT/DOUBLE", "amount", "NaN equality")
+      } else {
+        assert(CometIcebergNativeWrite.getSupportLevel(write).isInstanceOf[Compatible])
+      }
+    }
+  }
+
   test("Bloom-filter folding must be explicitly enabled for native writes") {
     withDetectionCatalog { dir =>
       createTable(
@@ -1790,6 +1837,20 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       s"spark.sql.catalog.$catalog.warehouse" -> warehouseDir.getAbsolutePath) {
       f(warehouseDir)
     }
+  }
+
+  private def floatingBloomWriteExec(tableName: String, properties: String): IcebergWriteExec = {
+    spark.sql(s"""
+      CREATE TABLE $catalog.$ns.$tableName (
+        id INT, region STRING, amount DOUBLE, f FLOAT,
+        detail STRUCT<value: DOUBLE>, samples ARRAY<FLOAT>,
+        attrs MAP<STRING, DOUBLE>, lookup MAP<FLOAT, INT>
+      ) USING iceberg TBLPROPERTIES ($properties)
+    """)
+    planInsertWriteExec(
+      s"$catalog.$ns.$tableName",
+      "(1, 'region', 1.0, CAST(2.0 AS FLOAT), named_struct('value', 3.0D), " +
+        "array(CAST(4.0 AS FLOAT)), map('key', 5.0D), map(CAST(6.0 AS FLOAT), 1))")
   }
 
   private def createTable(

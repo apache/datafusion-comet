@@ -153,7 +153,7 @@ object CometConf extends ShimCometConf {
         "When false, these writes use Iceberg's Java writer. This option selects the writer; " +
         "it cannot disable folding inside parquet-rs. Boolean filters also differ: Java leaves " +
         "them empty while Rust inserts values. Requires spark.comet.write.iceberg.enabled. " +
-        "Off by default.")
+        "FLOAT/DOUBLE Bloom columns use Java to preserve NaN equality. Off by default.")
       .booleanConf
       .createWithDefault(false)
 

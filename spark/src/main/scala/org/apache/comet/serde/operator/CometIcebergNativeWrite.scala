@@ -438,6 +438,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNativeSupportedCompressionLevel,
     requireNativeSupportedBloomFilterProperties,
     requireBloomFilterFoldingOptIn,
+    requireNoFloatingPointBloomFilters,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -720,6 +721,67 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           }
           .toSeq
           .headOption
+      }
+    }
+  }
+
+  private def bloomFilterParquetPaths(
+      configuredColumns: Seq[String],
+      schema: Any,
+      resolution: IcebergReflection.ParquetPathResolution): Map[String, String] = {
+    val icebergVersion = IcebergReflection.icebergVersion()
+    val versionParts = icebergVersion.split("[.-]", 3)
+    val version =
+      if (versionParts.length >= 2) {
+        scala.util.Try((versionParts(0).toInt, versionParts(1).toInt)).toOption
+      } else {
+        None
+      }
+    version match {
+      case Some((1, minor)) if minor < 8 =>
+        // Iceberg 1.5 passes the configured name straight to parquet-mr.
+        configuredColumns.filter(resolution.physicalPaths).map(path => path -> path).toMap
+      case Some((1, minor)) if minor < 10 =>
+        // Iceberg 1.8 resolves canonical and short collection aliases through field ids.
+        configuredColumns.flatMap { configuredName =>
+          IcebergReflection
+            .findFieldIdByName(schema, configuredName)
+            .flatMap(resolution.pathByFieldId.get)
+            .map(configuredName -> _)
+        }.toMap
+      case _ =>
+        // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
+        resolution.pathByIcebergColumnName
+    }
+  }
+
+  // A floating-point Bloom filter can reject a SQL-equal NaN with a different bit payload.
+  // Until native writes canonicalize these values, preserve Java's writer for affected leaves.
+  private val requireNoFloatingPointBloomFilters: TriggerRule = ctx => {
+    val properties = interpretedBloomFilterProperties(ctx.properties)
+    val columns = IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(properties)
+    if (columns.isEmpty) {
+      None
+    } else {
+      val schema = IcebergReflection
+        .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
+        .getOrElse(
+          throw new IllegalStateException("could not resolve schema for Bloom type checking"))
+      val resolution = IcebergReflection
+        .getParquetPathResolution(schema)
+        .getOrElse(
+          throw new IllegalStateException(
+            "could not resolve Parquet paths for Bloom type checking"))
+      val paths = bloomFilterParquetPaths(columns, schema, resolution)
+      val affected = columns.filter { column =>
+        paths.get(column).exists(resolution.floatingPointPhysicalPaths.contains)
+      }
+      if (affected.isEmpty) {
+        None
+      } else {
+        Some(
+          s"Bloom filters on FLOAT/DOUBLE columns ${affected.sorted.mkString(", ")} " +
+            "require the Java writer to preserve NaN equality")
       }
     }
   }
@@ -1327,30 +1389,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }
         val configuredColumns =
           IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties)
-        val icebergVersion = IcebergReflection.icebergVersion()
-        val versionParts = icebergVersion.split("[.-]", 3)
-        val version =
-          if (versionParts.length >= 2) {
-            scala.util.Try((versionParts(0).toInt, versionParts(1).toInt)).toOption
-          } else {
-            None
-          }
-        val resolvedPaths = version match {
-          case Some((1, minor)) if minor < 8 =>
-            // Iceberg 1.5 passes the configured name straight to parquet-mr.
-            configuredColumns.filter(resolution.physicalPaths).map(path => path -> path).toMap
-          case Some((1, minor)) if minor < 10 =>
-            // Iceberg 1.8 resolves canonical and short collection aliases through field ids.
-            configuredColumns.flatMap { configuredName =>
-              IcebergReflection
-                .findFieldIdByName(writeSchema, configuredName)
-                .flatMap(resolution.pathByFieldId.get)
-                .map(configuredName -> _)
-            }.toMap
-          case _ =>
-            // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
-            resolution.pathByIcebergColumnName
-        }
+        val resolvedPaths = bloomFilterParquetPaths(configuredColumns, writeSchema, resolution)
         val renamedColumns = resolvedPaths.collect {
           case (configuredName, path) if resolution.renamedPhysicalPaths.contains(path) =>
             configuredName

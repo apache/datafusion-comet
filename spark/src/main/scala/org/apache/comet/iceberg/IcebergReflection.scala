@@ -43,7 +43,8 @@ object IcebergReflection extends Logging {
       pathByIcebergColumnName: Map[String, String],
       pathByFieldId: Map[Int, String],
       physicalPaths: Set[String],
-      renamedPhysicalPaths: Set[String])
+      renamedPhysicalPaths: Set[String],
+      floatingPointPhysicalPaths: Set[String])
 
   /**
    * Iceberg class names used throughout Comet.
@@ -722,6 +723,10 @@ object IcebergReflection extends Logging {
 
       val resolved = columns.asScala.flatMap { column =>
         val primitiveType = getMethod(column.getClass, "getPrimitiveType").invoke(column)
+        val floatingPoint = Set("FLOAT", "DOUBLE").contains(
+          getMethod(primitiveType.getClass, "getPrimitiveTypeName")
+            .invoke(primitiveType)
+            .toString)
         val parquetId = getMethod(primitiveType.getClass, "getId").invoke(primitiveType)
         Option(parquetId).flatMap { id =>
           val fieldId = getMethod(id.getClass, "intValue").invoke(id).asInstanceOf[Int]
@@ -747,16 +752,22 @@ object IcebergReflection extends Logging {
                   }
               }
             }
-            (fieldId, icebergName.asInstanceOf[String], parquetPathParts.mkString("."), renamed)
+            (
+              fieldId,
+              icebergName.asInstanceOf[String],
+              parquetPathParts.mkString("."),
+              renamed,
+              floatingPoint)
           }
         }
       }.toSeq
       Some(
         ParquetPathResolution(
-          resolved.map { case (_, name, path, _) => name -> path }.toMap,
-          resolved.map { case (fieldId, _, path, _) => fieldId -> path }.toMap,
-          resolved.map { case (_, _, path, _) => path }.toSet,
-          resolved.collect { case (_, _, path, true) => path }.toSet))
+          resolved.map { case (_, name, path, _, _) => name -> path }.toMap,
+          resolved.map { case (fieldId, _, path, _, _) => fieldId -> path }.toMap,
+          resolved.map { case (_, _, path, _, _) => path }.toSet,
+          resolved.collect { case (_, _, path, true, _) => path }.toSet,
+          resolved.collect { case (_, _, path, _, true) => path }.toSet))
     } catch {
       case e: Exception =>
         logError(s"Iceberg reflection failure: Parquet column paths: ${e.getMessage}")
