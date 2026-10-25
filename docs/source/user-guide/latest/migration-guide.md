@@ -62,31 +62,6 @@ key is removed.
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
 need none either, but check whether any of them applies to your deployment.
 
-### In-Memory Cache Enabled by Default
-
-`spark.comet.exec.inMemoryCache.enabled` now defaults to `true` on Spark 3.5 and later. There, an
-application that loads `CometPlugin` now stores what it caches with `CACHE TABLE`, `df.cache()` or
-`df.persist()` in Comet's Arrow format instead of Spark's, and Comet scans it natively. On Spark 3.4
-the default stays `false`; see [In-Memory Cache](in-memory-cache.md) for why. The format does not
-change query results, but it can change performance. Spark's own cache scan can read Comet's format
-more slowly than Spark's, which matters when a session turns Comet or its native execution off
-after caching, and Comet records a fallback reason on such a scan. See
-[In-Memory Cache](in-memory-cache.md#limitations).
-
-The format is chosen once, when the application starts. To keep Spark's format, set
-`spark.comet.exec.inMemoryCache.enabled=false` then. Comet also keeps Spark's format without that
-setting when the application:
-
-- starts with `spark.comet.enabled` or `spark.comet.exec.enabled` set to `false`.
-- leaves Comet shuffle enabled without one of Comet's shuffle managers, so that Comet disables
-  itself.
-- uses Kryo with `spark.kryo.registrationRequired=true` and has not registered Comet's cached
-  batch, because Kryo would reject it. To use Comet's format, register Comet's classes with
-  `spark.kryo.registrator=org.apache.comet.CometKryoRegistrator`; see
-  [Kryo](in-memory-cache.md#kryo).
-
-An application that sets `spark.sql.cache.serializer` itself keeps the serializer it chose.
-
 ### Deprecated and Removed Settings
 
 Using `spark.comet.sparkToColumnar.enabled` and `spark.comet.sparkToColumnar.supportedOperatorList`
@@ -110,6 +85,66 @@ without a `FROM` clause as an `RDDScan`, so on those versions `RDDScan` in the l
 it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a query is now converted
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
+
+Converting a Text scan with `FileSourceScan` or `BatchScan` in the list is deprecated in the same
+way, and logs the same warning. Use `spark.comet.convert.text.enabled` instead.
+
+### Iceberg Writes
+
+Comet's Iceberg write path is now switched by one setting, `spark.comet.write.iceberg.enabled`,
+which stays off by default. With it on, Comet plans an Iceberg `INSERT INTO`, `INSERT OVERWRITE`,
+and copy-on-write `DELETE`, `UPDATE` or `MERGE` as two operators, `IcebergWrite` under
+`IcebergCommit`, in place of Spark's single V2 write operator, and writes the data files of each
+eligible write natively with iceberg-rust. A write that is not eligible uses iceberg-java's writer,
+and iceberg-java commits every write. Before turning it on, see [Iceberg Writes](iceberg.md#writes)
+for how natively written files differ from iceberg-java's, the footer reads the native path makes on
+S3 or GCS, and how the native writer draws on Comet's off-heap memory pool.
+
+Comet 1.1.0 named this setting `spark.comet.iceberg.write.enabled`, in the testing category, and it
+took effect only together with `spark.comet.write.iceberg.splitOperator.enabled`. Comet now ignores
+the old name, so a deployment that turned native writes on that way must set
+`spark.comet.write.iceberg.enabled=true` to keep them.
+`spark.comet.write.iceberg.splitOperator.enabled` is a testing setting, as it was in 1.1.0, but
+Comet 1.1.0's Iceberg Writes guide documented it as the switch for the split plan. A deployment
+that still sets it to `true` keeps the split plan, with iceberg-java writing the data files, and
+on Spark 3.5+ it now also plans merge-on-read writes as the split plan. Unset it to plan Spark's
+own operator.
+
+### Memory Pool Limits
+
+The `fair_unified` memory pool, which is the default for `spark.comet.exec.memoryPool`, limited each
+of a task's operators to a share of all of `spark.memory.offHeap.size`, while Spark limits each task
+to an even share of it among the running tasks. Whenever more than one task was running, the share
+was the looser limit, so one operator could take all of its task's memory, and another operator
+that cannot spill, such as the final merge of a sort, then failed the task
+([#7088](https://github.com/apache/datafusion-comet/issues/7088)). Spark retried such tasks, and the
+retries usually succeeded. Comet 1.2.0 divides `spark.memory.offHeap.size` among the tasks running
+native plans, as Spark does, and within a task limits only the operators that can spill, each to an
+even share of what the operators that cannot spill leave. So sorts, aggregations and the shuffle
+writer can spill sooner when several of them run in one task, and the operators that cannot spill
+are limited only by Spark, unless the deprecated `spark.comet.exec.memoryPool.fraction` is below
+`1.0`. The native Iceberg fanout writer is one of the operators that can spill: it closes files
+rather than take memory from the others, so it can write more files.
+
+An operator's limit can now be well below what Spark would grant its task, and a sort can fail
+where it used to run. A sort fails with "Not enough memory to continue external sort" instead of
+spilling when a single batch is larger than its share, which wide rows, many cores per executor, a
+small `spark.memory.offHeap.size` and several operators that can spill in one task make likelier.
+It can also fail when operators that cannot spill, such as the build side of a shuffled hash join,
+hold the whole of the task's share. To avoid either, give the executors more off-heap memory,
+lower `spark.comet.batchSize`, or leave every limit to Spark by setting
+`spark.comet.exec.memoryPool=greedy_unified`. See
+[Configuring Comet Memory](tuning/memory.md#configuring-comet-memory).
+
+### Native Iceberg Scan File Concurrency
+
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` now defaults to 2, where Comet `1.1.0`
+defaulted to 1. The native Iceberg scan reads two data files at once within a task, which hides the
+latency of opening each file on tables with many small files or on high-latency storage such as S3.
+Each file in flight holds its own buffers, so a task can use more off-heap memory, and a query
+without an `ORDER BY` can return rows in a different order than before, because batches from the two
+files interleave. Spark does not guarantee the order of such a result. To read one file at a time in
+the order Spark assigned them, as before, set the setting to `1`. See [Iceberg tuning](iceberg.md#tuning).
 
 ## Upgrading to Comet 1.1.0
 

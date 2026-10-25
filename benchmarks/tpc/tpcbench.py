@@ -122,6 +122,7 @@ def main(
     query_num: int = None,
     write_path: str = None,
     options: Dict[str, str] = None,
+    plan_dir: str = None,
 ):
     if options is None:
         options = {}
@@ -217,6 +218,19 @@ def main(
                 df = spark.sql(sql)
                 df.explain("formatted")
 
+                if plan_dir is not None and is_query:
+                    os.makedirs(plan_dir, exist_ok=True)
+                    plan_path = os.path.join(plan_dir, f"{name}-q{query_label}.plan.txt")
+                    try:
+                        plan_str = spark._jvm.PythonSQLUtils.explainString(
+                            df._jdf.queryExecution(), "formatted"
+                        )
+                        with open(plan_path, "w") as pf:
+                            pf.write(plan_str)
+                        print(f"Plan saved to {plan_path}")
+                    except Exception as e:
+                        print(f"Warning: could not save plan: {e}")
+
                 if is_query and write_path is not None:
                     if len(df.columns) > 0:
                         output_path = f"{write_path}/q{query_label}"
@@ -303,6 +317,10 @@ if __name__ == "__main__":
         help="Prefix for result file"
     )
     parser.add_argument(
+        "--plan-dir",
+        help="Optional directory to write formatted plans per query"
+    )
+    parser.add_argument(
         "--query", type=int,
         help="Specific query number (1-based). If omitted, run all."
     )
@@ -324,4 +342,5 @@ if __name__ == "__main__":
         args.query,
         args.write,
         args.options,
+        args.plan_dir,
     )

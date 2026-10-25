@@ -290,7 +290,7 @@ JVM exception it must surface as. It detects the `SparkErrorWithContext` type an
 ```rust
 // native/jni-bridge/src/errors.rs
 
-fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmException<'a> {
+fn jvm_exception(error: &CometError) -> JvmException<'_> {
     match error {
         CometError::DataFusion {
             source: DataFusionError::External(e), ..

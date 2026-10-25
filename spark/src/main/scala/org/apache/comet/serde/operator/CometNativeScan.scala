@@ -27,11 +27,11 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
-import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -105,22 +105,45 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
    * The data schema the native scan actually serializes.
    *
    * Spark's required schema can prune a Variant column, including a Variant nested under an
-   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
-   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary field
+   * types unchanged and retain the pruned required field for a requested Variant-bearing root,
    * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
    * the native schema.
    */
   private def nativeDataSchema(
       dataSchema: StructType,
       requiredSchema: StructType,
-      resolver: Resolver): StructType =
+      resolver: Resolver): StructType = {
+    // Ordinary fields keep their names, which projection below also matches exactly. Index
+    // only ID-bearing required fields so wide ordinary schemas do not need quadratic lookups.
+    val requiredFieldsWithIds = requiredSchema.fields
+      .filter(ParquetUtils.hasFieldId)
+      .map(field => field.name -> field)
+      .toMap
     StructType(dataSchema.fields.flatMap { field =>
       if (containsVariantType(field.dataType)) {
         requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
       } else {
-        Some(field)
+        // Nested schema pruning drops root metadata from the relation's data schema. Spark
+        // 3.4 still retains it in requiredSchema, which its Parquet reader uses for ID matching.
+        // Use that ID here too, without changing the table schema's types or projection indexes.
+        // When pruning also drops requiredSchema's ID (Spark 3.5+), leave the missing
+        // data-schema ID untouched so lookup remains name-based.
+        Some(
+          requiredFieldsWithIds
+            .get(field.name)
+            .map { required =>
+              field.copy(metadata = new MetadataBuilder()
+                .withMetadata(field.metadata)
+                .putLong(
+                  ParquetUtils.FIELD_ID_METADATA_KEY,
+                  ParquetUtils.getFieldId(required).toLong)
+                .build())
+            }
+            .getOrElse(field))
       }
     })
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {
@@ -241,12 +264,27 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       scan: CometScanExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    // Collect S3/cloud storage configurations
-    val hadoopConf = scan.relation.sparkSession.sessionState
-      .newHadoopConfWithOptions(scan.relation.options)
+    val hadoopConf =
+      scan.relation.sparkSession.sessionState.newHadoopConfWithOptions(scan.relation.options)
+    // The root paths can miss a file, e.g. a catalog partition located outside the table, so
+    // check the listed files. The static partitions are a superset of what DPP keeps.
+    val multiStoreReason = CometScanUtils.multiStoreFallbackReason(
+      "Native Parquet scan",
+      scan.selectedPartitions.view.flatMap(_.files.view.map(_.getPath.toUri)),
+      NativeConfig.resolveS3CompliantSchemes(hadoopConf),
+      NativeConfig.resolveLibhdfsSchemes(hadoopConf),
+      scan.bucketedScan)
+    if (multiStoreReason.nonEmpty) {
+      // CometExecRule falls back to the wrapped scan, so tag it too for the explain output.
+      withFallbackReason(scan, multiStoreReason.get)
+      withFallbackReason(scan.wrapped, multiStoreReason.get)
+      return None
+    }
 
-    // Use selectedPartitions (static) instead of getFilePartitions() because at planning time
-    // DPP subqueries haven't been resolved yet. Object store options don't depend on DPP.
+    // The options of every scheme the scan reads, or a decline for the ABFS layouts one
+    // resolution cannot serve. Use selectedPartitions (static) instead of getFilePartitions()
+    // because at planning time DPP subqueries haven't been resolved yet. Object store options
+    // don't depend on DPP.
     val fileUris = scan.selectedPartitions.view.flatMap(_.files).map(_.getPath.toUri)
     val objectStoreOptions =
       NativeConfig.extractScanObjectStoreOptions(hadoopConf, fileUris) match {
@@ -407,16 +445,14 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       CometTimeZone.nativeId(Some(sessionTimeZone)).getOrElse(sessionTimeZone))
     commonBuilder.setCaseSensitive(conf.getConf[Boolean](SQLConf.CASE_SENSITIVE))
 
-    // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-    // missing in the Parquet file, the new default preserves the parent struct's
-    // nullness from the file (so non-null parents materialize as a struct of all-null
-    // fields). Pre-4.1 Spark hardcodes the legacy behavior (whole struct null), which
-    // matches the Comet default we use as fallback.
+    // SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+    // map exist in the Parquet file, the new default preserves the parent's nullness
+    // from the file (so non-null parents keep their structure with all-null leaves).
+    // Older Spark versions always use legacy behavior and ignore this key.
     val returnNullStructConfKey =
       "spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing"
-    val returnNullStructDefault = if (isSpark41Plus) "false" else "true"
     commonBuilder.setReturnNullStructIfAllFieldsMissing(
-      conf.getConfString(returnNullStructConfKey, returnNullStructDefault).toBoolean)
+      !isSpark41Plus || conf.getConfString(returnNullStructConfKey, "false").toBoolean)
 
     // Field-ID matching: only ask the native side to do extra work when the conf is on AND
     // the requested schema actually carries IDs. Spark's ParquetReadSupport applies the same

@@ -84,10 +84,10 @@ stay native under strict mode, whether the floats in them are scalar or nested.
 
 That includes a key that nests floats in an array or struct whose type can hold a null element or
 field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
-`NULLS LAST`, so Comet falls back in every mode, not only in strict mode, for the two shapes where
-the native sort or window frame would place it differently: `ASC NULLS LAST` or `DESC NULLS FIRST`
-on such a key ([#6476](https://github.com/apache/datafusion-comet/issues/6476)), and a `RANGE`
-window frame that has to find a row's peers over it
+`NULLS LAST`. Comet keeps the key's root null placement separate from its nested comparison, so
+sorts and ranking windows stay native under either null order
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
+has to find a row's peers over such a key still falls back to Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). The
 [operator compatibility notes](operators.md) describe both.
 
@@ -113,18 +113,24 @@ the two can differ.
 
 ## Array distinct and union
 
-`array_distinct` and `array_union` fall back to Spark when their element type contains
-`FLOAT` or `DOUBLE`, on every Spark version except 4.2.0. Spark 4.2.0 normalizes signed zeros
-and NaNs in the arguments of these functions before they run (SPARK-54918), so native execution
-returns the same results. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
-negative zero distinct in flat arrays. Spark 4.0.5+, 4.1.4+, and 4.2.1+ normalize while these
-functions evaluate instead (SPARK-59602), which native execution does not match for NaNs or for
-zeros nested in arrays or structs. Other element types remain native.
+When their element type contains `FLOAT` or `DOUBLE`, `array_distinct` and `array_union` run
+natively on Spark 4.0.5+, 4.1.4+, and 4.2+. These releases treat `-0.0` and `0.0`, and every NaN
+representation, as one value in these functions, including inside nested arrays and structs, and
+return the normalized value. Spark 4.2.0 normalizes the arguments in the plan (SPARK-54918), and
+4.0.5, 4.1.4, and 4.2.1 normalize while these functions evaluate (SPARK-59602). Comet normalizes
+the elements the same way. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+negative zero distinct in flat arrays, so on those versions these functions fall back to Spark.
+Other element types remain native on every version.
 
-The check is based on the element type, not the values. It also applies to NULL or empty
-floating-point arrays and columns that never contain negative zero. The entire projection
-falls back to Spark, introducing a `CometColumnarToRow` transition and moving unrelated
-expressions in the same projection out of Comet. For example,
+Elements that hold a string with a non-`UTF8_BINARY` collation fall back on every version,
+including a struct with a `DOUBLE` and a `STRING COLLATE UTF8_LCASE` field. Spark compares such
+strings under their collation, so `'a'` and `'A'` are one value under `UTF8_LCASE`, while the
+native kernels compare their bytes.
+
+Where these functions fall back, the check is based on the element type, not the values. It also
+applies to NULL or empty floating-point arrays and columns that never contain negative zero. The
+entire projection falls back to Spark, introducing a `CometColumnarToRow` transition and moving
+unrelated expressions in the same projection out of Comet. For example,
 `SELECT id + 1, array_distinct(a), i[0] + 5` evaluates all three expressions in a Spark `Project`.
 
 This can have a substantial cost. A local Spark 4.1.3 benchmark of
@@ -133,18 +139,26 @@ projection fallback about 15 times slower than native opt-in (best of five runs)
 The slowdown depends on the workload.
 
 Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
-`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on other
-versions, but signed-zero and NaN results may differ from Spark. Native execution can keep
-NaNs with different signs or payloads distinct. Signed-zero differences also depend on the
-element type: native execution merges positive and negative zero in flat floating-point arrays,
-but can keep them distinct inside nested arrays or structs. Only opt in if these differences
-are acceptable for your data.
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on the older
+versions, but signed-zero results may differ from Spark. Native execution treats `-0.0` and `0.0`
+as one value and returns `0.0`. The older versions keep both zeros in a flat floating-point array,
+and inside nested arrays or structs they return whichever zero came first. Only opt in if these
+differences are acceptable for your data.
 
-The check uses the Spark version number, not the changes a build contains. A build that reports
-any version other than 4.2.0 falls back even if it includes SPARK-54918. A vendor build that
-reports 4.2.0 but includes SPARK-59602 still runs natively; set
-`spark.comet.expression.ArrayDistinct.enabled=false` and
-`spark.comet.expression.ArrayUnion.enabled=false` on such a build.
+The check uses the Spark version number, not the changes a build contains. A vendor build that
+reports an older version but includes SPARK-54918 or SPARK-59602 still falls back.
+
+## `arrays_overlap`
+
+`arrays_overlap` runs natively on every Spark version and follows that version's rule for `FLOAT`
+and `DOUBLE` elements in a flat array. Spark 4.0.5+, 4.1.4+, and 4.2+ treat `-0.0` and `0.0` as one
+value (SPARK-54918, SPARK-59602), and earlier releases keep them apart. Every NaN representation is
+one value on every version, and nested arrays and structs compare their elements in Spark's order,
+in which the two zeros are equal.
+
+Comet chooses the rule by the Spark version number. On a vendor build that reports an older
+version but includes SPARK-59602, Comet returns `false` for two flat arrays whose only common value
+is a zero of opposite sign, where Spark returns `true`.
 
 ## `array_contains`, `array_remove` and `sort_array`
 
@@ -162,3 +176,11 @@ representations tie, and keeps equal elements in their original order. In an arr
 can be null, such as one built from nullable columns, `-0.0` and `0.0` therefore tie. Sorting an
 array whose elements cannot be null in ascending order, Spark's generated code puts `-0.0` before
 `0.0`, and so does Comet. All three expressions run natively in strict floating-point mode.
+
+## Map construction
+
+`map_from_arrays` and `map_from_entries` don't build a map natively when its key type holds a
+`FLOAT` or `DOUBLE` at any depth. They run Spark's code through the codegen dispatcher instead, so
+duplicate keys, including NaNs and zeros of either sign, behave as in Spark. `FLOAT` and `DOUBLE`
+values don't affect either function. The expressions' entries in the
+[expression compatibility guide](expressions/map.md) give the reason.

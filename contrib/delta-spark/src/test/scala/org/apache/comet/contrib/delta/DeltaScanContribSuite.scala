@@ -33,8 +33,10 @@ import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
 import org.apache.spark.sql.comet.CometDeltaNativeScanExec
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
+import org.apache.spark.sql.execution.SparkPlan
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.hadoop.fs.FakeHDFSFileSystem
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.rules.CometScanRule
 
@@ -252,11 +254,73 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(DeltaScanSupport.s3CompliantAliasSchemeReason(notOptedIn, Seq(blobUri)).isEmpty)
   }
 
-  test("libhdfsSchemes parses the list exactly like core's scan gate (trim, lowercase, blanks)") {
-    withSQLConf(CometConf.COMET_LIBHDFS_SCHEMES.key -> " HDFS , viewfs ,, ") {
-      assert(DeltaScanSupport.libhdfsSchemes == Set("hdfs", "viewfs"))
+  test("scheme gate claims a libhdfs scheme only when the session lists it") {
+    withTempPath { dir =>
+      spark.range(0, 10).write.format("delta").save(dir.getAbsolutePath)
+      val localPath = dir.getAbsolutePath
+      val fakePath = s"${FakeHDFSFileSystem.PREFIX}$localPath"
+      val bareKey = CometConf.COMET_LIBHDFS_SCHEMES_KEY
+      val unsupported = "Native Delta scan does not support filesystem scheme(s) fake"
+      def readerOnly(scheme: String): String =
+        s"Native Delta scan does not support filesystem scheme(s) $scheme listed in $bareKey " +
+          "only through reader options"
+      // (case, path, SQLConf, reader options, expected fallback reason or None when claimed).
+      // Delta keeps `fs.` read options in the relation options, which never reach SQLConf or the
+      // session's Hadoop conf. newHadoopConf copies the bare key from SQLConf, and a runtime SET
+      // of the `spark.hadoop.` key with its prefix, so native never routes `fake` through
+      // libhdfs for the latter. libhdfs never sees reader options, so a scheme only they list is
+      // declined, even a local one.
+      val cases = Seq(
+        (
+          "bare key in SQLConf",
+          fakePath,
+          Seq(bareKey -> "fake,hdfs"),
+          Map.empty[String, String],
+          None),
+        ("reader option", fakePath, Nil, Map(bareKey -> "fake,hdfs"), Some(readerOnly("fake"))),
+        (
+          "runtime SET of the spark.hadoop. key",
+          fakePath,
+          Seq(CometConf.COMET_LIBHDFS_SCHEMES.key -> "fake,hdfs"),
+          Map.empty[String, String],
+          Some(unsupported)),
+        (
+          "reader option removes a session-listed scheme",
+          fakePath,
+          Seq(bareKey -> "fake,hdfs"),
+          Map(bareKey -> "hdfs"),
+          Some(unsupported)),
+        (
+          "reader-only natively readable scheme",
+          localPath,
+          Nil,
+          Map(bareKey -> "file"),
+          Some(readerOnly("file"))))
+      // Every case runs, and the failure lists each one that broke.
+      val errors = cases.flatMap { case (name, path, conf, readOptions, expectedReason) =>
+        var plan: SparkPlan = null
+        withSQLConf(("fs.fake.impl" -> classOf[FakeHDFSFileSystem].getName) +: conf: _*) {
+          plan = spark.read
+            .format("delta")
+            .options(readOptions)
+            .load(path)
+            .queryExecution
+            .executedPlan
+        }
+        val claimed = collectByName(plan, "CometDeltaNativeScanExec").nonEmpty
+        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+        expectedReason match {
+          case None if reasons.exists(_.contains("filesystem scheme")) =>
+            Some(s"$name: the scheme must not be declined, got reasons: $reasons")
+          case None if !claimed => Some(s"$name: expected the native Delta scan:\n$plan")
+          case Some(_) if claimed => Some(s"$name: the scan must fall back:\n$plan")
+          case Some(reason) if !reasons.exists(_.contains(reason)) =>
+            Some(s"$name: expected a reason containing '$reason', got reasons: $reasons")
+          case _ => None
+        }
+      }
+      assert(errors.isEmpty, errors.mkString("\n"))
     }
-    assert(DeltaScanSupport.libhdfsSchemes == Set("hdfs"))
   }
 
   test("unsupportedSchemes passes an all-file: root-path selection (no regression)") {

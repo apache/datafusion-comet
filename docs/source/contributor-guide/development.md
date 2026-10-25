@@ -117,8 +117,10 @@ is torn down on plugin shutdown (via `release_runtime`) so that the tokio worker
 and the JVM can shut down cleanly:
 
 - **Worker threads:** one per executor core by default (`spark.executor.cores`, or the thread
-  count of a `local[N]` or `local[*]` master, and one when `spark.executor.cores` is not set
-  outside local mode), configurable via `COMET_WORKER_THREADS`
+  count of a `local[N]` or `local[*]` master, the cores per worker of a `local-cluster` master,
+  the JVM's available processors on a standalone cluster, and one on YARN and Kubernetes, when
+  `spark.executor.cores` is not set), configurable via `COMET_WORKER_THREADS`. See
+  `CometExecIterator.numDriverOrExecutorCores`.
 - **Max blocking threads:** 512 by default, configurable via `COMET_MAX_BLOCKING_THREADS`
 - All async I/O (S3, HTTP, Parquet reads) runs on worker threads as non-blocking futures
 
@@ -606,6 +608,12 @@ still assert while recording, so a recorded file cannot contradict what hadoop-a
 file is written only when every case ran. Review the diff of the regenerated files before
 committing them: each line that changes is a behaviour change on that hadoop-azure release.
 
+The FileSystem cross-check in `AbfsAuthParitySuite` is tagged `org.apache.comet.tags.AzureTest`.
+It initializes a real `AzureBlobFileSystem`, so it passes only when the test-scoped hadoop-azure
+matches the Hadoop the build runs on. A build against another Hadoop, where no matching
+hadoop-azure is pinned, can skip it with `-DtagsToExclude=org.apache.comet.tags.AzureTest` and
+still run the resolver cases.
+
 ## Benchmark
 
 There's a `make` command to run micro benchmarks in the repo. For
@@ -624,6 +632,13 @@ Comet is a multi-language project with native code written in Rust and JVM code 
 It is possible to debug both native and JVM code concurrently as described in the [DEBUGGING guide](debugging)
 
 ## Submitting a Pull Request
+
+With coding agents, the number of open PRs can far exceed our review capacity. To help reviewers
+focus on fewer PRs at a time, users without write access are limited to **3 open, non-draft PRs**.
+If you reach the limit, wait for existing PRs to be merged, close them, or convert them to drafts
+before opening another. For work that is split into a series of small PRs, keep only the PR that
+is ready for review, or that the later PRs depend on, as non-draft, and open the others as drafts
+until it merges.
 
 Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
 or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
