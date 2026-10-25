@@ -477,9 +477,14 @@ private[comet] object AbfsAuthResolver extends Logging {
    * planning natively and failing every task.
    */
   def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
+    // The container and host only: a password in the user info stays out of the reason.
+    val authority = Option(uri.getRawAuthority).getOrElse("")
+    val at = authority.lastIndexOf('@')
+    val location = s"${uri.getScheme}://" +
+      (if (at < 0) authority
+       else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at))
     def unsupported(mechanism: String): String =
-      s"Native scan does not support ABFS authentication $mechanism for " +
-        s"${uri.getScheme}://${uri.getRawAuthority}"
+      s"Native scan does not support ABFS authentication $mechanism for $location"
     outcome match {
       case Declined(authType, providerClass, assertionProviderClass) =>
         val classes = providerClass.map(c => s" with provider $c").getOrElse("") +
@@ -491,9 +496,7 @@ private[comet] object AbfsAuthResolver extends Logging {
             _) =>
         Some(unsupported(s"auth type ${AuthTypes.OAUTH} with provider $c"))
       case Failed(_, message) =>
-        Some(
-          "Hadoop ABFS authentication failed on the driver for " +
-            s"${uri.getScheme}://${uri.getRawAuthority}: $message")
+        Some(s"Hadoop ABFS authentication failed on the driver for $location: $message")
       case _: Resolved | Unconfigured => None
     }
   }

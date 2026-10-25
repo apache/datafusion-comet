@@ -782,6 +782,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "auth type Custom")
   }
 
+  test("extractScanObjectStoreOptions - an ABFS fallback reason leaves out a URL password") {
+    val hadoopConf = abfsScanConf(Keys.AUTH_TYPE -> "Custom")
+    val uri = new URI("abfss://data:url-password@accta.dfs.core.windows.net/path/a.parquet")
+    NativeConfig.extractScanObjectStoreOptions(hadoopConf, Seq(uri)) match {
+      case Left(reason) =>
+        reason should include("abfss://data@accta.dfs.core.windows.net")
+        reason should not include "url-password"
+      case Right(options) => fail(s"expected a fallback, got $options")
+    }
+  }
+
   test("extractScanObjectStoreOptions - a custom SAS token provider falls back to Spark") {
     val providerClass = classOf[NeverInstantiatedSasTokenProvider].getName
     assertFallsBack(
