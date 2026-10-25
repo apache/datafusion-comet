@@ -1131,11 +1131,9 @@ in every column of a scan that has data filters, Comet returns NULL where Spark 
 <code class="docutils literal notranslate"><span class="pre">ArithmeticException:</span> <span class="pre">long</span> <span class="pre">overflow</span></code>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5553">#5553</a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5739">#5739</a>).</p></li>
-<li><p><strong>Reads that Spark rejects.</strong> Comet returns rows where Spark fails the read for
-<code class="docutils literal notranslate"><span class="pre">TIMESTAMP(NANOS)</span></code> columns read as <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> or <code class="docutils literal notranslate"><span class="pre">timestamp_ntz</span></code>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7034">#7034</a>), <code class="docutils literal notranslate"><span class="pre">INT</span></code> columns read as
-<code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">DAY</span> <span class="pre">TO</span> <span class="pre">SECOND</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5188">#5188</a>), and
-Variant-annotated fields read as a plain struct
+<li><p><strong>Reads that Spark rejects.</strong> Comet returns rows where Spark fails the read for <code class="docutils literal notranslate"><span class="pre">INT</span></code> columns
+read as <code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">DAY</span> <span class="pre">TO</span> <span class="pre">SECOND</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5188">#5188</a>)
+and Variant-annotated fields read as a plain struct
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5741">#5741</a>).</p></li>
 </ul>
 </section>
