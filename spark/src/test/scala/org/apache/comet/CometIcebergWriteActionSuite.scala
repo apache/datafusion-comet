@@ -1601,6 +1601,27 @@ class CometIcebergWriteActionSuite
     }
   }
 
+  test("unconfigured quoted columns preserve native Bloom writes") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.bloom_unconfigured_quoted (
+          id INT, `order id` INT
+        ) USING iceberg
+        TBLPROPERTIES ('write.parquet.bloom-filter-enabled.column.id'='true')
+      """)
+      assertNativeWriteEngages("bloom_unconfigured_quoted", 0 until 1000) {
+        spark.sql(s"""
+          INSERT INTO $catalog.$ns.bloom_unconfigured_quoted
+          SELECT CAST(id AS INT), CAST(id AS INT) FROM range(0, 1000, 1, 1)
+        """)
+      }
+      assert(parquetBloomFilterPresent("bloom_unconfigured_quoted", "id"))
+      assertParquetBloomContainsInts("bloom_unconfigured_quoted", "id", 0 until 1000)
+      assert(!parquetBloomFilterPresent("bloom_unconfigured_quoted", "order id"))
+    }
+  }
+
   test("quoted bloom-filter columns renamed by Iceberg fall back to the JVM footer") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
