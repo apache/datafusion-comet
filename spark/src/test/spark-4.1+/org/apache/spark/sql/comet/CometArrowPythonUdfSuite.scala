@@ -535,52 +535,97 @@ class CometArrowPythonUdfSuite extends CometTestBase {
     }
   }
 
+  /**
+   * Runs `job` in a job group, waits until `started` exists, cancels the group, and checks that
+   * the task ends as killed.
+   */
+  private def assertCancelKillsTask(started: File)(job: => Any): Unit = {
+    val killed = new CountDownLatch(1)
+    val listener = new SparkListener {
+      override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = taskEnd.reason match {
+        case _: TaskKilled => killed.countDown()
+        case _ =>
+      }
+    }
+    spark.sparkContext.addSparkListener(listener)
+    try {
+      val group = "comet-arrow-udf-kill"
+      val running = Future {
+        spark.sparkContext.setJobGroup(group, "native Arrow UDF loop", interruptOnCancel = true)
+        job
+      }(ExecutionContext.global)
+      val deadline = 60.seconds.fromNow
+      while (!started.exists()) {
+        assert(deadline.hasTimeLeft(), "the UDF did not start")
+        Thread.sleep(50)
+      }
+      spark.sparkContext.cancelJobGroup(group)
+      // The monitor waits spark.python.task.killTimeout, 2 seconds, before interrupting.
+      assert(killed.await(30, TimeUnit.SECONDS), "the task running the UDF was not killed")
+      intercept[SparkException](ThreadUtils.awaitResult(running, 30.seconds))
+    } finally {
+      spark.sparkContext.removeSparkListener(listener)
+    }
+  }
+
+  /**
+   * A UDF that loops in Python bytecode, where the interrupt takes effect, and survives a user
+   * `except Exception`. It creates `started` first, for its batches that pass `condition`.
+   */
+  private def loopingUdf(started: File, condition: String = "True") = {
+    val loop = "(lambda ns: (exec('def f(a):\\n" +
+      s"    if not ($condition):\\n        return a\\n" +
+      "    open(\"" + started.getCanonicalPath + "\", \"w\").close()\\n" +
+      "    n = 0\\n    while True:\\n        n += 1\\n        try:\\n" +
+      "            n %= 7\\n        except Exception:\\n            pass\\n', ns), " +
+      "ns['f'])[1])({})"
+    arrowUdf("loop", pickledCommand(loop, "LongType()"), LongType)
+  }
+
   test("killing a task interrupts its running native Arrow UDF") {
     assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
 
     withTempDir { dir =>
       val started = new File(dir, "started")
-      // Loops in Python bytecode, where the interrupt takes effect, and survives a user
-      // `except Exception`.
-      val loop = "(lambda ns: (exec('def f(a):\\n" +
-        "    open(\"" + started.getCanonicalPath + "\", \"w\").close()\\n" +
-        "    n = 0\\n    while True:\\n        n += 1\\n        try:\\n" +
-        "            n %= 7\\n        except Exception:\\n            pass\\n', ns), " +
-        "ns['f'])[1])({})"
-      val udf = arrowUdf("loop", pickledCommand(loop, "LongType()"), LongType)
-      val killed = new CountDownLatch(1)
-      val listener = new SparkListener {
-        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = taskEnd.reason match {
-          case _: TaskKilled => killed.countDown()
-          case _ =>
-        }
+      val udf = loopingUdf(started)
+      withSQLConf(
+        CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        val df = spark.range(0, 1, 1, 1).select(udf(col("id")))
+        assert(isNative(df))
+        assertCancelKillsTask(started)(df.collect())
       }
-      spark.sparkContext.addSparkListener(listener)
-      try {
-        withSQLConf(
-          CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
-          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-          val df = spark.range(0, 1, 1, 1).select(udf(col("id")))
-          assert(isNative(df))
-          val group = "comet-arrow-udf-kill"
-          val job = Future {
-            spark.sparkContext.setJobGroup(
-              group,
-              "native Arrow UDF loop",
-              interruptOnCancel = true)
-            df.collect()
-          }(ExecutionContext.global)
-          val deadline = 60.seconds.fromNow
-          while (!started.exists()) {
-            assert(deadline.hasTimeLeft(), "the UDF did not start")
-            Thread.sleep(50)
-          }
-          spark.sparkContext.cancelJobGroup(group)
-          assert(killed.await(30, TimeUnit.SECONDS), "the task running the UDF was not killed")
-          intercept[SparkException](ThreadUtils.awaitResult(job, 30.seconds))
+    }
+  }
+
+  test("killing a completed task interrupts the UDF call its plan release waits for") {
+    assume(NativeBase.supportsPythonUdf(), "native library was built without python-udf")
+
+    withTempDir { dir =>
+      val path = new File(dir, "data").getCanonicalPath
+      spark.range(0, 2, 1, 1).write.parquet(path)
+      val started = new File(dir, "started")
+      // Loops only on the second row, which a native scan's plan evaluates ahead of the task.
+      val udf = loopingUdf(started, "a[0].as_py() == 1")
+      withSQLConf(
+        CometConf.COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.ARROW_EXECUTION_MAX_RECORDS_PER_BATCH.key -> "1") {
+        val df = spark.read.parquet(path).select(udf(col("id")))
+        assert(isNative(df))
+        val marker = started.getCanonicalPath
+        assertCancelKillsTask(started) {
+          // Takes the first row, then completes the task once the second is in the UDF. Releasing
+          // the plan then waits for that call.
+          df.rdd
+            .mapPartitions { rows =>
+              assert(rows.hasNext)
+              val first = rows.next().getLong(0)
+              while (!new File(marker).exists()) Thread.sleep(10)
+              Iterator(first)
+            }
+            .collect()
         }
-      } finally {
-        spark.sparkContext.removeSparkListener(listener)
       }
     }
   }

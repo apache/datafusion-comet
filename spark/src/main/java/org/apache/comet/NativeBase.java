@@ -330,13 +330,15 @@ public abstract class NativeBase {
   }
 
   /**
-   * Raises an exception in the running Python UDF calls of a killed task, and makes its later calls
-   * fail without entering Python. A no-op for a task with no native plan holding a Python UDF, so
-   * callers repeat it until the task completes.
+   * Makes the later Python UDF calls of a killed task fail without entering Python and, with
+   * `interruptRunning`, raises an exception in its running calls that it has not interrupted yet. A
+   * no-op for a task with no native plan holding a Python UDF, so callers repeat it until the task
+   * completes.
    *
+   * @param task the token that `Native.setPythonUdfTask` bound the task's plans to
    * @return the number of calls interrupted
    */
-  public static native int interruptPythonUdfs(long taskAttemptId);
+  public static native int killPythonUdfs(long task, boolean interruptRunning);
 
   /** Release native resources through JNI */
   static native void release();

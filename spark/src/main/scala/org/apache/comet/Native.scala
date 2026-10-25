@@ -139,6 +139,17 @@ class Native extends NativeBase {
   @native def hasPythonUdf(plan: Long): Boolean
 
   /**
+   * Binds the native query plan's Python UDFs to the token of its Spark task, which
+   * `NativeBase.killPythonUdfs` takes. Must precede the first `executePlan`.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @param task
+   *   the token of the plan's task, unique in this process.
+   */
+  @native def setPythonUdfTask(plan: Long, task: Long): Unit
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan

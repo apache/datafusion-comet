@@ -111,7 +111,7 @@ class CometExecIterator(
   private val taskMemory = CometExecIterator.taskMemory(TaskContext.get(), id)
   private val cometTaskMemoryManager = taskMemory.manager
 
-  private val plan = {
+  private val (plan, pythonUdfWatch) = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
 
@@ -164,7 +164,20 @@ class CometExecIterator(
       shufflePartitionPusher.foreach { pusher =>
         nativeLib.setShufflePartitionPusher(createdPlan, pusher)
       }
-      createdPlan
+      // A native Python UDF ignores the task's kill, so watch the task to stop its calls. This
+      // reads the plan before the completion listener below, which can release it at once.
+      val pythonUdfWatch =
+        if (PythonUdfMonitor.supported && nativeLib.hasPythonUdf(createdPlan)) {
+          val watch = PythonUdfMonitor.watch(
+            TaskContext.get(),
+            COMET_NATIVE_ARROW_PYTHON_UDF_INTERRUPT_ENABLED.get())
+          nativeLib.setPythonUdfTask(createdPlan, watch.task)
+          watch.planOpened()
+          Some(watch)
+        } else {
+          None
+        }
+      (createdPlan, pythonUdfWatch)
     } catch {
       case failure: Throwable =>
         // The task-completion listener is not installed until iterator construction succeeds.
@@ -234,11 +247,6 @@ class CometExecIterator(
   }
 
   CometExecIterator.startMemoryUsageLog()
-
-  // A native Python UDF ignores the task's kill, so watch the task to interrupt its calls.
-  if (PythonUdfMonitor.supported && nativeLib.hasPythonUdf(plan)) {
-    PythonUdfMonitor.watch(TaskContext.get())
-  }
 
   /**
    * Matches any throwable once a JVM input of this plan has failed, and extracts what that input
@@ -373,6 +381,9 @@ class CometExecIterator(
       // execution context frees this plan's task-shared memory pool reference and several JNI
       // global refs.
       attempt(nativeLib.releasePlan(plan))
+      // Only now: releasing the plan waits for a Python UDF call in flight, which a kill
+      // meanwhile must still stop.
+      pythonUdfWatch.foreach(_.planClosed())
 
       // Drops what the task's JVM UDFs keep for this plan, such as its dispatched kernels. `id` is
       // the plan id the native plan passed them.

@@ -190,19 +190,20 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
     cfg!(feature = "python-udf")
 }
 
-/// Interrupts the Python UDF calls of a killed Spark task; see
-/// `execution::python_udf::interrupt_task`. Returns the number of calls interrupted.
+/// Stops the Python UDF calls of a killed Spark task; see `execution::python_udf::kill_task`.
+/// Returns the number of calls interrupted.
 #[no_mangle]
-pub extern "system" fn Java_org_apache_comet_NativeBase_interruptPythonUdfs(
+pub extern "system" fn Java_org_apache_comet_NativeBase_killPythonUdfs(
     _: EnvUnowned,
     _: JClass,
-    task_attempt_id: jni::sys::jlong,
+    task: jni::sys::jlong,
+    interrupt_running: jni::sys::jboolean,
 ) -> jni::sys::jint {
     #[cfg(feature = "python-udf")]
-    return execution::python_udf::interrupt_task(task_attempt_id) as jni::sys::jint;
+    return execution::python_udf::kill_task(task, interrupt_running) as jni::sys::jint;
     #[cfg(not(feature = "python-udf"))]
     {
-        let _ = task_attempt_id;
+        let _ = (task, interrupt_running);
         0
     }
 }

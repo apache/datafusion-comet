@@ -541,6 +541,19 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_NATIVE_ARROW_PYTHON_UDF_INTERRUPT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.nativeArrowPythonUDF.interruptOnKill.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether killing a task raises an exception in its running native Arrow UDF call, " +
+          "once the call has run for spark.python.task.killTimeout after the kill. The " +
+          "exception can arrive while Python code holds a lock it would release in a later " +
+          "`finally` block, leaving the lock held for every task in the executor's shared " +
+          "interpreter. When disabled, a killed task waits for its running call to return. " +
+          "Either way, the task's later calls do not run.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")

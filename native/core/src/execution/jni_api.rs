@@ -531,8 +531,9 @@ struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
-    /// The Spark task attempt running the plan
-    pub task_attempt_id: i64,
+    /// The JVM's token for the Spark task running the plan, set when the JVM stops the plan's
+    /// Python UDFs on a kill
+    pub python_udf_task: Option<i64>,
     /// The number of partitions
     pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
@@ -874,7 +875,7 @@ fn create_execution_context(
     Ok(Box::new(ExecutionContext {
         id,
         spark_plan,
-        task_attempt_id,
+        python_udf_task: None,
         partition_count,
         root_op: None,
         scans: vec![],
@@ -1479,7 +1480,7 @@ fn execute_plan(
         let start = Instant::now();
         let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
             .with_exec_id(exec_context_id)
-            .with_task_attempt_id(exec_context.task_attempt_id)
+            .with_python_udf_task(exec_context.python_udf_task)
             .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
@@ -1710,7 +1711,7 @@ fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
 }
 
 /// Whether the plan evaluates a Python UDF in the embedded interpreter, which the JVM then
-/// interrupts when the task is killed.
+/// stops when the task is killed.
 #[no_mangle]
 pub extern "system" fn Java_org_apache_comet_Native_hasPythonUdf(
     e: EnvUnowned,
@@ -1725,6 +1726,21 @@ pub extern "system" fn Java_org_apache_comet_Native_hasPythonUdf(
         Ok(contains_python_udf(
             &get_execution_context(exec_context).spark_plan,
         ))
+    })
+}
+
+/// Sets the JVM's token for the plan's Spark task, which `NativeBase.killPythonUdfs` takes to
+/// stop the plan's Python UDFs. Must precede the first `executePlan`, which creates them.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setPythonUdfTask(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    task: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        get_execution_context(exec_context).python_udf_task = Some(task);
+        Ok(())
     })
 }
 

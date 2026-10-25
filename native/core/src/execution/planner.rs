@@ -203,8 +203,9 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
-    /// The Spark task attempt running the plan, if any. Killing it interrupts Arrow UDFs.
-    task_attempt_id: Option<i64>,
+    /// The JVM's token for the Spark task running the plan, if the JVM stops its Arrow UDFs
+    /// when the task is killed.
+    python_udf_task: Option<i64>,
 }
 
 impl Default for PhysicalPlanner {
@@ -226,7 +227,7 @@ impl PhysicalPlanner {
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
-            task_attempt_id: None,
+            python_udf_task: None,
         }
     }
 
@@ -305,8 +306,8 @@ impl PhysicalPlanner {
         self
     }
 
-    pub fn with_task_attempt_id(mut self, task_attempt_id: i64) -> Self {
-        self.task_attempt_id = Some(task_attempt_id);
+    pub fn with_python_udf_task(mut self, python_udf_task: Option<i64>) -> Self {
+        self.python_udf_task = python_udf_task;
         self
     }
 
@@ -1673,7 +1674,7 @@ impl PhysicalPlanner {
                     udf.max_records_per_batch,
                     udf.max_bytes_per_batch,
                     udf.accept_array_like_results,
-                    self.task_attempt_id,
+                    self.python_udf_task,
                 )?);
                 Ok((
                     scans,

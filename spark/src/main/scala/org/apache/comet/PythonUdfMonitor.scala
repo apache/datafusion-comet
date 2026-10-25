@@ -19,52 +19,93 @@
 
 package org.apache.comet
 
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.{ConcurrentHashMap, TimeUnit}
+import java.util.concurrent.atomic.{AtomicInteger, AtomicLong}
 
-import org.apache.spark.TaskContext
+import org.apache.spark.{SparkEnv, TaskContext}
 import org.apache.spark.internal.Logging
 
 /**
- * Interrupts the native Python UDF calls of killed tasks. Spark's Python runner has a
- * `MonitorThread` that destroys the worker of a killed task. A native UDF runs in the embedded
- * interpreter on the task thread instead, where neither a Java interrupt nor a stopped input
- * reaches it. So one daemon thread per task polls its kill state and, while the task is killed
- * but still running, raises an exception in the task's running Python calls, once per call so
- * that its cleanup can run. Calls that start after the first interrupt fail without entering
- * Python.
+ * Stops the native Python UDF calls of killed tasks. Spark's Python runner has a `MonitorThread`
+ * that destroys the worker of a killed task. A native UDF runs in the embedded interpreter on the
+ * task thread instead, where neither a Java interrupt nor a stopped input reaches it. So one
+ * daemon thread per task polls its kill state. Once the task is killed, its later calls fail
+ * without entering Python. A call still running `spark.python.task.killTimeout` after the kill
+ * gets an exception raised in it, once so that its cleanup can run, unless that is disabled.
  */
 object PythonUdfMonitor extends Logging {
 
-  // Raising the exception is cheap and lets the call unwind on its own, so unlike Spark's
-  // monitor this one does not wait `spark.python.task.killTimeout` before acting. Repeating it
-  // reaches calls of plans that the task registers after an earlier attempt.
+  // Repeating the kill reaches calls of plans that the task registers after an earlier poll.
   private val PollIntervalMs = 100L
 
-  private val watchedTasks = ConcurrentHashMap.newKeySet[java.lang.Long]()
+  private val nextTask = new AtomicLong()
 
-  /** Whether the native library can run Python UDFs, and so may need its calls interrupted. */
+  private val watches = new ConcurrentHashMap[TaskContext, Watch]()
+
+  /** Whether the native library can run Python UDFs, and so may need its calls stopped. */
   lazy val supported: Boolean = NativeBase.supportsPythonUdf()
 
-  /** Starts watching the task unless it is watched already. The watch ends with the task. */
-  def watch(context: TaskContext): Unit = {
+  /**
+   * The watch over one task. `task` is unique in this process, while a task attempt id is unique
+   * only within one SparkContext.
+   */
+  final class Watch private[PythonUdfMonitor] (val task: Long) {
+    private val openPlans = new AtomicInteger()
+
+    /** Counts a native plan bound to `task`, which the watch outlives. */
+    def planOpened(): Unit = {
+      val _ = openPlans.incrementAndGet()
+    }
+
+    /** Ends what [[planOpened]] started, once the plan has been released. */
+    def planClosed(): Unit = {
+      val _ = openPlans.decrementAndGet()
+    }
+
+    private[PythonUdfMonitor] def hasOpenPlans: Boolean = openPlans.get() > 0
+  }
+
+  /**
+   * Returns the task's watch, starting it unless the task is watched already. The watch ends once
+   * the task has completed and its counted plans are released, since releasing a plan waits for
+   * its running call.
+   */
+  def watch(context: TaskContext, interruptRunning: Boolean): Watch =
+    watches.computeIfAbsent(
+      context,
+      _ => {
+        val watch = new Watch(nextTask.incrementAndGet())
+        start(context, watch, interruptRunning)
+        watch
+      })
+
+  private def start(context: TaskContext, watch: Watch, interruptRunning: Boolean): Unit = {
+    val killTimeoutNs = TimeUnit.MILLISECONDS.toNanos(
+      SparkEnv.get.conf.getTimeAsMs("spark.python.task.killTimeout", "2s"))
     val taskAttemptId = context.taskAttemptId()
-    if (watchedTasks.add(taskAttemptId)) {
-      val thread = new Thread(s"Comet Python UDF monitor for task $taskAttemptId") {
-        override def run(): Unit = {
-          try {
-            while (!context.isCompleted()) {
-              if (context.isInterrupted() && NativeBase.interruptPythonUdfs(taskAttemptId) > 0) {
+    val thread = new Thread(s"Comet Python UDF monitor for task $taskAttemptId") {
+      override def run(): Unit = {
+        try {
+          var killedAt = Option.empty[Long]
+          while (!context.isCompleted() || watch.hasOpenPlans) {
+            if (context.isInterrupted()) {
+              val now = System.nanoTime()
+              val since = killedAt.getOrElse(now)
+              killedAt = Some(since)
+              // Like Spark's monitor, give a running call the kill timeout to return.
+              val interrupt = interruptRunning && now - since >= killTimeoutNs
+              if (NativeBase.killPythonUdfs(watch.task, interrupt) > 0) {
                 logInfo(s"Interrupted Python UDF calls of killed task $taskAttemptId")
               }
-              Thread.sleep(PollIntervalMs)
             }
-          } finally {
-            val _ = watchedTasks.remove(taskAttemptId)
+            Thread.sleep(PollIntervalMs)
           }
+        } finally {
+          val _ = watches.remove(context, watch)
         }
       }
-      thread.setDaemon(true)
-      thread.start()
     }
+    thread.setDaemon(true)
+    thread.start()
   }
 }

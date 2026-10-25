@@ -52,7 +52,9 @@ unsafe extern "C" {
     fn PyThread_get_thread_ident() -> c_ulong;
 }
 
-/// The native plans of one Spark task attempt that hold Arrow UDFs.
+/// The native plans of one Spark task that hold Arrow UDFs. Tasks are keyed by a token the JVM
+/// assigns to each `TaskContext`, because a task attempt id is unique only within one
+/// `SparkContext`.
 #[derive(Default)]
 struct TaskCalls {
     plans: usize,
@@ -64,8 +66,8 @@ struct TaskCalls {
 struct Call {
     /// Python thread id of the thread running the call.
     thread: c_ulong,
-    /// Whether [`interrupt_task`] has raised in the call. It raises once, so that a second
-    /// exception does not abort the cleanup the first one started.
+    /// Whether [`kill_task`] has raised in the call. It raises once, so that a second exception
+    /// does not abort the cleanup the first one started.
     interrupted: bool,
 }
 
@@ -76,46 +78,41 @@ fn tasks() -> MutexGuard<'static, HashMap<i64, TaskCalls>> {
     TASKS.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Registers a native plan's Arrow UDFs under their Spark task attempt, so that
-/// [`interrupt_task`] reaches their calls. The task's entry is removed when its last
-/// registration is dropped, which happens when the plan is released.
+/// Registers a native plan's Arrow UDFs under their Spark task, so that [`kill_task`] reaches
+/// their calls. The task's entry is removed when its last registration is dropped, which
+/// happens when the plan is released.
 pub struct TaskRegistration {
-    task_attempt_id: i64,
+    task: i64,
 }
 
 impl TaskRegistration {
-    pub fn new(task_attempt_id: i64) -> Self {
-        tasks().entry(task_attempt_id).or_default().plans += 1;
-        Self { task_attempt_id }
+    pub fn new(task: i64) -> Self {
+        tasks().entry(task).or_default().plans += 1;
+        Self { task }
     }
 
     fn is_killed(&self) -> bool {
-        tasks()
-            .get(&self.task_attempt_id)
-            .is_some_and(|task| task.killed)
+        tasks().get(&self.task).is_some_and(|task| task.killed)
     }
 
     fn killed_error(&self) -> ArrowError {
-        ArrowError::ComputeError(format!(
-            "Arrow UDF stopped because task {} was killed",
-            self.task_attempt_id
-        ))
+        ArrowError::ComputeError("Arrow UDF stopped because its Spark task was killed".to_string())
     }
 }
 
 impl Drop for TaskRegistration {
     fn drop(&mut self) {
         let mut tasks = tasks();
-        if let Some(task) = tasks.get_mut(&self.task_attempt_id) {
+        if let Some(task) = tasks.get_mut(&self.task) {
             task.plans -= 1;
             if task.plans == 0 {
-                tasks.remove(&self.task_attempt_id);
+                tasks.remove(&self.task);
             }
         }
     }
 }
 
-/// A call to the user's callable, recorded so that [`interrupt_task`] can raise in its thread.
+/// Python code run by a UDF call, recorded so that [`kill_task`] can raise in its thread.
 struct RunningCall<'a> {
     task: &'a TaskRegistration,
     thread: c_ulong,
@@ -127,7 +124,7 @@ impl<'a> RunningCall<'a> {
         // SAFETY: the caller is attached to the interpreter.
         let thread = unsafe { PyThread_get_thread_ident() };
         let mut tasks = tasks();
-        let calls = tasks.entry(task.task_attempt_id).or_default();
+        let calls = tasks.entry(task.task).or_default();
         if calls.killed {
             return Err(task.killed_error());
         }
@@ -137,41 +134,56 @@ impl<'a> RunningCall<'a> {
         });
         Ok(Self { task, thread })
     }
-}
 
-impl Drop for RunningCall<'_> {
-    fn drop(&mut self) {
+    /// Unrecords the call. Returns whether [`kill_task`] raised in it.
+    fn unregister(&self) -> bool {
         let mut tasks = tasks();
-        let Some(calls) = tasks.get_mut(&self.task.task_attempt_id) else {
-            return;
-        };
-        let Some(index) = calls.calls.iter().position(|c| c.thread == self.thread) else {
-            return;
-        };
-        if calls.calls.swap_remove(index).interrupted {
-            // An interrupt that arrived as the callable returned is still pending on this
-            // thread. Nothing can set another one now that the call is unrecorded, so clear
-            // it rather than let it fire in later Python code on this thread.
-            // SAFETY: the call is made while attached, on the thread it names.
-            unsafe {
-                pyo3::ffi::PyThreadState_SetAsyncExc(self.thread as c_long, std::ptr::null_mut())
-            };
+        tasks
+            .get_mut(&self.task.task)
+            .and_then(|calls| {
+                let index = calls.calls.iter().position(|c| c.thread == self.thread)?;
+                Some(calls.calls.swap_remove(index).interrupted)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Unrecords the call. If it was interrupted, the exception may still be pending, for
+    /// example when the interrupt arrived as native code returned to Rust. Nothing can raise
+    /// another one once the call is unrecorded, so let this one fire now rather than in later
+    /// Python code on this thread. Clearing it with `PyThreadState_SetAsyncExc(id, NULL)`
+    /// instead would leave the interpreter's pending-event flag set on CPython 3.11 and 3.12,
+    /// slowing down every other thread.
+    fn exit(self, py: Python<'_>) {
+        let interrupted = self.unregister();
+        std::mem::forget(self);
+        if interrupted {
+            // The backward jump checks for pending events. The registry lock is released, so
+            // the GIL may switch here.
+            let _ = py.run(c"for _ in (0, 0):\n    pass\n", None, None);
         }
     }
 }
 
-/// Marks a Spark task attempt as killed and raises [`TaskKilled`] in its running Arrow UDF
-/// calls that it has not interrupted yet. Later calls of the task fail without entering
-/// Python. Returns the number of calls interrupted. A task with no registered plan is not
-/// recorded, so the caller repeats this until the task completes.
+impl Drop for RunningCall<'_> {
+    fn drop(&mut self) {
+        self.unregister();
+    }
+}
+
+/// Marks a Spark task as killed, so that its later Arrow UDF calls fail without entering
+/// Python. With `interrupt_running`, also raises [`TaskKilled`] in its running calls that it
+/// has not interrupted yet. Returns the number of calls interrupted. A task with no
+/// registered plan is not recorded, so the caller repeats this until the task completes.
 ///
 /// The exception takes effect when the thread next runs Python bytecode: a call blocked in
-/// native code that released the GIL is interrupted only when that code returns.
-pub fn interrupt_task(task_attempt_id: i64) -> usize {
-    let running = match tasks().get_mut(&task_attempt_id) {
-        Some(task) => {
-            task.killed = true;
-            task.calls.iter().any(|call| !call.interrupted)
+/// native code that released the GIL is interrupted only when that code returns. It can also
+/// take effect between a lock's acquisition and the `try` that releases it, leaving the lock
+/// held, which is why the JVM can turn `interrupt_running` off.
+pub fn kill_task(task: i64, interrupt_running: bool) -> usize {
+    let running = match tasks().get_mut(&task) {
+        Some(calls) => {
+            calls.killed = true;
+            interrupt_running && calls.calls.iter().any(|call| !call.interrupted)
         }
         None => false,
     };
@@ -182,11 +194,11 @@ pub fn interrupt_task(task_attempt_id: i64) -> usize {
     Python::attach(|py| {
         let exception = TaskKilled::type_object(py);
         let mut tasks = tasks();
-        let Some(task) = tasks.get_mut(&task_attempt_id) else {
+        let Some(calls) = tasks.get_mut(&task) else {
             return 0;
         };
         let mut interrupted = 0;
-        for call in task.calls.iter_mut().filter(|call| !call.interrupted) {
+        for call in calls.calls.iter_mut().filter(|call| !call.interrupted) {
             // SAFETY: attached to the interpreter, and `exception` is a live type object.
             let set = unsafe {
                 pyo3::ffi::PyThreadState_SetAsyncExc(call.thread as c_long, exception.as_ptr())
@@ -403,7 +415,7 @@ impl ArrowPythonUdf {
         })
     }
 
-    /// Lets [`interrupt_task`] interrupt this UDF's calls for the registered task.
+    /// Lets [`kill_task`] stop this UDF's calls for the registered task.
     pub fn with_task(mut self, task: Arc<TaskRegistration>) -> Self {
         self.task = Some(task);
         self
@@ -437,6 +449,10 @@ impl ArrowPythonUdf {
             }
         }
 
+        // Fail before waiting for the GIL, which another UDF may hold for a long time.
+        if let Some(task) = self.task.as_deref().filter(|task| task.is_killed()) {
+            return Err(task.killed_error());
+        }
         Python::attach(|py| {
             let pa = py.import("pyarrow").map_err(python_error)?;
             let array_class = pa.getattr("Array").map_err(python_error)?;
@@ -474,30 +490,32 @@ impl ArrowPythonUdf {
                 .as_deref()
                 .map(|task| RunningCall::enter(py, task))
                 .transpose()?;
-            let result = self.callable.bind(py).call(positional, Some(&kwargs));
-            drop(call);
+            let mut result = self.callable.bind(py).call(positional, Some(&kwargs));
+            if self.accept_array_like {
+                // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`, which
+                // converts lists and NumPy arrays and rejects chunked arrays. It can run a
+                // user-defined `__arrow_array__`, so the call stays recorded meanwhile.
+                result = result.and_then(|result| {
+                    let arrays = PyList::new(py, [result])?;
+                    let names = PyList::new(py, ["_0"])?;
+                    pa.getattr("RecordBatch")?
+                        .call_method1("from_arrays", (arrays, names))?
+                        .call_method1("column", (0,))
+                });
+            }
+            if let Some(call) = call {
+                call.exit(py);
+            }
             let result = result.map_err(|error| python_traceback_error(py, error))?;
             if let Some(task) = self.task.as_deref().filter(|task| task.is_killed()) {
                 return Err(task.killed_error());
             }
-            let result = if self.accept_array_like {
-                // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`,
-                // which converts lists and NumPy arrays and rejects chunked arrays.
-                let arrays = PyList::new(py, [result]).map_err(python_error)?;
-                let names = PyList::new(py, ["_0"]).map_err(python_error)?;
-                pa.getattr("RecordBatch")
-                    .map_err(python_error)?
-                    .call_method1("from_arrays", (arrays, names))
-                    .map_err(|error| python_traceback_error(py, error))?
-                    .call_method1("column", (0,))
-                    .map_err(python_error)?
-            } else if result.is_instance(&array_class).map_err(python_error)? {
-                result
-            } else {
+            // The conversion above already produced an array for Spark 4.2.
+            if !self.accept_array_like && !result.is_instance(&array_class).map_err(python_error)? {
                 return Err(ArrowError::ComputeError(
                     "Arrow UDF must return a pyarrow.Array".to_string(),
                 ));
-            };
+            }
             let result_len = result.len().map_err(python_error)?;
             if result_len != num_rows {
                 return Err(ArrowError::ComputeError(format!(
@@ -775,51 +793,98 @@ mod tests {
         });
     }
 
-    fn running_calls(task_attempt_id: i64) -> Option<usize> {
-        tasks().get(&task_attempt_id).map(|task| task.calls.len())
+    fn running_calls(task: i64) -> Option<usize> {
+        tasks().get(&task).map(|task| task.calls.len())
+    }
+
+    /// Evaluates `python` (a function of one argument) as a UDF of `task` on another thread.
+    /// Returns the UDF, and a receiver for its result once the call has started.
+    fn start_call(
+        task: &Arc<TaskRegistration>,
+        python: &std::ffi::CStr,
+        accept_array_like: bool,
+    ) -> (
+        Arc<ArrowPythonUdf>,
+        std::sync::mpsc::Receiver<Result<ArrayRef>>,
+    ) {
+        let command = Python::attach(|py| cloudpickled_lambda(py, python));
+        let udf = Arc::new(
+            ArrowPythonUdf::from_command(
+                &command,
+                DataType::Int64,
+                true,
+                true,
+                accept_array_like,
+                "",
+            )
+            .unwrap()
+            .with_task(Arc::clone(task)),
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&udf);
+        // Not joined: a call that ignores the interrupt would never return.
+        std::thread::spawn(move || {
+            let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
+            let result = worker.evaluate(&[input], 1);
+            // Release the registration before the test can check that it is gone.
+            drop(worker);
+            sender.send(result)
+        });
+        wait_for(
+            || running_calls(task.task) == Some(1),
+            "the UDF call did not start",
+        );
+        (udf, receiver)
+    }
+
+    fn wait_for(condition: impl Fn() -> bool, message: &str) {
+        let start = std::time::Instant::now();
+        while !condition() {
+            assert!(start.elapsed().as_secs() < 30, "{message}");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn error_of(receiver: std::sync::mpsc::Receiver<Result<ArrayRef>>) -> String {
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the call did not return")
+            .unwrap_err()
+            .to_string()
+    }
+
+    /// Whether the Python expression `expression`, which may use `sys`, is true.
+    fn python_is(expression: &std::ffi::CStr) -> bool {
+        Python::attach(|py| {
+            let locals = pyo3::types::PyDict::new(py);
+            locals.set_item("sys", py.import("sys").unwrap()).unwrap();
+            py.eval(expression, None, Some(&locals))
+                .unwrap()
+                .extract()
+                .unwrap()
+        })
     }
 
     #[test]
     fn interrupts_running_call_of_killed_task() {
         const TASK: i64 = -6811;
         initialize_python().unwrap();
-        // `except Exception` must not swallow the interrupt.
-        let command = Python::attach(|py| {
-            cloudpickled_lambda(
-                py,
-                c"(lambda ns: (exec('def f(a):\\n    n = 0\\n    while True:\\n        n += 1\\n        try:\\n            n %= 7\\n        except Exception:\\n            pass\\n', ns), ns['f'])[1])({})",
-            )
-        });
         let task = Arc::new(TaskRegistration::new(TASK));
-        let udf = Arc::new(
-            ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
-                .unwrap()
-                .with_task(Arc::clone(&task)),
+        // `except Exception` must not swallow the interrupt.
+        let (udf, result) = start_call(
+            &task,
+            c"(lambda ns: (exec('def f(a):\\n    n = 0\\n    while True:\\n        n += 1\\n        try:\\n            n %= 7\\n        except Exception:\\n            pass\\n', ns), ns['f'])[1])({})",
+            false,
         );
-        let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-        let (sender, receiver) = std::sync::mpsc::channel();
-        {
-            let (udf, input) = (Arc::clone(&udf), Arc::clone(&input));
-            // Not joined: a call that ignores the interrupt would never return.
-            std::thread::spawn(move || sender.send(udf.evaluate(&[input], 1)));
-        }
-        let start = std::time::Instant::now();
-        while running_calls(TASK) != Some(1) {
-            assert!(start.elapsed().as_secs() < 30, "the UDF call did not start");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert_eq!(interrupt_task(TASK), 1);
-        let error = receiver
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("the interrupted call did not return")
-            .unwrap_err()
-            .to_string();
+        assert_eq!(kill_task(TASK, true), 1);
+        let error = error_of(result);
         assert!(error.contains("TaskKilled"), "{error}");
         assert_eq!(running_calls(TASK), Some(0));
         // A killed task does not enter Python again.
+        let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
         let error = udf.evaluate(&[input], 1).unwrap_err().to_string();
         assert!(error.contains("was killed"), "{error}");
-        assert_eq!(interrupt_task(TASK), 0);
+        assert_eq!(kill_task(TASK, true), 0);
         drop(udf);
         drop(task);
         assert_eq!(running_calls(TASK), None);
@@ -829,7 +894,7 @@ mod tests {
     fn interrupts_a_call_once_so_its_cleanup_runs() {
         const TASK: i64 = -6812;
         initialize_python().unwrap();
-        let command = Python::attach(|py| {
+        Python::attach(|py| {
             let sys = py.import("sys").unwrap();
             let lock = py
                 .import("threading")
@@ -838,56 +903,136 @@ mod tests {
                 .unwrap();
             sys.setattr("comet_cleanup_lock", lock).unwrap();
             sys.setattr("comet_cleaning", false).unwrap();
-            // The cleanup outlasts the monitor's 100 ms polling interval.
-            cloudpickled_lambda(
-                py,
-                c"(lambda ns: (exec('def f(a):\\n    import sys, time\\n    sys.comet_cleanup_lock.acquire()\\n    try:\\n        n = 0\\n        while True:\\n            n += 1\\n    finally:\\n        sys.comet_cleaning = True\\n        time.sleep(0.4)\\n        sys.comet_cleanup_lock.release()\\n', ns), ns['f'])[1])({})",
-            )
         });
-        let sys_attr = |expression: &std::ffi::CStr| -> bool {
-            Python::attach(|py| {
-                let sys = py.import("sys").unwrap();
-                let locals = pyo3::types::PyDict::new(py);
-                locals.set_item("sys", sys).unwrap();
-                py.eval(expression, None, Some(&locals))
-                    .unwrap()
-                    .extract()
-                    .unwrap()
-            })
-        };
         let task = Arc::new(TaskRegistration::new(TASK));
-        let udf = Arc::new(
-            ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
-                .unwrap()
-                .with_task(Arc::clone(&task)),
+        // The cleanup outlasts the monitor's 100 ms polling interval.
+        let (_udf, result) = start_call(
+            &task,
+            c"(lambda ns: (exec('def f(a):\\n    import sys, time\\n    sys.comet_cleanup_lock.acquire()\\n    try:\\n        n = 0\\n        while True:\\n            n += 1\\n    finally:\\n        sys.comet_cleaning = True\\n        time.sleep(0.4)\\n        sys.comet_cleanup_lock.release()\\n', ns), ns['f'])[1])({})",
+            false,
         );
-        let (sender, receiver) = std::sync::mpsc::channel();
-        {
-            let udf = Arc::clone(&udf);
-            let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-            std::thread::spawn(move || sender.send(udf.evaluate(&[input], 1)));
-        }
-        let start = std::time::Instant::now();
-        while running_calls(TASK) != Some(1) {
-            assert!(start.elapsed().as_secs() < 30, "the UDF call did not start");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert_eq!(interrupt_task(TASK), 1);
-        while !sys_attr(c"sys.comet_cleaning") {
-            assert!(start.elapsed().as_secs() < 30, "the cleanup did not start");
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        assert_eq!(kill_task(TASK, true), 1);
+        wait_for(
+            || python_is(c"sys.comet_cleaning"),
+            "the cleanup did not start",
+        );
         // A later poll while the call cleans up must not raise in it again.
-        assert_eq!(interrupt_task(TASK), 0);
-        let error = receiver
-            .recv_timeout(std::time::Duration::from_secs(30))
-            .expect("the interrupted call did not return")
-            .unwrap_err()
-            .to_string();
+        assert_eq!(kill_task(TASK, true), 0);
+        let error = error_of(result);
         assert!(error.contains("TaskKilled"), "{error}");
         assert!(
-            !sys_attr(c"sys.comet_cleanup_lock.locked()"),
+            !python_is(c"sys.comet_cleanup_lock.locked()"),
             "the cleanup did not release its lock"
+        );
+    }
+
+    #[test]
+    fn kill_without_interrupt_lets_the_running_call_finish() {
+        const TASK: i64 = -6813;
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .setattr("comet_finish_call", false)
+                .unwrap()
+        });
+        let task = Arc::new(TaskRegistration::new(TASK));
+        let (_udf, result) = start_call(
+            &task,
+            c"(lambda ns: (exec('def f(a):\\n    import sys, time\\n    while not sys.comet_finish_call:\\n        time.sleep(0.01)\\n    return a\\n', ns), ns['f'])[1])({})",
+            false,
+        );
+        assert_eq!(kill_task(TASK, false), 0);
+        Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .setattr("comet_finish_call", true)
+                .unwrap()
+        });
+        // The call ran to its end, and its result is dropped because the task was killed.
+        let error = error_of(result);
+        assert!(error.contains("was killed"), "{error}");
+        assert!(!error.contains("TaskKilled"), "{error}");
+    }
+
+    #[test]
+    fn interrupts_a_user_defined_array_conversion() {
+        const TASK: i64 = -6814;
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .setattr("comet_converting", false)
+                .unwrap()
+        });
+        let task = Arc::new(TaskRegistration::new(TASK));
+        // Spark 4.2 converts the result with `RecordBatch.from_arrays`, which calls
+        // `__arrow_array__`.
+        let (_udf, result) = start_call(
+            &task,
+            c"(lambda ns: (exec('import sys\\nclass Slow:\\n    def __len__(self):\\n        return 1\\n    def __arrow_array__(self, type=None):\\n        sys.comet_converting = True\\n        n = 0\\n        while True:\\n            n += 1\\ndef f(a):\\n    return Slow()\\n', ns), ns['f'])[1])({})",
+            true,
+        );
+        wait_for(
+            || python_is(c"sys.comet_converting"),
+            "the conversion did not start",
+        );
+        assert_eq!(kill_task(TASK, true), 1);
+        let error = error_of(result);
+        assert!(error.contains("TaskKilled"), "{error}");
+    }
+
+    #[test]
+    fn consumes_an_interrupt_pending_when_the_call_returns() {
+        const TASK: i64 = -6815;
+        initialize_python().unwrap();
+        // A callable implemented in C returns straight to Rust, so an interrupt that arrives
+        // while it sleeps is still pending when the call ends.
+        let command = Python::attach(|py| {
+            let sleep = py
+                .import("functools")
+                .unwrap()
+                .getattr("partial")
+                .unwrap()
+                .call1((py.import("time").unwrap().getattr("sleep").unwrap(), 0.3))
+                .unwrap();
+            let _imports = IMPORT_LOCK
+                .lock_py_attached(py)
+                .unwrap_or_else(PoisonError::into_inner);
+            py.import("cloudpickle")
+                .unwrap()
+                .call_method1("dumps", ((sleep, py.None()),))
+                .unwrap()
+                .extract::<Vec<u8>>()
+                .unwrap()
+        });
+        let task = Arc::new(TaskRegistration::new(TASK));
+        let udf = ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
+            .unwrap()
+            .with_task(Arc::clone(&task));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                // Keep this thread's Python state across the call, as a thread that runs
+                // more Python afterwards would.
+                Python::attach(|py| {
+                    let result = udf.evaluate(&[], 0).map(drop);
+                    let after = py.run(c"for _ in (0, 0):\n    pass\n", None, None);
+                    sender.send((result, after.is_ok())).unwrap();
+                })
+            });
+            wait_for(
+                || running_calls(TASK) == Some(1),
+                "the UDF call did not start",
+            );
+            assert_eq!(kill_task(TASK, true), 1);
+        });
+        let (result, later_python_ok) = receiver.recv().unwrap();
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("was killed"), "{error}");
+        assert!(
+            later_python_ok,
+            "the interrupt fired in Python code after the call"
         );
     }
 
