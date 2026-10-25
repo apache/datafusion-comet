@@ -22,7 +22,7 @@ package org.apache.comet.serde
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, PartialMerge, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
 import org.apache.spark.sql.internal.SQLConf
@@ -1178,7 +1178,9 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
         "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
           "implementation always drops null inputs.")
     } else {
-      Nil
+      Seq(
+        "`collect_set` over FLOAT or DOUBLE in a PartialMerge chain (for example, beside " +
+          "`count(DISTINCT ...)`) falls back to Spark to preserve signed-zero and NaN semantics.")
     }
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
@@ -1208,6 +1210,16 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Declining the merge also keeps its buffer producers in Spark via the unsafe-partial pass.
+    if (!isSpark42Plus && aggExpr.mode == PartialMerge &&
+      (expr.child.dataType == FloatType || expr.child.dataType == DoubleType)) {
+      withFallbackReason(
+        aggExpr,
+        "collect_set on FLOAT/DOUBLE in PartialMerge requires Spark 4.2 or later " +
+          "to preserve signed-zero and NaN semantics")
+      return None
+    }
+
     val child = aggExpr.mode match {
       // Spark 4.2 (SPARK-57298) normalizes NaN and -0.0 inside CollectSet's buffer conversion
       // (`convertToBufferElement`/`eval` in collect.scala), so the normalization is invisible in
