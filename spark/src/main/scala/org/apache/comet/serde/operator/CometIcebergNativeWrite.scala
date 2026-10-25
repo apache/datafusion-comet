@@ -725,14 +725,14 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
-  private def bloomFilterParquetPaths(
+  private[operator] def bloomFilterParquetPaths(
       configuredColumns: Seq[String],
       schema: Any,
-      resolution: IcebergReflection.ParquetPathResolution): Map[String, String] = {
-    val icebergVersion = IcebergReflection.icebergVersion()
-    val versionParts = icebergVersion.split("[.-]", 3)
+      resolution: IcebergReflection.ParquetPathResolution,
+      icebergVersion: String = IcebergReflection.icebergVersion()): Map[String, String] = {
     val version =
-      if (versionParts.length >= 2) {
+      if (Option(icebergVersion).exists(_.matches("\\d+\\.\\d+\\.\\d+(?:[-+].+)?"))) {
+        val versionParts = icebergVersion.split("[.-]", 3)
         scala.util.Try((versionParts(0).toInt, versionParts(1).toInt)).toOption
       } else {
         None
@@ -749,11 +749,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
             .flatMap(resolution.pathByFieldId.get)
             .map(configuredName -> _)
         }.toMap
-      case _ =>
+      case Some((1, minor)) if minor >= 10 =>
         // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
         resolution.pathByIcebergColumnName.filter { case (column, _) =>
           configuredColumns.contains(column)
         }
+      case _ =>
+        // getSupportLevel catches this during planning and keeps the write on Java. Guessing
+        // canonical naming for repackaged runtimes could silently omit requested filters.
+        throw new IllegalArgumentException(
+          s"Cannot determine Iceberg Bloom column-name convention for version '$icebergVersion'")
     }
   }
 
