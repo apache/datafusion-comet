@@ -59,6 +59,19 @@ class SparkErrorConverterSuite extends AnyFunSuite {
     }
   }
 
+  test("NumericOutOfRange converts to a SparkArithmeticException like Spark") {
+    val json =
+      """{"errorType":"NumericOutOfRange","errorClass":"NUMERIC_OUT_OF_SUPPORTED_RANGE",""" +
+        """"params":{"value":"0e38"}}"""
+    val ex = SparkErrorConverter.convertToSparkException(
+      new org.apache.comet.exceptions.CometQueryExecutionException(json))
+    assert(ex.getClass.getName == "org.apache.spark.SparkArithmeticException")
+    assert(ex.isInstanceOf[ArithmeticException])
+    val error = ex.asInstanceOf[SparkThrowable]
+    assert(error.getErrorClass == "NUMERIC_OUT_OF_SUPPORTED_RANGE")
+    assert(error.getMessageParameters.get("value") == "0e38")
+  }
+
   test("CannotReadFile converts to a FAILED_READ_FILE SparkException naming the file") {
     val ex = SparkErrorConverter
       .convertErrorType(
