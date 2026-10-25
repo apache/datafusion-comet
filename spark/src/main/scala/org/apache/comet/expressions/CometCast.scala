@@ -26,7 +26,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.DataTypeSupport.isComplexType
+import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
 import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
@@ -37,6 +37,9 @@ object CometCast
     with CometExprShim
     with CometTypeShim
     with CodegenDispatchFallback {
+
+  private[comet] val duplicateStructFieldNamesReason: String =
+    "Cast target contains a struct with duplicate field names"
 
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
@@ -220,6 +223,13 @@ object CometCast
     // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
     if (isVariantType(fromType) || isVariantType(toType)) {
       return unsupported(fromType, toType)
+    }
+
+    // Check the entire target before the NullType and identity shortcuts below. Arrow Java can
+    // collapse duplicate struct children even when the source reaches the target through a null,
+    // array, map, or nested struct path.
+    if (containsDuplicateFieldNames(toType)) {
+      return Unsupported(Some(duplicateStructFieldNamesReason))
     }
 
     // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
