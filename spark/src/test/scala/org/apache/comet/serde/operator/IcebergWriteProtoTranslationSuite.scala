@@ -135,6 +135,43 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     }
   }
 
+  test("empty legacy Bloom names retain Java validation and lookup failures remain failures") {
+    val resolution = IcebergReflection.ParquetPathResolution(
+      Map.empty,
+      Map.empty,
+      Set.empty,
+      Set.empty,
+      Set.empty)
+    Seq("1.8.1", "1.9.1").foreach { version =>
+      val error = intercept[IllegalArgumentException] {
+        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq(""), resolution, version)
+      }
+      assert(error.getMessage.contains("Empty Bloom column name"))
+    }
+    class MissingSchema {
+      def findField(name: String): AnyRef = {
+        require(name.nonEmpty)
+        null
+      }
+    }
+    assert(
+      CometIcebergNativeWrite
+        .bloomFilterParquetPaths(Seq("missing"), resolution, "1.8.1", new MissingSchema)
+        .isEmpty)
+    class FailingSchema {
+      def findField(name: String): AnyRef =
+        throw new IllegalArgumentException(s"lookup failed: $name")
+    }
+    val error = intercept[IllegalArgumentException] {
+      CometIcebergNativeWrite.bloomFilterParquetPaths(
+        Seq("id"),
+        resolution,
+        "1.8.1",
+        new FailingSchema)
+    }
+    assert(error.getMessage.contains("lookup failed: id"))
+  }
+
   // -- compression -----------------------------------------------------------
 
   test("compression defaults to zstd at parquet-mr's level 3 when no property is set") {
