@@ -206,6 +206,45 @@ pub(crate) fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> 
     }
 }
 
+/// Microseconds in one 400-year Gregorian cycle (146097 days). Calendars, weekdays and
+/// therefore recurring time-zone rules repeat with this period.
+const MICROS_PER_GREGORIAN_CYCLE: i64 = 146_097 * 86_400 * 1_000_000;
+const MILLIS_PER_GREGORIAN_CYCLE: i64 = 146_097 * 86_400 * 1_000;
+
+/// How many Gregorian cycles a value outside chrono's year range (-262144..=262143) is moved
+/// towards the epoch before its offset is looked up. 40,000 years brings every `i64` microsecond
+/// value (years -290308 to 294247) into range.
+const OUT_OF_RANGE_SHIFT_CYCLES: i64 = 100;
+
+/// Converts a local (timestamp without time zone) value to UTC.
+///
+/// Spark (`java.time`) handles the whole `i64` range, while chrono only represents years
+/// -262144 to 262143. For a value outside chrono's range, the offset is looked up at the same
+/// local time a whole number of 400-year cycles closer to the epoch, where chrono can
+/// represent it, and then applied to the original value. Overflowing `i64` while applying
+/// the offset raises `long overflow`, as Spark does.
+fn local_to_utc(
+    value: i64,
+    unit_per_cycle: i64,
+    to_local: impl Fn(i64) -> Option<NaiveDateTime>,
+    to_utc: impl Fn(NaiveDateTime) -> i64,
+) -> Result<i64, ArrowError> {
+    if let Some(local_datetime) = to_local(value) {
+        return Ok(to_utc(local_datetime));
+    }
+    let shift = OUT_OF_RANGE_SHIFT_CYCLES * unit_per_cycle;
+    let shifted = if value > 0 {
+        value - shift
+    } else {
+        value + shift
+    };
+    let local_datetime = to_local(shifted).ok_or_else(|| datetime_cast_err(value))?;
+    let offset = shifted - to_utc(local_datetime);
+    value
+        .checked_sub(offset)
+        .ok_or_else(|| ArrowError::ComputeError("long overflow".to_string()))
+}
+
 /// Takes in a Timestamp(Microsecond, None) array and a timezone id, and returns
 /// a Timestamp(Microsecond, Some<_>) array.
 /// The understanding is that the input array has time in the timezone specified in the second
@@ -224,13 +263,12 @@ pub(crate) fn timestamp_ntz_to_timestamp(
             let array = as_primitive_array::<TimestampMicrosecondType>(&array);
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMicrosecondType> = array.try_unary(|value| {
-                as_datetime::<TimestampMicrosecondType>(value)
-                    .ok_or_else(|| datetime_cast_err(value))
-                    .map(|local_datetime| {
-                        let datetime = resolve_local_datetime(&tz, local_datetime);
-
-                        datetime.timestamp_micros()
-                    })
+                local_to_utc(
+                    value,
+                    MICROS_PER_GREGORIAN_CYCLE,
+                    as_datetime::<TimestampMicrosecondType>,
+                    |local_datetime| resolve_local_datetime(&tz, local_datetime).timestamp_micros(),
+                )
             })?;
             let array_with_tz = if let Some(to_tz) = to_timezone {
                 array.with_timezone(to_tz)
@@ -243,13 +281,12 @@ pub(crate) fn timestamp_ntz_to_timestamp(
             let array = as_primitive_array::<TimestampMillisecondType>(&array);
             let tz: Tz = tz.parse()?;
             let array: PrimitiveArray<TimestampMillisecondType> = array.try_unary(|value| {
-                as_datetime::<TimestampMillisecondType>(value)
-                    .ok_or_else(|| datetime_cast_err(value))
-                    .map(|local_datetime| {
-                        let datetime = resolve_local_datetime(&tz, local_datetime);
-
-                        datetime.timestamp_millis()
-                    })
+                local_to_utc(
+                    value,
+                    MILLIS_PER_GREGORIAN_CYCLE,
+                    as_datetime::<TimestampMillisecondType>,
+                    |local_datetime| resolve_local_datetime(&tz, local_datetime).timestamp_millis(),
+                )
             })?;
             let array_with_tz = if let Some(to_tz) = to_timezone {
                 array.with_timezone(to_tz)
@@ -425,6 +462,55 @@ mod tests {
             as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
             micros_for("2024-10-27 00:30:00")
         );
+    }
+
+    fn ntz_micros(values: Vec<i64>) -> ArrayRef {
+        Arc::new(TimestampMicrosecondArray::from(values))
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_handles_values_beyond_chrono_range() {
+        // Spark converts the whole i64 range; chrono stops at years -262144 and 262143.
+        let output =
+            timestamp_ntz_to_timestamp(ntz_micros(vec![i64::MAX, i64::MIN, 0]), "UTC", None)
+                .unwrap();
+        let output = as_primitive_array::<TimestampMicrosecondType>(&output);
+        assert_eq!(output.values(), &[i64::MAX, i64::MIN, 0]);
+
+        // A fixed offset is applied unchanged: +02:00 local is two hours earlier in UTC.
+        let two_hours = 2 * 3_600 * 1_000_000;
+        let output =
+            timestamp_ntz_to_timestamp(ntz_micros(vec![i64::MAX]), "+02:00", None).unwrap();
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            i64::MAX - two_hours
+        );
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_beyond_chrono_range_matches_shifted_offset() {
+        // Far-future Los Angeles values use the same offset as the same local time 40,000
+        // years earlier, which is how the out-of-range offset is derived.
+        let tz = "America/Los_Angeles";
+        let value = 280_000_i64 * 365 * 86_400 * 1_000_000;
+        let shift = OUT_OF_RANGE_SHIFT_CYCLES * MICROS_PER_GREGORIAN_CYCLE;
+        let shifted =
+            timestamp_ntz_to_timestamp(ntz_micros(vec![value - shift]), tz, None).unwrap();
+        let expected = as_primitive_array::<TimestampMicrosecondType>(&shifted).value(0) + shift;
+        let output = timestamp_ntz_to_timestamp(ntz_micros(vec![value]), tz, None).unwrap();
+        assert_eq!(
+            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_overflow_is_long_overflow() {
+        // Long.MIN local time in a zone east of UTC is before Long.MIN in UTC: Spark raises
+        // `long overflow`.
+        let err =
+            timestamp_ntz_to_timestamp(ntz_micros(vec![i64::MIN]), "+02:00", None).unwrap_err();
+        assert!(err.to_string().contains("long overflow"), "{err}");
     }
 
     // Helper: build a Timestamp(Microsecond, Some(tz)) array from a UTC datetime string
