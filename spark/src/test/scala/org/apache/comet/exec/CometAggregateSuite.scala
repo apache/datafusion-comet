@@ -478,7 +478,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     objectHash <- Seq(false, true)
   } {
     test(
-      s"collect_set with distinct preserves float semantics (issue #7203): " +
+      "collect_set with distinct preserves float semantics (issue #7203): " +
         s"$dataType, nativeInput=$nativeInput, adaptive=$adaptive, objectHash=$objectHash") {
       withSQLConf(
         COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
