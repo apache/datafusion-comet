@@ -73,6 +73,25 @@ SELECT cast('2020-01-01 12:34:56 UTC' as timestamp)
 query
 SELECT cast('2020-01-01 12:34:56GMT+08:00' as timestamp)
 
+-- string to timestamp: SHORT_IDS aliases, region ids and offsets with seconds
+query
+SELECT cast('2020-01-01 12:34:56 PST' as timestamp)
+
+query
+SELECT cast('2020-01-01 12:34:56 CET' as timestamp)
+
+query
+SELECT cast('2020-01-01 12:34:56Zulu' as timestamp)
+
+query
+SELECT cast('2020-01-01 12:34:56America/Los_Angeles' as timestamp)
+
+query
+SELECT cast('2020-01-01 12:34:56 Etc/GMT+8' as timestamp)
+
+query
+SELECT cast('2020-01-01 12:34:56 +08:00:00' as timestamp)
+
 -- string to timestamp: time-only and T-prefixed time-only
 query
 SELECT cast('T12:34:56' as timestamp)
