@@ -4395,9 +4395,9 @@ class CometIcebergNativeSuite
               .value
           assert(scanned == 1, s"Expected the first file to be scanned, scanned $scanned files")
 
-          // Expiring the first snapshot with cleanExpiredMetadata (Iceberg 1.8+) drops the original
+          // Expiring the first snapshot with cleanExpiredMetadata (Iceberg 1.9+) drops the original
           // schema, while the file that snapshot wrote stays in the table.
-          if (icebergVersionAtLeast(1, 8)) {
+          if (icebergVersionAtLeast(1, 9)) {
             val icebergTable =
               loadIcebergTable(spark, "test_cat", "db", "promoted_residual_test")
                 .asInstanceOf[org.apache.iceberg.Table]
