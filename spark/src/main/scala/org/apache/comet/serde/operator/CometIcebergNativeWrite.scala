@@ -948,7 +948,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }.toMap
       case _ =>
         // Iceberg 1.10+ keys writer properties by canonical findColumnName output.
-        resolution.pathByIcebergColumnName
+        resolution.pathByIcebergColumnName.filter { case (column, _) =>
+          configuredColumns.contains(column)
+        }
     }
   }
 
