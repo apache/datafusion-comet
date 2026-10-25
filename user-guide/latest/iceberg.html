@@ -1032,6 +1032,14 @@ transforms falls back)</p></li>
 or renamed. The native reader cannot yet match such a field to data files written before the
 change. The check uses the table’s schema history, so the fallback stays after those files are
 rewritten</p></li>
+<li><p>Scans that read a struct, array, or map column from a table with
+<code class="docutils literal notranslate"><span class="pre">schema.name-mapping.default</span></code>, including tables imported with <code class="docutils literal notranslate"><span class="pre">snapshot</span></code>, <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">add_files</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6790">#6790</a>). The native reader
+does not apply name mappings to nested fields. Queries that read only primitive columns can
+still run natively. The fallback remains while the property is set, even if the data files
+have since been rewritten with field IDs. Iceberg’s nullness rules are separate from the
+Parquet legacy setting; <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6934">#6934</a> tracks
+the reader update and review of this fallback</p></li>
 <li><p>Scans where no schema in the table’s history gives a partition source or equality-delete key a
 name that the scan’s other columns don’t use (every task of a native scan must give such a
 column the same name)</p></li>
@@ -1632,12 +1640,6 @@ the <a class="reference internal" href="datasources.html#s3-limitations"><span c
 <section id="reads-that-differ-from-spark">
 <h3>Reads that differ from Spark<a class="headerlink" href="#reads-that-differ-from-spark" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>Migrated tables that use a name mapping.</strong> The <code class="docutils literal notranslate"><span class="pre">migrate</span></code>, <code class="docutils literal notranslate"><span class="pre">snapshot</span></code> and <code class="docutils literal notranslate"><span class="pre">add_files</span></code>
-procedures set <code class="docutils literal notranslate"><span class="pre">schema.name-mapping.default</span></code> for files without Iceberg field ids. When a query
-also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-fields, list elements and map values). Filters on those fields then select the wrong rows
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6790">#6790</a>). The fix needs an iceberg-rust
-upgrade (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6934">#6934</a>).</p></li>
 <li><p><strong>Data files with neither field ids nor a name mapping.</strong> Spark reads every nested field of such
 a file as NULL, and the native scan returns the values stored in the file
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6794">#6794</a>).</p></li>

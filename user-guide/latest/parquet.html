@@ -938,6 +938,14 @@ TIMESTAMP_MILLIS). On Spark 4.0+, this read is permitted
 behavior.</p></li>
 </ul>
 </section>
+<section id="missing-nested-fields">
+<h3>Missing Nested Fields<a class="headerlink" href="#missing-nested-fields" title="Link to this heading">#</a></h3>
+<p>When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.4
+through 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
+follows this behavior. On Spark 4.1+, the default (<code class="docutils literal notranslate"><span class="pre">false</span></code>) preserves the file’s parent nullness.
+Set <code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true</span></code> for legacy behavior.
+A field that exists in the file but contains only NULL values is not a missing field.</p>
+</section>
 <section id="schema-mismatch-handling">
 <h3>Schema Mismatch Handling<a class="headerlink" href="#schema-mismatch-handling" title="Link to this heading">#</a></h3>
 <p>The issues in this subsection apply only when the requested read schema differs from the schema written
@@ -1110,11 +1118,6 @@ metadata (<a class="reference external" href="https://github.com/apache/datafusi
 read back wrong inside lists written in a legacy layout, as Hive and
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.writeLegacyFormat=true</span></code> write them
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7029">#7029</a>).</p></li>
-<li><p><strong>A struct or array with none of its requested fields in the file.</strong> Spark returns NULL for the
-column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
-and 4.0, and to Spark 4.1 and later with
-<code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true</span></code>
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7030">#7030</a>).</p></li>
 <li><p><strong>Nested BINARY values that are not valid UTF-8, read as STRING.</strong> This applies to a BINARY
 column without the UTF8 annotation that is read as <code class="docutils literal notranslate"><span class="pre">string</span></code>, through the read schema or
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.binaryAsString=true</span></code>. Spark returns the bytes. Comet returns NULL for each
@@ -1270,6 +1273,7 @@ Comet resolves the fields by id.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#reading">Reading</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unsupported-features-fall-back-to-spark">Unsupported features: fall back to Spark</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#unsupported-features-error-at-scan-time">Unsupported features: error at scan time</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#missing-nested-fields">Missing Nested Fields</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#schema-mismatch-handling">Schema Mismatch Handling</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#read-error-wrapping">Read Error Wrapping</a></li>
 </ul>
