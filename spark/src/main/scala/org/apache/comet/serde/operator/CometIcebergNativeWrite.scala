@@ -758,9 +758,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         Some(
           s"Iceberg $icebergVersion applies ${PropertyKeys.ParquetBloomFilterColumnFppPrefix}* " +
             "independently; these settings require Java validation")
-      case Some((1, minor)) if minor >= 10 => None
+      case Some((1, minor)) if minor >= 5 => None
       case Some((1, _)) =>
-        Some(s"Native Bloom writes require Iceberg 1.10 or later; found '$icebergVersion'")
+        Some(s"Native Bloom writes require Iceberg 1.5 or later; found '$icebergVersion'")
       case _ =>
         Some(
           s"Cannot determine Iceberg Bloom column-name convention for version '$icebergVersion'")
