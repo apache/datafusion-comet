@@ -659,8 +659,9 @@ fn combine_checks(
 /// encoding used by Spark. Legacy or custom group names cannot be recovered from this schema.
 /// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
-/// (they read as null / default, as before). A pair Spark rejects when it opens the file is an
-/// error, and sibling verdicts combine as in [`combine_checks`].
+/// (they read as null / default, as before). Independently selected losing fields still undergo
+/// open-time shape validation, but do not contribute deferred decoder rejections because their
+/// values are not read. Sibling verdicts combine as in [`combine_checks`].
 fn check_conversion(
     physical_type: &DataType,
     target_type: &DataType,
@@ -674,17 +675,29 @@ fn check_conversion(
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
             let physical_indices = match_struct_fields(physical_fields, target_fields, options)?;
-            combine_checks(target_fields.iter().zip(physical_indices).filter_map(
-                |(target_field, physical_index)| {
-                    let physical_field = &physical_fields[physical_index?];
-                    Some(check_conversion(
-                        physical_field.data_type(),
-                        target_field.data_type(),
-                        &format!("{column}, {}", physical_field.name()),
-                        options,
-                    ))
-                },
-            ))
+            combine_checks(
+                target_fields
+                    .iter()
+                    .zip(physical_indices.iter())
+                    .filter_map(|(target_field, (physical_index, owns_value))| {
+                        let physical_field = &physical_fields[physical_index?];
+                        Some(
+                            check_conversion(
+                                physical_field.data_type(),
+                                target_field.data_type(),
+                                &format!("{column}, {}", physical_field.name()),
+                                options,
+                            )
+                            .map(|check| {
+                                if owns_value {
+                                    check
+                                } else {
+                                    ConversionCheck::Accept
+                                }
+                            }),
+                        )
+                    }),
+            )
         }
         (
             DataType::List(physical_item)
@@ -3574,6 +3587,166 @@ pub(crate) mod test {
         }
     }
 
+    #[test]
+    fn absent_container_selections_do_not_add_conversion_errors() -> Result<(), DataFusionError> {
+        let physical = DataType::Struct(
+            vec![Arc::new(
+                Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+            )]
+            .into(),
+        );
+        for (case_sensitive, missing_id) in [(true, false), (false, true)] {
+            let mut options = default_options();
+            options.use_field_id = true;
+            options.case_sensitive = case_sensitive;
+            let mut absent = Field::new("a", struct_type(vec![("v", DataType::Int64)]), true);
+            if missing_id {
+                absent = absent.with_metadata(id_meta("2"));
+            }
+            let target = DataType::Struct(
+                vec![
+                    Arc::new(Field::new("x", DataType::Int64, true).with_metadata(id_meta("1"))),
+                    Arc::new(absent),
+                ]
+                .into(),
+            );
+            assert!(matches!(
+                check_conversion(&physical, &target, "s", &options)?,
+                ConversionCheck::Accept
+            ));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wide_field_id_struct_preserves_values_and_parent_nulls_across_batches(
+    ) -> Result<(), DataFusionError> {
+        use arrow::buffer::NullBuffer;
+
+        let rows = 16_401;
+        let fields = (1..=64)
+            .map(|id| {
+                Arc::new(
+                    Field::new(format!("file_{id}"), DataType::Int32, true)
+                        .with_metadata(id_meta(&id.to_string())),
+                )
+            })
+            .collect::<Vec<_>>();
+        let columns = (1..=64)
+            .map(|id| {
+                Arc::new(Int32Array::from(
+                    (0..rows)
+                        .map(|row| (row % 11 != 0).then_some(id * 100_000 + row as i32))
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef
+            })
+            .collect::<Vec<_>>();
+        let nulls = Some(NullBuffer::from(
+            (0..rows).map(|row| row % 7 != 0).collect::<Vec<_>>(),
+        ));
+        let input = StructArray::new(fields.into(), columns.clone(), nulls.clone());
+        let requested = (1..=64)
+            .rev()
+            .map(|id| {
+                Arc::new(
+                    Field::new(format!("requested_{id}"), DataType::Int32, true)
+                        .with_metadata(id_meta(&id.to_string())),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected =
+            StructArray::new(requested.into(), columns.into_iter().rev().collect(), nulls);
+        let wrap = |array: StructArray| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "s",
+                    array.data_type().clone(),
+                    true,
+                )])),
+                vec![Arc::new(array)],
+            )
+        };
+        let input = wrap(input)?;
+        let expected = wrap(expected)?;
+        let mut options = default_options();
+        options.use_field_id = true;
+        let mut stream = scan_parquet(&input, expected.schema(), options)?;
+        let mut offset = 0;
+        let mut batches = 0;
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            assert_eq!(batch, expected.slice(offset, batch.num_rows()));
+            offset += batch.num_rows();
+            batches += 1;
+        }
+        assert_eq!(offset, rows);
+        assert!(batches > 1);
+        Ok(())
+    }
+
+    /// Clipping validates a selected container even when another claimant owns its value.
+    /// Losing leaf conversions do not install a decoder and must not add deferred failures.
+    #[test]
+    fn losing_field_claims_preserve_open_errors_but_not_deferred_rejections(
+    ) -> Result<(), DataFusionError> {
+        let mut options = default_options();
+        options.use_field_id = true;
+        for reverse in [false, true] {
+            for wrap in 0..4 {
+                for losing_type in [
+                    DataType::Int32,
+                    struct_type(vec![("v", DataType::Int64)]),
+                    list_type(struct_type(vec![("v", DataType::Int64)])),
+                    map_type(struct_type(vec![("v", DataType::Int64)])),
+                ] {
+                    let physical = DataType::Struct(
+                        vec![Arc::new(
+                            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+                        )]
+                        .into(),
+                    );
+                    let mut requested = vec![
+                        Arc::new(
+                            Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                        ),
+                        Arc::new(Field::new("a", losing_type.clone(), true)),
+                    ];
+                    if reverse {
+                        requested.reverse();
+                    }
+                    let target = DataType::Struct(requested.into());
+                    let (physical, target) = match wrap {
+                        0 => (physical, target),
+                        1 => (list_type(physical), list_type(target)),
+                        2 => (map_type(physical), map_type(target)),
+                        _ => (
+                            DataType::Dictionary(Box::new(DataType::Int32), Box::new(physical)),
+                            target,
+                        ),
+                    };
+                    let result = check_conversion(&physical, &target, "s", &options);
+                    if matches!(losing_type, DataType::Int32) {
+                        assert!(matches!(result?, ConversionCheck::Accept));
+                    } else {
+                        let error = result
+                            .err()
+                            .expect("losing container must still be clipped");
+                        let message = error.to_string();
+                        assert!(message.contains("INT64"), "{message}");
+                        assert!(message.contains("A"), "{message}");
+                        let required = Arc::new(Schema::new(vec![Field::new("s", target, true)]));
+                        let physical = Arc::new(Schema::new(vec![Field::new("s", physical, true)]));
+                        assert!(
+                            super::check_file_conversions(required, physical, options.clone())
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Positive: `INT32 -> bigint` inside a struct still converts when type promotion is
     /// allowed (Spark 4.x behaviour).
     #[tokio::test]
@@ -3720,7 +3893,9 @@ pub(crate) mod test {
         assert!(!error.contains("case-insensitive"), "{error}");
         // A case-sensitive read compares exact names, so `Dup` resolves to itself alone.
         assert_eq!(
-            super::match_struct_fields(&fields, &fields[2..], &options).unwrap(),
+            super::match_struct_fields(&fields, &fields[2..], &options)
+                .unwrap()
+                .into_owned(),
             vec![Some(2)]
         );
     }

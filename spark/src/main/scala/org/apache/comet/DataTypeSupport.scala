@@ -132,6 +132,21 @@ object DataTypeSupport {
     ids.distinct.length != ids.length
   }
 
+  /**
+   * True when a field named in `requiredFieldNames` shares its id with another field in `fields`.
+   * Names are matched exactly, as in the native scan's projection into its serialized schema.
+   * Like the sibling-only check above, this is only meaningful when field-id matching is enabled.
+   */
+  def hasDuplicateFieldIds(
+      fields: Array[StructField],
+      requiredFieldNames: Set[String]): Boolean = {
+    val fieldsById = fields.flatMap(field => fieldId(field).map(_ -> field.name)).groupBy(_._1)
+    fieldsById.values.exists(matches =>
+      matches.length > 1 && matches.exists { case (_, name) =>
+        requiredFieldNames.contains(name)
+      })
+  }
+
   private def fieldId(field: StructField): Option[Int] = {
     if (!ParquetUtils.hasFieldId(field)) None
     else {

@@ -1508,6 +1508,149 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  test("Parquet field claims - pruned losing container does not add a schema error") {
+    withFieldClaimFile(nested = true) { (path, _) =>
+      val fields = StructType(
+        Seq(
+          withFieldId("x", 1),
+          StructField("a", new StructType().add("v", LongType), nullable = true)))
+      val schema = new StructType().add("s", fields)
+      withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> "true") {
+        def query: DataFrame = spark.read.schema(schema).parquet(path).select("s.x")
+        val expected = fieldClaimReference(query)
+        assert(expected == Seq(Row(1L), Row(2L), Row(3L)))
+        checkNativeFieldClaimAnswer(query, expected)
+      }
+    }
+  }
+
+  for {
+    shape <- Seq("struct", "array", "map")
+    reverse <- Seq(false, true)
+    empty <- Seq(false, true)
+  } {
+    test(
+      s"Parquet field claims - losing container still fails schema validation - shape=$shape reverse=$reverse empty=$empty") {
+      def wrapType(fields: StructType): DataType = shape match {
+        case "struct" => fields
+        case "array" => ArrayType(fields, containsNull = true)
+        case "map" => MapType(StringType, fields, valueContainsNull = true)
+      }
+      val writeType = wrapType(StructType(Seq(withFieldId("A", 1))))
+      val fields = Seq(
+        withFieldId("x", 1),
+        StructField("a", new StructType().add("v", LongType), nullable = true))
+      val readType = wrapType(StructType(if (reverse) fields.reverse else fields))
+      val value: Any = shape match {
+        case "struct" => Row(7L)
+        case "array" => Seq(Row(7L))
+        case "map" => Map("k" -> Row(7L))
+      }
+      withSQLConf(
+        SQLConf.CASE_SENSITIVE.key -> "false",
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        withTempPath { path =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val rows = if (empty) Seq.empty[Row] else Seq(Row(value))
+            spark
+              .createDataFrame(
+                spark.sparkContext.parallelize(rows, 1),
+                new StructType().add("s", writeType))
+              .write
+              .parquet(path.getCanonicalPath)
+          }
+          def query: DataFrame =
+            spark.read.schema(new StructType().add("s", readType)).parquet(path.getCanonicalPath)
+
+          for (vectorized <- Seq(false, true)) {
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
+              val error = intercept[Exception](query.collect())
+              assert(causeMessages(error).contains("is not a group"), causeMessages(error))
+            }
+          }
+          val df = query
+          assert(
+            collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+              scan
+            }.nonEmpty,
+            s"expected native schema validation:\n${df.queryExecution.executedPlan}")
+          val error = intercept[Exception](df.collect())
+          val messages = causeMessages(error)
+          assert(messages.contains("INT64") && messages.contains("A"), messages)
+        }
+      }
+    }
+  }
+
+  for {
+    reverse <- Seq(false, true)
+    readIds <- Seq(false, true)
+    selected <- Seq("x", "y", "z")
+  } {
+    test(
+      s"Parquet field claims - repeated root ids single-column projection - reverse=$reverse readIds=$readIds selected=$selected") {
+      val fields = Seq(withFieldId("x", 1), withFieldId("y", 1), withFieldId("z", 2))
+      val readSchema = StructType(if (reverse) fields.reverse else fields)
+      val writeSchema = StructType(Seq(withFieldId("A", 1), withFieldId("z", 2)))
+      val expected = Seq(Row(if (selected == "z") 9L else if (readIds) 7L else null))
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> readIds.toString) {
+        withTempPath { path =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .createDataFrame(spark.sparkContext.parallelize(Seq(Row(7L, 9L)), 1), writeSchema)
+              .write
+              .parquet(path.getCanonicalPath)
+          }
+          def query: DataFrame =
+            spark.read.schema(readSchema).parquet(path.getCanonicalPath).select(selected)
+
+          // Either Spark reader can read one alias alone. Keep both aliases in dataSchema to
+          // exercise the difference between Spark's projection and native root remapping.
+          for (vectorized <- Seq(false, true)) {
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
+              val df = query
+              val scans = collect(df.queryExecution.executedPlan) {
+                case scan: FileSourceScanExec =>
+                  scan
+              }
+              assert(scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized))
+              scans.foreach { scan =>
+                assert(scan.requiredSchema.fieldNames.toSeq == Seq(selected))
+                assert(scan.relation.dataSchema.fieldNames.toSeq == readSchema.fieldNames.toSeq)
+              }
+              checkAnswer(df, expected)
+            }
+          }
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "true",
+            SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+            val df = query
+            checkAnswer(df, expected)
+            val plan = df.queryExecution.executedPlan
+            val native = collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty
+            if (readIds && selected != "z") {
+              assert(!native, s"expected a fallback for a projected repeated id:\n$plan")
+              val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+              assert(
+                reasons.exists(_.contains("duplicate Parquet field ids")),
+                s"$reasons\n$plan")
+            } else {
+              // Unread duplicate IDs must not disable an unrelated root or name-based reads.
+              assert(native, s"unexpected fallback for an unrelated root or disabled IDs:\n$plan")
+            }
+          }
+        }
+      }
+    }
+  }
+
   for {
     nested <- Seq(false, true)
     offheap <- Seq(false, true)
@@ -1559,12 +1702,13 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
                 val scans = collect(plan) { case scan: FileSourceScanExec => scan }
                 assert(scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized))
               }
-              val rows = df.collect().toSeq
-              info(
-                s"Spark ${spark.version}, nested=$nested, offheap=$offheap, $reader: ${rows.mkString(", ")}")
-              // Observe Spark's vectorized result without pinning its known bug as expected
-              // behavior. Comet and parquet-mr must return NULL for the losing name claimant.
+              // Only inspect the plan for Spark's vectorized reader: the losing field can
+              // contain stale memory with off-heap vectors. Comet and parquet-mr must return
+              // NULL for the losing name claimant.
               if (comet || !vectorized) {
+                val rows = df.collect().toSeq
+                info(
+                  s"Spark ${spark.version}, nested=$nested, offheap=$offheap, $reader: ${rows.mkString(", ")}")
                 assert(rows.sortBy(_.toString) == expected.sortBy(_.toString))
               }
             }

@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::field_resolver::FieldResolver;
+use crate::parquet::field_resolver::{FieldMatches, FieldResolver};
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
     make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
@@ -430,13 +430,14 @@ pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
-/// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
-/// from, or `None` when the file holds no such field, with Spark's `clipParquetGroupFields` rules
+/// Resolve each requested (`to`) struct field independently and record value ownership,
+/// with Spark's `clipParquetGroupFields` rules
 /// as [`FieldResolver::resolve_all`] applies them: an id-bearing requested field matches only by id
 /// when `use_field_id` is set, and every other field matches by name, folded with the same
 /// `toLowerCase(Locale.ROOT)` fold the top-level schema adapter uses when `case_sensitive` is
 /// false. A requested field that selects more than one file field is rejected. Each file field
-/// belongs to its strongest claimant only; a losing requested field reads NULL.
+/// belongs to its strongest claimant only. Keep losing selections for schema validation;
+/// runtime conversion masks them with [`FieldMatches::into_owned`] so they read NULL.
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -444,7 +445,7 @@ pub(crate) fn match_struct_fields(
     from_fields: &[FieldRef],
     to_fields: &[FieldRef],
     parquet_options: &SparkParquetOptions,
-) -> DataFusionResult<Vec<Option<usize>>> {
+) -> DataFusionResult<FieldMatches> {
     // Fold the file (`from`) and requested (`to`) field names once via the JVM's
     // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
     // nested case-insensitive matching is byte-for-byte consistent with the top level.
@@ -476,7 +477,8 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<ArrayRef> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            let from_indices = match_struct_fields(from_fields, to_fields, parquet_options)?;
+            let from_indices =
+                match_struct_fields(from_fields, to_fields, parquet_options)?.into_owned();
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());
