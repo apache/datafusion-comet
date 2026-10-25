@@ -520,7 +520,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
             s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', " +
             s"'write.parquet.bloom-filter-ndv.column.id'='$bindingNdv', " +
             s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
-      if (icebergSupportsBloomFpp && icebergSupportsBloomNdv) {
+      if (icebergVersionAtLeast(1, 6) && !icebergVersionAtLeast(1, 8)) {
+        assertUnsupportedContainsAllowingWriteFailure("ignored_minimum_cap", "independently")
+      } else if (icebergSupportsBloomFpp && icebergSupportsBloomNdv) {
         assertUnsupportedContainsAllowingWriteFailure(
           "ignored_minimum_cap",
           "write.parquet.bloom-filter-max-bytes")
