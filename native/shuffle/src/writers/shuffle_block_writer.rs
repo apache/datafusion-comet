@@ -19,7 +19,6 @@ use crate::codec_context::ShuffleCodecContext;
 use crate::offsets_as_lengths::{
     buffer_ranges, buffer_roles, has_offsets, offsets_to_lengths, BufferRole, LENGTHS_TAG_FLAG,
 };
-use crate::shuffle_writer::contains_view_type;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::{
@@ -97,6 +96,41 @@ fn matches_ipc_layout(
 
 /// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
 ///
+/// True when `data_type` is, or contains, one of Arrow's view layouts: `Utf8View`, `BinaryView`,
+/// `ListView` or `LargeListView`.
+///
+/// Arrow's IPC writer truncates a sliced array's buffers per type — numeric and temporal values
+/// through `get_or_truncate_buffer`, byte arrays through `reencode_offsets`, list children through
+/// `get_list_array_buffers`, boolean bitmaps through `bit_slice`, and struct children because
+/// `ArrayData::slice` pushes the slice down into them. The view layouts are the exception: it
+/// slices the views (or offsets and sizes) buffers but serializes every shared data buffer or
+/// child in full, since proving that no surviving view references it is not cheap.
+///
+/// Two callers depend on this. The round-robin planner avoids positional placement, the only one
+/// that can hand the writer a sliced array, because a short run would drag a whole batch's data
+/// buffers into the shuffle output. The multi-partition writers
+/// ([`ShuffleBlockWriter::has_view_types`]) keep coalescing, which compacts sparse views, because
+/// a batch gathered by `interleave` shares its source batches' data buffers.
+pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8View
+        | DataType::BinaryView
+        | DataType::ListView(_)
+        | DataType::LargeListView(_) => true,
+        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
+            contains_view_type(field.data_type())
+        }
+        DataType::Map(field, _) => contains_view_type(field.data_type()),
+        DataType::Struct(fields) => fields.iter().any(|f| contains_view_type(f.data_type())),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, f)| contains_view_type(f.data_type())),
+        DataType::Dictionary(_, value) => contains_view_type(value),
+        DataType::RunEndEncoded(_, values) => contains_view_type(values.data_type()),
+        _ => false,
+    }
+}
+
 /// Each block is a self-contained Arrow IPC stream (schema message, dictionary messages, record
 /// batch message, end-of-stream marker). For the common case of a schema with no dictionary types,
 /// the schema flatbuffer for local writers is encoded once in [`Self::try_new`] and written verbatim
@@ -482,6 +516,17 @@ mod tests {
             true
         )))));
         assert!(has_view(dict(DataType::Utf8View)));
+        let item = |data_type| Arc::new(Field::new("item", data_type, true));
+        assert!(has_view(DataType::ListView(item(DataType::Int32))));
+        assert!(has_view(DataType::LargeListView(item(DataType::Int64))));
+        assert!(has_view(DataType::Struct(
+            vec![Field::new(
+                "s",
+                DataType::ListView(item(DataType::Int32)),
+                true
+            )]
+            .into()
+        )));
         assert!(!has_view(dict(DataType::Utf8)));
         assert!(!has_view(DataType::Int64));
     }

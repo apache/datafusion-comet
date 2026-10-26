@@ -27,4 +27,5 @@ pub(crate) use checksum::Checksum;
 pub(crate) use local::local_partition_writer::LocalPartitionWriter;
 pub(crate) use partition_writer::PartitionWriter;
 pub(crate) use rss::rss_partition_writer::RssPartitionWriter;
+pub(crate) use shuffle_block_writer::contains_view_type;
 pub use shuffle_block_writer::{CompressionCodec, ShuffleBlockWriter};
