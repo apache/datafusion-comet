@@ -146,8 +146,8 @@ class ArrowCachedBatchStatsSuite extends AnyFunSuite {
 
     test(s"decimal($precision, $scale) bounds of random values and nulls") {
       (0 until 5).foreach { seed =>
-        check(precision, scale, randomValues(precision, 500, seed), nullEvery = 0)
-        check(precision, scale, randomValues(precision, 500, seed), nullEvery = 7)
+        check(precision, scale, randomValues(precision, 500, seed.toLong), nullEvery = 0)
+        check(precision, scale, randomValues(precision, 500, seed.toLong), nullEvery = 7)
       }
     }
   }
