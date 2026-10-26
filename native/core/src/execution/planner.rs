@@ -4476,7 +4476,6 @@ mod tests {
     #[tokio::test]
     async fn keyless_aggregate_without_functions_emits_one_empty_row() {
         use arrow::array::RecordBatchOptions;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
 
         let scan = Operator {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
@@ -4522,22 +4521,7 @@ mod tests {
             assert_eq!("ScanExec", planned.children[0].native_plan.name());
 
             for batches in [vec![rows(3), rows(2)], vec![]] {
-                let input: Arc<dyn ExecutionPlan> =
-                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
-                        .unwrap();
-                let native_plan = Arc::clone(&planned.native_plan)
-                    .transform_up(|node| {
-                        Ok(if node.name() == "ScanExec" {
-                            Transformed::yes(Arc::clone(&input))
-                        } else {
-                            Transformed::no(node)
-                        })
-                    })
-                    .unwrap()
-                    .data;
-                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
-                    .await
-                    .unwrap();
+                let results = collect_over_batches(&planned, batches, Arc::clone(&task_ctx)).await;
                 assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
             }
         }
@@ -4546,7 +4530,6 @@ mod tests {
     #[tokio::test]
     async fn sort_aggregate_output_is_ordered_by_grouping_keys() {
         use arrow::datatypes::Int32Type;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
 
         let array_type = spark_expression::DataType {
@@ -4626,21 +4609,7 @@ mod tests {
         ])) as ArrayRef;
         let batch =
             RecordBatch::try_new(planned.children[0].schema(), vec![Arc::clone(&keys)]).unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
         assert_eq!(keys.as_ref(), output.column(0).as_ref());
     }
@@ -4700,27 +4669,17 @@ mod tests {
     async fn partial_merge_runs_as_single_and_emits_merged_states() {
         use arrow::array::{BooleanArray, Int64Array};
         use datafusion::assert_batches_sorted_eq;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
         // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
         // states. DataFusion's first has no GroupsAccumulator without an ordering.
-        let int64 = spark_expression::DataType {
-            type_id: 4,
-            type_info: None,
-        };
+        let int64 = create_int64_datatype();
         let boolean = spark_expression::DataType {
             type_id: 0,
             type_info: None,
         };
-        let v = Expr {
-            expr_struct: Some(Unbound(spark_expression::UnboundReference {
-                name: "v".to_string(),
-                datatype: Some(int64.clone()),
-            })),
-            ..Default::default()
-        };
+        let v = create_unbound_int64("v");
         let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
         let aggregate = |mode: i32| Operator {
             plan_id: 1,
@@ -4746,19 +4705,8 @@ mod tests {
                     ..Default::default()
                 }],
                 agg_exprs: vec![
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
-                            child: Some(v.clone()),
-                            datatype: Some(int64.clone()),
-                        })),
-                        ..Default::default()
-                    },
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
-                            children: vec![v.clone()],
-                        })),
-                        ..Default::default()
-                    },
+                    create_max_agg(&v),
+                    create_count_agg(&v),
                     spark_expression::AggExpr {
                         expr_struct: Some(AggExprStruct::First(spark_expression::First {
                             child: Some(v.clone()),
@@ -4823,21 +4771,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         assert_batches_sorted_eq!(
             [
                 "+-------+------------+--------------+--------------------+---------------------------+",
@@ -4856,7 +4790,6 @@ mod tests {
     async fn partial_merge_over_sorted_input_runs_as_final() {
         use arrow::array::Int64Array;
         use datafusion::assert_batches_sorted_eq;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
         use datafusion::physical_plan::InputOrderMode;
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
@@ -4864,17 +4797,8 @@ mod tests {
         // A Spark PartialMerge grouped by (g, k) over a native sort on g, or on g and k, which
         // DataFusion 55's Single would run with a GroupedHashAggregateStream that can fail to
         // spill (#6880).
-        let int64 = spark_expression::DataType {
-            type_id: 4,
-            type_info: None,
-        };
-        let v = Expr {
-            expr_struct: Some(Unbound(spark_expression::UnboundReference {
-                name: "v".to_string(),
-                datatype: Some(int64.clone()),
-            })),
-            ..Default::default()
-        };
+        let int64 = create_int64_datatype();
+        let v = create_unbound_int64("v");
         let key = |index: i32| Expr {
             expr_struct: Some(Bound(spark_expression::BoundReference {
                 index,
@@ -4926,21 +4850,7 @@ mod tests {
             aggregate(
                 sort_keys,
                 vec![int64.clone(), int64.clone()],
-                vec![
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
-                            child: Some(v.clone()),
-                            datatype: Some(int64.clone()),
-                        })),
-                        ..Default::default()
-                    },
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
-                            children: vec![v.clone()],
-                        })),
-                        ..Default::default()
-                    },
-                ],
+                vec![create_max_agg(&v), create_count_agg(&v)],
             )
         };
         for (sort_keys, input_order_mode) in [
@@ -4974,21 +4884,7 @@ mod tests {
                 ],
             )
             .unwrap();
-            let input: Arc<dyn ExecutionPlan> =
-                MemorySourceConfig::try_new_exec(&[vec![batch]], input_schema, None).unwrap();
-            let native_plan = Arc::clone(&planned.native_plan)
-                .transform_up(|node| {
-                    Ok(if node.name() == "ScanExec" {
-                        Transformed::yes(Arc::clone(&input))
-                    } else {
-                        Transformed::no(node)
-                    })
-                })
-                .unwrap()
-                .data;
-            let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
-                .await
-                .unwrap();
+            let results = collect_over_batches(&planned, vec![batch], Arc::clone(&task_ctx)).await;
             assert_batches_sorted_eq!(
                 [
                     "+-------+-------+------------+--------------+",
@@ -5184,6 +5080,74 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    fn create_int64_datatype() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        }
+    }
+
+    /// An unbound reference to the Int64 column `name`, as a Spark aggregate function's child.
+    fn create_unbound_int64(name: &str) -> Expr {
+        Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: name.to_string(),
+                datatype: Some(create_int64_datatype()),
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn create_max_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Max(
+                spark_expression::Max {
+                    child: Some(child.clone()),
+                    datatype: Some(create_int64_datatype()),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn create_count_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Count(
+                spark_expression::Count {
+                    children: vec![child.clone()],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Runs `planned` with `batches` standing in for its single `ScanExec` and returns the
+    /// output batches.
+    async fn collect_over_batches(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        batches: Vec<RecordBatch>,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+    ) -> Vec<RecordBatch> {
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], planned.children[0].schema(), None)
+                .unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]

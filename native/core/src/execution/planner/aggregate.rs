@@ -354,17 +354,19 @@ fn input_is_keys_then_states(
     if !keys_lead {
         return Ok(false);
     }
-    let state_fields = aggr_expr
-        .iter()
-        .map(|expr| expr.state_fields())
-        .collect::<datafusion::common::Result<Vec<_>>>()?
-        .concat();
-    let input_types = input_schema
+    let mut input_types = input_schema
         .fields()
         .iter()
         .skip(num_keys)
         .map(|f| f.data_type());
-    Ok(input_types.eq(state_fields.iter().map(|f| f.data_type())))
+    for expr in aggr_expr {
+        for field in expr.state_fields()? {
+            if input_types.next() != Some(field.data_type()) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(input_types.next().is_none())
 }
 
 impl PhysicalPlanner {
