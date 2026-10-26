@@ -23,7 +23,7 @@ import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float =
 
 import scala.collection.JavaConverters._
 
-import org.apache.arrow.vector.DecimalVector
+import org.apache.arrow.vector.{DecimalVector, VarCharVector}
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -146,7 +146,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         case d: DecimalType => gatherDecimalStats(col, numRows, d)
         // Every StringType, collated ones included, and compared with the ordering resolved for
         // that column rather than with byte order. See boundsOrderings.
-        case _: StringType => gatherStringStats(col, numRows, orderings(c))
+        case dt: StringType => gatherStringStats(col, numRows, dt == StringType, orderings(c))
         case other =>
           assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
           (null, null, knownNulls)
@@ -379,6 +379,96 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   }
 
   private def gatherStringStats(
+      col: ColumnVector,
+      numRows: Int,
+      defaultCollation: Boolean,
+      ordering: Ordering[Any]): (UTF8String, UTF8String, Int) = col match {
+    // The default StringType is equal only to itself, so no collated type takes this path.
+    case v: CometPlainVector
+        if defaultCollation && v.getValueVector.isInstanceOf[VarCharVector] =>
+      gatherStringBytesStats(v, numRows)
+    case _ => gatherStringStatsByValue(col, numRows, ordering)
+  }
+
+  // Compares the bytes of the strings in Arrow's data buffer instead of building a UTF8String for
+  // every row. The default collation orders strings by their bytes, unsigned and lexicographic,
+  // which is the order UTF8String.compareTo implements and the one this follows. A row is compared
+  // with the lower bound first, and with the upper one only when it is not below it. Only the two
+  // bounds become UTF8Strings, copied because the vector's buffers are released once the batch is
+  // written.
+  private def gatherStringBytesStats(
+      col: CometPlainVector,
+      numRows: Int): (UTF8String, UTF8String, Int) = {
+    val vector = col.getValueVector.asInstanceOf[VarCharVector]
+    val data = vector.getDataBuffer.memoryAddress()
+    val offsets = vector.getOffsetBuffer.memoryAddress()
+    var minRow = -1
+    var maxRow = -1
+    var minAddress = 0L
+    var minLength = 0
+    var maxAddress = 0L
+    var maxLength = 0
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val start = Platform.getInt(null, offsets + r * 4L)
+        val length = Platform.getInt(null, offsets + (r + 1L) * 4L) - start
+        val address = data + start
+        if (minRow < 0) {
+          minRow = r
+          maxRow = r
+          minAddress = address
+          minLength = length
+          maxAddress = address
+          maxLength = length
+        } else if (compareBytes(address, length, minAddress, minLength) < 0) {
+          minRow = r
+          minAddress = address
+          minLength = length
+        } else if (compareBytes(address, length, maxAddress, maxLength) > 0) {
+          maxRow = r
+          maxAddress = address
+          maxLength = length
+        }
+      }
+      r += 1
+    }
+    if (minRow < 0) {
+      (null, null, nullCount)
+    } else {
+      (col.getUTF8String(minRow).copy(), col.getUTF8String(maxRow).copy(), nullCount)
+    }
+  }
+
+  // The comparison of UTF8String.compareTo: eight bytes at a time as big-endian unsigned longs,
+  // then byte by byte, and the shorter of two strings with the same prefix first.
+  private def compareBytes(left: Long, leftLength: Int, right: Long, rightLength: Int): Int = {
+    val length = math.min(leftLength, rightLength)
+    val words = length & ~7
+    var i = 0
+    while (i < words) {
+      val a = Platform.getLong(null, left + i)
+      val b = Platform.getLong(null, right + i)
+      if (a != b) {
+        return JLong.compareUnsigned(JLong.reverseBytes(a), JLong.reverseBytes(b))
+      }
+      i += 8
+    }
+    while (i < length) {
+      val a = Platform.getByte(null, left + i) & 0xff
+      val b = Platform.getByte(null, right + i) & 0xff
+      if (a != b) return a - b
+      i += 1
+    }
+    leftLength - rightLength
+  }
+
+  // The fallback for a collated string, a large-offset vector, or a column that is not a plain
+  // Arrow vector.
+  private def gatherStringStatsByValue(
       col: ColumnVector,
       numRows: Int,
       ordering: Ordering[Any]): (UTF8String, UTF8String, Int) = {
