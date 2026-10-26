@@ -2868,8 +2868,9 @@ pub(crate) mod test {
 
         // INT96 coercion as `parquet_exec::get_options` hardcodes it for every native scan.
         let mut table_options = datafusion::config::TableParquetOptions::new();
-        table_options.global.coerce_int96 = Some("us".to_string());
-        table_options.global.coerce_int96_tz = Some("UTC".to_string());
+        table_options.global.coerce_int96 =
+            Some(datafusion::common::parquet_config::DFTimeUnit::Microsecond);
+        table_options.global.coerce_int96_tz = Some("UTC".parse().unwrap());
         let mut parquet_source = ParquetSource::new(required_schema)
             .with_table_parquet_options(table_options)
             .with_pushdown_filters(row_filters)

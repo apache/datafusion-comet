@@ -150,7 +150,7 @@ fn nested_map(selected_len: usize, null_percent: usize, shape: &str) -> MapArray
     let offsets = OffsetBuffer::<i32>::from_lengths((0..BATCH_SIZE).flat_map(|_| {
         std::iter::repeat_n(selected_len, width).chain(std::iter::repeat_n(128, width))
     }));
-    let count = *offsets.last().unwrap();
+    let count = offsets.last();
     let lists: ArrayRef = Arc::new(ListArray::new(
         Arc::new(Field::new("item", DataType::Int32, true)),
         offsets,
