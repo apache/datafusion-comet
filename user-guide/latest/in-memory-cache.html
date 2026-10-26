@@ -975,7 +975,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Whether to store and scan Spark’s in-memory cache in Comet’s format. Read at startup.</p></td>
+<td><p>Whether to store and scan Spark’s in-memory cache in Comet’s format. Read at startup. Also decides how an AQE cache is built on Spark 4.0+.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.compression.codec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">zstd</span></code></p></td>
