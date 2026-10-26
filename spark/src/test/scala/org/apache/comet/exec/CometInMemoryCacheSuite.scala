@@ -2697,6 +2697,31 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache converts a batch whose vectors hold more than its rows") {
+    // The statistics are gathered from the batch that is written, and a vector's null count covers
+    // all of its values. Here the batch reports 2 rows over vectors of 4 whose last two values are
+    // null, so a count taken from the vectors would be 2, which equals the batch's row count: the
+    // batch would be recorded all null and pruned by IsNotNull without being decoded. Converting
+    // copies only the batch's rows.
+    val cacheSchema = StructType(Seq(StructField("b", BinaryType)))
+    val binaries = new VarBinaryVector("b", CometArrowAllocator)
+    try {
+      binaries.allocateNew(4)
+      Seq(0, 1).foreach(r => binaries.set(r, Array[Byte](r.toByte)))
+      Seq(2, 3).foreach(r => binaries.setNull(r))
+      binaries.setValueCount(4)
+      val longer = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 2)
+      assert(Utils.isArrowBacked(longer))
+      assert(
+        !CometCachedBatchHelper.writesDirectly(longer, cacheSchema),
+        "a vector longer than its batch must be converted, not written as it stands")
+      val exact = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 4)
+      assert(CometCachedBatchHelper.writesDirectly(exact, cacheSchema))
+    } finally {
+      binaries.close()
+    }
+  }
+
   // Ordering by the JSON form rather than by the columns themselves, since a projection that
   // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
   private def orderedByJson(cols: Seq[String], from: String): String =

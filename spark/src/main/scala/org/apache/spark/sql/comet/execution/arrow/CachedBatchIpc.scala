@@ -132,6 +132,11 @@ private[comet] object CachedBatchIpc {
    * answers for the top-level vector only, so a struct of large strings passes it while its child
    * is stored with 64-bit offsets and read with 32-bit ones.
    *
+   * A vector must also hold exactly the batch's rows. The cache records the null counts of the
+   * vectors it writes, so a vector longer than the batch it sits in would count nulls past the
+   * batch's last row, and could be recorded all null and pruned by `IS NOT NULL` without being
+   * decoded. Converting copies exactly the batch's rows.
+   *
    * Names, nullability and a timestamp's timezone are not compared. None of them changes how the
    * reader interprets the body, and the writer's legitimately differ -- a Comet scan labels
    * timestamps with the session's zone where the reader rebuilds them as UTC, which is a label
@@ -141,7 +146,8 @@ private[comet] object CachedBatchIpc {
     batch.numCols() == readerFields.length &&
       (0 until batch.numCols()).forall { i =>
         batch.column(i) match {
-          case v: CometVector => sameLayout(writtenField(v), readerFields(i))
+          case v: CometVector =>
+            v.numValues() == batch.numRows() && sameLayout(writtenField(v), readerFields(i))
           case _ => false
         }
       }
