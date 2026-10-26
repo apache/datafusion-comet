@@ -32,12 +32,22 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 /// writers of a task, and an error mid-partition cannot strand the buffer inside a
 /// dropped writer and silently end recycling.
 ///
-/// Small batches are coalesced using Arrow's [`BatchCoalescer`] before serialization, reducing
-/// per-block IPC schema overhead. Output batches hold at least `batch_size` rows, apart from the
-/// remainder emitted on flush. The coalescer is lazily initialized on the first write and
-/// configured (via `biggest_coalesce_batch_size`) to pass batches that are already at least
-/// `batch_size` rows straight through, verbatim and without copying them, so an oversized input
-/// batch is written as a single oversized block.
+/// A writer either coalesces or passes batches through, chosen at construction:
+///
+/// * [`Self::new`]: small batches are coalesced using Arrow's [`BatchCoalescer`] before
+///   serialization, reducing per-block IPC schema overhead. Output batches hold at least
+///   `batch_size` rows, apart from the remainder emitted on flush. The coalescer is lazily
+///   initialized on the first write and configured (via `biggest_coalesce_batch_size`) to pass
+///   batches that are already at least `batch_size` rows straight through, verbatim and without
+///   copying them, so an oversized input batch is written as a single oversized block. This is
+///   the mode for the long-lived single-partition writer, whose inputs can genuinely be small.
+/// * [`Self::new_for_partition`]: every batch is serialized as its own block, verbatim. This is
+///   the mode for the per-partition writers of a multi-partition shuffle, whose input is a
+///   `PartitionedBatchIterator` that already emits maximal `batch_size` chunks plus one tail:
+///   there is never a second batch for the tail to coalesce with, so coalescing there would
+///   only copy the tail's rows into builders and re-emit the same block. Schemas with view types
+///   are the exception and keep coalescing, because the IPC writer would otherwise serialize
+///   every data buffer the gathered views share.
 ///
 /// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
 /// are created per output partition, and codec contexts must stay task-scoped.
@@ -46,32 +56,68 @@ pub(crate) struct BufBatchWriter<S: Borrow<ShuffleBlockWriter>, W: Write> {
     writer: W,
     buffer_max_size: usize,
     /// Coalesces small batches into target_batch_size before serialization.
-    /// Lazily initialized on first write to capture the schema.
+    /// Lazily initialized on first write to capture the schema. Never set in passthrough mode.
     coalescer: Option<BatchCoalescer>,
-    /// Target batch size for coalescing
-    batch_size: usize,
+    /// Target batch size for coalescing; `None` selects passthrough mode.
+    coalesce_batch_size: Option<usize>,
     /// Address of the scratch `Vec` seen on first use; every later call must pass the same
     /// one, or unflushed bytes in the other buffer would be silently abandoned.
     #[cfg(debug_assertions)]
     scratch_addr: Option<usize>,
-    /// Running total of bytes serialized through this writer, used to report spilled bytes when
-    /// the underlying writer does not implement [`Seek`] (e.g. a `Box<dyn SpillWriter>`).
+    /// Running total of bytes serialized through this writer, used to report spilled bytes and
+    /// to track output offsets without a `Seek` on the underlying writer.
     total_bytes_written: u64,
 }
 
 impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
+    /// A coalescing writer; see the type-level docs for when to use which mode.
     pub(crate) fn new(
         shuffle_block_writer: S,
         writer: W,
         buffer_max_size: usize,
         batch_size: usize,
     ) -> Self {
+        Self::with_mode(
+            shuffle_block_writer,
+            writer,
+            buffer_max_size,
+            Some(batch_size),
+        )
+    }
+
+    /// A writer for one output partition of a multi-partition shuffle: passthrough, except for
+    /// schemas with view types, which still need the coalescer to compact sparse views (see
+    /// [`ShuffleBlockWriter::has_view_types`]).
+    pub(crate) fn new_for_partition(
+        shuffle_block_writer: S,
+        writer: W,
+        buffer_max_size: usize,
+        batch_size: usize,
+    ) -> Self {
+        if shuffle_block_writer.borrow().has_view_types() {
+            Self::new(shuffle_block_writer, writer, buffer_max_size, batch_size)
+        } else {
+            Self::new_passthrough(shuffle_block_writer, writer, buffer_max_size)
+        }
+    }
+
+    /// A passthrough writer that serializes every batch as its own block, verbatim.
+    fn new_passthrough(shuffle_block_writer: S, writer: W, buffer_max_size: usize) -> Self {
+        Self::with_mode(shuffle_block_writer, writer, buffer_max_size, None)
+    }
+
+    fn with_mode(
+        shuffle_block_writer: S,
+        writer: W,
+        buffer_max_size: usize,
+        coalesce_batch_size: Option<usize>,
+    ) -> Self {
         Self {
             shuffle_block_writer,
             writer,
             buffer_max_size,
             coalescer: None,
-            batch_size,
+            coalesce_batch_size,
             #[cfg(debug_assertions)]
             scratch_addr: None,
             total_bytes_written: 0,
@@ -118,7 +164,15 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         write_time: &Time,
     ) -> datafusion::common::Result<usize> {
         self.check_scratch(scratch);
-        let batch_size = self.batch_size;
+        let Some(batch_size) = self.coalesce_batch_size else {
+            return self.write_batch_to_buffer(
+                batch,
+                scratch,
+                codec_context,
+                encode_time,
+                write_time,
+            );
+        };
         let coalescer = self.coalescer.get_or_insert_with(|| {
             // Enable BatchCoalescer's zero-copy passthrough for batches that are already big
             // enough, so we don't `copy_rows` the whole batch into the in-progress builders just
@@ -178,8 +232,14 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         Ok(bytes_written)
     }
 
-    /// Flushes buffered rows and bytes; `scratch` is left drained for the next writer.
-    pub(crate) fn flush(
+    /// Writes any rows still held by the coalescer and any bytes still in `scratch` to the
+    /// underlying writer, without flushing that writer. `scratch` is left drained for the next
+    /// writer.
+    ///
+    /// This is what a per-partition writer over a shared buffered output wants: the output's
+    /// own buffer keeps accumulating across partitions and is flushed once at the end, instead
+    /// of every partition ending in its own write syscall.
+    pub(crate) fn drain(
         &mut self,
         scratch: &mut Vec<u8>,
         codec_context: &mut ShuffleCodecContext,
@@ -199,12 +259,11 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             self.write_batch_to_buffer(batch, scratch, codec_context, encode_time, write_time)?;
         }
 
-        // Flush the scratch buffer to the underlying writer
+        // Hand the scratch buffer to the underlying writer
         let mut write_timer = write_time.timer();
         if !scratch.is_empty() {
             self.writer.write_all(scratch)?;
         }
-        self.writer.flush()?;
         write_timer.stop();
         scratch.clear();
         // The scratch's high-water mark can reach `buffer_max_size` plus the largest block
@@ -213,9 +272,26 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         Ok(())
     }
 
+    /// [`Self::drain`], then flushes the underlying writer.
+    pub(crate) fn flush(
+        &mut self,
+        scratch: &mut Vec<u8>,
+        codec_context: &mut ShuffleCodecContext,
+        encode_time: &Time,
+        write_time: &Time,
+    ) -> datafusion::common::Result<()> {
+        self.drain(scratch, codec_context, encode_time, write_time)?;
+        let mut write_timer = write_time.timer();
+        self.writer.flush()?;
+        write_timer.stop();
+        Ok(())
+    }
+
     /// Total number of bytes serialized through this writer since it was created. Unlike
     /// [`Self::writer_stream_position`], this does not require the underlying writer to implement
-    /// [`Seek`], so it is used to report spilled bytes when writing to a `Box<dyn SpillWriter>`.
+    /// [`Seek`], so it is used to report spilled bytes when writing to a `Box<dyn SpillWriter>`
+    /// and to track output offsets without flushing a buffered output. After [`Self::drain`] or
+    /// [`Self::flush`] every counted byte has been handed to the underlying writer.
     pub(crate) fn bytes_written(&self) -> u64 {
         self.total_bytes_written
     }
@@ -288,6 +364,119 @@ mod tests {
             let decoded = read_ipc_compressed(&output[16..]).unwrap();
             assert_eq!(decoded.num_rows(), 100);
         }
+    }
+
+    /// A passthrough writer must emit every input batch as its own block, in order, with no
+    /// coalescing of a small tail into a following batch and no rows held back until `drain`.
+    #[test]
+    fn passthrough_writes_each_batch_as_its_own_block() {
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let make_batch = |start: i64, rows: i64| {
+            let values: Vec<i64> = (start..start + rows).collect();
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![Arc::new(Int64Array::from(values))],
+            )
+            .unwrap()
+        };
+        // The shape a PartitionedBatchIterator produces: maximal chunks then one tail, but
+        // also a tail followed by more batches, which a coalescer would merge.
+        let inputs = [
+            make_batch(0, 100),
+            make_batch(100, 30),
+            make_batch(130, 100),
+            make_batch(230, 7),
+        ];
+        let block_writer =
+            ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
+        let mut output = Vec::new();
+        let time = Time::default();
+        let mut scratch = Vec::new();
+        let mut codec_context = ShuffleCodecContext::default();
+        let mut writer = BufBatchWriter::new_passthrough(block_writer, &mut output, 1 << 20);
+        for batch in &inputs {
+            writer
+                .write(batch, &mut scratch, &mut codec_context, &time, &time)
+                .unwrap();
+        }
+        writer
+            .drain(&mut scratch, &mut codec_context, &time, &time)
+            .unwrap();
+        assert!(scratch.is_empty(), "drain must leave the scratch empty");
+        assert_eq!(writer.bytes_written() as usize, output.len());
+
+        let mut block_rows = Vec::new();
+        let mut next = 0i64;
+        let mut pos = 0;
+        while pos < output.len() {
+            let len = u64::from_le_bytes(output[pos..pos + 8].try_into().unwrap()) as usize;
+            let block = read_ipc_compressed(&output[pos + 16..pos + 8 + len]).unwrap();
+            let values = block
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            assert_eq!(values.value(0), next, "rows must stay in input order");
+            next += block.num_rows() as i64;
+            block_rows.push(block.num_rows());
+            pos += 8 + len;
+        }
+        assert_eq!(block_rows, vec![100, 30, 100, 7]);
+    }
+
+    /// A schema with a view type must keep coalescing under `new_for_partition`, since the IPC
+    /// writer serializes every data buffer a gathered view array references; a schema without
+    /// one passes through.
+    #[test]
+    fn for_partition_coalesces_only_view_schemas() {
+        use arrow::array::StringViewArray;
+
+        let block_count = |schema: Arc<Schema>, columns: Vec<arrow::array::ArrayRef>| {
+            let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+            let block_writer =
+                ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
+            let mut output = Vec::new();
+            let time = Time::default();
+            let mut scratch = Vec::new();
+            let mut codec_context = ShuffleCodecContext::default();
+            let mut writer =
+                BufBatchWriter::new_for_partition(block_writer, &mut output, 1 << 20, 8192);
+            for _ in 0..3 {
+                writer
+                    .write(&batch, &mut scratch, &mut codec_context, &time, &time)
+                    .unwrap();
+            }
+            writer
+                .drain(&mut scratch, &mut codec_context, &time, &time)
+                .unwrap();
+            let mut blocks = Vec::new();
+            let mut pos = 0;
+            while pos < output.len() {
+                let len = u64::from_le_bytes(output[pos..pos + 8].try_into().unwrap()) as usize;
+                blocks.push(read_ipc_compressed(&output[pos + 16..pos + 8 + len]).unwrap());
+                pos += 8 + len;
+            }
+            blocks
+        };
+
+        let plain = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
+        let blocks = block_count(plain, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]);
+        assert_eq!(
+            blocks.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
+            [3, 3, 3]
+        );
+
+        let view = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Utf8View,
+            false,
+        )]));
+        let blocks = block_count(
+            view,
+            vec![Arc::new(StringViewArray::from(vec!["a", "b", "c"]))],
+        );
+        let rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
+        assert_eq!(rows, [9], "view schemas must be coalesced into one block");
     }
 
     /// Handing a non-empty scratch to a fresh writer would silently prepend stale bytes

@@ -113,6 +113,9 @@ pub struct ShuffleBlockWriter {
     /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
     write_options: IpcWriteOptions,
     schema_encoding: SchemaEncoding,
+    /// Whether the schema contains a view type anywhere, nested or not; see
+    /// [`Self::has_view_types`].
+    has_view_types: bool,
 }
 
 impl ShuffleBlockWriter {
@@ -152,6 +155,18 @@ impl ShuffleBlockWriter {
                 })
             }
         }
+    }
+
+    /// True when the schema contains a view type (`Utf8View`, `BinaryView`, `ListView`,
+    /// `LargeListView`), at any depth.
+    ///
+    /// Arrow's IPC writer serializes every data buffer a view array references, whatever the
+    /// views actually point at. A batch gathered by `interleave` from many buffered batches
+    /// shares all of their data buffers, so writing each small chunk of it verbatim would repeat
+    /// those buffers in every block. Such schemas must go through a coalescer, which compacts
+    /// sparse views.
+    pub(crate) fn has_view_types(&self) -> bool {
+        self.has_view_types
     }
 
     pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
@@ -248,11 +263,22 @@ impl ShuffleBlockWriter {
         };
         header_bytes.extend_from_slice(&codec_header);
 
+        let has_view_types = schema.flattened_fields().iter().any(|f| {
+            matches!(
+                f.data_type(),
+                DataType::Utf8View
+                    | DataType::BinaryView
+                    | DataType::ListView(_)
+                    | DataType::LargeListView(_)
+            )
+        });
+
         Ok(Self {
             codec,
             header_bytes: Arc::from(header_bytes),
             write_options,
             schema_encoding,
+            has_view_types,
         })
     }
 

@@ -35,24 +35,6 @@ struct ActiveSpillFile {
     writer: BufWriter<Box<dyn DfSpillWriter>>,
 }
 
-/// Forwards writes but ignores `flush`, so `BufBatchWriter`'s flush at the end of each partition
-/// leaves the bytes buffered.
-struct DeferFlush<'a, W: Write>(&'a mut W);
-
-impl<W: Write> Write for DeferFlush<'_, W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buf)
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        self.0.write_all(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// One spill file shared by every output partition of a task, with the ranges each partition's
 /// blocks occupy.
 pub(crate) struct PartitionedSpill {
@@ -88,6 +70,9 @@ impl PartitionedSpill {
 
     /// Appends partition `pid`'s batches to the spill file. `recycled_buffer` is left drained,
     /// including on error.
+    ///
+    /// `iter` comes from a `PartitionedBatchIterator`, which already emits maximal `batch_size`
+    /// chunks plus one tail, so the batches are written through verbatim rather than coalesced.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         pid: usize,
@@ -104,9 +89,9 @@ impl PartitionedSpill {
         self.ensure_spill_file_created(runtime)?;
 
         let result = (|| {
-            let mut buf_batch_writer = BufBatchWriter::new(
+            let mut buf_batch_writer = BufBatchWriter::new_for_partition(
                 &mut self.shuffle_block_writer,
-                DeferFlush(&mut self.spill_file.as_mut().unwrap().writer),
+                &mut self.spill_file.as_mut().unwrap().writer,
                 self.write_buffer_size,
                 self.batch_size,
             );
@@ -127,7 +112,9 @@ impl PartitionedSpill {
                     &metrics.write_time,
                 )?;
             }
-            buf_batch_writer.flush(
+            // `drain`, not `flush`: the bytes stay in the shared spill buffer until
+            // `PartitionedSpill::flush`.
+            buf_batch_writer.drain(
                 recycled_buffer,
                 codec_context,
                 &metrics.encode_time,
@@ -334,7 +321,7 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
-        // batch_size below the row count so a write serializes into the scratch
+        // batch_size below the row count so a coalescing write serializes into the scratch
         PartitionedSpill::new(block_writer, 1 << 20, 10, num_partitions)
     }
 
