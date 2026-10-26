@@ -17,27 +17,31 @@
 
 -- MinSparkVersion: 4.2
 -- Config: spark.comet.exec.strictFloatingPoint=true
+-- Config: spark.sql.shuffle.partitions=2
 -- ConfigMatrix: parquet.enable.dictionary=false,true
+-- ConfigMatrix: spark.sql.execution.useObjectHashAggregateExec=true,false
+-- ConfigMatrix: spark.sql.adaptive.enabled=true,false
 
 statement
-CREATE TABLE cs_norm_scalar(grp string, f float, d double) USING parquet
+CREATE TABLE cs_norm_scalar(grp string, id int, f float, d double) USING parquet
 
 statement
 INSERT INTO cs_norm_scalar VALUES
-  ('ordinary', CAST(1.5 AS FLOAT), CAST(1.1 AS DOUBLE)),
-  ('ordinary', CAST(2.5 AS FLOAT), CAST(2.2 AS DOUBLE)),
-  ('ordinary', CAST(1.5 AS FLOAT), CAST(1.1 AS DOUBLE)),
-  ('ordinary', CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE)),
-  ('nan', CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE)),
-  ('nan', CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE)),
-  ('nan', CAST(1.0 AS FLOAT), CAST(1.0 AS DOUBLE)),
-  ('infinity', CAST('Infinity' AS FLOAT), CAST('Infinity' AS DOUBLE)),
-  ('infinity', CAST('-Infinity' AS FLOAT), CAST('-Infinity' AS DOUBLE)),
-  ('infinity', CAST('Infinity' AS FLOAT), CAST('Infinity' AS DOUBLE)),
-  ('zero', CAST('-0.0' AS FLOAT), CAST('-0.0' AS DOUBLE)),
-  ('zero', CAST(0.0 AS FLOAT), CAST(0.0 AS DOUBLE)),
-  ('zero', CAST(1.0 AS FLOAT), CAST(1.0 AS DOUBLE)),
-  ('zero', CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE))
+  ('ordinary', 1, CAST(1.5 AS FLOAT), CAST(1.1 AS DOUBLE)),
+  ('ordinary', 2, CAST(2.5 AS FLOAT), CAST(2.2 AS DOUBLE)),
+  ('ordinary', 3, CAST(1.5 AS FLOAT), CAST(1.1 AS DOUBLE)),
+  ('ordinary', 4, CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE)),
+  ('nan', 1, CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE)),
+  ('nan', 2, CAST('NaN' AS FLOAT), CAST('NaN' AS DOUBLE)),
+  ('nan', 3, CAST(1.0 AS FLOAT), CAST(1.0 AS DOUBLE)),
+  ('infinity', 1, CAST('Infinity' AS FLOAT), CAST('Infinity' AS DOUBLE)),
+  ('infinity', 2, CAST('-Infinity' AS FLOAT), CAST('-Infinity' AS DOUBLE)),
+  ('infinity', 3, CAST('Infinity' AS FLOAT), CAST('Infinity' AS DOUBLE)),
+  ('zero', 1, CAST('-0.0' AS FLOAT), CAST('-0.0' AS DOUBLE)),
+  ('zero', 2, CAST(0.0 AS FLOAT), CAST(0.0 AS DOUBLE)),
+  ('zero', 3, CAST(1.0 AS FLOAT), CAST(1.0 AS DOUBLE)),
+  ('zero', 4, CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE)),
+  ('null', 1, CAST(NULL AS FLOAT), CAST(NULL AS DOUBLE))
 
 -- Repartition so equal values must also deduplicate across partial buffers.
 query
@@ -45,6 +49,26 @@ SELECT grp, sort_array(collect_set(f)), sort_array(collect_set(d))
 FROM (SELECT /*+ REPARTITION(3) */ * FROM cs_norm_scalar)
 GROUP BY grp
 ORDER BY grp
+
+-- Issue #7203: scalar FLOAT/DOUBLE collect_set beside DISTINCT remains native on Spark 4.2.
+query
+SELECT grp, count(DISTINCT id), sort_array(collect_set(f))
+FROM cs_norm_scalar GROUP BY grp
+
+query
+SELECT grp, count(DISTINCT id), sort_array(collect_set(d))
+FROM cs_norm_scalar GROUP BY grp
+
+-- The same aggregate shape also stays native for collect_list and struct-valued collect_set.
+query
+SELECT grp, count(DISTINCT id), sort_array(collect_list(f)), sort_array(collect_list(d))
+FROM cs_norm_scalar WHERE grp = 'ordinary' GROUP BY grp
+
+query
+SELECT grp, count(DISTINCT id),
+  sort_array(collect_set(named_struct('v', f))),
+  sort_array(collect_set(named_struct('v', d)))
+FROM cs_norm_scalar WHERE grp = 'ordinary' GROUP BY grp
 
 -- Exercise the no-GROUP BY aggregate shape while merging partial buffers.
 query

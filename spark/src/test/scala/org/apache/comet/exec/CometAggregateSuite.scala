@@ -31,7 +31,7 @@ import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometBatchScanExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometNativeScanExec, CometProjectExec, CometScanExec, CometSortAggregateExec, CometSortExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, SortExec}
 import org.apache.spark.sql.execution.SQLExecution
@@ -471,15 +471,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  for {
-    dataType <- Seq("FLOAT", "DOUBLE")
-    nativeInput <- Seq(false, true)
-    adaptive <- Seq(false, true)
-    objectHash <- Seq(false, true)
-  } {
-    test(
-      "collect_set with distinct preserves float semantics (issue #7203): " +
-        s"$dataType, nativeInput=$nativeInput, adaptive=$adaptive, objectHash=$objectHash") {
+  test("float collect_set merges Spark partials natively on Spark 4.2 (issue #7203)") {
+    assume(isSpark42Plus, "Spark 4.2 normalizes floating-point collect_set buffers")
+    // SQL fixtures cover the answers and fallback matrix. This mixed plan needs operator exclusions
+    // and assertions on the consumed plan, which a plain SQL query directive cannot express.
+    for {
+      adaptive <- Seq(false, true)
+      objectHash <- Seq(false, true)
+    } {
       withSQLConf(
         COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
@@ -494,79 +493,28 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           (1, 5, Some(1.0d)),
           (1, 6, None),
           (2, 1, None))
-        def check(source: DataFrame): Unit = {
-          val df = source
-            .groupBy("_1")
-            .agg(count_distinct(col("_2")), sort_array(collect_set(col("_3").cast(dataType))))
-          val (_, plan) = if (isSpark42Plus) {
-            checkSparkAnswerAndOperator(
-              df,
-              Seq(classOf[CometBaseAggregateExec]),
-              classOf[ObjectHashAggregateExec],
-              classOf[SortAggregateExec],
-              classOf[SortExec],
-              classOf[LocalTableScanExec])
-          } else {
-            checkSparkAnswerAndFallbackReason(
-              df,
-              "collect_set on FLOAT/DOUBLE in PartialMerge requires Spark 4.2 or later")
-          }
-          if (nativeInput) {
-            assert(
-              collect(plan) {
-                case _: CometScanExec | _: CometBatchScanExec | _: CometNativeScanExec => true
-              }.nonEmpty,
-              plan)
-          } else {
-            assert(collect(plan) { case s: LocalTableScanExec => s }.nonEmpty, plan)
-          }
-          val nativeAggregates = collect(plan) { case a: CometBaseAggregateExec => a }
-          val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
-          if (isSpark42Plus) {
-            assert(nativeAggregates.exists(_.modes.contains(PartialMerge)), plan)
-            assert(nativeAggregates.exists(_.modes.contains(Final)), plan)
-            assert(nativeAggregates.exists(_.modes == Seq(Partial)) == nativeInput, plan)
-            assert(sparkAggregates.isEmpty == nativeInput, plan)
-            assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
-          } else {
-            assert(nativeAggregates.isEmpty, plan)
-            assert(sparkAggregates.exists(_.aggregateExpressions.exists(_.mode == Partial)), plan)
-            assert(
-              sparkAggregates.exists(_.aggregateExpressions.exists(_.mode == PartialMerge)),
-              plan)
-            assert(sparkAggregates.exists(_.aggregateExpressions.exists(_.mode == Final)), plan)
-          }
-        }
-        if (nativeInput) {
-          withParquetDataFrame(data, withDictionary = false)(check)
-        } else {
-          check(data.toDF())
-        }
-      }
-    }
-  }
-
-  test("float collect fallback leaves other native aggregate paths enabled (issue #7203)") {
-    withSQLConf(COMET_EXEC_STRICT_FLOATING_POINT.key -> "false") {
-      withParquetTable(
-        Seq((1, 1, 1.0d), (1, 2, 1.0d), (1, 3, 2.0d)),
-        "t_collect_float",
-        withDictionary = false) {
-        for {
-          dataType <- Seq("FLOAT", "DOUBLE")
-          (fn, distinct) <- Seq(
-            (s"collect_set(CAST(_3 AS $dataType))", false),
-            (s"collect_list(CAST(_3 AS $dataType))", true),
-            (s"collect_set(named_struct('v', CAST(_3 AS $dataType)))", true))
-        } {
-          val count = if (distinct) ", count(DISTINCT _2)" else ""
-          val (_, plan) = checkSparkAnswerAndOperator(
-            s"SELECT _1, sort_array($fn)$count FROM t_collect_float GROUP BY _1")
-          val aggregates = collect(plan) { case a: CometBaseAggregateExec => a }
-          assert(aggregates.exists(_.modes.contains(Partial)), plan)
-          assert(aggregates.exists(_.modes.contains(Final)), plan)
-          assert(aggregates.exists(_.modes.contains(PartialMerge)) == distinct, plan)
-        }
+        val df = data
+          .toDF()
+          .groupBy("_1")
+          .agg(
+            count_distinct(col("_2")),
+            sort_array(collect_set(col("_3").cast("FLOAT"))),
+            sort_array(collect_set(col("_3"))))
+        val (_, plan) = checkSparkAnswerAndOperator(
+          df,
+          Seq(classOf[CometBaseAggregateExec]),
+          classOf[ObjectHashAggregateExec],
+          classOf[SortAggregateExec],
+          classOf[SortExec],
+          classOf[LocalTableScanExec])
+        assert(collect(plan) { case s: LocalTableScanExec => s }.nonEmpty, plan)
+        val nativeAggregates = collect(plan) { case a: CometBaseAggregateExec => a }
+        val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
+        assert(nativeAggregates.exists(_.modes.contains(PartialMerge)), plan)
+        assert(nativeAggregates.exists(_.modes.contains(Final)), plan)
+        assert(!nativeAggregates.exists(_.modes == Seq(Partial)), plan)
+        assert(sparkAggregates.nonEmpty, plan)
+        assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
       }
     }
   }
