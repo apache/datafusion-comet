@@ -488,13 +488,19 @@ The `MultiPartitionShuffleRepartitioner` holds:
   context. `try_new` hands `LocalPartitionWriter` a `reservation.new_empty()` sibling, so the
   bytes land on the same consumer without a new one, and the writer keeps it equal to what
   those buffers hold. A spill frees `reservation` but not this one, and it counts toward
-  neither `memory_spilled_bytes` nor `spark.comet.shuffle.native.maxBufferBytes`. The three
-  file and copy buffers ask the pool for their full size, and when it refuses the writer
-  uses an 8 KiB buffer instead and charges that; the data file buffer, built before the
-  writer has a reservation, is rebuilt at that size while still empty. A spill forced by pool
-  pressure opens the spill file while its batches are still charged, so that buffer often
-  starts small; after each spill has freed its batches, the writer asks for the full size
-  again until the pool grants it, and moves the buffered bytes into the larger buffer. The
+  neither `memory_spilled_bytes` nor `spark.comet.shuffle.native.maxBufferBytes`. Each file
+  and copy buffer is allocated when the phase that uses it starts: the spill file buffer when
+  the first spill opens the file, the other two at the first `finish_partition`. That call
+  flushes the spill file and releases its buffer, then sizes the copy buffer, which serves
+  every spilled range, and then the data file buffer, which blocks of the write buffer size
+  bypass anyway. Each asks the pool for its full size, and when the pool refuses the writer
+  uses an 8 KiB buffer instead and charges that. Any other pool error, such as an exception
+  Spark threw while spilling another consumer, fails the task. A spill forced by pool pressure
+  opens the spill file while its batches are still charged, so that buffer often starts
+  small. After each spill has freed its batches, the writer drops the drained encode scratch,
+  which one wide row can leave larger than the pool, and grows the spill file buffer toward
+  the full size, but to no more than half of what the spill freed, so the next batches have
+  room. It never shrinks that buffer, and moves the buffered bytes into the larger one. The
   scratch and the zstd context already exist when they are charged, so the writer records
   them without asking.
 

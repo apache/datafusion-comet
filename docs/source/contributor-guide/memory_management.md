@@ -587,7 +587,10 @@ diverge for several structural reasons:
   an operator charges it by hand. The one place that happens today is the native shuffle writer's
   zstd context when a task writes to more than one local partition: the writer reserves the
   context's size for as long as it holds one, so those bytes are in `reserved` but not in
-  `allocated`. In a default build the C dependencies are libzstd (`zstd-sys`, behind the Parquet
+  `allocated`. It holds one between blocks only up to level 8. A larger context exceeds the 8 MiB
+  the writer keeps, so `release_zstd_if_oversized` frees it after each block, and that workspace,
+  about 15 MiB at level 9 and 90 MiB at level 19, is in neither figure. In a default build the C
+  dependencies are libzstd (`zstd-sys`, behind the Parquet
   `zstd` codec and the shuffle writer's `zstd` codec), libhdfs (`hdfs-sys`, pulled in by the default
   `hdfs-opendal` feature), and the TLS stack used for cloud object stores (`aws-lc-sys`). With the
   `python-udf` feature, the embedded Python interpreter and PyArrow also allocate outside
