@@ -95,8 +95,8 @@ pub(crate) struct LocalPartitionWriter {
     /// with the total length so partition sizes are simple offset differences.
     /// Has `num_output_partitions + 1` elements.
     offsets: Vec<u64>,
-    write_buffer_size: usize,
     batch_size: usize,
+    write_buffer_size: usize,
     num_output_partitions: usize,
     /// Id of the last partition passed to `finish_partition`, used to assert
     /// partitions are finalized in ascending order. `-1` before any call.
@@ -153,8 +153,8 @@ impl LocalPartitionWriter {
             data_output,
             codec_context: ShuffleCodecContext::default(),
             offsets: vec![0u64; num_output_partitions + 1],
-            write_buffer_size,
             batch_size,
+            write_buffer_size,
             num_output_partitions,
             last_finish_pid: -1,
         })

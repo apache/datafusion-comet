@@ -19,6 +19,7 @@ use crate::codec_context::ShuffleCodecContext;
 use crate::offsets_as_lengths::{
     buffer_ranges, buffer_roles, has_offsets, offsets_to_lengths, BufferRole, LENGTHS_TAG_FLAG,
 };
+use crate::shuffle_writer::contains_view_type;
 use arrow::array::RecordBatch;
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use arrow::ipc::writer::{
@@ -157,8 +158,7 @@ impl ShuffleBlockWriter {
         }
     }
 
-    /// True when the schema contains a view type (`Utf8View`, `BinaryView`, `ListView`,
-    /// `LargeListView`), at any depth.
+    /// True when the schema contains a view type at any depth; see [`contains_view_type`].
     ///
     /// Arrow's IPC writer serializes every data buffer a view array references, whatever the
     /// views actually point at. A batch gathered by `interleave` from many buffered batches
@@ -263,15 +263,10 @@ impl ShuffleBlockWriter {
         };
         header_bytes.extend_from_slice(&codec_header);
 
-        let has_view_types = schema.flattened_fields().iter().any(|f| {
-            matches!(
-                f.data_type(),
-                DataType::Utf8View
-                    | DataType::BinaryView
-                    | DataType::ListView(_)
-                    | DataType::LargeListView(_)
-            )
-        });
+        let has_view_types = schema
+            .fields()
+            .iter()
+            .any(|f| contains_view_type(f.data_type()));
 
         Ok(Self {
             codec,
@@ -470,6 +465,26 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Int32Type};
     use std::io::Cursor;
+
+    #[test]
+    fn has_view_types_sees_nested_and_dictionary_views() {
+        let has_view = |data_type: DataType| {
+            let schema = Schema::new(vec![Field::new("c", data_type, true)]);
+            ShuffleBlockWriter::try_new(&schema, CompressionCodec::None)
+                .unwrap()
+                .has_view_types()
+        };
+        let dict = |value| DataType::Dictionary(Box::new(DataType::Int32), Box::new(value));
+        assert!(has_view(DataType::Utf8View));
+        assert!(has_view(DataType::List(Arc::new(Field::new(
+            "item",
+            DataType::BinaryView,
+            true
+        )))));
+        assert!(has_view(dict(DataType::Utf8View)));
+        assert!(!has_view(dict(DataType::Utf8)));
+        assert!(!has_view(DataType::Int64));
+    }
 
     fn test_schema() -> Schema {
         Schema::new(vec![

@@ -178,10 +178,9 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             // enough, so we don't `copy_rows` the whole batch into the in-progress builders just
             // to re-emit a same-sized batch. The passthrough fires for batches strictly larger
             // than the limit, so set it to `batch_size - 1` to include batches of exactly
-            // `batch_size`, which is what `PartitionedBatchIterator` emits (except the tail),
-            // removing a full copy of the shuffle payload. Block boundaries are unchanged for
-            // that iterator since it never emits more than `batch_size` rows. The
-            // single-partition path routes `>= batch_size` batches here directly, so those now
+            // `batch_size`, which is what `PartitionedBatchIterator` emits (except the tail)
+            // when a view-type schema routes the multi-partition path through this coalescer.
+            // The single-partition path routes `>= batch_size` batches here directly, so those
             // form one oversized block rather than being split at `batch_size`. Rows are written
             // in the same order either way.
             BatchCoalescer::new(batch.schema(), batch_size)

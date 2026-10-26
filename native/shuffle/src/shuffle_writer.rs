@@ -415,11 +415,15 @@ async fn external_shuffle(
 /// the views buffer but serializes every shared data buffer in full, since proving that no
 /// surviving view references a buffer is not cheap.
 ///
+/// The multi-partition shuffle writers consult this too (`ShuffleBlockWriter::has_view_types`):
+/// a gathered view batch shares its source batches' data buffers, so they keep coalescing, which
+/// compacts sparse views, rather than writing each chunk verbatim.
+///
 /// [`RoundRobinStrategy::RowGroups`] is the only placement that can hand the writer a sliced
 /// array; everything else materializes a fresh batch through `interleave_record_batch`. So a view
 /// column anywhere in the schema would let a short run drag a whole batch's data buffers into the
 /// shuffle output, which is the opposite of what the strategy is for.
-fn contains_view_type(data_type: &DataType) -> bool {
+pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
     match data_type {
         DataType::Utf8View | DataType::BinaryView => true,
         DataType::List(field)

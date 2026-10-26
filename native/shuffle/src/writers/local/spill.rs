@@ -321,7 +321,8 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
-        // batch_size below the row count so a coalescing write serializes into the scratch
+        // batch_size below the row count so a view-schema write, which coalesces, serializes into
+        // the scratch
         PartitionedSpill::new(block_writer, 1 << 20, 10, num_partitions)
     }
 
