@@ -1583,7 +1583,7 @@ def check_tpc_dataset_caches():
 
     Both dataset caches used `hashFiles('.github/workflows/pr_build_linux.yml')`
     as their key, and PR #5973 left them exempt from the main-only save rule
-    because `./tpch` and `./tpcds-sf-1` are not dependency trees. The workflow
+    because `./tpch` and `./tpcds-sf-<scale factor>` are not dependency trees. The workflow
     file is one of the most edited files in the repository, so the key rotated
     with every CI change, orphaning main's entry and regenerating a
     multi-hundred-megabyte dataset -- and the dataset kept competing with the

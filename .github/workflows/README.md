@@ -50,8 +50,10 @@ merge. Three jobs are still on `push`: `docs`, because it deploys to
 `pr_build_macos`, because of `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
-TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci and Maven
+caches on `main` stale until the next unrelated change. The TPC-H and TPC-DS
+datasets do not depend on those files; the push run re-warms them only after
+eviction.
 
 Warming those caches is the only thing the push run is for, so on `push` the
 Linux build runs in **cache-refresh-only** mode: `build-native` and the two
@@ -445,8 +447,9 @@ edits rotating its key. `dev/ci/check-ci-config.py` guards this coupling.
 
 A job that only ever runs on a pull request or in the queue keeps the guard
 anyway, and so never writes. That is deliberate — it restores from main's
-entry through `restore-keys` and downloads whatever else it needs, which is
-what a cold pull request already did. See the push-tier discussion above for
+entry through `restore-keys` (the TPC dataset restores require an exact key
+instead) and downloads whatever else it needs, which is what a cold pull
+request already did. See the push-tier discussion above for
 which jobs do run on main and therefore do write.
 
 ## Retrying flaky network operations
