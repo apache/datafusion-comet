@@ -242,26 +242,34 @@ impl PartitionedSpill {
         &mut self,
         buffers: &MemoryReservation,
     ) -> datafusion::common::Result<()> {
-        if self.failed {
+        let capacity = self.buffer_capacity();
+        if self.failed || self.spill_file.is_none() || capacity >= self.write_buffer_size {
             return Ok(());
         }
-        let Some(spill_file) = self.spill_file.take() else {
-            return Ok(());
-        };
-        let capacity = spill_file.writer.capacity();
-        if capacity >= self.write_buffer_size {
-            self.spill_file = Some(spill_file);
-            return Ok(());
-        }
-        if let Err(error) = buffers.try_grow(self.write_buffer_size - capacity) {
-            self.spill_file = Some(spill_file);
-            return if super::is_refusal(&error) {
+        match buffers.try_grow(self.write_buffer_size - capacity) {
+            Ok(()) => {
+                self.resize_buffer(self.write_buffer_size);
                 Ok(())
-            } else {
-                Err(error)
-            };
+            }
+            Err(error) if super::is_refusal(&error) => Ok(()),
+            Err(error) => Err(error),
         }
-        let ActiveSpillFile { temp_file, writer } = spill_file;
+    }
+
+    /// Writes the buffered bytes to the file and drops the write buffer, once nothing more will
+    /// be spilled.
+    pub(crate) fn release_buffer(&mut self) -> datafusion::common::Result<()> {
+        self.flush()?;
+        self.resize_buffer(0);
+        Ok(())
+    }
+
+    /// Rebuilds the write buffer at `capacity`, moving the buffered bytes into it. Callers make
+    /// sure they fit, so nothing is written to the file.
+    fn resize_buffer(&mut self, capacity: usize) {
+        let Some(ActiveSpillFile { temp_file, writer }) = self.spill_file.take() else {
+            return;
+        };
         let (file, buffered) = writer.into_parts();
         let buffered = match buffered {
             Ok(buffered) => buffered,
@@ -271,13 +279,16 @@ impl PartitionedSpill {
                 panicked.into_inner()
             }
         };
-        let mut writer = BufWriter::with_capacity(self.write_buffer_size, file);
-        // The bytes fit the larger, empty buffer, so this copies without touching the file.
+        let mut writer = BufWriter::with_capacity(capacity, file);
         if writer.write_all(&buffered).is_err() {
             self.failed = true;
         }
         self.spill_file = Some(ActiveSpillFile { temp_file, writer });
-        Ok(())
+    }
+
+    /// Whether any partition has spilled bytes.
+    pub(crate) fn has_ranges(&self) -> bool {
+        self.len > 0
     }
 
     pub(crate) fn buffer_capacity(&self) -> usize {

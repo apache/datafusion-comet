@@ -1619,8 +1619,8 @@ mod tests {
         );
         assert_eq!(
             assert_local_buffers_charged(&repartitioner, &runtime),
-            write_buffer_size,
-            "the data file buffer is charged when the writer attaches"
+            0,
+            "nothing is charged before the first row"
         );
 
         repartitioner
@@ -1630,7 +1630,7 @@ mod tests {
         repartitioner.spill(0).unwrap();
         assert_eq!(repartitioner.reservation.size(), 0);
         assert!(
-            assert_local_buffers_charged(&repartitioner, &runtime) >= 2 * write_buffer_size,
+            assert_local_buffers_charged(&repartitioner, &runtime) >= write_buffer_size,
             "the spill file buffer is charged after a spill"
         );
 
@@ -1640,12 +1640,60 @@ mod tests {
             .unwrap();
         repartitioner.shuffle_write().unwrap();
         assert!(
-            assert_local_buffers_charged(&repartitioner, &runtime) >= 3 * write_buffer_size,
-            "the spill copy buffer is charged after the write"
+            assert_local_buffers_charged(&repartitioner, &runtime) >= 2 * write_buffer_size,
+            "the data file and spill copy buffers are charged after the write"
+        );
+        assert_eq!(
+            repartitioner.partition_writer().buffer_capacities(),
+            (write_buffer_size, 0, write_buffer_size),
+            "the spill file buffer is released before the output is written"
         );
 
         drop(repartitioner);
         assert_eq!(runtime.memory_pool.reserved(), 0);
+    }
+
+    async fn write_small_input(
+        dir: &tempfile::TempDir,
+        limit: usize,
+        write_buffer_size: usize,
+    ) -> Vec<u8> {
+        let runtime = runtime_with_pool(limit);
+        let mut repartitioner = hash_repartitioner(
+            local_writer(dir, 2, write_buffer_size, Arc::clone(&runtime)),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        assert_eq!(assert_local_buffers_charged(&repartitioner, &runtime), 0);
+        // an operator feeding the shuffle, such as a hash join, still gets memory
+        let upstream = MemoryConsumer::new("HashJoinInput[0]").register(&runtime.memory_pool);
+        upstream.try_grow(128).unwrap();
+        drop(upstream);
+        repartitioner
+            .insert_batch(int64_batch(0..16))
+            .await
+            .unwrap();
+        repartitioner.shuffle_write().unwrap();
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        std::fs::read(dir.path().join("data.out")).unwrap()
+    }
+
+    /// The data file buffer is charged only once the output is written, not before the input
+    /// produces a row.
+    #[tokio::test]
+    async fn writer_charges_nothing_before_the_first_row() {
+        let write_buffer_size = 1 << 20;
+        let unbounded =
+            write_small_input(&tempfile::tempdir().unwrap(), 1 << 30, write_buffer_size).await;
+        let bounded = write_small_input(
+            &tempfile::tempdir().unwrap(),
+            write_buffer_size,
+            write_buffer_size,
+        )
+        .await;
+        assert!(!unbounded.is_empty());
+        assert_eq!(bounded, unbounded);
     }
 
     async fn spill_every_chunk(
@@ -1683,19 +1731,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (baseline, capacities) =
             spill_every_chunk(&dir, runtime_with_pool(1 << 30), write_buffer_size).await;
-        assert_eq!(
-            capacities,
-            (write_buffer_size, write_buffer_size, write_buffer_size)
-        );
+        assert_eq!(capacities, (write_buffer_size, 0, write_buffer_size));
 
         for (limit, expected) in [
-            // room for the data file buffer only; the batches take the rest
+            // room for one of the output buffers, which goes to the spill copy buffer
             (
                 write_buffer_size + 512 * 1024,
-                (write_buffer_size, fallback, fallback),
+                (fallback, 0, write_buffer_size),
             ),
             // too small for any of them
-            (512 * 1024, (fallback, fallback, fallback)),
+            (512 * 1024, (fallback, 0, fallback)),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let (output, capacities) =
