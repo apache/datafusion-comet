@@ -557,7 +557,10 @@ fn spark_has_updater(
     }
 
     // Reject reading a primitive numeric Parquet column as StringType /
-    // BinaryType. Spark has no `int -> string` etc. updater.
+    // BinaryType. Spark has no `int -> string` etc. updater. This includes
+    // DATE (INT32) and timestamp (INT64 or INT96) columns, which surface as
+    // Date32 / Timestamp: neither the INT32 nor the INT64 / INT96 case has a
+    // string branch. See #7214.
     let physical_is_primitive_numeric = matches!(
         physical_type,
         DataType::Boolean
@@ -567,6 +570,8 @@ fn spark_has_updater(
             | DataType::Int64
             | DataType::Float32
             | DataType::Float64
+            | DataType::Date32
+            | DataType::Timestamp(_, _)
     );
     if physical_is_primitive_numeric && is_string_or_binary(target_type) {
         return false;
@@ -637,6 +642,12 @@ fn spark_has_updater(
     //     so reaching this branch means the column was un-annotated.
     //   - `Date32 -> Timestamp(LTZ)`: Spark only allows Date -> TimestampNTZ.
     //   - `Timestamp -> Date32`: no Timestamp updater branches into Date.
+    //   - `Timestamp -> Int8/16/32, Float*, Decimal*`: INT96 updaters produce
+    //     only timestamps, and INT64 ones a timestamp or a long (a decimal
+    //     needs a decimal annotation, which `isDecimalTypeMatched` refuses for
+    //     a timestamp annotation). See #7214.
+    //   - `Date32 -> Float32, Decimal*`: the INT32 case has no FloatType
+    //     branch, and `isDecimalTypeMatched` refuses a date annotation.
     //
     // See #4297.
     let is_spark_rejected_conversion = matches!(
@@ -672,29 +683,24 @@ fn spark_has_updater(
         | (DataType::Date32, DataType::Timestamp(_, Some(_)))
         // Timestamp -> Date.
         | (DataType::Timestamp(_, _), DataType::Date32)
+        // Timestamp -> narrower int, floating point or decimal.
+        | (
+            DataType::Timestamp(_, _),
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Float32
+                | DataType::Float64
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _),
+        )
+        // Date -> float or decimal.
+        | (
+            DataType::Date32,
+            DataType::Float32 | DataType::Decimal128(_, _) | DataType::Decimal256(_, _),
+        )
     );
     if is_spark_rejected_conversion {
-        return false;
-    }
-
-    // A timestamp leaf is INT96, or INT64 annotated as a timestamp. Spark's INT96 updaters
-    // produce only timestamps, and its INT64 updaters produce a timestamp or a long (a decimal
-    // needs a decimal annotation), so a timestamp read as a string, a narrower integer, a float
-    // or a decimal has no updater. Without this, the cast returns text, raw numbers or NULL.
-    // See #7214.
-    if matches!(physical_type, DataType::Timestamp(_, _))
-        && (is_string_or_binary(target_type)
-            || matches!(
-                target_type,
-                DataType::Int8
-                    | DataType::Int16
-                    | DataType::Int32
-                    | DataType::Float32
-                    | DataType::Float64
-                    | DataType::Decimal128(_, _)
-                    | DataType::Decimal256(_, _)
-            ))
-    {
         return false;
     }
 
@@ -2868,6 +2874,35 @@ pub(crate) mod test {
             matches!(check, ConversionCheck::Accept),
             "INT64 timestamp as bigint"
         );
+        Ok(())
+    }
+
+    /// A DATE column read as a string, a float or a decimal: Spark's INT32 case has no updater
+    /// for these, so it rejects them instead of returning the date as text or a number. Reading
+    /// it as `int` stays allowed. See #7214.
+    #[tokio::test]
+    async fn parquet_date_read_as_string_float_or_decimal_errors() -> Result<(), DataFusionError> {
+        for read_type in [
+            DataType::Utf8,
+            DataType::Float32,
+            DataType::Decimal128(20, 0),
+        ] {
+            let values = Arc::new(Date32Array::from(vec![18262])) as Arc<dyn arrow::array::Array>;
+            let msg = assert_rejected_conversion(
+                Field::new("d", DataType::Date32, false),
+                values,
+                read_type.clone(),
+            )
+            .await?;
+            assert!(
+                msg.contains("Column: [[d]]") && msg.contains("Found: INT32"),
+                "read as {read_type}: unexpected error: {msg}"
+            );
+        }
+        let options = default_options();
+        let date = Field::new("d", DataType::Date32, true);
+        let check = check_field_conversion(&date, &DataType::Int32, "d", &options)?;
+        assert!(matches!(check, ConversionCheck::Accept), "DATE as int");
         Ok(())
     }
 
