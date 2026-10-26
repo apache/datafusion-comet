@@ -268,6 +268,11 @@ pub enum SparkError {
         spark_type: String,
     },
 
+    /// Overflow in Parquet's millis-to-micros conversion. The per-file reader fills in the
+    /// original Spark path before the JVM wraps this in cannotReadFilesError.
+    #[error("long overflow")]
+    ParquetTimestampOverflow { file_path: String },
+
     /// A per-file read failure (corrupt footer/page, truncated/empty file, deleted file) raised by
     /// the native parquet reader / object_store. Classified by typed `DataFusionError` variant (no
     /// message matching) and translated by the JVM shim into Spark's `FAILED_READ_FILE`
@@ -284,6 +289,12 @@ pub enum SparkError {
     /// message: Spark's exception has no column parameter, so the JVM drops it.
     #[error("[INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME] Reading dates before 1582-10-15 or timestamps before 1900-01-01T00:00:00Z from {format} files can be ambiguous (column {column})")]
     ReadAncientDatetime { format: String, column: String },
+
+    /// A Python UDF that Comet runs in its embedded interpreter raised. `traceback` is the
+    /// formatted Python traceback, the text Spark reads back from a failed Python worker. The JVM
+    /// shim converts it to Spark's `org.apache.spark.api.python.PythonException`.
+    #[error("[PYTHON_EXCEPTION] An exception was thrown from the Python worker: {traceback}")]
+    PythonException { traceback: String },
 
     #[error("ArrowError: {0}.")]
     Arrow(Arc<ArrowError>),
@@ -391,8 +402,10 @@ impl SparkError {
             SparkError::DuplicateFieldByFieldId { .. } => "DuplicateFieldByFieldId",
             SparkError::ParquetMissingFieldIds { .. } => "ParquetMissingFieldIds",
             SparkError::ParquetSchemaConvert { .. } => "ParquetSchemaConvert",
+            SparkError::ParquetTimestampOverflow { .. } => "ParquetTimestampOverflow",
             SparkError::CannotReadFile { .. } => "CannotReadFile",
             SparkError::ReadAncientDatetime { .. } => "ReadAncientDatetime",
+            SparkError::PythonException { .. } => "PythonException",
             SparkError::Arrow(_) => "Arrow",
             SparkError::Internal(_) => "Internal",
         }
@@ -668,6 +681,9 @@ impl SparkError {
                     "sparkType": spark_type,
                 })
             }
+            SparkError::ParquetTimestampOverflow { file_path } => {
+                serde_json::json!({ "filePath": file_path })
+            }
             SparkError::CannotReadFile { file_path, message } => {
                 serde_json::json!({
                     "filePath": file_path,
@@ -678,6 +694,11 @@ impl SparkError {
                 serde_json::json!({
                     "format": format,
                     "column": column,
+                })
+            }
+            SparkError::PythonException { traceback } => {
+                serde_json::json!({
+                    "traceback": traceback,
                 })
             }
             SparkError::Arrow(e) => {
@@ -781,13 +802,18 @@ impl SparkError {
                 "org/apache/spark/sql/execution/datasources/SchemaColumnConvertNotSupportedException"
             }
 
-            // CannotReadFile - converted to a FAILED_READ_FILE SparkException by the shim
-            // (QueryExecutionErrors.cannotReadFilesError).
-            SparkError::CannotReadFile { .. } => "org/apache/spark/SparkException",
+            // File-read failures are wrapped by QueryExecutionErrors.cannotReadFilesError.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => {
+                "org/apache/spark/SparkException"
+            }
 
             // ReadAncientDatetime - converted to SparkUpgradeException by the shim
             // (DataSourceUtils.newRebaseExceptionInRead).
             SparkError::ReadAncientDatetime { .. } => "org/apache/spark/SparkUpgradeException",
+
+            // PythonException - built by the shim with the constructor of the running Spark
+            // version.
+            SparkError::PythonException { .. } => "org/apache/spark/api/python/PythonException",
 
             // Generic errors
             SparkError::Arrow(_) | SparkError::Internal(_) => "org/apache/spark/SparkException",
@@ -893,14 +919,17 @@ impl SparkError {
             // SparkException error class, so no error class is exposed here.
             SparkError::ParquetSchemaConvert { .. } => None,
 
-            // CannotReadFile — the JVM shim wraps it via cannotReadFilesError, which supplies the
-            // FAILED_READ_FILE error class, so none is exposed here.
-            SparkError::CannotReadFile { .. } => None,
+            // The JVM's cannotReadFilesError supplies the version-appropriate error class.
+            SparkError::CannotReadFile { .. } | SparkError::ParquetTimestampOverflow { .. } => None,
 
             // ReadAncientDatetime - set by DataSourceUtils.newRebaseExceptionInRead in the shim.
             SparkError::ReadAncientDatetime { .. } => {
                 Some("INCONSISTENT_BEHAVIOR_CROSS_VERSION.READ_ANCIENT_DATETIME")
             }
+
+            // Spark 4.2 raises PythonException with PYTHON_EXCEPTION. Earlier versions have no
+            // error class for it, and their shims ignore this one.
+            SparkError::PythonException { .. } => Some("PYTHON_EXCEPTION"),
 
             // Generic errors (no error class)
             SparkError::Arrow(_) | SparkError::Internal(_) => None,
@@ -1013,6 +1042,15 @@ impl From<ArrowError> for SparkError {
 impl From<SparkError> for DataFusionError {
     fn from(value: SparkError) -> Self {
         DataFusionError::External(Box::new(value))
+    }
+}
+
+/// Arrow's `try_*` kernels require closure errors to be `ArrowError`, so a `SparkError`
+/// travels through `ExternalError`. Unwrap it again so JNI sees the direct `SparkError`.
+pub fn unwrap_arrow_external_error(error: ArrowError) -> DataFusionError {
+    match error {
+        ArrowError::ExternalError(error) => DataFusionError::External(error),
+        error => error.into(),
     }
 }
 
@@ -1163,6 +1201,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parquet_timestamp_overflow_json() {
+        let error = SparkError::ParquetTimestampOverflow {
+            file_path: "file:///bad%20timestamp.parquet".to_string(),
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "errorType": "ParquetTimestampOverflow",
+                "errorClass": "",
+                "params": { "filePath": "file:///bad%20timestamp.parquet" },
+            })
+        );
+        assert_eq!(error.exception_class(), "org/apache/spark/SparkException");
+        assert_eq!(error.to_string(), "long overflow");
+    }
+
+    #[test]
     fn test_error_class_mapping() {
         // Test that error_class() returns the correct error class
         assert_eq!(
@@ -1211,6 +1267,22 @@ mod tests {
             SparkError::read_ancient_datetime("d", false).exception_class(),
             "org/apache/spark/SparkUpgradeException"
         );
+    }
+
+    #[test]
+    fn test_python_exception_json() {
+        let traceback = "Traceback (most recent call last):\n  File \"<string>\", line 1\nZeroDivisionError: division by zero";
+        let error = SparkError::PythonException {
+            traceback: traceback.to_string(),
+        };
+        let parsed: serde_json::Value = serde_json::from_str(&error.to_json()).unwrap();
+        assert_eq!(parsed["errorType"], "PythonException");
+        assert_eq!(parsed["errorClass"], "PYTHON_EXCEPTION");
+        assert_eq!(
+            parsed["params"],
+            serde_json::json!({"traceback": traceback})
+        );
+        assert!(error.to_string().ends_with(traceback), "{error}");
     }
 
     #[test]
