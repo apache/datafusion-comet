@@ -86,9 +86,10 @@ object SparkErrorConverter extends ShimSparkErrorConverter {
     val json = parse(e.getMessage)
     val errorJson = json.extract[ErrorJson]
     val rawParams = errorJson.params.getOrElse(Map.empty)
-    // CannotReadFile carries the offending file path natively only for the object_store NotFound
-    // case; for corrupt/truncated parquet the native error has no path, so fall back to the
-    // per-task file list threaded in from CometExecIterator.
+    // Only CannotReadFile falls back to the per-task file list from CometExecIterator: its native
+    // error carries a path only for object_store NotFound. ParquetTimestampOverflow is also a
+    // file-read error, but it must stay out of this fallback: its native reader attaches the
+    // failing file's path, while the joined list would name every file of a multi-file task.
     val params =
       if (errorJson.errorType == "CannotReadFile"
         && rawParams.get("filePath").forall(p => p == null || p.toString.isEmpty)
