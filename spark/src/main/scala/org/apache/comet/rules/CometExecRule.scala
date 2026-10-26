@@ -610,15 +610,17 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
               project.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull]))
             case _ => false
           }
+        val rowConversionReasons = ListBuffer.empty[String]
         val prepared =
           if (needsRowConversion &&
-            CometSparkToColumnarExec.isRowSchemaSupported(op.child.schema, ListBuffer.empty)) {
+            CometSparkToColumnarExec.isRowConversionSupported(op.child, rowConversionReasons)) {
             val rows = ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false)
               .apply(op.child)
             convertToComet(rows, CometSparkToColumnarExec)
               .map(child => op.withNewChildren(Seq(child)))
               .getOrElse(op)
           } else {
+            rowConversionReasons.foreach(reason => withFallbackReason(op, reason))
             op
           }
         convertToComet(prepared, CometIcebergNativeWrite).getOrElse(op)

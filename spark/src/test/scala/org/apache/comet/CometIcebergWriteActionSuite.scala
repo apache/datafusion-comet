@@ -45,17 +45,18 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, CometSparkToColumnarExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, ProjectExec, SortExec, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, LocalLimitExec, ProjectExec, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.streaming.Trigger
-import org.apache.spark.sql.types.{DoubleType, IntegerType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{BinaryType, DoubleType, IntegerType, StringType, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.iceberg.{IcebergReflection, IcebergWriteReportListener, PositionDeltaWrite}
@@ -212,17 +213,29 @@ class CometIcebergWriteActionSuite
               val input = spark.read.parquet(path.toString)
               val snapshot = withNativeEnabled {
                 captureWrite(nativeTable) {
-                  input.writeTo(s"cat.db.$nativeTable").append()
+                  input
+                    .writeTo(s"cat.db.$nativeTable")
+                    .option("distribution-mode", "none")
+                    .append()
                 }
               }
               assert(snapshot.snapshotDelta == 1)
               assertSparkRequiredWrite(snapshot.plans)
+              assert(snapshot.plans.forall(p =>
+                collectWithSubqueries(p) { case e: ShuffleExchangeLike => e }.isEmpty))
               if (sorted) {
-                assert(snapshot.plans.exists(p =>
-                  collectWithSubqueries(p) { case s: SortExec => s }.nonEmpty))
+                val writers = snapshot.plans.flatMap(p =>
+                  collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+                assert(writers.forall(w =>
+                  collectWithSubqueries(w) {
+                    case bridge: CometSparkToColumnarExec if collectWithSubqueries(bridge.child) {
+                          case sort: SortExec if hasRequiredProjection(sort.child) => sort
+                        }.nonEmpty =>
+                      bridge
+                  }.nonEmpty))
               }
               withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-                input.writeTo(s"cat.db.$reference").append()
+                input.writeTo(s"cat.db.$reference").option("distribution-mode", "none").append()
               }
               checkAnswer(
                 sql(s"SELECT * FROM cat.db.$nativeTable"),
@@ -341,8 +354,124 @@ class CometIcebergWriteActionSuite
               }
             }
             assert(snapshot.snapshotDelta == 1)
-            assertSparkRequiredWrite(snapshot.plans)
+            assertSparkRequiredWrite(snapshot.plans, requireBridge = false)
+            val writers = snapshot.plans.flatMap(p =>
+              collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+            assert(writers.forall(w =>
+              collectWithSubqueries(w) {
+                case exchange: CometShuffleExchangeExec
+                    if exchange.nodeName == "CometColumnarExchange" &&
+                      collectWithSubqueries(exchange.child) {
+                        case limit: LocalLimitExec if hasRequiredProjection(limit.child) => limit
+                      }.nonEmpty =>
+                  exchange
+              }.nonEmpty))
             checkAnswer(sql(s"SELECT * FROM cat.db.$tableName"), Seq(Row(1)))
+          }
+        }
+      }
+    }
+  }
+
+  Seq(false, true).foreach { adaptive =>
+    test(
+      s"native Iceberg writer: Arrow bridge respects a single-partition limit, AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withIcebergCatalog { _ =>
+          val table = s"required_rdd_limit_$adaptive"
+          sql(s"""CREATE TABLE cat.db.$table (id INT NOT NULL) USING iceberg
+            |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+          val schema = StructType(Seq(StructField("id", IntegerType, nullable = true)))
+          val input = spark.createDataFrame(
+            spark.sparkContext.parallelize(Seq(Row(1), Row(null)), 1),
+            schema)
+          val snapshot = withNativeEnabled {
+            captureWrite(table) {
+              input.coalesce(1).limit(1).writeTo(s"cat.db.$table").append()
+            }
+          }
+          assert(snapshot.snapshotDelta == 1)
+          assertSparkRequiredWrite(snapshot.plans)
+          assert(snapshot.plans.forall(p =>
+            collectWithSubqueries(p) { case e: ShuffleExchangeLike => e }.isEmpty))
+          val writers = snapshot.plans.flatMap(p =>
+            collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
+          assert(writers.forall(w =>
+            collectWithSubqueries(w) {
+              case bridge: CometSparkToColumnarExec if collectWithSubqueries(bridge.child) {
+                    case limit: LocalLimitExec if hasRequiredProjection(limit.child) => limit
+                  }.nonEmpty =>
+                bridge
+            }.nonEmpty))
+          checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq(Row(1)))
+        }
+      }
+    }
+  }
+
+  Seq("text", "binary_cast").foreach { source =>
+    test(s"native Iceberg writer: unproven $source strings preserve invalid UTF-8 on Spark") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_TEXT_ENABLED.key -> "false",
+        "spark.comet.expression.Cast.enabled" -> "false") {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            val table = s"required_utf8_$source"
+            val reference = s"${table}_jvm"
+            val schema =
+              if (source == "text") "value STRING NOT NULL"
+              else "id INT NOT NULL, value STRING"
+            Seq(table, reference).foreach { name =>
+              sql(s"""CREATE TABLE cat.db.$name ($schema) USING iceberg
+                |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
+            }
+            val input = if (source == "text") {
+              Files.write(path.toPath, Array(0xff.toByte, '\n'.toByte))
+              spark.read.text(path.toString)
+            } else {
+              sql("SELECT 1 AS id, X'FF' AS bytes").write.parquet(path.toString)
+              spark.read.parquet(path.toString).selectExpr("id", "CAST(bytes AS STRING) AS value")
+            }
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              input.writeTo(s"cat.db.$reference").append()
+            }
+            val snapshot = withNativeEnabled {
+              captureWrite(table) {
+                input.writeTo(s"cat.db.$table").append()
+              }
+            }
+            assert(snapshot.snapshotDelta == 1)
+            // Read bytes through Spark too: a native reader could normalize both results.
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              val expected = sql(s"SELECT hex(CAST(value AS BINARY)) FROM cat.db.$reference")
+              val actual = sql(s"SELECT hex(CAST(value AS BINARY)) FROM cat.db.$table")
+              checkAnswer(expected, Seq(Row("FF")))
+              checkAnswer(actual, expected)
+            }
+            val writers = snapshot.plans.flatMap(p =>
+              collectWithSubqueries(p) { case w: IcebergWriteExec => w })
+            assert(writers.nonEmpty, snapshot.plans.mkString("\n"))
+            assert(writers.forall(hasRequiredProjection), snapshot.plans.mkString("\n"))
+            assert(
+              snapshot.plans.forall(p =>
+                collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.isEmpty),
+              snapshot.plans.mkString("\n"))
+            if (source == "binary_cast") {
+              assert(
+                writers.exists(w =>
+                  collectWithSubqueries(w) {
+                    case p: ProjectExec if p.projectList.exists(_.exists {
+                          case c: Cast =>
+                            c.child.dataType == BinaryType && c.dataType == StringType
+                          case _ => false
+                        }) =>
+                      p
+                  }.nonEmpty),
+                snapshot.plans.mkString("\n"))
+            }
           }
         }
       }
@@ -5064,22 +5193,24 @@ class CometIcebergWriteActionSuite
     }
     .getOrElse(fail(s"Expected Spark's null assertion failure, got $error"))
 
+  private def hasRequiredProjection(plan: SparkPlan): Boolean = collectWithSubqueries(plan) {
+    case p: ProjectExec if p.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull])) => p
+  }.nonEmpty
+
   private def assertSparkRequiredWrite(
       plans: Seq[SparkPlan],
       requireBridge: Boolean = true): Unit = {
-    def hasAssertion(plan: SparkPlan): Boolean = collectWithSubqueries(plan) {
-      case p: ProjectExec if p.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull])) => p
-    }.nonEmpty
-
     val writers =
       plans.flatMap(p => collectWithSubqueries(p) { case w: CometIcebergWriteExec => w })
     assert(writers.nonEmpty, plans.mkString("\n"))
     writers.foreach { writer =>
-      assert(hasAssertion(writer), s"Expected Spark's required-field projection:\n$writer")
+      assert(
+        hasRequiredProjection(writer),
+        s"Expected Spark's required-field projection:\n$writer")
       if (requireBridge) {
         assert(
           collectWithSubqueries(writer) {
-            case bridge: CometSparkToColumnarExec if hasAssertion(bridge.child) => bridge
+            case bridge: CometSparkToColumnarExec if hasRequiredProjection(bridge.child) => bridge
           }.nonEmpty,
           s"Expected Spark's required-field projection to feed Arrow into the native writer:\n$writer")
       }

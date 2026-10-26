@@ -27,18 +27,21 @@ import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CreateNamedStruct, Expression, GetStructField, If, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RowArrowReader, SparkColumnarArrowReader}
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{RowToColumnarTransition, SparkPlan}
+import org.apache.spark.sql.execution.{CoalesceExec, CollectLimitExec, ColumnarToRowTransition, FilterExec, GlobalLimitExec, LocalLimitExec, ProjectExec, RowToColumnarTransition, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.{CometConf, DataTypeSupport}
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
+import org.apache.comet.shims.CometTypeShim
 
 case class CometSparkToColumnarExec(child: SparkPlan)
     extends RowToColumnarTransition
@@ -132,11 +135,72 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
 object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
 
-  private object RowTypeSupport extends DataTypeSupport
+  private object RowTypeSupport extends DataTypeSupport with CometTypeShim
 
   // RowArrowReader recursively writes the collection types supported by DataTypeSupport.
   def isRowSchemaSupported(schema: StructType, fallbackReasons: ListBuffer[String]): Boolean =
     RowTypeSupport.isSchemaSupported(schema, fallbackReasons)
+
+  /**
+   * Whether the Iceberg writer may convert this Spark row subtree to Arrow. Native import
+   * normalizes invalid UTF-8, while Spark rows can retain those bytes. A new conversion is safe
+   * only when its string outputs preserve already valid strings or contain validated literals.
+   */
+  def isRowConversionSupported(plan: SparkPlan, fallbackReasons: ListBuffer[String]): Boolean = {
+    if (!isRowSchemaSupported(plan.schema, fallbackReasons)) {
+      false
+    } else if (hasValidStrings(plan)) {
+      true
+    } else {
+      fallbackReasons += "Iceberg writer row conversion cannot prove that string outputs contain " +
+        "valid UTF-8; native Arrow import could change their bytes"
+      false
+    }
+  }
+
+  private def containsString(dt: DataType): Boolean =
+    dt.existsRecursively(_.isInstanceOf[StringType])
+
+  private def hasValidStrings(plan: SparkPlan): Boolean = {
+    if (!containsString(plan.schema)) {
+      true
+    } else {
+      plan match {
+        // These planning placeholders disappear without running a native import.
+        case CometScanWrapper(_, source) => hasValidStrings(source)
+        case CometSinkPlaceHolder(_, _, child) => hasValidStrings(child)
+        case _: CometNativeExec => true
+        case project: ProjectExec =>
+          hasValidStrings(project.child) && project.projectList.forall(
+            preservesValidStrings(_, project.child.outputSet))
+        case _: SortExec | _: LocalLimitExec | _: GlobalLimitExec | _: CollectLimitExec |
+            _: FilterExec | _: CoalesceExec | _: ColumnarToRowTransition =>
+          plan.children.forall(hasValidStrings)
+        case _ => false
+      }
+    }
+  }
+
+  private def preservesValidStrings(expr: Expression, input: AttributeSet): Boolean = {
+    if (!containsString(expr.dataType)) {
+      true
+    } else {
+      expr match {
+        case attr: Attribute => input.contains(attr)
+        case alias: Alias => preservesValidStrings(alias.child, input)
+        case assertion: AssertNotNull => preservesValidStrings(assertion.child, input)
+        case field: GetStructField => preservesValidStrings(field.child, input)
+        case struct: CreateNamedStruct => struct.valExprs.forall(preservesValidStrings(_, input))
+        case conditional: If =>
+          preservesValidStrings(conditional.trueValue, input) &&
+          preservesValidStrings(conditional.falseValue, input)
+        case Literal(null, _) => true
+        case Literal(value: UTF8String, _: StringType) => RowTypeSupport.isValidUtf8(value)
+        // String-bearing collection transforms and other producers need their own proof.
+        case _ => false
+      }
+    }
+  }
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,

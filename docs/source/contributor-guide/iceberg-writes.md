@@ -122,10 +122,18 @@ conversion by calling `convertToComet`. The converted node keeps the `IcebergWri
 
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
 batches from its child over FFI. If Spark has inserted an `AssertNotNull` projection for required
-fields, `CometExecRule` keeps that projection in Spark and wraps the writer's input in
-`CometSparkToColumnarExec`. Any Spark sort or limit above the projection stays below that conversion,
-preserving Spark's row-wise assertion evaluation and error order. The row conversion accepts the
-recursive types supported by `RowArrowReader`; the writer's eligibility checks still apply.
+fields, `CometExecRule` keeps that projection in Spark. When row conversion is safe, it wraps the
+writer's input in `CometSparkToColumnarExec`. Any Spark sort or limit above the projection stays
+below that conversion, preserving Spark's row-wise assertion evaluation and error order.
+
+The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
+string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows
+native inputs through preserving Spark operators and projections, including attributes, struct
+fields and construction, `If` branches, assertions, and validated string literals. Unproven row
+sources or other string-producing expressions, including string-bearing collection transforms,
+keep the JVM writer: importing invalid UTF-8 into Arrow could change the stored bytes. The writer's
+table and schema eligibility checks still apply.
+
 Other inputs must already be Comet native operators. This is why a write fed directly by a
 `LocalTableScanExec` (`INSERT ... VALUES`, a local
 DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.

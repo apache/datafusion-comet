@@ -460,9 +460,15 @@ plan; an ineligible write keeps `IcebergWrite`.
 
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
 must supply Arrow data. When Spark inserts `AssertNotNull` checks for nullable input written to
-required fields, those checks remain in Spark and their output is converted to Arrow at the writer
-boundary. This allows the native writer to handle these writes even without a shuffle, while Spark
-preserves assertion and expression error order. The same table and schema eligibility checks apply.
+required fields, those checks remain in Spark. Eligible output is converted to Arrow at the writer
+boundary, allowing native writes without a shuffle while preserving Spark's assertion and expression
+error order.
+
+This conversion requires proof that string values, including nested strings, contain valid UTF-8.
+For example, it accepts native input with recognized Spark projections that preserve those strings
+or use validated literals. Unproven sources or string-producing expressions, such as Spark text
+input, Spark binary-to-string casts, or string-bearing collection transforms, keep the iceberg-java
+writer to preserve the original bytes. The same table and schema eligibility checks apply.
 
 A write fed directly by a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
