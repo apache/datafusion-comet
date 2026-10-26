@@ -461,8 +461,17 @@ plan; an ineligible write keeps `IcebergWrite`.
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
 must supply Arrow data. When Spark inserts `AssertNotNull` checks for nullable input written to
 required fields, those checks remain in Spark. Eligible output is converted to Arrow at the writer
-boundary, allowing native writes without a shuffle while preserving Spark's assertion and expression
-error order.
+boundary, allowing native writes without a shuffle.
+
+For a partitioned clustered writer, this new conversion also requires a Spark sort to fully consume
+each writer partition before writing; only local or global limits may wrap that sort. Unsorted or
+otherwise deferred row input keeps the iceberg-java writer, preserving an earlier partition-order
+error ahead of a later Spark expression failure. Unpartitioned and fanout writers do not require
+this additional condition.
+
+Writes with `fixed(N)` fields, including nested fields, keep iceberg-java when this row conversion
+would be needed, even with a sort. This preserves Java's fixed-width validation failures; writes
+that already supply native Arrow input retain their existing eligibility.
 
 This conversion requires proof that string values, including nested strings, contain valid UTF-8.
 For example, it accepts native input with recognized Spark projections that preserve those strings

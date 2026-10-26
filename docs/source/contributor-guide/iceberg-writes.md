@@ -124,7 +124,19 @@ conversion by calling `convertToComet`. The converted node keeps the `IcebergWri
 batches from its child over FFI. If Spark has inserted an `AssertNotNull` projection for required
 fields, `CometExecRule` keeps that projection in Spark. When row conversion is safe, it wraps the
 writer's input in `CometSparkToColumnarExec`. Any Spark sort or limit above the projection stays
-below that conversion, preserving Spark's row-wise assertion evaluation and error order.
+below that conversion, and Spark evaluates the assertions and their child expressions.
+
+For partitioned clustered writers, `isRowInputEvaluationSupported` also requires Spark to
+materialize each writer partition before conversion. It accepts `SortExec`, optionally wrapped
+only in `LocalLimitExec` or `GlobalLimitExec` (and planning placeholders). Unsorted or otherwise
+deferred row input keeps the JVM writer so an earlier partition-order error cannot be overtaken
+by a later Spark expression failure during batch read-ahead. This condition does not apply to
+unpartitioned or fanout writers.
+
+This new row conversion also keeps writes with `fixed(N)` fields, including nested fields, on the
+JVM writer even when sorted. `SparkWrite.writeSchema` retains the fixed width that Spark's
+`BinaryType` cannot enforce, so the gate preserves the JVM writer's fixed-width validation
+failures. Existing native input paths remain eligible for fixed fields.
 
 The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
 string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows

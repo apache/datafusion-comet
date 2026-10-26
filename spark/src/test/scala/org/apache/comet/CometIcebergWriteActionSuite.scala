@@ -297,6 +297,96 @@ class CometIcebergWriteActionSuite
         }
     }
 
+    test(s"native Iceberg writer: clustered input error precedes a later null, AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_BATCH_SIZE.key -> "8") {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            val expectedRows = Seq(Row(1, 0), Row(2, 1), Row(3, 0), Row(null, 2))
+            val schema = StructType(
+              Seq(
+                StructField("id", IntegerType, nullable = true),
+                StructField("p", IntegerType, nullable = false)))
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .createDataFrame(spark.sparkContext.parallelize(expectedRows, 1), schema)
+                .write
+                .parquet(path.toString)
+            }
+            val rows = spark.read.parquet(path.toString)
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              assert(rows.collect().toSeq == expectedRows)
+            }
+            val candidate = s"required_unclustered_native_$adaptive"
+            val reference = s"required_unclustered_jvm_$adaptive"
+            val control = s"required_unclustered_control_$adaptive"
+            Seq(candidate, reference, control).foreach { table =>
+              sql(s"""CREATE TABLE cat.db.$table (id INT NOT NULL, p INT)
+                |USING iceberg PARTITIONED BY (p)""".stripMargin)
+            }
+            val successful = withNativeEnabled {
+              captureWrite(control)(appendUnclustered(control, rows.where("id <= 2")))
+            }
+            assert(successful.snapshotDelta == 1)
+            checkAnswer(sql(s"SELECT * FROM cat.db.$control"), expectedRows.take(2))
+
+            // Row three revisits a closed partition before row four evaluates AssertNotNull.
+            // Capture failures as in failedWrites, but the safe route here is the JVM writer.
+            var candidateFailure: Throwable = null
+            val candidatePlans = withNativeEnabled {
+              capturePlans(spark, includeFailures = true) {
+                candidateFailure = intercept[Exception](appendUnclustered(candidate, rows))
+              }
+            }
+            var referenceFailure: Throwable = null
+            var referencePlans: Seq[SparkPlan] = Seq.empty
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              referencePlans = capturePlans(spark, includeFailures = true) {
+                referenceFailure = intercept[Exception](appendUnclustered(reference, rows))
+              }
+            }
+            val plans = candidatePlans ++ referencePlans
+            plans.foreach(assertColumnarContract)
+            assert(
+              plans.forall(p =>
+                collectWithSubqueries(p) {
+                  case s: SortExec => s
+                  case e: ShuffleExchangeLike => e
+                }.isEmpty),
+              plans.mkString("\n"))
+            assert(referencePlans.exists(hasRequiredProjection), referencePlans.mkString("\n"))
+            Seq(candidate, reference).foreach { table =>
+              assert(countSnapshots(table) == 0)
+              assert(parquetFiles(dataDir(table)).isEmpty)
+              checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
+            }
+            val expected = clusteredWriterError(referenceFailure)
+            assert(expected._2.startsWith(
+              "Incoming records violate the writer assumption that records are clustered by spec"))
+            val actual = withClue(s"Candidate plans:\n${candidatePlans.mkString("\n")}\n") {
+              clusteredWriterError(candidateFailure)
+            }
+            assert(actual == expected, s"candidate $actual != jvm $expected")
+            assert(
+              causeChain(candidateFailure)(actual._1).getClass ==
+                causeChain(referenceFailure)(expected._1).getClass)
+            val writers = candidatePlans.flatMap(p =>
+              collectWithSubqueries(p) { case w: IcebergWriteExec => w })
+            assert(writers.nonEmpty, candidatePlans.mkString("\n"))
+            assert(writers.forall(hasRequiredProjection), candidatePlans.mkString("\n"))
+            assert(
+              candidatePlans.forall(p =>
+                collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+                  w
+                }.isEmpty),
+              candidatePlans.mkString("\n"))
+          }
+        }
+      }
+    }
+
     test(s"native Iceberg writer: Spark assertion aborts after a valid prefix, AQE=$adaptive") {
       assume(icebergAvailable && isSpark35Plus)
       withSQLConf(
@@ -4450,6 +4540,135 @@ class CometIcebergWriteActionSuite
           .head
           .getLong(0)
         assert(matched == 1L, "timestamp values shifted on the native write path")
+      }
+    }
+  }
+
+  for {
+    adaptive <- Seq(false, true)
+    laterNull <- Seq(false, true)
+  } {
+    test(
+      "native Iceberg writer: fixed-length validation preserves the first error, " +
+        s"laterNull=$laterNull, AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_BATCH_SIZE.key -> "8") {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            val schema = StructType(
+              Seq(
+                StructField("id", IntegerType, nullable = true),
+                StructField("fx", BinaryType, nullable = true)))
+            val invalidRows = Seq(Row(1, Array[Byte](1, 2, 3))) ++
+              (if (laterNull) Seq(Row(null, Array[Byte](5, 6, 7, 8))) else Seq.empty)
+            val invalidPath = new File(path, "invalid").toString
+            val validPath = new File(path, "valid").toString
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .createDataFrame(spark.sparkContext.parallelize(invalidRows, 1), schema)
+                .write
+                .parquet(invalidPath)
+              spark
+                .createDataFrame(
+                  spark.sparkContext.parallelize(
+                    Seq(Row(1, Array[Byte](1, 2, 3, 4)), Row(2, Array[Byte](5, 6, 7, 8))),
+                    1),
+                  schema)
+                .write
+                .parquet(validPath)
+              val expectedInput = Seq(Row(1, "010203")) ++
+                (if (laterNull) Seq(Row(null, "05060708")) else Seq.empty)
+              assert(
+                spark.read.parquet(invalidPath).selectExpr("id", "hex(fx)").collect().toSeq ==
+                  expectedInput)
+            }
+            val suffix = s"${laterNull}_$adaptive"
+            val candidate = s"required_fixed_native_$suffix"
+            val reference = s"required_fixed_jvm_$suffix"
+            val nativeControl = s"required_fixed_control_native_$suffix"
+            val jvmControl = s"required_fixed_control_jvm_$suffix"
+            Seq(candidate, reference, nativeControl, jvmControl).foreach { table =>
+              sql(s"""CREATE TABLE $catalog.$ns.$table (id INT NOT NULL) USING iceberg
+                |TBLPROPERTIES ('write.distribution-mode'='none',
+                |'write.parquet.dict-size-bytes'='1')""".stripMargin)
+              addIcebergColumn(
+                loadIcebergTable(spark, catalog, ns, table),
+                "fx",
+                icebergFixedType(4))
+              sql(s"REFRESH TABLE $catalog.$ns.$table")
+            }
+            def assertJvmRequiredWrite(plans: Seq[SparkPlan]): Unit = {
+              val writers =
+                plans.flatMap(p => collectWithSubqueries(p) { case w: IcebergWriteExec => w })
+              assert(writers.nonEmpty, plans.mkString("\n"))
+              assert(writers.forall(hasRequiredProjection), plans.mkString("\n"))
+              assert(
+                plans.forall(p =>
+                  collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.isEmpty),
+                plans.mkString("\n"))
+              plans.foreach(assertColumnarContract)
+            }
+            val valid = spark.read.parquet(validPath)
+            val successful = withNativeEnabled {
+              captureWrite(nativeControl) {
+                valid.writeTo(s"$catalog.$ns.$nativeControl").append()
+              }
+            }
+            assert(successful.snapshotDelta == 1)
+            assertJvmRequiredWrite(successful.plans)
+            assert(
+              successful.plans.forall(p =>
+                collectWithSubqueries(p) {
+                  case s: SortExec => s
+                  case e: ShuffleExchangeLike => e
+                }.isEmpty),
+              successful.plans.mkString("\n"))
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              valid.writeTo(s"$catalog.$ns.$jvmControl").append()
+              assert(countSnapshots(jvmControl) == 1)
+              Seq(nativeControl, jvmControl).foreach { table =>
+                checkAnswer(
+                  sql(s"SELECT id, hex(fx) FROM $catalog.$ns.$table"),
+                  Seq(Row(1, "01020304"), Row(2, "05060708")))
+              }
+            }
+
+            // A one-byte dictionary limit forces the first fixed(4) value through Parquet's
+            // plain writer, which rejects its three bytes before any later null assertion.
+            def appendInvalid(table: String): Unit =
+              spark.read.parquet(invalidPath).writeTo(s"$catalog.$ns.$table").append()
+            var candidateFailure: Throwable = null
+            val candidatePlans = withNativeEnabled {
+              capturePlans(spark, includeFailures = true) {
+                candidateFailure = intercept[Exception](appendInvalid(candidate))
+              }
+            }
+            var referenceFailure: Throwable = null
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              referenceFailure = intercept[Exception](appendInvalid(reference))
+            }
+            assertJvmRequiredWrite(candidatePlans)
+            Seq(candidate, reference).foreach { table =>
+              assert(countSnapshots(table) == 0)
+              assert(parquetFiles(dataDir(table)).isEmpty)
+              checkAnswer(sql(s"SELECT * FROM $catalog.$ns.$table"), Seq.empty[Row])
+            }
+            val expected = causeChain(referenceFailure).last
+            assert(expected.isInstanceOf[IllegalArgumentException], expected.toString)
+            assert(
+              expected.getStackTrace.exists(frame =>
+                frame.getClassName.endsWith(".FixedLenByteArrayPlainValuesWriter") &&
+                  frame.getMethodName == "writeBytes"),
+              expected.toString)
+            val actual = causeChain(candidateFailure).last
+            assert(
+              actual.getClass == expected.getClass,
+              s"candidate root $actual != JVM root $expected")
+            assert(actual.getMessage == expected.getMessage)
+          }
+        }
       }
     }
   }
