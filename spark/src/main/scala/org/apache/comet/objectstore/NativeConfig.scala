@@ -132,13 +132,20 @@ object NativeConfig {
     rawAuthority.substring(rawAuthority.lastIndexOf('@') + 1)
   }
 
-  /** As in native, the user ends at the first `:` and the host follows the last `@`. */
-  private def authorityWithoutPassword(uri: URI): String = {
+  /**
+   * As in native, the user ends at the first `:` and the host follows the last `@`. An authority
+   * with no password is returned as is.
+   */
+  private[objectstore] def authorityWithoutPassword(uri: URI): String = {
     val rawAuthority = Option(uri.getRawAuthority).getOrElse("")
     val at = rawAuthority.lastIndexOf('@')
-    val user = rawAuthority.take(at).takeWhile(_ != ':')
-    val host = rawAuthority.substring(at + 1)
-    if (user.isEmpty) host else s"$user@$host"
+    if (at < 0 || (at > 0 && rawAuthority.lastIndexOf(':', at - 1) < 0)) {
+      rawAuthority
+    } else {
+      val user = rawAuthority.take(at).takeWhile(_ != ':')
+      val host = rawAuthority.substring(at + 1)
+      if (user.isEmpty) host else s"$user@$host"
+    }
   }
 
   /** `scheme://[user@]host[:port]` of `uri`, for messages: no password, path or query. */

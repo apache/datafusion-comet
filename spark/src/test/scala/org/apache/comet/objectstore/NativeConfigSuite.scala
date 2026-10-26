@@ -754,6 +754,14 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "(abfss://data@accta.dfs.core.windows.net and abfss://logs@accta.dfs.core.windows.net)")
   }
 
+  test("authorityWithoutPassword - an authority without a password is returned as is") {
+    for (authority <- Seq("container@acct.dfs.core.windows.net", "container@acct:8443")) {
+      val uri = new URI(s"abfss://$authority/k.parquet")
+      NativeConfig.authorityWithoutPassword(uri) should be theSameInstanceAs uri.getRawAuthority
+    }
+    NativeConfig.authorityWithoutPassword(new URI("/tmp/t/k.parquet")) shouldBe ""
+  }
+
   test("displayAuthority - lowercase scheme and no password, path or query") {
     NativeConfig.displayAuthority(
       new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
