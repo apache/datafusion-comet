@@ -43,7 +43,7 @@ import org.apache.spark.unsafe.Platform
  * potential conflicts with Spark's Arrow dependencies, hence we cannot reuse Spark's ArrowWriter
  * directly.
  */
-private[arrow] object ArrowWriter {
+private[comet] object ArrowWriter {
   def create(root: VectorSchemaRoot, fixedWidthCapacity: Int): ArrowWriter = {
     require(fixedWidthCapacity >= 0, "Fixed-width capacity must be non-negative")
     val children = root.getFieldVectors().asScala.map { vector =>
@@ -668,7 +668,7 @@ private[arrow] final class DictionaryCache {
   }
 }
 
-private[arrow] abstract class ArrowFieldWriter {
+private[comet] abstract class ArrowFieldWriter {
 
   def valueVector: ValueVector
 

@@ -340,7 +340,8 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 `stack` are supported via `CometExplodeExec` (operator-level, not expression-level). `explode` and
 `posexplode` support array input; map input falls back to Spark
 ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
-`spark.comet.exec.explode.enabled`.
+`spark.comet.exec.explode.enabled`. Other deterministic generators run on the JVM inside
+`CometExplodeExec`; see [Generators](scala_java_udfs.md#generators).
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
@@ -376,7 +377,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `get_json_object` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#get_json_object)) |
 | `json_array_length` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; the native path, which differs for single-quoted JSON, unescaped control characters, and trailing content, is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#json_array_length)) |
 | `json_object_keys` | ✅ | Codegen dispatch |  |
-| `json_tuple` | 🔜 | — | [#3160](https://github.com/apache/datafusion-comet/issues/3160) |
+| `json_tuple` | ✅ | — | Runs on the JVM inside `CometExplodeExec` ([Generators](scala_java_udfs.md#generators)); [#3160](https://github.com/apache/datafusion-comet/issues/3160) tracks a native implementation |
 | `schema_of_json` | ✅ | Codegen dispatch |  |
 | `to_json` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default, including options and map/array inputs; the native path is opt-in via allowIncompatible ([audit](../../contributor-guide/expression-audits/json_funcs.md#to_json)) |
 

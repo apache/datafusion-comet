@@ -21,7 +21,7 @@
 
 Comet executes Spark's Scala and Java [scalar user-defined functions (UDFs)](https://spark.apache.org/docs/latest/sql-ref-functions-udf-scalar.html) within the Comet pipeline. The presence of a UDF does not force the enclosing operator out of the Comet pipeline; surrounding Rust-implemented operators stay in the pipeline.
 
-This page covers Spark's `ScalaUDF` (Scala `udf(...)`, `spark.udf.register(...)` over Scala or Java functional interfaces, and SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`). Other UDF kinds (Python / Pandas, Hive, aggregate) are out of scope and continue to fall back to Spark.
+This page covers Spark's `ScalaUDF` (Scala `udf(...)`, `spark.udf.register(...)` over Scala or Java functional interfaces, and SQL `CREATE FUNCTION ... AS 'com.example.MyUDF'`). Other UDF kinds (Python / Pandas, Hive scalar UDFs, aggregate) are out of scope and continue to fall back to Spark. Hive UDTFs and other generators are covered in [Generators](#generators).
 
 This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabled` to `false` to route plans containing a `ScalaUDF` back to Spark for the enclosing operator.
 
@@ -42,8 +42,15 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 ## Not supported
 
 - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, the legacy `UserDefinedAggregateFunction`).
-- Table UDFs and generators.
+- Python UDTFs (`@udtf`).
 - Python `@udf` and Pandas `@pandas_udf`.
+
+## Generators
+
+A deterministic generator that Comet has no native implementation of, such as a Hive `GenericUDTF` registered with `CREATE FUNCTION` or Spark's `json_tuple`, runs inside Comet's native generate operator. The operator calls the generator on the JVM for each batch and keeps one generator instance per partition, so state the generator holds carries across batches. Once a partition's input ends, the rows of the generator's `terminate()` (a Hive UDTF's `close()`) follow, carrying the partition's last input row, as in Spark.
+
+Set `spark.comet.exec.jvmGenerator.enabled` to `false` to run such a generator in Spark instead.
+
 - Hive `GenericUDF` and `SimpleUDF`.
 - `NullType` and `UserDefinedType` arguments and return types. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`).
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
