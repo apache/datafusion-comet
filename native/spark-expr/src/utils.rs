@@ -211,18 +211,20 @@ pub(crate) fn resolve_local_datetime(tz: &Tz, local_datetime: NaiveDateTime) -> 
 const MICROS_PER_GREGORIAN_CYCLE: i64 = 146_097 * 86_400 * 1_000_000;
 const MILLIS_PER_GREGORIAN_CYCLE: i64 = 146_097 * 86_400 * 1_000;
 
-/// How many Gregorian cycles a value outside chrono's year range (-262144..=262143) is moved
-/// towards the epoch before its offset is looked up. 40,000 years brings every `i64` microsecond
-/// value (years -290308 to 294247) into range.
-const OUT_OF_RANGE_SHIFT_CYCLES: i64 = 100;
+/// How many Gregorian cycles from the epoch a value outside chrono's year range
+/// (-262144..=262143) is moved to before its offset is looked up. 600 cycles is 240,000 years,
+/// inside chrono's range on both sides of 1970.
+const IN_RANGE_CYCLES: u64 = 600;
 
 /// Converts a local (timestamp without time zone) value to UTC.
 ///
 /// Spark (`java.time`) handles the whole `i64` range, while chrono only represents years
 /// -262144 to 262143. For a value outside chrono's range, the offset is looked up at the same
-/// local time a whole number of 400-year cycles closer to the epoch, where chrono can
-/// represent it, and then applied to the original value. Overflowing `i64` while applying
-/// the offset raises `long overflow`, as Spark does.
+/// local time moved towards the epoch by whole 400-year cycles, until it is
+/// `IN_RANGE_CYCLES` cycles from the epoch on the same side, where chrono can represent it.
+/// That offset is then applied to the original value. The number of cycles comes from the
+/// value, so this covers the whole `i64` range for both microseconds and milliseconds.
+/// Overflowing `i64` while applying the offset raises `long overflow`, as Spark does.
 fn local_to_utc(
     value: i64,
     unit_per_cycle: i64,
@@ -232,17 +234,27 @@ fn local_to_utc(
     if let Some(local_datetime) = to_local(value) {
         return Ok(to_utc(local_datetime));
     }
-    let shift = OUT_OF_RANGE_SHIFT_CYCLES * unit_per_cycle;
-    let shifted = if value > 0 {
-        value - shift
-    } else {
-        value + shift
-    };
+    let shifted = shift_towards_epoch(value, unit_per_cycle);
     let local_datetime = to_local(shifted).ok_or_else(|| datetime_cast_err(value))?;
     let offset = shifted - to_utc(local_datetime);
     value
         .checked_sub(offset)
         .ok_or_else(|| ArrowError::ComputeError("long overflow".to_string()))
+}
+
+/// Moves `value` towards the epoch by whole Gregorian cycles so that it ends up
+/// `IN_RANGE_CYCLES` cycles from the epoch (plus the remainder within a cycle), on the same
+/// side. The shift is at most `|value|`, so it cannot overflow.
+fn shift_towards_epoch(value: i64, unit_per_cycle: i64) -> i64 {
+    let cycles = (value.unsigned_abs() / unit_per_cycle as u64).saturating_sub(IN_RANGE_CYCLES);
+    // `cycles * unit_per_cycle <= |value|`, which fits in `u64`, and the subtraction or
+    // addition below keeps the result between 0 and `value`.
+    let shift = cycles * unit_per_cycle as u64;
+    if value > 0 {
+        value - shift as i64
+    } else {
+        (value as i128 + shift as i128) as i64
+    }
 }
 
 /// Takes in a Timestamp(Microsecond, None) array and a timezone id, and returns
@@ -400,7 +412,7 @@ pub fn unlikely(b: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::TimestampMicrosecondArray;
+    use arrow::array::{TimestampMicrosecondArray, TimestampMillisecondArray};
 
     fn array_containing(local_datetime: &str) -> ArrayRef {
         let dt = NaiveDateTime::parse_from_str(local_datetime, "%Y-%m-%d %H:%M:%S").unwrap();
@@ -488,20 +500,41 @@ mod tests {
     }
 
     #[test]
-    fn test_timestamp_ntz_to_timestamp_beyond_chrono_range_matches_shifted_offset() {
-        // Far-future Los Angeles values use the same offset as the same local time 40,000
-        // years earlier, which is how the out-of-range offset is derived.
-        let tz = "America/Los_Angeles";
-        let value = 280_000_i64 * 365 * 86_400 * 1_000_000;
-        let shift = OUT_OF_RANGE_SHIFT_CYCLES * MICROS_PER_GREGORIAN_CYCLE;
-        let shifted =
-            timestamp_ntz_to_timestamp(ntz_micros(vec![value - shift]), tz, None).unwrap();
-        let expected = as_primitive_array::<TimestampMicrosecondType>(&shifted).value(0) + shift;
-        let output = timestamp_ntz_to_timestamp(ntz_micros(vec![value]), tz, None).unwrap();
+    fn test_timestamp_ntz_to_timestamp_millis_cover_the_whole_i64_range() {
+        // i64 milliseconds reach about year 292 million, far beyond any fixed shift.
+        let input: ArrayRef =
+            Arc::new(TimestampMillisecondArray::from(vec![i64::MAX, i64::MIN, 0]));
+        let output = timestamp_ntz_to_timestamp(Arc::clone(&input), "UTC", None).unwrap();
+        let output = as_primitive_array::<TimestampMillisecondType>(&output);
+        assert_eq!(output.values(), &[i64::MAX, i64::MIN, 0]);
+
+        let two_hours = 2 * 3_600 * 1_000;
+        let input: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![i64::MAX]));
+        let output = timestamp_ntz_to_timestamp(input, "+02:00", None).unwrap();
         assert_eq!(
-            as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
-            expected
+            as_primitive_array::<TimestampMillisecondType>(&output).value(0),
+            i64::MAX - two_hours
         );
+    }
+
+    #[test]
+    fn test_shift_towards_epoch_lands_inside_chrono_range() {
+        for (value, unit) in [
+            (i64::MAX, MICROS_PER_GREGORIAN_CYCLE),
+            (i64::MIN, MICROS_PER_GREGORIAN_CYCLE),
+            (i64::MAX, MILLIS_PER_GREGORIAN_CYCLE),
+            (i64::MIN, MILLIS_PER_GREGORIAN_CYCLE),
+        ] {
+            let shifted = shift_towards_epoch(value, unit);
+            assert_eq!((value - shifted) % unit, 0);
+            assert_eq!(shifted.signum(), value.signum());
+            let in_range = if unit == MICROS_PER_GREGORIAN_CYCLE {
+                as_datetime::<TimestampMicrosecondType>(shifted)
+            } else {
+                as_datetime::<TimestampMillisecondType>(shifted)
+            };
+            assert!(in_range.is_some(), "{value} -> {shifted}");
+        }
     }
 
     #[test]

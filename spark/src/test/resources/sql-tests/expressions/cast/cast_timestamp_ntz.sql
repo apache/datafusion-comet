@@ -125,3 +125,23 @@ INSERT INTO test_date_ntz_overflow VALUES (0), (106751992), (NULL), (-1), (-1067
 query
 SELECT days, try_cast(date_from_unix_date(days) AS timestamp_ntz)
 FROM test_date_ntz_overflow ORDER BY days
+
+-- NTZ -> Timestamp beyond chrono's year range (-262144 to 262143). Rows a day inside each end
+-- of the microsecond range do not overflow in any session time zone above, and the January
+-- and July far-past rows and the January far-future row check the out-of-range offsets against
+-- Spark. Results are read back as epoch seconds, since java.sql.Timestamp cannot hold these
+-- instants. A July far-future row is left out: chrono-tz stops applying DST after 2099, so
+-- Comet already differs from Spark there for in-range years such as 2100.
+statement
+CREATE TABLE test_ntz_extreme(ts_ntz timestamp_ntz, id int) USING parquet
+
+statement
+INSERT INTO test_ntz_extreme VALUES
+  (TIMESTAMP_NTZ'+294247-01-09 04:00:54.775807', 1),
+  (TIMESTAMP_NTZ'+280000-01-15 12:00:00', 2),
+  (TIMESTAMP_NTZ'-280000-01-15 12:00:00', 3),
+  (TIMESTAMP_NTZ'-280000-07-15 12:00:00', 4),
+  (TIMESTAMP_NTZ'-290308-12-22 19:59:05.224192', 5)
+
+query
+SELECT cast(cast(ts_ntz as timestamp) as long), id FROM test_ntz_extreme ORDER BY id
