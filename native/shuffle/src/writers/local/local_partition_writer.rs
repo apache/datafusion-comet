@@ -356,10 +356,10 @@ impl PartitionWriter for LocalPartitionWriter {
                             })?;
                             // Open first, so a failed open leaves nothing charged.
                             let spill_file = File::open(path)?;
-                            let buffer_size =
-                                self.buffers.as_ref().map_or(write_buffer_size, |buffers| {
-                                    super::reserve_buffer(buffers, write_buffer_size)
-                                });
+                            let buffer_size = match self.buffers.as_ref() {
+                                Some(buffers) => super::reserve_buffer(buffers, write_buffer_size)?,
+                                None => write_buffer_size,
+                            };
                             *spill_reader = Some((spill_file, vec![0; buffer_size]));
                         }
                         let (spill_file, buffer) = spill_reader.as_mut().unwrap();
@@ -457,7 +457,7 @@ impl PartitionWriter for LocalPartitionWriter {
         Ok(())
     }
 
-    fn write_burst_complete(&mut self) {
+    fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
         // A spill burst just ended and the next encode may be a long time coming, so don't
         // sit on the zstd workspace.
         self.codec_context.release_zstd();
@@ -466,8 +466,9 @@ impl PartitionWriter for LocalPartitionWriter {
         if let (Some(buffers), DataOutput::Multi { spill, .. }) =
             (&self.buffers, &mut self.data_output)
         {
-            spill.restore_buffer(buffers);
+            spill.restore_buffer(buffers)?;
         }
+        Ok(())
     }
 
     fn attach_buffer_reservation(
@@ -480,7 +481,7 @@ impl PartitionWriter for LocalPartitionWriter {
         // Attached once, before any write: the rebuild below must not discard buffered bytes.
         debug_assert!(self.buffers.is_none() && output_writer.buffer().is_empty());
         // The data file buffer was allocated before the consumer existed; shrink it if refused.
-        let capacity = super::reserve_buffer(&reservation, self.write_buffer_size);
+        let capacity = super::reserve_buffer(&reservation, self.write_buffer_size)?;
         if capacity != output_writer.capacity() {
             let output_file = output_writer
                 .get_ref()
@@ -861,7 +862,7 @@ mod tests {
                     .write(pid, &mut vec![Ok(batch_for(pid))].into_iter(), &metrics)
                     .unwrap();
             }
-            writer.write_burst_complete();
+            writer.write_burst_complete().unwrap();
             let range_len = |pid: usize| {
                 let ranges = writer.get_spill().ranges(pid).unwrap();
                 assert_eq!(ranges.len(), 1, "one spilled block for partition {pid}");
@@ -967,7 +968,7 @@ mod tests {
         assert_buffers_charged(&writer, &pool);
         let after_write = writer.buffer_reservation_size();
 
-        writer.write_burst_complete();
+        writer.write_burst_complete().unwrap();
         assert!(!writer.holds_zstd_cctx());
         assert_eq!(writer.buffer_reservation_size(), after_write - retained);
         assert_buffers_charged(&writer, &pool);

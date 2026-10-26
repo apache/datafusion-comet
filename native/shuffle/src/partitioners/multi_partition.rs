@@ -655,9 +655,9 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
             // After the free, so the writer can regrow buffers the pool cut short during the spill.
-            self.partition_writer.write_burst_complete();
+            let burst_result = self.partition_writer.write_burst_complete();
             self.metrics.spill_count.add(1);
-            write_result
+            write_result.and(burst_result)
         })
     }
 
@@ -748,6 +748,7 @@ mod tests {
     struct FailingPartitionWriter {
         fail: bool,
         consume_before_failure: bool,
+        fail_burst: bool,
         write_calls: usize,
     }
 
@@ -790,6 +791,59 @@ mod tests {
             _metrics: &ShufflePartitionerMetrics,
         ) -> datafusion::common::Result<()> {
             Ok(())
+        }
+
+        fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
+            if self.fail_burst {
+                return Err(DataFusionError::Execution(
+                    "injected burst failure".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
+
+    /// A failed `write_burst_complete` fails the spill, but only after the spilled memory is
+    /// released and counted; a write error takes precedence.
+    #[tokio::test]
+    async fn spill_returns_burst_error_after_releasing_memory() {
+        let batch = int64_batch(0..64);
+        let runtime = Arc::new(RuntimeEnv::default());
+        let mut repartitioner = hash_repartitioner(
+            FailingPartitionWriter {
+                fail_burst: true,
+                ..Default::default()
+            },
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        for (fail_write, expected) in [
+            (false, "injected burst failure"),
+            (true, "injected write failure"),
+        ] {
+            repartitioner.partition_writer.fail = fail_write;
+            repartitioner.insert_batch(batch.clone()).await.unwrap();
+            let reserved = repartitioner.reservation.size();
+            assert!(reserved > 0);
+            let (spills, spilled) = (
+                repartitioner.spill_count(),
+                repartitioner.metrics.memory_spilled_bytes.value(),
+            );
+
+            let error = repartitioner.spill(0).unwrap_err();
+            assert!(
+                matches!(&error, DataFusionError::Execution(message) if message == expected),
+                "unexpected error: {error}"
+            );
+            assert_eq!(runtime.memory_pool.reserved(), 0);
+            assert_eq!(
+                (
+                    repartitioner.spill_count(),
+                    repartitioner.metrics.memory_spilled_bytes.value()
+                ),
+                (spills + 1, spilled + reserved)
+            );
         }
     }
 
@@ -1475,6 +1529,15 @@ mod tests {
         runtime: Arc<RuntimeEnv>,
         max_buffer_bytes: Option<usize>,
     ) -> MultiPartitionShuffleRepartitioner<W> {
+        try_hash_repartitioner(writer, num_partitions, runtime, max_buffer_bytes).unwrap()
+    }
+
+    fn try_hash_repartitioner<W: PartitionWriter>(
+        writer: W,
+        num_partitions: usize,
+        runtime: Arc<RuntimeEnv>,
+        max_buffer_bytes: Option<usize>,
+    ) -> datafusion::common::Result<MultiPartitionShuffleRepartitioner<W>> {
         MultiPartitionShuffleRepartitioner::try_new(
             0,
             writer,
@@ -1485,7 +1548,44 @@ mod tests {
             false,
             max_buffer_bytes,
         )
-        .unwrap()
+    }
+
+    /// A pool error that is not a refusal, such as an exception Spark threw while spilling a
+    /// peer, fails the shuffle instead of leaving the writer on a fallback buffer.
+    #[tokio::test]
+    async fn buffer_pool_errors_other_than_refusal_fail_the_shuffle() {
+        use crate::writers::erroring_pool::{external, ErroringPool};
+        let write_buffer_size = 1 << 20;
+        let dir = tempfile::tempdir().unwrap();
+        // Only the writer's buffers ask for the full write buffer size.
+        let runtime = Arc::new(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(Arc::new(ErroringPool::new(
+                    1 << 30,
+                    write_buffer_size,
+                    external,
+                )))
+                .build()
+                .unwrap(),
+        );
+        let result = async {
+            let mut repartitioner = try_hash_repartitioner(
+                local_writer(&dir, 2, write_buffer_size, Arc::clone(&runtime)),
+                2,
+                Arc::clone(&runtime),
+                None,
+            )?;
+            repartitioner.insert_batch(int64_batch(0..4096)).await?;
+            repartitioner.spill(0)?;
+            repartitioner.shuffle_write()
+        }
+        .await;
+        let error = result.expect_err("an exception from the pool must fail the shuffle");
+        assert!(
+            matches!(error.find_root(), DataFusionError::External(_)),
+            "unexpected error: {error}"
+        );
+        assert_eq!(runtime.memory_pool.reserved(), 0);
     }
 
     fn assert_local_buffers_charged(

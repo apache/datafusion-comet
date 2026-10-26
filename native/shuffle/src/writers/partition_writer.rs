@@ -74,7 +74,9 @@ pub(crate) trait PartitionWriter: Send {
     /// event), letting the writer drop transient encode state. Staging more batches
     /// afterwards is still allowed.
     /// Called after the spilled batches are freed, so the writer can ask the pool again.
-    fn write_burst_complete(&mut self) {}
+    fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
+        Ok(())
+    }
 
     /// Hands the writer an empty reservation for its own buffers. Called once, before any `write`.
     fn attach_buffer_reservation(

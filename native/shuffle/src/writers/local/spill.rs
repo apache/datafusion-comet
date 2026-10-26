@@ -225,9 +225,10 @@ impl PartitionedSpill {
                 .create_tmp_file("shuffle writer spill")?;
             // Open before charging, so a failed open leaves nothing on the reservation.
             let file = temp_file.open_writer()?;
-            let capacity = buffers.map_or(self.write_buffer_size, |reservation| {
-                super::reserve_buffer(reservation, self.write_buffer_size)
-            });
+            let capacity = match buffers {
+                Some(reservation) => super::reserve_buffer(reservation, self.write_buffer_size)?,
+                None => self.write_buffer_size,
+            };
             let writer = BufWriter::with_capacity(capacity, file);
             self.spill_file = Some(ActiveSpillFile { temp_file, writer });
         }
@@ -235,20 +236,30 @@ impl PartitionedSpill {
     }
 
     /// Grows a fallback-sized buffer back to the configured size if `buffers` grants it.
-    /// Buffered bytes move to the new buffer; nothing is written to the file.
-    pub(crate) fn restore_buffer(&mut self, buffers: &MemoryReservation) {
+    /// Buffered bytes move to the new buffer; nothing is written to the file. Errors other than
+    /// a refusal are returned.
+    pub(crate) fn restore_buffer(
+        &mut self,
+        buffers: &MemoryReservation,
+    ) -> datafusion::common::Result<()> {
         if self.failed {
-            return;
+            return Ok(());
         }
         let Some(spill_file) = self.spill_file.take() else {
-            return;
+            return Ok(());
         };
         let capacity = spill_file.writer.capacity();
-        if capacity >= self.write_buffer_size
-            || buffers.try_grow(self.write_buffer_size - capacity).is_err()
-        {
+        if capacity >= self.write_buffer_size {
             self.spill_file = Some(spill_file);
-            return;
+            return Ok(());
+        }
+        if let Err(error) = buffers.try_grow(self.write_buffer_size - capacity) {
+            self.spill_file = Some(spill_file);
+            return if super::is_refusal(&error) {
+                Ok(())
+            } else {
+                Err(error)
+            };
         }
         let ActiveSpillFile { temp_file, writer } = spill_file;
         let (file, buffered) = writer.into_parts();
@@ -266,6 +277,7 @@ impl PartitionedSpill {
             self.failed = true;
         }
         self.spill_file = Some(ActiveSpillFile { temp_file, writer });
+        Ok(())
     }
 
     pub(crate) fn buffer_capacity(&self) -> usize {
@@ -552,7 +564,7 @@ mod tests {
             "the bytes must sit in the buffer"
         );
 
-        spill.restore_buffer(&buffers);
+        spill.restore_buffer(&buffers).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size()),
             (fallback, fallback),
@@ -560,7 +572,7 @@ mod tests {
         );
 
         batches.free();
-        spill.restore_buffer(&buffers);
+        spill.restore_buffer(&buffers).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size(), pool.reserved()),
             (WRITE_BUFFER, WRITE_BUFFER, WRITE_BUFFER)
@@ -587,6 +599,31 @@ mod tests {
     }
 
     #[test]
+    fn restore_buffer_returns_errors_other_than_refusal() {
+        use super::super::erroring_pool::{external, refusal, ErroringPool};
+        let fallback = super::super::FALLBACK_BUFFER_SIZE;
+        let (_pool, _batches, buffers) = full_pool();
+        let mut spill = partitioned_spill(&test_batch(), 1);
+        write_with_buffers(
+            &mut spill,
+            &mut vec![Ok(test_batch())].into_iter(),
+            &buffers,
+        )
+        .unwrap();
+
+        for (error, is_refusal) in [
+            (refusal as fn() -> DataFusionError, true),
+            (external, false),
+        ] {
+            let pool: Arc<dyn MemoryPool> = Arc::new(ErroringPool::new(1 << 30, 0, error));
+            let reservation = MemoryConsumer::new("buffers").register(&pool);
+            let result = spill.restore_buffer(&reservation);
+            assert_eq!(result.is_ok(), is_refusal, "{result:?}");
+            assert_eq!((spill.buffer_capacity(), reservation.size()), (fallback, 0));
+        }
+    }
+
+    #[test]
     fn restore_buffer_skips_a_failed_spill_file() {
         let fallback = super::super::FALLBACK_BUFFER_SIZE;
         let (_pool, batches, buffers) = full_pool();
@@ -599,7 +636,7 @@ mod tests {
         assert!(write_with_buffers(&mut spill, &mut iter, &buffers).is_err());
 
         batches.free();
-        spill.restore_buffer(&buffers);
+        spill.restore_buffer(&buffers).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size()),
             (fallback, fallback)
