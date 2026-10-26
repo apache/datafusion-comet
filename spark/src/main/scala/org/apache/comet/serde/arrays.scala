@@ -1014,6 +1014,13 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
 
 object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
 
+  // Flatten only rearranges offsets and never inspects the values, so unlike the comparing array
+  // functions it can take binary elements.
+  override def isTypeSupported(dt: DataType): Boolean = dt match {
+    case BinaryType => true
+    case _ => super.isTypeSupported(dt)
+  }
+
   override def getSupportLevel(expr: Flatten): SupportLevel = childTypesSupportLevel(expr)
 
   override def convert(
