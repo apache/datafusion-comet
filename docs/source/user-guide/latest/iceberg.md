@@ -822,6 +822,12 @@ The native Iceberg writer is disabled by default. With `spark.comet.write.iceber
   iceberg-java rejects the value. The native writer also trims or lowercases a few other settings
   that iceberg-java reads as written
   ([#7008](https://github.com/apache/datafusion-comet/issues/7008)).
+- **All-NaN `float` and `double` columns.** When a data file holds a column chunk with only NaN
+  values, the native writer records NaN as that column's lower and upper bound in the manifest.
+  iceberg-java records no bound, and the Iceberg spec does not allow NaN as a bound. This comes
+  from the Parquet writer, which writes NaN statistics for such a chunk since Parquet 60, and from
+  iceberg-rust, which copies them into the bounds
+  ([#7242](https://github.com/apache/datafusion-comet/issues/7242)).
 
 The physical differences that every native data file has, and why they are safe, are listed in
 [Accepted divergences](#accepted-divergences).
