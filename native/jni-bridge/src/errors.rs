@@ -831,7 +831,24 @@ fn natural_exception(error: &CometError) -> JvmException<'static> {
     let exception = error.to_exception();
     JvmException::New {
         class: exception.class,
-        message: exception.msg,
+        message: with_spill_limit_hint(exception.msg),
+    }
+}
+
+/// The config key DataFusion's spill-limit error tells users to raise. Comet sets the limit
+/// from `spark.comet.maxTempDirectorySize` instead, and DataFusion raises the error as a plain
+/// `std::io::Error`, so the key in the message text is the only thing to match on.
+const DATAFUSION_SPILL_LIMIT_KEY: &str = "`datafusion.runtime.max_temp_directory_size`";
+
+const SPILL_LIMIT_HINT: &str = "Comet does not use `datafusion.runtime.*` settings: \
+     the spill limit is `spark.comet.maxTempDirectorySize`. It applies to each Comet native plan \
+     separately, so an executor can use several times that much disk.";
+
+fn with_spill_limit_hint(message: String) -> String {
+    if message.contains(DATAFUSION_SPILL_LIMIT_KEY) {
+        format!("{message} {SPILL_LIMIT_HINT}")
+    } else {
+        message
     }
 }
 
@@ -1521,6 +1538,44 @@ mod tests {
             r#"Unable to get field named "b". Valid fields: ["A", "B"]"#.to_string(),
         )));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
+    }
+
+    /// DataFusion's spill-limit error, produced by a real `DiskManager` rather than copied, so a
+    /// rewording in a DataFusion upgrade fails this test instead of silently dropping the hint.
+    fn spill_limit_error() -> io::Error {
+        use datafusion::execution::disk_manager::DiskManagerBuilder;
+        use std::io::Write;
+
+        let disk_manager = Arc::new(
+            DiskManagerBuilder::default()
+                .with_max_temp_directory_size(10)
+                .build()
+                .unwrap(),
+        );
+        let file = disk_manager.create_tmp_file("spill limit test").unwrap();
+        let mut writer = file.open_writer().unwrap();
+        writer.write_all(&[0u8; 1024]).unwrap_err()
+    }
+
+    #[test]
+    fn spill_limit_error_names_the_comet_config() {
+        for error in [
+            DataFusionError::IoError(spill_limit_error()),
+            DataFusionError::ArrowError(Box::new(ArrowError::from(spill_limit_error())), None),
+            DataFusionError::External(Box::new(spill_limit_error())),
+        ] {
+            let error = CometError::from(error);
+            assert!(error.to_string().contains(DATAFUSION_SPILL_LIMIT_KEY));
+            let expected = format!("{error} {SPILL_LIMIT_HINT}");
+            let (_, class, message, _) = classify(error);
+            assert_eq!(class, "org/apache/comet/CometNativeException");
+            assert_eq!(message, expected);
+        }
+
+        let other = CometError::from(io::Error::other("disk gone"));
+        let expected = other.to_string();
+        let (_, _, message, _) = classify(other);
+        assert_eq!(message, expected);
     }
 
     #[test]
