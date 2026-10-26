@@ -94,8 +94,6 @@ fn matches_ipc_layout(
         .is_some_and(|buffers| buffers.len() == roles.len())
 }
 
-/// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
-///
 /// True when `data_type` is, or contains, one of Arrow's view layouts: `Utf8View`, `BinaryView`,
 /// `ListView` or `LargeListView`.
 ///
@@ -117,10 +115,10 @@ pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
         | DataType::BinaryView
         | DataType::ListView(_)
         | DataType::LargeListView(_) => true,
-        DataType::List(field) | DataType::LargeList(field) | DataType::FixedSizeList(field, _) => {
-            contains_view_type(field.data_type())
-        }
-        DataType::Map(field, _) => contains_view_type(field.data_type()),
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => contains_view_type(field.data_type()),
         DataType::Struct(fields) => fields.iter().any(|f| contains_view_type(f.data_type())),
         DataType::Union(fields, _) => fields
             .iter()
@@ -131,6 +129,8 @@ pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
     }
 }
 
+/// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
+///
 /// Each block is a self-contained Arrow IPC stream (schema message, dictionary messages, record
 /// batch message, end-of-stream marker). For the common case of a schema with no dictionary types,
 /// the schema flatbuffer for local writers is encoded once in [`Self::try_new`] and written verbatim
@@ -504,9 +504,11 @@ mod tests {
     fn has_view_types_sees_nested_and_dictionary_views() {
         let has_view = |data_type: DataType| {
             let schema = Schema::new(vec![Field::new("c", data_type, true)]);
-            ShuffleBlockWriter::try_new(&schema, CompressionCodec::None)
+            let flag = ShuffleBlockWriter::try_new(&schema, CompressionCodec::None)
                 .unwrap()
-                .has_view_types()
+                .has_view_types();
+            assert_eq!(flag, contains_view_type(schema.field(0).data_type()));
+            flag
         };
         let dict = |value| DataType::Dictionary(Box::new(DataType::Int32), Box::new(value));
         assert!(has_view(DataType::Utf8View));

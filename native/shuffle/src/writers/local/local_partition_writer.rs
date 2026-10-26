@@ -455,6 +455,7 @@ fn copy_spill_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writers::decode_blocks;
     use crate::writers::local::spill::pathless_backend;
     use crate::CompressionCodec;
     use arrow::array::Int64Array;
@@ -569,20 +570,10 @@ mod tests {
         // Decode every block within a partition's byte range; a wrong offset would land
         // mid-block and fail to parse.
         let rows_in = |range: std::ops::Range<usize>| {
-            let mut pos = range.start;
-            let mut rows = 0;
-            while pos < range.end {
-                let len = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap()) as usize;
-                assert!(
-                    pos + 8 + len <= range.end,
-                    "block crosses a partition boundary"
-                );
-                rows += crate::read_ipc_compressed(&data[pos + 16..pos + 8 + len])
-                    .unwrap()
-                    .num_rows();
-                pos += 8 + len;
-            }
-            rows
+            decode_blocks(&data[range])
+                .iter()
+                .map(RecordBatch::num_rows)
+                .sum::<usize>()
         };
         assert_eq!(rows_in(offsets[0] as usize..offsets[1] as usize), 300);
         assert_eq!(rows_in(offsets[1] as usize..offsets[2] as usize), 100);
@@ -614,17 +605,6 @@ mod tests {
     fn int_batch(values: std::ops::Range<i64>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
         RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from_iter_values(values))]).unwrap()
-    }
-
-    fn decode_blocks(bytes: &[u8]) -> Vec<RecordBatch> {
-        let mut batches = Vec::new();
-        let mut pos = 0;
-        while pos < bytes.len() {
-            let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
-            batches.push(crate::read_ipc_compressed(&bytes[pos + 16..pos + 8 + len]).unwrap());
-            pos += 8 + len;
-        }
-        batches
     }
 
     fn count_files(dir: &std::path::Path) -> usize {

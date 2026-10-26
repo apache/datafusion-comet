@@ -94,16 +94,16 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         buffer_max_size: usize,
         batch_size: usize,
     ) -> Self {
-        if shuffle_block_writer.borrow().has_view_types() {
-            Self::new(shuffle_block_writer, writer, buffer_max_size, batch_size)
-        } else {
-            Self::new_passthrough(shuffle_block_writer, writer, buffer_max_size)
-        }
-    }
-
-    /// A passthrough writer that serializes every batch as its own block, verbatim.
-    fn new_passthrough(shuffle_block_writer: S, writer: W, buffer_max_size: usize) -> Self {
-        Self::with_mode(shuffle_block_writer, writer, buffer_max_size, None)
+        let coalesce_batch_size = shuffle_block_writer
+            .borrow()
+            .has_view_types()
+            .then_some(batch_size);
+        Self::with_mode(
+            shuffle_block_writer,
+            writer,
+            buffer_max_size,
+            coalesce_batch_size,
+        )
     }
 
     fn with_mode(
@@ -305,6 +305,7 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write + Seek> BufBatchWriter<S, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::writers::decode_blocks;
     use crate::{read_ipc_compressed, CompressionCodec};
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
@@ -392,7 +393,8 @@ mod tests {
         let time = Time::default();
         let mut scratch = Vec::new();
         let mut codec_context = ShuffleCodecContext::default();
-        let mut writer = BufBatchWriter::new_passthrough(block_writer, &mut output, 1 << 20);
+        let mut writer =
+            BufBatchWriter::new_for_partition(block_writer, &mut output, 1 << 20, 8192);
         for batch in &inputs {
             writer
                 .write(batch, &mut scratch, &mut codec_context, &time, &time)
@@ -406,10 +408,7 @@ mod tests {
 
         let mut block_rows = Vec::new();
         let mut next = 0i64;
-        let mut pos = 0;
-        while pos < output.len() {
-            let len = u64::from_le_bytes(output[pos..pos + 8].try_into().unwrap()) as usize;
-            let block = read_ipc_compressed(&output[pos + 16..pos + 8 + len]).unwrap();
+        for block in decode_blocks(&output) {
             let values = block
                 .column(0)
                 .as_any()
@@ -418,7 +417,6 @@ mod tests {
             assert_eq!(values.value(0), next, "rows must stay in input order");
             next += block.num_rows() as i64;
             block_rows.push(block.num_rows());
-            pos += 8 + len;
         }
         assert_eq!(block_rows, vec![100, 30, 100, 7]);
     }
@@ -430,7 +428,7 @@ mod tests {
     fn for_partition_coalesces_only_view_schemas() {
         use arrow::array::StringViewArray;
 
-        let block_count = |schema: Arc<Schema>, columns: Vec<arrow::array::ArrayRef>| {
+        let write_blocks = |schema: Arc<Schema>, columns: Vec<arrow::array::ArrayRef>| {
             let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
             let block_writer =
                 ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
@@ -448,18 +446,11 @@ mod tests {
             writer
                 .drain(&mut scratch, &mut codec_context, &time, &time)
                 .unwrap();
-            let mut blocks = Vec::new();
-            let mut pos = 0;
-            while pos < output.len() {
-                let len = u64::from_le_bytes(output[pos..pos + 8].try_into().unwrap()) as usize;
-                blocks.push(read_ipc_compressed(&output[pos + 16..pos + 8 + len]).unwrap());
-                pos += 8 + len;
-            }
-            blocks
+            decode_blocks(&output)
         };
 
         let plain = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let blocks = block_count(plain, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]);
+        let blocks = write_blocks(plain, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]);
         assert_eq!(
             blocks.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
             [3, 3, 3]
@@ -470,7 +461,7 @@ mod tests {
             DataType::Utf8View,
             false,
         )]));
-        let blocks = block_count(
+        let blocks = write_blocks(
             view,
             vec![Arc::new(StringViewArray::from(vec!["a", "b", "c"]))],
         );
