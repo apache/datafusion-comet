@@ -2467,7 +2467,7 @@ object IcebergReflection extends Logging {
  * @param metadataLocation
  *   Path to the table metadata file
  * @param nameMapping
- *   Optional name mapping from table properties (for schema evolution)
+ *   Name mapping from successfully read table properties, or None when not configured
  * @param tasks
  *   List of FileScanTask objects from Iceberg planning
  * @param scanSchema
@@ -2551,16 +2551,10 @@ object CometIcebergNativeScanMetadata extends Logging {
       table <- getTable(scan)
       scanSchema <- getExpectedSchema(scan)
       tableSchema <- getSchema(table)
+      // Reading properties must succeed; only the mapping key is optional.
+      properties <- getTableProperties(table).filter(_ != null)
     } yield {
-      // nameMapping is optional - if it fails we just use None
-      val nameMapping = getTableProperties(table).flatMap { properties =>
-        val nameMappingKey = "schema.name-mapping.default"
-        if (properties.containsKey(nameMappingKey)) {
-          Some(properties.get(nameMappingKey))
-        } else {
-          None
-        }
-      }
+      val nameMapping = Option(properties.get("schema.name-mapping.default"))
 
       val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
       val (prunedTaskSchema, fullTaskSchema) =

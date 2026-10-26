@@ -231,6 +231,14 @@ The following scenarios will fall back to the JVM Iceberg reader:
   or renamed. The native reader cannot yet match such a field to data files written before the
   change. The check uses the table's schema history, so the fallback stays after those files are
   rewritten
+- Scans that read a struct, array, or map column from a table with
+  `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
+  `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
+  does not apply name mappings to nested fields. Queries that read only primitive columns can
+  still run natively. The fallback remains while the property is set, even if the data files
+  have since been rewritten with field IDs. Iceberg's nullness rules are separate from the
+  Parquet legacy setting; [#6934](https://github.com/apache/datafusion-comet/issues/6934) tracks
+  the reader update and review of this fallback
 - Scans where no schema in the table's history gives a partition source or equality-delete key a
   name that the scan's other columns don't use (every task of a native scan must give such a
   column the same name)
@@ -802,12 +810,6 @@ Which entries apply depends on which native paths are enabled:
 
 ### Reads that differ from Spark
 
-- **Migrated tables that use a name mapping.** The `migrate`, `snapshot` and `add_files`
-  procedures set `schema.name-mapping.default` for files without Iceberg field ids. When a query
-  also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-  fields, list elements and map values). Filters on those fields then select the wrong rows
-  ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The fix needs an iceberg-rust
-  upgrade ([#6934](https://github.com/apache/datafusion-comet/issues/6934)).
 - **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
   a file as NULL, and the native scan returns the values stored in the file
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).

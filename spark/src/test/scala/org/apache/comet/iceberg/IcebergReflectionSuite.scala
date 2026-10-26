@@ -66,6 +66,75 @@ class IcebergReflectionSuite extends AnyFunSuite {
     val metadata = IcebergReflection.getTableMetadata(table)
     assert(metadata.isDefined)
     assert(metadata.get.isInstanceOf[TableMetadata])
+    val extracted = extractScanMetadata(new MetadataScan(table, schema)).get
+    assert(extracted.nameMapping.isEmpty)
+    assert(extracted.fullTaskSchema.isDefined)
+    assert(extracted.prunedTaskSchema.isDefined)
+  }
+
+  private val scanSchema =
+    new Schema(Types.NestedField.optional(1, "id", Types.IntegerType.get()))
+
+  private def extractScanMetadata(scan: MetadataScan): Option[CometIcebergNativeScanMetadata] =
+    CometIcebergNativeScanMetadata.extract(
+      scan,
+      "file:///tmp/test-table/metadata.json",
+      Map.empty,
+      Collections.emptyList[AnyRef](),
+      Set.empty)
+
+  test("scan metadata preserves name mapping when present and None when absent") {
+    val mapping = """[{"field-id":1,"names":["id","old_id"]}]"""
+    for (expected <- Seq(None, Some(mapping))) {
+      val properties = new java.util.HashMap[String, String]()
+      expected.foreach(properties.put("schema.name-mapping.default", _))
+      val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => properties))
+      val metadata = extractScanMetadata(new MetadataScan(table, scanSchema)).get
+      assert(metadata.nameMapping == expected)
+      assert(metadata.fullTaskSchema.isDefined)
+      assert(metadata.prunedTaskSchema.isDefined)
+      assert(metadata.globalFieldIdMapping == Map("id" -> 1))
+    }
+  }
+
+  test("scan metadata declines when the properties accessor throws") {
+    val metadata =
+      new PropertiesMetadata(() => throw new IllegalStateException("properties failed"))
+    val table = new MetadataTable(scanSchema, metadata)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor is missing") {
+    val table = new MetadataTable(scanSchema, new Object)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor returns null") {
+    val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => null))
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  // Only the metadata's properties accessor varies. Every case has a valid scan/table schema,
+  // schema history and operations.current(), so other reflection failures cannot mask the bug.
+  class MetadataScan(scanTable: AnyRef, scanSchema: Schema) {
+    def table(): AnyRef = scanTable
+    def projection(): Schema = scanSchema
+  }
+
+  class MetadataTable(tableSchema: Schema, metadata: AnyRef) {
+    def schema(): Schema = tableSchema
+    def schemas(): java.util.Map[Integer, Schema] =
+      Collections.singletonMap(Integer.valueOf(0), tableSchema)
+    def operations(): MetadataOperations = new MetadataOperations(metadata)
+    def name(): String = "test-table"
+  }
+
+  class MetadataOperations(metadata: AnyRef) {
+    def current(): AnyRef = metadata
+  }
+
+  class PropertiesMetadata(read: () => java.util.Map[String, String]) {
+    def properties(): java.util.Map[String, String] = read()
   }
 
   test("findMethod resolves a method once and returns the cached instance") {
