@@ -1259,6 +1259,27 @@ object IcebergReflection extends Logging {
   }
 
   /**
+   * Top-level column names of `schema` whose Parquet files can store a narrower integer or
+   * floating-point type than the column: int (Hive TINYINT and SMALLINT), long (int) and double
+   * (float). Files imported by `add_files`, `migrate` or `snapshot` are not checked against the
+   * schema, so the schema history cannot reveal them, but those procedures set a name mapping.
+   * Callers treat these columns as promoted for a table that has one.
+   */
+  def narrowableColumns(schema: Any): Set[String] = {
+    import scala.jdk.CollectionConverters._
+    getMethod(schema.getClass, "columns")
+      .invoke(schema)
+      .asInstanceOf[java.util.List[_]]
+      .asScala
+      .filter { column =>
+        Set("int", "long", "double").contains(
+          getMethod(column.getClass, "type").invoke(column).toString)
+      }
+      .map(fieldName)
+      .toSet
+  }
+
+  /**
    * Validates partition column types for compatibility with iceberg-rust.
    *
    * iceberg-rust's Literal::try_from_json() has incomplete type support: - Binary/fixed types:

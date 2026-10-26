@@ -1089,9 +1089,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Columns whose type changed over the table's history; residual predicates comparing them
     // with a literal are dropped, except equality. The scan schema also covers a column that
     // VERSION AS OF reads after it was dropped from the table.
-    val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
-      .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
-      .toSet
+    // add_files, migrate and snapshot import files without checking their types against the
+    // schema, so the history records nothing for them, but they set a name mapping. A table with
+    // one is treated as if every column that can hold a narrower type were promoted.
+    val schemas = Seq(metadata.tableSchema, metadata.scanSchema)
+    val recordedPromotions =
+      schemas.flatMap(IcebergReflection.promotedColumns(metadata.table, _))
+    val importedNarrowings =
+      if (metadata.nameMapping.isDefined) schemas.flatMap(IcebergReflection.narrowableColumns)
+      else Nil
+    val promotedColumns = (recordedPromotions ++ importedNarrowings).toSet
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
     // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
