@@ -245,6 +245,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_TEXT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.text.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Spark (non-native) Text v1 and v2 scans will be converted to " +
+          "Arrow format. Arrow strings must be valid UTF-8, so Comet replaces bytes that are " +
+          "not valid UTF-8, for example in a Latin-1 file, with U+FFFD, and results that " +
+          "depend on the original bytes can differ from Spark. Enable this only for Text " +
+          "sources that are UTF-8. See the compatibility guide.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CONVERT_FROM_RANGE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.range.enabled")
       .category(CATEGORY_EXEC)
@@ -1280,9 +1292,10 @@ object CometConf extends ShimCometConf {
           "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
           "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
           "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
-          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
-          "to this fraction of the off-heap size divided by the task's consumers, and the " +
-          s"greedy_unified pool ignores it. $TUNING_GUIDE.")
+          "to off-heap mode, where the fair_unified pool limits each task to this fraction " +
+          "of the off-heap size, which is tighter than Spark's own limit of an even share of " +
+          "the pool per running task only when it is below one over the number of running " +
+          s"tasks, and the greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
 
@@ -1343,10 +1356,11 @@ object CometConf extends ShimCometConf {
           s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` is true, each named by its Spark class name " +
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
-          "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
-          "deprecated and will stop working in a future major release. Use their " +
-          "`spark.comet.convert` configs instead.")
+          "`FileSourceScan` for file formats other than Parquet, JSON, CSV and Text. Naming " +
+          "`Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan`, " +
+          "or naming `FileSourceScan` or `BatchScan` to convert a Text scan, is deprecated " +
+          "and will stop working in a future major release. Use their `spark.comet.convert` " +
+          "configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
@@ -1355,13 +1369,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.broadcastBuildSide.enabled")
       .category(CATEGORY_EXEC)
       .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
-        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "example an ORC source) to Arrow when that scan feeds a broadcast join's build side and " +
         "every scan on the probe side is already native, so the broadcast join runs natively " +
         "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
         "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
         "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
         "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Set this to false to keep such build sides on Spark.")
+        "subquery. Parquet, JSON, CSV and Text scans are converted only by their own " +
+        "`spark.comet.convert` configs. Set this to false to keep such build sides on Spark.")
       .booleanConf
       .createWithDefault(true)
 
