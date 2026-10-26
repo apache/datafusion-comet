@@ -294,6 +294,21 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       empty
   }
 
+  test("files that may be narrower treat every column of a narrowable type as promoted") {
+    // A table with a name mapping may hold files imported by add_files, migrate or snapshot, which
+    // store any narrower type even though the history is complete.
+    val schema = new Schema(
+      Types.NestedField.optional(1, "i", Types.IntegerType.get()),
+      Types.NestedField.optional(2, "id", Types.LongType.get()),
+      Types.NestedField.optional(3, "f", Types.DoubleType.get()),
+      Types.NestedField.optional(4, "r", Types.FloatType.get()),
+      Types.NestedField.optional(5, "s", Types.StringType.get()))
+    val table = new SchemaHistory(0 -> schema)
+    IcebergReflection.promotedColumns(table, schema) shouldBe empty
+    IcebergReflection.promotedColumns(table, schema, filesMayBeNarrower = true) shouldBe
+      Set("i", "id", "f")
+  }
+
   test("NOT declines equality on a nullable column, which may be a null-safe comparison") {
     // Iceberg converts Spark's `value <=> 1` to `value = 1`. Negated, Spark keeps NULL rows that
     // the native reader's not-equal drops.

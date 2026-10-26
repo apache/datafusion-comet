@@ -4581,6 +4581,81 @@ class CometIcebergNativeSuite
     }
   }
 
+  test("residuals on tables with a name mapping keep rows from imported files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val sourceName = "imported_residual_source"
+        val table = "test_cat.db.imported_residual_test"
+        withTempDir { dir =>
+          // The file stores id as INT, t as TINYINT and d as FLOAT, while the source table below
+          // declares them as BIGINT, INT and DOUBLE. snapshotTable imports the file as it is, sets
+          // the table's name mapping and records no schema change.
+          val dataPath = new File(dir, "source").getAbsolutePath
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            spark
+              .sql("SELECT CAST(id AS INT) AS id, CAST(id AS TINYINT) AS t, " +
+                "CAST(id AS FLOAT) AS d FROM range(1, 4)")
+              .coalesce(1)
+              .write
+              .parquet(dataPath)
+          }
+          withTable(sourceName) {
+            spark.sql(s"CREATE TABLE $sourceName (id BIGINT, t INT, d DOUBLE) " +
+              s"USING parquet LOCATION '$dataPath'")
+            val actions = Class
+              .forName("org.apache.iceberg.spark.actions.SparkActions")
+              .getMethod("get")
+              .invoke(null)
+            val snapshot = actions.getClass
+              .getMethod("snapshotTable", classOf[String])
+              .invoke(actions, sourceName)
+            val destination = snapshot.getClass
+              .getMethod("as", classOf[String])
+              .invoke(snapshot, table)
+            destination.getClass.getMethod("execute").invoke(destination)
+            try {
+              val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+              assert(icebergTable.properties().get("schema.name-mapping.default") != null)
+              assert(icebergTable.schemas().size() == 1)
+
+              // iceberg-rust skips the imported file's pages for these, or casts 200 and
+              // 3000000000 to a NULL TINYINT and INT. Range predicates on d are not pushed to the
+              // native scan with or without a name mapping, so d is covered by IN only.
+              val predicates = Seq(
+                "id > 0",
+                "id < 3000000000",
+                "id IN (1, 2)",
+                "t < 200",
+                "t IN (1, 200)",
+                "d IN (1.0D, 2.0D)",
+                "id = 2",
+                "t = 2",
+                "d = 2.0D")
+              for (predicate <- predicates) {
+                checkIcebergNativeScan(s"SELECT id FROM $table WHERE $predicate")
+              }
+
+              // Equality stays pushed: it is correct for the imported file.
+              val df = spark.sql(s"SELECT id FROM $table WHERE id = 2 AND t = 2")
+              df.collect()
+              val scans = collectIcebergNativeScans(df.queryExecution.executedPlan)
+              assert(scans.length == 1)
+              val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+              assert(common.getResidualPoolCount == 1)
+            } finally {
+              spark.sql(s"DROP TABLE IF EXISTS $table")
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("literal residuals on promoted columns keep rows from older files") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 

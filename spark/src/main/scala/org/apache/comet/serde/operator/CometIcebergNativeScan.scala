@@ -1088,11 +1088,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // schema so a filter column projected out of the scan output is still recognized.
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
-    // Columns whose type changed over the table's history; residual predicates comparing them
-    // with a literal are dropped, except equality. The scan schema covers VERSION AS OF reads,
-    // where a name can still mean a column the table has since replaced with a new one.
+    // Columns whose type changed over the table's history, or whose files may store a narrower
+    // type; residual predicates comparing them with a literal are dropped, except equality.
+    // iceberg-rust casts the literal to the file's type for the row filter, so a value that does
+    // not fit becomes NULL, and the page index skips the pages of a file whose type it cannot
+    // compare with the literal (apache/iceberg-rust#3122). add_files, migrate and snapshot import
+    // files without checking their types against the schema, so the history records nothing for
+    // them, but they set a name mapping, so a table that has one is treated as if its files could
+    // be narrower. The scan schema covers VERSION AS OF reads, where a name can still mean a
+    // column the table has since replaced with a new one.
+    //
+    // This workaround can go once the pin includes the iceberg-rust fixes for the row filter
+    // (#3540) and the page index (#3507). Until then, IN lookups on BIGINT keys of migrated tables
+    // lose row group pruning in the native scan.
+    val filesMayBeNarrower = metadata.nameMapping.isDefined
     val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
-      .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
+      .flatMap(IcebergReflection.promotedColumns(metadata.table, _, filesMayBeNarrower))
       .toSet
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with

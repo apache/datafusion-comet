@@ -1230,9 +1230,17 @@ object IcebergReflection extends Logging {
    * timestamp_ns, which a date can be promoted to. The history cannot reveal a file whose type
    * differs without a recorded schema change, such as one imported by `add_files`, `migrate` or
    * `snapshot`, or one promoted under metadata from before Iceberg 0.12, which kept only the
-   * current schema. Called at serialization time, so it throws on reflection failure.
+   * current schema.
+   *
+   * Those imports set a name mapping, so a caller reading a table that has one passes
+   * `filesMayBeNarrower = true`. Every column of a type that a file can store in a narrower type
+   * is then returned, as for an incomplete history, and `int` joins the types above (Hive TINYINT
+   * and SMALLINT). Called at serialization time, so it throws on reflection failure.
    */
-  def promotedColumns(table: Any, schema: Any): Set[String] = {
+  def promotedColumns(
+      table: Any,
+      schema: Any,
+      filesMayBeNarrower: Boolean = false): Set[String] = {
     import scala.jdk.CollectionConverters._
     val findField = getMethod(schema.getClass, "findField", classOf[Int])
     def typeOf(field: Any): String = fieldTypeOf(field).toString
@@ -1243,6 +1251,9 @@ object IcebergReflection extends Logging {
     val history = schemasById.values.toSeq
     val ids = schemasById.keys.map(_.asInstanceOf[Integer].intValue).toSet
     val historyComplete = ids.nonEmpty && ids.min == 0 && ids.max == ids.size - 1
+    val assumeNarrower = filesMayBeNarrower || !historyComplete
+    val promotableTypes = Set("long", "double", "timestamp", "timestamp_ns") ++
+      (if (filesMayBeNarrower) Some("int") else None)
     getMethod(schema.getClass, "columns")
       .invoke(schema)
       .asInstanceOf[java.util.List[_]]
@@ -1250,9 +1261,8 @@ object IcebergReflection extends Logging {
       .filter { column =>
         val id = fieldIdOf(column).asInstanceOf[AnyRef]
         val current = typeOf(column)
-        val promotable = current.startsWith("decimal(") ||
-          Set("long", "double", "timestamp", "timestamp_ns").contains(current)
-        (promotable && !historyComplete) ||
+        val promotable = current.startsWith("decimal(") || promotableTypes.contains(current)
+        (promotable && assumeNarrower) ||
         history.exists(older => Option(findField.invoke(older, id)).exists(typeOf(_) != current))
       }
       .map(fieldName)
