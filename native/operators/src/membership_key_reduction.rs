@@ -123,7 +123,7 @@ impl ExecutionPlan for MembershipKeyReductionExec {
             let batch = batch?;
             let rows = batch.num_rows();
             input_rows.add(rows);
-            // Avoid building a hash table on short partitions, including a single large batch.
+            // Avoid speculative hashing on short partitions, including a single large batch.
             let attempt = seen >= PREFIX_ROWS && (min_rows..=MAX_BATCH_ROWS).contains(&rows);
             seen = seen.saturating_add(rows);
             if attempt {
