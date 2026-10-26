@@ -1982,7 +1982,7 @@ class CometIcebergWriteActionSuite
 
       def insert(table: String): Unit = spark.sql(
         s"INSERT INTO cat.db.$table " +
-          s"SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) " +
           s"FROM range(${insertedIds.start}, ${insertedIds.end}, 1, 1)")
 
       assertNativeWriteEngages("bloom_explicit_ndv_fold_native", insertedIds) {
