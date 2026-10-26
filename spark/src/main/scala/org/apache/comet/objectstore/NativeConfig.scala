@@ -342,7 +342,7 @@ object NativeConfig {
 
     import scala.jdk.CollectionConverters._
     val options = scala.collection.mutable.Map[String, String]() ++= schemeListOptions(hadoopConf)
-    val s3CompliantSchemes = parseSchemeSet(hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY))
+    val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)
 
     // ABFS: Hadoop resolves the mechanism and values for this URI's account on the driver, and
     // only those travel to native (never another account's keys, never the whole namespace).

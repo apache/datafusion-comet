@@ -472,9 +472,10 @@ private[comet] object AbfsAuthResolver extends Logging {
   /**
    * Why the native store cannot read `uri` under `outcome`, or None when it can: a mechanism
    * Hadoop named that runs Java code per request, a built-in OAuth provider with no
-   * `object_store` counterpart, or a resolution that failed. All are known on the driver, so the
-   * scan falls back to Spark's own reader, which authenticates through hadoop-azure, instead of
-   * planning natively and failing every task.
+   * `object_store` counterpart, a client credentials endpoint the native store rejects, or a
+   * resolution that failed. All are known on the driver, so the scan falls back to Spark's own
+   * reader, which authenticates through hadoop-azure, instead of planning natively and failing
+   * every task.
    */
   def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
     // The container and host only: a password in the user info stays out of the reason.
@@ -496,6 +497,13 @@ private[comet] object AbfsAuthResolver extends Logging {
             Some(c @ (Providers.REFRESH_TOKEN | Providers.USER_PASSWORD)),
             _) =>
         Some(unsupported(s"auth type ${AuthTypes.OAUTH} with provider $c"))
+      case Resolved(AuthTypes.OAUTH, Some(c @ Providers.CLIENT_CREDS), values)
+          if !values.get(Keys.CLIENT_ENDPOINT).exists(clientCredsEndpointUsable) =>
+        // The endpoint stays out of the reason: it may carry user info.
+        Some(
+          unsupported(
+            s"auth type ${AuthTypes.OAUTH} with provider $c and an endpoint that is not an " +
+              "https URL with a tenant path segment"))
       case Failed(_, message) =>
         // Some of Hadoop's own messages quote the whole URI, user info included.
         val safeMessage =
@@ -504,6 +512,23 @@ private[comet] object AbfsAuthResolver extends Logging {
       case _: Resolved | Unconfigured => None
     }
   }
+
+  /**
+   * Whether the native store can post client credentials token requests to `endpoint`: an `https`
+   * URL with a host and a tenant segment, which `client_creds_settings` in `azure.rs` reads the
+   * same way (the tenant is the segment before the last `oauth2`, else the first). Conservative
+   * where the native URL parser and `java.net.URI` could disagree: a percent escape, a backslash
+   * or a dot segment is declined, since Hadoop's own reader may take it.
+   */
+  private[objectstore] def clientCredsEndpointUsable(endpoint: String): Boolean =
+    Try(new URI(endpoint)).toOption.exists { uri =>
+      val path = Option(uri.getRawPath).getOrElse("")
+      val segments = path.stripPrefix("/").split("/", -1)
+      val tenantAt = Some(segments.lastIndexOf("oauth2")).filter(_ > 0).map(_ - 1).getOrElse(0)
+      "https".equalsIgnoreCase(uri.getScheme) && uri.getHost != null &&
+      !path.exists(c => c == '%' || c == '\\') && !segments.exists(s => s == "." || s == "..") &&
+      segments(tenantAt).nonEmpty
+    }
 
   private def providerMarker(authType: String): String =
     if (authType == AuthTypes.SAS) Markers.SAS_PROVIDER_CLASS else Markers.OAUTH_PROVIDER_CLASS
