@@ -1935,7 +1935,10 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
             Unsupported(Some(s"Unsupported data type: $other"))
         }
       case other =>
-        Unsupported(Some(s"Unsupported generator: ${other.nodeName}"))
+        CometGeneratorUDF.declineReason(other) match {
+          case Some(reason) => Unsupported(Some(reason))
+          case None => Compatible()
+        }
     }
   }
 
@@ -1943,18 +1946,37 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op: GenerateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val (childExpr, isPosExplode, isInline) = op.generator match {
-      case inline: Inline => (inline.child, false, true)
-      case stack: Stack => (stackAsStructArray(stack), false, true)
-      case explode: ExplodeBase => (explode.child, explode.position, false)
-      case other => throw new IllegalStateException(s"Unsupported generator: ${other.nodeName}")
+    val explodeBuilder = OperatorOuterClass.Explode.newBuilder().setOuter(op.outer)
+    val childExprProto = op.generator match {
+      case inline: Inline =>
+        explodeBuilder.setInline(true)
+        exprToProto(inline.child, op.child.output)
+      case stack: Stack =>
+        explodeBuilder.setInline(true)
+        val array = stackAsStructArray(stack)
+        exprToProto(array, op.child.output).orElse {
+          // The array of structs is built here rather than taken from the plan, so carry any
+          // reason recorded on the built nodes to the generator, where the operator collects it.
+          liftFallbackReasons(array, op.generator)
+          None
+        }
+      case explode: ExplodeBase =>
+        explodeBuilder.setPosition(explode.position)
+        exprToProto(explode.child, op.child.output)
+      case generator =>
+        // The JVM generator yields, for each input row, an array of the structs it emits.
+        explodeBuilder.setInline(true)
+        CometGeneratorUDF.calls(generator, op.child.output) match {
+          case Right((process, terminate)) =>
+            explodeBuilder.setTerminate(terminate)
+            Some(process)
+          case Left(reason) =>
+            withFallbackReason(op, reason)
+            None
+        }
     }
-    val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      // `stack` builds its array of structs here rather than taking it from the plan, so carry any
-      // reason recorded on the built nodes to the generator, where the operator collects it.
-      liftFallbackReasons(childExpr, op.generator)
       return None
     }
 
@@ -1969,12 +1991,8 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
-    val explodeBuilder = OperatorOuterClass.Explode
-      .newBuilder()
+    explodeBuilder
       .setChild(childExprProto.get)
-      .setOuter(op.outer)
-      .setPosition(isPosExplode)
-      .setInline(isInline)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())

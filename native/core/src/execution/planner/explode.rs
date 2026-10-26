@@ -17,7 +17,8 @@
 
 //! Builder for the native `Explode` operator, which plans Spark's `explode`, `posexplode`,
 //! `inline`, and their `_outer` variants as a projection followed by Comet's `ExplodeExec`.
-//! Spark's `stack` arrives here as `inline` over an array of structs built by the JVM serde.
+//! Spark's `stack` arrives here as `inline` over an array of structs built by the JVM serde, and
+//! any other generator as `inline` over the rows a JVM `CometUDF` produces for each input row.
 
 use std::sync::Arc;
 
@@ -213,13 +214,18 @@ impl OperatorBuilder for ExplodeBuilder {
         let unnest_options = UnnestOptions::new().with_null_handling(null_handling);
 
         // Comet's specialized fork of `UnnestExec`; see `operators::explode`.
-        let unnest_exec = Arc::new(ExplodeExec::new(
+        let mut unnest_exec = ExplodeExec::new(
             project_exec,
             list_unnests,
             struct_column_indices,
             output_schema,
             unnest_options,
-        )?);
+        )?;
+        if let Some(terminate) = &explode.terminate {
+            let terminate = planner.create_expr(terminate, Arc::new(Schema::empty()))?;
+            unnest_exec = unnest_exec.with_terminate(terminate)?;
+        }
+        let unnest_exec = Arc::new(unnest_exec);
 
         Ok((
             scans,

@@ -64,16 +64,16 @@ use arrow::array::{
 };
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
-use arrow::compute::{cast, is_not_null, kernels, sum};
-use arrow::datatypes::{DataType, Int64Type, SchemaRef};
-use arrow::record_batch::RecordBatch;
+use arrow::compute::{cast, is_not_null, kernels, sum, take_record_batch};
+use arrow::datatypes::{DataType, Int64Type, Schema, SchemaRef, UInt32Type};
+use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 // Upstream imports these as `arrow_ord::cmp::{eq, lt}`; Comet reaches them through `arrow`,
 // which does not have `arrow_ord` as a direct dependency.
 use arrow::compute::kernels::cmp::{eq, lt};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
-    exec_datafusion_err, exec_err, internal_err, Constraints, HashMap, HashSet, Result,
-    UnnestOptions,
+    exec_datafusion_err, exec_err, internal_err, Constraints, HashMap, HashSet, NullHandling,
+    Result, UnnestOptions,
 };
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::equivalence::ProjectionMapping;
@@ -107,6 +107,8 @@ pub struct ExplodeExec {
     list_column_indices: Vec<ListUnnest>,
     struct_column_indices: Vec<usize>,
     options: UnnestOptions,
+    /// See [`ExplodeExec::with_terminate`].
+    terminate: Option<Arc<dyn PhysicalExpr>>,
     metrics: ExecutionPlanMetricsSet,
     cache: Arc<PlanProperties>,
 }
@@ -132,9 +134,22 @@ impl ExplodeExec {
             list_column_indices,
             struct_column_indices,
             options,
+            terminate: None,
             metrics: ExecutionPlanMetricsSet::new(),
             cache: Arc::new(cache),
         })
+    }
+
+    /// Unnest one more row once the input is exhausted: `terminate`, evaluated against a one-row
+    /// batch with no columns, takes the place of the list column in the last input row. This is
+    /// how a JVM generator's `terminate()` output joins the last row's other columns, as in
+    /// Spark's `GenerateExec`. Requires exactly one list column to unnest.
+    pub fn with_terminate(mut self, terminate: Arc<dyn PhysicalExpr>) -> Result<Self> {
+        if self.list_column_indices.len() != 1 {
+            return internal_err!("ExplodeExec terminate requires exactly one list column");
+        }
+        self.terminate = Some(terminate);
+        Ok(self)
     }
 
     /// Compute the plan properties, keeping whatever the child guarantees about the columns
@@ -235,11 +250,13 @@ impl ExecutionPlan for ExplodeExec {
 
     fn apply_expressions(
         &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
     ) -> Result<TreeNodeRecursion> {
-        // ExplodeExec holds no physical expressions of its own; the columns to unnest are
-        // identified by index, so there is nothing to visit here.
-        Ok(TreeNodeRecursion::Continue)
+        // The columns to unnest are identified by index, so `terminate` is the only expression.
+        match &self.terminate {
+            Some(terminate) => f(terminate),
+            None => Ok(TreeNodeRecursion::Continue),
+        }
     }
 
     fn with_new_children(
@@ -249,13 +266,17 @@ impl ExecutionPlan for ExplodeExec {
         if children.len() != 1 {
             return internal_err!("ExplodeExec expects exactly one child");
         }
-        Ok(Arc::new(ExplodeExec::new(
+        let mut exec = ExplodeExec::new(
             Arc::clone(&children[0]),
             self.list_column_indices.clone(),
             self.struct_column_indices.clone(),
             Arc::clone(&self.schema),
             self.options.clone(),
-        )?))
+        )?;
+        if let Some(terminate) = &self.terminate {
+            exec = exec.with_terminate(Arc::clone(terminate))?;
+        }
+        Ok(Arc::new(exec))
     }
 
     fn execute(
@@ -277,6 +298,8 @@ impl ExecutionPlan for ExplodeExec {
             input_rows: MetricBuilder::new(&self.metrics).counter("input_rows", partition),
             batch_size,
             pending_input: None,
+            terminate: self.terminate.clone(),
+            last_row: None,
         });
 
         // Chunking the input bounds each build to roughly `batch_size` rows, but two cases can
@@ -372,6 +395,10 @@ struct ExplodeStream {
     /// longer than `batch_size`, and recursive unnesting (where the expansion cannot be
     /// predicted up front), both still materialize their full expansion in one build.
     pending_input: Option<PendingInput>,
+    /// See [`ExplodeExec::with_terminate`]. Taken once it has run.
+    terminate: Option<Arc<dyn PhysicalExpr>>,
+    /// The last input row, copied out of its batch, kept while `terminate` is pending.
+    last_row: Option<RecordBatch>,
 }
 
 impl RecordBatchStream for ExplodeStream {
@@ -440,6 +467,14 @@ impl ExplodeStream {
                     self.input_rows.add(batch.num_rows());
                     if batch.num_rows() > 0 {
                         let timer = self.baseline_metrics.elapsed_compute().timer();
+                        if self.terminate.is_some() {
+                            // A copy rather than a slice, so the rest of the batch is not held
+                            // until the input ends.
+                            let last = PrimitiveArray::<UInt32Type>::from(vec![
+                                batch.num_rows() as u32 - 1,
+                            ]);
+                            self.last_row = Some(take_record_batch(&batch, &last)?);
+                        }
                         let output_lens = self.predict_output_lens(&batch);
                         timer.done();
                         self.pending_input = Some(PendingInput {
@@ -458,11 +493,57 @@ impl ExplodeStream {
                     if other.is_none() {
                         let input_schema = self.input.schema();
                         self.input = Box::pin(EmptyRecordBatchStream::new(input_schema));
+                        if let Some(terminate) = self.terminate.take() {
+                            let elapsed_compute = self.baseline_metrics.elapsed_compute().clone();
+                            let timer = elapsed_compute.timer();
+                            let result = self.terminate_batch(&terminate);
+                            timer.done();
+                            if let Some(batch) = result.transpose() {
+                                if let Ok(batch) = &batch {
+                                    batch.record_output(&self.baseline_metrics);
+                                }
+                                return Poll::Ready(Some(batch));
+                            }
+                        }
                     }
                     return Poll::Ready(other);
                 }
             }
         }
+    }
+
+    /// Unnest the rows `terminate` yields in place of the last input row's list. With no input
+    /// rows, the other columns are null. Spark's `outer` handling does not apply to these rows, so
+    /// an empty result adds nothing.
+    fn terminate_batch(
+        &mut self,
+        terminate: &Arc<dyn PhysicalExpr>,
+    ) -> Result<Option<RecordBatch>> {
+        let options = RecordBatchOptions::new().with_row_count(Some(1));
+        let no_columns =
+            RecordBatch::try_new_with_options(Arc::new(Schema::empty()), vec![], &options)?;
+        let rows = terminate.evaluate(&no_columns)?.into_array(1)?;
+
+        let input_schema = self.input.schema();
+        let mut columns = match self.last_row.take() {
+            Some(row) => row.columns().to_vec(),
+            None => input_schema
+                .fields()
+                .iter()
+                .map(|f| new_null_array(f.data_type(), 1))
+                .collect(),
+        };
+        columns[self.list_type_columns[0].index_in_input_schema] = rows;
+        let batch = RecordBatch::try_new(input_schema, columns)?;
+
+        build_batch(
+            &batch,
+            &self.schema,
+            &self.list_type_columns,
+            &self.struct_column_indices,
+            &UnnestOptions::new().with_null_handling(NullHandling::Drop),
+            None,
+        )
     }
 
     /// Compute how many output rows each input row of `batch` will expand into, so the input
@@ -1574,6 +1655,8 @@ mod tests {
             input_rows: MetricBuilder::new(&metrics).counter("input_rows", 0),
             batch_size: 4,
             pending_input: None,
+            terminate: None,
+            last_row: None,
         };
 
         let mut rows = 0;
@@ -1876,6 +1959,110 @@ mod tests {
             Some(vec![true, false, true, true]),
         );
         assert_output_lens(with_nulls.slice(1, 3), [&[0, 0, 3], &[1, 0, 3], &[1, 1, 3]]);
+    }
+
+    /// Explode column "l" of `(id, l)` batches, ending with the rows `terminate` yields.
+    async fn explode_with_terminate(
+        input: Vec<RecordBatch>,
+        terminate: Vec<i32>,
+        null_handling: NullHandling,
+    ) -> Vec<(Option<i32>, Option<i32>)> {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("l", DataType::new_list(DataType::Int32, true), true),
+        ]));
+        let source =
+            MemorySourceConfig::try_new_exec(&[input], Arc::clone(&input_schema), None).unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("l", DataType::Int32, true),
+        ]));
+        let rows = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(
+            terminate.into_iter().map(Some).collect::<Vec<_>>(),
+        )]);
+        let terminate = Arc::new(datafusion::physical_expr::expressions::Literal::new(
+            datafusion::common::ScalarValue::List(Arc::new(rows)),
+        ));
+        let explode = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 1,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(null_handling),
+        )
+        .unwrap()
+        .with_terminate(terminate)
+        .unwrap();
+        let batches =
+            datafusion::physical_plan::common::collect(explode.execute(0, Arc::default()).unwrap())
+                .await
+                .unwrap();
+        batches
+            .iter()
+            .flat_map(|b| {
+                let id = b.column(0).as_primitive::<Int32Type>();
+                let l = b.column(1).as_primitive::<Int32Type>();
+                id.iter().zip(l.iter()).collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn id_list_batch(rows: Vec<(i32, Vec<i32>)>) -> RecordBatch {
+        let (ids, lists): (Vec<_>, Vec<_>) = rows.into_iter().unzip();
+        let lists = ListArray::from_iter_primitive::<Int32Type, _, _>(
+            lists
+                .into_iter()
+                .map(|l| Some(l.into_iter().map(Some).collect::<Vec<_>>())),
+        );
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("l", lists.data_type().clone(), true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from(ids)), Arc::new(lists)],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn terminate_rows_carry_the_last_input_row() {
+        let input = vec![
+            id_list_batch(vec![(1, vec![10]), (2, vec![])]),
+            id_list_batch(vec![(3, vec![30, 31])]),
+        ];
+        assert_eq!(
+            explode_with_terminate(input, vec![100, 101], NullHandling::Drop).await,
+            [
+                (Some(1), Some(10)),
+                (Some(3), Some(30)),
+                (Some(3), Some(31)),
+                (Some(3), Some(100)),
+                (Some(3), Some(101)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn terminate_without_input_rows_has_null_columns() {
+        let input = vec![id_list_batch(vec![])];
+        assert_eq!(
+            explode_with_terminate(input, vec![100], NullHandling::Drop).await,
+            [(None, Some(100))]
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_terminate_adds_no_outer_row() {
+        // `outer` keeps an input row whose list is empty, but not an empty `terminate()`.
+        let input = vec![id_list_batch(vec![(1, vec![])])];
+        assert_eq!(
+            explode_with_terminate(input, vec![], NullHandling::PreserveAndExpandEmpty).await,
+            [(Some(1), None)]
+        );
     }
 
     #[test]

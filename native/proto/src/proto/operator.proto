@@ -1117,6 +1117,10 @@ message Explode {
   // Whether the array holds structs whose fields become separate output columns (inline). A
   // null struct element yields a row of nulls.
   bool inline = 5;
+  // Evaluated once after the input is exhausted, against a one-row batch with no columns. Yields
+  // an array of the same type as `child` holding the rows a JVM generator's `terminate()` emits,
+  // which carry the last input row's projected columns.
+  spark.spark_expression.Expr terminate = 6;
 }
 
 message HashJoin {
