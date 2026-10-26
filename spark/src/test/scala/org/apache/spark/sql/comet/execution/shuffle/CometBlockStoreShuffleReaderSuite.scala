@@ -56,4 +56,34 @@ class CometBlockStoreShuffleReaderSuite extends AnyFunSuite {
     assert(!second.wasClosed)
     assert(fetched == 1)
   }
+
+  test("reading the full raw stream returns and closes every block") {
+    class TrackingStream(bytes: Array[Byte]) extends ByteArrayInputStream(bytes) {
+      var wasClosed = false
+      override def close(): Unit = {
+        wasClosed = true
+        super.close()
+      }
+    }
+
+    val first = new TrackingStream(Array[Byte](1, 2, 3))
+    val second = new TrackingStream(Array[Byte](4, 5, 6))
+    var fetched = 0
+    val blocks = new Iterator[InputStream] {
+      private val remaining = List(first, second).iterator
+      override def hasNext: Boolean = remaining.hasNext
+      override def next(): InputStream = {
+        fetched += 1
+        remaining.next()
+      }
+    }
+
+    val input = CometBlockStoreShuffleReader.concatenate(blocks)
+    val bytes = Iterator.continually(input.read()).takeWhile(_ != -1).toList
+
+    assert(bytes == List(1, 2, 3, 4, 5, 6))
+    assert(fetched == 2)
+    assert(first.wasClosed)
+    assert(second.wasClosed)
+  }
 }

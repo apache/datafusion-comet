@@ -206,6 +206,7 @@ class CometBlockStoreShuffleReader[K, C](
 }
 
 private[shuffle] object CometBlockStoreShuffleReader {
+
   /**
    * Concatenates block streams without asking the iterator for remaining blocks when closed.
    * SequenceInputStream normally drains its Enumeration during close, which would fetch every
