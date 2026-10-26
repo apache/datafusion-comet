@@ -3994,6 +3994,50 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/comet/issues/7208
+  test("AQE does not split a skewed rebalance partition under operators that need clustering") {
+    // Spark's OptimizeSkewInRebalancePartitions splits a skewed partition unless an operator
+    // above needs ClusteredDistribution, which ValidateRequirements checks. Comet's aggregate,
+    // window and join operators have to declare the same requirement, or one key is processed
+    // as several pieces and yields several rows.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "200",
+      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "2k",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTempPath { dir =>
+        spark
+          .range(0, 40000, 1, 8)
+          .selectExpr("CASE WHEN id % 10 = 0 THEN 0L ELSE id % 1000 END AS k", "id AS v")
+          .write
+          .parquet(dir.getCanonicalPath)
+        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("rebalance_t1")
+
+        def checkNotSplit(query: String): Unit = {
+          val (_, cometPlan) = checkSparkAnswer(query)
+          val skewedReads = collect(cometPlan) {
+            case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+          }
+          assert(skewedReads.isEmpty, cometPlan)
+        }
+
+        val rebalanced = "(SELECT /*+ REBALANCE(k) */ * FROM rebalance_t1)"
+        checkNotSplit(s"SELECT k, sum(v), count(*) FROM $rebalanced GROUP BY k")
+        checkNotSplit(
+          s"SELECT k, row_number() OVER (PARTITION BY k ORDER BY v) rn FROM $rebalanced")
+
+        Seq("true", "false").foreach { preferSmj =>
+          withSQLConf(SQLConf.PREFER_SORTMERGEJOIN.key -> preferSmj) {
+            checkNotSplit(
+              s"SELECT a.k, count(*) FROM $rebalanced a JOIN $rebalanced b ON a.k = b.k " +
+                "GROUP BY a.k")
+          }
+        }
+      }
+    }
+  }
+
   // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala#L466-L484
   test("AQE coalesces each branch of a union whose shuffles have different partition counts") {
     // Every leaf below the union is a shuffle stage, so Spark's rule coalesces its shuffles

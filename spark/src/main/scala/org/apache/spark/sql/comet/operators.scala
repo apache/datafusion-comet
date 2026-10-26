@@ -2780,6 +2780,12 @@ abstract class CometBaseAggregateExec
   }
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
+
+  // Declare the same distribution as the Spark aggregate this replaces. Without it AQE's
+  // OptimizeSkewInRebalancePartitions can split a skewed partition under a Final aggregate,
+  // because ValidateRequirements has nothing to reject, and one key then yields several rows.
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
 }
 
 case class CometHashAggregateExec(
@@ -3345,6 +3351,10 @@ case class CometHashJoinExec(
       throw new IllegalArgumentException(s"ShuffledJoin should not take $x as the JoinType")
   }
 
+  // Same distribution as the Spark join this replaces; see CometBaseAggregateExec.
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
+
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
@@ -3710,6 +3720,10 @@ case class CometSortMergeJoinExec(
     case x =>
       throw new IllegalArgumentException(s"ShuffledJoin should not take $x as the JoinType")
   }
+
+  // Same distribution as the Spark join this replaces; see CometBaseAggregateExec.
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
