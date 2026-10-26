@@ -44,6 +44,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
@@ -274,16 +275,14 @@ abstract class ParquetReadSuite extends CometTestBase {
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
     // Matches Spark's positive and negative overflow cases:
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
-    def isOverflow(error: Throwable): Boolean =
-      Iterator
-        .iterate(error)(_.getCause)
-        .takeWhile(_ != null)
-        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
 
     Seq(false, true).foreach { dictionaryEnabled =>
       Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
         withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val path = new Path(dir.toURI.toString, "bad timestamp%.parquet")
+          val healthyPath = new Path(dir.toURI.toString, "healthy.parquet")
           val schema = MessageTypeParser.parseMessageType("""
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
@@ -324,6 +323,18 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           writer.close()
 
+          // Spark orders a task's files by size, largest first. Make the healthy file the larger
+          // one, so the task reads it before the failing file and the error cannot just name the
+          // task's first file.
+          val healthyWriter = createParquetWriter(schema, healthyPath, dictionaryEnabled)
+          (0 until 2000).foreach { i =>
+            val healthyRecord = new SimpleGroup(schema)
+            healthyRecord.add(0, i.toLong)
+            healthyRecord.add(1, i.toLong)
+            healthyWriter.write(healthyRecord)
+          }
+          healthyWriter.close()
+
           val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
             org.apache.parquet.hadoop.util.HadoopInputFile
               .fromPath(path, spark.sessionState.newHadoopConf()))
@@ -341,20 +352,89 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
 
           Seq(false, true).foreach { ansiEnabled =>
-            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
-                  val selected = df.select(column)
-                  assert(collect(selected.queryExecution.executedPlan) {
-                    case _: CometNativeScanExec => true
-                  }.nonEmpty)
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+              SQLConf.FILES_MAX_PARTITION_BYTES.key -> "134217728") {
+              readParquetFile(dir.toString) { df =>
+                val queries = Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m")
+                  .map(column => df.select(column)) :+ df.select("ts").repartition(1)
+                queries.foreach { selected =>
+                  val scans = collect(selected.queryExecution.executedPlan) {
+                    case scan: CometNativeScanExec => scan
+                  }
+                  assert(scans.nonEmpty)
+                  scans.foreach { scan =>
+                    assert(scan.perPartitionFilePaths.length == 1)
+                    assert(scan.perPartitionFilePaths.head.size == 2)
+                    assert(
+                      new java.net.URI(scan.perPartitionFilePaths.head.head) == healthyPath.toUri)
+                  }
 
-                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
-                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                  val error = checkSparkError(selected, errorClass)
+                  assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+                  assert(error.getCause.getClass == classOf[ArithmeticException])
+                  assert(error.getCause.getMessage == "long overflow")
                 }
               }
             }
           }
+        }
+      }
+    }
+  }
+
+  test("TIMESTAMP_MILLIS overflow after the first batch of a file") {
+    // Spark 3.4 and 3.5 wrap a reader error in cannotReadFilesError only while FileScanRDD reads
+    // the first batch of a file split. A later batch throws from hasNext without the wrapper:
+    // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L126-L132
+    // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L285-L298
+    // Spark 4.x wraps every batch through attachFilePath, as Comet does on every version:
+    // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L133-L143
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional int64 ts(TIMESTAMP_MILLIS);
+          |}
+          |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      (0 to 5000).foreach { i =>
+        val record = new SimpleGroup(schema)
+        record.add(0, if (i == 5000) 92233720368547758L else i.toLong)
+        writer.write(record)
+      }
+      writer.close()
+
+      // One row group read in 4096-row batches puts row 5000 in the second batch of both readers.
+      withSQLConf(
+        SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "4096",
+        CometConf.COMET_BATCH_SIZE.key -> "4096") {
+        readParquetFile(path.toString) { df =>
+          val error = if (isSpark40Plus) {
+            checkSparkError(df, errorClass)
+          } else {
+            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            // Spark's job failure is caused by the bare overflow. Comet's is caused by the
+            // file-read error, which adds one SparkException above the overflow.
+            val sparkCauses = causeChain(sparkError.getOrElse(fail("Spark did not fail")))
+            val cometCauses = causeChain(cometError.getOrElse(fail("Comet did not fail")))
+            assert(
+              sparkCauses.map(_.getClass) ==
+                Seq(classOf[SparkException], classOf[ArithmeticException]))
+            assert(sparkCauses.last.getMessage == "long overflow")
+            assert(cometCauses.map(_.getClass) ==
+              Seq(classOf[SparkException], classOf[SparkException], classOf[ArithmeticException]))
+            cometCauses(1).asInstanceOf[SparkException]
+          }
+          assert(error.getErrorClass == errorClass)
+          assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+          assert(error.getCause.getClass == classOf[ArithmeticException])
+          assert(error.getCause.getMessage == "long overflow")
         }
       }
     }
@@ -1819,6 +1899,86 @@ abstract class ParquetReadSuite extends CometTestBase {
           checkSparkAnswerAndOperator(df.where("id = 100"))
           // A mismatch in an unrequested column must not affect the scan.
           checkSparkAnswerAndOperator(df.select("id").where("id = 2"))
+        }
+      }
+    }
+  }
+
+  test("native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/7034. Spark's
+    // writer cannot produce TIMESTAMP(NANOS), so timestamp_nanos.parquet was written with
+    // PyArrow. Its leaves, in file order, are `id int`, then TIMESTAMP(NANOS) leaves that are
+    // UTC-adjusted (`t`, `s.t`, the elements of `a` and the values of `m`) or not (`u`, the
+    // elements of `b` and `v.element.n`), with non-NANOS leaves in between (`s.i`, `m.key`,
+    // `v.element.x`) and a trailing TIMESTAMP_MICROS `w`. `v` is a list_view in the file's
+    // ARROW:schema. In the row with id 1 every NANOS value is 2020-09-13 12:26:40.123456789 UTC
+    // and `w` is 2020-09-13 12:26:40.123456 UTC; the row with id 2 is null or empty. Spark has
+    // no updater that reads TIMESTAMP(NANOS) as timestamp or timestamp_ntz.
+    val path = getResourceParquetFilePath("test-data/timestamp_nanos.parquet")
+    val readTypes = Seq(
+      "t timestamp",
+      "u timestamp",
+      "s struct<t: timestamp>",
+      "a array<timestamp>",
+      "b array<timestamp>",
+      "m map<string, timestamp>",
+      "v array<struct<n: timestamp>>",
+      "t timestamp_ntz",
+      "u timestamp_ntz")
+    for (pushdown <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        for (readType <- readTypes) {
+          val df = spark.read.schema(s"id int, $readType").parquet(path).where("id > 0")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+              s"$engine, $readType, row filter pushdown $pushdown: ${chain.mkString("\n")}")
+          }
+        }
+        // The TIMESTAMP(NANOS) leaves only fail the read when they are requested as timestamps.
+        // Spark reads them as bigint, which must still match with the footer check now running
+        // for this file. The other leaves must keep their own Parquet types: a miscount in the
+        // footer check's leaf marking would tag one of them as TIMESTAMP(NANOS) and fail them.
+        Seq(
+          "id int",
+          "id int, t bigint, s struct<t: bigint>, b array<bigint>, m map<string, bigint>",
+          "id int, w timestamp",
+          "id int, s struct<i: int>",
+          "id int, v array<struct<x: int>>").foreach { schema =>
+          checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(path).where("id > 0"))
+        }
+      }
+    }
+  }
+
+  test("native scan reads INT96 timestamps with row filter pushdown like Spark") {
+    // The row filter path checks conversions against the file's raw Arrow schema, where an
+    // INT96 leaf is still a nanosecond timestamp, so this guards against mistaking it for
+    // TIMESTAMP(NANOS) (#7034).
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        spark
+          .sql("""
+            |SELECT 1 AS id, ts, named_struct('ts', ts) AS s, array(ts, NULL) AS a
+            |FROM VALUES (TIMESTAMP'2020-01-01 01:02:03.123456') AS v(ts)
+            |UNION ALL SELECT 2, NULL, NULL, NULL
+            |""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0"))
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0").select("ts"))
         }
       }
     }
