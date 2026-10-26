@@ -152,7 +152,7 @@ impl OperatorBuilder for WindowBuilder {
         // Spark expects Int32). If any window expression carries a
         // `result_type` that differs from the actual output type, wrap the
         // aggregate in a projection that casts the mismatched columns.
-        let final_plan: Arc<dyn ExecutionPlan> = {
+        let plan = {
             let agg_schema = window_agg.schema();
             let input_field_count = input_schema.fields().len();
             let mut needs_cast = false;
@@ -180,17 +180,24 @@ impl OperatorBuilder for WindowBuilder {
                 proj_exprs.push((expr, field.name().to_string()));
             }
             if needs_cast {
-                Arc::new(ProjectionExec::try_new(proj_exprs, window_agg)?)
+                let projection: Arc<dyn ExecutionPlan> = Arc::new(ProjectionExec::try_new(
+                    proj_exprs,
+                    Arc::clone(&window_agg),
+                )?);
+                // The window is an additional plan so that its time is reported with the
+                // projection's rather than left out.
+                SparkPlan::new_with_additional(
+                    spark_plan.plan_id,
+                    projection,
+                    vec![child],
+                    vec![window_agg],
+                )
             } else {
-                window_agg
+                SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])
             }
         };
 
-        Ok((
-            scans,
-            shuffle_scans,
-            Arc::new(SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])),
-        ))
+        Ok((scans, shuffle_scans, Arc::new(plan)))
     }
 }
 
