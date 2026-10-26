@@ -58,11 +58,10 @@
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
-    make_array, new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray,
-    Int64Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray,
-    Scalar, StructArray,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
+    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
+    StructArray,
 };
-use arrow::buffer::NullBuffer;
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
 use arrow::compute::{cast, is_not_null, kernels, sum};
@@ -85,6 +84,7 @@ use datafusion::physical_plan::metrics::{
     SplitMetrics,
 };
 use datafusion::physical_plan::stream::BatchSplitStream;
+use datafusion_comet_common::children_with_parent_nulls;
 // `ListUnnest` is the one item the copied region below does NOT need to duplicate: unlike the
 // kernels, upstream exports it publicly.
 use datafusion::physical_plan::unnest::ListUnnest;
@@ -576,9 +576,9 @@ fn flatten_struct_cols(
             Some(_) => match column_data.data_type() {
                 DataType::Struct(_) => {
                     let struct_arr = column_data.as_any().downcast_ref::<StructArray>().unwrap();
-                    for field in struct_arr.columns() {
-                        columns_expanded.push(with_parent_nulls(field, struct_arr.nulls())?);
-                    }
+                    // Arrow leaves the field values under a null struct unspecified, so they
+                    // must not leak out once the struct is flattened.
+                    columns_expanded.extend(children_with_parent_nulls(struct_arr)?);
                 }
                 data_type => {
                     return internal_err!(
@@ -590,21 +590,6 @@ fn flatten_struct_cols(
         }
     }
     Ok(RecordBatch::try_new(Arc::clone(schema), columns_expanded)?)
-}
-
-/// Returns `field` with every slot null where its parent struct is null. Arrow leaves the field
-/// values under a null struct unspecified, so they must not leak out once the struct is flattened.
-fn with_parent_nulls(field: &ArrayRef, parent_nulls: Option<&NullBuffer>) -> Result<ArrayRef> {
-    let Some(parent_nulls) = parent_nulls.filter(|n| n.null_count() > 0) else {
-        return Ok(Arc::clone(field));
-    };
-    // A `Null` field is already all null and carries no validity buffer.
-    if field.data_type() == &DataType::Null {
-        return Ok(Arc::clone(field));
-    }
-    let nulls = NullBuffer::union(Some(parent_nulls), field.nulls());
-    let data = field.to_data().into_builder().nulls(nulls).build()?;
-    Ok(make_array(data))
 }
 
 /// This function is used to execute the unnesting on multiple columns all at once, but
@@ -1895,39 +1880,18 @@ mod tests {
 
     #[test]
     fn flatten_struct_cols_nulls_fields_under_a_null_struct() {
-        // Row 1's struct is null but its fields hold values, which Arrow allows. Spark's `inline`
-        // turns a null struct into a row of nulls, so none of those values may surface.
-        let a: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4)]));
-        let b: ArrayRef = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
-        let fields = vec![
-            Arc::new(Field::new("a", DataType::Int32, true)),
-            Arc::new(Field::new("b", DataType::Int32, false)),
-        ];
+        // Row 1's struct is null but its field holds a value, which Arrow allows. Spark's
+        // `inline` turns a null struct into a row of nulls, so the value must not surface.
+        let field = Arc::new(Field::new("a", DataType::Int32, true));
         let structs: ArrayRef = Arc::new(StructArray::new(
-            fields.clone().into(),
-            vec![a, b],
-            Some(NullBuffer::from(vec![true, false, true, true])),
+            vec![Arc::clone(&field)].into(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+            Some(NullBuffer::from(vec![true, false, true])),
         ));
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("a", DataType::Int32, true),
-            Field::new("b", DataType::Int32, true),
-        ]));
-        let indices = HashSet::from([0]);
+        let schema = Arc::new(Schema::new(vec![field]));
 
-        let batch = flatten_struct_cols(&[Arc::clone(&structs)], &schema, &indices).unwrap();
+        let batch = flatten_struct_cols(&[structs], &schema, &HashSet::from([0])).unwrap();
         let a = batch.column(0).as_primitive::<Int32Type>();
-        let b = batch.column(1).as_primitive::<Int32Type>();
-        assert_eq!(a.iter().collect::<Vec<_>>(), [Some(1), None, None, Some(4)]);
-        assert_eq!(
-            b.iter().collect::<Vec<_>>(),
-            [Some(10), None, Some(30), Some(40)]
-        );
-
-        // A slice keeps the struct's mask aligned with its fields.
-        let batch = flatten_struct_cols(&[structs.slice(1, 2)], &schema, &indices).unwrap();
-        let a = batch.column(0).as_primitive::<Int32Type>();
-        let b = batch.column(1).as_primitive::<Int32Type>();
-        assert_eq!(a.iter().collect::<Vec<_>>(), [None, None]);
-        assert_eq!(b.iter().collect::<Vec<_>>(), [None, Some(30)]);
+        assert_eq!(a.iter().collect::<Vec<_>>(), [Some(1), None, Some(3)]);
     }
 }

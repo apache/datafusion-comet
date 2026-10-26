@@ -114,3 +114,7 @@ SELECT id, inline(array(named_struct('k', id, 'v', 'p'), named_struct('k', id * 
 
 query
 SELECT id, inline(arrays_zip(array(1, 2, 3), array('a', 'b'))) FROM test_inline WHERE id = 1
+
+-- NULL struct elements produced by an expression rather than read from Parquet
+query
+SELECT id, inline_outer(array(IF(id % 2 = 0, NULL, named_struct('a', id, 'b', concat('v', id))), named_struct('a', -1, 'b', NULL))) FROM test_inline

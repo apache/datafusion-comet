@@ -245,7 +245,9 @@ class CometGenerateExecSuite extends CometTestBase {
       val df = Seq((1, 10), (2, 20))
         .toDF("id", "v")
         .selectExpr("id", "stack(2, v, plus_one(v))")
-      checkSparkAnswerAndFallbackReason(df, "stack arguments are not supported natively")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
     }
   }
 
