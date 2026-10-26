@@ -20,13 +20,31 @@ use arrow::array::{
     Array, ArrayRef, ArrowPrimitiveType, AsArray, GenericStringArray, PrimitiveArray,
 };
 use arrow::compute::unary;
-use arrow::datatypes::{DataType, Int64Type};
+use arrow::datatypes::{DataType, Int64Type, TimestampMicrosecondType};
 use arrow::error::ArrowError;
 use datafusion::common::cast::as_generic_string_array;
 use num::integer::div_floor;
 use std::sync::Arc;
 
 pub(crate) const MICROS_PER_SECOND: i64 = 1000000;
+
+/// Attach `target_tz` to a microsecond timestamp array.
+///
+/// A batch with no nulls keeps `nulls() == None`. `unary_opt` always builds a
+/// null buffer, and `unary` copies an all-valid one; the builder these kernels
+/// replace did neither.
+pub(crate) fn timestamp_micros_with_tz(
+    array: PrimitiveArray<TimestampMicrosecondType>,
+    target_tz: &Option<Arc<str>>,
+) -> ArrayRef {
+    let array = if array.null_count() == 0 && array.nulls().is_some() {
+        let (_, values, _) = array.into_parts();
+        PrimitiveArray::new(values, None)
+    } else {
+        array
+    };
+    Arc::new(array.with_timezone_opt(target_tz.clone()))
+}
 
 /// A fork & modified version of Arrow's `unary_dyn` which is being deprecated
 pub fn unary_dyn<F, T>(array: &ArrayRef, op: F) -> Result<ArrayRef, ArrowError>

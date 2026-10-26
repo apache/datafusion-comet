@@ -167,9 +167,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> strictFloatingPoint,
-        // Defaults to true under CometTestBase; pin it so strict mode exercises the shipped
-        // admission policy rather than the test harness's escape hatch.
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         withTempView("floating_window_peers") {
           // LocalTableScan preserves NaN payloads, unlike a Parquet round trip. Check the input
@@ -230,7 +227,6 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
         for {
           rankFunction <- Seq("RANK", "DENSE_RANK")
@@ -272,6 +268,37 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window group limit: nested null peers with non-default root null ordering") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      "spark.sql.optimizer.windowGroupLimitThreshold" -> "1000",
+      CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "true") {
+      withTempView("nested_null_group_limit") {
+        Seq((1, Some(1)), (2, Some(1)), (3, Some(2)), (4, None), (5, None))
+          .toDF("id", "i")
+          .createOrReplaceTempView("nested_null_group_limit")
+
+        for ((ordering, cutoff, expected) <- Seq(
+            ("ASC NULLS LAST", 3, Seq((1, 3), (2, 3), (4, 1), (5, 1))),
+            ("DESC NULLS FIRST", 2, Seq((1, 2), (2, 2), (3, 1))))) {
+          val query = sql(s"""
+               |SELECT id, rnk FROM (
+               |  SELECT id, RANK() OVER (ORDER BY array(i) $ordering) AS rnk
+               |  FROM nested_null_group_limit
+               |) WHERE rnk <= $cutoff
+               |""".stripMargin)
+          checkSparkAnswerAndOperator(
+            query,
+            Seq(classOf[CometSortExec], classOf[CometWindowGroupLimitExec]))
+          assert(
+            query.collect().map(row => row.getInt(0) -> row.getInt(1)).sorted.toSeq == expected)
+        }
+      }
+    }
+  }
+
   for (orderColumn <- Seq("f", "d")) {
     test(s"window: scalar floating-point order key under strict floating point ($orderColumn)") {
       // Deliberately not gated on Spark 3.5, unlike the WindowGroupLimit tests above, so the
@@ -293,7 +320,6 @@ class CometWindowExecSuite extends CometTestBase {
 
         withSQLConf(
           CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
           CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> "false") {
           checkSparkAnswerAndOperator(
             sql(s"""SELECT id, SUM(id) OVER (ORDER BY $orderColumn) AS running
@@ -414,7 +440,23 @@ class CometWindowExecSuite extends CometTestBase {
     val df2 =
       df.select($"value", sum($"value").over(window.rangeBetween(1L, Window.unboundedFollowing)))
 
-    checkSparkAnswer(df2)
+    checkSparkAnswerAndFallbackReason(df2, "Unsupported RANGE frame lower offset")
+    val cometWindowExecs = collect(df2.queryExecution.executedPlan) { case w: CometWindowExec =>
+      w
+    }
+    assert(cometWindowExecs.isEmpty)
+  }
+
+  test("window query with rangeBetween PRECEDING upper bound falls back to Spark") {
+    // `rangeBetween(unboundedPreceding, -1L)` puts a negative offset (PRECEDING semantic)
+    // in the upper bound position, which the proto only encodes as Following. We fall
+    // back to Spark rather than serialize the magnitude as a FOLLOWING bound.
+    val df = Seq(1, 2, 4, 3, 2, 1).toDF("value")
+    val window = Window.orderBy($"value".desc)
+    val df2 =
+      df.select($"value", sum($"value").over(window.rangeBetween(Window.unboundedPreceding, -1L)))
+
+    checkSparkAnswerAndFallbackReason(df2, "Unsupported RANGE frame upper offset")
     val cometWindowExecs = collect(df2.queryExecution.executedPlan) { case w: CometWindowExec =>
       w
     }
@@ -476,6 +518,28 @@ class CometWindowExecSuite extends CometTestBase {
                       |FROM testData ORDER BY cate, val
                       |""".stripMargin)
       checkSparkAnswerAndOperator(df1)
+    }
+  }
+
+  test("Native window operator reports its output rows and time") {
+    withTempDir { dir =>
+      (0 until 1000)
+        .map(i => (i % 10, i))
+        .toDF("k", "v")
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      withTempView("window_metrics") {
+        spark.read.parquet(dir.toString).createOrReplaceTempView("window_metrics")
+        // `max` needs no cast projection. The planner test in `planner.rs` covers the window
+        // that does, such as `row_number`.
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql("SELECT max(v) OVER (PARTITION BY k ORDER BY v) FROM window_metrics"))
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(windows.length == 1)
+        assert(windows.head.metrics("output_rows").value == 1000)
+        assert(windows.head.metrics("elapsed_compute").value > 0)
+      }
     }
   }
 
@@ -701,6 +765,50 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: high-precision decimal AVG and TRY_AVG fall back to Spark") {
+    withTempDir { dir =>
+      Seq((1, 1, "0.6"), (1, 2, "0.6"))
+        .toDF("g", "ord", "raw_v")
+        .selectExpr(
+          "g",
+          "ord",
+          "CAST(raw_v AS DECIMAL(27,27)) AS v27",
+          "CAST(raw_v AS DECIMAL(28,28)) AS v28",
+          "CAST(raw_v AS DECIMAL(38,38)) AS v38")
+        .coalesce(1)
+        .write
+        .mode("overwrite")
+        .parquet(dir.toString)
+      withParquetTable(spark.read.parquet(dir.toString), "window_avg") {
+        withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+          // Pin the 27/28 boundary and both error modes when the running sum exceeds 38 digits.
+          for ((aggregate, precision) <- Seq(
+              ("AVG", 27),
+              ("AVG", 28),
+              ("AVG", 38),
+              ("TRY_AVG", 38))) {
+            val df = sql(s"""
+              SELECT g, ord, $aggregate(v$precision) OVER (
+                PARTITION BY g ORDER BY ord
+                ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS running_avg
+              FROM window_avg ORDER BY g, ord
+            """)
+            if (precision == 27) {
+              val (_, plan) = checkSparkAnswerAndOperator(df)
+              assertCometWindowExecExists(plan)
+            } else {
+              val (_, plan) = checkSparkAnswerAndFallbackReason(
+                df,
+                "AVG on DECIMAL with precision 28 or more is not supported")
+              assert(collect(plan) { case window: SparkWindowExec => window }.nonEmpty)
+              assert(collect(plan) { case window: CometWindowExec => window }.isEmpty)
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("window: decimal AVG fuzz with PARTITION BY and ORDER BY") {
     Seq((9, 1), (9, 4), (10, 2), (11, 3), (11, 6)).foreach { case (precision, scale) =>
       withTempDir { dir =>
@@ -831,8 +939,8 @@ class CometWindowExecSuite extends CometTestBase {
   test("window: decimal AVG at maximum precision falls back for every frame") {
     // Spark's window buffer keeps the running sum unbounded, so DECIMAL(38,38) inputs 0.6, 0.6,
     // -0.6 average to 0.6, 0.6, 0.2 in a running frame and to 0.2 over the whole partition. The
-    // native AVG skipped the row that takes its sum out of the precision, which gave 0.6 for the
-    // third running frame, or raised under ANSI, and 0 for the whole partition.
+    // native AVG latches once the sum leaves the precision, returning NULL or raising under
+    // ANSI instead of Spark's average for the last running frame and the whole partition.
     // https://github.com/apache/datafusion-comet/issues/5418
     val low = new java.math.BigDecimal("0.2").setScale(38)
     val high = new java.math.BigDecimal("0.6").setScale(38)
@@ -870,9 +978,9 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
-  test("window: decimal AVG whose rescaled sum can overflow falls back") {
-    // Below precision 28 the sum has headroom above the input, but from precision 25 the native
-    // average can still overflow when it rescales a large sum, as in an aggregate.
+  test("window: decimal AVG below precision 28 runs natively by default") {
+    // Widening the rescaled numerator removes the precision-25 fallback. The separate
+    // precision-28 guard still protects Spark's unbounded intermediate sum.
     // https://github.com/apache/datafusion-comet/issues/7007
     withTempDir { dir =>
       Seq((1, "1.5"), (2, "2.5"))
@@ -885,15 +993,8 @@ class CometWindowExecSuite extends CometTestBase {
 
       spark.read.parquet(dir.toString).createOrReplaceTempView("dec_avg_rescale")
       val query = "SELECT ord, AVG(v) OVER (ORDER BY ord) AS run_avg FROM dec_avg_rescale"
-      val (_, cometPlan) = checkSparkAnswerAndFallbackReason(
-        query,
-        "a large sum of a DECIMAL with precision 25 or more overflows when the native " +
-          "average rescales it")
-      assert(collect(cometPlan) { case w: CometWindowExec => w }.isEmpty, cometPlan)
-      withSQLConf(CometConf.getExprAllowIncompatConfigKey("Average") -> "true") {
-        val (_, nativePlan) = checkSparkAnswerAndOperator(query)
-        assertCometWindowExecExists(nativePlan)
-      }
+      val (_, cometPlan) = checkSparkAnswerAndOperator(query)
+      assertCometWindowExecExists(cometPlan)
     }
   }
 
