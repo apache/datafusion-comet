@@ -881,6 +881,44 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     }
   }
 
+  test("extractScanObjectStoreOptions - an http Workload Identity authority falls back") {
+    val handles = AbfsReflection.handles(getClass.getClassLoader).get
+    assume(handles.hasFixedSasTokenProvider, "Workload Identity needs hadoop-azure 3.4.1+")
+    def conf(authority: String): Configuration =
+      abfsScanConf(
+        Keys.AUTH_TYPE -> "OAuth",
+        Keys.OAUTH_PROVIDER_TYPE -> Providers.WORKLOAD_IDENTITY,
+        Keys.MSI_TENANT -> "tenant-abc",
+        Keys.CLIENT_ID -> "client-123",
+        Keys.MSI_AUTHORITY -> authority)
+    assertFallsBack(
+      conf("http://user:authority-password@login.example/"),
+      Providers.WORKLOAD_IDENTITY,
+      "authority that is not an https URL")
+    val uris = Seq(abfsFile("data", "accta", "a.parquet"))
+    NativeConfig.extractScanObjectStoreOptions(
+      conf("http://user:authority-password@login.example/"),
+      uris) match {
+      case Left(reason) => reason should not include "authority-password"
+      case Right(options) => fail(s"expected a fallback, got $options")
+    }
+    NativeConfig.extractScanObjectStoreOptions(conf("https://login.example/aad/"), uris) match {
+      case Right(options) => options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
+      case Left(reason) => fail(s"expected native options, got a fallback: $reason")
+    }
+  }
+
+  test("httpsHost - needs an https URL with a host") {
+    Seq("https://login.microsoftonline.com/", "https://h:8443/aad", "HTTPS://h").foreach(a =>
+      withClue(a)(AbfsAuthResolver.httpsHost(a) shouldBe true))
+    Seq(
+      "http://login.microsoftonline.com/",
+      "https:///",
+      "login.microsoftonline.com",
+      "not a url")
+      .foreach(a => withClue(a)(AbfsAuthResolver.httpsHost(a) shouldBe false))
+  }
+
   test("clientCredsEndpointUsable - agrees with the endpoints azure.rs builds a store for") {
     // The cases of `oauth_endpoint_parts_split_tenant_and_authority_host` in azure.rs, over https.
     val usable = Seq(

@@ -504,6 +504,12 @@ private[comet] object AbfsAuthResolver extends Logging {
           unsupported(
             s"auth type ${AuthTypes.OAUTH} with provider $c and an endpoint that is not an " +
               "https URL with a tenant path segment"))
+      case Resolved(AuthTypes.OAUTH, Some(c @ Providers.WORKLOAD_IDENTITY), values)
+          if !values.get(Keys.MSI_AUTHORITY).exists(httpsHost) =>
+        Some(
+          unsupported(
+            s"auth type ${AuthTypes.OAUTH} with provider $c and an authority that is not an " +
+              "https URL"))
       case Failed(_, message) =>
         // Some of Hadoop's own messages quote the whole URI, user info included.
         val safeMessage =
@@ -525,10 +531,21 @@ private[comet] object AbfsAuthResolver extends Logging {
       val path = Option(uri.getRawPath).getOrElse("")
       val segments = path.stripPrefix("/").split("/", -1)
       val tenantAt = Some(segments.lastIndexOf("oauth2")).filter(_ > 0).map(_ - 1).getOrElse(0)
-      "https".equalsIgnoreCase(uri.getScheme) && uri.getHost != null &&
+      hasHttpsHost(uri) &&
       !path.exists(c => c == '%' || c == '\\') && !segments.exists(s => s == "." || s == "..") &&
       segments(tenantAt).nonEmpty
     }
+
+  /**
+   * Whether the native store can post Workload Identity token requests to `authority`. It adds
+   * `/<tenant>/oauth2/v2.0/token` to the authority, as Hadoop does, over a client that refuses
+   * `http`, so the authority must be an `https` URL with a host.
+   */
+  private[objectstore] def httpsHost(authority: String): Boolean =
+    Try(new URI(authority)).toOption.exists(hasHttpsHost)
+
+  private def hasHttpsHost(uri: URI): Boolean =
+    "https".equalsIgnoreCase(uri.getScheme) && uri.getHost != null
 
   private def providerMarker(authType: String): String =
     if (authType == AuthTypes.SAS) Markers.SAS_PROVIDER_CLASS else Markers.OAUTH_PROVIDER_CLASS
