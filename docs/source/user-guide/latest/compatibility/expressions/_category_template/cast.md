@@ -125,8 +125,8 @@ does. The following forms are supported:
 
 - `Z`, and `UTC`, `GMT` or `UT` on their own or followed by an offset (e.g. `UTC`, `GMT-01:00`,
   `UTC+8`).
-- Offsets in the forms `+H`, `+HH`, `+HHMM`, `+H:M`, `+HH:MM` and `+H:MM:SS` (e.g. `+07:30`,
-  `-0800`, `+08:00:00`).
+- Offsets in the forms `+H`, `+HH`, `+HHMM`, `+HHMMSS`, `+H:M`, `+HH:MM` and `+H:MM:SS`
+  (e.g. `+07:30`, `-0800`, `+080000`, `+08:00:00`).
 - The Java `ZoneId.SHORT_IDS` aliases `ACT`, `AET`, `AGT`, `ART`, `AST`, `BET`, `BST`, `CAT`,
   `CNT`, `CST`, `CTT`, `EAT`, `ECT`, `IET`, `IST`, `JST`, `MIT`, `NET`, `NST`, `PLT`, `PNT`,
   `PRT`, `PST`, `SST` and `VST`, which map to a region and follow its daylight saving time, and

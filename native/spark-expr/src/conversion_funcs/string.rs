@@ -1594,6 +1594,12 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
                 rest[2..].parse::<i32>().ok()?,
                 0,
             ),
+            // "+HHMMSS", as `java.time.ZoneOffset.of` accepts it ("+080000" is "+08:00").
+            6 => (
+                rest[..2].parse::<i32>().ok()?,
+                rest[2..4].parse::<i32>().ok()?,
+                rest[4..].parse::<i32>().ok()?,
+            ),
             _ => return None,
         }
     };
@@ -1656,11 +1662,27 @@ const JAVA_SHORT_IDS: &[(&str, &str)] = &[
     ("HST", "-10:00"),
 ];
 
+/// Length of the longest tz database id (`America/Argentina/ComodRivadavia` in chrono-tz 0.10).
+const MAX_ZONE_ID_LEN: usize = 32;
+
+/// A cheap check that runs before the `Tz` lookup, which builds an error string on every miss.
+/// Every tz database id and `SHORT_IDS` alias starts with an upper-case letter and is at most
+/// `MAX_ZONE_ID_LEN` bytes of `[A-Za-z0-9_+/-]`, and ids are case sensitive, so anything else
+/// (for example "a timestamp" or "timestamp" in a malformed value such as "not a timestamp")
+/// cannot resolve and is skipped without a lookup.
+fn could_be_zone_id(id: &str) -> bool {
+    id.starts_with(|c: char| c.is_ascii_uppercase())
+        && id.len() <= MAX_ZONE_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'/' | b'-'))
+}
+
 /// Resolves a zone id that starts with a letter the way `ZoneId.of(id, SHORT_IDS)` does:
 /// a `SHORT_IDS` alias first, then a tz database region id such as `CET`, `Zulu` or
 /// `Etc/GMT+8`. Prefix forms such as `UTC+07:30` are not handled here.
 fn zone_id_to_tz(id: &str) -> Option<Tz> {
-    if !id.starts_with(|c: char| c.is_ascii_alphabetic()) {
+    if !could_be_zone_id(id) {
         return None;
     }
     if let Some((_, target)) = JAVA_SHORT_IDS.iter().find(|(alias, _)| *alias == id) {
@@ -3588,6 +3610,16 @@ mod tests {
             ("2020-01-01 12:34:56-8:00:00", Some(utc + 8 * hour)),
             ("2020-01-01 12:34:56 UTC+8:00:00", Some(utc - 8 * hour)),
             ("2020-01-01 12:34:56 GMT-8:00:00", Some(utc + 8 * hour)),
+            // "+HHMMSS" without colons, bare and after UTC/GMT
+            ("2020-01-01 12:34:56 +080000", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56-080000", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 UTC-080000", Some(utc + 8 * hour)),
+            (
+                "2020-01-01 12:34:56 GMT+053000",
+                Some(utc - 5 * hour - 30 * 60 * 1_000_000),
+            ),
+            ("2020-01-01 12:34:56 +080030", None),
+            ("2020-01-01 12:34:56 +08000", None),
             // A non-zero seconds part is not supported yet (`Tz` has minute precision),
             // see https://github.com/apache/datafusion-comet/issues/7224
             ("2020-01-01 12:34:56 +08:00:30", None),
@@ -3661,6 +3693,22 @@ mod tests {
             assert!(zone_id_to_tz(alias).is_some(), "{alias}");
         }
         assert_eq!(JAVA_SHORT_IDS.len(), 28);
+    }
+
+    #[test]
+    fn could_be_zone_id_test() {
+        assert!(could_be_zone_id("America/Argentina/ComodRivadavia"));
+        assert!(could_be_zone_id("Etc/GMT+8"));
+        assert!(could_be_zone_id("America/Port-au-Prince"));
+        assert!(could_be_zone_id("PST"));
+        for (alias, _) in JAVA_SHORT_IDS {
+            assert!(could_be_zone_id(alias), "{alias}");
+        }
+        assert!(!could_be_zone_id("a timestamp"));
+        assert!(!could_be_zone_id("timestamp"));
+        assert!(!could_be_zone_id("pst"));
+        assert!(!could_be_zone_id("Europe/Moscow!"));
+        assert!(!could_be_zone_id(&"A".repeat(MAX_ZONE_ID_LEN + 1)));
     }
 
     #[test]
