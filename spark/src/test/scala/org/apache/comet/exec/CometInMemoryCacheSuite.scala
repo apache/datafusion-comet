@@ -2758,6 +2758,47 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(zstdSize == plainSize, s"the relation size should not depend on the codec: $sizes")
   }
 
+  test("Comet in-memory cache is built from rows under AQE before Spark 4.0") {
+    // Spark builds a cache from the batches of its plan only when the plan reports that it
+    // supports columnar output. A cached AdaptiveSparkPlanExec does not before Spark 4.0, so there
+    // a relation cached under AQE goes native plan, columnar-to-row, UnsafeRow and back to Arrow
+    // before it is compressed. Without AQE, or from 4.0 on, it is written from the Arrow batches.
+    // The user guide's build timings are from Spark 4.1 and say so.
+    Seq(true, false).foreach { adaptive =>
+      withConversions(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        spark.catalog.clearCache()
+        try {
+          spark
+            .range(0, 100, 1, 2)
+            .selectExpr("id % 7 AS k", "id AS v")
+            .groupBy("k")
+            .agg(sum("v").as("s"))
+            .createOrReplaceTempView("rows_build_cache")
+          spark.catalog.cacheTable("rows_build_cache")
+          assert(spark.table("rows_build_cache").count() == 7)
+          val cachedPlan = spark.sharedState.cacheManager
+            .lookupCachedData(spark.table("rows_build_cache"))
+            .get
+            .cachedRepresentation
+            .cacheBuilder
+            .cachedPlan
+          assert(
+            cachedPlan.isInstanceOf[AdaptiveSparkPlanExec] == adaptive,
+            s"AQE is $adaptive:\n$cachedPlan")
+          assert(
+            cachedPlan.supportsColumnar == (!adaptive || isSpark40Plus),
+            s"AQE is $adaptive:\n$cachedPlan")
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache scans no columns for a row-count-only query") {
     // SELECT count(*) selects no columns, and the scan must keep it that way. Widening it -- to
     // the whole cache schema, or to a single placeholder column -- makes the emitted batches
