@@ -298,6 +298,18 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     failed.message should not include secret
   }
 
+  test("Failed - a credential that contains the URI's password is redacted whole") {
+    val secret = "oauth-client-secret-4f9a2c"
+    val secretUri = new URI(s"abfss://data:client-secret@$account/path/file.parquet")
+    val outcome =
+      resolve(conf(acct(Keys.AUTH_TYPE) -> secret, acct(Keys.CLIENT_SECRET) -> secret), secretUri)
+    outcome shouldBe a[Failed]
+    val failed = outcome.asInstanceOf[Failed]
+    failed.message should include("No enum constant")
+    Seq("oauth-", "-4f9a2c", "client-secret").foreach(part =>
+      failed.message should not include part)
+  }
+
   test("Failed - an unknown auth type value is Hadoop's enum error") {
     val outcome = resolveWith(acct(Keys.AUTH_TYPE) -> "oauth")
     outcome shouldBe a[Failed]
@@ -382,6 +394,20 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     val message = "Failure for acct key =\"c2VjcmV0c2VjcmV0\": token=the-secret-value port=8080"
     redact(message, Seq("the-secret-value", "8080")) shouldBe
       "Failure for acct key =\"<redacted>\": token=<redacted> port=8080"
+  }
+
+  test("redact - overlapping, contained and adjacent secrets become one marker") {
+    // Each secret is matched in the original text, so the order they arrive in does not matter.
+    val cases = Seq(
+      ("x oauth-client-secret-4f9a2c y", Seq("client-secret", "oauth-client-secret-4f9a2c")),
+      ("x first-secret-tail y", Seq("first-secret", "secret-tail")),
+      ("x first-secretsecond-secret y", Seq("first-secret", "second-secret")),
+      ("x abababababab y", Seq("abababab")))
+    for ((message, secrets) <- cases; ordered <- Seq(secrets, secrets.reverse)) {
+      withClue(s"$message with $ordered: ") {
+        redact(message, ordered) shouldBe "x <redacted> y"
+      }
+    }
   }
 
   test("redact - a padded secret is hidden in its trimmed form too") {

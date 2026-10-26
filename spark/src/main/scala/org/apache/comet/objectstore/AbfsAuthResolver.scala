@@ -20,6 +20,7 @@
 package org.apache.comet.objectstore
 
 import java.net.URI
+import java.util.Arrays
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
@@ -474,13 +475,26 @@ private[comet] object AbfsAuthResolver extends Logging {
 
   /**
    * Hides every `secret` of at least [[MIN_REDACTED_LENGTH]] characters in `message`, and the raw
-   * key a `SimpleKeyProvider` message quotes.
+   * key a `SimpleKeyProvider` message quotes. Secrets are matched in the same text, so one that
+   * overlaps or contains another is hidden whole, and each run of hidden characters becomes one
+   * marker.
    */
   private[objectstore] def redact(message: String, secrets: Iterable[String]): String = {
-    val withoutQuotedKey = QUOTED_KEY_PATTERN.replaceAllIn(message, "key =\"" + REDACTED + "\"")
-    secrets
-      .filter(_.length >= MIN_REDACTED_LENGTH)
-      .foldLeft(withoutQuotedKey)((text, secret) => text.replace(secret, REDACTED))
+    val text = QUOTED_KEY_PATTERN.replaceAllIn(message, "key =\"" + REDACTED + "\"")
+    val hidden = new Array[Boolean](text.length)
+    secrets.filter(_.length >= MIN_REDACTED_LENGTH).foreach { secret =>
+      var i = text.indexOf(secret)
+      while (i >= 0) {
+        Arrays.fill(hidden, i, i + secret.length, true)
+        i = text.indexOf(secret, i + 1)
+      }
+    }
+    val out = new StringBuilder(text.length)
+    for (i <- 0 until text.length) {
+      if (!hidden(i)) out += text(i)
+      else if (i == 0 || !hidden(i - 1)) out ++= REDACTED
+    }
+    out.toString
   }
 
   /** The parts of `uri` that can carry a credential: the password and the raw query. */
