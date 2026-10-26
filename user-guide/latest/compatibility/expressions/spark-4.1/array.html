@@ -939,6 +939,10 @@ under the License.
 </section>
 <section id="sequence">
 <h2>Sequence<a class="headerlink" href="#sequence" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>When <code class="docutils literal notranslate"><span class="pre">stop</span> <span class="pre">-</span> <span class="pre">start</span></code> overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 and later return its elements (SPARK-58821), and earlier releases raise <code class="docutils literal notranslate"><span class="pre">INTERNAL_ERROR</span></code>. Comet chooses the behavior by the Spark version number. On a vendor build that reports an older version but includes SPARK-58821, Comet raises the error where Spark returns the elements.</p></li>
+</ul>
 <p>The following cases have no native implementation and always run in the JVM using Spark’s code-generated implementation (inside the Comet pipeline):</p>
 <ul class="simple">
 <li><p>date and timestamp element types run through the JVM codegen dispatcher</p></li>

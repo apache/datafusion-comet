@@ -917,6 +917,11 @@ Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by
 <li><p>Scientific notation (e.g. <code class="docutils literal notranslate"><span class="pre">1.23E+5</span></code>) is supported.</p></li>
 <li><p>Special values (<code class="docutils literal notranslate"><span class="pre">inf</span></code>, <code class="docutils literal notranslate"><span class="pre">infinity</span></code>, <code class="docutils literal notranslate"><span class="pre">nan</span></code>) produce <code class="docutils literal notranslate"><span class="pre">NULL</span></code>.</p></li>
 </ul>
+<p>A zero with a large exponent, such as <code class="docutils literal notranslate"><span class="pre">'0e39'</span></code>, casts to <code class="docutils literal notranslate"><span class="pre">0</span></code> on Spark 4.0.5, 4.1.4, 4.2.1 and later
+(SPARK-60118). Earlier releases return <code class="docutils literal notranslate"><span class="pre">NULL</span></code> for it, or raise <code class="docutils literal notranslate"><span class="pre">NUMERIC_OUT_OF_SUPPORTED_RANGE</span></code>
+under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
+reports an older version but includes SPARK-60118, Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (or raises) where Spark
+returns <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p>
 </section>
 <section id="string-to-date">
 <h2>String to Date<a class="headerlink" href="#string-to-date" title="Link to this heading">#</a></h2>

@@ -95,6 +95,10 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 ## Sequence
 
+The following differences from Spark are always present and do not require any additional configuration:
+
+- When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 and later return its elements (SPARK-58821), and earlier releases raise `INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor build that reports an older version but includes SPARK-58821, Comet raises the error where Spark returns the elements.
+
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - date and timestamp element types run through the JVM codegen dispatcher
