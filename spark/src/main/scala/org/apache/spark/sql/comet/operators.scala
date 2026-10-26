@@ -736,6 +736,17 @@ abstract class CometExec extends CometPlan {
   }
 }
 
+/**
+ * Declares the distribution of the Spark operator that a Comet operator replaces. Without it
+ * AQE's OptimizeSkewInRebalancePartitions can split a skewed partition under an operator that
+ * needs its input clustered, because ValidateRequirements has nothing to reject, and one key then
+ * yields several rows. Mix it into operators that replace a clustering aggregate, window or join.
+ */
+trait CometDelegatesRequiredChildDistribution extends CometExec {
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
+}
+
 object CometExec {
   final class InvalidSparkFallbackException(message: String)
       extends IllegalArgumentException(message)
@@ -2705,6 +2716,7 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
  */
 abstract class CometBaseAggregateExec
     extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution
     with PartitioningPreservingUnaryExecNode {
 
   def groupingExpressions: Seq[NamedExpression]
@@ -2780,12 +2792,6 @@ abstract class CometBaseAggregateExec
   }
 
   override protected def outputExpressions: Seq[NamedExpression] = resultExpressions
-
-  // Declare the same distribution as the Spark aggregate this replaces. Without it AQE's
-  // OptimizeSkewInRebalancePartitions can split a skewed partition under a Final aggregate,
-  // because ValidateRequirements has nothing to reject, and one key then yields several rows.
-  override def requiredChildDistribution: Seq[Distribution] =
-    originalPlan.requiredChildDistribution
 }
 
 case class CometHashAggregateExec(
@@ -3338,7 +3344,8 @@ case class CometHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3350,10 +3357,6 @@ case class CometHashJoinExec(
     case x =>
       throw new IllegalArgumentException(s"ShuffledJoin should not take $x as the JoinType")
   }
-
-  // Same distribution as the Spark join this replaces; see CometBaseAggregateExec.
-  override def requiredChildDistribution: Seq[Distribution] =
-    originalPlan.requiredChildDistribution
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
@@ -3708,7 +3711,8 @@ case class CometSortMergeJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3720,10 +3724,6 @@ case class CometSortMergeJoinExec(
     case x =>
       throw new IllegalArgumentException(s"ShuffledJoin should not take $x as the JoinType")
   }
-
-  // Same distribution as the Spark join this replaces; see CometBaseAggregateExec.
-  override def requiredChildDistribution: Seq[Distribution] =
-    originalPlan.requiredChildDistribution
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)

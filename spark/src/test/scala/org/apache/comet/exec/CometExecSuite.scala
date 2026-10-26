@@ -3994,12 +3994,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
-  // https://github.com/apache/comet/issues/7208
+  // https://github.com/apache/datafusion-comet/issues/7208
   test("AQE does not split a skewed rebalance partition under operators that need clustering") {
-    // Spark's OptimizeSkewInRebalancePartitions splits a skewed partition unless an operator
-    // above needs ClusteredDistribution, which ValidateRequirements checks. Comet's aggregate,
-    // window and join operators have to declare the same requirement, or one key is processed
-    // as several pieces and yields several rows.
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "200",
@@ -4012,26 +4008,31 @@ class CometExecSuite extends CometTestBase {
           .selectExpr("CASE WHEN id % 10 = 0 THEN 0L ELSE id % 1000 END AS k", "id AS v")
           .write
           .parquet(dir.getCanonicalPath)
-        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("rebalance_t1")
 
-        def checkNotSplit(query: String): Unit = {
-          val (_, cometPlan) = checkSparkAnswer(query)
-          val skewedReads = collect(cometPlan) {
-            case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+        withParquetTable(dir.getCanonicalPath, "rebalance_t1") {
+          def checkNotSplit(query: String): Unit = {
+            val (_, cometPlan) = checkSparkAnswer(query)
+            val skewedReads = collect(cometPlan) {
+              case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+            }
+            assert(skewedReads.isEmpty, cometPlan)
           }
-          assert(skewedReads.isEmpty, cometPlan)
-        }
 
-        val rebalanced = "(SELECT /*+ REBALANCE(k) */ * FROM rebalance_t1)"
-        checkNotSplit(s"SELECT k, sum(v), count(*) FROM $rebalanced GROUP BY k")
-        checkNotSplit(
-          s"SELECT k, row_number() OVER (PARTITION BY k ORDER BY v) rn FROM $rebalanced")
-
-        Seq("true", "false").foreach { preferSmj =>
-          withSQLConf(SQLConf.PREFER_SORTMERGEJOIN.key -> preferSmj) {
-            checkNotSplit(
-              s"SELECT a.k, count(*) FROM $rebalanced a JOIN $rebalanced b ON a.k = b.k " +
-                "GROUP BY a.k")
+          val rebalanced = "(SELECT /*+ REBALANCE(k) */ * FROM rebalance_t1)"
+          val window =
+            s"SELECT k, row_number() OVER (PARTITION BY k ORDER BY v) rn FROM $rebalanced"
+          checkNotSplit(s"SELECT k, sum(v), count(*) FROM $rebalanced GROUP BY k")
+          // operators between the shuffle and the aggregate pass its partitioning through
+          checkNotSplit(
+            s"SELECT k, sum(w) FROM (SELECT k, v + 1 AS w FROM $rebalanced WHERE v > 5) GROUP BY k")
+          checkNotSplit(window)
+          checkNotSplit(s"SELECT * FROM ($window) WHERE rn <= 2")
+          Seq("true", "false").foreach { preferSmj =>
+            withSQLConf(SQLConf.PREFER_SORTMERGEJOIN.key -> preferSmj) {
+              checkNotSplit(
+                s"SELECT a.k, count(*) FROM $rebalanced a JOIN $rebalanced b ON a.k = b.k " +
+                  "GROUP BY a.k")
+            }
           }
         }
       }
