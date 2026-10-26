@@ -146,25 +146,12 @@ it, so the operators above the typed operation can run natively. Spark inserts n
 transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
 own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
 the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
-limit, a `mapPartitions` function, or an external row/object consumer could stop reading it early, unless
+limit, a `mapPartitions` function, or code reading `Dataset.rdd` could stop reading it early, unless
 an operator that reads all of its input first, such as an exchange, a sort, or a hash aggregate,
-sits in between. External consumers include `Dataset.rdd`, PySpark's `DataFrame.rdd` row export,
-and a scalar subquery's implicit `executeTake(2)`. The preserved streamed side of a broadcast outer
-join still permits conversion when its consumer reads every result row; an inherited limit or other
-partial reader continues to prevent it. For the same reason, it leaves the output unconverted when the plan uses
+sits in between. For the same reason, it leaves the output unconverted when the plan uses
 `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`: filling the batch
 moves the scan's reader past the file that these report when Spark evaluates them above the
-conversion. When row iteration fails after some complete rows, `RowArrowReader` emits that valid
-prefix before reporting the input error on the next read. This lets a native consumer report an
-earlier error from those rows first. Encoding failures that can leave a partial row, and task
-cancellation, propagate immediately.
-
-Native assertions need a separate field-evaluation check at these consumers. Full row consumption
-alone does not order an earlier sort, shuffle or TopK key error before a later child's assertion.
-Independent expression roots, including Expand projections and hash join keys and conditions,
-must also preserve Spark's first error across rows.
-
-Fusing the deserializer, the `Invoke` that calls the user function, and the
+conversion. Fusing the deserializer, the `Invoke` that calls the user function, and the
 serializer of `Dataset.map` into one projection in the JVM codegen dispatcher was tried in
 [#5714](https://github.com/apache/datafusion-comet/pull/5714) and dropped. The dispatcher only calls
 into Spark's own classes, and the conversion gets nearly the same speedup for `map` while also

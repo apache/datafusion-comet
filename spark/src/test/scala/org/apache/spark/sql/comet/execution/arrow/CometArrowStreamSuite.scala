@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.arrow
 
 import java.nio.charset.StandardCharsets
 
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.jdk.CollectionConverters._
 import scala.util.Using
 
@@ -35,10 +35,10 @@ import org.apache.arrow.vector.dictionary.{Dictionary => ArrowDictionary}
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
-import org.apache.spark.TaskKilledException
 import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, SpecializedGetters}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
+import org.apache.spark.sql.comet.CometSparkToColumnarExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.{ConstantColumnVector, Dictionary, OffHeapColumnVector, OnHeapColumnVector}
 import org.apache.spark.sql.types.{ArrayType, BooleanType, ByteType, CalendarIntervalType, DataType, DateType, DayTimeIntervalType, Decimal, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
@@ -55,89 +55,22 @@ import org.apache.comet.vector.{CometPlainVector, CometVector, NativeUtil}
  */
 class CometArrowStreamSuite extends AnyFunSuite with Matchers {
 
-  test("row reader emits a successful prefix before a later input error") {
-    for (failInHasNext <- Seq(false, true); successfulRows <- Seq(0, 2)) {
-      val allocator = new RootAllocator(Long.MaxValue)
-      val schema = StructType(Seq(StructField("v", IntegerType)))
-      val failure = new IllegalArgumentException("later row failed")
-      var reads = 0
-      val rows = new Iterator[org.apache.spark.sql.catalyst.InternalRow] {
-        override def hasNext: Boolean = {
-          if (failInHasNext && reads == successfulRows) throw failure
-          true
-        }
-        override def next(): org.apache.spark.sql.catalyst.InternalRow = {
-          if (reads == successfulRows) throw failure
-          reads += 1
-          new GenericInternalRow(Array[Any](reads))
-        }
-      }
-      val reader = new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, 4)
-      try {
-        if (successfulRows > 0) {
-          reader.loadNextBatch() shouldBe true
-          reader.getVectorSchemaRoot.getRowCount shouldBe successfulRows
-          reader.getVectorSchemaRoot.getVector(0).asInstanceOf[IntVector].get(1) shouldBe 2
-        }
-        intercept[IllegalArgumentException](
-          reader.loadNextBatch()) should be theSameInstanceAs failure
-      } finally {
-        reader.close()
-        allocator.getAllocatedMemory shouldBe 0L
-        allocator.close()
-      }
+  test("row conversion schema gate supports nested collections") {
+    val array = ArrayType(IntegerType)
+    val map = MapType(IntegerType, ArrayType(LongType))
+    Seq(array, map, new StructType().add("a", array).add("m", map)).foreach { dataType =>
+      val schema = new StructType().add("value", dataType)
+      CometSparkToColumnarExec.isRowSchemaSupported(schema, ListBuffer.empty) shouldBe true
+      CometSparkToColumnarExec.isSchemaSupported(schema, ListBuffer.empty) shouldBe false
     }
-  }
 
-  test("row reader does not read past a full batch or defer cancellation") {
-    for (batchSize <- Seq(1, 4)) {
-      val allocator = new RootAllocator(Long.MaxValue)
-      val schema = StructType(Seq(StructField("v", IntegerType)))
-      var reads = 0
-      val failure = new TaskKilledException("cancelled")
-      val rows = new Iterator[org.apache.spark.sql.catalyst.InternalRow] {
-        override def hasNext: Boolean = {
-          if (reads == 1) throw failure
-          true
-        }
-        override def next(): org.apache.spark.sql.catalyst.InternalRow = {
-          reads += 1
-          new GenericInternalRow(Array[Any](reads))
-        }
-      }
-      val reader =
-        new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, batchSize)
-      try {
-        if (batchSize == 1) reader.loadNextBatch() shouldBe true
-        intercept[TaskKilledException](reader.loadNextBatch()) should be theSameInstanceAs failure
-        reads shouldBe 1
-      } finally {
-        reader.close()
-        allocator.getAllocatedMemory shouldBe 0L
-        allocator.close()
-      }
-    }
-  }
-
-  test("row reader does not emit a batch when encoding a later row fails") {
-    val allocator = new RootAllocator(Long.MaxValue)
-    val schema = StructType(Seq(StructField("a", IntegerType), StructField("b", IntegerType)))
-    val failure = new IllegalArgumentException("second column failed")
-    val invalid = new GenericInternalRow(Array[Any](3, 4)) {
-      override def getInt(ordinal: Int): Int = {
-        if (ordinal == 1) throw failure
-        super.getInt(ordinal)
-      }
-    }
-    val rows = Iterator(new GenericInternalRow(Array[Any](1, 2)), invalid)
-    val reader = new RowArrowReader(allocator, Utils.toArrowSchema(schema, "UTC"), rows, 4)
-    try {
-      intercept[IllegalArgumentException](
-        reader.loadNextBatch()) should be theSameInstanceAs failure
-    } finally {
-      reader.close()
-      allocator.getAllocatedMemory shouldBe 0L
-      allocator.close()
+    val duplicateFields = new StructType().add("x", IntegerType).add("x", LongType)
+    Seq(
+      ArrayType(duplicateFields),
+      MapType(StringType, new StructType()),
+      ArrayType(YearMonthIntervalType())).foreach { dataType =>
+      val schema = new StructType().add("value", dataType)
+      CometSparkToColumnarExec.isRowSchemaSupported(schema, ListBuffer.empty) shouldBe false
     }
   }
 

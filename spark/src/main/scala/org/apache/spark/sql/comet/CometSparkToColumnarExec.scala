@@ -132,6 +132,12 @@ case class CometSparkToColumnarExec(child: SparkPlan)
 
 object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSupport {
 
+  private object RowTypeSupport extends DataTypeSupport
+
+  // RowArrowReader recursively writes the collection types supported by DataTypeSupport.
+  def isRowSchemaSupported(schema: StructType, fallbackReasons: ListBuffer[String]): Boolean =
+    RowTypeSupport.isSchemaSupported(schema, fallbackReasons)
+
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
       op: SparkPlan): CometNativeExec = {

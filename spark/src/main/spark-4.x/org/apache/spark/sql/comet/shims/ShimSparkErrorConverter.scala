@@ -215,7 +215,9 @@ trait ShimSparkErrorConverter {
         Some(SparkException.internalError(params("message").toString))
 
       case "NotNullAssertViolation" =>
-        Some(QueryExecutionErrors.notNullAssertViolation(params("walkedTypePath").toString))
+        Some(
+          QueryExecutionErrors.foundNullValueForNotNullableFieldError(
+            params("fieldName").toString))
 
       case "ValueIsNull" =>
         Some(

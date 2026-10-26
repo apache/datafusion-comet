@@ -121,8 +121,13 @@ conversion by calling `convertToComet`. The converted node keeps the `IcebergWri
 `originalPlan`, so AQE re-plans the write from that node.
 
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
-batches from its child over FFI, so the conversion is declined unless the child is already a Comet
-native operator. This is why a write fed by a `LocalTableScanExec` (`INSERT ... VALUES`, a local
+batches from its child over FFI. If Spark has inserted an `AssertNotNull` projection for required
+fields, `CometExecRule` keeps that projection in Spark and wraps the writer's input in
+`CometSparkToColumnarExec`. Any Spark sort or limit above the projection stays below that conversion,
+preserving Spark's row-wise assertion evaluation and error order. The row conversion accepts the
+recursive types supported by `RowArrowReader`; the writer's eligibility checks still apply.
+Other inputs must already be Comet native operators. This is why a write fed directly by a
+`LocalTableScanExec` (`INSERT ... VALUES`, a local
 DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.
 
 `CometIcebergWriteExec` is row-based (it emits the commit message row) over a columnar child, so

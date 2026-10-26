@@ -26,10 +26,9 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Average, Count, Final, First, Last, Max, Min, Partial, PartialMerge, Sum}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -54,7 +53,7 @@ import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -62,12 +61,11 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.rules.CometExecRule.allExecs
 import org.apache.comet.serde._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
-import org.apache.comet.shims.{CometEvalModeUtil, CometTypeShim, ShimCometMergeRows, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
+import org.apache.comet.shims.{CometTypeShim, ShimCometMergeRows, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
 
@@ -187,13 +185,11 @@ object CometExecRule {
   private[rules] val warnedDeprecatedConversions = ConcurrentHashMap.newKeySet[String]()
 
   /**
-   * A consumer that may skip input rows or defer projected fields until a row is selected. See
-   * `tagPartiallyReadOutputs`.
+   * Tag set on a `SerializeFromObjectExec` whose output an operator above it can stop reading
+   * early, naming that operator. See `tagPartiallyReadTypedDatasetOutputs`.
    */
-  private case class PartialReader(description: String, canSkipInput: Boolean = true)
-
-  private val PARTIAL_READER: TreeNodeTag[PartialReader] =
-    TreeNodeTag[PartialReader]("comet.partialReader")
+  private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.typedDatasetPartialReader")
 
   /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
@@ -445,7 +441,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
     lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
 
-    tagPartiallyReadOutputs(plan)
+    if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
+      tagPartiallyReadTypedDatasetOutputs(plan)
+    }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
@@ -558,17 +556,18 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // Arrow lets the operators above the typed operation run natively.
       case op: SerializeFromObjectExec
           if CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf) =>
-        op.getTagValue(CometExecRule.PARTIAL_READER) match {
-          // This independent restriction also applies when all rows are consumed.
-          case _ if readsInputFileBlock =>
-            withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
-          case Some(reader) if reader.canSkipInput =>
+        op.getTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER) match {
+          case Some(reader) =>
             withFallbackReason(
               op,
               "Comet does not convert the output of a typed Dataset operation when " +
-                s"${reader.description} can stop reading it early, because filling an Arrow " +
-                "batch would run the user function on rows that Spark never reaches")
-          case _ =>
+                s"$reader can stop reading it early, because filling an Arrow batch would " +
+                "run the user function on rows that Spark never reaches")
+          // The conversion reads ahead of input_file_name and friends, as it does over a leaf.
+          // See shouldApplySparkToColumnar.
+          case None if readsInputFileBlock =>
+            withFallbackReason(op, CometExecRule.INPUT_FILE_BLOCK_FALLBACK_REASON)
+          case None =>
             convertTypedDatasetOutput(op)
         }
 
@@ -602,19 +601,26 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // A shuffle directly under the native write stays in the child stage and is not wrapped
       // again.
       case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
-        // Spark evaluates incompatible assertions in row order; the fully consuming writer
-        // can still read their checked rows as Arrow, using the existing conversion.
-        val prepared = op.child match {
-          case project: ProjectExec
-              if project.projectList.exists(CometAssertNotNull.hasAssertionCandidate) &&
-                CometSparkToColumnarExec.isSchemaSupported(project.schema, ListBuffer.empty) =>
+        // Spark inserts AssertNotNull projections for nullable input to required Iceberg fields.
+        // Keep their row-wise evaluation in Spark, including any sort or limit above them, and
+        // convert the writer's input to Arrow only after Spark has evaluated those operators.
+        val needsRowConversion = !op.child.isInstanceOf[CometNativeExec] &&
+          op.child.exists {
+            case project: ProjectExec =>
+              project.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull]))
+            case _ => false
+          }
+        val prepared =
+          if (needsRowConversion &&
+            CometSparkToColumnarExec.isRowSchemaSupported(op.child.schema, ListBuffer.empty)) {
             val rows = ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false)
-              .apply(project)
+              .apply(op.child)
             convertToComet(rows, CometSparkToColumnarExec)
               .map(child => op.withNewChildren(Seq(child)))
               .getOrElse(op)
-          case _ => op
-        }
+          } else {
+            op
+          }
         convertToComet(prepared, CometIcebergNativeWrite).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
@@ -1262,204 +1268,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           serde.convert(op, builder)
         }
       }
-      return nativeOp
-        .filter { proto =>
-          // A serde may emit several native nodes for one Spark operator. Inspect those nodes,
-          // but stop at real Spark children, whose consumption context was tagged independently.
-          def containsOwnAssertion(node: Operator): Boolean =
-            CometAssertNotNull.containsNativeAssertion(node.toBuilder.clearChildren().build()) ||
-              node.getChildrenList.asScala.exists { child =>
-                child.getPlanId == proto.getPlanId && containsOwnAssertion(child)
-              }
-
-          def hasNativeAssertion: Boolean =
-            op.expressions.exists(CometAssertNotNull.hasAssertionCandidate) && (op match {
-              // TopK's sink proto omits its runtime projection over the selected rows.
-              case topK: TakeOrderedAndProjectExec =>
-                QueryPlanSerde.withSharedSubexpressions(topK.projectList) {
-                  topK.projectList.exists { expression =>
-                    QueryPlanSerde
-                      .exprToProto(expression, topK.child.output)
-                      .exists(CometAssertNotNull.containsNativeAssertion)
-                  }
-                }
-              case _: HashAggregateExec | _: ObjectHashAggregateExec =>
-                // Input/grouping expressions consume all rows; only the result projection is lazy.
-                proto.hasProjection && CometAssertNotNull.containsNativeAssertion(
-                  proto.getProjection)
-              case _ => containsOwnAssertion(proto)
-            })
-          def hasGroupingAssertion(node: Operator): Boolean =
-            (node.hasHashAgg && node.getHashAgg.getGroupingExprsList.asScala
-              .exists(CometAssertNotNull.containsNativeAssertion)) ||
-              node.getChildrenList.asScala.exists { child =>
-                child.getPlanId == proto.getPlanId && hasGroupingAssertion(child)
-              }
-          val projectionExpressions = op match {
-            case project: ProjectExec => project.projectList
-            case expand: ExpandExec => expand.projections.flatten
-            case topK: TakeOrderedAndProjectExec => topK.projectList
-            case aggregate: BaseAggregateExec => aggregate.resultExpressions
-            case _ => Seq.empty
-          }
-          val errorOrderFallback =
-            if (projectionExpressions.nonEmpty && hasNativeAssertion &&
-              !CometAssertNotNull.canEvaluateInBatch(projectionExpressions)) {
-              Some(
-                "Native AssertNotNull in a projection could change the first error Spark reports")
-            } else None
-          val consumerFallback = op match {
-            case aggregate: BaseAggregateExec
-                if aggregate.groupingExpressions.exists(
-                  CometAssertNotNull.hasAssertionCandidate) &&
-                  hasGroupingAssertion(proto) =>
-              // Spark updates each group before reading the next key. A later key assertion
-              // must not precede an earlier update's overflow or argument error.
-              val safeUpdates = aggregateUpdatesAreNonThrowing(aggregate)
-              val inputs = aggregate.groupingExpressions ++
-                aggregate.aggregateExpressions.flatMap(a =>
-                  a.aggregateFunction.children ++ a.filter)
-              if (!safeUpdates || !CometAssertNotNull.canEvaluateInBatch(inputs)) {
-                Some(
-                  "Native AssertNotNull in grouping keys could change the first aggregate error")
-              } else None
-            case _ => None
-          }
-          val fallback =
-            nativeAssertionJoinFallback(op, proto)
-              .orElse {
-                op.getTagValue(CometExecRule.PARTIAL_READER)
-                  .filter(_ => hasNativeAssertion)
-                  .map(reader =>
-                    s"Native AssertNotNull below ${reader.description} could change which values " +
-                      "Spark checks")
-              }
-              .orElse(errorOrderFallback)
-              .orElse(consumerFallback)
-          fallback.foreach(reason => withFallbackReason(op, reason))
-          fallback.isEmpty
-        }
-        .map { nativeOp =>
-          val exec = serde.createExec(nativeOp, op)
-          rollUpInfoMessages(op, exec)
-          exec
-        }
-    }
-    None
-  }
-
-  private def aggregateUpdatesAreNonThrowing(aggregate: BaseAggregateExec): Boolean =
-    aggregate.aggregateExpressions.forall { expression =>
-      val function = expression.aggregateFunction
-      val safe = function match {
-        case _: Count | _: Min | _: Max | _: First | _: Last => true
-        case sum: Sum =>
-          sum.dataType == DoubleType ||
-          CometEvalModeUtil.fromSparkEvalMode(CometEvalModeUtil.sumEvalMode(sum)) !=
-            CometEvalMode.ANSI
-        case average: Average => average.dataType == DoubleType
-        case _ => false
-      }
-      safe && (function.children ++ expression.filter).forall(CometAssertNotNull.isNonThrowing)
-    }
-
-  private def nativeAssertionJoinFallback(op: SparkPlan, proto: Operator): Option[String] = {
-    import OperatorOuterClass.JoinType
-
-    if (!op.expressions.exists(CometAssertNotNull.hasAssertionCandidate)) return None
-
-    // These consumers can skip candidates even without a LIMIT above the join. Inspect only
-    // the serialized condition. Child projections use the partial-reader tags independently;
-    // assertions captured inside opaque JVM dispatch keep their existing execution path.
-    val condition = if (proto.hasHashJoin) {
-      val join = proto.getHashJoin
-      Some(join.getJoinType -> join.getCondition)
-    } else if (proto.hasSortMergeJoin) {
-      val join = proto.getSortMergeJoin
-      Some(join.getJoinType -> join.getCondition)
-    } else if (proto.hasBroadcastNestedLoopJoin) {
-      val join = proto.getBroadcastNestedLoopJoin
-      Some(join.getJoinType -> join.getCondition)
-    } else None
-
-    if (condition.exists {
-        case (JoinType.LeftSemi | JoinType.LeftAnti, expression) =>
-          CometAssertNotNull.containsNativeAssertion(expression)
-        case _ => false
-      }) {
-      return Some(
-        "Native AssertNotNull in an early-exit join condition could check candidates Spark skips")
-    }
-
-    if (proto.hasHashJoin) {
-      val join = proto.getHashJoin
-      val leftKeys = join.getLeftJoinKeysList.asScala
-      val rightKeys = join.getRightJoinKeysList.asScala
-      // Spark evaluates broadcast build keys while materializing the broadcast. A native
-      // join evaluates them in probe tasks, which need not exist for an empty probe RDD.
-      val buildKeys = if (join.getBuildSide == OperatorOuterClass.BuildSide.BuildRight) {
-        rightKeys
-      } else leftKeys
-      if (op.isInstanceOf[BroadcastHashJoinExec] && !join.getNullAwareAntiJoin &&
-        buildKeys.exists(CometAssertNotNull.containsNativeAssertion)) {
-        return Some(
-          "Native AssertNotNull in broadcast build keys could skip broadcast-time checks")
-      }
-      // Native hash-build failures otherwise lose Spark's structured error in the async build.
-      if (op.isInstanceOf[ShuffledHashJoinExec] &&
-        buildKeys.exists(CometAssertNotNull.containsNativeAssertion)) {
-        return Some("Native AssertNotNull in shuffled build keys could lose Spark's error")
-      }
-      // Spark's packed integral key is null-propagating: an earlier NULL component skips
-      // later components. Native hash joins evaluate the component arrays independently.
-      op match {
-        case hash: HashJoin =>
-          val packedKeys = Seq(hash.leftKeys -> leftKeys, hash.rightKeys -> rightKeys)
-          if (packedKeys.exists { case (keys, nativeKeys) =>
-              HashJoin.rewriteKeyExpr(keys).length < keys.length &&
-              nativeKeys.exists(CometAssertNotNull.containsNativeAssertion)
-            }) {
-            return Some(
-              "Native AssertNotNull in packed hash join keys could check keys Spark skips")
-          }
-        case _ =>
-      }
-      // Empty and all-NULL build relations can skip different streamed keys in Spark and
-      // DataFusion. Null-aware anti joins also stop building at the first NULL key in Spark,
-      // while native execution builds on the opposite side and evaluates keys in batches.
-      val keys = if (join.getNullAwareAntiJoin) {
-        leftKeys ++ rightKeys
-      } else {
-        join.getJoinType match {
-          case JoinType.Inner | JoinType.LeftSemi | JoinType.LeftAnti =>
-            if (join.getBuildSide == OperatorOuterClass.BuildSide.BuildRight) leftKeys
-            else rightKeys
-          case _ => Seq.empty
-        }
-      }
-      if (keys.exists(CometAssertNotNull.containsNativeAssertion)) {
-        return Some("Native AssertNotNull in hash join keys could change which keys Spark checks")
-      }
-      // Independent key roots run column by column natively, but row by row in Spark.
-      op match {
-        case hash: HashJoin =>
-          val keyGroups = Seq(hash.leftKeys -> leftKeys, hash.rightKeys -> rightKeys)
-          val assertedKeys = (leftKeys ++ rightKeys)
-            .exists(CometAssertNotNull.containsNativeAssertion)
-          if ((assertedKeys && !hash.condition.forall(CometAssertNotNull.isNonThrowing)) ||
-            (CometAssertNotNull.containsNativeAssertion(join.getCondition) &&
-              !CometAssertNotNull.canEvaluateInBatch(
-                hash.leftKeys ++ hash.rightKeys ++ hash.condition))) {
-            return Some(
-              "Native AssertNotNull in a hash join could change the first key or condition error")
-          }
-          if (keyGroups.exists { case (expressions, nativeKeys) =>
-              nativeKeys.exists(CometAssertNotNull.containsNativeAssertion) &&
-              !CometAssertNotNull.canEvaluateInBatch(expressions)
-            }) {
-            return Some("Native AssertNotNull in hash join keys could change the first key error")
-          }
-        case _ =>
+      return nativeOp.map { nativeOp =>
+        val exec = serde.createExec(nativeOp, op)
+        rollUpInfoMessages(op, exec)
+        exec
       }
     }
     None
@@ -1606,123 +1418,51 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     allExecs.get(op.getClass).exists(_.enabledConfig.forall(_.get(op.conf)))
 
   /**
-   * Tags operators whose output a consumer can skip evaluating. Spark computes rows as the
-   * consumer reads them, while native expressions and typed Dataset conversion fill a whole Arrow
-   * batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or code reading
-   * `Dataset.rdd`, an assertion or user function could throw on rows Spark never reaches. Joins
-   * can also skip an input, and generated projections, filters, samples and joins can defer child
-   * fields until an expression needs them. Conversely, native joins can skip input Spark would
-   * evaluate. An operator that reads all of its input before it returns a row ends the search,
-   * since Spark computes every row below it anyway: an exchange, a sort, a hash aggregate, or a
-   * top-k over input that is not already sorted. Throwing keys and updates still require a
-   * field-only context so a later child assertion cannot precede their earlier error.
+   * Tags each `SerializeFromObjectExec` whose output an operator above it can stop reading early
+   * with that operator, so `transform` does not convert it. Spark computes the rows of a typed
+   * Dataset operation one at a time, as the operator above reads them, while the conversion fills
+   * a whole Arrow batch first. Below a limit, a `mapPartitions` function such as `_.take(1)`, or
+   * code reading `Dataset.rdd`, the conversion would run the user function on rows Spark never
+   * reaches, and a function that throws on one of them would fail a query that succeeds in Spark.
+   * An operator that reads all of its input before it returns a row ends the search, since Spark
+   * computes every row below it anyway: an exchange, a sort, a hash aggregate, or a top-k over
+   * input that is not already sorted.
    *
    * Conversion is bottom-up, so this runs first. TreeNode tags survive the child copies made
-   * during transformUp, while an identity set would not. Retain established tags when AQE visits
-   * a fragment without its limiting ancestor.
+   * during transformUp, while an identity set would not.
    */
-  private def tagPartiallyReadOutputs(plan: SparkPlan): Unit = {
-    import CometExecRule.PartialReader
-
-    def visit(op: SparkPlan, partialReader: Option[PartialReader]): Unit = {
-      // AQE can revisit a fragment without the ancestor that could skip whole rows. A new
-      // field-only reader must not weaken that established context or its child propagation.
-      val inheritedReader = op
-        .getTagValue(CometExecRule.PARTIAL_READER)
-        .filter(_.canSkipInput)
-        .orElse(partialReader)
-      // A repeated transform can already contain Comet limits and consumption barriers.
-      val original = op match {
-        case comet: CometExec => comet.originalPlan
-        case other => other
-      }
-      val childReader = original match {
-        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec =>
-          Some(PartialReader("a limit"))
+  private def tagPartiallyReadTypedDatasetOutputs(plan: SparkPlan): Unit = {
+    def visit(op: SparkPlan, partialReader: Option[String]): Unit = {
+      val childReader = op match {
+        case serialize: SerializeFromObjectExec =>
+          partialReader.foreach(
+            serialize.setTagValue(CometExecRule.TYPED_DATASET_PARTIAL_READER, _))
+          partialReader
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec => Some("a limit")
         // A top-k reads only its first rows when its input is already sorted.
         case topK: TakeOrderedAndProjectExec
             if SortOrder.orderingSatisfies(topK.child.outputOrdering, topK.sortOrder) =>
-          Some(PartialReader("a limit"))
-        // Global window limits can stop below an exchange, without an upper reader tag.
-        case w if ShimCometWindowGroupLimit.extract(w).exists(_.partitionSpec.isEmpty) =>
-          Some(PartialReader("a window group limit"))
-        case _: MapPartitionsExec => Some(PartialReader("a mapPartitions function"))
-        // Writers consume their input rows; they are not external, potentially partial readers.
-        case _: IcebergWriteExec | _: DataWritingCommandExec | _: WriteFilesExec => None
-        // These consumers defer projected fields, but still read every input object. Keep
-        // typed Dataset conversion eligible unless an ancestor can skip whole input rows.
-        case _: ProjectExec =>
-          inheritedReader.orElse(Some(PartialReader("a projection", canSkipInput = false)))
-        case _: FilterExec =>
-          inheritedReader.orElse(Some(PartialReader("a filter", canSkipInput = false)))
-        case _: SampleExec =>
-          inheritedReader.orElse(Some(PartialReader("a sample", canSkipInput = false)))
-        case aggregate: BaseAggregateExec if !aggregateUpdatesAreNonThrowing(aggregate) =>
-          // Full row consumption does not order a child assertion after earlier updates.
-          Some(PartialReader("an aggregate update", canSkipInput = false))
-        case _: BroadcastHashJoinExec | _: ShuffledHashJoinExec | _: SortMergeJoinExec |
-            _: BroadcastNestedLoopJoinExec =>
-          Some(PartialReader("a join"))
-        case topK: TakeOrderedAndProjectExec
-            if !topK.sortOrder.forall(order => CometAssertNotNull.isNonThrowing(order.child)) =>
-          Some(PartialReader("a top-k key", canSkipInput = false))
-        case sort: SortExec
-            if !sort.sortOrder.forall(order => CometAssertNotNull.isNonThrowing(order.child)) =>
-          Some(PartialReader("a sort key", canSkipInput = false))
-        case exchange: ShuffleExchangeExec if !(exchange.outputPartitioning match {
-              case HashPartitioning(keys, _) => keys.forall(CometAssertNotNull.isNonThrowing)
-              case RangePartitioning(order, _) =>
-                order.forall(key => CometAssertNotNull.isNonThrowing(key.child))
-              case _ => true
-            }) =>
-          Some(PartialReader("a shuffle key", canSkipInput = false))
+          Some("a limit")
+        case _: MapPartitionsExec => Some("a mapPartitions function")
         case _: Exchange | _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
             _: TakeOrderedAndProjectExec =>
           None
-        case _ => inheritedReader
+        case _ => partialReader
       }
-      // TopK and aggregate result projections run after selection/aggregation. An external
-      // consumer can still skip their output rows, even though their input is fully consumed.
-      // Projections, filters, samples and joins introduce a context for their children only.
-      // A join's own keys and condition have separate checks for their evaluation order.
-      val ownReader = original match {
-        case _: TakeOrderedAndProjectExec | _: HashAggregateExec | _: ObjectHashAggregateExec |
-            _: ProjectExec | _: FilterExec | _: SampleExec | _: BroadcastHashJoinExec |
-            _: ShuffledHashJoinExec | _: SortMergeJoinExec | _: BroadcastNestedLoopJoinExec =>
-          inheritedReader
-        case _ => childReader
-      }
-      ownReader.foreach(op.setTagValue(CometExecRule.PARTIAL_READER, _))
-      original match {
-        // The preserved streamed side of a broadcast outer join is fully consumed. Its
-        // fields may still be deferred; retain any ancestor that can skip whole rows.
-        case join: BroadcastHashJoinExec
-            if (join.joinType == LeftOuter && join.buildSide == BuildRight) ||
-              (join.joinType == RightOuter && join.buildSide == BuildLeft) =>
-          val streamedReader = inheritedReader
-            .filter(_.canSkipInput)
-            .orElse(Some(PartialReader("a join", canSkipInput = false)))
-          val streamed = if (join.buildSide == BuildRight) 0 else 1
-          op.children.zipWithIndex.foreach { case (child, index) =>
-            visit(child, if (index == streamed) streamedReader else childReader)
-          }
-        case _ => op.children.foreach(visit(_, childReader))
-      }
+      op.children.foreach(visit(_, childReader))
     }
-    // Object RDD consumers may skip typed operations. Row consumers (including javaToPython
-    // and a separately prepared scalar subquery's executeTake(2)) may skip output fields/rows
-    // without a LIMIT node. Both assertions and typed user functions must remain lazy there;
-    // a fully consuming operator or writer below this boundary still permits conversion.
+    // `Dataset.rdd` reads the objects the plan produces, and the RDD's own code decides how many
+    // of them to read, as `take(1)` does. The plan's root is the `DeserializeToObjectExec` that
+    // `Dataset.rdd` adds. When the Dataset ends in a typed operation such as `map`, Spark's
+    // `EliminateSerialization` drops that deserializer together with the operation's serializer,
+    // so the root is the operation itself, which produces objects too, or a typed filter or a
+    // project over it. A Dataset's own plan ends in rows, so no other plan has such a root.
     def producesObjects(op: SparkPlan): Boolean = op match {
       case _: ObjectProducerExec => true
       case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
       case _ => false
     }
-    visit(
-      plan,
-      Some(
-        if (producesObjects(plan)) PartialReader("code reading Dataset.rdd")
-        else PartialReader("an external row consumer")))
+    visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
   }
 
   /**

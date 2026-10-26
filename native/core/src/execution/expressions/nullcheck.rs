@@ -17,18 +17,6 @@
 
 //! Null check expression builders
 
-use std::sync::Arc;
-
-use arrow::datatypes::SchemaRef;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::AssertNotNull;
-
-use crate::execution::{
-    operators::ExecutionError,
-    planner::{expression_registry::ExpressionBuilder, PhysicalPlanner},
-};
-use crate::extract_expr;
 use datafusion::physical_expr::expressions::{IsNotNullExpr, IsNullExpr};
 
 use crate::unary_expr_builder;
@@ -42,21 +30,3 @@ macro_rules! define_null_check_builders {
 }
 
 define_null_check_builders!();
-
-pub struct AssertNotNullBuilder;
-
-impl ExpressionBuilder for AssertNotNullBuilder {
-    fn build(
-        &self,
-        spark_expr: &Expr,
-        input_schema: SchemaRef,
-        planner: &PhysicalPlanner,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        let expr = extract_expr!(spark_expr, AssertNotNull);
-        let child = planner.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
-        Ok(Arc::new(AssertNotNull::new(
-            child,
-            expr.walked_type_path.clone(),
-        )))
-    }
-}

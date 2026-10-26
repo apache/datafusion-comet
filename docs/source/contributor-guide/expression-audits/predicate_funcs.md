@@ -84,24 +84,6 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
-## assertnotnull
-
-Internal Catalyst runtime nullability check, with no public SQL function. Native evaluation preserves the child value and checks its outer logical validity, including dictionary values. Structural and lazy conditional parents used by V2 writes are supported when they contain one distinct assertion over a nonthrowing child and no competing errors. Repeated identical assertions are safe; distinct checks or potentially throwing siblings fall back to preserve Spark's first failing row, field and error. Only identity and numeric widening casts are treated as nonthrowing; temporal and nested conversions can overflow even when Spark permits an upcast. Assertions captured entirely in JVM codegen dispatch retain their existing execution path.
-
-Partial consumers keep assertions in Spark's row evaluation. This includes limits, samples, deferred projection/filter fields, join inputs, external row exports such as `DataFrame.rdd`, and separately prepared scalar subqueries that read only two rows. Full-consumption barriers permit native checks only when their own keys or aggregate updates cannot fail before a later child assertion. Late TopK and aggregate result projections retain their external consumption bound. Assertion predicates, including predicates resolved from scalar subqueries after planning, remain outside native Parquet scans. Empty-schema shuffles preserve Spark's key evaluation, and native one-partition hash shuffles decline asserted keys.
-
-Semi/anti join conditions and inner/semi/anti keys fall back when native evaluation could check candidates or keys Spark skips. Hash joins also decline asserted build keys, packed keys, and combinations of keys or residual conditions whose first error can differ. These checks inspect native assertions without traversing opaque JVM-dispatched closures. Typed Dataset conversion remains eligible on the preserved streamed side of a fully consumed outer hash join; an ancestor that can stop consuming rows still prevents conversion.
-
-Aggregate arguments and filters fall back when their serialized aggregate contains a native assertion, because Spark can skip values during lazy, filtered or nullable-argument updates. Grouping keys additionally preserve ordering against aggregate-update errors. Required-field writes can retain a native writer above a Spark row-checked projection converted to Arrow. `RowArrowReader` delivers a completed prefix before a later producer error, while encoding errors and cancellation propagate immediately.
-
-The `CometAssertNotNullBenchmark` compares Spark and Comet on primitive, dictionary-string and struct inputs at several NULL densities, and on required-field Iceberg writes. It consumes output and verifies the assertion and writer implementations before timing.
-
-- Spark 3.4.3 (audited 2026-10-22): full `NullPointerException` message and newline-delimited walked path. Nullable-source V2 writes to required columns are rejected during analysis.
-- Spark 3.5.9 (audited 2026-10-22): same expression error contract as 3.4.3. V2 writes insert runtime assertions for required fields.
-- Spark 4.0.4 (audited 2026-10-22): `SparkRuntimeException` with `NOT_NULL_ASSERT_VIOLATION` and `walkedTypePath`.
-- Spark 4.1.3 (audited 2026-10-22): same expression contract as 4.0.4.
-- Spark 4.2.0 (audited 2026-10-22): same expression contract as 4.0.4.
-
 ## AtLeastNNonNulls (DataFrame API)
 
 - Spark 3.4.3 (audited 2026-09-24): non-nullable Boolean predicate used by `DataFrame.na.drop`. Counts non-null, non-NaN children and stops evaluating a row once the threshold is reached. Non-positive thresholds return true without evaluating children.

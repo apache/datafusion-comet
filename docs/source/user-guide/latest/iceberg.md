@@ -450,7 +450,7 @@ per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
 depends on is one the native path reproduces exactly, and additionally only when the plan
-feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
+feeding the write supplies Arrow batches to Comet. For a partitioned table that plan includes the hash
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 [Iceberg system functions](#iceberg-system-functions)). Ineligible writes run through
@@ -459,7 +459,12 @@ output. A write that runs natively shows `CometIcebergWrite` under `IcebergCommi
 plan; an ineligible write keeps `IcebergWrite`.
 
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
-must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
+must supply Arrow data. When Spark inserts `AssertNotNull` checks for nullable input written to
+required fields, those checks remain in Spark and their output is converted to Arrow at the writer
+boundary. This allows the native writer to handle these writes even without a shuffle, while Spark
+preserves assertion and expression error order. The same table and schema eligibility checks apply.
+
+A write fed directly by a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
 `LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
 (off by default). Without that setting such writes keep `IcebergWrite` and run through

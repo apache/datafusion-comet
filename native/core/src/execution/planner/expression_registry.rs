@@ -67,7 +67,6 @@ pub enum ExpressionType {
     // Null checks
     IsNull,
     IsNotNull,
-    AssertNotNull,
 
     // Bitwise operations
     BitwiseAnd,
@@ -281,10 +280,6 @@ impl ExpressionRegistry {
             .insert(ExpressionType::IsNull, Box::new(IsNullBuilder));
         self.builders
             .insert(ExpressionType::IsNotNull, Box::new(IsNotNullBuilder));
-        self.builders.insert(
-            ExpressionType::AssertNotNull,
-            Box::new(AssertNotNullBuilder),
-        );
     }
 
     /// Register string expression builders
@@ -349,7 +344,6 @@ impl ExpressionRegistry {
 
             Some(ExprStruct::IsNull(_)) => Ok(ExpressionType::IsNull),
             Some(ExprStruct::IsNotNull(_)) => Ok(ExpressionType::IsNotNull),
-            Some(ExprStruct::AssertNotNull(_)) => Ok(ExpressionType::AssertNotNull),
 
             Some(ExprStruct::BitwiseAnd(_)) => Ok(ExpressionType::BitwiseAnd),
             Some(ExprStruct::BitwiseOr(_)) => Ok(ExpressionType::BitwiseOr),

@@ -19,12 +19,9 @@
 
 package org.apache.spark.sql.comet.execution.arrow
 
-import scala.util.control.NonFatal
-
 import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.Schema
-import org.apache.spark.{TaskContext, TaskKilledException}
 import org.apache.spark.sql.catalyst.InternalRow
 
 /**
@@ -48,8 +45,6 @@ private[comet] class RowArrowReader(
 
   require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
 
-  private var pendingInputError: Throwable = null
-
   override protected def readSchema(): Schema = arrowSchema
 
   override def bytesRead(): Long = 0L
@@ -57,7 +52,6 @@ private[comet] class RowArrowReader(
   override protected def closeReadSource(): Unit = ()
 
   override def loadNextBatch(): Boolean = {
-    if (pendingInputError != null) throw pendingInputError
     prepareLoadNextBatch()
 
     if (!rowIter.hasNext) {
@@ -67,23 +61,9 @@ private[comet] class RowArrowReader(
     val startNs = System.nanoTime()
     val writer = ArrowWriter.create(getVectorSchemaRoot, maxRecordsPerBatch)
     var rowCount = 0
-    var readingInput = true
-    try {
-      while (rowCount < maxRecordsPerBatch && rowIter.hasNext) {
-        val row = rowIter.next()
-        readingInput = false
-        writer.write(row)
-        rowCount += 1
-        readingInput = true
-      }
-    } catch {
-      case NonFatal(error)
-          if readingInput && rowCount > 0 && !error.isInstanceOf[TaskKilledException] =>
-        val context = TaskContext.get()
-        if (context != null && context.isInterrupted()) throw error
-        // Let consumers process the successful prefix before a later input error. A writer
-        // error may leave a partial row, so it must propagate without emitting that batch.
-        pendingInputError = error
+    while (rowIter.hasNext && rowCount < maxRecordsPerBatch) {
+      writer.write(rowIter.next())
+      rowCount += 1
     }
     writer.finish()
     onConversionNs(System.nanoTime() - startNs)

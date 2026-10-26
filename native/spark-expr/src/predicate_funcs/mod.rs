@@ -15,12 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-mod assert_not_null;
 mod at_least_n_non_nulls;
 mod is_nan;
 mod rlike;
 
-pub use assert_not_null::AssertNotNull;
 pub use at_least_n_non_nulls::AtLeastNNonNulls;
 pub use is_nan::spark_isnan;
 pub use rlike::RLike;

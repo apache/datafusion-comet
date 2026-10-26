@@ -21,14 +21,10 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, And, AtLeastNNonNulls, Attribute, BinaryExpression, BoundReference, CaseWhen, Cast, CreateNamedStruct, EqualNullSafe, EqualTo, Expression, GetStructField, GreaterThan, GreaterThanOrEqual, If, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or, Remainder}
-import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
+import org.apache.spark.sql.catalyst.expressions.{And, AtLeastNNonNulls, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
-import org.apache.spark.sql.catalyst.trees.TreePattern.NULL_CHECK
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType, NumericType}
-
-import com.google.protobuf.Message
+import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
@@ -492,103 +488,6 @@ object ComparisonUtils {
       liftFallbackReasons(serializedValue, expr)
       serializedList.foreach(liftFallbackReasons(_, expr))
       None
-    }
-  }
-}
-
-object CometAssertNotNull extends CometExpressionSerde[AssertNotNull] {
-  def hasAssertionCandidate(expr: Expression): Boolean =
-    expr.containsPattern(NULL_CHECK) &&
-      (expr.isInstanceOf[AssertNotNull] || expr.children.exists(hasAssertionCandidate))
-
-  // Enabling this previously unsupported expression must not make an enclosing eager kernel
-  // check rows that Spark skips (for example, false AND assertnotnull(NULL)). Admit the
-  // structural and lazy conditional contexts used by V2 writes; keep other compositions in
-  // Spark until their evaluation order has been verified. Check every parent during serde so
-  // a safe wrapper cannot hide an unsafe descendant.
-  private[serde] def hasUnsupportedParent(expr: Expression, proto: Expr): Boolean = expr match {
-    case _: AssertNotNull =>
-      false
-    case _: Alias | _: CreateNamedStruct | _: GetStructField | _: If | _: CaseWhen =>
-      hasAssertionCandidate(expr) && containsNativeAssertion(proto) &&
-      !canEvaluateInBatch(Seq(expr))
-    case _ =>
-      hasAssertionCandidate(expr) && containsNativeAssertion(proto)
-  }
-
-  // A later child error must not precede an earlier row's NULL assertion. Unknown children,
-  // including nested assertions, stay in Spark; deterministic alone does not mean non-throwing.
-  private def isNonThrowingNode(expr: Expression): Boolean = expr match {
-    case _: Literal | _: Attribute | _: BoundReference => true
-    case _: Alias | _: CreateNamedStruct | _: GetStructField | _: If | _: CaseWhen |
-        _: EqualNullSafe | _: EqualTo | _: GreaterThan | _: GreaterThanOrEqual | _: LessThan |
-        _: LessThanOrEqual | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or =>
-      true
-    case cast: Cast =>
-      val from = cast.child.dataType
-      val to = cast.dataType
-      // canUpCast also admits temporal and nested conversions that can overflow.
-      from == to || (from.isInstanceOf[NumericType] && to.isInstanceOf[NumericType] &&
-        Cast.canUpCast(from, to))
-    case Remainder(_, Literal(value: Int, _), _) => value > 0
-    case Remainder(_, Literal(value: Long, _), _) => value > 0
-    // The scalar value is prepared before either Spark or native row evaluation begins.
-    case _: org.apache.spark.sql.execution.ScalarSubquery => true
-    case _ => false
-  }
-
-  private[comet] def isNonThrowing(expr: Expression): Boolean =
-    isNonThrowingNode(expr) && expr.children.forall(isNonThrowing)
-
-  // Independent arrays can report a later row's failure before an earlier row in another
-  // field/branch. Repeated identical checks have the same error; distinct checks do not.
-  def canEvaluateInBatch(expressions: Seq[Expression]): Boolean = {
-    var firstAssertion: AssertNotNull = null
-    def safe(expr: Expression): Boolean = expr match {
-      case assertion: AssertNotNull =>
-        if (firstAssertion == null) firstAssertion = assertion
-        firstAssertion.fastEquals(assertion) && isNonThrowing(assertion.child)
-      case _ => isNonThrowingNode(expr) && expr.children.forall(safe)
-    }
-    expressions.forall(safe)
-  }
-
-  // A dispatched subtree captures its assertions in opaque closure bytes. Only assertions
-  // left in the native proto need this guard, including beneath a dispatched child's parent.
-  // Walk message fields so repeated arguments and new expression containers are not missed.
-  private[comet] def containsNativeAssertion(message: Message): Boolean = message match {
-    case expr: Expr if expr.hasAssertNotNull => true
-    case _ =>
-      message.getAllFields.values.asScala.exists {
-        case child: Message => containsNativeAssertion(child)
-        case children: java.util.List[_] =>
-          children.asScala.exists {
-            case child: Message => containsNativeAssertion(child)
-            case _ => false
-          }
-        case _ => false
-      }
-  }
-
-  override def convert(
-      expr: AssertNotNull,
-      inputs: Seq[Attribute],
-      binding: Boolean): Option[Expr] = {
-    if (!isNonThrowing(expr.child)) {
-      withFallbackReason(
-        expr,
-        "Native AssertNotNull child could throw before Spark checks an earlier NULL")
-      return None
-    }
-    exprToProtoInternal(expr.child, inputs, binding).map { child =>
-      Expr
-        .newBuilder()
-        .setAssertNotNull(
-          ExprOuterClass.AssertNotNull
-            .newBuilder()
-            .setChild(child)
-            .setWalkedTypePath(expr.walkedTypePath.mkString("\n", "\n", "\n")))
-        .build()
     }
   }
 }
