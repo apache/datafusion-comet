@@ -127,6 +127,11 @@ iceberg-rust uses a pushed predicate to skip row groups and pages and to filter 
 decode, and the filter above the scan evaluates the complete condition. `OR` is pushed only when
 both branches can be, and `NOT` only when its whole child can be.
 
+Partial pushdown is enabled by default. Set
+`spark.comet.scan.icebergNative.partialPushdown.enabled=false` to push only conditions that
+convert in full. This can help when most rows match and reader filtering adds work without
+skipping reads. The filter above the scan evaluates the complete condition with either setting.
+
 Some predicates are left to the filter above the scan because iceberg-rust would return
 different rows than Spark:
 
@@ -825,7 +830,9 @@ Which entries apply depends on which native paths are enabled:
   filter literal incorrectly, so comparisons other than `=` pushed to the native scan can drop
   matching rows. Comet avoids this for promotions that the schema history records. When only part
   of a condition is pushed, it also avoids this for promotions made before Iceberg 0.12 and for
-  tables with a name mapping, which those procedures set. Other cases can still drop rows
+  tables with a name mapping, which those procedures set. A condition that converts in full can
+  still drop rows from imported narrower files, even on a table with a name mapping, or from
+  columns promoted before Iceberg 0.12
   ([#7138](https://github.com/apache/datafusion-comet/issues/7138)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values

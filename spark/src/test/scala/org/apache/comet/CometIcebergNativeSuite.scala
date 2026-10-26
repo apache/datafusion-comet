@@ -4388,6 +4388,35 @@ class CometIcebergNativeSuite
             partialBytes * 2 < fullBytes,
             s"Partial residual must prune reads: partial=$partialBytes, full=$fullBytes")
 
+          val enabledWholeScan = checkAndGetScan("id BETWEEN 1000 AND 1099")
+          withSQLConf(CometConf.COMET_ICEBERG_PARTIAL_PUSHDOWN_ENABLED.key -> "false") {
+            val disabledScan = checkAndGetScan("l IS NOT NULL AND id BETWEEN 1000 AND 1099")
+            assert(disabledScan.metrics("output_rows").value == 10000L)
+            assert(disabledScan.metrics("bytes_scanned").value == fullBytes)
+            // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+            if (icebergVersionAtLeast(1, 8)) {
+              val disabled =
+                OperatorOuterClass.IcebergScanCommon.parseFrom(disabledScan.commonData)
+              val enabled = OperatorOuterClass.IcebergScanCommon.parseFrom(partialScan.commonData)
+              assert(disabled.getResidualPoolCount == 0)
+              assert(enabled.getResidualPoolCount == 1)
+            }
+
+            val wholeScan = checkAndGetScan("id BETWEEN 1000 AND 1099")
+            assert(wholeScan.metrics("output_rows").value < 1000L)
+            assert(wholeScan.metrics("bytes_scanned").value * 2 < fullBytes)
+            assert(
+              wholeScan.metrics("output_rows").value ==
+                enabledWholeScan.metrics("output_rows").value)
+            if (icebergVersionAtLeast(1, 8)) {
+              val whole = OperatorOuterClass.IcebergScanCommon.parseFrom(wholeScan.commonData)
+              val enabledWhole =
+                OperatorOuterClass.IcebergScanCommon.parseFrom(enabledWholeScan.commonData)
+              assert(whole.getResidualPoolCount == 1)
+              assert(whole.getResidualPoolList == enabledWhole.getResidualPoolList)
+            }
+          }
+
           // A partial residual keeps equality on a BIGINT column but not a range, which an
           // unrecorded promotion could make drop rows.
           val partialBigEqBytes =

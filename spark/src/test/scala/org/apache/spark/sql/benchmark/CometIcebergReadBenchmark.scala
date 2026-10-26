@@ -32,7 +32,8 @@ import org.apache.comet.CometConf
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make
  * benchmark-org.apache.spark.sql.benchmark.CometIcebergReadBenchmark` Results will be written to
  * "spark/benchmarks/CometIcebergReadBenchmark-**results.txt". Pass `--nested-only` to run only
- * the nested column cases, or `--filter-only` to run only the partial filter cases.
+ * the nested column cases, or `--filter-only` to run only the partial filter cases. Add
+ * `--reverse-filter-cases` to measure partial pushdown enabled before disabled.
  */
 object CometIcebergReadBenchmark extends CometBenchmarkBase {
 
@@ -181,7 +182,7 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
    * the scan, which evaluates the range again. Every file covers the whole range of every
    * filtered column, so file pruning in Iceberg's planning skips nothing either.
    */
-  def icebergPartialFilterBenchmark(values: Int): Unit = {
+  def icebergPartialFilterBenchmark(values: Int, reverseCases: Boolean): Unit = {
     withTempPath { dir =>
       configureIcebergHadoopCatalog(new File(dir, "iceberg-warehouse"))
       val table = s"$defaultIcebergCatalog.db.partial_filter"
@@ -208,11 +209,13 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
         CometConf.COMET_ENABLED.key -> "true",
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true")
+      val pushdownCases = if (reverseCases) Seq(true, false) else Seq(false, true)
 
       Seq(
         "1% of a clustered column" -> s"clustered < ${values / 100}",
         "1% of a scattered column" -> s"scattered < ${values / 100}",
         "90% of a scattered column" -> s"scattered < ${values / 10 * 9}",
+        "99% of a scattered column" -> s"scattered < ${values / 100 * 99}",
         "one value of a clustered BIGINT column" -> s"clustered_long = ${values / 2}")
         .foreach { case (name, range) =>
           val query = s"SELECT sum(length(payload)) FROM $table WHERE l IS NOT NULL AND $range"
@@ -222,23 +225,38 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
           benchmark.addCase("SQL Iceberg - Spark") { _ =>
             spark.sql(query).noop()
           }
-          benchmark.addCase("SQL Iceberg - Comet Iceberg-Rust") { _ =>
-            withSQLConf(cometIceberg: _*) {
-              spark.sql(query).noop()
+          val expected = spark.sql(query).collect().toSeq
+          pushdownCases.foreach { enabled =>
+            val configs = cometIceberg :+
+              (CometConf.COMET_ICEBERG_PARTIAL_PUSHDOWN_ENABLED.key -> enabled.toString)
+            val state = if (enabled) "enabled" else "disabled"
+            benchmark.addCase(s"SQL Iceberg - Comet, partial pushdown $state") { _ =>
+              withSQLConf(configs: _*) {
+                spark.sql(query).noop()
+              }
             }
-          }
 
-          withSQLConf(cometIceberg: _*) {
-            val df = spark.sql(query)
-            df.collect()
-            val scans = collect(df.queryExecution.executedPlan) {
-              case scan: CometIcebergNativeScanExec => scan
+            withSQLConf(configs: _*) {
+              val df = spark.sql(query)
+              require(
+                df.collect().toSeq == expected,
+                s"Unexpected result with partial pushdown $state")
+              val scans = collect(df.queryExecution.executedPlan) {
+                case scan: CometIcebergNativeScanExec => scan
+              }
+              require(
+                scans.nonEmpty,
+                s"Expected a native Iceberg scan:\n${df.queryExecution.executedPlan}")
+              val bytes = scans.map(_.metrics("bytes_scanned").value).sum
+              val rows = scans.map(_.metrics("output_rows").value).sum
+              require(
+                if (enabled) rows < values else rows == values,
+                s"Unexpected scan output with partial pushdown $state: $rows rows")
+              warn(
+                benchmark,
+                f"Comet partial pushdown $state: ${bytes / 1024.0 / 1024.0}%.1f MiB scanned, " +
+                  s"$rows rows output")
             }
-            val bytes = scans.map(_.metrics("bytes_scanned").value).sum
-            val rows = scans.map(_.metrics("output_rows").value).sum
-            warn(
-              benchmark,
-              f"Comet native scan: ${bytes / 1024.0 / 1024.0}%.1f MiB scanned, $rows rows output")
           }
           benchmark.run()
         }
@@ -263,7 +281,9 @@ object CometIcebergReadBenchmark extends CometBenchmarkBase {
     }
     if (!nestedOnly) {
       runBenchmark("SQL Iceberg Partial Filter") {
-        icebergPartialFilterBenchmark(1024 * 1024 * 16)
+        icebergPartialFilterBenchmark(
+          1024 * 1024 * 16,
+          reverseCases = mainArgs.contains("--reverse-filter-cases"))
       }
     }
   }

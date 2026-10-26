@@ -1145,7 +1145,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // TINYINT and SMALLINT stored as INT32 with INT_8 or INT_16 annotations, which iceberg-rust
     // compares incorrectly. So partial pushdown is not extended to these tables, and they push a
     // residual only when it converts whole.
-    val partialPushdown = metadata.nameMapping.isEmpty
+    val partialPushdown = metadata.nameMapping.isEmpty &&
+      CometConf.COMET_ICEBERG_PARTIAL_PUSHDOWN_ENABLED.get()
 
     // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
     // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
