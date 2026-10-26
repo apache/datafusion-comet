@@ -1803,13 +1803,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       if (SparkFixes.sequenceRecomputesOverflowedLength(org.apache.spark.SPARK_VERSION)) {
         checkSparkAnswerAndOperator(query)
       } else {
-        val df = sql(query)
-        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
-        val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
-        Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
-          assert(error.isDefined, s"$engine did not fail")
-          assert(error.get.getMessage.contains("Unreachable code reached"), error.get.getMessage)
-        }
+        checkSparkError(sql(query), "INTERNAL_ERROR")
       }
     }
   }

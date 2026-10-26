@@ -22,8 +22,10 @@ package org.apache.comet.serde
 import org.apache.spark.sql.comet.util.Utils
 
 /**
- * Spark fixes that change a result Comet reproduces natively, and the Spark releases that carry
- * them. The fixes leave nothing in the plan for Comet to detect, so the checks go by the version.
+ * SPARK-58821 and SPARK-60118, which change results Comet reproduces natively, and the Spark
+ * releases that carry them. The fixes leave nothing in the plan for Comet to detect, so the
+ * checks go by the version. Other fixes Comet picks by version keep their own checks, such as
+ * `RegrSparkVersions` and `ArraySetSupport.normalizesFloats`.
  */
 private[comet] object SparkFixes {
 

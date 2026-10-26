@@ -710,9 +710,11 @@ fn parse_string_to_decimal(
 
     // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi. Spark
     // counts precision - scale integral digits for zero too, so "0e38" (scale -38) has 39 and is
-    // over the 38-digit limit. Spark stopped applying that limit to zero in SPARK-60118.
+    // over the 38-digit limit. Spark stopped applying that limit to zero in SPARK-60118. Before
+    // that it counted in an int, which wraps negative for "0e2147483647" (scale -2147483647), so
+    // that zero skipped the limit; the wrapping subtraction does the same.
     if mantissa == 0 {
-        if !zero_any_exponent && exponent < -37 {
+        if !zero_any_exponent && 1i32.wrapping_sub(exponent) > 38 {
             return Err(SparkError::NumericOutOfRange {
                 value: input_str.to_string(),
             });
@@ -2773,11 +2775,17 @@ mod tests {
     }
 
     /// Spark used to count integral digits for zero, so a zero with an exponent above 37 was out
-    /// of range (NULL, or NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI). Since SPARK-60118 zero casts
-    /// to 0 whatever its exponent. The inputs include ones from Comet's cast fuzz tests.
+    /// of range (NULL, or NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI), except "0e2147483647", whose
+    /// count wrapped in Spark's int arithmetic. Since SPARK-60118 zero casts to 0 whatever its
+    /// exponent. The inputs include ones from Comet's cast fuzz tests.
     #[test]
     fn test_parse_string_to_decimal_zero_with_large_exponent() {
-        for (s, precision, scale) in [("0e37", 10, 2), ("0e-50", 10, 2), ("-0.0e10", 38, 10)] {
+        for (s, precision, scale) in [
+            ("0e37", 10, 2),
+            ("0e-50", 10, 2),
+            ("-0.0e10", 38, 10),
+            ("0e2147483647", 10, 2),
+        ] {
             for zero_any_exponent in [false, true] {
                 assert_eq!(
                     parse_string_to_decimal(s, precision, scale, zero_any_exponent).unwrap(),
@@ -2793,6 +2801,8 @@ mod tests {
             ("0E2655", 10, 2),
             ("+0.E81", 10, 2),
             ("0e5887677", 38, 10),
+            ("0e2147483646", 10, 2),
+            ("0.0e2147483647", 10, 2),
         ] {
             let err = parse_string_to_decimal(s, precision, scale, false).unwrap_err();
             assert!(
