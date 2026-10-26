@@ -25,7 +25,6 @@ import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.GZIPOutputStream
 
-import org.scalatest.concurrent.Eventually._
 import org.scalatest.time.{Millis, Seconds, Span}
 
 import org.apache.hadoop.fs.{FileSystem, Path}
