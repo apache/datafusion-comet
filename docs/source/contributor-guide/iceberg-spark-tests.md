@@ -113,7 +113,7 @@ extensions shard instead, install Comet and patch the matching Iceberg tree as a
 Gradle directly. For Iceberg 1.11.0 with Spark 4.1 and Scala 2.13:
 
 ```shell
-ENABLE_COMET=true ENABLE_COMET_ONHEAP=true ./gradlew \
+ENABLE_COMET=true ENABLE_COMET_ONHEAP=true COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1 ./gradlew \
   -DsparkVersions=4.1 -DscalaVersion=2.13 -DflinkVersions= -DkafkaVersions= \
   :iceberg-spark:iceberg-spark-extensions-4.1_2.13:test \
   --init-script ../datafusion-comet/dev/ci/iceberg-test-shards.gradle \
