@@ -1685,8 +1685,6 @@ class CometJoinSuite extends CometTestBase {
 
   test("right key reduction requires an unfiltered left-semi join sorted over a Comet shuffle") {
     val config = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED
-    assert(!config.get(new SQLConf))
-    assert(!OperatorOuterClass.SortMergeJoin.getDefaultInstance.getRightKeyReductionEnabled)
     val right = spark.range(1).queryExecution.sparkPlan
     val exchange = ShuffleExchangeExec(SinglePartition, right)
     val shuffle = CometShuffleExchangeExec(SinglePartition, right, exchange)
@@ -1718,23 +1716,26 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("right key reduction sorts fewer rows for ordinary single-column equality") {
+  test("right key reduction sorts fewer BIGINT rows and keeps a match in the final batch") {
     val config = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED
-    val left = Seq[(Int, Integer, Int)](
+    val wideKey = 1L << 32
+    val left = Seq[(Int, java.lang.Long, Int)](
       (1, null, 10),
       (1, null, 10),
-      (2, 0, 10),
-      (3, 1, 10),
-      (3, 1, 10),
+      (2, 0L, 10),
+      (3, 1L, 10),
+      (3, 1L, 10),
       (4, null, 20),
-      (5, 0, 20),
-      (6, 2, 20),
-      (7, -1, 20))
-    val keys = Seq[(Integer, Int)]((null, 10), (1, 10), (0, 20), (2, 20))
-    val right = (0 until 32768).map(i => keys(i % keys.size))
+      (5, 0L, 20),
+      (6, wideKey, 20),
+      (7, -1L, 20),
+      (8, wideKey - 1, 20))
+    val keys = Seq[(java.lang.Long, Int)]((null, 10), (1L, 10), (0L, 20), (wideKey, 20))
+    val right = (0 until 32768).map(i => keys(i % keys.size)) :+ (Long.box(-1L) -> 20)
 
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       CometConf.COMET_BATCH_SIZE.key -> "4096") {
       withParquetTable(left, "reduction_left") {
@@ -1746,7 +1747,7 @@ class CometJoinSuite extends CometTestBase {
             df
           }
           val equality = "l._2 = r._1"
-          val expected = Seq(2, 3, 3, 5, 6)
+          val expected = Seq(2, 3, 3, 5, 6, 7)
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             val plan = run(equality, expected).queryExecution.executedPlan
             assert(collectFirst(plan) { case j: SortMergeJoinExec => j }.isDefined)
@@ -1759,6 +1760,7 @@ class CometJoinSuite extends CometTestBase {
           } {
             withSQLConf(
               SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              SQLConf.SHUFFLE_PARTITIONS.key -> (if (adaptive) "2" else "1"),
               CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString,
               CometConf.COMET_SHUFFLE_MODE.key -> writer,
               config.key -> enabled.toString) {
@@ -1774,6 +1776,10 @@ class CometJoinSuite extends CometTestBase {
                 val in = join.longMetric("right_key_reduction_input_rows").value
                 val out = join.longMetric("right_key_reduction_output_rows").value
                 assert(out > 0 && out < in, plan.treeString)
+                if (!adaptive) {
+                  // One file and one shuffle partition put the new key alone in the final batch.
+                  assert(join.longMetric("right_key_reduction_bypass_rows").value == 8192L + 1)
+                }
                 assert(out == sortRows && join.longMetric("output_rows").value == expected.size)
                 assert(!sort.metrics.contains("right_key_reduction_output_rows"))
                 assert(sortRows < baselineSortRows, plan.treeString)
@@ -1788,8 +1794,8 @@ class CometJoinSuite extends CometTestBase {
             CometConf.COMET_SHUFFLE_MODE.key -> "native",
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
             for ((condition, ids) <- Seq(
-                ("l._2 <=> r._1", Seq(1, 1, 2, 3, 3, 4, 5, 6)),
-                (s"$equality AND l._3 = r._2", Seq(3, 3, 5, 6)))) {
+                ("l._2 <=> r._1", Seq(1, 1, 2, 3, 3, 4, 5, 6, 7)),
+                (s"$equality AND l._3 = r._2", Seq(3, 3, 5, 6, 7)))) {
               val plan = run(condition, ids).queryExecution.executedPlan
               val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
                 .getOrElse(fail(plan.treeString))

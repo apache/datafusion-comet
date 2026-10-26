@@ -203,6 +203,7 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    jvm_execution_memory_held: bool,
 }
 
 impl Default for PhysicalPlanner {
@@ -224,6 +225,7 @@ impl PhysicalPlanner {
             shuffle_partition_pusher: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            jvm_execution_memory_held: false,
         }
     }
 
@@ -299,6 +301,11 @@ impl PhysicalPlanner {
 
     pub fn with_exec_id(mut self, exec_context_id: i64) -> Self {
         self.exec_context_id = exec_context_id;
+        self
+    }
+
+    pub fn with_jvm_execution_memory_held(mut self, held: bool) -> Self {
+        self.jvm_execution_memory_held = held;
         self
     }
 

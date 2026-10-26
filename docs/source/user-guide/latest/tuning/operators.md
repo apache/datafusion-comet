@@ -44,14 +44,14 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 A left-semi join returns each left row if any right row matches. For an unfiltered batch join
 on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
 to keep one copy of each repeated key per batch before the native sort. The option is off by
-default. The right sort must read the key column directly from a Comet shuffle.
+default. The right sort must read the key column directly from a Comet shuffle. With
+unified memory, a task that starts the native plan while another Spark consumer holds
+execution memory uses the ordinary native sort.
 
-The reducer forwards whole batches until it has seen at least 8,192 rows in the partition.
-It then tries batches of 1,024 to 65,536 rows. If more than about a third of a batch would
-remain, it forwards that batch and waits for a larger batch before trying again. A refused
-memory reservation sends the rest of that partition directly to the native sort.
-Compare the join's reduction input and output counts to see how many rows the sort saved.
-Reduction time includes unsuccessful attempts.
+The reducer forwards short inputs and batches with too few repeated keys. After an
+unprofitable batch, it only tries again on a larger batch in the same partition. If all
+remaining batches are the same size, they go straight to the sort. The join reports rows
+entering, leaving, and bypassing reduction, plus time spent on all attempts.
 
 ### Broadcast Joins
 

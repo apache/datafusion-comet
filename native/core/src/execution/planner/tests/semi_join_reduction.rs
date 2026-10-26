@@ -21,7 +21,7 @@ use super::{
 use datafusion_comet_operators::MembershipKeyReductionExec;
 use datafusion_comet_proto::spark_operator::{self as op, operator::OpStruct, JoinType, Operator};
 
-fn reduced(input: Operator, sort: op::Sort) -> bool {
+fn reduced(planner: &PhysicalPlanner, input: Operator, sort: op::Sort) -> bool {
     let sorted = Operator {
         children: vec![input],
         op_struct: Some(OpStruct::Sort(sort)),
@@ -45,9 +45,7 @@ fn reduced(input: Operator, sort: op::Sort) -> bool {
         })),
         ..Default::default()
     };
-    let (_, _, plan) = PhysicalPlanner::default()
-        .create_plan(&join, &mut vec![], 1)
-        .unwrap();
+    let (_, _, plan) = planner.create_plan(&join, &mut vec![], 1).unwrap();
     plan.children[1].native_plan.children()[0].is::<MembershipKeyReductionExec>()
 }
 
@@ -59,7 +57,10 @@ fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
         sort_orders: vec![create_sort_order(0, field.type_id, false, true)],
         ..Default::default()
     };
-    assert!(reduced(scan.clone(), sort.clone()));
+    let planner = PhysicalPlanner::default();
+    assert!(reduced(&planner, scan.clone(), sort.clone()));
+    let busy = PhysicalPlanner::default().with_jvm_execution_memory_held(true);
+    assert!(!reduced(&busy, scan.clone(), sort.clone()));
     let direct = Operator {
         op_struct: Some(OpStruct::ShuffleScan(op::ShuffleScan {
             fields: vec![field.clone()],
@@ -67,7 +68,7 @@ fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
         })),
         ..Default::default()
     };
-    assert!(reduced(direct, sort.clone()));
+    assert!(reduced(&planner, direct, sort.clone()));
 
     for (fetch, skip, descending, nulls_first) in [
         (Some(10), None, false, true),
@@ -76,6 +77,7 @@ fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
         (None, None, false, false),
     ] {
         assert!(!reduced(
+            &planner,
             scan.clone(),
             op::Sort {
                 fetch,
@@ -92,5 +94,5 @@ fn reduces_only_a_matching_unlimited_sort_directly_over_the_shuffle() {
         })),
         ..Default::default()
     };
-    assert!(!reduced(project, sort));
+    assert!(!reduced(&planner, project, sort));
 }

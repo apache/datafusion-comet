@@ -531,6 +531,7 @@ struct ExecutionContext {
     pub id: i64,
     /// The deserialized Spark plan
     pub spark_plan: Operator,
+    jvm_execution_memory_held: bool,
     /// The number of partitions
     pub partition_count: usize,
     /// The DataFusion root operator converted from the `spark_plan`
@@ -714,6 +715,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
 /// What `createPlan` takes from the Spark configs.
 struct PlanSettings {
     spark_config: HashMap<String, String>,
+    jvm_execution_memory_held: bool,
     debug_native: bool,
     strict_timestamp_labels: bool,
     explain_native: bool,
@@ -735,6 +737,7 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
 
     // Access Comet configs
     Ok(PlanSettings {
+        jvm_execution_memory_held: spark_configs.jvm_execution_memory_held,
         debug_native: spark_config.get_bool(COMET_DEBUG_ENABLED),
         strict_timestamp_labels: spark_config.get_bool(COMET_STRICT_TIMESTAMP_LABELS),
         explain_native: spark_config.get_bool(COMET_EXPLAIN_NATIVE_ENABLED),
@@ -876,6 +879,7 @@ fn create_execution_context(
     Ok(Box::new(ExecutionContext {
         id,
         spark_plan,
+        jvm_execution_memory_held: settings.jvm_execution_memory_held,
         partition_count,
         root_op: None,
         scans: vec![],
@@ -1480,6 +1484,7 @@ fn execute_plan(
         let start = Instant::now();
         let planner = PhysicalPlanner::new(Arc::clone(&exec_context.session_ctx), partition)
             .with_exec_id(exec_context_id)
+            .with_jvm_execution_memory_held(exec_context.jvm_execution_memory_held)
             .with_strict_timestamp_labels(exec_context.strict_timestamp_labels)
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
@@ -4159,6 +4164,7 @@ mod tests {
 
         let configs = ConfigMap {
             entries: HashMap::from([(SPARK_EXECUTOR_CORES.to_string(), "2".to_string())]),
+            ..Default::default()
         };
         let inputs = PlanInputs {
             id: -6201,

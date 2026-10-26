@@ -3555,7 +3555,7 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED)
 
-  // The JVM and direct shuffle readers both decode a fresh IPC body for each batch.
+  // Limit reduction to Comet shuffle inputs, including those wrapped by AQE.
   @tailrec
   private def readsCometShuffle(plan: SparkPlan): Boolean = plan match {
     case _: CometShuffleExchangeExec => true

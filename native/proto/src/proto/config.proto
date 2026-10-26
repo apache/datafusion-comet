@@ -23,4 +23,6 @@ option java_package = "org.apache.comet.serde";
 
 message ConfigMap {
   map<string, string> entries = 1;
+  // The task already has execution memory held outside Comet's unified pool.
+  bool jvm_execution_memory_held = 2;
 }

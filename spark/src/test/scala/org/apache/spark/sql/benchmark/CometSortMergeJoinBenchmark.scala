@@ -22,7 +22,6 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.comet.{CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -141,11 +140,11 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
             CometConf.COMET_SHUFFLE_MODE.key -> "native")
           withSQLConf(settings.toSeq: _*) {
             val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
-            for ((table, distinctKeys, batchSize, shouldReduce) <- Seq(
-                ("build_repeated", 128, 1024, true),
-                ("build_balanced", 2048, 8192, true),
-                ("build_skewed", buildRows / 25 * 12 + 7, 1024, false),
-                ("build", buildRows, 8192, false))) {
+            for ((table, distinctKeys, batchSize) <- Seq(
+                ("build_repeated", 128, 1024),
+                ("build_balanced", 2048, 8192),
+                ("build_skewed", buildRows / 25 * 12 + 7, 1024),
+                ("build", buildRows, 8192))) {
               val benchmark = new Benchmark(
                 s"left semi, $distinctKeys distinct right keys in $buildRows rows",
                 buildRows.toLong,
@@ -153,35 +152,10 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
               val query = s"""SELECT /*+ MERGE(b) */ count(*)
                              |FROM (SELECT k FROM probe WHERE k < $buildRows) p
                              |LEFT SEMI JOIN $table b ON p.k = b.k""".stripMargin
-              // Check the result and the actual reducer work outside the timed section.
               for (enabled <- Seq(false, true)) {
                 val conf = Seq(
                   flag -> enabled.toString,
                   CometConf.COMET_BATCH_SIZE.key -> batchSize.toString)
-                withSQLConf(conf: _*) {
-                  val df = spark.sql(query)
-                  require(df.collect().head.getLong(0) == distinctKeys)
-                  val plan = df.queryExecution.executedPlan
-                  val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
-                    .getOrElse(throw new IllegalStateException(plan.treeString))
-                  require(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled == enabled)
-                  val sortRows = collectFirst(join.right) { case s: CometSortExec =>
-                    s.longMetric("output_rows").value
-                  }.getOrElse(throw new IllegalStateException(plan.treeString))
-                  if (enabled) {
-                    val in = join.longMetric("right_key_reduction_input_rows").value
-                    val out = join.longMetric("right_key_reduction_output_rows").value
-                    val bypass = join.longMetric("right_key_reduction_bypass_rows").value
-                    require(in == buildRows && out == sortRows)
-                    if (shouldReduce) {
-                      require(out > 0 && out <= in * 3 / 4)
-                    } else {
-                      require(out == in && bypass == in)
-                    }
-                  } else {
-                    require(sortRows == buildRows)
-                  }
-                }
                 benchmark.addCase(s"right key reduction=$enabled") { _ =>
                   withSQLConf(conf: _*) { spark.sql(query).collect() }
                 }

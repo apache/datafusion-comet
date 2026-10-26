@@ -204,8 +204,7 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
-/// Spark enables reduction only for a single integer key read from a Comet shuffle.
-/// Its IPC frames can arrive through either the JVM Arrow stream or the direct shuffle reader.
+/// Spark identifies the shuffle input. Check the actual sort and its key before replacing its child.
 fn reduce_before_sort(
     params: &mut JoinParameters,
     sort_options: &[SortOptions],
@@ -279,6 +278,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             .collect();
 
         let reducer = if join.right_key_reduction_enabled
+            && !planner.jvm_execution_memory_held
             && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
                 if sort.fetch.is_none() && sort.skip.is_none())
         {
