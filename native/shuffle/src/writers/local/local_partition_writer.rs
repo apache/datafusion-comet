@@ -69,8 +69,9 @@ enum DataOutput {
         runtime: Arc<RuntimeEnv>,
         /// Byte buffer recycled through the short-lived per-partition `BufBatchWriter`s.
         /// Partitions are written strictly one at a time, so a single buffer keeps its
-        /// grown capacity across the whole task instead of every partition regrowing a
-        /// fresh allocation toward the write buffer size.
+        /// grown capacity across the partitions of a spill or of the output instead of every
+        /// partition regrowing a fresh allocation toward the write buffer size. Each spill
+        /// releases it.
         recycled_buffer: Vec<u8>,
     },
 }
@@ -499,16 +500,25 @@ impl PartitionWriter for LocalPartitionWriter {
         Ok(())
     }
 
-    fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
+    fn write_burst_complete(&mut self, freed: usize) -> datafusion::common::Result<()> {
         // A spill burst just ended and the next encode may be a long time coming, so don't
-        // sit on the zstd workspace.
+        // sit on the zstd workspace, nor on the drained scratch, which one wide row can leave
+        // larger than the pool.
         self.codec_context.release_zstd();
+        if let DataOutput::Multi {
+            recycled_buffer, ..
+        } = &mut self.data_output
+        {
+            *recycled_buffer = Vec::new();
+        }
         self.sync_buffer_reservation();
         // A pressure spill opened its file while the batches still held the pool; now they don't.
+        // Half of what the spill freed stays with the input, so the next batch does not spill.
+        let capacity = self.write_buffer_size.min(freed / 2);
         if let (Some(buffers), DataOutput::Multi { spill, .. }) =
             (&self.buffers, &mut self.data_output)
         {
-            spill.restore_buffer(buffers)?;
+            spill.restore_buffer(buffers, capacity)?;
         }
         Ok(())
     }
@@ -899,7 +909,7 @@ mod tests {
                 .unwrap();
         }
         let scratch = writer.scratch_capacity();
-        writer.write_burst_complete().unwrap();
+        writer.write_burst_complete(0).unwrap();
         let range_len = |pid: usize| {
             let ranges = writer.get_spill().ranges(pid).unwrap();
             assert_eq!(ranges.len(), 1, "one spilled block for partition {pid}");
@@ -1057,9 +1067,13 @@ mod tests {
         assert_buffers_charged(&writer, &pool);
         let after_write = writer.buffer_reservation_size();
 
-        writer.write_burst_complete().unwrap();
+        let scratch = writer.scratch_capacity();
+        writer.write_burst_complete(0).unwrap();
         assert!(!writer.holds_zstd_cctx());
-        assert_eq!(writer.buffer_reservation_size(), after_write - retained);
+        assert_eq!(
+            writer.buffer_reservation_size(),
+            after_write - retained - scratch
+        );
         assert_buffers_charged(&writer, &pool);
 
         for pid in 0..2 {

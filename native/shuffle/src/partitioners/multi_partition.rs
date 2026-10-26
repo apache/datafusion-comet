@@ -651,11 +651,12 @@ impl<T: PartitionWriter> MultiPartitionShuffleRepartitioner<T> {
             // rejected reservation. Shared allocations are charged once within a spill, but
             // contribute again if buffered for a later spill, regardless of input batching.
             // Also release and count all buffered inputs when the writer fails partway through.
-            let memory_spilled_bytes = self.reservation.free().saturating_add(unreserved_bytes);
+            let freed = self.reservation.free();
+            let memory_spilled_bytes = freed.saturating_add(unreserved_bytes);
             self.metrics.memory_spilled_bytes.add(memory_spilled_bytes);
             self.pinned_buffers.clear();
             // After the free, so the writer can regrow buffers the pool cut short during the spill.
-            let burst_result = self.partition_writer.write_burst_complete();
+            let burst_result = self.partition_writer.write_burst_complete(freed);
             self.metrics.spill_count.add(1);
             write_result.and(burst_result)
         })
@@ -793,7 +794,7 @@ mod tests {
             Ok(())
         }
 
-        fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
+        fn write_burst_complete(&mut self, _freed: usize) -> datafusion::common::Result<()> {
             if self.fail_burst {
                 return Err(DataFusionError::Execution(
                     "injected burst failure".to_string(),
@@ -1506,11 +1507,23 @@ mod tests {
         write_buffer_size: usize,
         runtime: Arc<RuntimeEnv>,
     ) -> LocalPartitionWriter {
-        let block_writer = ShuffleBlockWriter::try_new(
+        local_writer_for(
             int64_batch(0..1).schema().as_ref(),
-            CompressionCodec::Lz4Frame,
+            dir,
+            num_partitions,
+            write_buffer_size,
+            runtime,
         )
-        .unwrap();
+    }
+
+    fn local_writer_for(
+        schema: &arrow::datatypes::Schema,
+        dir: &tempfile::TempDir,
+        num_partitions: usize,
+        write_buffer_size: usize,
+        runtime: Arc<RuntimeEnv>,
+    ) -> LocalPartitionWriter {
+        let block_writer = ShuffleBlockWriter::try_new(schema, CompressionCodec::Lz4Frame).unwrap();
         LocalPartitionWriter::try_new(
             dir.path().join("data.out").to_str().unwrap().to_string(),
             Arc::new(PartitionOffsets::default()),
@@ -1820,6 +1833,136 @@ mod tests {
             assert!(
                 values == expected,
                 "pool limit {limit} lost or repeated rows"
+            );
+        }
+    }
+
+    /// One row of `v` and `width` incompressible bytes.
+    fn wide_batch(v: i64, width: usize) -> RecordBatch {
+        let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ v as u64;
+        let bytes: Vec<u8> = (0..width)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                state as u8
+            })
+            .collect();
+        RecordBatch::try_from_iter([
+            ("v", Arc::new(Int64Array::from(vec![v])) as ArrayRef),
+            (
+                "b",
+                Arc::new(arrow::array::BinaryArray::from(vec![bytes.as_slice()])) as ArrayRef,
+            ),
+        ])
+        .unwrap()
+    }
+
+    /// The scratch that encoded one wide row is released after its spill, so the narrow rows
+    /// that follow fit the pool instead of each spilling.
+    #[tokio::test]
+    async fn wide_row_scratch_is_released_after_the_spill() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime_with_pool(512 * 1024);
+        let mut repartitioner = hash_repartitioner(
+            local_writer_for(
+                wide_batch(0, 0).schema().as_ref(),
+                &dir,
+                2,
+                1 << 20,
+                Arc::clone(&runtime),
+            ),
+            2,
+            Arc::clone(&runtime),
+            None,
+        );
+        repartitioner
+            .insert_batch(wide_batch(0, 768 * 1024))
+            .await
+            .unwrap();
+        assert_eq!(repartitioner.spill_count(), 1);
+        assert_local_buffers_charged(&repartitioner, &runtime);
+        for v in 1..=128 {
+            repartitioner.insert_batch(wide_batch(v, 0)).await.unwrap();
+        }
+        repartitioner.shuffle_write().unwrap();
+        assert!(
+            repartitioner.spill_count() <= 2,
+            "{} spills",
+            repartitioner.spill_count()
+        );
+        let bytes = std::fs::read(dir.path().join("data.out")).unwrap();
+        assert_eq!(output_values(&bytes), (0..=128).collect::<Vec<i64>>());
+    }
+
+    /// Feeds 256 batches of 1024 values through 8 partitions, returning the spill count and
+    /// the output values. After each spill, `check(freed, writer)` sees what the spill freed.
+    async fn spill_sweep<W: PartitionWriter>(
+        writer: W,
+        runtime: Arc<RuntimeEnv>,
+        mut check: impl FnMut(usize, &W),
+    ) -> usize {
+        let mut repartitioner = hash_repartitioner(writer, 8, runtime, None);
+        for start in (0..256 * 1024i64).step_by(1024) {
+            let (spills, reserved) = (
+                repartitioner.spill_count(),
+                repartitioner.reservation.size(),
+            );
+            repartitioner
+                .insert_batch(int64_batch(start..start + 1024))
+                .await
+                .unwrap();
+            if repartitioner.spill_count() > spills {
+                // only a refusal spills here, and a refused batch was never charged
+                check(reserved, repartitioner.partition_writer());
+            }
+        }
+        repartitioner.shuffle_write().unwrap();
+        repartitioner.spill_count()
+    }
+
+    /// A restore after a pressure spill grows the spill file buffer to at most half of what the
+    /// spill freed, leaving the rest to the input, so the writer spills at most about twice as
+    /// often as one that holds no buffers at all.
+    #[tokio::test]
+    async fn spill_buffer_restore_leaves_room_for_the_input() {
+        for limit in [2112 * 1024, 1088 * 1024] {
+            let baseline = spill_sweep(
+                FailingPartitionWriter::default(),
+                runtime_with_pool(limit),
+                |_, _| {},
+            )
+            .await;
+            let dir = tempfile::tempdir().unwrap();
+            let runtime = runtime_with_pool(limit);
+            let mut previous = 0;
+            let spills = spill_sweep(
+                local_writer(&dir, 8, 1 << 20, Arc::clone(&runtime)),
+                Arc::clone(&runtime),
+                |freed, writer| {
+                    let capacity = writer.buffer_capacities().1;
+                    // The first spill opens the file, which the pool can grant in full while
+                    // the batches are still charged; after that only a restore grows it.
+                    if previous > 0 && capacity > previous {
+                        assert!(
+                            capacity <= freed / 2,
+                            "pool limit {limit}: spill buffer {capacity} after freeing {freed}"
+                        );
+                    }
+                    previous = capacity;
+                    assert_eq!(writer.buffer_reservation_size(), writer.buffer_bytes_held());
+                },
+            )
+            .await;
+            assert!(
+                spills <= 2 * baseline + 2,
+                "pool limit {limit}: {spills} spills, {baseline} without buffers"
+            );
+            let bytes = std::fs::read(dir.path().join("data.out")).unwrap();
+            assert_eq!(
+                output_values(&bytes),
+                (0..256 * 1024i64).collect::<Vec<i64>>(),
+                "pool limit {limit}"
             );
         }
     }

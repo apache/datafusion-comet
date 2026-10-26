@@ -73,8 +73,9 @@ pub(crate) trait PartitionWriter: Send {
     /// Marks the end of one burst of [`write`](PartitionWriter::write) calls (a spill
     /// event), letting the writer drop transient encode state. Staging more batches
     /// afterwards is still allowed.
-    /// Called after the spilled batches are freed, so the writer can ask the pool again.
-    fn write_burst_complete(&mut self) -> datafusion::common::Result<()> {
+    /// Called after the spilled batches are freed, so the writer can ask the pool again;
+    /// `freed` is the number of bytes the spill released.
+    fn write_burst_complete(&mut self, _freed: usize) -> datafusion::common::Result<()> {
         Ok(())
     }
 

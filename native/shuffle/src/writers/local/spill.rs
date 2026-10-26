@@ -235,20 +235,21 @@ impl PartitionedSpill {
         Ok(())
     }
 
-    /// Grows a fallback-sized buffer back to the configured size if `buffers` grants it.
-    /// Buffered bytes move to the new buffer; nothing is written to the file. Errors other than
-    /// a refusal are returned.
+    /// Grows the write buffer to `capacity` if `buffers` grants it, and never shrinks it. Buffered
+    /// bytes move to the new buffer; nothing is written to the file.
+    /// Errors other than a refusal are returned.
     pub(crate) fn restore_buffer(
         &mut self,
         buffers: &MemoryReservation,
+        capacity: usize,
     ) -> datafusion::common::Result<()> {
-        let capacity = self.buffer_capacity();
-        if self.failed || self.spill_file.is_none() || capacity >= self.write_buffer_size {
+        let current = self.buffer_capacity();
+        if self.failed || self.spill_file.is_none() || capacity <= current {
             return Ok(());
         }
-        match buffers.try_grow(self.write_buffer_size - capacity) {
+        match buffers.try_grow(capacity - current) {
             Ok(()) => {
-                self.resize_buffer(self.write_buffer_size);
+                self.resize_buffer(capacity);
                 Ok(())
             }
             Err(error) if super::is_refusal(&error) => Ok(()),
@@ -575,7 +576,7 @@ mod tests {
             "the bytes must sit in the buffer"
         );
 
-        spill.restore_buffer(&buffers).unwrap();
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size()),
             (fallback, fallback),
@@ -583,7 +584,7 @@ mod tests {
         );
 
         batches.free();
-        spill.restore_buffer(&buffers).unwrap();
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size(), pool.reserved()),
             (WRITE_BUFFER, WRITE_BUFFER, WRITE_BUFFER)
@@ -628,7 +629,7 @@ mod tests {
         ] {
             let pool: Arc<dyn MemoryPool> = Arc::new(ErroringPool::new(1 << 30, 0, error));
             let reservation = MemoryConsumer::new("buffers").register(&pool);
-            let result = spill.restore_buffer(&reservation);
+            let result = spill.restore_buffer(&reservation, WRITE_BUFFER);
             assert_eq!(result.is_ok(), is_refusal, "{result:?}");
             assert_eq!((spill.buffer_capacity(), reservation.size()), (fallback, 0));
         }
@@ -647,7 +648,7 @@ mod tests {
         assert!(write_with_buffers(&mut spill, &mut iter, &buffers).is_err());
 
         batches.free();
-        spill.restore_buffer(&buffers).unwrap();
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
         assert_eq!(
             (spill.buffer_capacity(), buffers.size()),
             (fallback, fallback)
