@@ -936,22 +936,44 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def exprToProto(
       expr: Expression,
       inputs: Seq[Attribute],
-      binding: Boolean = true): Option[Expr] = {
-
-    val newExpr = DecimalPrecision.promote(expr)
-    val result = exprToProtoInternal(newExpr, inputs, binding)
-    if (!(newExpr eq expr)) {
-      // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
-      // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
-      // expressions, still see them. Skipped in the common case where `promote` returned the same
-      // tree and there is nothing to lift.
-      liftCoverageTags(newExpr, expr)
-      if (result.isEmpty) {
-        liftFallbackReasons(newExpr, expr)
+      binding: Boolean = true): Option[Expr] =
+    CometExplainInfo.withExpressionFallbackReasonScope {
+      val newExpr = DecimalPrecision.promote(expr)
+      val result = exprToProtoInternal(newExpr, inputs, binding)
+      if (!(newExpr eq expr)) {
+        // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
+        // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
+        // expressions, still see them. Skipped in the common case where `promote` returned the same
+        // tree and there is nothing to lift.
+        liftCoverageTags(newExpr, expr)
+        if (result.isEmpty) {
+          liftFallbackReasons(newExpr, expr)
+        }
       }
+      result
     }
-    result
-  }
+
+  /**
+   * Convert an independent expression and return its current failure reasons before the scope
+   * closes. Used by planning probes outside operator conversion, such as native range shuffle.
+   * Ignore mutable tags and keep the probe's journal separate from any enclosing conversion.
+   */
+  def exprToProtoWithFallbackReasons(
+      expr: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean = true): (Option[Expr], Set[String]) =
+    CometExplainInfo.withFallbackReasonScope {
+      val result = exprToProto(expr, inputs, binding)
+      val reasons = if (result.isEmpty) {
+        expr
+          .collect { case e: Expression => e }
+          .flatMap(CometExplainInfo.currentFallbackReasons)
+          .toSet
+      } else {
+        Set.empty[String]
+      }
+      (result, reasons)
+    }
 
   private def liftCoverageTags(from: Expression, to: Expression): Unit = {
     val exprs = from.collect { case e: Expression => e }
@@ -961,15 +983,18 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   }
 
   /**
-   * Lift fallback reasons recorded anywhere in the rewritten tree onto the original node, so that
-   * `CometExecRule.rollUpFallbackReasons` and extended explain can see them. Without this the
-   * reason is attached to a copy that is not in the plan and is lost entirely - see
-   * https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that the `Invoke` /
-   * `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
+   * Lift fallback reasons recorded during the current conversion in the rewritten tree onto the
+   * original node, so that `CometExecRule.rollUpFallbackReasons` and extended explain can see
+   * them. Without this the reason is attached to a copy that is not in the plan and is lost
+   * entirely - see https://github.com/apache/datafusion-comet/issues/5230. Same copy-back that
+   * the `Invoke` / `StaticInvoke` rewrites in `Spark4xCometExprShim` do.
    *
    * Callers are the serde paths that rebuild an expression tree before converting it, so the
    * reasons land on copies the operator does not hold: `DecimalPrecision.promote` here, and
    * `CometWindowExec`'s `DecimalAggregates` unwrapping.
+   *
+   * Reads the conversion journal, not tags: a shared literal may carry a tag copied from an
+   * unrelated expression or an earlier query. Callers must run inside a fallback reason scope.
    *
    * Only called when conversion failed: a fallback reason states why an expression could not be
    * converted, so lifting one off a tree that converted fine would attribute a stale reason to an
@@ -978,7 +1003,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def liftFallbackReasons(from: Expression, to: Expression): Unit = {
     val reasons = mutable.Set.empty[String]
     from.foreach { e =>
-      e.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+      reasons ++= CometExplainInfo.currentFallbackReasons(e)
     }
     if (reasons.nonEmpty) {
       val _ = withFallbackReasons(to, reasons.toSet)
@@ -992,7 +1017,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * The caller owns decimal promotion: this method serializes children of an already-promoted
    * root without traversing them again. Literals and wrappers that introduce no decimal
    * arithmetic can also use this path. Newly synthesized arithmetic must enter through
-   * [[exprToProto]].
+   * [[exprToProto]]. Callers must run inside a fallback reason scope owned by the outer
+   * [[exprToProto]] call or the enclosing operator conversion.
    *
    * @param expr
    *   The input expression
@@ -1009,7 +1035,6 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       expr: Expression,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-
     def convert[T <: Expression](expr: T, handler: CometExpressionSerde[T]): Option[Expr] = {
       val exprConfName = handler.getExprConfigName(expr)
       if (!CometConf.isExprEnabled(exprConfName)) {
@@ -1050,9 +1075,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           } else {
             // Expressions that opt in via `CodegenDispatchFallback` route their `Incompatible`
             // result through the JVM codegen dispatcher (Spark's own `doGenCode` inside the Comet
-            // pipeline) so the projection stays native while still matching Spark. Everything else
-            // falls back to Spark. Falling back is also the result when the dispatcher cannot
-            // handle the expression.
+            // pipeline) so the projection stays native while still matching Spark. Everything
+            // else falls back to Spark, as does a dispatcher that cannot handle the expression.
             val dispatched = dispatchIfFallback(handler, expr, inputs, binding).map {
               case (h, proto) =>
                 val key = h.nativeOptInConfigKeyOverride
@@ -1107,8 +1131,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           expr.getTagValue(CometExplainInfo.DISPATCHED_SELF).isEmpty) {
           withNativeExpr(expr, CometExplainInfo.exprDisplayName(expr))
         }
-        // Passthrough serdes such as Alias return an already-identified child expression. Preserve
-        // that child's context instead of replacing it with the structural wrapper's origin.
+        // Passthrough serdes such as Alias return an already-identified child expression.
+        // Preserve that child's context instead of replacing it with the wrapper's origin.
         if (protoExpr.hasExprId) protoExpr else attachExprIdAndContext(expr, protoExpr)
       }
   }

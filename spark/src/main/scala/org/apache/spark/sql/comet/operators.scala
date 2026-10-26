@@ -2816,6 +2816,13 @@ case class CometSortAggregateExec(
     this.copy(child = newChild)
 }
 
+object CometHashJoin {
+
+  private[apache] val uncheckedStreamedOrderReason: String =
+    "the streamed side's sort order, which this outer join has to keep, cannot be checked, " +
+      "so the join stays in Spark"
+}
+
 trait CometHashJoin {
 
   // Only BroadcastHashJoinExec can be null-aware (NOT IN subqueries).
@@ -2943,7 +2950,8 @@ trait CometHashJoin {
     // Declaring the order there would let an operator above rely on it, an
     // aggregate in sorted mode for instance, which then splits groups. So nothing is declared
     // when such a join feeds the streamed side with no sort in between, or when a leaf reports
-    // an order that cannot be checked; see mayReportFalseOrder.
+    // an order that cannot be checked; see mayReportFalseOrder. When it comes from the JVM or a
+    // nested loop join, the join stays in Spark, as Spark may have dropped a sort above it.
     //
     // Declaring any order makes DataFusion keep the probe rows in place, so the longest prefix
     // of the order that Comet can express is enough. A key that exprToProto takes counts as
@@ -2952,9 +2960,14 @@ trait CometHashJoin {
     // check `supportedSortType` makes for a sort. Nothing here can tell whether an operator above
     // relies on the order, so a join whose first key Comet cannot express stays in Spark.
     val (streamed, _) = streamedSide(join.buildSide, join.left, join.right)
+    val keepsStreamedOrder =
+      runsAsRightOuterJoin(join.joinType, join.buildSide) && join.outputOrdering.nonEmpty
+    if (keepsStreamedOrder && mayReportFalseOrder(streamed, countInPlan = false)) {
+      withFallbackReason(join, CometHashJoin.uncheckedStreamedOrderReason)
+      return None
+    }
     val streamedSortOrders =
-      if (runsAsRightOuterJoin(join.joinType, join.buildSide) &&
-        join.outputOrdering.nonEmpty && !mayReportFalseOrder(streamed)) {
+      if (keepsStreamedOrder && !mayReportFalseOrder(streamed, countInPlan = true)) {
         val orders = join.outputOrdering.iterator
           .takeWhile(order => !hasNonDefaultStringCollation(order.dataType))
           .map(exprToProto(_, streamed.output))
@@ -3007,11 +3020,16 @@ trait CometHashJoin {
   // order, but the scan reads the final plan behind it once there is one. While CometExecRule
   // converts a plan, a native plan's JVM inputs sit behind a CometScanWrapper, a leaf, so the
   // walk looks through that too.
-  private def mayReportFalseOrder(plan: SparkPlan): Boolean = plan match {
+  //
+  // With `countInPlan` off, a Comet hash join in the same native plan does not count: DataFusion
+  // sees its probe input's order itself. Past an input from the JVM, every join counts again.
+  private def mayReportFalseOrder(plan: SparkPlan, countInPlan: Boolean): Boolean = plan match {
     case adaptive: AdaptiveSparkPlanExec if adaptive.isFinalPlan =>
-      mayReportFalseOrder(adaptive.executedPlan)
+      mayReportFalseOrder(adaptive.executedPlan, countInPlan)
     case _ if plan.outputOrdering.isEmpty => false
     case _: SortExec | _: CometSortExec => false
+    // Its rows stay in order only over a one-row build side, and a native join above would move
+    // them. Over more build rows they are already out of order (#6898); drop this once fixed.
     case _: CometBroadcastNestedLoopJoinExec => true
     case join: CometBroadcastHashJoinExec =>
       hashJoinMayReportFalseOrder(
@@ -3019,40 +3037,46 @@ trait CometHashJoin {
         join.joinType,
         join.buildSide,
         join.left,
-        join.right)
+        join.right,
+        countInPlan)
     case join: CometHashJoinExec =>
       hashJoinMayReportFalseOrder(
         join.nativeOp,
         join.joinType,
         join.buildSide,
         join.left,
-        join.right)
+        join.right,
+        countInPlan)
     case join: HashJoin =>
-      mayReportFalseOrder(streamedSide(join.buildSide, join.left, join.right)._1)
-    case wrapper: CometScanWrapper => mayReportFalseOrder(wrapper.originalPlan)
+      mayReportFalseOrder(streamedSide(join.buildSide, join.left, join.right)._1, countInPlan)
+    case wrapper: CometScanWrapper =>
+      mayReportFalseOrder(wrapper.originalPlan, countInPlan = true)
     case scan: CometInMemoryTableScanExec =>
-      mayReportFalseOrder(scan.originalPlan.relation.cachedPlan)
-    case scan: InMemoryTableScanExec => mayReportFalseOrder(scan.relation.cachedPlan)
-    case stage: QueryStageExec => mayReportFalseOrder(stage.plan)
+      mayReportFalseOrder(scan.originalPlan.relation.cachedPlan, countInPlan = true)
+    case scan: InMemoryTableScanExec =>
+      mayReportFalseOrder(scan.relation.cachedPlan, countInPlan = true)
+    case stage: QueryStageExec => mayReportFalseOrder(stage.plan, countInPlan)
     // A scan reports an order that Spark already relies on.
     case _: DataSourceScanExec | _: DataSourceV2ScanExecBase | _: RangeExec | _: CometLeafExec =>
       false
     case _ if plan.children.isEmpty => true
-    case _ => plan.children.exists(mayReportFalseOrder)
+    case _ => plan.children.exists(mayReportFalseOrder(_, countInPlan))
   }
 
   // Whether a Comet hash join that reports an order may not keep it. Only the streamed side's
   // order reaches the join's output, so a false order on the build side is of no concern, and an
-  // outer join of the two shapes has to have declared the order on its probe input as well.
+  // outer join of the two shapes has to have declared the order on its probe input if counted.
   private def hashJoinMayReportFalseOrder(
       nativeOp: Operator,
       joinType: JoinType,
       buildSide: BuildSide,
       left: SparkPlan,
-      right: SparkPlan): Boolean = {
+      right: SparkPlan,
+      countInPlan: Boolean): Boolean = {
     val (streamed, streamedIndex) = streamedSide(buildSide, left, right)
-    mayReportFalseOrder(streamed) ||
-    (runsAsRightOuterJoin(joinType, buildSide) && !declaresStreamedOrder(nativeOp, streamedIndex))
+    mayReportFalseOrder(streamed, countInPlan) ||
+    (countInPlan && runsAsRightOuterJoin(joinType, buildSide) &&
+      !declaresStreamedOrder(nativeOp, streamedIndex))
   }
 
   // Whether the native planner declares the streamed order on the probe input of the join that

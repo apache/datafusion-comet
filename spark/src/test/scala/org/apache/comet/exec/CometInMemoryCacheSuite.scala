@@ -38,9 +38,9 @@ import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.LeftOuter
+import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
@@ -3677,6 +3677,100 @@ class CometInMemoryCacheSuite extends CometTestBase {
               }
             } finally {
               spark.catalog.clearCache()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("an outer hash join over a cache of an outer hash join over a native filter keeps order") {
+    // The filter keeps the serde from seeing that the first join declared its order, so the
+    // second join, reading that join's cache from the JVM, cannot check the order.
+    for {
+      rightOuter <- Seq(false, true)
+      nativeCache <- Seq(true, false)
+      adaptive <- Seq(false, true)
+    } {
+      val (joinType, buildSide) =
+        if (rightOuter) (RightOuter, BuildLeft) else (LeftOuter, BuildRight)
+      def outerJoin(streamed: String, small: String, on: String): String =
+        if (rightOuter) s"$small RIGHT JOIN $streamed ON $on"
+        else s"$streamed LEFT JOIN $small ON $on"
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+        CometConf.COMET_BATCH_SIZE.key -> "8",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString,
+        CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> (!nativeCache).toString) {
+        withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
+          withParquetTable((0 until 40 by 2).map(m => (m * 1000, m)), "small") {
+            withTempView("cached", "joined") {
+              try {
+                spark
+                  .table("big")
+                  .toDF("k", "v")
+                  .repartition(2, $"k")
+                  .sortWithinPartitions("k")
+                  .cache()
+                  .createOrReplaceTempView("cached")
+                spark.table("cached").count()
+                sql("SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w FROM " +
+                  outerJoin("(SELECT * FROM cached WHERE v >= 0) a", "small b", "a.k = b._1"))
+                  .cache()
+                  .createOrReplaceTempView("joined")
+                spark.table("joined").count()
+                val cachedPlan = cachedPlanOf(spark.table("joined"))
+                val context = s"$joinType nativeCache=$nativeCache AQE=$adaptive"
+                assert(
+                  find(cachedPlan) {
+                    case join: CometBroadcastHashJoinExec =>
+                      join.joinType == joinType && join.buildSide == buildSide &&
+                      join.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0
+                    case _ => false
+                  }.isDefined,
+                  s"$context: the cache was not written by a native outer join that sent the " +
+                    s"order:\n$cachedPlan")
+                assert(
+                  partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
+                  s"$context: the cached outer join rows are out of order")
+
+                def df: DataFrame = sql("SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2 FROM " +
+                  outerJoin("joined j", "small c", "j.k = c._1"))
+                  .sortWithinPartitions("k")
+                val (_, plan) =
+                  checkSparkAnswerAndFallbackReason(
+                    df,
+                    CometHashJoin.uncheckedStreamedOrderReason)
+                val planContext = s"$context\n$plan"
+                if (nativeCache) {
+                  assert(
+                    collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
+                    planContext)
+                } else {
+                  assert(
+                    collect(plan) { case s: InMemoryTableScanExec => s }.size == 1,
+                    planContext)
+                  assert(
+                    collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty,
+                    planContext)
+                }
+                assert(
+                  collect(plan) { case j: BroadcastHashJoinExec =>
+                    (j.joinType, j.buildSide)
+                  } == Seq((joinType, buildSide)),
+                  planContext)
+                assert(
+                  collect(plan) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
+                  planContext)
+                assert(
+                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                  planContext)
+                assert(partitionsInOrder(df, keyOrder(Ascending)), planContext)
+              } finally {
+                spark.catalog.clearCache()
+              }
             }
           }
         }
