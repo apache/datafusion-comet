@@ -361,6 +361,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
           Seq(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
             SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+            SQLConf.COLUMN_BATCH_SIZE.key -> "100",
             CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") ++ confs: _*) {
           val query = s"SELECT $projection FROM $source"
           val expected = uncachedSparkAnswer(query)
@@ -376,7 +377,8 @@ class CometInMemoryCacheSuite extends CometTestBase {
               if (converted) {
                 assert(transitions.isEmpty)
                 assert(conversions.length == 1)
-                assert(conversions.head.metrics("numOutputBatches").value > 0)
+                // 1000 rows cut at the cache's batch size of 100, not spark.comet.batchSize.
+                assert(conversions.head.metrics("numOutputBatches").value >= 10)
               } else {
                 assert(conversions.isEmpty)
                 assert(transitions.length == 1)
@@ -404,6 +406,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
       val transition = RowToColumnarExec(spark.range(10).queryExecution.sparkPlan)
       val rule = CometCacheBuildRule()
       assert(rule(transition).isInstanceOf[CometSparkToColumnarExec])
+      // The batches are cut at the cache's batch size, as Spark's transition and the serializer's
+      // row path do, not at spark.comet.batchSize.
+      withSQLConf(
+        SQLConf.COLUMN_BATCH_SIZE.key -> "1234",
+        CometConf.COMET_BATCH_SIZE.key -> "4321") {
+        assert(rule(transition).asInstanceOf[CometSparkToColumnarExec].batchSize == Some(1234))
+      }
       // Only the root, which is where Spark puts the transition for a stage's columnar output.
       val filtered = FilterExec(Literal.TrueLiteral, transition)
       assert(rule(filtered) eq filtered)

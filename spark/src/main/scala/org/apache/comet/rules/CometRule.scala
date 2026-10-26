@@ -48,7 +48,7 @@ object CometRule {
     Seq(
       RevertNativeForTransitionHeavyStages(session, wholePlan = preview),
       EliminateRedundantTransitions(session),
-      CometCacheBuildRule(preview),
+      CometCacheBuildRule(),
       CometCacheColumnarRule(preview))
 
   /**
