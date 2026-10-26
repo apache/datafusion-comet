@@ -253,6 +253,15 @@ impl PhysicalPlanner {
         }
     }
 
+    /// Look up the `QueryContext` registered for an expression by `register_query_context`, if
+    /// the expression carries an id and a context.
+    fn query_context_for(
+        &self,
+        expr_id: Option<u64>,
+    ) -> Option<Arc<datafusion_comet_spark_expr::QueryContext>> {
+        expr_id.and_then(|expr_id| self.query_context_registry.get(expr_id))
+    }
+
     /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
     /// when the context refers to the pool by index. Falls back to the inline `sql_text` for
     /// plans serialized without interning -- the paths that serialize an operator directly rather
@@ -662,11 +671,7 @@ impl PhysicalPlanner {
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 Ok(Arc::new(Cast::new(
                     child,
@@ -685,10 +690,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
@@ -1259,11 +1261,7 @@ impl PhysicalPlanner {
         options: BinaryExprOptions,
         eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Look up query context from registry if expr_id is present
-        let query_context = spark_expr.expr_id.and_then(|expr_id| {
-            let registry = &self.query_context_registry;
-            registry.get(expr_id)
-        });
+        let query_context = self.query_context_for(spark_expr.expr_id);
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
