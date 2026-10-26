@@ -30,7 +30,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, CreateArray, CreateNamedStruct, Expression, ExpressionSet, Generator, Inline, LeafExpression, Literal, NamedExpression, SortOrder, Stack, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -1920,6 +1920,13 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (!op.generator.deterministic) {
       return Unsupported(Some("Only deterministic generators are supported"))
     }
+    op.generator match {
+      // Spark only accepts an array of structs for `inline`.
+      case _: Inline => return Compatible()
+      // Planned as `inline` over an array of structs; see `stackAsStructArray`.
+      case _: Stack => return Compatible()
+      case _ =>
+    }
     if (op.generator.children.length != 1) {
       return Unsupported(Some("generators with multiple inputs are not supported"))
     }
@@ -1943,10 +1950,19 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op: GenerateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val childExpr = op.generator.children.head
+    val (childExpr, isInline) = op.generator match {
+      case inline: Inline => (inline.child, true)
+      case stack: Stack => (stackAsStructArray(stack), true)
+      case generator => (generator.children.head, false)
+    }
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
+      if (op.generator.isInstanceOf[Stack]) {
+        // The array of structs is built here, not in the plan, so its fallback reason would not
+        // surface on its own.
+        withFallbackReason(op, "stack arguments are not supported natively")
+      }
       return None
     }
 
@@ -1968,9 +1984,27 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       .setChild(childExprProto.get)
       .setOuter(op.outer)
       .setPosition(isPosExplode)
+      .setInline(isInline)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())
+  }
+
+  /**
+   * `stack(n, v1, ..., vk)` emits `n` rows of `ceil(k / n)` columns, filled row by row and padded
+   * with nulls. That is `inline` over an array holding one struct per output row.
+   */
+  private def stackAsStructArray(stack: Stack): Expression = {
+    val numRows = stack.children.head.eval().asInstanceOf[Int]
+    val values = stack.children.tail
+    val fields = stack.elementSchema.fields.toSeq
+    CreateArray(Seq.tabulate(numRows) { row =>
+      CreateNamedStruct(fields.zipWithIndex.flatMap { case (field, col) =>
+        val index = row * fields.length + col
+        val value = if (index < values.length) values(index) else Literal(null, field.dataType)
+        Seq(Literal(field.name), value)
+      })
+    })
   }
 
   override def createExec(nativeOp: Operator, op: GenerateExec): CometNativeExec = {

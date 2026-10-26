@@ -310,28 +310,28 @@ consecutively in a plan, they execute as a single fused block. The write operato
 (`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are the exception: each runs as its
 own native plan over its child's output.
 
-| Node                           | Spark equivalent                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `CometProject`                 | `ProjectExec`                                                                     |
-| `CometFilter`                  | `FilterExec`                                                                      |
-| `CometSort`                    | `SortExec`                                                                        |
-| `CometLocalLimit`              | `LocalLimitExec`                                                                  |
-| `CometGlobalLimit`             | `GlobalLimitExec`                                                                 |
-| `CometExpand`                  | `ExpandExec`                                                                      |
-| `CometExplode`                 | `GenerateExec` (for `explode`, `explode_outer`, `posexplode`, `posexplode_outer`) |
-| `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`                                    |
-| `CometHashJoin`                | `ShuffledHashJoinExec`                                                            |
-| `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                           |
-| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                     |
-| `CometSortMergeJoin`           | `SortMergeJoinExec`                                                               |
-| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                              |
-| `CometWindowExec`              | `WindowExec`                                                                      |
-| `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
-| `CometSample`                  | `SampleExec` (sampling without replacement)                                       |
-| `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
-| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
-| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
-| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
+| Node                           | Spark equivalent                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `CometProject`                 | `ProjectExec`                                                                                                        |
+| `CometFilter`                  | `FilterExec`                                                                                                         |
+| `CometSort`                    | `SortExec`                                                                                                           |
+| `CometLocalLimit`              | `LocalLimitExec`                                                                                                     |
+| `CometGlobalLimit`             | `GlobalLimitExec`                                                                                                    |
+| `CometExpand`                  | `ExpandExec`                                                                                                         |
+| `CometExplode`                 | `GenerateExec` (for `explode`, `explode_outer`, `posexplode`, `posexplode_outer`, `inline`, `inline_outer`, `stack`) |
+| `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`                                                                       |
+| `CometHashJoin`                | `ShuffledHashJoinExec`                                                                                               |
+| `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                                                              |
+| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                                                        |
+| `CometSortMergeJoin`           | `SortMergeJoinExec`                                                                                                  |
+| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                                                                 |
+| `CometWindowExec`              | `WindowExec`                                                                                                         |
+| `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                                                         |
+| `CometSample`                  | `SampleExec` (sampling without replacement)                                                                          |
+| `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                                                          |
+| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)                                           |
+| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)                                             |
+| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                                                             |
 
 ### JVM-Side Operators
 
