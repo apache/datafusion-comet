@@ -53,10 +53,11 @@ use datafusion_comet_proto::{
 };
 use datafusion_datasource::{file_scan_config::FileScanConfig, source::DataSourceExec};
 use itertools::Itertools;
-use jni::objects::{Global, JObject};
+use jni::objects::{Global, JObject, JValue};
 
 use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
 use crate::{
+    errors::CometError,
     execution::{
         operators::{
             DynamicFilterJoinExec, ExecutionError, ScanExec, ShuffleScanExec, SortedInputExec,
@@ -64,6 +65,7 @@ use crate::{
         spark_plan::SparkPlan,
     },
     extract_op,
+    jvm_bridge::{check_exception, JVMClasses},
 };
 
 use ExecutionError::GeneralError;
@@ -206,6 +208,7 @@ pub struct SortMergeJoinBuilder;
 
 /// Spark identifies the shuffle input. Check the actual sort and its key before replacing its child.
 fn reduce_before_sort(
+    planner: &PhysicalPlanner,
     params: &mut JoinParameters,
     sort_options: &[SortOptions],
 ) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
@@ -230,6 +233,25 @@ fn reduce_before_sort(
         || !order.expr.eq(key)
     {
         return Ok(None);
+    }
+    // Check at first execution, after Spark has constructed the input iterators.
+    // Reducing the sort's request must not make an already-resident JVM consumer spill.
+    if let Some(context) = &planner.task_context {
+        let occupied = JVMClasses::with_env(|env| -> Result<bool, CometError> {
+            let result = env.call_static_method(
+                jni::jni_str!("org/apache/comet/CometExecIterator"),
+                jni::jni_str!("hasOtherExecutionMemory"),
+                jni::jni_sig!("(Lorg/apache/spark/TaskContext;)Z"),
+                &[JValue::Object(context.as_obj())],
+            );
+            if let Some(error) = check_exception(env)? {
+                return Err(error);
+            }
+            Ok(result?.z()?)
+        })?;
+        if occupied {
+            return Ok(None);
+        }
     }
     let reducer: Arc<dyn ExecutionPlan> =
         Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
@@ -278,11 +300,10 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             .collect();
 
         let reducer = if join.right_key_reduction_enabled
-            && !planner.jvm_execution_memory_held
             && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
                 if sort.fetch.is_none() && sort.skip.is_none())
         {
-            reduce_before_sort(&mut join_params, &sort_options)?
+            reduce_before_sort(planner, &mut join_params, &sort_options)?
         } else {
             None
         };

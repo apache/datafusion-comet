@@ -50,7 +50,7 @@ pub struct MembershipKeyReductionExec {
 }
 
 impl MembershipKeyReductionExec {
-    /// The join planner supplies a fresh shuffle batch containing one signed integer key.
+    /// The join planner supplies a single signed integer key column.
     pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         Self {
             input,
@@ -123,7 +123,7 @@ impl ExecutionPlan for MembershipKeyReductionExec {
             let batch = batch?;
             let rows = batch.num_rows();
             input_rows.add(rows);
-            // Avoid the setup cost on short partitions, including a single large batch.
+            // Avoid building a hash table on short partitions, including a single large batch.
             let attempt = seen >= PREFIX_ROWS && (min_rows..=MAX_BATCH_ROWS).contains(&rows);
             seen = seen.saturating_add(rows);
             if attempt {

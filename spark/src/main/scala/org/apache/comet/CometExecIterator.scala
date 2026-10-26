@@ -114,15 +114,9 @@ class CometExecIterator(
   private val plan = {
     val conf = SparkEnv.get.conf
     val localDiskDirs = SparkEnv.get.blockManager.getLocalDiskDirs
-    val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
-    // Smaller sort inputs can change which consumer Spark spills. Keep the original sort
-    // when another consumer already owns execution memory in this task.
-    val jvmExecutionMemoryHeld =
-      memoryConfig.offHeapMode &&
-        cometTaskMemoryManager.internal.getMemoryConsumptionForThisTask >
-        cometTaskMemoryManager.getUsed
-    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs(jvmExecutionMemoryHeld)
+    // serialize Comet related Spark configs in protobuf format
+    val protobufSparkConfigs = CometExecIterator.serializeCometSQLConfs()
 
     // Create keyUnwrapper if encryption is enabled
     val keyUnwrapper = if (encryptedFilePaths.nonEmpty) {
@@ -136,6 +130,8 @@ class CometExecIterator(
     } else {
       null
     }
+
+    val memoryConfig = CometExecIterator.getMemoryConfig(conf)
 
     val createdPlan = nativeLib.createPlan(
       id,
@@ -450,6 +446,17 @@ object CometExecIterator extends Logging {
         }
         created
       }
+    }
+  }
+
+  /** Called by the native planner before reducing keys for an eligible semi join. */
+  def hasOtherExecutionMemory(context: TaskContext): Boolean = {
+    if (!CometSparkSessionExtensions.isOffHeapEnabled(SparkEnv.get.conf)) {
+      false
+    } else {
+      val memory = taskMemories.get(context)
+      memory != null &&
+      memory.manager.internal.getMemoryConsumptionForThisTask > memory.manager.getUsed
     }
   }
 
@@ -874,8 +881,8 @@ object CometExecIterator extends Logging {
   private def cometSqlConfs: Map[String, String] =
     SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX))
 
-  def serializeCometSQLConfs(jvmExecutionMemoryHeld: Boolean = false): Array[Byte] = {
-    val builder = ConfigMap.newBuilder().setJvmExecutionMemoryHeld(jvmExecutionMemoryHeld)
+  def serializeCometSQLConfs(): Array[Byte] = {
+    val builder = ConfigMap.newBuilder()
     cometSqlConfs.foreach { case (k, v) =>
       if (k.startsWith(s"${CometConf.COMET_PREFIX}.datafusion.")) {
         if (CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.get(SQLConf.get)) {
