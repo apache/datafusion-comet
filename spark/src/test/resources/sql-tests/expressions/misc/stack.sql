@@ -59,6 +59,10 @@ SELECT id, stack(2, x, NULL) FROM test_stack
 query
 SELECT id, stack(2, NULL, s1, 'k', NULL) FROM test_stack
 
+-- a row count given as a foldable expression rather than a literal
+query
+SELECT id, stack(1 + 1, x, y) FROM test_stack
+
 -- expressions as arguments
 query
 SELECT id, stack(2, x + 1, upper(s1), y * 2, concat(s1, s2)) FROM test_stack

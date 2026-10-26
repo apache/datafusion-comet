@@ -47,6 +47,6 @@
 
 ## stack
 
-- Planned as `inline` over an array holding one struct per output row, so `stack(n, v1, ..., vk)` evaluates each argument once per input row, as Spark does, and pads the last row with NULLs. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation. Arguments the native `array` or `named_struct` cannot handle fall back with the reason `stack arguments are not supported natively`.
+- Planned as `inline` over an array holding one struct per output row, so `stack(n, v1, ..., vk)` evaluates each argument once per input row, as Spark does, and pads the last row with NULLs. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation. An argument that cannot run natively falls back with that argument's own reason.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
