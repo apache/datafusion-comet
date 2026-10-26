@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{Array, StructArray};
+use arrow::array::{Array, ArrayRef, AsArray, StructArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::{DataFusionError, Result as DataFusionResult, ScalarValue};
@@ -99,8 +99,10 @@ impl PhysicalExpr for GetStructField {
                     self.ordinal,
                 )?))
             }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                child_with_parent_nulls(&struct_array, self.ordinal)?,
+            // A scalar struct holds one row, so its field is a scalar too. A one-row array would
+            // not match the batch's row count.
+            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Scalar(
+                single_row_scalar(child_with_parent_nulls(&struct_array, self.ordinal)?)?,
             )),
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
@@ -123,6 +125,20 @@ impl PhysicalExpr for GetStructField {
     }
 }
 
+/// The scalar that a one-row array holds. A list wraps the array as is: `try_from_array` rebuilds
+/// a list's element field from its name and nullability, which drops metadata such as a Variant
+/// element's extension type, so the scalar's type would no longer match `data_type`.
+fn single_row_scalar(array: ArrayRef) -> DataFusionResult<ScalarValue> {
+    Ok(match array.data_type() {
+        DataType::List(_) => ScalarValue::List(Arc::new(array.as_list::<i32>().clone())),
+        DataType::LargeList(_) => ScalarValue::LargeList(Arc::new(array.as_list::<i64>().clone())),
+        DataType::FixedSizeList(_, _) => {
+            ScalarValue::FixedSizeList(Arc::new(array.as_fixed_size_list().clone()))
+        }
+        _ => ScalarValue::try_from_array(&array, 0)?,
+    })
+}
+
 impl Display for GetStructField {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -136,10 +152,98 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int64Array};
-    use arrow::buffer::NullBuffer;
+    use arrow::array::{Int64Array, ListArray, NullArray};
+    use arrow::buffer::{NullBuffer, OffsetBuffer};
     use arrow::datatypes::Fields;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{Column, Literal};
+
+    // A field of a scalar struct is a scalar, so a consumer broadcasts it over the batch instead of
+    // reading a one-row array beside full columns. A null struct gives a null field, for a typed
+    // field and a Null-typed one.
+    #[test]
+    fn field_of_scalar_struct_is_scalar() {
+        let fields: Fields = Fields::from(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("n", DataType::Null, true),
+        ]);
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![0_i64, 1, 2, 3]))],
+        )
+        .unwrap();
+
+        let present = ScalarValue::Struct(Arc::new(StructArray::new(
+            fields.clone(),
+            vec![
+                Arc::new(Int64Array::from(vec![7_i64])),
+                Arc::new(NullArray::new(1)),
+            ],
+            None,
+        )));
+        let absent = ScalarValue::Struct(Arc::new(StructArray::new_null(fields.clone(), 1)));
+        // A null struct whose child slot still holds a value: the field is null all the same.
+        let hidden = ScalarValue::Struct(Arc::new(StructArray::new(
+            fields,
+            vec![
+                Arc::new(Int64Array::from(vec![7_i64])),
+                Arc::new(NullArray::new(1)),
+            ],
+            Some(NullBuffer::new_null(1)),
+        )));
+
+        for (scalar, ordinal, expected) in [
+            (present.clone(), 0, ScalarValue::Int64(Some(7))),
+            (present, 1, ScalarValue::Null),
+            (absent.clone(), 0, ScalarValue::Int64(None)),
+            (absent, 1, ScalarValue::Null),
+            (hidden, 0, ScalarValue::Int64(None)),
+        ] {
+            let expr = GetStructField::new(Arc::new(Literal::new(scalar)), ordinal);
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Scalar(value) => assert_eq!(value, expected),
+                ColumnarValue::Array(array) => {
+                    panic!("expected a scalar for ordinal {ordinal}, got array {array:?}")
+                }
+            }
+        }
+    }
+
+    // A list field of a scalar struct keeps its element field, metadata included, so the scalar's
+    // type is the one `data_type` declares.
+    #[test]
+    fn list_field_of_scalar_struct_keeps_its_type() {
+        let item =
+            Arc::new(Field::new("item", DataType::Int64, true).with_metadata(
+                [("ARROW:extension:name".to_string(), "test.ext".to_string())].into(),
+            ));
+        let list = ListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::from_lengths([2]),
+            Arc::new(Int64Array::from(vec![1_i64, 2])),
+            None,
+        );
+        let fields: Fields = Fields::from(vec![Field::new("l", DataType::List(item), true)]);
+        let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(list)],
+            None,
+        )));
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int64Array::from(vec![0_i64, 1, 2]))],
+        )
+        .unwrap();
+
+        let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+        match expr.evaluate(&batch).unwrap() {
+            ColumnarValue::Scalar(value) => {
+                assert_eq!(value.data_type(), expr.data_type(&schema).unwrap())
+            }
+            ColumnarValue::Array(array) => panic!("expected a scalar, got array {array:?}"),
+        }
+    }
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
     // non-null value at that row -- Arrow stores child validity independently of the parent

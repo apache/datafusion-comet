@@ -38,3 +38,15 @@ INSERT INTO test_struct_null_field VALUES (1), (-1), (NULL)
 query
 SELECT s.x, s.n FROM (
   SELECT IF(a > 0, named_struct('x', a, 'n', null), null) AS s FROM test_struct_null_field)
+
+-- A field of a struct that native evaluates as a scalar (a cast of named_struct over a scalar
+-- subquery) is one value for every row. The table is one file, so at the default batch size its
+-- four rows share a batch.
+statement
+CREATE TABLE test_struct_scalar(a int) USING parquet
+
+statement
+INSERT INTO test_struct_scalar SELECT /*+ REPARTITION(1) */ * FROM VALUES (1), (-1), (NULL), (4) AS v(a)
+
+query
+SELECT a, CAST(named_struct('x', (SELECT max(a) FROM test_struct_scalar)) AS STRUCT<x: BIGINT>).x, CAST(named_struct('x', (SELECT max(a) FROM test_struct_scalar WHERE a > 100)) AS STRUCT<x: BIGINT>).x FROM test_struct_scalar
