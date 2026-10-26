@@ -19,6 +19,7 @@
 
 package org.apache.comet.expressions
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
@@ -26,7 +27,7 @@ import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -161,6 +162,8 @@ object CometCast
             .toBoolean)
         castBuilder.setTimezone(timeZoneId.getOrElse("UTC"))
         castBuilder.setIsSpark4Plus(isSpark40Plus)
+        castBuilder.setDecimalZeroAnyExponent(
+          SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
         Some(
           ExprOuterClass.Expr
             .newBuilder()

@@ -72,6 +72,12 @@ including:
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
+A zero with a large exponent, such as `'0e39'`, casts to `0` on Spark 4.0.5, 4.1.4, 4.2.1 and later
+(SPARK-60118). Earlier releases return `NULL` for it, or raise `NUMERIC_OUT_OF_SUPPORTED_RANGE`
+under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
+reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
+returns `0`.
+
 ## String to Date
 
 Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years

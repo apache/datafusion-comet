@@ -318,13 +318,14 @@ pub(crate) fn cast_string_to_decimal(
     precision: &u8,
     scale: &i8,
     eval_mode: EvalMode,
+    zero_any_exponent: bool,
 ) -> SparkResult<ArrayRef> {
     match to_type {
         DataType::Decimal128(_, _) => {
-            cast_string_to_decimal128_impl(array, eval_mode, *precision, *scale)
+            cast_string_to_decimal128_impl(array, eval_mode, *precision, *scale, zero_any_exponent)
         }
         DataType::Decimal256(_, _) => {
-            cast_string_to_decimal256_impl(array, eval_mode, *precision, *scale)
+            cast_string_to_decimal256_impl(array, eval_mode, *precision, *scale, zero_any_exponent)
         }
         _ => Err(SparkError::Internal(format!(
             "Unexpected type in cast_string_to_decimal: {:?}",
@@ -338,6 +339,7 @@ fn cast_string_to_decimal128_impl(
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
+    zero_any_exponent: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
@@ -351,7 +353,7 @@ fn cast_string_to_decimal128_impl(
             decimal_builder.append_null();
         } else {
             let str_value = string_array.value(i);
-            match parse_string_to_decimal(str_value, precision, scale) {
+            match parse_string_to_decimal(str_value, precision, scale, zero_any_exponent) {
                 Ok(Some(decimal_value)) => {
                     decimal_builder.append_value(decimal_value);
                 }
@@ -401,6 +403,7 @@ fn cast_string_to_decimal256_impl(
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
+    zero_any_exponent: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
@@ -414,7 +417,7 @@ fn cast_string_to_decimal256_impl(
             decimal_builder.append_null();
         } else {
             let str_value = string_array.value(i);
-            match parse_string_to_decimal(str_value, precision, scale) {
+            match parse_string_to_decimal(str_value, precision, scale, zero_any_exponent) {
                 Ok(Some(decimal_value)) => {
                     // Convert i128 to i256
                     let i256_value = i256::from_i128(decimal_value);
@@ -577,7 +580,17 @@ fn is_special_value(trimmed: &str) -> bool {
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
-fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
+///
+/// `zero_any_exponent` selects how a zero with a large exponent ("0e39") is cast. Spark used to
+/// apply the integral-digit limit to zero too, so such a string returned NULL (or raised
+/// NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI). Since SPARK-60118 Spark skips that limit for zero,
+/// which fits any decimal type, and casts it to 0.
+fn parse_string_to_decimal(
+    input_str: &str,
+    precision: u8,
+    scale: i8,
+    zero_any_exponent: bool,
+) -> SparkResult<Option<i128>> {
     // Spark parses via `new java.math.BigDecimal(str.toString.trim)`, so the trim set is
     // `String.trim`'s: every byte <= 0x20, which includes the null byte ("123\u0000" and
     // "\u0000123" both parse as 123) but not 0x7F or any non-ASCII whitespace. Null bytes in
@@ -606,9 +619,13 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     // validate and parse mantissa and exponent or bubble up the error
     let (mantissa, exponent) = parse_decimal_str(trimmed, input_str, precision, scale)?;
 
-    // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi
+    // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi. Spark
+    // counts precision - scale integral digits for zero too, so "0e38" (scale -38) has 39 and is
+    // over the 38-digit limit. Spark stopped applying that limit to zero in SPARK-60118. Before
+    // that it counted in an int, which wraps negative for "0e2147483647" (scale -2147483647), so
+    // that zero skipped the limit; the wrapping subtraction does the same.
     if mantissa == 0 {
-        if exponent < -37 {
+        if !zero_any_exponent && 1i32.wrapping_sub(exponent) > 38 {
             return Err(SparkError::NumericOutOfRange {
                 value: input_str.to_string(),
             });
@@ -2099,14 +2116,59 @@ mod tests {
     fn test_parse_string_to_decimal_boundary() {
         // 38-digit integral parses (fits i128).
         let s38 = "9".repeat(38);
-        assert!(parse_string_to_decimal(&s38, 38, 0).unwrap().is_some());
+        assert!(parse_string_to_decimal(&s38, 38, 0, false)
+            .unwrap()
+            .is_some());
         // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
         let s39 = "9".repeat(39);
-        assert!(parse_string_to_decimal(&s39, 38, 0).is_err());
+        assert!(parse_string_to_decimal(&s39, 38, 0, false).is_err());
         // Very long fractional part now returns Err via the invalid_decimal_cast path instead
         // of panicking on 10_i128.pow(fractional_scale).
         let over_long = format!("0.{}", "0".repeat(40));
-        assert!(parse_string_to_decimal(&over_long, 38, 10).is_err());
+        assert!(parse_string_to_decimal(&over_long, 38, 10, false).is_err());
+    }
+
+    /// Spark used to count integral digits for zero, so a zero with an exponent above 37 was out
+    /// of range (NULL, or NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI), except "0e2147483647", whose
+    /// count wrapped in Spark's int arithmetic. Since SPARK-60118 zero casts to 0 whatever its
+    /// exponent. The inputs include ones from Comet's cast fuzz tests.
+    #[test]
+    fn test_parse_string_to_decimal_zero_with_large_exponent() {
+        for (s, precision, scale) in [
+            ("0e37", 10, 2),
+            ("0e-50", 10, 2),
+            ("-0.0e10", 38, 10),
+            ("0e2147483647", 10, 2),
+        ] {
+            for zero_any_exponent in [false, true] {
+                assert_eq!(
+                    parse_string_to_decimal(s, precision, scale, zero_any_exponent).unwrap(),
+                    Some(0),
+                    "{s} zero_any_exponent={zero_any_exponent}"
+                );
+            }
+        }
+        for (s, precision, scale) in [
+            ("0e38", 10, 2),
+            ("0E73", 2, 2),
+            ("+0e83", 10, 2),
+            ("0E2655", 10, 2),
+            ("+0.E81", 10, 2),
+            ("0e5887677", 38, 10),
+            ("0e2147483646", 10, 2),
+            ("0.0e2147483647", 10, 2),
+        ] {
+            let err = parse_string_to_decimal(s, precision, scale, false).unwrap_err();
+            assert!(
+                err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                "{s}: {err}"
+            );
+            assert_eq!(
+                parse_string_to_decimal(s, precision, scale, true).unwrap(),
+                Some(0),
+                "{s}"
+            );
+        }
     }
 
     #[test]

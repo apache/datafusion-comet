@@ -421,6 +421,9 @@ message Cast {
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
+  // True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
+  // 0, instead of applying the integral-digit limit to it (SPARK-60118).
+  bool decimal_zero_any_exponent = 7;
 }
 
 // Spark's internal PreciseTimestampConversion, used by time-window grouping to convert
