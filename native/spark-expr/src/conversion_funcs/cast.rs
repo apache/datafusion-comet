@@ -552,11 +552,11 @@ fn cast_struct_to_struct(
                 })
                 .collect::<DataFusionResult<Vec<_>>>()?;
 
-            Ok(Arc::new(StructArray::new(
+            Ok(Arc::new(StructArray::try_new(
                 to_fields.clone(),
                 cast_fields,
                 array.nulls().cloned(),
-            )))
+            )?))
         }
         _ => unreachable!(),
     }
@@ -1246,6 +1246,70 @@ mod tests {
         } else {
             unreachable!()
         }
+    }
+
+    /// Struct min/max casts its input this way to relabel nullable fields as non-nullable,
+    /// so the values, including a UTC timestamp, must come through unchanged.
+    #[test]
+    fn test_cast_struct_relabels_nullable_fields_as_non_nullable() {
+        let ts_type =
+            DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, Some("UTC".into()));
+        let ts: ArrayRef = Arc::new(
+            PrimitiveArray::<TimestampMicrosecondType>::from(vec![-1, 0, 1]).with_timezone("UTC"),
+        );
+        let s: ArrayRef = Arc::new(StringArray::from(vec!["a", "中文", ""]));
+        let inner_from = Fields::from(vec![Field::new("s", DataType::Utf8, true)]);
+        let inner_to = Fields::from(vec![Field::new("s", DataType::Utf8, false)]);
+        let inner: ArrayRef = Arc::new(StructArray::new(inner_from.clone(), vec![s], None));
+        let from_fields = Fields::from(vec![
+            Field::new("ts", ts_type.clone(), true),
+            Field::new("inner", DataType::Struct(inner_from), true),
+        ]);
+        let to_fields = Fields::from(vec![
+            Field::new("ts", ts_type, false),
+            Field::new("inner", DataType::Struct(inner_to), false),
+        ]);
+        // The outer struct itself may be null.
+        let outer: ArrayRef = Arc::new(StructArray::new(
+            from_fields,
+            vec![ts, inner],
+            Some(vec![true, false, true].into()),
+        ));
+        let to_type = DataType::Struct(to_fields);
+
+        let result = cast_array(
+            Arc::clone(&outer),
+            &to_type,
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        )
+        .unwrap();
+
+        assert_eq!(result.data_type(), &to_type);
+        assert_eq!(result.nulls(), outer.nulls());
+        let result = result.as_struct();
+        let original = outer.as_struct();
+        assert_eq!(result.column(0).as_ref(), original.column(0).as_ref());
+        assert_eq!(
+            result.column(1).as_struct().column(0).as_ref(),
+            original.column(1).as_struct().column(0).as_ref()
+        );
+    }
+
+    /// A null under a field relabeled as non-nullable must be an error, not a panic.
+    #[test]
+    fn test_cast_struct_to_non_nullable_field_with_null_returns_error() {
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![Some(1), None]));
+        let from_fields = Fields::from(vec![Field::new("v", DataType::Int64, true)]);
+        let to_fields = Fields::from(vec![Field::new("v", DataType::Int64, false)]);
+        let array: ArrayRef = Arc::new(StructArray::new(from_fields, vec![values], None));
+
+        let result = cast_array(
+            array,
+            &DataType::Struct(to_fields),
+            &SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]

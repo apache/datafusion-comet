@@ -51,10 +51,10 @@ use datafusion_comet_proto::{
     spark_operator::{AggregateMode as ProtoAggregateMode, Operator},
 };
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, CometCollectList, CometCollectSet,
-    Correlation, Covariance, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr,
-    RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst,
-    Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
+    ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, Cast, CometCollectList, CometCollectSet,
+    Correlation, Covariance, EvalMode, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode,
+    Regr, RegrType, SparkBloomFilterVersion, SparkCastOptions, SparkListAgg, SparkMinMax,
+    SparkPercentile, SparkPivotFirst, Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
 };
 use jni::objects::{Global, JObject};
 
@@ -339,7 +339,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, false);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -353,7 +353,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, true);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -807,6 +807,38 @@ impl PhysicalPlanner {
         Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
     }
 
+    /// Cast a min/max input to the aggregate's declared type. Native expressions such as
+    /// `struct(...)` can report nullable fields where Spark declares them non-nullable, and
+    /// DataFusion's `CastExpr` rejects that narrowing. For a struct, only nullability may differ:
+    /// Comet's `Cast` then relabels the fields without touching the data (and errors if a field
+    /// declared non-nullable holds a null), so the input matches the state that shuffle and scans
+    /// stamp with Spark's type. Any other difference is a planning error.
+    fn cast_min_max_child(
+        child: Arc<dyn PhysicalExpr>,
+        datatype: &DataType,
+        schema: &SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        if !matches!(datatype, DataType::Struct(_)) {
+            return Ok(Arc::new(CastExpr::new(child, datatype.clone(), None)));
+        }
+        let child_type = child.data_type(schema.as_ref())?;
+        if &child_type == datatype {
+            return Ok(child);
+        }
+        if !equal_ignoring_nullability(&child_type, datatype) {
+            return Err(GeneralError(format!(
+                "min/max input type {child_type} does not match the declared type {datatype}"
+            )));
+        }
+        Ok(Arc::new(Cast::new(
+            child,
+            datatype.clone(),
+            SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+            None,
+            None,
+        )))
+    }
+
     pub(super) fn create_aggr_func_expr(
         name: &str,
         schema: SchemaRef,
@@ -820,6 +852,19 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+/// True if two types match apart from struct field nullability and metadata.
+fn equal_ignoring_nullability(a: &DataType, b: &DataType) -> bool {
+    match (a, b) {
+        (DataType::Struct(fa), DataType::Struct(fb)) => {
+            fa.len() == fb.len()
+                && fa.iter().zip(fb.iter()).all(|(x, y)| {
+                    x.name() == y.name() && equal_ignoring_nullability(x.data_type(), y.data_type())
+                })
+        }
+        _ => a == b,
     }
 }
 
@@ -896,5 +941,55 @@ fn percentile_value(expr: &spark_expression::Expr) -> Result<f64, ExecutionError
         _ => Err(GeneralError(
             "Percentile value must be a non-null literal".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{Fields, TimeUnit};
+    use std::collections::HashMap;
+
+    #[test]
+    fn equal_ignoring_nullability_allows_only_nullability_and_metadata() {
+        let inner = |nullable| {
+            DataType::Struct(Fields::from(vec![Field::new(
+                "s",
+                DataType::Utf8,
+                nullable,
+            )]))
+        };
+        let outer = |nullable, ts_type: DataType| {
+            DataType::Struct(Fields::from(vec![
+                Field::new("ts", ts_type, nullable),
+                Field::new("inner", inner(nullable), nullable),
+            ]))
+        };
+        let ts = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+
+        assert!(equal_ignoring_nullability(
+            &outer(true, ts.clone()),
+            &outer(false, ts.clone())
+        ));
+
+        let with_metadata =
+            DataType::Struct(Fields::from(vec![Field::new("s", DataType::Utf8, true)
+                .with_metadata(HashMap::from([("k".to_string(), "v".to_string())]))]));
+        assert!(equal_ignoring_nullability(&with_metadata, &inner(false)));
+
+        // A different leaf type, timezone label or field name is not a relabel.
+        assert!(!equal_ignoring_nullability(
+            &outer(false, ts.clone()),
+            &outer(false, DataType::Int64)
+        ));
+        assert!(!equal_ignoring_nullability(
+            &outer(false, ts),
+            &outer(
+                false,
+                DataType::Timestamp(TimeUnit::Microsecond, Some("+05:30".into()))
+            )
+        ));
+        let renamed = DataType::Struct(Fields::from(vec![Field::new("t", DataType::Utf8, false)]));
+        assert!(!equal_ignoring_nullability(&renamed, &inner(false)));
     }
 }

@@ -33,7 +33,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, isStringCollationType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
@@ -44,6 +44,8 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
   override def supportsNativePartialToSparkFinal(fn: Min): Boolean = true
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
+
+  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
 
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -85,6 +87,8 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
   override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
+
+  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -1589,7 +1593,7 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with Co
   }
 }
 
-object AggSerde {
+object AggSerde extends CometTypeShim {
   import org.apache.spark.sql.types._
 
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
@@ -1639,14 +1643,70 @@ object AggSerde {
       Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
     // DataFusion's grouped hash aggregate under-reports the memory these values hold (#6936).
     case _: StringType | BinaryType => Compatible()
+    case st: StructType => minMaxStructSupportLevel(st)
     case _ if minMaxDataTypeSupported(dt) => Compatible()
     case _ => Unsupported(Some(s"Unsupported data type: $dt"))
   }
 
+  /**
+   * DataFusion compares struct fields with Arrow's total order for floats, which differs from
+   * Spark for -0.0 and negative NaN. It also skips a null field when comparing two structs, while
+   * Spark orders null as the smallest value, so a struct is only Compatible when none of its
+   * fields (at any depth) can be null.
+   */
+  private def minMaxStructSupportLevel(st: StructType): SupportLevel = {
+    if (st.fields.isEmpty) {
+      Unsupported(Some("Struct min/max over an empty struct"))
+    } else if (hasNonDefaultStringCollation(st)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
+    } else if (SupportLevel.containsType(st, classOf[FloatType], classOf[DoubleType])) {
+      Unsupported(
+        Some(
+          "Struct min/max over a float or double field. DataFusion orders -0.0 below 0.0 and" +
+            " a NaN with the sign bit set below every value, while Spark treats -0.0 and 0.0" +
+            " as equal and every NaN as the largest value"))
+    } else {
+      unsupportedStructLeaf(st) match {
+        case Some(dt) => Unsupported(Some(s"Struct min/max over a field of type $dt"))
+        case None if structHasNullableField(st) => Incompatible(Some(minMaxNullableStructReason))
+        case None => Compatible()
+      }
+    }
+  }
+
+  /** The first leaf type of a struct that native min/max cannot compare, if any. */
+  private def unsupportedStructLeaf(dt: DataType): Option[DataType] = dt match {
+    case st: StructType if st.fields.isEmpty => Some(st)
+    case st: StructType =>
+      st.fields.view.flatMap(f => unsupportedStructLeaf(f.dataType)).headOption
+    case _ =>
+      minMaxSupportLevel(dt) match {
+        case _: Compatible => None
+        case _ => Some(dt)
+      }
+  }
+
+  private def structHasNullableField(dt: DataType): Boolean = dt match {
+    case st: StructType => st.fields.exists(f => f.nullable || structHasNullableField(f.dataType))
+    case _ => false
+  }
+
+  private val minMaxNullableStructReason =
+    "Struct min/max with nullable fields (at any depth). DataFusion skips a null field when" +
+      " comparing structs, while Spark orders null as the smallest value. When a field that" +
+      " decides the order is null, the result can differ from Spark, and can also differ" +
+      " between runs because the skipping comparison does not give a consistent order."
+
+  /** Reasons a struct min/max is not Compatible, for the generated compatibility guide. */
+  val minMaxIncompatibleReasons: Seq[String] = Seq(minMaxNullableStructReason)
+
   /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
   val minMaxUnsupportedReasons: Seq[String] = Seq(
     "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
-      " string or binary, such as timestamp without time zone, intervals, arrays and structs.",
+      " string or binary, such as timestamp without time zone, intervals, arrays and maps." +
+      " A struct is supported only if all of its fields are of supported types other than" +
+      " float and double, since DataFusion orders -0.0 and NaN with the sign bit set" +
+      " differently from Spark inside a struct.",
     "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
       " while Comet compares raw bytes.")
 
