@@ -1121,6 +1121,9 @@ message Explode {
   repeated spark.spark_expression.Expr project_list = 3;
   // Whether to emit a position column alongside the exploded values (posexplode)
   bool position = 4;
+  // Whether the array holds structs whose fields become separate output columns (inline). A
+  // null struct element yields a row of nulls.
+  bool inline = 5;
 }
 
 message HashJoin {

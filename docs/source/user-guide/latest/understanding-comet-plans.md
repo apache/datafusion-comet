@@ -314,28 +314,28 @@ own Rust plan over its child's output. `CometTakeOrderedAndProject` is another: 
 Rust plan, and when its input has several partitions, it first gathers the top rows of each partition
 through a single-partition Comet shuffle.
 
-| Node                           | Spark equivalent                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `CometProject`                 | `ProjectExec`                                                                     |
-| `CometFilter`                  | `FilterExec`                                                                      |
-| `CometSort`                    | `SortExec`                                                                        |
-| `CometLocalLimit`              | `LocalLimitExec`                                                                  |
-| `CometGlobalLimit`             | `GlobalLimitExec`                                                                 |
-| `CometExpand`                  | `ExpandExec`                                                                      |
-| `CometExplode`                 | `GenerateExec` (for `explode`, `explode_outer`, `posexplode`, `posexplode_outer`) |
-| `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`                                    |
-| `CometHashJoin`                | `ShuffledHashJoinExec`                                                            |
-| `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                           |
-| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                     |
-| `CometSortMergeJoin`           | `SortMergeJoinExec`                                                               |
-| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                              |
-| `CometWindowExec`              | `WindowExec`                                                                      |
-| `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
-| `CometSample`                  | `SampleExec` (sampling without replacement)                                       |
-| `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
-| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental Rust Parquet writer)          |
-| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental Rust Parquet writer)            |
-| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
+| Node                           | Spark equivalent                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `CometProject`                 | `ProjectExec`                                                                                                        |
+| `CometFilter`                  | `FilterExec`                                                                                                         |
+| `CometSort`                    | `SortExec`                                                                                                           |
+| `CometLocalLimit`              | `LocalLimitExec`                                                                                                     |
+| `CometGlobalLimit`             | `GlobalLimitExec`                                                                                                    |
+| `CometExpand`                  | `ExpandExec`                                                                                                         |
+| `CometExplode`                 | `GenerateExec` (for `explode`, `explode_outer`, `posexplode`, `posexplode_outer`, `inline`, `inline_outer`, `stack`) |
+| `CometHashAggregate`           | `HashAggregateExec`, `ObjectHashAggregateExec`                                                                       |
+| `CometHashJoin`                | `ShuffledHashJoinExec`                                                                                               |
+| `CometBroadcastHashJoin`       | `BroadcastHashJoinExec`                                                                                              |
+| `CometBroadcastNestedLoopJoin` | `BroadcastNestedLoopJoinExec`                                                                                        |
+| `CometSortMergeJoin`           | `SortMergeJoinExec`                                                                                                  |
+| `CometMergeRows`               | `MergeRowsExec` (Spark 3.5+; opt-in)                                                                                 |
+| `CometWindowExec`              | `WindowExec`                                                                                                         |
+| `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                                                         |
+| `CometSample`                  | `SampleExec` (sampling without replacement)                                                                          |
+| `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                                                          |
+| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental Rust Parquet writer)                                             |
+| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental Rust Parquet writer)                                               |
+| `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                                                             |
 
 ### JVM-Side Operators
 

@@ -336,20 +336,21 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 
 ## generator_funcs
 
-`explode`, `explode_outer`, `posexplode`, and `posexplode_outer` are supported via
-`CometExplodeExec` (operator-level, not expression-level) for array input; map input falls back
-to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
+`explode`, `explode_outer`, `posexplode`, `posexplode_outer`, `inline`, `inline_outer`, and
+`stack` are supported via `CometExplodeExec` (operator-level, not expression-level). `explode` and
+`posexplode` support array input; map input falls back to Spark
+([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `explode` | ✅ | — | via `CometExplodeExec` |
 | `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
-| `inline` | 🔜 | — | Operator-level generator (like `explode`) |
-| `inline_outer` | 🔜 | — | Operator-level generator (like `explode`) |
+| `inline` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline)) |
+| `inline_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline_outer)) |
 | `posexplode` | ✅ | — | via `CometExplodeExec` |
 | `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
-| `stack` | 🔜 | — | Operator-level generator |
+| `stack` | ✅ | — | via `CometExplodeExec`, planned as `inline` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#stack)) |
 
 ---
 

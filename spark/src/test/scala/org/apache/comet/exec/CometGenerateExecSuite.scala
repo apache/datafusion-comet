@@ -237,6 +237,18 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  test("stack with an argument Comet cannot run natively falls back") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      spark.udf.register("plus_one", (i: Int) => i + 1)
+      val df = Seq((1, 10), (2, 20))
+        .toDF("id", "v")
+        .selectExpr("id", "stack(2, v, plus_one(v))")
+      checkSparkAnswerAndFallbackReason(df, "stack arguments are not supported natively")
+    }
+  }
+
   test("explode with nullable projected column") {
     withSQLConf(
       CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
