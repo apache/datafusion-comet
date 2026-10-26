@@ -39,7 +39,7 @@ import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometExplainInfo
-import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withFallbackReasons, withInfo, withNativeExpr}
+import org.apache.comet.CometSparkSessionExtensions.{appendTagValues, withFallbackReason, withFallbackReasons, withInfo, withLiftedFallbackReasons, withNativeExpr}
 import org.apache.comet.DataTypeSupport
 import org.apache.comet.expressions._
 import org.apache.comet.parquet.CometParquetUtils
@@ -1006,7 +1006,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       reasons ++= CometExplainInfo.currentFallbackReasons(e)
     }
     if (reasons.nonEmpty) {
-      val _ = withFallbackReasons(to, reasons.toSet)
+      val _ = withLiftedFallbackReasons(to, reasons.toSet)
     }
   }
 
