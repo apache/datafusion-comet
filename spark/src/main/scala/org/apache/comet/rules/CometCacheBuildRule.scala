@@ -48,14 +48,19 @@ import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
  * Runs only when Comet's cache is enabled and its serializer is installed, so another serializer
  * gets the batches Spark planned for it, and for schemas `CometSparkToColumnarExec` can convert.
  *
- * @param preview
- *   true in the plan-only preview, which shows the plan Comet would execute. Otherwise the rule
- *   leaves plans alone in plan-only mode, where Spark executes each query unchanged.
+ * The conversion cuts batches at `spark.sql.inMemoryColumnarStorage.batchSize`, as Spark's
+ * `RowToColumnarExec` and the serializer's own row path do, so the cache is batched the same way
+ * whether or not AQE planned it. The batch size sets how fine-grained the cache's min/max pruning
+ * stats are.
+ *
+ * In plan-only mode, where Spark executes each query unchanged, the rule leaves plans alone. It
+ * takes no `preview` flag: the plan-only preview inserts transitions for row output, so no
+ * `RowToColumnarExec` reaches its root.
  */
-case class CometCacheBuildRule(preview: Boolean = false) extends Rule[SparkPlan] {
+case class CometCacheBuildRule() extends Rule[SparkPlan] {
   override def apply(plan: SparkPlan): SparkPlan = plan match {
     case transition @ RowToColumnarExec(child) if appliesTo(transition) =>
-      val conversion = CometSparkToColumnarExec(child)
+      val conversion = CometSparkToColumnarExec(child, Some(conf.columnBatchSize))
       transition.logicalLink.foreach(conversion.setLogicalLink)
       conversion
     case _ => plan
@@ -64,7 +69,7 @@ case class CometCacheBuildRule(preview: Boolean = false) extends Rule[SparkPlan]
   private def appliesTo(transition: RowToColumnarExec): Boolean =
     isCometLoaded(conf) &&
       COMET_EXEC_IN_MEMORY_CACHE_ENABLED.get(conf) &&
-      (preview || !CometRule.planOnlyApplies(conf, transition)) &&
+      !CometRule.planOnlyApplies(conf, transition) &&
       conf.getConf(StaticSQLConf.SPARK_CACHE_SERIALIZER) ==
       classOf[ArrowCachedBatchSerializer].getName &&
       CometSparkToColumnarExec.isSchemaSupported(transition.schema, ListBuffer.empty[String])
