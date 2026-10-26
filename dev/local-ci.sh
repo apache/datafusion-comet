@@ -405,6 +405,8 @@ gradlew() {
     cd "$dest"
     # shellcheck disable=SC2031
     export SPARK_LOCAL_IP=localhost ENABLE_COMET=true ENABLE_COMET_ONHEAP=true
+    # Iceberg's tests expect file order from queries without an ORDER BY.
+    export COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1
     # One directory per target, emptied first, so a rerun reports only its own writes.
     export COMET_ICEBERG_WRITE_REPORT_DIR="$dest/build/comet-iceberg-writes/$target"
     rm -rf "$COMET_ICEBERG_WRITE_REPORT_DIR"

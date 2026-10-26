@@ -34,6 +34,7 @@
 - Spark 3.5.8 (audited 2026-05-27): identical to 3.4.3.
 - Spark 4.0.1 (audited 2026-05-27): now `RuntimeReplaceable` and rewritten to `ArrayInsert(arr, Literal(-1), elem)`. `CometArrayAppend` is therefore unreachable; dispatch goes through `CometArrayInsert` (which carries its own `Incompatible` notes documented at the `array_insert` entry).
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 3.4, 3.5 (2026-10-15, [#6086](https://github.com/apache/datafusion-comet/issues/6086)): Spark disagrees with itself here. Interpreted `ArrayAppend.eval` returns NULL for a NULL array without evaluating the item, but `doGenCode` emits the item's code outside `nullSafeExec`, so generated code evaluates the item on every row, including rows whose array is `NULL`, and an item that raises under ANSI raises there. Comet follows the generated code, which is what runs under whole-stage codegen. Its `CASE WHEN <array> IS NOT NULL THEN array_append(...) ELSE null` guard skipped the item on those rows; the `ELSE` branch now evaluates it too, when it is not a literal or a column read, and returns a NULL typed as the list. A nondeterministic array or item with a nullable array falls back to Spark, because the guard serializes the operands more than once. A non-nullable array gets no guard at all, so each operand is evaluated once over the whole batch.
 
 ## array_compact
 
@@ -149,6 +150,7 @@
 - Spark 3.5.8 (audited 2026-05-27): baseline. `ArraysOverlap(left, right)`; three-valued logic (TRUE if any common non-null element, NULL if a null is present and no overlap is found in non-nulls, FALSE otherwise). Comet routes via `CometArraysOverlap` to the native `spark_arrays_overlap` UDF, which implements the same three-valued logic.
 - Spark 4.0.1 (audited 2026-05-27): `NullIntolerant` -> `nullIntolerant` field refactor.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
+- Spark 4.0.5, 4.1.4 and 4.2.1 (release candidates, 2026-10-14): `fastEval` and its generated code normalize each flat `FLOAT` or `DOUBLE` element with `NormalizeFloatingNumbers.FLOAT_NORMALIZER` / `DOUBLE_NORMALIZER` before the `java.util.HashSet` lookup (SPARK-59602), so `-0.0` and `0.0` are one value. Spark 4.2.0 normalizes the arguments in the plan instead (SPARK-54918). Earlier releases keep the zeros apart, and every release treats all NaNs as one value. On the versions where `ArraySetSupport.normalizesFloats` holds, `CometArraysOverlap.nativeFunction` picks `spark_arrays_overlap_normalized`, which keys flat floats by `normalize_float`; otherwise `spark_arrays_overlap`, which keys them by `canonicalize_nan`. Nested elements compare in Spark's SQL ordering in both.
 
 ## arrays_zip
 

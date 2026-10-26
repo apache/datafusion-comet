@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, In, InSet, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -35,6 +35,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -59,6 +60,177 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("AtLeastNNonNulls: na.drop counts non-null and non-NaN values") {
+    val input = sql("""SELECT * FROM VALUES
+      (1, '', cast('NaN' AS FLOAT), 1D),
+      (2, NULL, -0F, cast('NaN' AS DOUBLE)),
+      (3, 'NaN', cast(NULL AS FLOAT), cast('Infinity' AS DOUBLE)),
+      (4, NULL, cast(NULL AS FLOAT), cast(NULL AS DOUBLE)) AS t(id, s, f, d)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+          for (n <- Seq(-1, 0, 1, 2, 3, 4)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, Seq("s", "f", "d")),
+              native = Seq("atleastnnonnulls"))
+          }
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop("all", Seq("s", "f", "d")),
+            native = Seq("atleastnnonnulls"))
+          withSQLConf(CometConf.getExprEnabledConfigKey("AtLeastNNonNulls") -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              spark.table("nonnulls").na.drop(2, Seq("s", "f", "d")),
+              "Expression support is disabled. Set spark.comet.expression.AtLeastNNonNulls.enabled=true to enable it.")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: counter and batch boundaries") {
+    val columns = (0 until 33).map(i => s"c$i")
+    val fields = columns.zipWithIndex.map { case (name, i) =>
+      s"CASE WHEN (id + $i) % 33 < id % 34 THEN cast(id AS DOUBLE) " +
+        s"WHEN $i % 2 = 0 THEN cast('NaN' AS DOUBLE) ELSE NULL END AS $name"
+    }
+    withTempPath { dir =>
+      spark.range(137).selectExpr((Seq("id") ++ fields): _*).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65") {
+          for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, columns),
+              native = Seq("atleastnnonnulls"))
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: complex values use only their outer nullability") {
+    val input = sql("""SELECT * FROM VALUES
+      (array(cast(NULL AS INT)), named_struct('a', cast(NULL AS INT)), map(1, cast(NULL AS INT))),
+      (array(), named_struct('a', 1), map()),
+      (NULL, NULL, NULL) AS t(a, s, m)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        for (n <- Seq(1, 2, 3, 4)) {
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop(n),
+            native = Seq("atleastnnonnulls"))
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: short-circuit child evaluation") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query(n: Int, prefix: Boolean = false): DataFrame = {
+          val df = spark.table("nonnulls")
+          val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
+          val args = if (prefix) Literal(1) +: children else children
+          df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
+        }
+        for (n <- Seq(-1, 0, 1)) {
+          checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
+        }
+        // Reach the threshold on different children for different rows in the counter path.
+        checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
+        for (n <- Seq(2, 3)) {
+          assertExpressionImpl(
+            query(n).queryExecution.executedPlan,
+            Seq("atleastnnonnulls"),
+            Seq.empty)
+          checkSparkError(query(n), "CAST_INVALID_INPUT")
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: falls back rather than skip a shared subexpression") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        // Every row reaches n=2 before its second cast, and the first row before either cast.
+        // Spark evaluates the repeated cast for every row only when it eliminates it as a
+        // shared subexpression, and then fails on "bad".
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(df.col("_2").expr, IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          // A shared subexpression among the first n children is evaluated for every row anyway.
+          val df = spark.table("nonnulls")
+          val plus = Add(df.col("_1").expr, Literal(1))
+          checkSparkAnswerAndImpl(
+            df.select(getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(plus, plus, Cast(df.col("_2").expr, IntegerType))))),
+            native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(
+                  causeChain(error).exists(e =>
+                    String.valueOf(e.getMessage).contains("CAST_INVALID_INPUT")),
+                  error)
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: shared decimal subexpressions preserve divide-by-zero errors") {
+    val rows = Seq((Some(1), BigDecimal(1), BigDecimal(0)), (None, BigDecimal(7), BigDecimal(1)))
+    withParquetTable(rows, "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(Divide(df.col("_2").expr, df.col("_3").expr), IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+        }
+      }
+    }
   }
 
   test("nested floating point membership uses native In and InSet") {
@@ -114,11 +286,9 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      // Scalar floating-point sort keys are normalized natively, so strict mode admits them even
-      // with allowIncompatible off. The nested tests below cover array and struct keys.
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      // Scalar floating-point sort keys are normalized natively, so strict mode admits them. The
+      // nested tests below cover array and struct keys.
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
         checkSparkAnswerAndOperator(
           sql("select * from tbl order by 1, 2, 3"),
           Seq(classOf[CometSortExec]))
@@ -165,9 +335,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val query =
           s"SELECT id, f, d, s FROM strict_fp_sort ORDER BY $col $direction $nullOrder$secondary, id"
 
-        withSQLConf(
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
           checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometSortExec]))
         }
       }
@@ -183,9 +351,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("strict_fp_topk")
 
-      withSQLConf(
-        CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-        CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
         for (col <- Seq("f", "d")) {
           checkSparkAnswerAndOperator(
             sql(s"SELECT id, f, d FROM strict_fp_topk ORDER BY $col ASC NULLS LAST, id LIMIT 4"),
@@ -214,9 +380,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     rows.toDF("id", "f", "d").createOrReplaceTempView("strict_fp_bits")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       for (col <- Seq("f", "d")) {
         val query = s"SELECT id, f, d FROM strict_fp_bits ORDER BY $col, id"
         // LocalTableScanExec has no native counterpart enabled by default; it is the source of
@@ -259,15 +423,10 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
       spark.read.parquet(path).createOrReplaceTempView("tbl")
 
-      // The sort stays native whether or not incompatible expressions are allowed.
-      Seq("false", "true").foreach { allowIncompat =>
-        withSQLConf(
-          CometConf.getExprAllowIncompatConfigKey("SortOrder") -> allowIncompat,
-          CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-          checkSparkAnswerAndOperator(
-            sql("select * from tbl order by 1, 2, 3"),
-            Seq(classOf[CometSortExec]))
-        }
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
       }
     }
   }
@@ -306,9 +465,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
     rows.toDF("id", "d").createOrReplaceTempView("strict_fp_nested_bits")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       // The zeros are peers, and so are the two NaNs, which sort last.
       for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
           ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),
@@ -1482,6 +1639,112 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           explain.contains("native implementation of FromUTCTimestamp"),
           s"Expected 'native implementation of FromUTCTimestamp' in: $explain")
+      }
+    }
+  }
+
+  test("division on negative-scale decimal reports unsupported via getSupportLevel") {
+    // Issue #5013: `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a
+    // negative scale wraps to roughly 4.29e9 and the BigInt branch attempts an unbounded
+    // allocation. Only division is affected. The other arithmetic operators scale-align by
+    // `10^(max_scale - s)`, which is never negative, so they stay native and are pinned by
+    // "safe ops on negative-scale decimal run natively" below. Constructing the expressions
+    // requires allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
+        val posDec = DecimalType(10, 0)
+        val negAttr = AttributeReference("n", negScale)()
+        val posAttr = AttributeReference("p", posDec)()
+        val expected = Unsupported(Some(CometDivide.negScaleDecimalArithmeticReason))
+
+        assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
+        assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
+        // Guard also fires when negative scale is only on the right operand.
+        assert(CometDivide.getSupportLevel(Divide(posAttr, negAttr)) == expected)
+
+        // The unguarded operators must not report unsupported for the same operands.
+        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == Compatible())
+        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == Compatible())
+        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == Compatible())
+        assert(CometMultiply.getSupportLevel(Multiply(negAttr, posAttr)) == Compatible())
+      }
+    }
+  }
+
+  test("division on negative-scale decimal falls back and returns correct results") {
+    // End-to-end proof for issue #5013 that the previously-panicking queries now complete.
+    // `checkSparkAnswerAndFallbackReason` rather than `checkSparkAnswer`: `CometDivide` and
+    // `CometIntegralDivide` do not mix in `CodegenDispatchFallback`, so `Unsupported` falls the
+    // whole projection back to Spark, and asserting the reason is what proves the guard fired.
+    // A plain answer comparison would pass whether or not it did.
+    // ConvertToLocalRelation is excluded so the arithmetic actually runs on the plan rather
+    // than being folded at plan time (#4789). `DecimalType(_, s<0)` must be constructed under
+    // allowNegativeScaleOfDecimal=true because the case class initializer reads the flag, so
+    // wrap everything (including the type value) in one block.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // A narrow and a wide negative-scale type, so the guard is exercised at both widths.
+      // Neither reaches a native kernel here, since the assertion below is that the projection
+      // falls back to Spark. `unit` is the smallest magnitude representable at that scale.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+        // source construction does not depend on any of the guards under test.
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        Seq("v / cast(3 as decimal(10, 0))", "v div cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndFallbackReason(
+            v.selectExpr(e),
+            CometDivide.negScaleDecimalArithmeticReason)
+        }
+      }
+    }
+  }
+
+  test("safe ops on negative-scale decimal run natively (regression pin)") {
+    // Multiply and UnaryMinus on negative-scale decimals don't scale-align an integer and
+    // ran natively at the time #5013 was fixed. The arithmetic guard intentionally does
+    // not cover them. If a future change ever adds scale-alignment to Multiply or a
+    // decimal codepath is added to UnaryMinus that does the multiply-by-10^n trick,
+    // these assertions will start returning a Comet fallback plan and this test will
+    // catch it before it reaches production as a silent-wrap or debug panic.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // The wide case matters most for `v * v`: Decimal(20,-5) * Decimal(20,-5) has
+      // p1 + p2 >= DECIMAL128_MAX_PRECISION, so it takes `WideDecimalBinaryExpr`'s multiply
+      // branch (which does compute a scale adjustment against the output precision/scale)
+      // and its result type is Decimal(38,-10) -- a negative *output* scale, not just
+      // negative inputs.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Same-scale Multiply - no alignment needed, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("v * v"))
+        checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
+        // UnaryMinus on Decimal(neg) - no alignment, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("-v"))
+        // Add, Subtract and Remainder scale-align by `10^(max_scale - s)`, which is never
+        // negative, so a negative scale is safe for them. They reach the decimal width tests in
+        // `PhysicalPlanner::create_binary_expr_with_options` and `create_modulo_expr`, which
+        // compute that width in `i16` for the same reason. A debug build panicked when those
+        // were `u8`, so these assertions catch a regression there only when the native library
+        // is built with overflow checks on.
+        Seq(
+          "v + v",
+          "v - v",
+          "v % v",
+          "v + cast(2 as decimal(10, 0))",
+          "v - cast(2 as decimal(10, 0))",
+          "v % cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndOperator(v.selectExpr(e))
+        }
       }
     }
   }
