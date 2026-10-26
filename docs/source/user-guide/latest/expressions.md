@@ -88,7 +88,7 @@ The tables below list every Spark built-in expression with its current status.
 | `approx_count_distinct` | ✅ | Native |  |
 | `approx_percentile` | ✅ | Native | Byte, short, int, long, float, and double input; other input types fall back to Spark |
 | `array_agg` | ✅ | Native | Alias for `collect_list` |
-| `avg` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `avg` | ✅ | Native | Interval types fall back. For `DECIMAL` input with precision 28 or more, fallback depends on the aggregate operator; see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `bit_and` | ✅ | Native |  |
 | `bit_or` | ✅ | Native |  |
 | `bit_xor` | ✅ | Native |  |
@@ -114,7 +114,7 @@ The tables below list every Spark built-in expression with its current status.
 | `listagg` | ✅ | Native | Spark 4.0+. `StringType` input with a literal delimiter; `WITHIN GROUP (ORDER BY ...)` and `BinaryType` inputs fall back to Spark. Without `WITHIN GROUP`, concatenation order is the (non-deterministic) group arrival order, matching Spark. |
 | `max` | ✅ | Native |  |
 | `max_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mean` | ✅ | Native | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `mean` | ✅ | Native | Interval types fall back. For `DECIMAL` input with precision 28 or more, fallback depends on the aggregate operator; see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
@@ -141,7 +141,7 @@ The tables below list every Spark built-in expression with its current status.
 | `stddev_samp` | ✅ | Native |  |
 | `string_agg` | ✅ | Native | Alias of `listagg`; same restrictions apply. |
 | `sum` | ✅ | Native |  |
-| `try_avg` | ✅ | — | Interval types fall back. `DECIMAL` input with precision 25 or more falls back in most cases, see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
+| `try_avg` | ✅ | — | Interval types fall back. For `DECIMAL` input with precision 28 or more, fallback depends on the aggregate operator; see [Hash Aggregation](compatibility/operators.md#hash-aggregation) |
 | `try_sum` | ✅ | — |  |
 | `var_pop` | ✅ | Native |  |
 | `var_samp` | ✅ | Native |  |
@@ -358,12 +358,12 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `crc32` | ✅ | Native |  |
-| `hash` | ✅ | Native |  |
+| `hash` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 | `md5` | ✅ | Native |  |
 | `sha` | ✅ | Native |  |
 | `sha1` | ✅ | Native |  |
 | `sha2` | ✅ | Native |  |
-| `xxhash64` | ✅ | Native |  |
+| `xxhash64` | ✅ | Native | Includes decimals with precision 19–38 and nested decimals |
 
 ---
 
@@ -386,7 +386,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `aggregate` | ✅ | Codegen dispatch |  |
-| `array_sort` | ✅ | Codegen dispatch |  |
+| `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
 | `exists` | ✅ | Codegen dispatch |  |
 | `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
 | `forall` | ✅ | Codegen dispatch |  |
@@ -605,7 +605,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `regexp_replace` | ✅ | Hybrid |  |
 | `regexp_substr` | ✅ | — | Rewrites to `nullif(regexp_extract(...), '')`; `regexp_extract` routes through the JVM codegen dispatcher by default |
 | `repeat` | ✅ | Native |  |
-| `replace` | ✅ | Hybrid |  |
+| `replace` | ✅ | Hybrid | Native by default for a direct string column with a non-empty, valid UTF-8 search literal and either a replacement literal (both at most 64 KiB) or a replacement column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under UTF8_BINARY collation; other cases use the JVM codegen dispatcher by default |
 | `right` | ✅ | Native |  |
 | `rpad` | ✅ | Hybrid | String inputs use the native kernel with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `rtrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs natively |
@@ -705,6 +705,7 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 - **Operator and optimizer-injected expressions:** runtime bloom-filter join probes (`BloomFilterMightContain`, `BloomFilterAggregate`), optimized `IN` sets (`InSet`), scalar subqueries (`ScalarSubquery`), and floating-point normalization (`KnownFloatingPointNormalized`).
 - **Accessor expressions (subscript and field access, not functions):** struct field access (`col.field`), array element access (`arr[i]`), and map value access (`map[key]`).
 - **Internal decimal arithmetic:** `CheckOverflow`, `MakeDecimal`, and `UnscaledValue`, which the analyzer inserts around decimal operations.
+- **Missing-data predicates:** `AtLeastNNonNulls`, used by `DataFrame.na.drop`, counts non-null and non-NaN values natively.
 - **User-defined functions:** Scala UDFs registered through the DataFrame or SQL API.
 - **DataSource V2 catalog functions:** Iceberg's system functions `bucket`, `truncate`, `years`, `months`, `days`, and `hours` (for example `system.bucket(16, id)`) run natively; see [Iceberg system functions](iceberg.md#iceberg-system-functions). Other DataSource V2 catalog functions run in Spark.
 - **Lowered built-ins:** Spark lowers some built-in functions to `StaticInvoke` or `Invoke` calls. Those without a native mapping run through the JVM codegen dispatcher when their input and output types are supported.

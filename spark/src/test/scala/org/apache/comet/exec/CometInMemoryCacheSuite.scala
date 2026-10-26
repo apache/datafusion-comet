@@ -31,19 +31,21 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
-import org.apache.arrow.vector.{BitVector, FieldVector, FixedSizeBinaryVector, IntVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
+import org.apache.arrow.vector.{BitVector, FieldVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
 import org.apache.arrow.vector.types.pojo.ArrowType
 import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.plans.LeftOuter
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlanInfo}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -3040,6 +3042,57 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache releases the 32-bit copy it makes of a large-offset column") {
+    // A large-offset column is written as a copy with 32-bit offsets, which nothing outside the
+    // writer ever holds. It has to be closed whether the write succeeds or fails, and a copy can
+    // be close to 2 GiB.
+    val rows = 16
+    // Returns the failure of the write, if any, once the batch's own vectors are closed and the
+    // allocator is back where it started.
+    def write(codec: CompressionCodec): Option[Throwable] = {
+      val baseline = CometArrowAllocator.getAllocatedMemory
+      val ints = new IntVector("i", CometArrowAllocator)
+      val large = new LargeVarCharVector("s", CometArrowAllocator)
+      val failure =
+        try {
+          ints.allocateNew(rows)
+          (0 until rows).foreach(i => ints.set(i, i))
+          ints.setValueCount(rows)
+          large.allocateNew(rows)
+          (0 until rows).foreach(i => large.setSafe(i, s"value_$i".getBytes("UTF-8")))
+          large.setValueCount(rows)
+
+          val batch = new ColumnarBatch(
+            Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(large)),
+            rows)
+          try {
+            CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator)
+            None
+          } catch {
+            case e: Exception => Some(e)
+          }
+        } finally {
+          ints.close()
+          large.close()
+        }
+      assert(
+        CometArrowAllocator.getAllocatedMemory == baseline,
+        "the copy of the large-offset column must be released")
+      failure
+    }
+
+    assert(write(new ZstdCompressionCodec(1)).isEmpty)
+
+    // The int column's two buffers compress, then the copy's first one fails.
+    val codec = new FailAfterCompressionCodec(succeedFor = 2)
+    val thrown = write(codec).getOrElse(fail("the injected failure must surface"))
+    assert(
+      causeChain(thrown).exists(t =>
+        Option(t.getMessage).contains(FailAfterCompressionCodec.Message)),
+      s"a compression failure must surface as itself: $thrown")
+    assert(codec.compressed == 2, "the failure must come after some buffers were compressed")
+  }
+
   test("Comet in-memory cache keeps no compressed bytes alive behind a buffer stored raw") {
     // Arrow stores a buffer verbatim when compressing it would not make it smaller -- a bitmap of
     // random bits, say -- and decompressing hands it back as a slice of whatever holds it. Copied
@@ -3387,6 +3440,212 @@ class CometInMemoryCacheSuite extends CometTestBase {
       assert(collect(plain.queryExecution.executedPlan) { case s: CometInMemoryTableScanExec =>
         s
       }.nonEmpty)
+    }
+  }
+
+  test("hash joins over a sorted cache keep the streamed side's order") {
+    // CometInMemoryTableScan reports the cached plan's sort order, so Spark drops the sort it
+    // would otherwise plan above a join that keeps that order. DataFusion's hash join keeps the
+    // unmatched probe rows of a left outer join built on the right, or of a right outer join built
+    // on the left, in place only when the probe input declares an order, which the native scan
+    // over the cache does not, so the native join declares the cache's order on its probe input.
+    // An inner join never moves probe rows.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed =
+              spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+
+            def query(hint: String, joinType: String): DataFrame = {
+              val joined = if (joinType == "right_outer") {
+                build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+              } else {
+                streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+              }
+              joined
+                .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+                .sortWithinPartitions("k")
+            }
+
+            def joins(plan: SparkPlan): Seq[(Class[_], BuildSide)] = collect(plan) {
+              case j: CometHashJoinExec => (j.getClass, j.buildSide)
+              case j: CometBroadcastHashJoinExec => (j.getClass, j.buildSide)
+            }
+
+            def sorts(plan: SparkPlan): Seq[SparkPlan] =
+              collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }
+
+            val outerRows = (0 until 10000).map { i =>
+              val k = i % 100
+              Row(k, i, if (k % 10 == 0) k / 10 else null)
+            }
+            val innerRows = outerRows.filter(_.get(2) != null)
+
+            Seq(
+              "shuffle_hash" -> classOf[CometHashJoinExec],
+              "broadcast" -> classOf[CometBroadcastHashJoinExec]).foreach {
+              case (hint, joinClass) =>
+                Seq("left_outer" -> BuildRight, "right_outer" -> BuildLeft).foreach {
+                  case (joinType, buildSide) =>
+                    val outer = query(hint, joinType)
+                    val outerPlan = outer.queryExecution.executedPlan
+                    assert(joins(outerPlan) == Seq((joinClass, buildSide)), outerPlan)
+                    assert(collect(outerPlan) { case s: CometInMemoryTableScanExec =>
+                      s
+                    }.size == 1)
+                    assert(sorts(outerPlan).isEmpty, outerPlan)
+                    QueryTest.sameRows(outerRows, outer.collect().toSeq).foreach(fail(_))
+                    assert(partitionsInOrder(outer, keyOrder(Ascending)), outerPlan)
+                }
+
+                val inner = query(hint, "inner")
+                val innerPlan = inner.queryExecution.executedPlan
+                assert(joins(innerPlan) == Seq((joinClass, BuildRight)), innerPlan)
+                assert(sorts(innerPlan).isEmpty, innerPlan)
+                QueryTest.sameRows(innerRows, inner.collect().toSeq).foreach(fail(_))
+                assert(partitionsInOrder(inner, keyOrder(Ascending)), innerPlan)
+            }
+          } finally {
+            spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("a broadcast outer hash join over a sorted cache keeps its order with default settings") {
+    // A cache written with no exchange in its plan is not adaptive, so with AQE on, as it is by
+    // default, the scan reports the cached plan's order just as it does with AQE off. Only the
+    // native cache scan is switched on here, and the broadcast join is the one Spark plans for
+    // a small build side.
+    withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      withParquetTable((0 until 10000).map(i => (i % 100, i)), "big") {
+        withParquetTable((0 until 10).map(i => (i * 10, i)), "small") {
+          try {
+            val streamed = spark.table("big").sortWithinPartitions("_1").cache()
+            streamed.count()
+            val build = spark.table("small")
+            val df = streamed
+              .join(build, streamed("_1") === build("_1"), "left_outer")
+              .select(streamed("_1").as("k"), streamed("_2").as("v"), build("_2").as("w"))
+              .sortWithinPartitions("k")
+            val expected = (0 until 10000).map { i =>
+              val k = i % 100
+              Row(k, i, if (k % 10 == 0) k / 10 else null)
+            }
+            QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+            // The plan AQE chose is final once the query has run.
+            val plan = df.queryExecution.executedPlan
+            assert(plan.isInstanceOf[AdaptiveSparkPlanExec], plan)
+            val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+            assert(joins.size == 1 && joins.head.joinType == LeftOuter, plan)
+            assert(joins.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+            assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+            assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+          } finally {
+            spark.catalog.clearCache()
+          }
+        }
+      }
+    }
+  }
+
+  test("an aggregate on the key above a hash join over a sorted cache groups each key once") {
+    // The order the join declares on its probe input reaches past the join, so the aggregate
+    // above it in the same native plan groups in sorted, streaming mode. That is right while
+    // Spark's reported order holds, and a wrong order would split a key across groups, which only
+    // a comparison of the rows as a multiset catches. With 40 keys and 8-row batches each group
+    // spans several batches. With 1000 keys a batch holds four keys, alternately matched and
+    // unmatched, so a join that moved its unmatched rows would also change the order in which the
+    // aggregate first sees the keys, and its output would not come back sorted.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+      CometConf.COMET_BATCH_SIZE.key -> "8",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      Seq(40, 1000).foreach { keys =>
+        val data = (0 until 2000).map(i => ((i % keys) * 1000, i))
+        withParquetTable(data, "big") {
+          withParquetTable((0 until keys by 2).map(m => (m * 1000, m)), "small") {
+            try {
+              val streamed =
+                spark.table("big").repartition(2, $"_1").sortWithinPartitions("_1").cache()
+              streamed.count()
+              val build = spark.table("small")
+
+              // A match in the build side for every even key.
+              val expected = data.groupBy(_._1).toSeq.map { case (k, rows) =>
+                Row(
+                  k,
+                  rows.size.toLong,
+                  rows.map(_._2.toLong).sum,
+                  if ((k / 1000) % 2 == 0) {
+                    rows.size.toLong
+                  } else 0L)
+              }
+
+              for {
+                (hint, joinClass) <- Seq(
+                  "shuffle_hash" -> classOf[CometHashJoinExec],
+                  "broadcast" -> classOf[CometBroadcastHashJoinExec])
+                (joinType, buildSide) <- Seq(
+                  "left_outer" -> BuildRight,
+                  "right_outer" -> BuildLeft)
+              } {
+                val joined = if (joinType == "right_outer") {
+                  build.hint(hint).join(streamed, build("_1") === streamed("_1"), joinType)
+                } else {
+                  streamed.join(build.hint(hint), streamed("_1") === build("_1"), joinType)
+                }
+                val df = joined
+                  .groupBy(streamed("_1"))
+                  .agg(count(lit(1)), sum(streamed("_2")), count(build("_2")))
+                val plan = df.queryExecution.executedPlan
+                val joins: Seq[(SparkPlan, BuildSide)] = collect(plan) {
+                  case j: CometHashJoinExec => (j, j.buildSide)
+                  case j: CometBroadcastHashJoinExec => (j, j.buildSide)
+                }
+                assert(
+                  joins.map { case (j, side) => (j.getClass, side) } == Seq(
+                    (joinClass, buildSide)),
+                  plan)
+                // The serde sent the order, which is what lets the aggregates above run in
+                // sorted mode, and a sorted aggregate emits its groups in key order.
+                assert(
+                  collect(plan) {
+                    case j: CometHashJoinExec => j.nativeOp
+                    case j: CometBroadcastHashJoinExec => j.nativeOp
+                  }.forall(_.getHashJoin.getStreamedSortOrdersCount > 0),
+                  plan)
+                assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+                // A final aggregate after a shuffle would merge a key a partial aggregate split,
+                // so both aggregates have to sit above the join with no exchange in between.
+                def aboveJoin(p: SparkPlan): Boolean = p.find(_ eq joins.head._1).isDefined
+                assert(
+                  collect(plan) { case a: CometHashAggregateExec => a }.count(aboveJoin) == 2,
+                  plan)
+                assert(
+                  !collect(plan) { case e: ShuffleExchangeLike => e }.exists(aboveJoin),
+                  plan)
+                assert(collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1, plan)
+                QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+              }
+            } finally {
+              spark.catalog.clearCache()
+            }
+          }
+        }
+      }
     }
   }
 }

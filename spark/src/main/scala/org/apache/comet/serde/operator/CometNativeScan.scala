@@ -31,7 +31,7 @@ import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometSc
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
@@ -105,22 +105,45 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
    * The data schema the native scan actually serializes.
    *
    * Spark's required schema can prune a Variant column, including a Variant nested under an
-   * unrequested struct, while the complete relation schema still contains it. Keep ordinary
-   * fields unchanged and retain the pruned required field for a requested Variant-bearing root,
+   * unrequested struct, while the complete relation schema still contains it. Keep ordinary field
+   * types unchanged and retain the pruned required field for a requested Variant-bearing root,
    * including a struct whose Variant child was pruned. Entirely unread Variant roots never enter
    * the native schema.
    */
   private def nativeDataSchema(
       dataSchema: StructType,
       requiredSchema: StructType,
-      resolver: Resolver): StructType =
+      resolver: Resolver): StructType = {
+    // Ordinary fields keep their names, which projection below also matches exactly. Index
+    // only ID-bearing required fields so wide ordinary schemas do not need quadratic lookups.
+    val requiredFieldsWithIds = requiredSchema.fields
+      .filter(ParquetUtils.hasFieldId)
+      .map(field => field.name -> field)
+      .toMap
     StructType(dataSchema.fields.flatMap { field =>
       if (containsVariantType(field.dataType)) {
         requiredSchema.fields.find(requiredField => resolver(requiredField.name, field.name))
       } else {
-        Some(field)
+        // Nested schema pruning drops root metadata from the relation's data schema. Spark
+        // 3.4 still retains it in requiredSchema, which its Parquet reader uses for ID matching.
+        // Use that ID here too, without changing the table schema's types or projection indexes.
+        // When pruning also drops requiredSchema's ID (Spark 3.5+), leave the missing
+        // data-schema ID untouched so lookup remains name-based.
+        Some(
+          requiredFieldsWithIds
+            .get(field.name)
+            .map { required =>
+              field.copy(metadata = new MetadataBuilder()
+                .withMetadata(field.metadata)
+                .putLong(
+                  ParquetUtils.FIELD_ID_METADATA_KEY,
+                  ParquetUtils.getFieldId(required).toLong)
+                .build())
+            }
+            .getOrElse(field))
       }
     })
+  }
 
   /** Determine whether the scan is supported and tag the Spark plan with any fallback reasons */
   def isSupported(scanExec: FileSourceScanExec): Boolean = {

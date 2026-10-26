@@ -213,7 +213,7 @@ private[comet] object CachedBatchIpc {
       codec: CompressionCodec,
       allocator: BufferAllocator,
       chunkSize: Int): (ChunkedByteBuffer, Array[Long]) = {
-    val (vectors, decoded) = decodeDictionaries(batch, allocator)
+    val (vectors, allocated) = decodeDictionaries(batch, allocator)
     try {
       val root = new VectorSchemaRoot(vectors.asJava)
       // A batch of zero columns carries only a row count, which a VectorSchemaRoot cannot infer
@@ -252,8 +252,8 @@ private[comet] object CachedBatchIpc {
         recordBatch.close()
       }
     } finally {
-      // Only the vectors this method allocated. The rest belong to the input batch.
-      decoded.foreach(v =>
+      // Only the vectors allocated for this write. The rest belong to the input batch.
+      allocated.foreach(v =>
         try v.close()
         catch { case NonFatal(_) => () })
     }
@@ -659,32 +659,34 @@ private[comet] object CachedBatchIpc {
   /**
    * Replace every dictionary-encoded column of `batch` with its decoded form.
    *
-   * Returns the vectors to write and, separately, the ones allocated here so the caller can close
-   * exactly those. Columns that needed no decoding are returned as they are and stay owned by
+   * Returns the vectors to write and, separately, the ones allocated for the write, so the caller
+   * can close exactly those: the decoded columns, and any that
+   * [[Utils.getBatchFieldVectorsWithProviders]] allocated, such as a 32-bit copy of a
+   * large-offset column. Columns that needed neither are returned as they are and stay owned by
    * `batch`.
    */
   private def decodeDictionaries(
       batch: ColumnarBatch,
       allocator: BufferAllocator): (Seq[FieldVector], Seq[ValueVector]) = {
-    val decoded = mutable.ArrayBuffer.empty[ValueVector]
+    val columns = Utils.getBatchFieldVectorsWithProviders(batch)
+    val allocated = mutable.ArrayBuffer.empty[ValueVector]
+    allocated ++= Utils.allocatedFor(batch, columns.map(_._1))
     try {
       val vectors =
-        Utils.getBatchFieldVectorsWithProviders(batch).map { case (vector, providerOpt) =>
+        columns.map { case (vector, providerOpt) =>
           if (vector.getField.getDictionary == null) {
             vector
           } else {
             val dictionary = Utils.lookupDictionary(vector, providerOpt)
             val plain = DictionaryEncoder.decode(vector, dictionary, allocator)
-            decoded += plain
+            allocated += plain
             plain.asInstanceOf[FieldVector]
           }
         }
-      (vectors, decoded.toSeq)
+      (vectors, allocated.toSeq)
     } catch {
       case NonFatal(e) =>
-        decoded.foreach(v =>
-          try v.close()
-          catch { case NonFatal(closeError) => e.addSuppressed(closeError) })
+        Utils.closeAfterFailure(allocated.toSeq, e)
         throw e
     }
   }
