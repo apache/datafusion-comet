@@ -379,14 +379,14 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // The literal and coalesce create required fields after the Parquet scan, which
         // otherwise widens field nullability. Sorting removes collect order differences.
         val struct = "named_struct('flag', true, 'id', coalesce(_2, 0), 'value', _3)"
-        // The four settings below are load-bearing for the plan that reproduces the mismatch:
-        // without them Spark keeps AQE and the default shuffle partition count, and this query
-        // passes even with the strict buffer declaration. They are not here to force spilling —
+        // This reuses the helper for its AQE-off and single-shuffle-partition settings, which are
+        // what make the query reproduce the mismatch: Spark's defaults insert a shuffle-boundary
+        // cast that hides it. The helper's memory settings are not here to force spilling —
         // neither stage spills on this fixture at any pool size tried (4 MiB, 2 MiB, 400 KiB), and
         // shrinking the pool past the Final state's first allocation fails the task with
-        // "Additional allocation failed for FinalHashAggregateStream[0]" instead of spilling.
-        // The assertion is therefore native execution plus the answer. The ungrouped Accumulator
-        // path is covered by collect_list.sql and collect_set.sql.
+        // "Additional allocation failed for FinalHashAggregateStream[0]" instead of spilling. The
+        // assertion is therefore native execution plus the answer. The ungrouped Accumulator path
+        // is covered by collect_list.sql and collect_set.sql.
         withDistinctMergeMemoryPressure {
           Seq(struct, s"array($struct)").foreach { value =>
             val df = sql(s"""
