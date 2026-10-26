@@ -157,10 +157,10 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
-  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-  // missing in the Parquet file, true returns the entire struct as null (legacy
-  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
-  // so non-null parents return a struct of all-null fields.
+  // SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+  // map exist in the Parquet file, true returns the entire value as null (legacy
+  // pre-4.1 behavior); false preserves the parent's nullness from the file, so
+  // non-null parents keep their structure with all-null leaves.
   bool return_null_struct_if_all_fields_missing = 14;
   // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
   // schema actually carries parquet.field.id metadata. When false the native
@@ -210,10 +210,10 @@ message DeltaSparkScanCommon {
   string table_root = 1;
   // Column mapping mode: "none", "name", or "id".
   string column_mapping_mode = 2;
-  // Key for split-mode plan-data injection. Derived from (table root, snapshot
-  // version, scan hash) so two scans of the same table in one plan (self-join,
-  // MERGE) don't collide -- same lesson as IcebergScan's
-  // (metadata_location, scan_hash_code) key.
+  // Key for split-mode plan-data injection: a hash of the table root, required
+  // schema, data filters, projection and fields, prefixed with common.source and
+  // ending with the scan op's plan_id, so two scans of one table in one native
+  // plan get distinct keys. Read only on the JVM side.
   string source_key = 3;
   // Effective datetime rebase read modes (LegacyBehaviorPolicy values of
   // spark.sql.parquet.datetimeRebaseModeInRead / int96RebaseModeInRead, resolved
