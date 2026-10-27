@@ -453,7 +453,16 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
     }
   }
 
-  /** A native parent must not evaluate a date on rows where Spark skips that child. */
+  // Native IN evaluates dynamic candidates for the whole batch. Only these constructors and
+  // leaves are safe on rows where Spark skips a candidate after a match or a NULL probe.
+  private def canEvaluateInCandidateEagerly(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute => true
+    case _: CreateArray | _: CreateNamedStruct =>
+      expr.children.forall(canEvaluateInCandidateEagerly)
+    case _ => false
+  }
+
+  /** A native parent must preserve Spark's evaluation of a date and its sibling expressions. */
   private[serde] def unsupportedParentReason(expr: Expression): Option[String] = {
     var pending: List[(Expression, Option[String])] = (expr, None) :: Nil
     while (pending.nonEmpty) {
@@ -486,12 +495,17 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
           // Empty membership can skip its sole operand in Spark.
           case in: In if in.list.isEmpty => pushChildren(Some(current.nodeName))
           case inSet: InSet if inSet.hset.isEmpty => pushChildren(Some(current.nodeName))
-          // Nonempty IN always evaluates its probe, but may skip list items after a match.
+          // Nonempty IN always evaluates its probe, but may skip candidates on individual rows.
           case in: In =>
             in.list.reverseIterator.foreach { child =>
               pending = (child, Some(in.nodeName)) :: pending
             }
-            pending = (in.value, None) :: pending
+            val probeParent = if (in.list.forall(canEvaluateInCandidateEagerly)) {
+              None
+            } else {
+              Some("In with computed candidates")
+            }
+            pending = (in.value, probeParent) :: pending
           case _ if current.children.size <= 1 => pushChildren(None)
           // Other native multi-child expressions may evaluate operands that Spark skips.
           case _ => pushChildren(Some(current.nodeName))

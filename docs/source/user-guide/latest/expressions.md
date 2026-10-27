@@ -281,7 +281,7 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 | `hour` | ✅ | Native |  |
 | `last_day` | ✅ | Native |  |
 | `localtimestamp` | ✅ | — |  |
-| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions or a parent could change which arguments Spark evaluates. |
+| `make_date` | ✅ | Native | Computed arguments preserve year → month → day NULL checks. Expressions fall back when shared subexpressions or a parent could change which arguments Spark evaluates. IN probes stay native for literal/column candidates and array/struct constructors of those values; other computed candidates require Spark evaluation. |
 | `make_dt_interval` | ✅ | Codegen dispatch |  |
 | `make_interval` | ✅ | Hybrid | Routes through the JVM codegen dispatcher by default; intervals outside Arrow's nanosecond range are tracked by [#5279](https://github.com/apache/datafusion-comet/issues/5279); the native path is opt-in via allowIncompatible ([details](compatibility/expressions/datetime.md)) |
 | `make_time` | ✅ | — | Spark 4.1+; requires `spark.sql.timeType.enabled=true`, which Spark leaves off by default. Runs natively; remaining TIME type work is tracked by [#4288](https://github.com/apache/datafusion-comet/issues/4288) |

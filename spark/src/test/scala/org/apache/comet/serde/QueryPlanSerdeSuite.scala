@@ -21,10 +21,12 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast, Divide, In, Literal, MakeDate}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
@@ -48,6 +50,51 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     Seq(nullProbe, firstMatch).foreach { predicate =>
       assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
     }
+  }
+
+  test("make_date IN falls back when a candidate can fail on a skipped row") {
+    val year = AttributeReference("y", IntegerType)()
+    val text = AttributeReference("s", StringType)()
+    val inputs = Seq(year, text)
+    val date = MakeDate(year, Literal(1), Literal(1), failOnError = true)
+    val first = Literal(java.sql.Date.valueOf("2024-01-01"))
+    val cast = Cast(text, DateType, Some("UTC"), ansiEnabled = true)
+    def struct(value: Expression): Expression =
+      CreateNamedStruct(Seq(Literal("d"), value, Literal("f"), Literal(0.0d)))
+    val scalar = In(date, Seq(first, cast))
+    val nested = In(struct(date), Seq(struct(first), struct(cast)))
+    val rows = Seq(
+      InternalRow(2024, UTF8String.fromString("bad")),
+      InternalRow(2025, UTF8String.fromString("2025-01-01")))
+
+    Seq(scalar, nested).foreach { in =>
+      Seq(in -> true, Not(in) -> false).foreach { case (predicate, expected) =>
+        val bound = BindReferences.bindReference(predicate, AttributeSeq(inputs))
+        val projection = UnsafeProjection.create(Seq(bound))
+        rows.foreach { row =>
+          assert(bound.eval(row) == expected)
+          assert(projection(row).getBoolean(0) == expected)
+        }
+        val error = intercept[Exception] {
+          bound.eval(InternalRow(2026, UTF8String.fromString("bad")))
+        }
+        assert(error.getMessage.contains("CAST_INVALID_INPUT"))
+        assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
+      }
+    }
+
+    // A NULL scalar probe skips even the first candidate.
+    val nullProbe = In(date, Seq(cast))
+    val bound = BindReferences.bindReference(nullProbe, AttributeSeq(inputs))
+    assert(bound.eval(InternalRow(null, UTF8String.fromString("bad"))) == null)
+    assert(QueryPlanSerde.exprToProto(nullProbe, inputs).isEmpty)
+
+    // Literal/column candidates, including struct constructors, remain native.
+    val candidate = AttributeReference("d", DateType)()
+    Seq(In(date, Seq(first, candidate)), In(struct(date), Seq(struct(first), struct(candidate))))
+      .foreach { predicate =>
+        assert(QueryPlanSerde.exprToProto(predicate, inputs :+ candidate).exists(_.hasIn))
+      }
   }
 
   test("supportedDataType matches each caller boundary") {

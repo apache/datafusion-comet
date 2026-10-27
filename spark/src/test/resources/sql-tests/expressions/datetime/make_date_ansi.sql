@@ -60,6 +60,37 @@ query expect_native(make_date, in)
 SELECT make_date(y, m, 1) IN (DATE '2024-01-01', DATE '2024-02-01')
 FROM make_date_arguments
 
+statement
+CREATE TABLE make_date_membership(y INT, s STRING) USING parquet
+
+statement
+INSERT INTO make_date_membership VALUES
+  (2024, 'bad'), (2025, '2025-01-01'), (NULL, 'bad')
+
+-- A match or NULL probe skips the throwing cast on that row, even when another row needs it.
+query expect_fallback(make_date requires Spark evaluation under In with computed candidates)
+SELECT make_date(y, 1, 1) IN (DATE '2024-01-01', CAST(s AS DATE))
+FROM make_date_membership
+
+-- Structs with floating-point fields use Comet's nested membership implementation.
+query expect_fallback(make_date requires Spark evaluation under In with computed candidates)
+SELECT (make_date(y, 1, 1), 0D) IN ((DATE '2024-01-01', 0D), (CAST(s AS DATE), 0D))
+FROM make_date_membership WHERE y IS NOT NULL
+
+query expect_fallback(make_date requires Spark evaluation under In with computed candidates)
+SELECT (make_date(y, 1, 1), 0D) NOT IN ((DATE '2024-01-01', 0D), (CAST(s AS DATE), 0D))
+FROM make_date_membership WHERE y IS NOT NULL
+
+-- A candidate required by an unmatched probe must still fail.
+query expect_error(CAST_INVALID_INPUT)
+SELECT make_date(y, 1, 1) IN (DATE '2023-01-01', CAST(s AS DATE))
+FROM make_date_membership WHERE y = 2024
+
+-- Safe struct constructors retain the native path with constant folding disabled.
+query expect_native(make_date, in)
+SELECT (make_date(y, 1, 1), 0D) IN ((DATE '2024-01-01', 0D), (DATE '2025-01-01', 0D))
+FROM make_date_membership
+
 -- Year and month NULLs skip the invalid day expression on just those rows.
 query expect_native(make_date)
 SELECT make_date(y, m, dayofmonth(make_date(2024, inner_m, 1))) FROM make_date_arguments
