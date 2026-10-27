@@ -35,9 +35,9 @@ use crate::{
     execution::{
         metrics::utils::update_comet_metric,
         planner::PhysicalPlanner,
+        row_partition_sort::sort_row_partitions,
         serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
-        sort::RdxSort,
     },
     jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
 };
@@ -95,7 +95,6 @@ use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
-    errors::Result as JNIResult,
     objects::{
         Global, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
@@ -137,10 +136,11 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
-    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
+use crate::parquet::parquet_exec::CometParquetScanOptions;
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
 use datafusion_comet_proto::spark_operator::operator::OpStruct;
 use log::{info, warn};
@@ -497,6 +497,7 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::RangeScan(_) => "RangeScan",
         OpStruct::ContribScan(_) => "ContribScan",
         OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
+        OpStruct::ArrowPythonUdf(_) => "ArrowPythonUdf",
     }
 }
 
@@ -609,6 +610,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     off_heap_mode: jboolean,
     memory_pool_type: JString,
     memory_limit: jlong,
+    off_heap_size: jlong,
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
@@ -684,6 +686,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 off_heap_mode: off_heap_mode != JNI_FALSE,
                 memory_pool_type,
                 memory_limit,
+                off_heap_size,
                 task_attempt_id,
                 task_cpus: task_cpus as usize,
                 local_dirs: local_dirs_vec,
@@ -752,6 +755,7 @@ struct PlanInputs {
     off_heap_mode: bool,
     memory_pool_type: String,
     memory_limit: i64,
+    off_heap_size: i64,
     task_attempt_id: i64,
     task_cpus: usize,
     local_dirs: Vec<String>,
@@ -791,6 +795,7 @@ fn create_execution_context(
         off_heap_mode,
         memory_pool_type,
         memory_limit,
+        off_heap_size,
         task_attempt_id,
         task_cpus,
         local_dirs,
@@ -804,7 +809,7 @@ fn create_execution_context(
 
     // Create DataFusion memory pool
     let memory_pool_config =
-        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit)?;
+        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit, off_heap_size)?;
     let memory_pool = memory_pool_for(&memory_pool_config);
 
     // Register the shared base pool before wrapping it for per-plan debug logging. The
@@ -915,7 +920,7 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
             ));
         }
 
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
         register_shuffle_partition_pusher(exec_context, || {
             Ok(Arc::new(JavaShufflePartitionPusher::try_new(
                 env, &callback,
@@ -1028,6 +1033,13 @@ fn prepare_datafusion_session_context(
         session_config =
             session_config.set_str("datafusion.execution.parquet.reorder_filters", "true");
     }
+
+    // Native Parquet scan options that DataFusion has no setting for travel as a session config
+    // extension, which every scan in the plan reads.
+    session_config = session_config.with_extension(Arc::new(CometParquetScanOptions {
+        prefetch_next_file_metadata: spark_config
+            .get_bool(COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED),
+    }));
 
     // Translate Comet's spill codec into DataFusion's spill compression, which DataFusion
     // otherwise leaves uncompressed. Set before the pass-through below for the same reason,
@@ -1395,7 +1407,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
 
         let tracing_enabled = exec_context.tracing_enabled;
         // Clone the label only when tracing is enabled. The clone is needed
@@ -1672,7 +1684,7 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 fn convert_datatype_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> CometResult<Vec<ArrowDataType>> {
     let array_len = serialized_datatypes.len(env)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
@@ -1680,20 +1692,32 @@ fn convert_datatype_arrays(
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
-        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(deserialize_arrow_datatype(bytes.as_slice(), i)?);
     }
 
     Ok(res)
 }
 
-fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
-    unsafe {
-        (id as *mut ExecutionContext)
-            .as_mut()
-            .expect("Comet execution context shouldn't be null!")
-    }
+/// Decodes the serialized Spark data type of column `index` into its Arrow data type.
+fn deserialize_arrow_datatype(bytes: &[u8], index: usize) -> CometResult<ArrowDataType> {
+    let data_type = serde::deserialize_data_type(bytes).map_err(|e| {
+        CometError::Internal(format!(
+            "Cannot deserialize the data type of column {index}: {e}"
+        ))
+    })?;
+    Ok(to_arrow_datatype(&data_type))
+}
+
+/// Reads the string argument `arg` of the JNI export `export`.
+fn string_arg(env: &Env, value: &JString, export: &str, arg: &str) -> CometResult<String> {
+    value
+        .try_to_string(env)
+        .map_err(|e| CometError::Internal(format!("Cannot read argument '{arg}' of {export}: {e}")))
+}
+
+fn get_execution_context<'a>(id: i64) -> CometResult<&'a mut ExecutionContext> {
+    unsafe { (id as *mut ExecutionContext).as_mut() }
+        .ok_or_else(|| CometError::Internal("Native execution context handle is null".to_string()))
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.
@@ -1707,7 +1731,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
     exec_context: jlong,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
-        let context = get_execution_context(exec_context);
+        let context = get_execution_context(exec_context)?;
         let root_plan = context.root_op.as_ref().map(|op| op.native_plan.as_ref());
         let offsets = shuffle_partition_offsets(root_plan)?;
 
@@ -1788,8 +1812,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
-                let output_path: String = file_path.try_to_string(env).unwrap();
-                let compression_codec: String = compression_codec.try_to_string(env).unwrap();
+                let output_path =
+                    string_arg(env, &file_path, "writeSortedFileNative", "file_path")?;
+                let compression_codec = string_arg(
+                    env,
+                    &compression_codec,
+                    "writeSortedFileNative",
+                    "compression_codec",
+                )?;
 
                 let results = write_sorted_file(
                     &row_addresses,
@@ -2018,6 +2048,7 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
     _class: JClass,
     address: jlong,
     size: jlong,
+    capacity: jlong,
     tracing_enabled: jboolean,
 ) {
     try_unwrap_or_throw(&e, |_| {
@@ -2025,27 +2056,33 @@ pub extern "system" fn Java_org_apache_comet_Native_sortRowPartitionsNative(
             "sortRowPartitionsNative",
             tracing_enabled != JNI_FALSE,
             || {
+                let size = usize::try_from(size).map_err(|_| {
+                    CometError::Internal(format!("sortRowPartitionsNative: negative size {size}"))
+                })?;
+                // The sort uses the `size` longs after the records as scratch space.
+                let capacity = usize::try_from(capacity)
+                    .ok()
+                    .filter(|capacity| capacity / 2 >= size)
+                    .ok_or_else(|| {
+                        CometError::Internal(format!(
+                            "sortRowPartitionsNative: an array of {capacity} longs has no room \
+                             for {size} longs of scratch space after {size} records"
+                        ))
+                    })?;
                 // SAFETY: JVM unsafe memory allocation is aligned with long.
                 debug_assert!(address != 0, "sortRowPartitionsNative: null address");
-                debug_assert!(size >= 0, "sortRowPartitionsNative: negative size {size}");
                 debug_assert_eq!(
                     (address as usize) % std::mem::align_of::<i64>(),
                     0,
                     "sortRowPartitionsNative: address not aligned to i64"
                 );
                 let array =
-                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, size as usize) };
-                sort_row_partitions(array);
+                    unsafe { std::slice::from_raw_parts_mut(address as *mut i64, capacity) };
+                sort_row_partitions(array, size);
                 Ok(())
             },
         )
     })
-}
-
-/// Sorts packed shuffle record pointers in place by the partition id in their upper 24 bits,
-/// keeping the order of the pointers within a partition. Core of `Native.sortRowPartitionsNative`.
-fn sort_row_partitions(packed_pointers: &mut [i64]) {
-    packed_pointers.rdxsort();
 }
 
 #[no_mangle]
@@ -2204,7 +2241,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceBegin", "event")?;
         trace_begin(&name);
         Ok(())
     })
@@ -2219,7 +2256,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceEnd", "event")?;
         trace_end(&name);
         Ok(())
     })
@@ -2235,7 +2272,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = name.try_to_string(env).unwrap();
+        let name = string_arg(env, &name, "logMemoryUsage", "name")?;
         log_memory_usage(&name, value as u64);
         Ok(())
     })
@@ -3384,21 +3421,43 @@ mod tests {
     }
 
     #[test]
-    fn sort_row_partitions_sorts_in_place() {
-        let mut pointers = vec![
-            5_i64 << 40 | 3,
-            1,
-            2_i64 << 40,
-            1_i64 << 40 | 7,
-            0,
-            5_i64 << 40,
-        ];
-        let mut expected = pointers.clone();
-        // Stable, so the lower 40 bits keep their input order within a partition.
-        expected.sort_by_key(|pointer| (*pointer as u64) >> 40);
-        sort_row_partitions(&mut pointers);
-        assert_eq!(pointers, expected);
-        assert_eq!(&pointers[..2], &[1, 0]);
+    fn deserialize_arrow_datatype_decodes_a_serialized_type() {
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+
+        let bytes = spark_expression::DataType {
+            type_id: DataTypeId::Int64 as i32,
+            type_info: None,
+        }
+        .encode_to_vec();
+        assert_eq!(
+            deserialize_arrow_datatype(&bytes, 0).unwrap(),
+            DataType::Int64
+        );
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_rejects_malformed_bytes() {
+        // Field 31 with the unused wire type 7, which protobuf cannot decode.
+        let error = deserialize_arrow_datatype(&[0xff], 2).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot deserialize the data type of column 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn get_execution_context_rejects_a_null_handle() {
+        let error = get_execution_context(0).map(|_| ()).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Native execution context handle is null"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -3640,7 +3699,10 @@ mod tests {
                         | offset as i64,
                 );
             }
-            sort_row_partitions(&mut pointers);
+            let num_records = pointers.len();
+            pointers.resize(2 * num_records, 0);
+            sort_row_partitions(&mut pointers, num_records);
+            pointers.truncate(num_records);
 
             // `u64` elements keep the rows 8-byte aligned, as in a Spark page.
             let pages: Vec<Vec<u64>> = page_bytes
@@ -4164,6 +4226,7 @@ mod tests {
             off_heap_mode: true,
             memory_pool_type: "greedy_unified".to_string(),
             memory_limit: 1 << 30,
+            off_heap_size: 1 << 30,
             task_attempt_id: -6201,
             task_cpus: 1,
             local_dirs: vec![std::env::temp_dir().to_str().unwrap().to_string()],

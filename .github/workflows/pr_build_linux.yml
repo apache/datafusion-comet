@@ -567,6 +567,7 @@ jobs:
               org.apache.comet.exec.CometJoinSuite
               org.apache.comet.exec.CometTypedDatasetSuite
               org.apache.spark.sql.comet.CometMapInBatchSuite
+              org.apache.spark.sql.comet.CometArrowPythonUdfSuite
               org.apache.spark.sql.execution.python.CometArrowPythonRunnerSuite
               org.apache.comet.CometNativeSuite
               org.apache.comet.DirectColumnarToRowConverterSuite
@@ -612,6 +613,7 @@ jobs:
               org.apache.spark.sql.comet.DecimalPrecisionSuite
               org.apache.spark.sql.comet.CometScanWithPlanDataSuite
               org.apache.spark.sql.comet.util.UtilsSuite
+              org.apache.spark.sql.comet.CometBroadcastValueSuite
               org.apache.comet.vector.NativeUtilSuite
               org.apache.comet.vector.CometVectorUtilsSuite
               org.apache.comet.udf.CometUdfBridgeSuite
@@ -674,6 +676,7 @@ jobs:
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.QueryPlanSerdeSuite
+              org.apache.comet.serde.SparkFixesSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]

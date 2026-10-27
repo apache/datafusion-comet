@@ -35,7 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeRefer
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
@@ -215,7 +215,6 @@ class CometJoinSuite extends CometTestBase {
 
     withSQLConf(
       CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.PREFER_SORTMERGEJOIN.key -> "true") {
@@ -633,6 +632,75 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("join dynamic filter crosses deterministic residuals only with explicit opt-in") {
+    withTempPath { probePath =>
+      withSQLConf(
+        CometConf.COMET_BATCH_SIZE.key -> "1",
+        CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> "true",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+        spark
+          .range(0, 10000, 1, 1)
+          .selectExpr("id AS payload", "CAST(id AS INT) AS probe_key")
+          .write
+          .option("parquet.block.size", "1024")
+          .parquet(probePath.getCanonicalPath)
+        withParquetTable(probePath.getCanonicalPath, "dynamic_residual_probe") {
+          // Key 2506 cannot pass the residual, although it belongs to the join domain.
+          withParquetTable(Seq(Tuple1(2500), Tuple1(2506)), "dynamic_residual_build") {
+            for (buildLeft <- Seq(false, true)) {
+              val from = if (buildLeft) {
+                "dynamic_residual_build b JOIN dynamic_residual_probe p"
+              } else {
+                "dynamic_residual_probe p JOIN dynamic_residual_build b"
+              }
+              val query = "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload FROM " + from +
+                " ON p.probe_key = b._1 WHERE pmod(p.payload, 7) > 0"
+              var unfilteredBytes = 0L
+              for (allowed <- Seq(false, true)) {
+                withSQLConf(
+                  CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString) {
+                  val (_, plan) = checkSparkAnswerAndOperator(
+                    sql(query),
+                    Seq(classOf[CometBroadcastHashJoinExec], classOf[CometNativeScanExec]))
+                  checkAnswer(sql(query), Seq(Row(2500, 2500L)))
+                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                  assert(joins.size == 1)
+                  val filters = collect(plan) {
+                    case filter: CometFilterExec if filter.output.exists(_.name == "probe_key") =>
+                      filter
+                  }
+                  assert(filters.size == 1, s"Expected one native residual filter:\n$plan")
+                  assert(filters.head.condition.deterministic)
+                  assert(filters.head.nativeOp.getFilter.getAllowRuntimeFilterPushdown == allowed)
+                  val scans = collect(plan) {
+                    case scan: CometNativeScanExec if scan.output.exists(_.name == "probe_key") =>
+                      scan
+                  }
+                  assert(scans.size == 1)
+                  val metrics = scans.head.metrics
+                  val bytes = metrics("bytes_scanned").value
+                  assert(joins.head.metrics("output_rows").value == 1L)
+                  assert(filters.head.metrics("output_rows").value > 0L)
+                  if (allowed) {
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                    assert(metrics("row_groups_pruned_statistics").value > 0L)
+                    assert(bytes < unfilteredBytes)
+                  } else {
+                    unfilteredBytes = bytes
+                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value > 0L)
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("join dynamic filter preserves Parquet schema conversion errors") {
     withTempPath { probePath =>
       withSQLConf(
@@ -654,14 +722,20 @@ class CometJoinSuite extends CometTestBase {
             .parquet(probePath.getCanonicalPath)
             .createOrReplaceTempView("dynamic_schema_probe")
           withParquetTable(Seq(Tuple1(0)), "dynamic_schema_build") {
-            for ((comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))) {
+            for {
+              (comet, dynamicFilter) <- Seq((false, false), (true, false), (true, true))
+              allowed <- Seq(false, true)
+              // Without a residual, reader filters can attach regardless of the permission flag.
+              residual <- Seq("", " WHERE pmod(p.payload, 2) >= 0")
+            } {
               withSQLConf(
                 CometConf.COMET_ENABLED.key -> comet.toString,
+                CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString,
                 CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED.key -> dynamicFilter.toString) {
                 val df = sql(
                   "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload " +
                     "FROM dynamic_schema_probe p JOIN dynamic_schema_build b " +
-                    "ON p.probe_key = b._1")
+                    "ON p.probe_key = b._1" + residual)
                 val plan = df.queryExecution.executedPlan
                 if (comet) {
                   val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
@@ -674,7 +748,8 @@ class CometJoinSuite extends CometTestBase {
                   }
                   assert(probes.size == 1, s"Expected one native probe scan:\n$plan")
                 }
-                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter: ") {
+                withClue(s"comet=$comet, dynamicFilter=$dynamicFilter, allowed=$allowed, " +
+                  s"residual=$residual: ") {
                   val error = intercept[SparkException](df.collect())
                   val chain = causeChain(error)
                   assert(
@@ -693,6 +768,7 @@ class CometJoinSuite extends CometTestBase {
     withTempPath { probePath =>
       withSQLConf(
         CometConf.COMET_BATCH_SIZE.key -> "16",
+        CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> "true",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
         SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
@@ -2636,6 +2712,127 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // Takes the checkpoint with AQE off, as an adaptive plan reports no order.
+  private def withOrderedCheckpoint(f: DataFrame => Unit): Unit =
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      f(
+        spark
+          .range(2000)
+          .selectExpr("id % 100 AS k", "id AS v")
+          .repartition(2, $"k")
+          .sortWithinPartitions("k", "v")
+          .localCheckpoint(eager = true))
+    }
+
+  test("outer hash joins over a checkpointed streamed side fall back and keep its order") {
+    // Spark drops the sort above the join for the checkpoint's order, which Comet cannot check.
+    withOrderedCheckpoint { streamed =>
+      val build = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
+      val order =
+        (0 to 1).map(i => SortOrder(BoundReference(i, LongType, nullable = true), Ascending))
+      for (adaptive <- Seq(false, true))
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+          for {
+            (hint, sparkJoin) <- Seq(
+              "shuffle_hash" -> classOf[ShuffledHashJoinExec],
+              "broadcast" -> classOf[BroadcastHashJoinExec])
+            joinType <- Seq("left_outer", "right_outer")
+          } {
+            def df: DataFrame = {
+              val on = streamed("k") === build("k")
+              val joined = if (joinType == "left_outer") {
+                streamed.join(build.hint(hint), on, joinType)
+              } else {
+                build.hint(hint).join(streamed, on, joinType)
+              }
+              joined
+                .select(streamed("k"), streamed("v"), build("w"))
+                .sortWithinPartitions("k", "v")
+            }
+            val (_, plan) =
+              checkSparkAnswerAndFallbackReason(df, CometHashJoin.uncheckedStreamedOrderReason)
+            val context = s"$hint $joinType AQE=$adaptive\n$plan"
+            assert(collect(plan) { case j if j.getClass == sparkJoin => j }.size == 1, context)
+            assert(
+              collect(plan) {
+                case j: CometHashJoinExec => j
+                case j: CometBroadcastHashJoinExec => j
+              }.isEmpty,
+              context)
+            assert(
+              collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+              context)
+            assert(partitionsInOrder(df, order: _*), context)
+          }
+        }
+    }
+  }
+
+  test("an outer hash join over a native inner join over a checkpoint falls back") {
+    // The order walk reaches the checkpoint through the inner join's streamed side.
+    withOrderedCheckpoint { streamed =>
+      val d1 = spark.range(100).where("id % 4 != 3").selectExpr("id AS k", "id AS a")
+      val d2 = spark.range(10).selectExpr("id * 10 AS k", "id AS w")
+      val order =
+        (0 to 1).map(i => SortOrder(BoundReference(i, LongType, nullable = true), Ascending))
+      def df: DataFrame = streamed
+        .join(d1.hint("broadcast"), streamed("k") === d1("k"), "inner")
+        .join(d2.hint("broadcast"), streamed("k") === d2("k"), "left_outer")
+        .select(streamed("k"), streamed("v"), d1("a"), d2("w"))
+        .sortWithinPartitions("k", "v")
+      val (_, plan) =
+        checkSparkAnswerAndFallbackReason(df, CometHashJoin.uncheckedStreamedOrderReason)
+      val inner = collect(plan) { case j: CometBroadcastHashJoinExec => j.joinType }
+      assert(inner == Seq(Inner), plan)
+      val outer = collect(plan) { case j: BroadcastHashJoinExec => j.joinType }
+      assert(outer == Seq(LeftOuter), plan)
+      assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      assert(partitionsInOrder(df, order: _*), plan)
+    }
+  }
+
+  test("chained outer hash joins over a native window keep its order natively") {
+    // The window and both joins share one native plan, where DataFusion sees the order itself.
+    withParquetTable((0 until 2000).map(i => (i % 40, i)), "t") {
+      withParquetTable((0 until 40 by 2).map(k => (k, k * 10)), "d1") {
+        withParquetTable((0 until 40 by 3).map(k => (k, k * 100)), "d2") {
+          val order = (0 to 1).map { i =>
+            SortOrder(BoundReference(i, IntegerType, nullable = true), Ascending)
+          }
+          for (adaptive <- Seq(false, true)) {
+            withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+              def df: DataFrame = sql("""SELECT w.k, w.v, w.rn, d1._2 AS x, d2._2 AS y
+                  |FROM (SELECT k, v, row_number() OVER (PARTITION BY k ORDER BY v) AS rn
+                  |      FROM (SELECT _1 AS k, _2 AS v FROM t)) w
+                  |LEFT JOIN d1 ON w.k = d1._1
+                  |LEFT JOIN d2 ON w.k = d2._1""".stripMargin)
+                .sortWithinPartitions("k", "v")
+              val (_, plan) = checkSparkAnswer(df)
+              val context = s"AQE=$adaptive\n$plan"
+              assert(new ExtendedExplainInfo().getFallbackReasons(plan).isEmpty, context)
+              val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+              assert(joins.size == 2 && joins.forall(_.joinType == LeftOuter), context)
+              assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+              assert(
+                collect(plan) {
+                  case s @ (_: CometSortExec | _: SortExec)
+                      if s.find(_.isInstanceOf[CometBroadcastHashJoinExec]).isDefined =>
+                    s
+                }.isEmpty,
+                context)
+              assert(partitionsInOrder(df, order: _*), context)
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Compares the rows of a fresh `df` with the ones Spark returns for it, as a multiset unless
   // `isSorted`. The rows of a key tie under a sort, so their order within it can differ between
   // the two.
@@ -3107,6 +3304,66 @@ class CometJoinSuite extends CometTestBase {
       }
       QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
       assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+    }
+  }
+
+  test("chained outer hash joins over a native filter over a sorted cache stay native") {
+    // DataFusion sees the first join's order, in the same native plan, so the second sends none.
+    withSortedCache() {
+      def df: DataFrame = sql("""SELECT /*+ BROADCAST(b), BROADCAST(c) */ a.k, a.v, b._2, c._2
+                                 |FROM (SELECT * FROM cached WHERE v >= 0) a
+                                 |LEFT JOIN small b ON a.k = b._1
+                                 |LEFT JOIN small c ON a.k = c._1""".stripMargin)
+        .sortWithinPartitions("k")
+      val (_, plan) = checkSparkAnswer(df)
+      // Spark's cache format adds a reason of its own to the cache scan.
+      assert(
+        !new ExtendedExplainInfo().getFallbackReasons(plan).exists(_.contains("sort order")),
+        plan)
+      val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+      assert(joins.size == 2 && joins.forall(_.joinType == LeftOuter), plan)
+      val (first, second) =
+        joins.partition(_.left.find(_.isInstanceOf[CometBroadcastHashJoinExec]).isEmpty)
+      assert(first.size == 1 && second.size == 1, plan)
+      assert(collect(first.head.left) { case f: CometFilterExec => f }.size == 1, plan)
+      assert(first.head.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0, plan)
+      assert(second.head.nativeOp.getHashJoin.getStreamedSortOrdersCount == 0, plan)
+      assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+      assert(partitionsInOrder(df, keyOrder(Ascending)), plan)
+    }
+  }
+
+  test("an outer hash join over a native nested loop join falls back") {
+    // Over two build rows the nested loop join emits rows out of order (#6898), so they are
+    // compared as a multiset. Over one build row they stay in order, and Spark's join keeps it.
+    withSortedCache() {
+      withParquetTable(Seq(Tuple1(0), Tuple1(1)), "two") {
+        withParquetTable(Seq(Tuple1(1)), "one") {
+          def query(nlBuild: String): String =
+            s"""SELECT /*+ BROADCAST(n), BROADCAST(b) */ a.k, a.v, n._1 AS z, b._2 AS w
+               |FROM cached a JOIN $nlBuild n ON a.v % 2 <= n._1
+               |LEFT JOIN small b ON a.k = b._1""".stripMargin
+          val reason = CometHashJoin.uncheckedStreamedOrderReason
+          def checkFallback(df: => DataFrame): SparkPlan = {
+            sameRowsAsSpark(df)
+            val plan = df.queryExecution.executedPlan
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains(reason)), plan)
+            val nestedLoopJoins = collect(plan) { case j: CometBroadcastNestedLoopJoinExec => j }
+            assert(nestedLoopJoins.size == 1, plan)
+            val outer = collect(plan) { case j: BroadcastHashJoinExec => j.joinType }
+            assert(outer == Seq(LeftOuter), plan)
+            plan
+          }
+
+          checkFallback(sql(query("two")))
+
+          def ordered: DataFrame = sql(query("one")).sortWithinPartitions("k")
+          val plan = checkFallback(ordered)
+          assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+          assert(partitionsInOrder(ordered, keyOrder(Ascending)), plan)
+        }
+      }
     }
   }
 

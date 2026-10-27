@@ -1213,6 +1213,65 @@ class CometIcebergNativeSuite
     }
   }
 
+  // The key `s.k` is nested, which iceberg-rust cannot look up, so the scan must fall back.
+  test("equality delete keyed on a nested field falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_eq_delete"
+        try {
+          spark.sql(
+            s"CREATE TABLE $table (id INT, s STRUCT<k: INT, a: INT>) USING iceberg " +
+              "TBLPROPERTIES ('format-version' = '2')")
+          spark.sql(
+            s"INSERT INTO $table SELECT CAST(id AS INT), " +
+              "named_struct('k', CAST(id % 10 AS INT), 'a', CAST(id AS INT)) FROM range(100)")
+
+          val icebergTable = Spark3Util.loadIcebergTable(spark, table)
+          val deleteRowSchema = icebergTable.schema().select("s.k")
+          val struct = org.apache.iceberg.data.GenericRecord
+            .create(deleteRowSchema.findField("s").`type`().asStructType())
+          struct.setField("k", Integer.valueOf(3))
+          val row = org.apache.iceberg.data.GenericRecord.create(deleteRowSchema)
+          row.setField("s", struct)
+          val out = icebergTable
+            .io()
+            .newOutputFile(
+              new File(warehouseDir, s"eq-delete-${System.nanoTime()}.parquet").toString)
+          val deleteFile = org.apache.iceberg.data.CometEqualityDeletes.write(
+            icebergTable,
+            out,
+            null,
+            java.util.Collections.singletonList[org.apache.iceberg.data.Record](row),
+            deleteRowSchema,
+            Some(Array(icebergTable.schema().findField("s.k").fieldId())))
+          icebergTable.newRowDelta().addDeletes(deleteFile).commit()
+
+          // Select the key: if the query leaves it out, even Spark returns the wrong rows.
+          val df = spark.sql(s"SELECT count(*), sum(s.k), sum(s.a) FROM $table")
+          checkAnswer(df, Row(90L, 420L, 4470L))
+          val plan = df.queryExecution.executedPlan
+          assert(
+            collectIcebergNativeScans(plan).isEmpty,
+            "A nested equality-delete key must prevent the native Iceberg scan")
+          val fallbackReasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(
+            fallbackReasons.exists(_.contains("Equality delete on nested field 'k'")),
+            s"Expected nested equality-delete fallback, found: ${fallbackReasons.mkString(", ")}")
+        } finally {
+          spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
+        }
+      }
+    }
+  }
+
   test("MOR table with multiple delete operations - mixed delete types") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -2102,6 +2161,111 @@ class CometIcebergNativeSuite
         checkIcebergNativeScan(s"SELECT * FROM $table ORDER BY id")
 
         spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  test("migration - nested name mapping falls back to Spark") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    for ((physicalName, alias) <- Seq(("x", false), ("old_x", false), ("old_x", true))) {
+      withTempIcebergDir { warehouseDir =>
+        withSQLConf(
+          "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.test_cat.type" -> "hadoop",
+          "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+          "spark.sql.iceberg.aggregate-push-down.enabled" -> "false",
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+          val sourceName = "name_mapping_source"
+          val destName = "test_cat.db.name_mapping_dest"
+          val dataPath = new File(warehouseDir, "source_data").getAbsolutePath
+          val physicalSchema = StructType.fromDDL(
+            s"id INT, s STRUCT<$physicalName:INT>, items ARRAY<STRUCT<$physicalName:INT>>, " +
+              s"m MAP<STRING,STRUCT<anchor:INT,items:ARRAY<STRUCT<$physicalName:INT,z:INT>>," +
+              s"nested:STRUCT<$physicalName:INT>>>")
+          val logicalSchema = StructType.fromDDL(
+            "id INT, s STRUCT<x:INT>, items ARRAY<STRUCT<x:INT>>, " +
+              "m MAP<STRING,STRUCT<anchor:INT,items:ARRAY<STRUCT<x:INT,z:INT>>," +
+              "nested:STRUCT<x:INT>>>")
+          val rows = Seq(
+            Row(1, Row(11), Seq(Row(22)), Map("k" -> Row(44, Seq(Row(33, 99)), Row(33)))),
+            Row(2, null, null, null),
+            Row(3, Row(null), Seq(Row(null)), Map("k" -> Row(55, Seq(Row(null, 99)), Row(null)))),
+            Row(4, Row(null), Seq.empty[Row], Map.empty[String, Row]),
+            Row(5, Row(66), Seq(null), Map("k" -> Row(77, null, null))),
+            Row(6, null, null, Map("k" -> null)))
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            "spark.sql.parquet.fieldId.write.enabled" -> "false") {
+            spark
+              .createDataFrame(spark.sparkContext.parallelize(rows, 1), physicalSchema)
+              .write
+              .parquet(dataPath)
+          }
+          withTable(sourceName) {
+            spark.sql(
+              s"CREATE TABLE $sourceName (${logicalSchema.toDDL}) " +
+                s"USING parquet LOCATION '$dataPath'")
+            try {
+              val actions = Class
+                .forName("org.apache.iceberg.spark.actions.SparkActions")
+                .getMethod("get")
+                .invoke(null)
+              val snapshot = actions.getClass
+                .getMethod("snapshotTable", classOf[String])
+                .invoke(actions, sourceName)
+              val destination = snapshot.getClass
+                .getMethod("as", classOf[String])
+                .invoke(snapshot, destName)
+              destination.getClass.getMethod("execute").invoke(destination)
+              val table = Spark3Util.loadIcebergTable(spark, destName)
+              val mapping = table.properties().get("schema.name-mapping.default")
+              assert(mapping != null)
+              assert(table.schemas().size() == 1)
+              if (alias) {
+                table
+                  .updateProperties()
+                  .set(
+                    "schema.name-mapping.default",
+                    mapping.replace("\"x\"", "\"x\", \"old_x\""))
+                  .commit()
+                spark.catalog.refreshTable(destName)
+              }
+              // An import-time mismatch or mapping alias need not appear in schema history.
+              assert(table.schemas().size() == 1)
+              for (pruning <- Seq(false, true)) {
+                withSQLConf(
+                  "spark.sql.optimizer.nestedSchemaPruning.enabled" -> pruning.toString) {
+                  // Also read a mapped sibling to cover partial map-value projection.
+                  val projections = Seq(
+                    "s IS NULL, items IS NULL, m IS NULL",
+                    "count(s), count(items), count(m)",
+                    "m['k'].anchor, m['k'].items.x IS NULL, m['k'].nested IS NULL",
+                    "count(m['k'].items.x), count(m['k'].nested), count(m['k'].anchor)",
+                    "m['k'].nested",
+                    "id, s, items, m")
+                  val queries = projections.map(p => s"SELECT $p FROM $destName") ++ Seq(
+                    s"SELECT id FROM $destName WHERE s.x = 11",
+                    s"SELECT id FROM $destName WHERE m['k'].anchor = 44")
+                  withClue(s"physicalName=$physicalName alias=$alias pruning=$pruning: ") {
+                    for (query <- queries) {
+                      val (_, plan) = checkSparkAnswerAndFallbackReason(
+                        query,
+                        "Nested columns with Iceberg name mapping")
+                      assert(collectIcebergNativeScans(plan).isEmpty)
+                    }
+                  }
+                }
+              }
+              // Unprojected nested fields do not prevent primitive or row-count scans.
+              checkIcebergNativeScan(s"SELECT id FROM $destName")
+              checkIcebergNativeScan(s"SELECT count(*) FROM $destName")
+            } finally {
+              spark.sql(s"DROP TABLE IF EXISTS $destName")
+            }
+          }
+        }
       }
     }
   }
