@@ -153,6 +153,7 @@ class CometExecIterator(
       memoryConfig.offHeapMode,
       memoryConfig.memoryPoolType,
       memoryConfig.memoryLimit,
+      memoryConfig.offHeapSize,
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
@@ -902,11 +903,16 @@ object CometExecIterator extends Logging {
       CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
+      CometConf.COMET_NATIVE_UDF_ENABLED,
+      CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
       CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
+    builder.putEntries(
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key,
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.get(SQLConf.get).mkString(","))
 
     builder.build().toByteArray
   }
@@ -925,13 +931,13 @@ object CometExecIterator extends Logging {
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
           s"memoryLimit=${toMB(memoryLimit)}")
-      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit)
+      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit, offHeapSize)
     } else {
       // On-heap mode exists only so that the Spark SQL tests can run against Comet without
       // changing Spark's memory configuration, and native memory cannot be charged to Spark's
       // on-heap pool, so nothing is accounted. See the memory management contributor guide.
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
-      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
+      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0, offHeapSize = 0)
     }
   }
 
@@ -1010,4 +1016,8 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    offHeapSize: Long)

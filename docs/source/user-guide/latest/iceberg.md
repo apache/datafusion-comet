@@ -63,11 +63,20 @@ Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The
 
 ### Tuning
 
-Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
-config `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`. This value defaults to 1 to
-maintain test behavior on Iceberg Java tests without `ORDER BY` clauses, but we suggest increasing it to
-values between 2 and 8 based on your workload, at the cost of extra memory. This helps most for
-tables with many small files or high-latency storage.
+Comet’s native Iceberg reader fetches multiple data files in parallel to hide I/O latency. The config
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` sets how many files one task reads at a time.
+It defaults to 2, which helps most for tables with many small files or high-latency storage such as S3.
+Values between 2 and 8 are reasonable; raise it based on your workload, at the cost of extra memory,
+because each file in flight holds its own buffers.
+
+When the limit is above 1, batches from different files are returned in no particular order, so a
+query without an `ORDER BY` can return rows in a different order than with a limit of 1. Spark does
+not guarantee that order, but some tests and applications depend on it. Set the limit to `1` to read
+the files one after another, in the order Spark assigned them.
+
+The Iceberg Spark tests are an example. They expect file order from queries without an `ORDER BY`, so
+the Iceberg test jobs set the environment variable `COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1`,
+which overrides the default. See [Iceberg Spark tests](../../contributor-guide/iceberg-spark-tests.md).
 
 ### Supported features
 
@@ -196,10 +205,14 @@ The following scenarios will fall back to the JVM Iceberg reader:
   projected is read natively)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
+- Equality deletes keyed on a field nested in a struct
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
+- Scans where Iceberg reports an output ordering (for example with
+  `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
+  scan, and the native reader does not preserve file order
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
@@ -208,6 +221,14 @@ The following scenarios will fall back to the JVM Iceberg reader:
   or renamed. The native reader cannot yet match such a field to data files written before the
   change. The check uses the table's schema history, so the fallback stays after those files are
   rewritten
+- Scans that read a struct, array, or map column from a table with
+  `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
+  `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
+  does not apply name mappings to nested fields. Queries that read only primitive columns can
+  still run natively. The fallback remains while the property is set, even if the data files
+  have since been rewritten with field IDs. Iceberg's nullness rules are separate from the
+  Parquet legacy setting; [#6934](https://github.com/apache/datafusion-comet/issues/6934) tracks
+  the reader update and review of this fallback
 - Scans where no schema in the table's history gives a partition source or equality-delete key a
   name that the scan's other columns don't use (every task of a native scan must give such a
   column the same name)
@@ -779,12 +800,6 @@ Which entries apply depends on which native paths are enabled:
 
 ### Reads that differ from Spark
 
-- **Migrated tables that use a name mapping.** The `migrate`, `snapshot` and `add_files`
-  procedures set `schema.name-mapping.default` for files without Iceberg field ids. When a query
-  also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-  fields, list elements and map values). Filters on those fields then select the wrong rows
-  ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The fix needs an iceberg-rust
-  upgrade ([#6934](https://github.com/apache/datafusion-comet/issues/6934)).
 - **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
   a file as NULL, and the native scan returns the values stored in the file
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
@@ -819,9 +834,6 @@ The physical differences that every native data file has, and why they are safe,
   ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
-- **An equality delete keyed on a nested field.** Every query the native scan runs on the table
-  fails with `field not found`, even one that reads the key
-  ([#6782](https://github.com/apache/datafusion-comet/issues/6782)).
 - **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
   letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
   ([#5540](https://github.com/apache/datafusion-comet/issues/5540)).

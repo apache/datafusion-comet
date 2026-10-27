@@ -90,6 +90,14 @@ case class CometScanRule(session: SparkSession)
 
     val fullPlan = plan
 
+    // The session's `fs.comet.libhdfs.schemes`, resolved once per relation session for this
+    // application: `newHadoopConf()` copies the whole Hadoop conf, and every V1 scan needs it.
+    val sessionLibhdfsSchemes = mutable.Map.empty[SparkSession, Set[String]]
+    def libhdfsSchemesOf(relationSession: SparkSession): Set[String] =
+      sessionLibhdfsSchemes.getOrElseUpdate(
+        relationSession,
+        NativeConfig.resolveLibhdfsSchemes(relationSession.sessionState.newHadoopConf()))
+
     def transformScan(scanNode: SparkPlan): SparkPlan = scanNode match {
       // Tagged by CometSpark34AqeDppFallbackRule on Spark < 3.5 to keep a peer scan
       // Spark-native for canonical symmetry in SMJ self-joins (SPARK-32509).
@@ -101,7 +109,7 @@ case class CometScanRule(session: SparkSession)
 
       // data source V1
       case scanExec: FileSourceScanExec =>
-        transformV1Scan(fullPlan, scanExec)
+        transformV1Scan(fullPlan, scanExec, libhdfsSchemesOf)
 
       // data source V2
       //
@@ -150,7 +158,10 @@ case class CometScanRule(session: SparkSession)
     metadataTableSuffix.exists(name.endsWith)
   }
 
-  private def transformV1Scan(plan: SparkPlan, scanExec: FileSourceScanExec): SparkPlan = {
+  private def transformV1Scan(
+      plan: SparkPlan,
+      scanExec: FileSourceScanExec,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): SparkPlan = {
     // Give any optional, out-of-tree scan contrib (e.g. Delta) first crack at this scan, ahead of
     // every built-in guard below. A contrib may support things Comet's built-in V1 scan does not
     // -- the Delta contrib synthesises `_metadata.*` in its own reader -- so applying those guards
@@ -225,7 +236,8 @@ case class CometScanRule(session: SparkSession)
           return scanExec
         }
 
-        nativeScan(plan, session, scanExec, r, hadoopConf).getOrElse(scanExec)
+        nativeScan(plan, session, scanExec, r, hadoopConf, sessionLibhdfsSchemes)
+          .getOrElse(scanExec)
 
       case _ =>
         withFallbackReason(scanExec, s"Unsupported relation ${scanExec.relation}")
@@ -237,7 +249,8 @@ case class CometScanRule(session: SparkSession)
       session: SparkSession,
       scanExec: FileSourceScanExec,
       r: HadoopFsRelation,
-      hadoopConf: Configuration): Option[SparkPlan] = {
+      hadoopConf: Configuration,
+      sessionLibhdfsSchemes: SparkSession => Set[String]): Option[SparkPlan] = {
     if (!COMET_EXEC_ENABLED.get()) {
       withFallbackReason(
         scanExec,
@@ -254,9 +267,8 @@ case class CometScanRule(session: SparkSession)
     //
     // EXCEPT schemes native routes through libhdfs (`hdfs` by default). A scheme the reader
     // options add to that list is declined; see NativeConfig.resolveScanLibhdfsSchemes.
-    val libhdfs = NativeConfig.resolveScanLibhdfsSchemes(
-      r.sparkSession.sessionState.newHadoopConf(),
-      hadoopConf)
+    val libhdfs =
+      NativeConfig.resolveScanLibhdfsSchemes(sessionLibhdfsSchemes(r.sparkSession), hadoopConf)
     val libhdfsSchemes = libhdfs.libhdfs
     // Opt-in S3-compliant alias schemes (e.g. `blob`) from `fs.comet.s3Compliant.schemes`. Read
     // from the Hadoop config, like the libhdfs list above, so `core-site.xml` is honored. The
@@ -491,6 +503,22 @@ case class CometScanRule(session: SparkSession)
         if (unsupportedMetadataCols.nonEmpty) {
           fallbackReasons += "Unsupported Iceberg metadata columns: " +
             unsupportedMetadataCols.map(_.name).mkString(", ")
+          return withFallbackReasons(scanExec, fallbackReasons.toSet)
+        }
+
+        // This build of Comet has no native k-way merge for sorted Iceberg data. When Iceberg
+        // groups a partition's sorted files and reports an output ordering (e.g. with the
+        // preserve-data-ordering config on), EnsureRequirements may already have dropped the Sort
+        // above this scan because Spark trusts that report. Comet's native reader concatenates a
+        // partition's files in arbitrary order, so taking over the scan would silently return
+        // unsorted rows that Spark believes are sorted -> wrong results. scanExec.ordering is
+        // Spark's own view of the reported ordering and is exactly the condition under which the
+        // Sort gets dropped, so we key off it. Stay on Spark, whose Iceberg reader produces the
+        // sorted output it promised. This only needs scanExec, so we check it before the metadata
+        // reads below, which can go over the network for REST and S3 catalogs.
+        if (scanExec.ordering.exists(_.nonEmpty)) {
+          fallbackReasons += "Iceberg reports an output ordering that this build of Comet cannot " +
+            "preserve in the native scan; staying on Spark to keep the reported ordering"
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
@@ -753,6 +781,20 @@ case class CometScanRule(session: SparkSession)
         val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
         val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
+        // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
+        // disappear during projection, or reach the adapter with physical field names that
+        // cannot distinguish a mapped alias from a genuinely missing field. Schema history
+        // does not detect names that already differed when the files were imported.
+        val nestedNameMappingSupported = !(metadata.nameMapping.isDefined &&
+          projectedDataColumns.exists(_.dataType match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }))
+        if (!nestedNameMappingSupported) {
+          fallbackReasons += "Nested columns with Iceberg name mapping are not yet supported " +
+            "by Comet's native reader (#6790)"
+        }
+
         // The full task schema can be serialized to native, but iceberg-rust can represent
         // Variant in that schema as long as no projected field contains one. Check projected
         // roots strictly, and allow Variant only under entirely unprojected roots. Other
@@ -942,6 +984,10 @@ case class CometScanRule(session: SparkSession)
           try {
             if (!taskValidation.deleteFiles.isEmpty) {
               val historicSchemas = IcebergReflection.getAllSchemas(metadata.table)
+              // Check every schema, as a dropped equality key exists only in the history.
+              val topLevelIds = (metadata.tableSchema +: historicSchemas)
+                .flatMap(IcebergReflection.buildFieldIdMapping(_).values)
+                .toSet
               val contentFileClass =
                 IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE)
               val deleteFileClass =
@@ -987,6 +1033,13 @@ case class CometScanRule(session: SparkSession)
                           "schema; resolved from schema history (likely a dropped column)")
                     }
                     fieldInfo match {
+                      // Nested keys fall back: iceberg-rust only looks up top-level columns.
+                      case Some((fieldName, _)) if !topLevelIds(fid) =>
+                        hasUnsupportedDeletes = true
+                        fallbackReasons +=
+                          s"Equality delete on nested field '$fieldName' (id $fid) is not yet " +
+                            "supported by iceberg-rust, which resolves equality field ids " +
+                            "among top-level columns only."
                       case Some((fieldName, fieldType)) =>
                         if (fieldType.contains("struct") || fieldType.equalsIgnoreCase(
                             "variant")) {
@@ -1072,7 +1125,7 @@ case class CometScanRule(session: SparkSession)
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported && taskSchemaNamesSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported && nestedNameMappingSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,

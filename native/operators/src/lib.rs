@@ -28,6 +28,7 @@
 mod expand;
 mod explode;
 mod filter;
+mod metric_owning;
 mod projection;
 mod range;
 mod rank_limit;
@@ -37,6 +38,6 @@ pub use expand::ExpandExec;
 pub use explode::ExplodeExec;
 pub use filter::CometFilterExec;
 pub use projection::CometProjectionExec;
-pub use range::range_exec;
+pub use range::{range_exec, range_sort_expr};
 pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
 pub use sample::SampleExec;

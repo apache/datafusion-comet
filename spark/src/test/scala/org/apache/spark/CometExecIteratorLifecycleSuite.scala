@@ -127,6 +127,7 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
+            64L << 20,
             taskAttemptId,
             1L,
             null,
@@ -300,9 +301,10 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
 
   test("a plan fed only by native scans returns its memory when it spilled and stops early") {
     // With a tiny pool the sort spills, and the merge that reads the spill files back holds its
-    // memory in the plan's own stream.
+    // memory in the plan's own stream. The sort's share is the 2 MiB pool less its merge's
+    // reservation, which its rows do not fit in.
     withSQLConf(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.001",
       CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
       "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
       assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = true)
@@ -683,6 +685,21 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(
       getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4g")).memoryLimit
         == fourGiB)
+  }
+
+  test("the memory pool limit is the fraction of the off-heap size that the tasks share") {
+    import CometExecIterator.getMemoryConfig
+    val fourGiB = 4L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "4g")
+    // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.5") {
+      val config = getMemoryConfig(offHeap)
+      assert(config.memoryLimit == fourGiB / 2)
+      assert(config.offHeapSize == fourGiB)
+    }
   }
 
   private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
