@@ -208,6 +208,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
@@ -343,6 +344,7 @@ jobs:
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.QueryPlanSerdeSuite
+              org.apache.comet.serde.SparkFixesSuite
               org.apache.comet.CometFallbackInvarianceSuite
 
       fail-fast: false

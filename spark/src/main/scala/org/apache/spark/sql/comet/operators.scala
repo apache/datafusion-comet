@@ -2492,18 +2492,26 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       val aggFunc = aggExpr.aggregateFunction
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case cl: CollectList =>
-          val elementType = cl.children.head.dataType
+        case _: CollectSet | _: CollectList =>
+          // Match the native planner's collect argument normalization, including nested fields.
+          val elementType = aggFunc.children.head.dataType.asNullable
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>
-          // Comet's native percentile UDAF keeps all values in a List<Float64> partial state.
-          // Comet casts the child to double, so the native state is ArrayType(DoubleType).
-          val nativeStateType = ArrayType(DoubleType, containsNull = true)
+          // Comet's native percentile UDAF keeps all values, cast to double, along with where
+          // each merged partial state ends in them and how deeply the merge stages nest it (see
+          // SparkPercentile in native/spark-expr).
+          val nativeStateType = StructType(
+            Seq(
+              StructField("values", ArrayType(DoubleType, containsNull = true), nullable = false),
+              StructField(
+                "partial_ends",
+                ArrayType(LongType, containsNull = true),
+                nullable = false),
+              StructField(
+                "partial_depths",
+                ArrayType(IntegerType, containsNull = true),
+                nullable = false)))
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case m: Mode =>
           // Comet's native mode accumulator keeps a frequency map encoded as parallel arrays

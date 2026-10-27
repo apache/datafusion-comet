@@ -804,6 +804,20 @@ case class CometScanRule(session: SparkSession)
         val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
         val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
+        // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
+        // disappear during projection, or reach the adapter with physical field names that
+        // cannot distinguish a mapped alias from a genuinely missing field. Schema history
+        // does not detect names that already differed when the files were imported.
+        val nestedNameMappingSupported = !(metadata.nameMapping.isDefined &&
+          projectedDataColumns.exists(_.dataType match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }))
+        if (!nestedNameMappingSupported) {
+          fallbackReasons += "Nested columns with Iceberg name mapping are not yet supported " +
+            "by Comet's native reader (#6790)"
+        }
+
         // The full task schema can be serialized to native, but iceberg-rust can represent
         // Variant in that schema as long as no projected field contains one. Check projected
         // roots strictly, and allow Variant only under entirely unprojected roots. Other
@@ -957,29 +971,6 @@ case class CometScanRule(session: SparkSession)
               "cannot decrypt HDFS encryption zones"
           }
           !secure && undeclared.isEmpty && encryptedDirectory.isEmpty
-        }
-
-        // iceberg-rust reads a data file that has no field ids through the table's name mapping
-        // (`schema.name-mapping.default`, which migrate, snapshot and add_files set). It cannot
-        // open the list layouts that Hive and Spark's `writeLegacyFormat` write (a two-level list,
-        // or a three-level one with `bag`/`array_element` groups) that way: the read schema it
-        // supplies keeps a field id on the list's element field, and the Parquet reader rejects it
-        // as incompatible. A file's layout is only known from its footer, so a scan of such a
-        // table falls back whenever it reads a list or map column, at any depth.
-        val nameMappedContainersSupported = {
-          val hasNameMapping = IcebergReflection
-            .getTableProperties(metadata.table)
-            .exists(_.containsKey("schema.name-mapping.default"))
-          val containers =
-            scanExec.output.filter(a => CometScanRule.containsArrayOrMap(a.dataType)).map(_.name)
-          if (hasNameMapping && containers.nonEmpty) {
-            fallbackReasons += "Iceberg scan reads list or map columns " +
-              s"(${containers.mkString(", ")}) of a table with a name mapping " +
-              "(schema.name-mapping.default); Comet's native reader cannot open Hive-style or " +
-              "two-level Parquet lists through a name mapping, and a file's layout is not known " +
-              "at planning"
-          }
-          !hasNameMapping || containers.isEmpty
         }
 
         if (!taskValidation.allParquet) {
@@ -1197,7 +1188,7 @@ case class CometScanRule(session: SparkSession)
           unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
           nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
-          nameMappedContainersSupported) {
+          nestedNameMappingSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1484,12 +1475,6 @@ object CometScanRule extends Logging {
    * `blob:///bucket/key.parquet` IS openable when it carries a promotable bucket segment.
    */
   /** Whether `dataType` is, or anywhere contains, an array or a map. */
-  private[rules] def containsArrayOrMap(dataType: DataType): Boolean = dataType match {
-    case _: ArrayType | _: MapType => true
-    case StructType(fields) => fields.exists(f => containsArrayOrMap(f.dataType))
-    case _ => false
-  }
-
   private[rules] def hasOpenableAuthority(uri: URI, s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = NativeConfig.lowerScheme(uri)
     scheme.isEmpty || scheme.contains("file") || uri.getRawAuthority != null ||
