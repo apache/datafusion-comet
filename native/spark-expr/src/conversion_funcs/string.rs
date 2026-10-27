@@ -1443,17 +1443,38 @@ fn parse_timestamp_to_micros<T: TimeZone>(
                 Some(days) => days,
                 None => return Ok(None),
             };
-        // Compute the timezone offset using epoch as a surrogate probe point.
-        // Extreme-year timestamps are only valid with a UTC-like fixed offset (any DST
-        // zone would overflow).  Using epoch gives us the standard offset.
-        let epoch_probe = NaiveDate::from_ymd_opt(1970, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let tz_offset_secs: i64 = match tz.from_local_datetime(&epoch_probe) {
+        // Look up the zone offset at the same local civil time moved toward the epoch
+        // by whole 400-year Gregorian cycles until the year is inside chrono's range.
+        // Calendars (and leap days) repeat every 400 years, so the shifted probe is a
+        // valid NaiveDate with the same month/day/time. For America/Los_Angeles this
+        // lands in the local-mean-time era for far-past extremes (matching Spark's
+        // ZoneRules), instead of the standard -08:00 offset that probing 1970-01-01
+        // would return. Fixed offsets and UTC are unchanged. Far-future DST after
+        // chrono-tz's last transition (~2099) is a separate gap (#6816).
+        let mut probe_year = year;
+        while probe_year < -262144 {
+            probe_year += 400;
+        }
+        while probe_year > 262143 {
+            probe_year -= 400;
+        }
+        let probe_date =
+            NaiveDate::from_ymd_opt(probe_year as i32, timestamp_info.month, timestamp_info.day)
+                .expect("month/day valid across a 400-year shift");
+        let probe_naive = probe_date.and_time(naive_time);
+        let tz_offset_secs: i64 = match tz.from_local_datetime(&probe_naive) {
             LocalResult::Single(dt) => dt.offset().fix().local_minus_utc() as i64,
+            // Fall-back overlap: Spark picks the earlier (pre-transition) offset.
             LocalResult::Ambiguous(dt, _) => dt.offset().fix().local_minus_utc() as i64,
-            LocalResult::None => 0,
+            LocalResult::None => {
+                // Spring-forward gap on the probe: use the pre-gap offset, as above.
+                let pre = probe_naive - chrono::Duration::hours(3);
+                match tz.from_local_datetime(&pre) {
+                    LocalResult::Single(dt) => dt.offset().fix().local_minus_utc() as i64,
+                    LocalResult::Ambiguous(dt, _) => dt.offset().fix().local_minus_utc() as i64,
+                    LocalResult::None => 0,
+                }
+            }
         };
         // Compute seconds since epoch via direct calendar arithmetic.
         // Use i128 for the intermediate multiply-by-1_000_000 step: the seconds value can be
@@ -3088,6 +3109,46 @@ mod tests {
         assert_eq!(
             timestamp_parser("-290308-12-21T19:59:05.224191Z", EvalMode::Legacy, tz, true).unwrap(),
             None,
+        );
+    }
+
+    #[test]
+    fn extreme_year_session_tz_uses_historic_offset() {
+        // Session-TZ (no zone suffix) extremes must use the zone's historic /
+        // local-mean-time offset, not the 1970 standard offset. Spark's
+        // America/Los_Angeles ZoneRules use LMT -07:52:58 before 1883; probing
+        // 1970 gave -08:00 and was 422s off (issue #7210).
+        let la = &Tz::from_str("America/Los_Angeles").unwrap();
+        assert_eq!(
+            timestamp_parser("-290308-12-21 19:59:05.224192", EvalMode::Legacy, la, true).unwrap(),
+            Some(-9223372008476775808),
+        );
+        // 1800 is still in chrono's range and already matched Spark; keep it pinned.
+        assert_eq!(
+            timestamp_parser("1800-06-01 00:00:00", EvalMode::Legacy, la, true).unwrap(),
+            Some(-5351587622000000),
+        );
+        // Fixed offsets and UTC must stay exact at the i64 microsecond bounds.
+        let utc = &Tz::from_str("UTC").unwrap();
+        assert_eq!(
+            timestamp_parser("294247-01-10 04:00:54.775807", EvalMode::Legacy, utc, true).unwrap(),
+            Some(i64::MAX),
+        );
+        assert_eq!(
+            timestamp_parser("-290308-12-21 19:59:05.224192", EvalMode::Legacy, utc, true).unwrap(),
+            Some(i64::MIN),
+        );
+        let plus2 = &Tz::from_str("+02:00").unwrap();
+        // Local = UTC+2, so the UTC instant is 2h earlier than the UTC-session parse.
+        assert_eq!(
+            timestamp_parser(
+                "294247-01-10 04:00:54.775807",
+                EvalMode::Legacy,
+                plus2,
+                true
+            )
+            .unwrap(),
+            Some(i64::MAX - 2 * 3600 * 1_000_000),
         );
     }
 
