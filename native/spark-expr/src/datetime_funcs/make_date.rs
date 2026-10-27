@@ -25,13 +25,14 @@ use datafusion::logical_expr::{
 };
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{conversion_funcs::ymd_to_epoch_day, SparkError};
 
 /// Skips the entire date expression on empty input, before any argument can raise an error.
 /// `inner` retains the planner's argument evaluation, including NULL short-circuiting when enabled.
-#[derive(Debug, Eq, Hash)]
+#[derive(Debug, Eq)]
 pub struct MakeDateExpr {
     inner: Arc<dyn PhysicalExpr>,
 }
@@ -45,6 +46,12 @@ impl MakeDateExpr {
 impl PartialEq for MakeDateExpr {
     fn eq(&self, other: &Self) -> bool {
         self.inner.eq(&other.inner)
+    }
+}
+
+impl Hash for MakeDateExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
     }
 }
 
