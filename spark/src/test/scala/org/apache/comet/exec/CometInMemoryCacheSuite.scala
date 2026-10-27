@@ -40,7 +40,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, Att
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometWindowExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
@@ -49,7 +49,7 @@ import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffl
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.functions.{count, lit, max, min, sum}
+import org.apache.spark.sql.functions.{col, count, lit, max, min, sum}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -3687,6 +3687,44 @@ class CometInMemoryCacheSuite extends CometTestBase {
           } finally {
             spark.catalog.clearCache()
           }
+        }
+      }
+    }
+  }
+
+  test("a native window over a sorted cache declares the cache's order") {
+    // The cache reports the order it was written in, so Spark puts no sort below a window
+    // partitioned and ordered by the cache's sort keys. The native window then reads the cache
+    // through a scan that declares no order, and rejected it with "Expects PARTITION BY
+    // expression to be ordered" until the window declared the order Spark sent (#7223).
+    Seq(true, false).foreach { nativeCache =>
+      withConversions(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
+        try {
+          val cached = spark
+            .range(2000)
+            .selectExpr("id % 20 AS k", "id AS v")
+            .repartition(2, col("k"))
+            .sortWithinPartitions("k", "v")
+            .cache()
+          cached.count()
+
+          val df =
+            cached.selectExpr("k", "v", "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r")
+          val expected = (0L until 2000L).map(v => Row(v % 20, v, (v / 20 + 1).toInt))
+          QueryTest.sameRows(expected, df.collect().toSeq).foreach(fail(_))
+          val plan = df.queryExecution.executedPlan
+          withClue(s"nativeCache=$nativeCache\n$plan\n") {
+            val windows = collect(plan) { case w: CometWindowExec => w }
+            assert(windows.size == 1)
+            assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 2)
+            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+          }
+        } finally {
+          spark.catalog.clearCache()
         }
       }
     }

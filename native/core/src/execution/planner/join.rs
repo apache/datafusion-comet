@@ -408,16 +408,17 @@ impl PhysicalPlanner {
     /// arrive through declares none. Only that order is declared: when an operator in between may
     /// have moved rows, `plan` is left as it is.
     ///
-    /// The serde sends an order only when the streamed side's Comet operators report it, and it
-    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
-    /// the native operators the same thing through `maintains_input_order`. The two agree as
-    /// long as a Comet operator that reports an order keeps it natively and says so, and a Comet
-    /// leaf that reports one is a source this walk knows or declares its order itself, as the
-    /// native range does. One that does not lands here with `plan` unchanged, and the join then
-    /// moves its unmatched rows after Spark has dropped the sort above it. Nothing here can fall
-    /// back at that point, so the invariant is kept at the operator: see "Adding a New Operator"
-    /// in the contributor guide.
-    fn with_declared_order(
+    /// The serde sends an order only when the Comet operators of a join's streamed side or of a
+    /// window's input report it, and it checks that nothing under them moves rows
+    /// (`mayReportFalseOrder`), while this walk asks the native operators the same thing through
+    /// `maintains_input_order`. The two agree as long as a Comet operator that reports an order
+    /// keeps it natively and says so, and a Comet leaf that reports one is a source this walk
+    /// knows or declares its order itself, as the native range does. One that does not lands
+    /// here with `plan` unchanged, and the join then moves its unmatched rows after Spark has
+    /// dropped the sort above it, or the window rejects its input. Nothing here can fall back at
+    /// that point, so the invariant is kept at the operator: see "Adding a New Operator" in the
+    /// contributor guide.
+    pub(super) fn with_declared_order(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         sort_orders: &[Expr],

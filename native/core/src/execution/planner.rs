@@ -4337,21 +4337,18 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn window_cast_projection_reports_window_time() {
-        use crate::execution::metrics::utils::to_native_metric_node;
+    /// `row_number() OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`, returning
+    /// `result_type`.
+    fn row_number_window_expr(
+        result_type: Option<spark_expression::DataType>,
+    ) -> spark_operator::WindowExpr {
         use spark_operator::{
             lower_window_frame_bound::LowerFrameBoundStruct,
             upper_window_frame_bound::UpperFrameBoundStruct, CurrentRow, LowerWindowFrameBound,
             UnboundedPreceding, UpperWindowFrameBound, WindowExpr, WindowFrame, WindowFrameType,
             WindowSpecDefinition,
         };
-
-        let session = Arc::new(SessionContext::new());
-        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
-        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
-        // casting projection above the window.
-        let row_number = WindowExpr {
+        WindowExpr {
             built_in_window_function: Some(Expr {
                 expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
                     func: "row_number".to_string(),
@@ -4376,9 +4373,20 @@ mod tests {
                 }),
                 ..Default::default()
             }),
-            result_type: Some(create_proto_datatype()),
+            result_type,
             ..Default::default()
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn window_cast_projection_reports_window_time() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+
+        let session = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
+        // casting projection above the window.
+        let row_number = row_number_window_expr(Some(create_proto_datatype()));
         let operator = Operator {
             children: vec![create_scan()],
             op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
@@ -4431,6 +4439,82 @@ mod tests {
             metrics.metrics["elapsed_compute"],
             window_time + projection_time
         );
+    }
+
+    /// A window partitioned and ordered by `col_0` over `input`, declaring `input_sort_orders`
+    /// for it.
+    fn partitioned_window(input: Operator, input_sort_orders: Vec<Expr>) -> Operator {
+        Operator {
+            children: vec![input],
+            op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                window_expr: vec![row_number_window_expr(None)],
+                partition_by_list: vec![create_bound_reference(0)],
+                order_by_list: vec![create_sort_order(0, 3, false, true)],
+                input_sort_orders,
+                ..Default::default()
+            }))),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn window_declares_input_order_on_a_scan() {
+        // Spark puts no sort below a window whose input reports the order it needs, and the rows
+        // then arrive through a `ScanExec`, which declares none. The window finds its partition
+        // keys' order only once the planner declares the order Spark sent.
+        let window_over = |input_sort_orders| {
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(
+                    &partitioned_window(create_scan(), input_sort_orders),
+                    &mut vec![],
+                    1,
+                )
+                .unwrap();
+            let window = planned
+                .native_plan
+                .downcast_ref::<datafusion::physical_plan::windows::BoundedWindowAggExec>()
+                .expect("a bounded window");
+            (Arc::clone(window.input()), window.partition_by_sort_keys())
+        };
+        let (input, keys) = window_over(vec![create_sort_order(0, 3, false, true)]);
+        let sorted = input
+            .downcast_ref::<crate::execution::operators::SortedInputExec>()
+            .expect("the window's input declares the order Spark sent");
+        assert_eq!("ScanExec", sorted.children()[0].name());
+        assert_eq!(
+            "col_0@0 ASC",
+            input.properties().output_ordering().unwrap().to_string()
+        );
+        assert_eq!(1, keys.unwrap().len());
+
+        let (input, keys) = window_over(vec![]);
+        assert_eq!("ScanExec", input.name());
+        assert!(keys
+            .unwrap_err()
+            .to_string()
+            .contains("Expects PARTITION BY expression to be ordered"));
+    }
+
+    #[test]
+    fn window_keeps_input_that_declares_an_order() {
+        // An input that already declares an order, a sort in the native plan for instance, is
+        // left as it is.
+        let sort = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                sort_orders: vec![create_sort_order(0, 3, false, true)],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let (_, _, planned) = PhysicalPlanner::default()
+            .create_plan(
+                &partitioned_window(sort, vec![create_sort_order(0, 3, false, true)]),
+                &mut vec![],
+                1,
+            )
+            .unwrap();
+        assert_eq!("SortExec", planned.native_plan.children()[0].name());
     }
 
     #[test]
