@@ -53,6 +53,23 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
+### Batching shuffle inputs to broadcast
+
+The experimental `spark.comet.exec.broadcastExchange.producerCoalesce.enabled` setting combines small
+local native shuffle batches before broadcast serialization. It is disabled by default. It
+can reduce Arrow export, serialization, and driver assembly work when a broadcast build reads
+many small shuffle blocks.
+
+The broadcast must read directly from a local Comet native shuffle, including an AQE shuffle
+read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
+selected shuffle partitions and row order. Large batches pass through without a merge copy.
+
+Each group is limited by `spark.comet.batchSize` (at most 65,536 rows), 1,024 input batches,
+and an 8 MiB estimate of retained buffers and bytes to copy. This is not a total memory limit:
+concatenation temporarily holds inputs and output together, and may retain one lookahead batch.
+These reader buffers are outside Spark's execution memory pool. Measure the setting on your
+workload before enabling it, particularly for wide rows.
+
 ### Columnar (JVM) Shuffle
 
 Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobinPartitioning`, `RangePartitioning`, and

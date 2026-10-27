@@ -22,6 +22,8 @@ package org.apache.spark.sql.comet.execution.shuffle
 import java.io.{FilterInputStream, InputStream}
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.util.control.NonFatal
+
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.io.CompressionCodec
@@ -34,6 +36,7 @@ import org.apache.spark.storage.BlockManager
 import org.apache.spark.storage.BlockManagerId
 import org.apache.spark.storage.ShuffleBlockFetcherIterator
 import org.apache.spark.util.CompletionIterator
+import org.apache.spark.util.Utils
 
 import org.apache.comet.{CometConf, Native}
 import org.apache.comet.vector.NativeUtil
@@ -121,6 +124,45 @@ class CometBlockStoreShuffleReader[K, C](
       })
       .map(b => (0, b))
 
+    withReadMetrics(recordIter)
+  }
+
+  /** One decoder groups frames across fetched blocks for a single broadcast producer task. */
+  private[shuffle] def readWithCoalescing(maxRows: Int): Iterator[Product2[K, C]] = {
+    val input = readAsRawStream()
+    val nativeUtil =
+      try new NativeUtil()
+      catch {
+        case NonFatal(failure) => Utils.tryWithSafeFinally(throw failure)(input.close())
+      }
+    val decoder =
+      try {
+        NativeBatchDecoderIterator(
+          input,
+          dep.decodeTime,
+          new Native(),
+          nativeUtil,
+          CometConf.COMET_TRACING_ENABLED.get(),
+          readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt,
+          coalescing = Some(maxRows))
+      } catch {
+        case NonFatal(failure) =>
+          Utils.tryWithSafeFinally(throw failure) {
+            Utils.tryWithSafeFinally(input.close())(nativeUtil.close())
+          }
+      }
+    // Registration invokes the callback immediately if completion raced construction. The
+    // decoder is lazy, so a closed task cannot acquire native batching state after cleanup.
+    context.addTaskCompletionListener[Unit] { _ =>
+      Utils.tryWithSafeFinally {
+        Utils.tryWithSafeFinally(decoder.close())(nativeUtil.close())
+      }(context.taskMetrics().mergeShuffleReadMetrics())
+    }
+    withReadMetrics(decoder.map(batch => (0, batch)))
+  }
+
+  private def withReadMetrics(
+      recordIter: Iterator[(Int, ColumnarBatch)]): Iterator[Product2[K, C]] = {
     // Update the context task metrics for each record read.
     val metricIter = CompletionIterator[(Any, Any), Iterator[(Any, Any)]](
       recordIter.map { record =>

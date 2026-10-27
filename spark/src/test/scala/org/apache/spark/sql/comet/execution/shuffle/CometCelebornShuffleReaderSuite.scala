@@ -1263,6 +1263,72 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     }
   }
 
+  test("local decoder coalesces across frames and flushes the final partial batch") {
+    val frames = Array.fill(8)(intFrame()).flatten
+    for (coalescing <- Seq(None, Some(16))) {
+      val nativeUtil = new org.apache.comet.vector.NativeUtil()
+      val input = new TrackingInputStream(frames)
+      val decoder = NativeBatchDecoderIterator(
+        input,
+        SQLMetrics.createNanoTimingMetric(spark.sparkContext, "decode time"),
+        new Native(),
+        nativeUtil,
+        tracingEnabled = false,
+        coalescing = coalescing)
+      try {
+        val sizes = scala.collection.mutable.ArrayBuffer.empty[Int]
+        val values = scala.collection.mutable.ArrayBuffer.empty[Int]
+        while (decoder.hasNext) {
+          val batch = decoder.next()
+          sizes += batch.numRows()
+          values ++= (0 until batch.numRows()).map(batch.column(0).getInt)
+        }
+        assert(values.toSeq == Seq.fill(8)(Seq(-1, 0, 1)).flatten)
+        assert(sizes.toSeq == (if (coalescing.isDefined) Seq(15, 9) else Seq.fill(8)(3)))
+        assert(input.closeCalls == 1)
+      } finally {
+        decoder.close()
+        nativeUtil.close()
+      }
+    }
+  }
+
+  test("coalescing decoder releases native state on early close and truncated input") {
+    for (truncated <- Seq(false, true)) {
+      var releases = 0
+      val native = new Native() {
+        override def closeShuffleBatchCoalescer(handle: Long): Unit = {
+          releases += 1
+          super.closeShuffleBatchCoalescer(handle)
+        }
+      }
+      val complete = Array.fill(8)(intFrame()).flatten
+      val input = new TrackingInputStream(
+        if (truncated) complete.take(complete.length - 1)
+        else complete)
+      val nativeUtil = new org.apache.comet.vector.NativeUtil()
+      val decoder = NativeBatchDecoderIterator(
+        input,
+        SQLMetrics.createNanoTimingMetric(spark.sparkContext, "decode time"),
+        native,
+        nativeUtil,
+        tracingEnabled = false,
+        coalescing = Some(if (truncated) 128 else 16))
+      try {
+        if (truncated) intercept[EOFException](decoder.hasNext)
+        else assert(decoder.hasNext) // Close with both exported and pending native batches.
+        decoder.close()
+        decoder.close()
+        assert(releases == 1)
+        assert(input.closeCalls == 1)
+        assert(!decoder.hasNext)
+      } finally {
+        decoder.close()
+        nativeUtil.close()
+      }
+    }
+  }
+
   private def dictionaryFrame(): Array[Byte] = {
     val allocator = new RootAllocator(Long.MaxValue)
     val encoding = new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))

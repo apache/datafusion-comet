@@ -32,12 +32,14 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, IntegerType, LongType, StringType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -77,6 +79,9 @@ case class CometBroadcastExchangeExec(
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"),
+    "nativeProducerBatching" -> SQLMetrics.createMetric(
+      sparkContext,
+      "broadcast exchanges using native producer batching"),
     "numCoalescedBatches" -> SQLMetrics.createMetric(
       sparkContext,
       "number of coalesced batches for broadcast"),
@@ -110,9 +115,24 @@ case class CometBroadcastExchangeExec(
   private lazy val maxBroadcastRows = 512000000L
 
   private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
-    plan.executeColumnar().mapPartitionsInternal { iter =>
-      Utils.serializeBatches(iter)
+    // Capture the read mode on the driver. A new RDD keeps it local to this broadcast consumer,
+    // including when AQE or exchange reuse shares the original shuffle with another operator.
+    val input = plan.executeColumnar()
+    val supported = plan.output.nonEmpty && plan.output.forall { attribute =>
+      attribute.dataType match {
+        case IntegerType | LongType | BooleanType | StringType | BinaryType => true
+        case _ => false
+      }
     }
+    val readInput = input match {
+      case shuffle: CometShuffledBatchRDD
+          if CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.get(conf) &&
+            supported && shuffle.supportsNativeBatchCoalescing =>
+        longMetric("nativeProducerBatching") += 1L
+        shuffle.withNativeBatchCoalescing(math.min(CometConf.COMET_BATCH_SIZE.get(conf), 65536))
+      case _ => input
+    }
+    readInput.mapPartitionsInternal(iter => Utils.serializeBatches(iter))
   }
 
   def getNumPartitions(): Int = {
