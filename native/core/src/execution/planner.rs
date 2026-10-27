@@ -118,7 +118,7 @@ use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
     CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats,
+    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
     NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
     WideDecimalOp,
 };
@@ -2203,6 +2203,11 @@ impl PhysicalPlanner {
         ));
         let scalar_expr = if expr.null_short_circuit {
             NullShortCircuit::wrap(scalar_expr, &input_schema)?
+        } else {
+            scalar_expr
+        };
+        let scalar_expr = if fun_name == "make_date" {
+            Arc::new(MakeDateExpr::new(scalar_expr)) as Arc<dyn PhysicalExpr>
         } else {
             scalar_expr
         };

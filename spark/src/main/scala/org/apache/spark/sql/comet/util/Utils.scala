@@ -244,6 +244,12 @@ object Utils extends CometTypeShim with Logging {
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   /**
+   * Bridges Spark's package-private check for unchanged types with widened nested nullability.
+   */
+  def equalsIgnoreCompatibleNullability(from: DataType, to: DataType): Boolean =
+    DataType.equalsIgnoreCompatibleNullability(from, to)
+
+  /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
    * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
    * classes, it must be in `common` module.
