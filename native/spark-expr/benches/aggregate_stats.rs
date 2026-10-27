@@ -40,7 +40,7 @@ use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, Physic
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_spark_expr::{
     ApproxPercentile, Avg, Correlation, Covariance, EvalMode, HllPlusPlus, Regr, RegrType,
-    SparkPercentile, Variance,
+    SparkPercentile, Variance, ZeroOrder,
 };
 use futures::StreamExt;
 use std::hint::black_box;
@@ -140,7 +140,14 @@ fn criterion_benchmark(c: &mut Criterion) {
 
     group.bench_function("percentile", |b| {
         let udf = Arc::new(AggregateUDF::new_from_impl(
-            SparkPercentile::try_new(0.5).unwrap(),
+            SparkPercentile::try_new(
+                0.5,
+                ZeroOrder {
+                    signed_zero_keys: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap(),
         ));
         // Mirror the planner: exact percentile takes the value column plus the
         // percentage literal as inputs.
