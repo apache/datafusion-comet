@@ -29,7 +29,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -39,7 +39,7 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType,
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.rules.CometScanTypeChecker
-import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, Unsupported}
+import org.apache.comet.serde.{Compatible, Incompatible, QueryPlanSerde, SparkFixes, Unsupported}
 
 /**
  * Spark-parity coverage for Comet's **native** `Cast` implementation, and for the
@@ -1537,9 +1537,22 @@ class CometNativeCastSuite
   }
 
   test("cast StringType to DecimalType(38,10) high precision - check 0 mantissa") {
-    val values = Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677").toDF("a")
+    // Without SPARK-60118, Spark limits zero to 38 integral digits like any other value, so
+    // 0e37 casts to 0 and 0e38 does not.
+    val values =
+      Seq("0e31", "000e3375", "0e40", "0E+695", "0e5887677", "0e37", "0e38").toDF("a")
     Seq(true, false).foreach(ansiEnabled =>
       castTest(values, DataTypes.createDecimalType(38, 10), testAnsi = ansiEnabled))
+  }
+
+  // The tests above compare the cast with the Spark they run on, and SparkFixesSuite covers the
+  // setting for each Spark version.
+  test("cast StringType to DecimalType sets the zero option for the running Spark version") {
+    val a = AttributeReference("a", StringType)()
+    val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
+    assert(
+      proto.map(_.getCast.getDecimalZeroAnyExponent) ==
+        Some(SparkFixes.castsZeroWithAnyExponentToDecimal(org.apache.spark.SPARK_VERSION)))
   }
 
   test("cast StringType to DecimalType(38,10) high precision") {
