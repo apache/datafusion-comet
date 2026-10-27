@@ -94,41 +94,6 @@ fn matches_ipc_layout(
         .is_some_and(|buffers| buffers.len() == roles.len())
 }
 
-/// True when `data_type` is, or contains, one of Arrow's view layouts: `Utf8View`, `BinaryView`,
-/// `ListView` or `LargeListView`.
-///
-/// Arrow's IPC writer truncates a sliced array's buffers per type — numeric and temporal values
-/// through `get_or_truncate_buffer`, byte arrays through `reencode_offsets`, list children through
-/// `get_list_array_buffers`, boolean bitmaps through `bit_slice`, and struct children because
-/// `ArrayData::slice` pushes the slice down into them. The view layouts are the exception: it
-/// slices the views (or offsets and sizes) buffers but serializes every shared data buffer or
-/// child in full, since proving that no surviving view references it is not cheap.
-///
-/// Two callers depend on this. The round-robin planner avoids positional placement, the only one
-/// that can hand the writer a sliced array, because a short run would drag a whole batch's data
-/// buffers into the shuffle output. The multi-partition writers
-/// ([`ShuffleBlockWriter::has_view_types`]) keep coalescing, which compacts sparse views, because
-/// a batch gathered by `interleave` shares its source batches' data buffers.
-pub(crate) fn contains_view_type(data_type: &DataType) -> bool {
-    match data_type {
-        DataType::Utf8View
-        | DataType::BinaryView
-        | DataType::ListView(_)
-        | DataType::LargeListView(_) => true,
-        DataType::List(field)
-        | DataType::LargeList(field)
-        | DataType::FixedSizeList(field, _)
-        | DataType::Map(field, _) => contains_view_type(field.data_type()),
-        DataType::Struct(fields) => fields.iter().any(|f| contains_view_type(f.data_type())),
-        DataType::Union(fields, _) => fields
-            .iter()
-            .any(|(_, f)| contains_view_type(f.data_type())),
-        DataType::Dictionary(_, value) => contains_view_type(value),
-        DataType::RunEndEncoded(_, values) => contains_view_type(values.data_type()),
-        _ => false,
-    }
-}
-
 /// Writes a record batch as a length-prefixed, compressed Arrow IPC block.
 ///
 /// Each block is a self-contained Arrow IPC stream (schema message, dictionary messages, record
@@ -148,9 +113,6 @@ pub struct ShuffleBlockWriter {
     /// pinned to metadata version V5, which [`IPC_EOS`] depends on.
     write_options: IpcWriteOptions,
     schema_encoding: SchemaEncoding,
-    /// Whether the schema contains a view type anywhere, nested or not; see
-    /// [`Self::has_view_types`].
-    has_view_types: bool,
 }
 
 impl ShuffleBlockWriter {
@@ -190,17 +152,6 @@ impl ShuffleBlockWriter {
                 })
             }
         }
-    }
-
-    /// True when the schema contains a view type at any depth; see [`contains_view_type`].
-    ///
-    /// Arrow's IPC writer serializes every data buffer a view array references, whatever the
-    /// views actually point at. A batch gathered by `interleave` from many buffered batches
-    /// shares all of their data buffers, so writing each small chunk of it verbatim would repeat
-    /// those buffers in every block. Such schemas must go through a coalescer, which compacts
-    /// sparse views.
-    pub(crate) fn has_view_types(&self) -> bool {
-        self.has_view_types
     }
 
     pub fn try_new(schema: &Schema, codec: CompressionCodec) -> Result<Self> {
@@ -297,17 +248,11 @@ impl ShuffleBlockWriter {
         };
         header_bytes.extend_from_slice(&codec_header);
 
-        let has_view_types = schema
-            .fields()
-            .iter()
-            .any(|f| contains_view_type(f.data_type()));
-
         Ok(Self {
             codec,
             header_bytes: Arc::from(header_bytes),
             write_options,
             schema_encoding,
-            has_view_types,
         })
     }
 
@@ -499,39 +444,6 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Int32Type};
     use std::io::Cursor;
-
-    #[test]
-    fn has_view_types_sees_nested_and_dictionary_views() {
-        let has_view = |data_type: DataType| {
-            let schema = Schema::new(vec![Field::new("c", data_type, true)]);
-            let flag = ShuffleBlockWriter::try_new(&schema, CompressionCodec::None)
-                .unwrap()
-                .has_view_types();
-            assert_eq!(flag, contains_view_type(schema.field(0).data_type()));
-            flag
-        };
-        let dict = |value| DataType::Dictionary(Box::new(DataType::Int32), Box::new(value));
-        assert!(has_view(DataType::Utf8View));
-        assert!(has_view(DataType::List(Arc::new(Field::new(
-            "item",
-            DataType::BinaryView,
-            true
-        )))));
-        assert!(has_view(dict(DataType::Utf8View)));
-        let item = |data_type| Arc::new(Field::new("item", data_type, true));
-        assert!(has_view(DataType::ListView(item(DataType::Int32))));
-        assert!(has_view(DataType::LargeListView(item(DataType::Int64))));
-        assert!(has_view(DataType::Struct(
-            vec![Field::new(
-                "s",
-                DataType::ListView(item(DataType::Int32)),
-                true
-            )]
-            .into()
-        )));
-        assert!(!has_view(dict(DataType::Utf8)));
-        assert!(!has_view(DataType::Int64));
-    }
 
     fn test_schema() -> Schema {
         Schema::new(vec![

@@ -40,7 +40,6 @@ struct ActiveSpillFile {
 pub(crate) struct PartitionedSpill {
     shuffle_block_writer: ShuffleBlockWriter,
     write_buffer_size: usize,
-    batch_size: usize,
     spill_file: Option<ActiveSpillFile>,
     /// Bytes appended to the spill file so far.
     len: u64,
@@ -54,13 +53,11 @@ impl PartitionedSpill {
     pub(crate) fn new(
         shuffle_block_writer: ShuffleBlockWriter,
         write_buffer_size: usize,
-        batch_size: usize,
         num_partitions: usize,
     ) -> Self {
         Self {
             shuffle_block_writer,
             write_buffer_size,
-            batch_size,
             spill_file: None,
             len: 0,
             ranges: vec![Vec::new(); num_partitions],
@@ -93,7 +90,6 @@ impl PartitionedSpill {
                 &mut self.shuffle_block_writer,
                 &mut self.spill_file.as_mut().unwrap().writer,
                 self.write_buffer_size,
-                self.batch_size,
             );
             buf_batch_writer.write(
                 &batch?,
@@ -321,9 +317,7 @@ mod tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema_ref().as_ref(), CompressionCodec::None)
                 .unwrap();
-        // batch_size below the row count so a view-schema write, which coalesces, serializes into
-        // the scratch
-        PartitionedSpill::new(block_writer, 1 << 20, 10, num_partitions)
+        PartitionedSpill::new(block_writer, 1 << 20, num_partitions)
     }
 
     fn metrics() -> ShufflePartitionerMetrics {

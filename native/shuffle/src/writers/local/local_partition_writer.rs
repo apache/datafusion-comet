@@ -95,7 +95,6 @@ pub(crate) struct LocalPartitionWriter {
     /// with the total length so partition sizes are simple offset differences.
     /// Has `num_output_partitions + 1` elements.
     offsets: Vec<u64>,
-    batch_size: usize,
     write_buffer_size: usize,
     num_output_partitions: usize,
     /// Id of the last partition passed to `finish_partition`, used to assert
@@ -135,7 +134,6 @@ impl LocalPartitionWriter {
             let spill = PartitionedSpill::new(
                 shuffle_block_writer.clone(),
                 write_buffer_size,
-                batch_size,
                 num_output_partitions,
             );
             DataOutput::Multi {
@@ -153,7 +151,6 @@ impl LocalPartitionWriter {
             data_output,
             codec_context: ShuffleCodecContext::default(),
             offsets: vec![0u64; num_output_partitions + 1],
-            batch_size,
             write_buffer_size,
             num_output_partitions,
             last_finish_pid: -1,
@@ -251,7 +248,6 @@ impl PartitionWriter for LocalPartitionWriter {
         self.last_finish_pid = pid as i32;
 
         let write_buffer_size = self.write_buffer_size;
-        let batch_size = self.batch_size;
 
         match &mut self.data_output {
             DataOutput::Single { writer, scratch } => {
@@ -317,7 +313,6 @@ impl PartitionWriter for LocalPartitionWriter {
                     shuffle_block_writer,
                     &mut *output_writer,
                     write_buffer_size,
-                    batch_size,
                 );
                 let codec_context = &mut self.codec_context;
                 let result: datafusion::common::Result<()> = (|| {
@@ -497,7 +492,6 @@ mod tests {
             Arc::new(PartitionOffsets::default()),
             block_writer,
             num_partitions,
-            // batch_size below the row count so the write serializes into the scratch.
             10,
             write_buffer_size,
             runtime,

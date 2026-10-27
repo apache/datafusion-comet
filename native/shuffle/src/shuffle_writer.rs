@@ -22,9 +22,7 @@ use crate::partitioners::{
     EmptySchemaShufflePartitioner, MultiPartitionShuffleRepartitioner, ShufflePartitioner,
     SinglePartitionShufflePartitioner,
 };
-use crate::writers::{
-    contains_view_type, LocalPartitionWriter, PartitionWriter, RssPartitionWriter,
-};
+use crate::writers::{LocalPartitionWriter, PartitionWriter, RssPartitionWriter};
 use crate::{CometPartitioning, CompressionCodec, RoundRobinStrategy, ShuffleBlockWriter};
 use async_trait::async_trait;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -33,7 +31,7 @@ use datafusion::physical_expr::{EquivalenceProperties, Partitioning, PhysicalExp
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{apply_expression_roots, EmptyRecordBatchStream};
 use datafusion::{
-    arrow::datatypes::{Schema, SchemaRef},
+    arrow::datatypes::{DataType, Schema, SchemaRef},
     error::Result,
     execution::context::TaskContext,
     physical_plan::{
@@ -406,6 +404,38 @@ async fn external_shuffle(
 
     // shuffle writer always has empty output
     Ok(Box::pin(EmptyRecordBatchStream::new(Arc::clone(&schema))) as SendableRecordBatchStream)
+}
+
+/// True when `data_type` is, or contains, one of Arrow's view layouts.
+///
+/// Arrow's IPC writer truncates a sliced array's buffers per type — numeric and temporal values
+/// through `get_or_truncate_buffer`, byte arrays through `reencode_offsets`, list children through
+/// `get_list_array_buffers`, boolean bitmaps through `bit_slice`, and struct children because
+/// `ArrayData::slice` pushes the slice down into them. The view types are the exception: it slices
+/// the views buffer but serializes every shared data buffer in full, since proving that no
+/// surviving view references a buffer is not cheap.
+///
+/// [`RoundRobinStrategy::RowGroups`] is the only placement that can hand the writer a sliced
+/// array; everything else materializes a fresh batch through `interleave_record_batch`. So a view
+/// column anywhere in the schema would let a short run drag a whole batch's data buffers into the
+/// shuffle output, which is the opposite of what the strategy is for.
+fn contains_view_type(data_type: &DataType) -> bool {
+    match data_type {
+        DataType::Utf8View | DataType::BinaryView => true,
+        DataType::List(field)
+        | DataType::LargeList(field)
+        | DataType::ListView(field)
+        | DataType::LargeListView(field)
+        | DataType::FixedSizeList(field, _)
+        | DataType::Map(field, _) => contains_view_type(field.data_type()),
+        DataType::Struct(fields) => fields.iter().any(|f| contains_view_type(f.data_type())),
+        DataType::Union(fields, _) => fields
+            .iter()
+            .any(|(_, f)| contains_view_type(f.data_type())),
+        DataType::Dictionary(_, value) => contains_view_type(value),
+        DataType::RunEndEncoded(_, values) => contains_view_type(values.data_type()),
+        _ => false,
+    }
 }
 
 /// The partitioning to actually use on `schema`. The planner decides whether positional placement

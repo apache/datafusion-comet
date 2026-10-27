@@ -45,9 +45,10 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 ///   the mode for the per-partition writers of a multi-partition shuffle, whose input is a
 ///   `PartitionedBatchIterator` that already emits maximal `batch_size` chunks plus one tail:
 ///   there is never a second batch for the tail to coalesce with, so coalescing there would
-///   only copy the tail's rows into builders and re-emit the same block. Schemas with view types
-///   are the exception and keep coalescing, because the IPC writer would otherwise serialize
-///   every data buffer the gathered views share.
+///   only copy the tail's rows into builders and re-emit the same block. Passthrough does not
+///   compact view arrays (`Utf8View`, `BinaryView`), which the IPC writer serializes with every
+///   data buffer they reference; the coalescer would only have compacted the tail, since full
+///   chunks bypass it, and Comet does not shuffle view types today.
 ///
 /// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
 /// are created per output partition, and codec contexts must stay task-scoped.
@@ -85,25 +86,14 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         )
     }
 
-    /// A writer for one output partition of a multi-partition shuffle: passthrough, except for
-    /// schemas with view types, which still need the coalescer to compact sparse views (see
-    /// [`ShuffleBlockWriter::has_view_types`]).
+    /// A passthrough writer for one output partition of a multi-partition shuffle; see the
+    /// type-level docs.
     pub(crate) fn new_for_partition(
         shuffle_block_writer: S,
         writer: W,
         buffer_max_size: usize,
-        batch_size: usize,
     ) -> Self {
-        let coalesce_batch_size = shuffle_block_writer
-            .borrow()
-            .has_view_types()
-            .then_some(batch_size);
-        Self::with_mode(
-            shuffle_block_writer,
-            writer,
-            buffer_max_size,
-            coalesce_batch_size,
-        )
+        Self::with_mode(shuffle_block_writer, writer, buffer_max_size, None)
     }
 
     fn with_mode(
@@ -178,9 +168,10 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
             // enough, so we don't `copy_rows` the whole batch into the in-progress builders just
             // to re-emit a same-sized batch. The passthrough fires for batches strictly larger
             // than the limit, so set it to `batch_size - 1` to include batches of exactly
-            // `batch_size`, which is what `PartitionedBatchIterator` emits (except the tail)
-            // when a view-type schema routes the multi-partition path through this coalescer.
-            // The single-partition path routes `>= batch_size` batches here directly, so those
+            // `batch_size`, which is what `PartitionedBatchIterator` emits (except the tail),
+            // removing a full copy of the shuffle payload. Block boundaries are unchanged for
+            // that iterator since it never emits more than `batch_size` rows. The
+            // single-partition path routes `>= batch_size` batches here directly, so those now
             // form one oversized block rather than being split at `batch_size`. Rows are written
             // in the same order either way.
             BatchCoalescer::new(batch.schema(), batch_size)
@@ -393,8 +384,7 @@ mod tests {
         let time = Time::default();
         let mut scratch = Vec::new();
         let mut codec_context = ShuffleCodecContext::default();
-        let mut writer =
-            BufBatchWriter::new_for_partition(block_writer, &mut output, 1 << 20, 8192);
+        let mut writer = BufBatchWriter::new_for_partition(block_writer, &mut output, 1 << 20);
         for batch in &inputs {
             writer
                 .write(batch, &mut scratch, &mut codec_context, &time, &time)
@@ -419,54 +409,6 @@ mod tests {
             block_rows.push(block.num_rows());
         }
         assert_eq!(block_rows, vec![100, 30, 100, 7]);
-    }
-
-    /// A schema with a view type must keep coalescing under `new_for_partition`, since the IPC
-    /// writer serializes every data buffer a gathered view array references; a schema without
-    /// one passes through.
-    #[test]
-    fn for_partition_coalesces_only_view_schemas() {
-        use arrow::array::StringViewArray;
-
-        let write_blocks = |schema: Arc<Schema>, columns: Vec<arrow::array::ArrayRef>| {
-            let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
-            let block_writer =
-                ShuffleBlockWriter::try_new(schema.as_ref(), CompressionCodec::None).unwrap();
-            let mut output = Vec::new();
-            let time = Time::default();
-            let mut scratch = Vec::new();
-            let mut codec_context = ShuffleCodecContext::default();
-            let mut writer =
-                BufBatchWriter::new_for_partition(block_writer, &mut output, 1 << 20, 8192);
-            for _ in 0..3 {
-                writer
-                    .write(&batch, &mut scratch, &mut codec_context, &time, &time)
-                    .unwrap();
-            }
-            writer
-                .drain(&mut scratch, &mut codec_context, &time, &time)
-                .unwrap();
-            decode_blocks(&output)
-        };
-
-        let plain = Arc::new(Schema::new(vec![Field::new("a", DataType::Int64, false)]));
-        let blocks = write_blocks(plain, vec![Arc::new(Int64Array::from(vec![1, 2, 3]))]);
-        assert_eq!(
-            blocks.iter().map(|b| b.num_rows()).collect::<Vec<_>>(),
-            [3, 3, 3]
-        );
-
-        let view = Arc::new(Schema::new(vec![Field::new(
-            "s",
-            DataType::Utf8View,
-            false,
-        )]));
-        let blocks = write_blocks(
-            view,
-            vec![Arc::new(StringViewArray::from(vec!["a", "b", "c"]))],
-        );
-        let rows: Vec<usize> = blocks.iter().map(|b| b.num_rows()).collect();
-        assert_eq!(rows, [9], "view schemas must be coalesced into one block");
     }
 
     /// Handing a non-empty scratch to a fresh writer would silently prepend stale bytes
