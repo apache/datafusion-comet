@@ -40,11 +40,11 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, Att
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -1243,6 +1243,117 @@ class CometInMemoryCacheSuite extends CometTestBase {
       withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) { _ =>
         checkStats("extreme_stats_columnar")
       }
+    }
+  }
+
+  // Each column's null count summed over the cached batches. Asserts first that the relation is
+  // stored in Comet's format, because Spark's DefaultCachedBatch records the same null counts and
+  // no bounds for binary, nested and void columns, and then that no batch records bounds for a
+  // column.
+  private def nullCountsWithoutBounds(view: String): Seq[Long] = {
+    val batchTypes = cachedBatchTypes(view)
+    assert(
+      batchTypes.sameElements(
+        Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+      s"$view was cached as ${batchTypes.mkString(", ")}")
+    val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+    val stats = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+      .collect()
+      .map(_.asInstanceOf[SimpleMetricsCachedBatch].stats)
+    relation.cachedRepresentation.output.indices.map { i =>
+      stats.foreach(s => assert(s.isNullAt(i * 5) && s.isNullAt(i * 5 + 1), s"column $i"))
+      stats.map(_.getInt(i * 5 + 2).toLong).sum
+    }
+  }
+
+  test("Comet in-memory cache statistics count nulls in columns that record no bounds") {
+    // These columns record a null count and no bounds: binary and nested types, and a bigint
+    // column with no values. The count is the one the written Arrow vectors hold, so it is checked
+    // from the row write path and Comet's native scan, which produce those vectors, and from
+    // Spark's vectorized reader, whose batches are converted to them first.
+    val df = spark
+      .range(1000)
+      .selectExpr("if(id % 7 = 0, NULL, id) AS v")
+      .selectExpr(
+        "cast(concat('b', v) AS binary) AS bin",
+        "if(v IS NULL, NULL, array(v, v + 1)) AS arr",
+        "if(v IS NULL, NULL, map(concat('k', v), v)) AS mp",
+        "if(v IS NULL, NULL, named_struct('a', v, 'b', cast(v AS string))) AS st",
+        "cast(NULL AS bigint) AS no_values")
+    // 143 of the ids 0 to 999 are multiples of 7.
+    val expected = Seq(143L, 143L, 143L, 143L, 1000L)
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // Only the row write path can take a void column; Parquet cannot store one.
+      val rows = df.withColumn("nt", lit(null))
+      rows.createOrReplaceTempView("no_bounds_rows")
+      rows.cache()
+      try {
+        rows.count()
+        assert(nullCountsWithoutBounds("no_bounds_rows") == expected :+ 1000L)
+      } finally {
+        rows.unpersist(blocking = true)
+        spark.catalog.dropTempView("no_bounds_rows")
+      }
+    }
+
+    withTempPath { path =>
+      df.write.parquet(path.toString)
+      withNativeCache {
+        spark.read.parquet(path.toString).createOrReplaceTempView("no_bounds_native")
+        spark.catalog.cacheTable("no_bounds_native")
+        spark.table("no_bounds_native").count()
+        val cachedPlan = spark.sharedState.cacheManager
+          .lookupCachedData(spark.table("no_bounds_native"))
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+          .cachedPlan
+        assert(cachedPlan.isInstanceOf[CometNativeScanExec], cachedPlan)
+        assert(nullCountsWithoutBounds("no_bounds_native") == expected)
+      }
+    }
+
+    withSparkColumnarCache(
+      "no_bounds_columnar",
+      SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true") { path =>
+      df.write.parquet(path)
+    } { _ =>
+      assert(nullCountsWithoutBounds("no_bounds_columnar") == expected)
+    }
+  }
+
+  test("Comet in-memory cache statistics count the nulls of a column missing from a file") {
+    // Spark's vectorized Parquet reader marks a column that a file lacks all-null without counting
+    // any nulls, so that vector's numNulls is 0 while every row isNullAt. A binary column records
+    // that count and no bounds, so taking it from that vector would record no nulls, and the
+    // IsNull filter below would prune every batch read from the file that lacks the column.
+    withSparkColumnarCache(
+      "missing_column_columnar",
+      SQLConf.PARQUET_SCHEMA_MERGING_ENABLED.key -> "true") { path =>
+      spark.range(0, 400).selectExpr("id").write.parquet(path)
+      spark
+        .range(400, 1000)
+        .selectExpr("id", "cast(cast(id AS string) AS binary) AS b")
+        .write
+        .mode("append")
+        .parquet(path)
+    } { _ =>
+      val relation = spark.sharedState.cacheManager
+        .lookupCachedData(spark.table("missing_column_columnar"))
+        .get
+        .cachedRepresentation
+      assert(relation.cacheBuilder.cachedPlan.isInstanceOf[FileSourceScanExec])
+      checkAnswer(
+        spark.sql("SELECT count(*) FROM missing_column_columnar WHERE b IS NULL"),
+        Row(400L))
+      val b = relation.output.indexWhere(_.name == "b")
+      val stats = relation.cacheBuilder.cachedColumnBuffers
+        .collect()
+        .map(_.asInstanceOf[SimpleMetricsCachedBatch].stats)
+      assert(stats.map(_.getInt(b * 5 + 2)).sum == 400)
     }
   }
 
@@ -2684,6 +2795,31 @@ class CometInMemoryCacheSuite extends CometTestBase {
         "the vector Comet's own scans produce for BinaryType must still take the direct path")
     } finally {
       varBinary.close()
+    }
+  }
+
+  test("Comet in-memory cache converts a batch whose vectors hold more than its rows") {
+    // The statistics are gathered from the batch that is written, and a vector's null count covers
+    // all of its values. Here the batch reports 2 rows over vectors of 4 whose last two values are
+    // null, so a count taken from the vectors would be 2, which equals the batch's row count: the
+    // batch would be recorded all null and pruned by IsNotNull without being decoded. Converting
+    // copies only the batch's rows.
+    val cacheSchema = StructType(Seq(StructField("b", BinaryType)))
+    val binaries = new VarBinaryVector("b", CometArrowAllocator)
+    try {
+      binaries.allocateNew(4)
+      Seq(0, 1).foreach(r => binaries.set(r, Array[Byte](r.toByte)))
+      Seq(2, 3).foreach(r => binaries.setNull(r))
+      binaries.setValueCount(4)
+      val longer = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 2)
+      assert(Utils.isArrowBacked(longer))
+      assert(
+        !CometCachedBatchHelper.writesDirectly(longer, cacheSchema),
+        "a vector longer than its batch must be converted, not written as it stands")
+      val exact = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 4)
+      assert(CometCachedBatchHelper.writesDirectly(exact, cacheSchema))
+    } finally {
+      binaries.close()
     }
   }
 
