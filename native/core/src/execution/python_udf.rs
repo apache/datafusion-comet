@@ -490,78 +490,18 @@ impl ArrowPythonUdf {
                 .as_deref()
                 .map(|task| RunningCall::enter(py, task))
                 .transpose()?;
-            let mut result = self.callable.bind(py).call(positional, Some(&kwargs));
-            if self.accept_array_like {
-                // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`, which
-                // converts lists and NumPy arrays and rejects chunked arrays. It can run a
-                // user-defined `__arrow_array__`, so the call stays recorded meanwhile.
-                result = result.and_then(|result| {
-                    let arrays = PyList::new(py, [result])?;
-                    let names = PyList::new(py, ["_0"])?;
-                    pa.getattr("RecordBatch")?
-                        .call_method1("from_arrays", (arrays, names))?
-                        .call_method1("column", (0,))
-                });
-            }
+            // Everything up to the export can run user code, such as a result's
+            // `__arrow_array__` or an extension array's `cast`, so the call stays recorded
+            // until it ends.
+            let exported =
+                self.call_and_export(py, &pa, &array_class, &positional, &kwargs, num_rows);
             if let Some(call) = call {
                 call.exit(py);
             }
-            let result = result.map_err(|error| python_traceback_error(py, error))?;
+            let (out_array, out_schema) = exported?;
             if let Some(task) = self.task.as_deref().filter(|task| task.is_killed()) {
                 return Err(task.killed_error());
             }
-            // The conversion above already produced an array for Spark 4.2.
-            if !self.accept_array_like && !result.is_instance(&array_class).map_err(python_error)? {
-                return Err(ArrowError::ComputeError(
-                    "Arrow UDF must return a pyarrow.Array".to_string(),
-                ));
-            }
-            let result_len = result.len().map_err(python_error)?;
-            if result_len != num_rows {
-                return Err(ArrowError::ComputeError(format!(
-                    "Arrow UDF returned {result_len} rows, expected {num_rows}"
-                )));
-            }
-
-            let mut ffi_return_type = FFI_ArrowSchema::try_from(&self.return_type)?;
-            let expected_type = pa
-                .getattr("DataType")
-                .map_err(python_error)?
-                .call_method1(
-                    "_import_from_c",
-                    (&raw mut ffi_return_type as Py_uintptr_t,),
-                )
-                .map_err(python_error)?;
-            let actual_type = result.getattr("type").map_err(python_error)?;
-            let typed_result = if actual_type.eq(&expected_type).map_err(python_error)? {
-                result
-            } else if self.allow_cast {
-                let kwargs = pyo3::types::PyDict::new(py);
-                kwargs
-                    .set_item("safe", self.safe_cast)
-                    .map_err(python_error)?;
-                result
-                    .call_method("cast", (expected_type,), Some(&kwargs))
-                    .map_err(python_error)?
-            } else {
-                return Err(ArrowError::ComputeError(format!(
-                    "Arrow UDF returned type {}, expected {}",
-                    actual_type.str().map_err(python_error)?,
-                    expected_type.str().map_err(python_error)?
-                )));
-            };
-
-            let mut out_array = FFI_ArrowArray::empty();
-            let mut out_schema = FFI_ArrowSchema::empty();
-            typed_result
-                .call_method1(
-                    "_export_to_c",
-                    (
-                        &raw mut out_array as Py_uintptr_t,
-                        &raw mut out_schema as Py_uintptr_t,
-                    ),
-                )
-                .map_err(python_error)?;
             // SAFETY: PyArrow filled both C Data structs and transferred ownership
             // of the array to `out_array`. `from_ffi` checks the schema but builds the
             // array without validating its buffers, so string data is checked below.
@@ -577,6 +517,87 @@ impl ArrowPythonUdf {
             // Decode it the same way as arrays imported from the JVM.
             decode_string_arrays(&make_array(data))
         })
+    }
+}
+
+impl ArrowPythonUdf {
+    /// Calls the callable, checks and casts its result, and exports it through the Arrow C Data
+    /// interface.
+    fn call_and_export(
+        &self,
+        py: Python<'_>,
+        pa: &Bound<'_, PyModule>,
+        array_class: &Bound<'_, PyAny>,
+        positional: &Bound<'_, PyTuple>,
+        kwargs: &Bound<'_, pyo3::types::PyDict>,
+        num_rows: usize,
+    ) -> Result<(FFI_ArrowArray, FFI_ArrowSchema)> {
+        let mut result = self.callable.bind(py).call(positional, Some(kwargs));
+        if self.accept_array_like {
+            // Spark 4.2 builds its output batch with `RecordBatch.from_arrays`, which converts
+            // lists and NumPy arrays and rejects chunked arrays.
+            result = result.and_then(|result| {
+                let arrays = PyList::new(py, [result])?;
+                let names = PyList::new(py, ["_0"])?;
+                pa.getattr("RecordBatch")?
+                    .call_method1("from_arrays", (arrays, names))?
+                    .call_method1("column", (0,))
+            });
+        }
+        let result = result.map_err(|error| python_traceback_error(py, error))?;
+        // The conversion above already produced an array for Spark 4.2.
+        if !self.accept_array_like && !result.is_instance(array_class).map_err(python_error)? {
+            return Err(ArrowError::ComputeError(
+                "Arrow UDF must return a pyarrow.Array".to_string(),
+            ));
+        }
+        let result_len = result.len().map_err(python_error)?;
+        if result_len != num_rows {
+            return Err(ArrowError::ComputeError(format!(
+                "Arrow UDF returned {result_len} rows, expected {num_rows}"
+            )));
+        }
+
+        let mut ffi_return_type = FFI_ArrowSchema::try_from(&self.return_type)?;
+        let expected_type = pa
+            .getattr("DataType")
+            .map_err(python_error)?
+            .call_method1(
+                "_import_from_c",
+                (&raw mut ffi_return_type as Py_uintptr_t,),
+            )
+            .map_err(python_error)?;
+        let actual_type = result.getattr("type").map_err(python_error)?;
+        let typed_result = if actual_type.eq(&expected_type).map_err(python_error)? {
+            result
+        } else if self.allow_cast {
+            let kwargs = pyo3::types::PyDict::new(py);
+            kwargs
+                .set_item("safe", self.safe_cast)
+                .map_err(python_error)?;
+            result
+                .call_method("cast", (expected_type,), Some(&kwargs))
+                .map_err(python_error)?
+        } else {
+            return Err(ArrowError::ComputeError(format!(
+                "Arrow UDF returned type {}, expected {}",
+                actual_type.str().map_err(python_error)?,
+                expected_type.str().map_err(python_error)?
+            )));
+        };
+
+        let mut out_array = FFI_ArrowArray::empty();
+        let mut out_schema = FFI_ArrowSchema::empty();
+        typed_result
+            .call_method1(
+                "_export_to_c",
+                (
+                    &raw mut out_array as Py_uintptr_t,
+                    &raw mut out_schema as Py_uintptr_t,
+                ),
+            )
+            .map_err(python_error)?;
+        Ok((out_array, out_schema))
     }
 }
 
@@ -983,6 +1004,30 @@ mod tests {
     }
 
     #[test]
+    fn interrupts_a_user_defined_result_cast() {
+        const TASK: i64 = -6816;
+        initialize_python().unwrap();
+        Python::attach(|py| {
+            py.import("sys")
+                .unwrap()
+                .setattr("comet_casting", false)
+                .unwrap()
+        });
+        let task = Arc::new(TaskRegistration::new(TASK));
+        // The result's extension type differs from the declared Int64, so it is cast with the
+        // array's own `cast`.
+        let (_udf, result) = start_call(
+            &task,
+            c"(lambda ns: (exec('import sys\\nimport pyarrow as pa\\nclass LoopArray(pa.ExtensionArray):\\n    def cast(self, *args, **kwargs):\\n        sys.comet_casting = True\\n        n = 0\\n        while True:\\n            n += 1\\nclass LoopType(pa.ExtensionType):\\n    def __init__(self):\\n        super().__init__(pa.int32(), \"comet.loop\")\\n    def __arrow_ext_serialize__(self):\\n        return b\"\"\\n    @classmethod\\n    def __arrow_ext_deserialize__(cls, storage_type, serialized):\\n        return cls()\\n    def __arrow_ext_class__(self):\\n        return LoopArray\\ndef f(a):\\n    return pa.ExtensionArray.from_storage(LoopType(), a.cast(pa.int32()))\\n', ns), ns['f'])[1])({})",
+            false,
+        );
+        wait_for(|| python_is(c"sys.comet_casting"), "the cast did not start");
+        assert_eq!(kill_task(TASK, true), 1);
+        let error = error_of(result);
+        assert!(error.contains("TaskKilled"), "{error}");
+    }
+
+    #[test]
     fn consumes_an_interrupt_pending_when_the_call_returns() {
         const TASK: i64 = -6815;
         initialize_python().unwrap();
@@ -1028,8 +1073,8 @@ mod tests {
             assert_eq!(kill_task(TASK, true), 1);
         });
         let (result, later_python_ok) = receiver.recv().unwrap();
-        let error = result.unwrap_err().to_string();
-        assert!(error.contains("was killed"), "{error}");
+        // The sleep returns None, so the call fails on its result.
+        assert!(result.is_err());
         assert!(
             later_python_ok,
             "the interrupt fired in Python code after the call"
