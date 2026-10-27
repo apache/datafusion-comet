@@ -998,7 +998,7 @@ pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
             ));
         }
 
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
         register_before_execution(
             exec_context.root_op.is_some(),
             &mut exec_context.output_stream,
