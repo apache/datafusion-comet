@@ -1263,7 +1263,7 @@ class CometIcebergWriteActionSuite
   test("native acceleration: writes configured Iceberg Parquet bloom filters") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       createTable(
         "native_bloom",
         partitionSpec = "",
@@ -1285,7 +1285,7 @@ class CometIcebergWriteActionSuite
   test("Bloom-filter folding config selects the native or JVM Iceberg writer") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
       createTable("bloom_folding_enabled", partitionSpec = "", properties)
       createTable("bloom_folding_disabled", partitionSpec = "", properties)
@@ -1371,7 +1371,7 @@ class CometIcebergWriteActionSuite
   test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val configuredFpp = 0.01
       val configuredNdv = 1000
       val properties = Some(
@@ -1413,7 +1413,7 @@ class CometIcebergWriteActionSuite
   test("enabled=false preserves JVM validation errors for malformed FPP and NDV") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       Seq(
         ("fpp", "'write.parquet.bloom-filter-fpp.column.id'='garbage'", icebergSupportsBloomFpp),
         ("ndv", "'write.parquet.bloom-filter-ndv.column.id'='garbage'", icebergSupportsBloomNdv))
@@ -1460,7 +1460,7 @@ class CometIcebergWriteActionSuite
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val minimumBytes = 32
       val naturallyMinimumNdv = 1
       val bindingNdv = 1000000
@@ -1694,7 +1694,7 @@ class CometIcebergWriteActionSuite
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // This NDV/FPP pair requests a 128 MiB allocation before max-bytes is applied. The 4 KiB
       // maximum must therefore bind on both writers rather than merely coinciding with the
       // naturally selected size.
@@ -1854,7 +1854,7 @@ class CometIcebergWriteActionSuite
   test("native bloom sizing matches JVM for shape properties supported by the Iceberg runtime") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true'"
       val cases: Seq[(String, String, Boolean, Boolean)] = Seq(
         (
@@ -1929,7 +1929,7 @@ class CometIcebergWriteActionSuite
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // max-bytes is only a cap in parquet-mr; it does not enlarge a filter whose explicit NDV
       // was underestimated. This comparison prevents Comet from silently replacing the user's
       // NDV with an artificial NDV derived from the much larger maximum.
@@ -1965,7 +1965,7 @@ class CometIcebergWriteActionSuite
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val configuredNdv = 1000L
       val configuredFpp = 0.01
       val insertedIds = 0 until 100
@@ -2018,7 +2018,7 @@ class CometIcebergWriteActionSuite
   test("large representable max folds natively while adjacent non-power-of-two falls back") {
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       val powerOfTwo = 64 * 1024 * 1024
       val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
       createTable(
@@ -2078,7 +2078,7 @@ class CometIcebergWriteActionSuite
     assumeNativeBloomRuntime()
     assumeNativeAcceleration()
     assumeIcebergBloomShapeProperties()
-    withIcebergCatalog { warehouseDir =>
+    withIcebergCatalog { _ =>
       // A tiny explicit NDV keeps the fallback writer's allocation small even for the oversized
       // maximum. Without a configured Bloom column, the maximum is unused and stays native.
       val enabledWithSmallNdv =
