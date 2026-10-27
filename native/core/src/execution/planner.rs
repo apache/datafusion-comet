@@ -4899,8 +4899,17 @@ mod tests {
             );
         }
 
+        // Final reads the keys from the leading columns and each state from the columns after
+        // them, so a PartialMerge whose input is laid out any other way stays Single.
+        let with_hash_agg =
+            |mut op: Operator, edit: &dyn Fn(&mut spark_operator::HashAggregate)| {
+                if let Some(OpStruct::HashAgg(agg)) = op.op_struct.as_mut() {
+                    edit(agg);
+                }
+                op
+            };
         // Spark's partial collect_list hands over its buffers as binary, which Final would spill
-        // as list states into binary columns, so that PartialMerge stays Single.
+        // as list states into binary columns.
         let collect_list = aggregate(
             &[0],
             vec![spark_expression::DataType {
@@ -4915,12 +4924,30 @@ mod tests {
                 ..Default::default()
             }],
         );
-        let (_, _, planned) = planner.create_plan(&collect_list, &mut vec![], 1).unwrap();
-        let single = planned.additional_native_plans[0]
-            .downcast_ref::<AggregateExec>()
-            .unwrap();
-        assert_eq!(&AggregateMode::Single, single.mode());
-        assert_ne!(&InputOrderMode::Linear, single.input_order_mode());
+        let swapped_keys = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.grouping_exprs = vec![key(1), key(0)];
+        });
+        let states_after_one_key = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.initial_input_buffer_offset = 1;
+        });
+        let extra_column = aggregate(
+            &[0],
+            vec![int64.clone(), int64.clone(), int64.clone()],
+            vec![create_max_agg(&v), create_count_agg(&v)],
+        );
+        for (case, op) in [
+            ("collect_list buffers", collect_list),
+            ("swapped keys", swapped_keys),
+            ("states after one key", states_after_one_key),
+            ("a column after the states", extra_column),
+        ] {
+            let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+            let single = planned.additional_native_plans[0]
+                .downcast_ref::<AggregateExec>()
+                .unwrap();
+            assert_eq!(&AggregateMode::Single, single.mode(), "{case}");
+            assert_ne!(&InputOrderMode::Linear, single.input_order_mode(), "{case}");
+        }
     }
 
     #[tokio::test]

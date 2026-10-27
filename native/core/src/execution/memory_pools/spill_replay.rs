@@ -182,6 +182,7 @@ pub(super) fn unwrap_spill_replay(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn
 }
 
 /// The prefix of the name DataFusion gives the consumer of an `OrderedFinalAggregateStream`.
+/// DataFusion 56 renames the stream and its consumer `ClusteredFinalAggregateStream` (#6410).
 pub(super) const ORDERED_FINAL_AGGREGATE: &str = "OrderedFinalAggregateStream[";
 
 /// Whether `consumer` belongs to a final or single aggregate, whose spill replay can't spill.

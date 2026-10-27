@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
@@ -318,7 +318,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       for (poolMiB <- poolsMiB) {
         withSQLConf(
           SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
           CometConf.COMET_BATCH_SIZE.key -> "1024",
           CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
           "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
@@ -365,9 +364,11 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     withPartialMergeOverSortedPrefix(Seq(16)) { path =>
       // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
       // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
-      // and the PartialMerge sees its input sorted on g. AQE would turn the join into a broadcast
-      // hash join, because the keys are tiny.
-      withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
+      // runtime, which would turn the join into a broadcast hash join, because the keys are tiny.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
         val df = spark.read
           .parquet(path + "/data")
           .join(spark.read.parquet(path + "/keys"), "g")
@@ -376,11 +377,20 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           .orderBy("g")
         checkCometAnswer(df, partialMergeOverSortedPrefixAnswer)
 
-        val plan = df.queryExecution.executedPlan
+        // An exchange between the join and the partial aggregate would leave the PartialMerge
+        // over unsorted input, where it would still spill.
+        def reachesJoinWithoutExchange(plan: SparkPlan): Boolean = plan match {
+          case _: CometSortMergeJoinExec => true
+          case _: CometShuffleExchangeExec => false
+          case other => other.children.exists(reachesJoinWithoutExchange)
+        }
         assert(
-          collect(plan) { case join: CometSortMergeJoinExec => join }.nonEmpty,
-          "Expected a native sort-merge join:\n" + plan)
-        spilledAggregates(df, PartialMerge)
+          spilledAggregates(df, PartialMerge).exists(_.child match {
+            case partial: CometHashAggregateExec => reachesJoinWithoutExchange(partial.child)
+            case _ => false
+          }),
+          "Expected a native PartialMerge over a partial aggregate over a sort-merge join:\n" +
+            df.queryExecution.executedPlan)
       }
     }
   }

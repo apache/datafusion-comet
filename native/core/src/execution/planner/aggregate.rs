@@ -260,8 +260,10 @@ impl OperatorBuilder for HashAggBuilder {
         // followed by native states. A PartialMerge over Spark's binary collect buffers keeps
         // Single, but that input arrives through a ScanExec with no ordering, so it is not
         // expected to be sorted on a key.
-        // DataFusion 56 replaces the legacy stream with an OrderedSingleAggregateStream, so
-        // recheck this on that upgrade (#6410).
+        // DataFusion 56 runs Single over this input with a ClusteredSingleAggregateStream, and
+        // renames this stream ClusteredFinalAggregateStream, which is also its consumer name
+        // (apache/datafusion#24697). So on that upgrade, drop this switch and update the
+        // consumer name prefix in `spill_replay.rs` that the fair pool exemption uses (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
             && !child
