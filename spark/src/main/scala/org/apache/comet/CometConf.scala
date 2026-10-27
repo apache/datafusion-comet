@@ -418,9 +418,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. On Spark 3.4, AQE cannot coalesce the shuffle " +
-          "partitions of a union that Comet runs with a cached relation in one branch. At " +
-          "startup, this setting also decides " +
+          "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
+          "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
+          "Comet writes the rows straight into Arrow batches for the cache instead of " +
+          "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
+          "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
+          "At startup, this setting also decides " +
           "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
           "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
