@@ -103,6 +103,11 @@ The following incompatibilities cause `Mode` to fall back to Spark by default. S
 
 ## Percentile
 
+The following differences from Spark are always present and do not require any additional configuration:
+
+- Before Spark 3.5.2, Spark can merge `0.0` and `-0.0` into one key and drop the count of one of them (SPARK-45599). Comet keeps every value, so when `FLOAT` or `DOUBLE` input holds both zeros the result can differ from Spark's.
+- From Spark 3.5.2, when `FLOAT` or `DOUBLE` input holds both `0.0` and `-0.0`, Spark ranks first the one its hash table reaches first. Comet replays those tables for each task's partial buffer and each merge stage, but not Spark's sort-based fallback once a task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor Comet's own aggregates emitting groups early or spilling under memory pressure, where a spill inside a merge stage nests that stage's partials one level deeper than Spark does. In those cases Comet's zero can differ from Spark's.
+
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - An array of percentages is not supported.

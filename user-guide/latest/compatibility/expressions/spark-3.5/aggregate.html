@@ -947,6 +947,11 @@ under the License.
 </section>
 <section id="percentile">
 <h2>Percentile<a class="headerlink" href="#percentile" title="Link to this heading">#</a></h2>
+<p>The following differences from Spark are always present and do not require any additional configuration:</p>
+<ul class="simple">
+<li><p>Before Spark 3.5.2, Spark can merge <code class="docutils literal notranslate"><span class="pre">0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> into one key and drop the count of one of them (SPARK-45599). Comet keeps every value, so when <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> input holds both zeros the result can differ from Spark’s.</p></li>
+<li><p>From Spark 3.5.2, when <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> input holds both <code class="docutils literal notranslate"><span class="pre">0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">-0.0</span></code>, Spark ranks first the one its hash table reaches first. Comet replays those tables for each task’s partial buffer and each merge stage, but not Spark’s sort-based fallback once a task holds <code class="docutils literal notranslate"><span class="pre">spark.sql.objectHashAggregate.sortBased.fallbackThreshold</span></code> groups, nor Comet’s own aggregates emitting groups early or spilling under memory pressure, where a spill inside a merge stage nests that stage’s partials one level deeper than Spark does. In those cases Comet’s zero can differ from Spark’s.</p></li>
+</ul>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
 <li><p>An array of percentages is not supported.</p></li>
