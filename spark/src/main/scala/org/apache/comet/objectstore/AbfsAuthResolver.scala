@@ -29,6 +29,7 @@ import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 
+import org.apache.comet.NativeBase
 import org.apache.comet.objectstore.AbfsReflection.Handles
 
 /**
@@ -471,11 +472,11 @@ private[comet] object AbfsAuthResolver extends Logging {
 
   /**
    * Why the native store cannot read `uri` under `outcome`, or None when it can: a mechanism
-   * Hadoop named that runs Java code per request, a built-in OAuth provider with no
-   * `object_store` counterpart, a client credentials endpoint the native store rejects, or a
-   * resolution that failed. All are known on the driver, so the scan falls back to Spark's own
+   * Hadoop named that runs Java code per request, a resolution that failed, or resolved values
+   * the native store rejects. All are known on the driver, so the scan falls back to Spark's own
    * reader, which authenticates through hadoop-azure, instead of planning natively and failing
-   * every task.
+   * every task. For `Resolved`, native itself answers (see [[nativeStoreError]]), so the rules
+   * live in one place.
    */
   def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
     // The container and host only: a password in the user info stays out of the reason.
@@ -485,67 +486,40 @@ private[comet] object AbfsAuthResolver extends Logging {
       if (at < 0) authority
       else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at)
     val location = s"${uri.getScheme}://$safeAuthority"
-    def unsupported(mechanism: String): String =
-      s"Native scan does not support ABFS authentication $mechanism for $location"
     outcome match {
       case Declined(authType, providerClass, assertionProviderClass) =>
         val classes = providerClass.map(c => s" with provider $c").getOrElse("") +
           assertionProviderClass.map(c => s" and client assertion provider $c").getOrElse("")
-        Some(unsupported(s"auth type $authType$classes"))
-      case Resolved(
-            AuthTypes.OAUTH,
-            Some(c @ (Providers.REFRESH_TOKEN | Providers.USER_PASSWORD)),
-            _) =>
-        Some(unsupported(s"auth type ${AuthTypes.OAUTH} with provider $c"))
-      case Resolved(AuthTypes.OAUTH, Some(c @ Providers.CLIENT_CREDS), values)
-          if !values.get(Keys.CLIENT_ENDPOINT).exists(clientCredsEndpointUsable) =>
-        // The endpoint stays out of the reason: it may carry user info.
         Some(
-          unsupported(
-            s"auth type ${AuthTypes.OAUTH} with provider $c and an endpoint that is not an " +
-              "https URL with a tenant path segment"))
-      case Resolved(AuthTypes.OAUTH, Some(c @ Providers.WORKLOAD_IDENTITY), values)
-          if !values.get(Keys.MSI_AUTHORITY).exists(httpsHost) =>
-        Some(
-          unsupported(
-            s"auth type ${AuthTypes.OAUTH} with provider $c and an authority that is not an " +
-              "https URL"))
+          s"Native scan does not support ABFS authentication auth type $authType$classes " +
+            s"for $location")
+      case resolved: Resolved =>
+        // The message names option keys, never their values.
+        nativeStoreError(s"$location/", toOptions(resolved)).map(message =>
+          s"Native scan cannot use the ABFS authentication for $location: $message")
       case Failed(_, message) =>
         // Some of Hadoop's own messages quote the whole URI, user info included.
         val safeMessage =
           if (authority.isEmpty) message else message.replace(authority, safeAuthority)
         Some(s"Hadoop ABFS authentication failed on the driver for $location: $safeMessage")
-      case _: Resolved | Unconfigured => None
+      case Unconfigured => None
     }
   }
 
   /**
-   * Whether the native store can post client credentials token requests to `endpoint`: an `https`
-   * URL with a host and a tenant segment, which `client_creds_settings` in `azure.rs` reads the
-   * same way (the tenant is the segment before the last `oauth2`, else the first). Conservative
-   * where the native URL parser and `java.net.URI` could disagree: a percent escape, a backslash
-   * or a dot segment is declined, since Hadoop's own reader may take it.
+   * Why native cannot build the store for `url` from `options`, from the same code the scan runs.
+   * When native cannot be asked (the library is not loaded), this assumes it can: such a build
+   * cannot run the native scan anyway.
    */
-  private[objectstore] def clientCredsEndpointUsable(endpoint: String): Boolean =
-    Try(new URI(endpoint)).toOption.exists { uri =>
-      val path = Option(uri.getRawPath).getOrElse("")
-      val segments = path.stripPrefix("/").split("/", -1)
-      val tenantAt = Some(segments.lastIndexOf("oauth2")).filter(_ > 0).map(_ - 1).getOrElse(0)
-      hasHttpsHost(uri) &&
-      !path.exists(c => c == '%' || c == '\\') && !segments.exists(s => s == "." || s == "..") &&
-      segments(tenantAt).nonEmpty
+  private def nativeStoreError(url: String, options: Map[String, String]): Option[String] = {
+    val (keys, values) = options.toArray.unzip
+    try Option(NativeBase.abfsStoreError(url, keys, values))
+    catch {
+      case e @ (NonFatal(_) | _: LinkageError) =>
+        logDebug(s"Could not ask native whether it can build the ABFS store for $url", e)
+        None
     }
-
-  /**
-   * Whether the native store can post Workload Identity token requests to `authority`. It adds
-   * `/<tenant>/oauth2/v2.0/token` to the authority, as Hadoop does, over a client that refuses
-   * `http`, so the authority must be an `https` URL with a host.
-   */
-  private[objectstore] def httpsHost(authority: String): Boolean =
-    Try(new URI(authority)).toOption.exists(hasHttpsHost)
-
-  private def hasHttpsHost(uri: URI): Boolean =
-    "https".equalsIgnoreCase(uri.getScheme) && uri.getHost != null
+  }
 
   private def providerMarker(authType: String): String =
     if (authType == AuthTypes.SAS) Markers.SAS_PROVIDER_CLASS else Markers.OAUTH_PROVIDER_CLASS

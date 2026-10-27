@@ -858,15 +858,28 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       Keys.CLIENT_ID -> "client-123",
       Keys.CLIENT_SECRET -> "client-secret-value")
 
-  test(
-    "extractScanObjectStoreOptions - a client credentials endpoint native rejects falls back") {
-    // `azure.rs` builds no store for an `http` endpoint or one without a tenant segment.
+  test("extractScanObjectStoreOptions - a client credentials endpoint follows native") {
+    // Native answers for the endpoint: `azure.rs` builds no store for an `http` endpoint or one
+    // without a tenant segment, and resolves the URL parser's quirks rather than rejecting them.
     Seq(
-      "http://login.microsoftonline.com/tenant/oauth2/token",
-      "https://login.microsoftonline.com/",
-      "https://login.microsoftonline.com").foreach { endpoint =>
+      "http://login.microsoftonline.com/tenant/oauth2/token" -> "is not an `https` URL",
+      "https://login.microsoftonline.com/" -> "no tenant segment",
+      "https://login.microsoftonline.com" -> "no tenant segment").foreach {
+      case (endpoint, message) =>
+        withClue(s"$endpoint: ") {
+          assertFallsBack(clientCredsConf(endpoint), Keys.CLIENT_ENDPOINT, message)
+        }
+    }
+    val uris = Seq(abfsFile("data", "accta", "a.parquet"))
+    Seq(
+      "https://auth-proxy.example/aad/t/oauth2/v2.0/token",
+      "https://h/a/%2e%2e/t/oauth2/token",
+      "https://h/a\\b/t/oauth2/token").foreach { endpoint =>
       withClue(s"$endpoint: ") {
-        assertFallsBack(clientCredsConf(endpoint), Providers.CLIENT_CREDS, "tenant path segment")
+        NativeConfig.extractScanObjectStoreOptions(clientCredsConf(endpoint), uris) match {
+          case Right(options) => options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
+          case Left(reason) => fail(s"expected native options, got a fallback: $reason")
+        }
       }
     }
   }
@@ -893,8 +906,8 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
         Keys.MSI_AUTHORITY -> authority)
     assertFallsBack(
       conf("http://user:authority-password@login.example/"),
-      Providers.WORKLOAD_IDENTITY,
-      "authority that is not an https URL")
+      Keys.MSI_AUTHORITY,
+      "is not an `https` URL")
     val uris = Seq(abfsFile("data", "accta", "a.parquet"))
     NativeConfig.extractScanObjectStoreOptions(
       conf("http://user:authority-password@login.example/"),
@@ -906,48 +919,6 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       case Right(options) => options(Markers.RESOLUTION) shouldBe Markers.RESOLVED
       case Left(reason) => fail(s"expected native options, got a fallback: $reason")
     }
-  }
-
-  test("httpsHost - needs an https URL with a host") {
-    Seq("https://login.microsoftonline.com/", "https://h:8443/aad", "HTTPS://h").foreach(a =>
-      withClue(a)(AbfsAuthResolver.httpsHost(a) shouldBe true))
-    Seq(
-      "http://login.microsoftonline.com/",
-      "https:///",
-      "login.microsoftonline.com",
-      "not a url")
-      .foreach(a => withClue(a)(AbfsAuthResolver.httpsHost(a) shouldBe false))
-  }
-
-  test("clientCredsEndpointUsable - agrees with the endpoints azure.rs builds a store for") {
-    // The cases of `oauth_endpoint_parts_split_tenant_and_authority_host` in azure.rs, over https.
-    val usable = Seq(
-      "https://login.microsoftonline.com/tenant/oauth2/token",
-      "https://user:pass@auth-proxy.example/t/oauth2/token",
-      "https://auth-proxy.example:8443/t/oauth2/token",
-      "https://[::1]:8443/t/oauth2/token",
-      "https://auth-proxy.example/aad/t/oauth2/v2.0/token",
-      "https://auth-proxy.example/aad/t/token",
-      "https://auth-proxy.example/oauth2/token",
-      "https://h//t/oauth2/token",
-      "https://h/aad/t/oauth2/v2.0/token?q=oauth2#f",
-      "https://h/a/oauth2/b/oauth2/token",
-      "HTTPS://h/t/oauth2/token")
-    val unusable = Seq(
-      "http://login.microsoftonline.com/tenant/oauth2/token",
-      "https://auth-proxy.example/",
-      "https://auth-proxy.example",
-      "https://h/a//oauth2/token",
-      "file:///t/oauth2/token",
-      "urn:t:oauth2",
-      "not a url",
-      // Resolved differently by the native URL parser, so declined rather than guessed at.
-      "https://h/a/%2e%2e/t/oauth2/token",
-      "https://h/a\\b/t/oauth2/token",
-      "https://h/a/../oauth2/token")
-    usable.foreach(e => withClue(e)(AbfsAuthResolver.clientCredsEndpointUsable(e) shouldBe true))
-    unusable.foreach(e =>
-      withClue(e)(AbfsAuthResolver.clientCredsEndpointUsable(e) shouldBe false))
   }
 
   test("extractScanObjectStoreOptions - a failed ABFS resolution falls back to Spark") {
