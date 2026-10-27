@@ -119,6 +119,11 @@ impl ScalarUDFImpl for SparkMakeDate {
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
         let [year, month, day] = take_function_args(self.name(), args.args)?;
 
+        // Scalar arguments must not evaluate a date when the input batch has no rows.
+        if args.number_rows == 0 {
+            return Ok(ColumnarValue::Array(Arc::new(Date32Array::new_null(0))));
+        }
+
         // Determine the batch size from array arguments (scalars have no inherent size)
         let num_rows = [&year, &month, &day]
             .iter()
@@ -192,6 +197,45 @@ impl ScalarUDFImpl for SparkMakeDate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::datatypes::{Field, Schema};
+    use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+    use datafusion::common::ScalarValue;
+    use datafusion::config::ConfigOptions;
+    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_expr::expressions::Literal;
+    use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
+
+    #[test]
+    fn scalar_arguments_do_not_validate_dates_on_empty_batches() {
+        let expression = ScalarFunctionExpr::new(
+            "make_date",
+            Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(true))),
+            [2024, 13, 1]
+                .into_iter()
+                .map(|value| {
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(value)))) as Arc<dyn PhysicalExpr>
+                })
+                .collect(),
+            Arc::new(Field::new("make_date", DataType::Date32, true)),
+            Arc::new(ConfigOptions::default()),
+        );
+        let batch = |number_rows| {
+            RecordBatch::try_new_with_options(
+                Arc::new(Schema::empty()),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(number_rows)),
+            )
+            .unwrap()
+        };
+        let result = expression
+            .evaluate(&batch(0))
+            .unwrap()
+            .into_array(0)
+            .unwrap();
+        assert_eq!(result.data_type(), &DataType::Date32);
+        assert!(result.is_empty());
+        assert!(expression.evaluate(&batch(1)).is_err());
+    }
 
     #[test]
     fn test_make_date_valid() {
