@@ -1234,7 +1234,7 @@ object IcebergReflection extends Logging {
   def promotedColumns(table: Any, schema: Any): Set[String] = {
     import scala.jdk.CollectionConverters._
     val findField = getMethod(schema.getClass, "findField", classOf[Int])
-    def typeOf(field: Any): String = getMethod(field.getClass, "type").invoke(field).toString
+    def typeOf(field: Any): String = fieldTypeOf(field).toString
     val schemasById = getMethod(table.getClass, "schemas")
       .invoke(table)
       .asInstanceOf[java.util.Map[_, _]]

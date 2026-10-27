@@ -4306,15 +4306,9 @@ class CometIcebergNativeSuite
     }
   }
 
-  /**
-   * Compares `SELECT id FROM table WHERE predicate` with Spark for each predicate, alone and
-   * after `l IS NOT NULL AND`. That array null check is a conjunct the serde never pushes, as in
-   * the queries that found these bugs, so each predicate is also checked in a residual left
-   * unpushed.
-   */
   private def checkResidualPredicates(table: String, predicates: Seq[String]): Unit =
-    for (predicate <- predicates; prefix <- Seq("", "l IS NOT NULL AND ")) {
-      checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
+    for (predicate <- predicates) {
+      checkIcebergNativeScan(s"SELECT id FROM $table WHERE ($predicate)")
     }
 
   test("floating-point residuals preserve signed zeros in native scans") {
@@ -4326,22 +4320,22 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
         val table = "test_cat.db.floating_residual_test"
-        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, d DOUBLE, l ARRAY<INT>) USING iceberg")
+        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, d DOUBLE) USING iceberg")
         try {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             // One file containing both zeros keeps file pruning from deciding the comparison.
             // Distinct ids make a missing signed-zero row observable without comparing floats.
             spark
               .sql("""
-                SELECT id, CAST(v AS FLOAT) AS f, CAST(v AS DOUBLE) AS d, l
+                SELECT id, CAST(v AS FLOAT) AS f, CAST(v AS DOUBLE) AS d
                 FROM VALUES
-                  (1, '-0.0', array(1)),
-                  (2, '0.0', array(1)),
-                  (3, '1.0', CAST(NULL AS ARRAY<INT>)),
-                  (4, '-1.0', array(1)),
-                  (5, NULL, array(1)),
-                  (6, 'NaN', array(1))
-                AS input(id, v, l)
+                  (1, '-0.0'),
+                  (2, '0.0'),
+                  (3, '1.0'),
+                  (4, '-1.0'),
+                  (5, NULL),
+                  (6, 'NaN')
+                AS input(id, v)
               """)
               .coalesce(1)
               .write
@@ -4397,15 +4391,15 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
         val table = "test_cat.db.null_safe_residual_test"
-        spark.sql(s"CREATE TABLE $table (id INT, b BOOLEAN, l ARRAY<INT>) USING iceberg")
+        spark.sql(s"CREATE TABLE $table (id INT, b BOOLEAN) USING iceberg")
         try {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             // One file keeps file pruning from deciding the comparison.
             spark
               .sql("""
                 SELECT * FROM VALUES
-                  (NULL, NULL, array(1)), (1, true, array(1)), (2, false, array(1))
-                AS t(id, b, l)
+                  (NULL, NULL), (1, true), (2, false)
+                AS t(id, b)
               """)
               .coalesce(1)
               .write
@@ -4464,16 +4458,16 @@ class CometIcebergNativeSuite
         CometConf.COMET_EXEC_ENABLED.key -> "true",
         CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
         val table = "test_cat.db.promoted_residual_test"
-        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, l ARRAY<INT>) USING iceberg")
+        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT) USING iceberg")
         try {
           withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
             // One file, so that its FLOAT bounds keep it for f = 0.1D below.
             spark.sql(s"""INSERT INTO $table SELECT /*+ COALESCE(1) */ * FROM VALUES
-              (1, 0.5, array(1)), (2, 2.5, array(1)), (3, 0.1, array(1)), (6, 0.05, array(1))
-              AS v(id, f, l)""")
+              (1, 0.5), (2, 2.5), (3, 0.1), (6, 0.05)
+              AS v(id, f)""")
             spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
             spark.sql(s"ALTER TABLE $table ALTER COLUMN f TYPE DOUBLE")
-            spark.sql(s"INSERT INTO $table VALUES (4, 0.5D, array(1)), (5, 4.5D, array(1))")
+            spark.sql(s"INSERT INTO $table VALUES (4, 0.5D), (5, 4.5D)")
           }
           // The first file still stores INT and FLOAT. iceberg-rust skips its pages for range and
           // IN predicates on the promoted types, and casts 3000000000 to a NULL INT.

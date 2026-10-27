@@ -752,7 +752,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               // Spark sorts every NaN above all numbers. The native row filter sorts negative NaNs
               // below them, and iceberg-rust prunes row groups on min/max statistics that can
               // leave NaN out, or hold it as both when parquet-mr 1.9 or earlier starts a row
-              // group with NaN (apache/iceberg-rust#3494).
+              // group with NaN. apache/iceberg-rust#3502 fixes the NaN-bound row-group pruning
+              // after the pinned revision; page-index and row-filter semantics still need checking
+              // before relaxing this exclusion.
               case LT | LT_EQ | GT | GT_EQ
                   if attribute.dataType == FloatType || attribute.dataType == DoubleType =>
                 None
