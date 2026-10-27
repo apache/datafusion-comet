@@ -163,6 +163,7 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometParquetWriterRetrySuite
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.spark.sql.comet.CometNativeWriteSuite
               org.apache.comet.parquet.ParquetReadV1Suite

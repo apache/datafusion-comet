@@ -429,7 +429,11 @@ the executor.
   in-progress row group (`ArrowWriter::memory_size`). The estimate counts encoded pages, encoder
   buffers, dictionaries and Bloom filters. The writer keeps parquet-rs's default row-group limit of
   1Mi rows and sets no byte limit, so a wide schema can hold a large row group
-  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)).
+  ([#5304](https://github.com/apache/datafusion-comet/issues/5304)). A file that is neither local
+  nor on HDFS, such as one the S3A magic committer hands out, is written through a Hadoop output
+  stream, and the reservation then also includes the 1 MiB buffer that batches the writes to it.
+  The stream's own buffers, such as S3A's upload buffers (`fs.s3a.fast.upload.buffer`), are not
+  Comet's and sit outside its pool, as they do for Spark's writer.
 - The Iceberg writer keeps one file open per partition in a fanout write, so its reservation grows
   with the number of partitions a task writes. iceberg-rust's `ParquetWriter` does not expose
   parquet-rs's `memory_size`, only every byte the file has written, its in-progress row group's

@@ -54,7 +54,7 @@ use crate::execution::{
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
+use crate::jvm_bridge::{jni_call, JVMClasses, OutputStreamSink, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
@@ -197,6 +197,10 @@ pub struct PhysicalPlanner {
     /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
     /// thread before native planning. Only explicit RSS destinations may use it.
     shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file the plan's Parquet writer writes, when the JVM created that
+    /// file, registered on the driving Spark task thread before native planning. Only a writer
+    /// planned to write through the JVM may use it.
+    output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
@@ -222,6 +226,7 @@ impl PhysicalPlanner {
             task_context: None,
             class_loader: None,
             shuffle_partition_pusher: None,
+            output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
         }
@@ -342,6 +347,15 @@ impl PhysicalPlanner {
         shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
     ) -> Self {
         self.shuffle_partition_pusher = shuffle_partition_pusher;
+        self
+    }
+
+    /// Attach the output stream of the file the plan's Parquet writer writes, for a file the
+    /// Spark task that created this plan created through the JVM.
+    ///
+    /// Only a writer planned to write through the JVM takes it, and such a writer requires it.
+    pub fn with_output_stream(mut self, output_stream: Option<Arc<dyn OutputStreamSink>>) -> Self {
+        self.output_stream = output_stream;
         self
     }
 
