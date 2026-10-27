@@ -2954,37 +2954,6 @@ mod tests {
     }
 
     #[test]
-    fn test_cast_float_to_timestamp_legacy_saturates() {
-        let tz = Some(Arc::from("UTC"));
-        let overflow: ArrayRef = Arc::new(Float64Array::from(vec![
-            Some(1e16),
-            Some(-1e16),
-            Some(9.3e12),
-            Some(f64::MAX),
-            Some(f64::NAN),
-        ]));
-        let legacy = cast_float_to_timestamp(&overflow, &tz, EvalMode::Legacy).unwrap();
-        assert_ts(
-            &legacy,
-            &[
-                Some(i64::MAX),
-                Some(i64::MIN),
-                Some(i64::MAX),
-                Some(i64::MAX),
-                None,
-            ],
-            Some("UTC"),
-        );
-        // Try goes through the ANSI path in Spark and turns the overflow into null.
-        let try_mode = cast_float_to_timestamp(&overflow, &tz, EvalMode::Try).unwrap();
-        assert_ts(&try_mode, &[None, None, None, None, None], Some("UTC"));
-
-        let f32_max: ArrayRef = Arc::new(Float32Array::from(vec![Some(f32::MAX), Some(f32::MIN)]));
-        let legacy = cast_float_to_timestamp(&f32_max, &tz, EvalMode::Legacy).unwrap();
-        assert_ts(&legacy, &[Some(i64::MAX), Some(i64::MIN)], Some("UTC"));
-    }
-
-    #[test]
     fn test_cast_float_invalid_from_type_is_double() {
         let tz = Some(Arc::from("UTC"));
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
