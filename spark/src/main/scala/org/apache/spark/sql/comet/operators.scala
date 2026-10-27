@@ -1980,10 +1980,9 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
-    // Convert the projection expressions (columns to carry forward)
-    // These are the non-generator output columns
-    val generatorOutput = op.generatorOutput.toSet
-    val projectExprs = op.output.filterNot(generatorOutput.contains).map { attr =>
+    // The child columns carried forward. Not derived from `op.output` minus the generator output:
+    // a generator may reuse its child's attribute ids, as `ReplicateRows` does for EXCEPT ALL.
+    val projectExprs = op.requiredChildOutput.map { attr =>
       exprToProto(attr, op.child.output)
     }
 

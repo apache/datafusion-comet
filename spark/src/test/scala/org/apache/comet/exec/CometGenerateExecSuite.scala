@@ -815,4 +815,20 @@ class CometGenerateExecSuite extends CometTestBase {
       }
     }
   }
+
+  test("EXCEPT ALL in a correlated subquery keeps the carried columns") {
+    // The decorrelated plan carries t0a and t0b past `ReplicateRows`, whose output reuses
+    // those attribute ids.
+    withTempView("t0", "t1", "t2") {
+      sql("CREATE TEMP VIEW t0(t0a, t0b) AS VALUES (1, 1), (2, 0)")
+      sql("CREATE TEMP VIEW t1(t1a, t1c) AS VALUES (1, 3)")
+      sql("CREATE TEMP VIEW t2(t2b, t2c) AS VALUES (1, 5), (2, 7)")
+      checkSparkAnswerWithNativeGenerate(sql("""
+          |SELECT t0a, (SELECT count(t1c) FROM
+          |  (SELECT t1c FROM t1 WHERE t1a = t0a
+          |   EXCEPT ALL
+          |   SELECT t2c FROM t2 WHERE t2b = t0b))
+          |FROM t0""".stripMargin))
+    }
+  }
 }
