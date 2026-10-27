@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeRefer
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.{HintInfo, Join, JoinHint, LogicalPlan, NO_BROADCAST_HASH, PREFER_SHUFFLE_HASH}
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, CommandResultExec, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SparkStrategy, SQLExecution, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
@@ -3302,6 +3302,15 @@ class CometJoinSuite extends CometTestBase {
           .localCheckpoint(eager = true))
     }
 
+  /**
+   * Build sides for an inner join with a checkpoint, each with whether to force a shuffled hash
+   * join: unhinted, then hinted for a shuffled hash join, then for a broadcast.
+   */
+  private def checkpointJoinBuildSides: Seq[(DataFrame, Boolean)] = {
+    val keys = spark.range(100).toDF("id")
+    Seq(keys -> true, keys.hint("shuffle_hash") -> false, keys.hint("broadcast") -> false)
+  }
+
   test("outer hash joins over a checkpointed streamed side fall back and keep its order") {
     // Spark drops the sort above the join for the checkpoint's order, which Comet cannot check.
     withOrderedCheckpoint { streamed =>
@@ -3391,6 +3400,61 @@ class CometJoinSuite extends CometTestBase {
           collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
           s"$hint\n$plan")
         assert(partitionsInOrder(df, order: _*), s"$hint\n$plan")
+      }
+    }
+  }
+
+  test("a native window above an inner hash join over a checkpointed streamed side runs") {
+    // Spark drops the window's sort for the checkpoint's order, which the join reports, but Comet
+    // cannot check that order, so the join declares none and the native window sorts its input.
+    withOrderedCheckpoint { streamed =>
+      for {
+        (build, force) <- checkpointJoinBuildSides
+        window <- Seq(
+          "dense_rank() OVER (PARTITION BY k ORDER BY v)",
+          "sum(v) OVER (PARTITION BY k)")
+      } {
+        withSQLConf(CometConf.COMET_FORCE_SHJ.key -> force.toString) {
+          def df: DataFrame = streamed
+            .join(build, $"k" === $"id")
+            .selectExpr("k", "v", s"$window AS r")
+          val plan = df.queryExecution.executedPlan
+          val context = s"force=$force $window\n$plan"
+          val joins = collect(plan) {
+            case j: CometHashJoinExec => j
+            case j: CometBroadcastHashJoinExec => j
+          }
+          assert(joins.size == 1, context)
+          assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+          assert(
+            collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+            context)
+          sameRowsAsSpark(df)
+        }
+      }
+    }
+  }
+
+  test("a native window group limit above an inner hash join over a checkpoint ranks it") {
+    assume(isSpark35Plus, "WindowGroupLimit was added in Spark 3.5")
+    // The native limit declares the order Spark requires of its input without checking it, which
+    // holds for the checkpoint's rows.
+    withOrderedCheckpoint { streamed =>
+      for ((build, force) <- checkpointJoinBuildSides) {
+        withSQLConf(CometConf.COMET_FORCE_SHJ.key -> force.toString) {
+          def df: DataFrame = streamed
+            .join(build, $"k" === $"id")
+            .selectExpr("k", "v", "rank() OVER (PARTITION BY k ORDER BY v) AS rk")
+            .where("rk <= 2")
+          val plan = df.queryExecution.executedPlan
+          val context = s"force=$force\n$plan"
+          assert(collect(plan) { case l: CometWindowGroupLimitExec => l }.nonEmpty, context)
+          assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+          assert(
+            collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+            context)
+          sameRowsAsSpark(df)
+        }
       }
     }
   }

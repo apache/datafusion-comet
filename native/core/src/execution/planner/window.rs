@@ -36,8 +36,9 @@ use datafusion::{
     physical_plan::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
+        sorts::sort::SortExec,
         windows::{BoundedWindowAggExec, WindowAggExec},
-        ExecutionPlan, InputOrderMode,
+        ExecutionPlan, ExecutionPlanProperties, InputOrderMode,
     },
 };
 use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
@@ -98,6 +99,36 @@ impl OperatorBuilder for WindowBuilder {
         let sort_exprs = &sort_exprs?;
         let partition_exprs = &partition_exprs?;
 
+        // Sort the input unless it is already ordered on every PARTITION BY key; rows from the
+        // JVM declare no order even when Spark reports them as sorted. The check looks only at
+        // the PARTITION BY keys; the sort orders by them ascending with nulls first, then by the
+        // ORDER BY keys.
+        let (_, ordered) = child
+            .native_plan
+            .equivalence_properties()
+            .find_longest_permutation(partition_exprs)?;
+        let required = partition_exprs
+            .iter()
+            .map(|e| {
+                PhysicalSortExpr::new(
+                    Arc::clone(e),
+                    SortOptions {
+                        descending: false,
+                        nulls_first: true,
+                    },
+                )
+            })
+            .chain(sort_exprs.iter().cloned());
+        let input_sort: Option<Arc<dyn ExecutionPlan>> = match LexOrdering::new(required) {
+            Some(ordering) if ordered.len() < partition_exprs.len() => Some(Arc::new(
+                SortExec::new(ordering, Arc::clone(&child.native_plan)),
+            )),
+            _ => None,
+        };
+        let window_input = input_sort
+            .as_ref()
+            .map_or_else(|| Arc::clone(&child.native_plan), Arc::clone);
+
         let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
             .window_expr
             .iter()
@@ -134,14 +165,14 @@ impl OperatorBuilder for WindowBuilder {
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
             Arc::new(BoundedWindowAggExec::try_new(
                 window_expr,
-                Arc::clone(&child.native_plan),
+                window_input,
                 InputOrderMode::Sorted,
                 !partition_exprs.is_empty(),
             )?)
         } else {
             Arc::new(WindowAggExec::try_new(
                 window_expr,
-                Arc::clone(&child.native_plan),
+                window_input,
                 !partition_exprs.is_empty(),
             )?)
         };
@@ -183,16 +214,21 @@ impl OperatorBuilder for WindowBuilder {
                     proj_exprs,
                     Arc::clone(&window_agg),
                 )?);
-                // The window is an additional plan so that its time is reported with the
-                // projection's rather than left out.
+                // The window and any input sort are additional plans so that their time is
+                // reported with the projection's rather than left out.
                 SparkPlan::new_with_additional(
                     spark_plan.plan_id,
                     projection,
                     vec![child],
-                    vec![window_agg],
+                    std::iter::once(window_agg).chain(input_sort).collect(),
                 )
             } else {
-                SparkPlan::new(spark_plan.plan_id, window_agg, vec![child])
+                SparkPlan::new_with_additional(
+                    spark_plan.plan_id,
+                    window_agg,
+                    vec![child],
+                    input_sort.into_iter().collect(),
+                )
             }
         };
 

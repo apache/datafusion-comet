@@ -3096,6 +3096,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 mod tests {
     mod empty_native_scan;
     mod multi_store_scan;
+    mod window_input_order;
 
     use futures::{poll, StreamExt};
     use std::{

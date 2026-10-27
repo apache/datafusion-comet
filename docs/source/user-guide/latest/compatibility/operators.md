@@ -210,6 +210,10 @@ supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` 
 native frame can treat the bound as the edge of the partition where Spark compares against it
 ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 
+Spark drops the sort below a window when it believes the window's input is already ordered. For a window with
+`PARTITION BY` keys, when Comet cannot verify that order, as with rows read from a checkpoint, the native window sorts
+its input by the `PARTITION BY` keys and then the `ORDER BY` keys. The results match Spark, at the cost of a sort.
+
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
 runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
 
