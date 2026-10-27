@@ -21,13 +21,14 @@ package org.apache.comet.expressions
 
 import scala.util.Try
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
-import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SupportLevel, Unsupported}
+import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
+import org.apache.comet.serde.{CodegenDispatchFallback, CometExpressionSerde, CometTimeZone, Compatible, ExprOuterClass, Incompatible, SparkFixes, SupportLevel, Unsupported}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, serializeDataType}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
@@ -37,6 +38,9 @@ object CometCast
     with CometExprShim
     with CometTypeShim
     with CodegenDispatchFallback {
+
+  private[comet] val duplicateStructFieldNamesReason: String =
+    "Cast target contains a struct with duplicate field names"
 
   // Shared with CometNativeCastSuite so the asserted reason cannot drift from production.
   private[comet] val negativeScaleDecimalToStringReason: String =
@@ -194,6 +198,8 @@ object CometCast
         castBuilder.setEvalMode(evalModeToProto(evalMode))
         castBuilder.setTimezone(timeZone)
         castBuilder.setIsSpark4Plus(isSpark40Plus)
+        castBuilder.setDecimalZeroAnyExponent(
+          SparkFixes.castsZeroWithAnyExponentToDecimal(SPARK_VERSION))
         Some(
           ExprOuterClass.Expr
             .newBuilder()
@@ -220,6 +226,13 @@ object CometCast
     // `CodegenDispatchFallback` mixin try the dispatcher and then fall back to Spark cleanly.
     if (isVariantType(fromType) || isVariantType(toType)) {
       return unsupported(fromType, toType)
+    }
+
+    // Check the entire target before the NullType and identity shortcuts below. Arrow Java can
+    // collapse duplicate struct children even when the source reaches the target through a null,
+    // array, map, or nested struct path.
+    if (containsDuplicateFieldNames(toType)) {
+      return Unsupported(Some(duplicateStructFieldNamesReason))
     }
 
     // Spark 4.0's collation metadata rides on `StringType`, but `serializeDataType` maps every
@@ -561,6 +574,66 @@ object CometCast
           DataTypes.DoubleType | _: DecimalType if evalMode == CometEvalMode.LEGACY =>
         Compatible()
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
+    }
+
+  /**
+   * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws
+   * becomes a null key, and Spark's `Cast.castMap` builds the result without rejecting it, so any
+   * TRY cast that changes a map's key type at any depth can, unless the key cast cannot fail.
+   * Arrow's map format requires a non-nullable key field, so no Comet path can hold that value.
+   */
+  private[comet] def canProduceNullMapKey(cast: Cast): Boolean =
+    evalMode(cast) == CometEvalMode.TRY && mayNullMapKey(cast.child.dataType, cast.dataType)
+
+  private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
+        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromValue, toValue)
+      case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
+        mayNullMapKey(fromElement, toElement)
+      case (StructType(fromFields), StructType(toFields)) =>
+        fromFields.zip(toFields).exists { case (from, to) =>
+          mayNullMapKey(from.dataType, to.dataType)
+        }
+      case _ => false
+    }
+
+  private val numericWidening =
+    Seq(
+      DataTypes.ByteType,
+      DataTypes.ShortType,
+      DataTypes.IntegerType,
+      DataTypes.LongType,
+      DataTypes.FloatType,
+      DataTypes.DoubleType)
+
+  private def integralDigits(dataType: DataType): Option[Int] = dataType match {
+    case DataTypes.ByteType => Some(3)
+    case DataTypes.ShortType => Some(5)
+    case DataTypes.IntegerType => Some(10)
+    case DataTypes.LongType => Some(20)
+    case _ => None
+  }
+
+  /**
+   * Key casts that cannot throw, so cannot become a null key under TRY. Deliberately narrower
+   * than Spark's `Cast.canUpCast`, which also admits date and timestamp conversions that overflow
+   * `Math.multiplyExact` for extreme values. Anything not listed is treated as able to fail.
+   */
+  private def keyCastCannotFail(fromType: DataType, toType: DataType): Boolean =
+    (fromType, toType) match {
+      case _ if fromType == toType => true
+      case (from, to) if numericWidening.contains(from) && numericWidening.contains(to) =>
+        numericWidening.indexOf(from) < numericWidening.indexOf(to)
+      case (from, to: DecimalType) if integralDigits(from).isDefined =>
+        to.precision - to.scale >= integralDigits(from).get
+      case (from: DecimalType, to: DecimalType) =>
+        to.scale >= from.scale && to.precision - to.scale >= from.precision - from.scale
+      case (
+            _: NumericType | DataTypes.BooleanType | DataTypes.DateType | DataTypes.TimestampType,
+            DataTypes.StringType) =>
+        true
+      case _ => false
     }
 
   private def unsupported(fromType: DataType, toType: DataType): Unsupported = {

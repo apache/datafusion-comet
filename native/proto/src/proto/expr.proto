@@ -95,6 +95,7 @@ message Expr {
     RandStr rand_str = 73;
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
+    AtLeastNNonNulls at_least_n_non_nulls = 76;
   }
 
   reserved 20;
@@ -469,6 +470,9 @@ message Cast {
   // True when running against Spark 4.0+. Controls version-specific cast behaviour
   // such as the handling of leading whitespace before T-prefixed time-only strings.
   bool is_spark4_plus = 6;
+  // True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
+  // 0, instead of applying the integral-digit limit to it (SPARK-60118).
+  bool decimal_zero_any_exponent = 7;
 }
 
 // Spark's internal PreciseTimestampConversion, used by time-window grouping to convert
@@ -774,4 +778,10 @@ message NativeScalarUdf {
   // to express a volatile one. The field is carried so that honoring it later
   // does not need a wire change.
   bool deterministic = 5;
+}
+
+// Counts non-null and non-NaN children, with per-row short-circuit evaluation.
+message AtLeastNNonNulls {
+  int32 n = 1;
+  repeated Expr children = 2;
 }
