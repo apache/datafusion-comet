@@ -34,7 +34,7 @@ use arrow::{
     array::{as_dictionary_array, Array, ArrayRef, PrimitiveArray},
     temporal_conversions::as_datetime,
 };
-use chrono::{DateTime, LocalResult, NaiveDateTime, Offset, TimeZone};
+use chrono::{DateTime, Datelike, LocalResult, NaiveDateTime, Offset, TimeZone};
 
 /// Preprocesses input arrays to add timezone information from Spark to Arrow array datatype or
 /// to apply timezone offset.
@@ -216,27 +216,48 @@ const MILLIS_PER_GREGORIAN_CYCLE: i64 = 146_097 * 86_400 * 1_000;
 /// inside chrono's range on both sides of 1970.
 const IN_RANGE_CYCLES: u64 = 600;
 
+/// Year used for offset lookups when the wall time is outside chrono's year range.
+///
+/// `chrono-tz` stops applying DST transitions after about 2099, while Spark/`java.time`
+/// keep applying the last zone rules forever. Looking the offset up at year 2000 (inside
+/// that window, and a leap year so 29 February stays valid) matches Spark for far-future
+/// and far-past seasonal zones. Looking it up at the cycle-shifted year (~±240000) would
+/// silently use standard time only and disagree with Spark by an hour on summer dates.
+const TZ_RULE_LOOKUP_YEAR: i32 = 2000;
+
+/// Same local month/day/time as `local`, but in [`TZ_RULE_LOOKUP_YEAR`].
+fn project_to_tz_rule_year(local: NaiveDateTime) -> NaiveDateTime {
+    let date = local.date();
+    // 2000 is a leap year, so every month/day chrono can represent (including 29 Feb) maps.
+    let projected = date
+        .with_year(TZ_RULE_LOOKUP_YEAR)
+        .expect("TZ_RULE_LOOKUP_YEAR accepts every chrono month/day");
+    projected.and_time(local.time())
+}
+
 /// Converts a local (timestamp without time zone) value to UTC.
 ///
 /// Spark (`java.time`) handles the whole `i64` range, while chrono only represents years
-/// -262144 to 262143. For a value outside chrono's range, the offset is looked up at the same
-/// local time moved towards the epoch by whole 400-year cycles, until it is
-/// `IN_RANGE_CYCLES` cycles from the epoch on the same side, where chrono can represent it.
-/// That offset is then applied to the original value. The number of cycles comes from the
-/// value, so this covers the whole `i64` range for both microseconds and milliseconds.
+/// -262144 to 262143. For a value outside chrono's range, the wall time is moved towards
+/// the epoch by whole 400-year cycles until chrono can represent it, then the offset is
+/// looked up at the same month/day/time in [`TZ_RULE_LOOKUP_YEAR`] (see that constant)
+/// and applied to the original value. The number of cycles comes from the value, so this
+/// covers the whole `i64` range for both microseconds and milliseconds.
 /// Overflowing `i64` while applying the offset raises `long overflow`, as Spark does.
 fn local_to_utc(
     value: i64,
     unit_per_cycle: i64,
     to_local: impl Fn(i64) -> Option<NaiveDateTime>,
     to_utc: impl Fn(NaiveDateTime) -> i64,
+    wall_as_epoch: impl Fn(NaiveDateTime) -> i64,
 ) -> Result<i64, ArrowError> {
     if let Some(local_datetime) = to_local(value) {
         return Ok(to_utc(local_datetime));
     }
     let shifted = shift_towards_epoch(value, unit_per_cycle);
     let local_datetime = to_local(shifted).ok_or_else(|| datetime_cast_err(value))?;
-    let offset = shifted - to_utc(local_datetime);
+    let lookup = project_to_tz_rule_year(local_datetime);
+    let offset = wall_as_epoch(lookup) - to_utc(lookup);
     value
         .checked_sub(offset)
         .ok_or_else(|| ArrowError::ComputeError("long overflow".to_string()))
@@ -280,6 +301,7 @@ pub(crate) fn timestamp_ntz_to_timestamp(
                     MICROS_PER_GREGORIAN_CYCLE,
                     as_datetime::<TimestampMicrosecondType>,
                     |local_datetime| resolve_local_datetime(&tz, local_datetime).timestamp_micros(),
+                    |wall| wall.and_utc().timestamp_micros(),
                 )
             })?;
             let array_with_tz = if let Some(to_tz) = to_timezone {
@@ -298,6 +320,7 @@ pub(crate) fn timestamp_ntz_to_timestamp(
                     MILLIS_PER_GREGORIAN_CYCLE,
                     as_datetime::<TimestampMillisecondType>,
                     |local_datetime| resolve_local_datetime(&tz, local_datetime).timestamp_millis(),
+                    |wall| wall.and_utc().timestamp_millis(),
                 )
             })?;
             let array_with_tz = if let Some(to_tz) = to_timezone {
@@ -497,6 +520,23 @@ mod tests {
             as_primitive_array::<TimestampMicrosecondType>(&output).value(0),
             i64::MAX - two_hours
         );
+    }
+
+    #[test]
+    fn test_timestamp_ntz_to_timestamp_far_future_july_uses_dst_offset() {
+        // Spark DateTimeUtils.convertTz for TIMESTAMP_NTZ '+280000-07-15 12:00:00' in
+        // America/Los_Angeles uses PDT (-07:00). Looking the offset up at the cycle-shifted
+        // year (~+242000) would use standard time (-08:00) because chrono-tz has no DST
+        // transitions that far out; projecting into TZ_RULE_LOOKUP_YEAR keeps PDT.
+        let local = 8_773_796_318_400_000_000i64;
+        let spark_utc = 8_773_796_343_600_000_000i64; // local + 7h
+        let wrong_std = 8_773_796_347_200_000_000i64; // local + 8h
+        let output =
+            timestamp_ntz_to_timestamp(ntz_micros(vec![local]), "America/Los_Angeles", None)
+                .unwrap();
+        let got = as_primitive_array::<TimestampMicrosecondType>(&output).value(0);
+        assert_eq!(got, spark_utc);
+        assert_ne!(got, wrong_std);
     }
 
     #[test]
