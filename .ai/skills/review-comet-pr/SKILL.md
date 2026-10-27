@@ -43,7 +43,7 @@ change.
 | `native/core/src/execution/memory_pools/`, `CometTaskMemoryManager`, `CometShuffleMemoryAllocator`, `MemoryConsumer` / `try_grow` / `reserve` call sites, pool configs                     | `review-comet-memory-pr`        |
 | `native/shuffle/`, `spark/src/main/scala/org/apache/spark/sql/comet/execution/shuffle/`, `spark/src/main/java/org/apache/spark/shuffle/`, `CometShuffleExchangeExec`                       | `review-comet-shuffle-pr`       |
 | `IcebergWriteStrategy`, `IcebergWriteExec`, `IcebergCommitExec`, `CometIcebergWriteExec`, `CometIcebergNativeWrite`, `iceberg_write.rs`, `iceberg_partition_path.rs`, the iceberg-rust pin | `review-comet-iceberg-write-pr` |
-| `docs/source/`, `README.md`, `.doc(...)` strings in config classes, doc comments (Scaladoc, Javadoc, Rust `///`)                                                                           | `review-comet-docs`             |
+| `docs/source/`, `README.md`, `AGENTS.md`, `.ai/skills/**/SKILL.md`, `.doc(...)` strings in config classes, doc comments                                                                    | `review-comet-docs`             |
 
 For a new operator, read `docs/source/contributor-guide/adding_a_new_operator.md` alongside this
 skill. There is no dedicated operator review skill yet.

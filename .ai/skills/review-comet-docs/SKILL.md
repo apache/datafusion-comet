@@ -38,15 +38,17 @@ existing comments, and the diff) and its CI check. This skill only covers docume
 This skill gives advice to a human. Never edit files, commit, push, or post comments.
 
 **Shell notes.** Run every command from the repository root. Each tool call may start a new shell,
-so save the variables you set and load them again in later calls:
+so save the variables you set in a state file named for this run, and load it in later calls:
 
 ```bash
-STATE="$(git rev-parse --git-dir)/review-comet-docs.env"
-printf 'R=%s\nHEAD_REF=%s\nBASE=%s\nADDED=%s\n' "$R" "$HEAD_REF" "$BASE" "$ADDED" > "$STATE"
+STATE="$(git rev-parse --git-dir)/review-comet-docs-<pr-or-name>.env"
+{ printf 'R=%q\n' "$R"; printf 'HEAD_SHA=%q\n' "$HEAD_SHA"; printf 'BASE=%q\n' "$BASE";
+  printf 'TARGET=%q\n' "$TARGET"; printf 'ADDED=%q\n' "$ADDED"; } > "$STATE"
 . "$STATE"
 ```
 
-In zsh, `$HEAD_REF:spark/...` is read as a history modifier, so always write `"${HEAD_REF}:<path>"`.
+In zsh, `$HEAD_SHA:spark/...` is read as a history modifier, so always write `"${HEAD_SHA}:<path>"`.
+Stop and report the review as incomplete if any command in steps 1 to 4 fails.
 
 ## 1. Select the Revisions
 
@@ -58,42 +60,47 @@ R=$(git remote -v | awk '/apache\/datafusion-comet(\.git)? \(fetch\)/ {print $1;
 
 If `R` is empty, use `https://github.com/apache/datafusion-comet.git` in its place.
 
-**PR mode.** Read the base branch and changed files, then fetch the base and the head without
-touching the working tree. The leading `+` lets the fetch replace a ref after a force push.
+**PR mode.** Read the PR's base branch and head commit, then fetch both without touching the working
+tree. The leading `+` lets the fetch replace a ref after a force push.
 
 ```bash
-gh pr view <pr> --repo apache/datafusion-comet --json baseRefName,headRefOid,files
+gh pr view <pr> --repo apache/datafusion-comet --json baseRefName,headRefOid
 git fetch "$R" "+refs/heads/<base>:refs/review/base-<pr>" "+pull/<pr>/head:refs/review/pr-<pr>"
-HEAD_REF=refs/review/pr-<pr>; BASE=$(git merge-base refs/review/base-<pr> "$HEAD_REF")
+TARGET=refs/review/base-<pr>; HEAD_SHA=$(git rev-parse refs/review/pr-<pr>)
 ```
 
-Check that `git rev-parse "$HEAD_REF"` equals `headRefOid`. If it does not, the PR changed while you
-fetched it: run both commands again, at most twice.
+Check that `HEAD_SHA` equals `headRefOid`. If it does not, the PR changed while you fetched it: run
+both commands again, at most twice. From here on, read everything at `HEAD_SHA`, not at the ref,
+which a later fetch can move.
 
-**Branch mode.** Fetch `main` the same way, then compare with it:
+**Branch mode.** Fetch `main` the same way. `TARGET=refs/review/main` and
+`HEAD_SHA=$(git rev-parse --verify <branch>)`:
 
 ```bash
 git fetch "$R" "+refs/heads/main:refs/review/main"
-HEAD_REF=<branch>; BASE=$(git merge-base refs/review/main "$HEAD_REF")
 ```
 
-**Audit mode.** There is no base. List the files, including new files that are not committed yet,
-and search them with `--untracked`:
+**Both modes.** Find the merge base. It fails in a shallow clone, so deepen the history and try again,
+or report the comparison as incomplete:
+
+```bash
+BASE=$(git merge-base "$TARGET" "$HEAD_SHA") || git fetch --deepen=1000 "$R"
+```
+
+If `git rev-list --count "$BASE..$TARGET"` is not zero, the target branch has moved since the change
+branched. Check the claims against `$TARGET` too, and report what has changed there.
+
+**Audit mode.** There is no base. List the files, including new files that are not committed yet:
 
 ```bash
 git ls-files --cached --others --exclude-standard -- <path>
 ```
 
-In PR and branch mode, read every file, including linked pages and the code a claim describes, from
-`$HEAD_REF`. If `git rev-list --count "$BASE"..refs/review/base-<pr>` (or `..refs/review/main`) is
-not zero, `main` has moved since the change branched. Check the claims against `main` too, and report
-what has changed there.
-
 ## 2. Read the Style Guide
 
-Read `docs/source/contributor-guide/style_guide.md` in full on every run. If the change edits the
-guide, read its version with `git show "${HEAD_REF}:docs/source/contributor-guide/style_guide.md"`.
-Otherwise, read it from the working tree. If the file does not exist, stop and say so.
+Read `docs/source/contributor-guide/style_guide.md` in full on every run, from the revision under
+review: `git show "${HEAD_SHA}:docs/source/contributor-guide/style_guide.md"` in PR and branch mode,
+or the working tree in audit mode. If it does not exist there, stop and say so.
 
 The guide is the rulebook, and its first section says what it covers. Cite its rule IDs (`T3`, `N1`,
 `P16`, and so on), and do not restate or reinterpret its rules here. If the guide and this skill
@@ -101,7 +108,13 @@ disagree, the guide wins.
 
 ## 3. Select the Files
 
-In PR and branch mode, `<paths>` below means these changed files:
+In PR and branch mode, list the changed files from Git, which is complete even for large PRs:
+
+```bash
+git -c core.quotePath=false diff --name-only "$BASE" "$HEAD_SHA"
+```
+
+From that list, `<paths>` below means:
 
 - `.md` and `.rst` files under `docs/source`, and `README.md`;
 - files that change `.doc(...)` strings in `CometConf.scala` or in contrib config classes;
@@ -131,17 +144,18 @@ accuracy checks still apply to code font: config keys, operator names, and code 
 written that way. For each check, record what it checked, the number of hits, and how many of them
 are findings.
 
-Use `git grep -P` or `perl`, as written. The system `grep` on macOS has no `-P`, and `git grep -E`
-does not support `\b`, so it silently finds nothing. Plain `\b` also misses Markdown italics such as
-`_native execution_`, because `_` counts as a word character, so the patterns below use lookarounds.
+The commands use `git grep -E` to find candidate lines and `perl` to match them. They do not need a
+Git built with PCRE, and they avoid two traps: the system `grep` on macOS has no `-P`, and `\b`
+misses Markdown italics such as `_native execution_`, because `_` counts as a word character.
 
 **Lines to check.** In PR and branch mode, list the added lines with their file and line number, and
-run the line checks below on this list only. In audit mode, run the line checks on the files with
+run the line checks below on this list only. In audit mode, run them on the files with
 `git grep -n --untracked`.
 
 ```bash
 ADDED=$(mktemp "$(git rev-parse --git-dir)/review-added.XXXXXX")
-git diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 "$BASE" "$HEAD_REF" -- <paths> \
+git -c core.quotePath=false diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 \
+    "$BASE" "$HEAD_SHA" -- <paths> \
   | awk '/^--- /{h=1; next}
          h && /^\+\+\+ b\//{f=substr($0,7); sub(/\t$/,"",f); h=0; next}
          /^@@/{h=0; split($3,a,/[+,]/); n=a[2]; next}
@@ -152,18 +166,19 @@ git diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 "$BASE" "$HEAD_REF" -
 matters, because `N3` allows more in the contributor guide:
 
 ```bash
-perl -ne 'print if /^.+?:\d+: .*(?:(?<![A-Za-z0-9])native(?:ly)?(?![A-Za-z0-9])|vectori[sz]ed)/i' "$ADDED"
-git grep -n -i --untracked -P '(?<![A-Za-z0-9])native(ly)?(?![A-Za-z0-9])|vectori[sz]ed' -- <files>   # audit
+P='(?:(?<![A-Za-z0-9])native(?:ly)?(?![A-Za-z0-9])|vectori[sz]ed)'
+perl -ne "print if /^.+?:\d+: .*$P/i" "$ADDED"
+git grep -n -i --untracked -E 'native|vectori[sz]ed' -- <files> | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
 ```
 
 **Config keys.** Every `spark.comet.*` key a page names must exist (`P13`). List the keys the text
-names, then the keys the code defines at the revision under review. `<rev>` is `$HEAD_REF`, or
+names, then the keys the code defines at the revision under review. `<rev>` is `$HEAD_SHA`, or
 nothing in audit mode. The second command reads definitions that span two lines, expands
 `createExecEnabledConfig`, and leaves out deprecated alternative names and unexpanded templates:
 
 ```bash
 perl -ne 'print "$1\n" while /(spark\.comet\.[\w.<>]*[\w>])/g' "$ADDED" | sort -u
-git grep -h -A1 -P '\b(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
+git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
   | perl -0777 -ne '
       while (/\b(?:conf|ConfigBuilder)\(\s*s?"([^"]+)"/g) {
         ($k = $1) =~ s/\$\{?COMET_EXEC_CONFIG_PREFIX\}?/spark.comet.exec/;
@@ -195,8 +210,9 @@ finding (`P16`).
 against `O4`. List the concrete operator classes and the classes that override their printed name:
 
 ```bash
-git grep -h -o -P 'case class (Comet|Iceberg)[A-Za-z]+Exec\b' <rev> -- spark/src/main contrib | sort -u
-git grep -n -P 'override (def|val|lazy val) (nodeName|simpleString)' <rev> -- spark/src/main contrib
+git grep -h -E 'case class (Comet|Iceberg)' <rev> -- spark/src/main contrib \
+  | perl -ne 'print "$1\n" if /case class ((?:Comet|Iceberg)[A-Za-z]+Exec)\b/' | sort -u
+git grep -n -E 'override (def|val|lazy val) (nodeName|simpleString)' <rev> -- spark/src/main contrib
 ```
 
 `spark/src/main` includes the per-Spark-version source directories. If the first command prints
@@ -206,48 +222,64 @@ about suffixes. When the page is an operator reference, also report concrete ope
 leaves out. Leave out planning markers such as `CometScanExec`, which never appear in a final plan,
 and contrib operators, which belong on their contrib page.
 
-**Links and images.** For each link or image in the text, inline or reference-style
-(`[text]: target`):
-
-- A Markdown link or image path under `docs/source` is relative to the page, or to `docs/source` when
-  it starts with `/`. Check that the file exists at the revision under review. A raw HTML link to a
-  `.html` page, or a link with no extension, refers to the `.md` or `.rst` source of the same name.
-- An `#anchor` must match a target on that page: an explicit label, or a heading slug. MyST makes
-  slugs for H1-H4 headings by lowercasing the text, turning each space into `-`, and removing
-  everything except letters, digits, `_`, and `-`. A repeated heading gets a numbered suffix.
-- A link to Comet's published docs by URL breaks `P4` on pages under `docs/source`, but not in
-  `README.md`.
-- For external links on the lines under review (at most 20 in audit mode), check the status with
-  `curl -s -o /dev/null -w '%{http_code}' -I -L --max-time 10 <url>`. Report a 404 as a finding. If
-  the request fails or the network is unavailable, say the link was not checked.
-
-**Structure.** Check for one H1 and no skipped heading levels (`P2`), the ASF header on new files
-(`P1`), and new pages missing from a toctree (`P6`). The heading command skips fenced code, where
-`#` starts a shell comment. Read the file with `git show "${HEAD_REF}:<file>"`, or from the working
-tree in audit mode:
-
-````bash
-git show "${HEAD_REF}:<file>" | awk '/^[[:space:]]*(```|~~~)/{f=!f; next} !f && /^#{1,6} /{print FNR": "$0}'
-git grep -n '<page-name>' <rev> -- 'docs/source/*.md' 'docs/source/*.rst'
-````
-
-For the toctree check, search for the page's file name without `.md`. The pathspec matches every page,
-including `docs/source/index.md`. A hit counts only inside a `{toctree}` block or a `.. toctree::`
-directive, not in an ordinary link.
-
-**Moved and removed pages.** In PR and branch mode, list the pages the change renames or deletes.
-Each one needs an entry in `redirects` in `docs/source/conf.py` (`P17`):
+**Docs build.** Links, anchors, images, toctrees, and page structure, in Markdown and
+reStructuredText, are checked by building the docs the way the published site is built. This
+catches what a reading of the changed lines cannot, such as a link on an unchanged page that a
+renamed heading breaks, or a page that no toctree includes. Install the docs requirements once, in a
+virtual environment, with `pip install -r docs/requirements.txt`. Then build the base and the head
+and compare their warnings. The function copies the expression templates into the per-version pages,
+as `docs/build.sh` does, so links to those pages resolve:
 
 ```bash
-git diff --name-status --diff-filter=DR "$BASE" "$HEAD_REF" -- docs/source
+build() {  # $1 = revision, $2 = output directory
+  mkdir -p "$2/src" && git archive "$1" docs/source | tar -x -C "$2/src"
+  T="$2/src/docs/source/user-guide/latest/compatibility/expressions"
+  for p in $(git show "$1:docs/build.sh" | sed -n 's/^SPARK_PROFILES=(\(.*\))/\1/p'); do
+    mkdir -p "$T/$p" && cp "$T/_category_template"/*.md "$T/$p/"
+  done
+  rm -rf "$T/_category_template"
+  sphinx-build -q -b html -n -D mermaid_output_format=raw "$2/src/docs/source" "$2/html" 2>&1 \
+    | sed -e "s#$2/src/##" -e 's/:[0-9]*: /: /' | sort > "$2/warnings.txt"
+}
+WORK=$(mktemp -d)
+build "$BASE" "$WORK/base" && build "$HEAD_SHA" "$WORK/head"
+comm -13 "$WORK/base/warnings.txt" "$WORK/head/warnings.txt"
 ```
+
+Every warning that only the head build has is a finding: a broken link, anchor, or image, a page
+missing from a toctree (`P6`), or a heading problem (`P2`). In audit mode, build the working tree's
+`docs/source` the same way and report the warnings for the audited pages. If the docs requirements
+cannot be installed, say that the build was not checked, and check that each changed link's target
+file exists.
+
+Sphinx does not count H1s. Check that each new or changed Markdown page has one H1 with the parser
+the docs build uses, which knows where code blocks start and end:
+
+```bash
+git show "${HEAD_SHA}:<file>" | python -c 'import sys; from markdown_it import MarkdownIt
+for t in MarkdownIt("commonmark").parse(sys.stdin.read()):
+    print(t.map[0] + 1, t.tag) if t.type == "heading_open" else None'
+```
+
+**Other structure checks.** A new file has the ASF header (`P1`). A link to Comet's published docs by
+URL breaks `P4` on pages under `docs/source`, but not in `README.md`. List the pages the change
+renames or deletes; each one needs an entry in `redirects` in `docs/source/conf.py` (`P17`):
+
+```bash
+git diff --name-status --diff-filter=DR "$BASE" "$HEAD_SHA" -- docs/source
+```
+
+**External links.** For external links on the lines under review (at most 20 in audit mode), check
+the status with `curl -s -o /dev/null -w '%{http_code}' -I -L --max-time 10 <url>`. Report a 404 as
+a finding. If the request fails or the network is unavailable, say the link was not checked.
 
 **Version claims and markers.** Find version claims to check against `P8`, and `TODO` or `XXX`
 markers, which break `P7`:
 
 ```bash
-perl -ne 'print if /^.+?:\d+: .*(?:(?:Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(?:TODO|XXX)\b)/' "$ADDED"
-git grep -n --untracked -P '(Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(TODO|XXX)\b' -- <files>   # audit
+V='(?:(?:Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(?:TODO|XXX)\b)'
+perl -ne "print if /^.+?:\d+: .*$V/" "$ADDED"
+git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- <files> | perl -ne "print if /$V/"  # audit
 ```
 
 CI runs prettier and the Apache RAT license check on PRs, so do not repeat them. If CI has not run
@@ -257,7 +289,7 @@ failed on them.
 ## 5. Judgment Checks
 
 - **Is it true?** For every sentence that names a class, rule, config, default, or file, read the
-  code it describes at the revision under review. A sentence can follow every wording rule and
+  code it describes at `HEAD_SHA`. A sentence can follow every wording rule and
   still be wrong: a scan that no longer exists, a config default that has changed, or an operator
   described as Rust-implemented that runs on the JVM. Check numbers, versions, and names first, and
   check that a condition in the text is the whole condition in the code. Pages that describe
