@@ -528,49 +528,96 @@ mod tests {
     }
 
     /// Partition offsets are tracked arithmetically instead of read back from the output
-    /// file, so the index must still describe the data file exactly: every offset lands on a
-    /// block boundary and each partition's blocks decode to the rows written for it, with a
-    /// spilled prefix and in-memory tail both accounted for.
+    /// file, so the index must still describe the data file exactly at the boundaries of the
+    /// running total: a partition holding only spilled data, an empty partition between two
+    /// non-empty ones, and an empty last partition.
     #[test]
-    fn offsets_match_data_file_with_spilled_and_in_memory_batches() {
+    fn offsets_match_data_file_for_spill_only_and_empty_partitions() {
         let batch = test_batch();
         let dir = tempfile::tempdir().unwrap();
-        let mut writer = partition_writer(&batch, &dir, Arc::new(RuntimeEnv::default()));
+        let mut writer =
+            partition_writer_with(&batch, 4, 1 << 20, &dir, Arc::new(RuntimeEnv::default()));
         let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
 
-        // Partition 0 spills one batch, then finishes with two more in memory.
-        // Partition 1 has no spill and finishes with one batch.
+        // Partition 0 is spilled and finishes with nothing in memory, partition 1 is empty,
+        // partition 2 is in memory only, and partition 3 is empty.
         writer
             .write(0, &mut vec![Ok(batch.clone())].into_iter(), &metrics)
             .unwrap();
         writer
+            .finish_partition(0, &mut std::iter::empty(), &metrics)
+            .unwrap();
+        writer
+            .finish_partition(1, &mut std::iter::empty(), &metrics)
+            .unwrap();
+        writer
             .finish_partition(
-                0,
+                2,
                 &mut vec![Ok(batch.clone()), Ok(batch.clone())].into_iter(),
                 &metrics,
             )
             .unwrap();
         writer
-            .finish_partition(1, &mut vec![Ok(batch.clone())].into_iter(), &metrics)
+            .finish_partition(3, &mut std::iter::empty(), &metrics)
             .unwrap();
         writer.finish_all(&metrics).unwrap();
 
         let data = std::fs::read(dir.path().join("data.out")).unwrap();
         let offsets = writer.partition_offsets.get().unwrap();
-        assert_eq!(offsets.len(), 3);
+        assert_eq!(offsets.len(), 5);
         assert_eq!(offsets[0], 0);
-        assert_eq!(offsets[2] as usize, data.len());
+        assert_eq!(offsets[4] as usize, data.len());
+        assert_eq!(offsets[1], offsets[2], "partition 1 is empty");
+        assert_eq!(offsets[3], offsets[4], "partition 3 is empty");
 
         // Decode every block within a partition's byte range; a wrong offset would land
         // mid-block and fail to parse.
-        let rows_in = |range: std::ops::Range<usize>| {
-            decode_blocks(&data[range])
+        let rows_in = |range: std::ops::Range<i64>| {
+            decode_blocks(&data[range.start as usize..range.end as usize])
                 .iter()
                 .map(RecordBatch::num_rows)
                 .sum::<usize>()
         };
-        assert_eq!(rows_in(offsets[0] as usize..offsets[1] as usize), 300);
-        assert_eq!(rows_in(offsets[1] as usize..offsets[2] as usize), 100);
+        assert_eq!(rows_in(offsets[0]..offsets[1]), 100);
+        assert_eq!(rows_in(offsets[1]..offsets[2]), 0);
+        assert_eq!(rows_in(offsets[2]..offsets[3]), 200);
+        assert_eq!(rows_in(offsets[3]..offsets[4]), 0);
+    }
+
+    /// The data file must agree with the byte total the offsets were derived from. A partition
+    /// that fails after a block already reached the output leaves bytes in the file the total
+    /// never counted, so `finish_all` must fail the task rather than publish offsets that point
+    /// readers at the wrong bytes.
+    #[test]
+    fn finish_all_fails_when_data_file_disagrees_with_offsets() {
+        let batch = test_batch();
+        let dir = tempfile::tempdir().unwrap();
+        // a 64-byte write buffer hands each block to the output as soon as it is encoded
+        let mut writer =
+            partition_writer_with(&batch, 2, 64, &dir, Arc::new(RuntimeEnv::default()));
+        let metrics = ShufflePartitionerMetrics::new(&ExecutionPlanMetricsSet::new(), 0);
+
+        let mut failing = vec![
+            Ok(batch.clone()),
+            Err(DataFusionError::Execution("injected failure".to_string())),
+        ]
+        .into_iter();
+        assert!(writer.finish_partition(0, &mut failing, &metrics).is_err());
+        writer
+            .finish_partition(1, &mut vec![Ok(batch)].into_iter(), &metrics)
+            .unwrap();
+
+        let err = writer
+            .finish_all(&metrics)
+            .expect_err("a data file longer than the counted bytes must fail");
+        assert!(
+            err.to_string().contains("partition offsets account for"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            writer.partition_offsets.get().is_none(),
+            "offsets must not be published"
+        );
     }
 
     /// Spilled bytes the writer cannot reach must fail the task. Skipping the copy the way
