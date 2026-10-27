@@ -2270,6 +2270,41 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  test("complex and temporal types are written through Hadoop") {
+    // The Hadoop route only forwards the encoded Parquet bytes, so a nested or temporal file must
+    // survive it unchanged. These are the shapes `nestedAndTemporalSource` does not have: an
+    // array of structs, a map with struct values, a decimal at the maximum precision, a date long
+    // before the epoch (still after the 1582 calendar cutover, which Spark 3.x refuses to write
+    // without a rebase mode), and a CJK string.
+    withRecordingFileSystem {
+      spark
+        .range(0, 5000)
+        .selectExpr(
+          "id",
+          // a struct holding an array of structs, a map, and a nullable field
+          "named_struct('arr', array(named_struct('k', id, 'v', CAST(id AS STRING))), " +
+            "'m', map('x', id), 'maybe', CASE WHEN id % 3 = 0 THEN NULL ELSE id END) AS nested",
+          "array(named_struct('a', id, 'b', id * 2)) AS arr_of_structs",
+          "map(CAST(id AS STRING), named_struct('p', id, 'q', id)) AS map_struct",
+          "CAST(id AS DECIMAL(38, 10)) AS dec",
+          "date_add(DATE'1600-01-01', CAST(id AS INT)) AS d",
+          "timestamp_micros(id * 1000000) AS ts",
+          "CAST(timestamp_micros(id * 1000000) AS TIMESTAMP_NTZ) AS ts_ntz",
+          "concat('名前-', CAST(id AS STRING), '-café-naïve') AS s")
+    } { (df, outputPath) =>
+      val plan =
+        captureWritePlan(p => df.write.option("compression", "none").parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
+      // The source has several partitions, so the files close in any order.
+      assert(RecordingFileSystem.created.size > 0)
+      assert(
+        RecordingFileSystem.closed.asScala.toSet == RecordingFileSystem.created.asScala.toSet)
+
+      checkAnswer(spark.read.parquet(outputPath), df)
+      assertMatchesSparkWriter(df, outputPath)
+    }
+  }
+
   test("a write of nested and temporal columns that fails partway is aborted") {
     withRecordingFileSystem(nestedAndTemporalSource(8000)) { (df, outputPath) =>
       RecordingFileSystem.failAtWrite = 3
