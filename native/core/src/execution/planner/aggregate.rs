@@ -54,7 +54,7 @@ use datafusion_comet_spark_expr::{
     ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, CometCollectList, CometCollectSet,
     Correlation, Covariance, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr,
     RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst,
-    Stddev, SumDecimal, SumInteger, Variance,
+    Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
 };
 use jni::objects::{Global, JObject};
 
@@ -641,7 +641,14 @@ impl PhysicalPlanner {
                 // its own UDAF rather than DataFusion's percentile_cont because DataFusion
                 // quantizes the interpolation weight.
                 let percentile_value = percentile_value(expr.percentage.as_ref().unwrap())?;
-                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(percentile_value)?);
+                let func = AggregateUDF::new_from_impl(SparkPercentile::try_new(
+                    percentile_value,
+                    ZeroOrder {
+                        float_input: expr.float_input,
+                        signed_zero_keys: expr.signed_zero_keys,
+                        merge_stage: expr.merge_stage,
+                    },
+                )?);
                 AggregateExprBuilder::new(func.into(), vec![child, percentile])
                     .schema(schema)
                     .alias("percentile")
