@@ -883,19 +883,22 @@ REVISION:<span class="w"> </span><span class="m">1</span>
 TEST<span class="w"> </span>SUITE:<span class="w"> </span>None
 </pre></div>
 </div>
-<p>Create example Spark application file <code class="docutils literal notranslate"><span class="pre">spark-pi.yaml</span></code></p>
+<p>Create an example Spark SQL application file named <code class="docutils literal notranslate"><span class="pre">comet-dataframe-pi.yaml</span></code>. This application uses
+Spark’s DataFrame API, so it exercises Comet without requiring an external data source.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>apiVersion:<span class="w"> </span>sparkoperator.k8s.io/v1beta2
 kind:<span class="w"> </span>SparkApplication
 metadata:
-<span class="w">  </span>name:<span class="w"> </span>spark-pi
+<span class="w">  </span>name:<span class="w"> </span>comet-dataframe-pi
 <span class="w">  </span>namespace:<span class="w"> </span>default
 spec:
 <span class="w">  </span>type:<span class="w"> </span>Scala
 <span class="w">  </span>mode:<span class="w"> </span>cluster
 <span class="w">  </span>image:<span class="w"> </span>apache/datafusion-comet
 <span class="w">  </span>imagePullPolicy:<span class="w"> </span>IfNotPresent
-<span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.SparkPi
+<span class="w">  </span>mainClass:<span class="w"> </span>org.apache.spark.examples.sql.SparkDataFramePi
 <span class="w">  </span>mainApplicationFile:<span class="w"> </span>local:///opt/spark/examples/jars/spark-examples_2.13-4.1.3.jar
+<span class="w">  </span>arguments:
+<span class="w">    </span>-<span class="w"> </span><span class="s2">"10"</span>
 <span class="w">  </span>sparkConf:
 <span class="w">    </span><span class="s2">"spark.executor.extraClassPath"</span>:<span class="w"> </span><span class="s2">"/opt/spark/jars/comet-spark-spark4.1_2.13-1.3.0-SNAPSHOT.jar"</span>
 <span class="w">    </span><span class="s2">"spark.driver.extraClassPath"</span>:<span class="w"> </span><span class="s2">"/opt/spark/jars/comet-spark-spark4.1_2.13-1.3.0-SNAPSHOT.jar"</span>
@@ -905,9 +908,12 @@ spec:
 <span class="w">    </span><span class="s2">"spark.executor.memoryOverhead"</span>:<span class="w"> </span><span class="s2">"1g"</span>
 <span class="w">    </span><span class="s2">"spark.comet.enabled"</span>:<span class="w"> </span><span class="s2">"true"</span>
 <span class="w">    </span><span class="s2">"spark.comet.exec.enabled"</span>:<span class="w"> </span><span class="s2">"true"</span>
+<span class="w">    </span><span class="s2">"spark.comet.exec.range.enabled"</span>:<span class="w"> </span><span class="s2">"true"</span>
+<span class="w">    </span><span class="s2">"spark.comet.explain.native.enabled"</span>:<span class="w"> </span><span class="s2">"true"</span>
 <span class="w">    </span><span class="s2">"spark.comet.shuffle.enabled"</span>:<span class="w"> </span><span class="s2">"true"</span>
 <span class="w">    </span><span class="s2">"spark.comet.shuffle.mode"</span>:<span class="w"> </span><span class="s2">"auto"</span>
 <span class="w">    </span><span class="s2">"spark.shuffle.manager"</span>:<span class="w"> </span><span class="s2">"org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager"</span>
+<span class="w">    </span><span class="s2">"spark.kubernetes.executor.deleteOnTermination"</span>:<span class="w"> </span><span class="s2">"false"</span>
 <span class="w">  </span>sparkVersion:<span class="w"> </span><span class="m">4</span>.1.3
 <span class="w">  </span>driver:
 <span class="w">    </span>labels:
@@ -927,36 +933,40 @@ spec:
 </div>
 <p>Refer to <a class="reference internal" href="#comet-docker-images">Comet builds</a></p>
 <p>Run Apache Spark application with Comet enabled</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>spark-pi.yaml
-sparkapplication.sparkoperator.k8s.io/spark-pi<span class="w"> </span>created
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>comet-dataframe-pi.yaml
+sparkapplication.sparkoperator.k8s.io/comet-dataframe-pi<span class="w"> </span>created
 </pre></div>
 </div>
 <p>Check application status</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>get<span class="w"> </span>sparkapp<span class="w"> </span>spark-pi
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>get<span class="w"> </span>sparkapp<span class="w"> </span>comet-dataframe-pi
 
-NAME<span class="w">       </span>STATUS<span class="w">    </span>ATTEMPTS<span class="w">   </span>START<span class="w">                  </span>FINISH<span class="w">       </span>AGE
-spark-pi<span class="w">   </span>RUNNING<span class="w">   </span><span class="m">1</span><span class="w">          </span><span class="m">2025</span>-03-18T21:19:48Z<span class="w">   </span>&lt;no<span class="w"> </span>value&gt;<span class="w">   </span>65s
+NAME<span class="w">                 </span>STATUS<span class="w">      </span>ATTEMPTS<span class="w">   </span>START<span class="w">   </span>FINISH<span class="w">   </span>AGE
+comet-dataframe-pi<span class="w">   </span>COMPLETED<span class="w">   </span><span class="m">1</span><span class="w">          </span>...<span class="w">     </span>...<span class="w">      </span>...
 </pre></div>
 </div>
 <p>To check more runtime details</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>spark-pi
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>describe<span class="w"> </span>sparkapplication<span class="w"> </span>comet-dataframe-pi
 
 ....
 Events:
 <span class="w">  </span>Type<span class="w">    </span>Reason<span class="w">                     </span>Age<span class="w">    </span>From<span class="w">                          </span>Message
 <span class="w">  </span>----<span class="w">    </span>------<span class="w">                     </span>----<span class="w">   </span>----<span class="w">                          </span>-------
-<span class="w">  </span>Normal<span class="w">  </span>SparkApplicationSubmitted<span class="w">  </span>8m15s<span class="w">  </span>spark-application-controller<span class="w">  </span>SparkApplication<span class="w"> </span>spark-pi<span class="w"> </span>was<span class="w"> </span>submitted<span class="w"> </span>successfully
-<span class="w">  </span>Normal<span class="w">  </span>SparkDriverRunning<span class="w">         </span>7m18s<span class="w">  </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>spark-pi-driver<span class="w"> </span>is<span class="w"> </span>running
-<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorPending<span class="w">       </span>7m11s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>pending
-<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorRunning<span class="w">       </span>7m10s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>running
-<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorCompleted<span class="w">     </span>7m5s<span class="w">   </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>spark-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>completed
-<span class="w">  </span>Normal<span class="w">  </span>SparkDriverCompleted<span class="w">       </span>7m4s<span class="w">   </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>spark-pi-driver<span class="w"> </span>completed
+<span class="w">  </span>Normal<span class="w">  </span>SparkApplicationSubmitted<span class="w">  </span>8m15s<span class="w">  </span>spark-application-controller<span class="w">  </span>SparkApplication<span class="w"> </span>comet-dataframe-pi<span class="w"> </span>was<span class="w"> </span>submitted<span class="w"> </span>successfully
+<span class="w">  </span>Normal<span class="w">  </span>SparkDriverRunning<span class="w">         </span>7m18s<span class="w">  </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>comet-dataframe-pi-driver<span class="w"> </span>is<span class="w"> </span>running
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorPending<span class="w">       </span>7m11s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>comet-dataframe-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>pending
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorRunning<span class="w">       </span>7m10s<span class="w">  </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>comet-dataframe-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>is<span class="w"> </span>running
+<span class="w">  </span>Normal<span class="w">  </span>SparkExecutorCompleted<span class="w">     </span>7m5s<span class="w">   </span>spark-application-controller<span class="w">  </span>Executor<span class="w"> </span><span class="o">[</span>comet-dataframe-pi-68732195ab217303-exec-1<span class="o">]</span><span class="w"> </span>completed
+<span class="w">  </span>Normal<span class="w">  </span>SparkDriverCompleted<span class="w">       </span>7m4s<span class="w">   </span>spark-application-controller<span class="w">  </span>Driver<span class="w"> </span>comet-dataframe-pi-driver<span class="w"> </span>completed
 </pre></div>
 </div>
 <p>Get Driver Logs</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>logs<span class="w"> </span>spark-pi-driver
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>kubectl<span class="w"> </span>logs<span class="w"> </span>comet-dataframe-pi-driver
 </pre></div>
 </div>
+<p>The driver log contains the computed approximation (<code class="docutils literal notranslate"><span class="pre">Pi</span> <span class="pre">is</span> <span class="pre">roughly</span> <span class="pre">...</span></code>). The example retains the
+completed executor pod so that you can inspect its log for the native plan emitted by
+<code class="docutils literal notranslate"><span class="pre">spark.comet.explain.native.enabled</span></code> and confirm that Comet executed the DataFrame query. Delete the
+application with <code class="docutils literal notranslate"><span class="pre">kubectl</span> <span class="pre">delete</span> <span class="pre">sparkapplication</span> <span class="pre">comet-dataframe-pi</span></code> when you finish.</p>
 <p>More info on <a class="reference external" href="https://www.kubeflow.org/docs/components/spark-operator/getting-started/">Kube Spark operator</a></p>
 </section>
 </section>
