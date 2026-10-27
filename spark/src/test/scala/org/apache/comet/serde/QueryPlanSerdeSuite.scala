@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast, Divide}
+import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast, Divide, In, Literal, MakeDate}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -30,6 +30,25 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plu
 import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
+
+  test("make_date IN evaluates the probe but can skip list expressions") {
+    val year = AttributeReference("y", IntegerType)()
+    val month = AttributeReference("m", IntegerType)()
+    val date = MakeDate(year, month, Literal(1), failOnError = true)
+    val inputs = Seq(year, month)
+    val epoch = Literal(0, DateType)
+    val probe = In(date, Seq(epoch, Literal(31, DateType)))
+    assert(QueryPlanSerde.exprToProto(probe, inputs).exists(_.hasIn))
+
+    // Spark must skip the unevaluable column references in the list in both cases.
+    val nullProbe = In(Literal.create(null, DateType), Seq(date))
+    val firstMatch = In(epoch, Seq(epoch, date))
+    assert(nullProbe.eval() == null)
+    assert(firstMatch.eval() == true)
+    Seq(nullProbe, firstMatch).foreach { predicate =>
+      assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
+    }
+  }
 
   test("supportedDataType matches each caller boundary") {
     val complex = ArrayType(IntegerType)

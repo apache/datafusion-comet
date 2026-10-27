@@ -26,6 +26,7 @@
 -- Config: spark.sql.subexpressionElimination.enabled=true
 -- Config: spark.sql.datetime.java8API.enabled=true
 -- Config: spark.sql.session.timeZone=UTC
+-- Config: spark.sql.optimizer.inSetConversionThreshold=10
 
 -- Sentinel: a valid date must still execute natively under ANSI. This guards against the
 -- expect_error queries passing vacuously if make_date were to fall back to Spark.
@@ -53,6 +54,11 @@ CREATE TABLE make_date_arguments(y INT, m INT, inner_m INT) USING parquet
 statement
 INSERT INTO make_date_arguments VALUES
   (NULL, 1, 13), (2024, NULL, 13), (2024, 1, 1)
+
+-- A nonempty IN evaluates its probe. Keep this two-item list as In rather than InSet.
+query expect_native(make_date, in)
+SELECT make_date(y, m, 1) IN (DATE '2024-01-01', DATE '2024-02-01')
+FROM make_date_arguments
 
 -- Year and month NULLs skip the invalid day expression on just those rows.
 query expect_native(make_date)

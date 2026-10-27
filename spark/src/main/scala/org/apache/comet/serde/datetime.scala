@@ -486,6 +486,12 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
           // Empty membership can skip its sole operand in Spark.
           case in: In if in.list.isEmpty => pushChildren(Some(current.nodeName))
           case inSet: InSet if inSet.hset.isEmpty => pushChildren(Some(current.nodeName))
+          // Nonempty IN always evaluates its probe, but may skip list items after a match.
+          case in: In =>
+            in.list.reverseIterator.foreach { child =>
+              pending = (child, Some(in.nodeName)) :: pending
+            }
+            pending = (in.value, None) :: pending
           case _ if current.children.size <= 1 => pushChildren(None)
           // Other native multi-child expressions may evaluate operands that Spark skips.
           case _ => pushChildren(Some(current.nodeName))
