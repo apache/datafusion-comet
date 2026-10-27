@@ -41,6 +41,7 @@ use futures::{StreamExt, TryStreamExt};
 const PREFIX_ROWS: usize = 8192;
 const MIN_BATCH_ROWS: usize = 1024;
 const MAX_BATCH_ROWS: usize = 64 * 1024;
+// A 128-row target amortizes retained batch metadata while keeping packing buffers small.
 const MIN_OUTPUT_ROWS: usize = 128;
 
 #[derive(Debug)]
@@ -150,15 +151,15 @@ impl ExecutionPlan for MembershipKeyReductionExec {
                     small.finish_buffered_batch()?;
                     Some(batch)
                 };
-                for batch in [small.next_completed_batch(), forward]
-                    .into_iter()
-                    .flatten()
-                {
+                while let Some(batch) = small.next_completed_batch() {
+                    out.emit(batch).await;
+                }
+                if let Some(batch) = forward {
                     out.emit(batch).await;
                 }
             }
             small.finish_buffered_batch()?;
-            if let Some(batch) = small.next_completed_batch() {
+            while let Some(batch) = small.next_completed_batch() {
                 out.emit(batch).await;
             }
             Ok(())

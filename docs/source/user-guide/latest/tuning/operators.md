@@ -45,8 +45,9 @@ A left-semi join returns each left row if any right row matches. For an unfilter
 on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
 to keep one copy of each repeated key per batch before the native sort. The option is off by
 default. The right sort must read the key column directly from a Comet shuffle. With
-unified memory, the native planner checks for execution memory held by another Spark
-consumer in the task and skips reduction if it finds any.
+unified memory, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.
 
 The reducer forwards short inputs and batches with too few repeated keys. After an
 unprofitable batch, it only tries again on a larger batch in the same partition. If all

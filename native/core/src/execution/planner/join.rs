@@ -234,8 +234,10 @@ fn reduce_before_sort(
     {
         return Ok(None);
     }
-    // Check at first execution, after Spark has constructed the input iterators.
-    // Reducing the sort's request must not make an already-resident JVM consumer spill.
+    // A smaller sort reservation can pass Comet's fair-share limit and reach Spark's
+    // acquireExecutionMemory, spilling a resident JVM consumer where the unreduced sort
+    // would have spilled natively. This best-effort check runs once at first execution,
+    // after input iterator construction; it cannot cover consumers that allocate later.
     if let Some(context) = &planner.task_context {
         let occupied = JVMClasses::with_env(|env| -> Result<bool, CometError> {
             let result = env.call_static_method(
@@ -250,6 +252,11 @@ fn reduce_before_sort(
             Ok(result?.z()?)
         })?;
         if occupied {
+            log::debug!(
+                "Skipping semi-join right-key reduction before sort {}: another Spark \
+                 consumer holds execution memory in this task",
+                params.right.plan_id
+            );
             return Ok(None);
         }
     }
