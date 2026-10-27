@@ -201,19 +201,23 @@ from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor, so
 settings do not reach it. The one exception is an HA nameservice. A location such as
 `hdfs://ns1/warehouse` has no port, and Comet passes the client the NameNodes that the session's
 Hadoop configuration declares for `ns1` with `dfs.ha.namenodes.ns1` and
-`dfs.namenode.rpc-address.ns1.<id>`.
+`dfs.namenode.rpc-address.ns1.<id>`. A portless location that the configuration does not declare
+is a single NameNode on Hadoop's default port, 8020, as it is to the JVM client.
 
 A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
 because the client cannot authenticate with the delegation tokens that Spark executors use on a
 Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
 the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`), and when a
 data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
-cannot decrypt it. Comet checks that at planning with one `getFileStatus` per data directory, on
-clusters whose NameNode advertises a key provider.
+cannot decrypt it. Comet checks that at planning, on clusters whose NameNode advertises a key
+provider, with one directory listing per parent of the data directories, cached for the session.
 
 On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
-operating system user when that variable is unset, rather than as the Spark user. Writes to HDFS
-use Iceberg's own writer.
+operating system user when that variable is unset, rather than as the Spark user. Comet therefore
+claims an HDFS scan only when the executors are known to read as the Spark user: set
+`spark.executorEnv.HADOOP_USER_NAME` to the user that submits the job (in local mode, the JVM's
+`HADOOP_USER_NAME` or operating system user must be that user). Otherwise the scan falls back with
+a reason that names the setting. Writes to HDFS use Iceberg's own writer.
 
 ### Current limitations
 
@@ -231,9 +235,9 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
-- HDFS scans on a cluster with Kerberos, HDFS file locations without a port that name an
-  undeclared nameservice or that have no authority, and HDFS files in an encryption zone (see
-  [HDFS](#hdfs))
+- HDFS scans on a cluster with Kerberos, or whose executors are not known to read as the Spark
+  user; HDFS file locations that name a nameservice without NameNodes or that have no authority;
+  and HDFS files in an encryption zone (see [HDFS](#hdfs))
 - Scans whose data or delete files are on a different storage backend than the table metadata, for
   example a local or REST-served metadata location with `write.data.path` on S3 or HDFS. The native
   reader opens every file of a scan through one storage, chosen from the metadata location

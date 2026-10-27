@@ -661,8 +661,14 @@ case class CometScanRule(session: SparkSession)
             // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
             // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
             // it. That is intended: the provider gets the full property bag.
+            // A nameservice the catalog declares with Hadoop's own keys is not also given a
+            // default-port host declaration.
+            val derivedHdfsProperties = hdfsProperties.filterNot { case (key, _) =>
+              val ns = key.stripPrefix("hdfs.name-node.")
+              fileIOProperties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+            }
             val catalogProperties =
-              hadoopDerivedProperties ++ hdfsProperties ++ fileIOProperties ++
+              hadoopDerivedProperties ++ derivedHdfsProperties ++ fileIOProperties ++
                 hadoopS3Options
                   .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
                   .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
@@ -955,11 +961,36 @@ case class CometScanRule(session: SparkSession)
               s"(dfs.ha.namenodes.$ns, and a host:port dfs.namenode.rpc-address.$ns.<id> for " +
               "each NameNode)"
           }
+          // The client connects as HADOOP_USER_NAME, or as the executor's OS user, never as the
+          // Spark user the JVM reader runs as (opendal exposes no user setting). Claimed only
+          // when the executors are known to read as the Spark user: HADOOP_USER_NAME set to it
+          // in their environment, or, in local mode, the JVM's own user.
+          val sparkUser = session.sparkContext.sparkUser
+          val executorEnvKey = "spark.executorEnv.HADOOP_USER_NAME"
+          val executorUser = Option(
+            session.sessionState.conf
+              .getConfString(
+                executorEnvKey,
+                session.sparkContext.getConf.get(executorEnvKey, null)))
+            .orElse {
+              if (session.sparkContext.isLocal) {
+                Some(sys.env.getOrElse("HADOOP_USER_NAME", System.getProperty("user.name")))
+              } else {
+                None
+              }
+            }
+          val identityKnown = executorUser.contains(sparkUser)
+          if (!identityKnown) {
+            fallbackReasons += "Iceberg scan reads HDFS as the executors' user " +
+              s"${executorUser.map(u => s"'$u'").getOrElse("(unknown)")} rather than the Spark " +
+              s"user '$sparkUser'; set $executorEnvKey=$sparkUser so Comet's native Iceberg " +
+              "reader connects as the Spark user"
+          }
           // The client is built without KMS support and rejects every file of an encryption
           // zone. Probed only once the scan is otherwise eligible, so an undeclared nameservice
           // is not also dialed.
           val encryptedDirectory =
-            if (secure || undeclared.nonEmpty) None
+            if (secure || undeclared.nonEmpty || !identityKnown) None
             else {
               CometIcebergNativeScan.hdfsEncryptedDirectory(
                 hadoopConf,
@@ -970,7 +1001,7 @@ case class CometScanRule(session: SparkSession)
               "encryption zone or whose status could not be read; Comet's native Iceberg reader " +
               "cannot decrypt HDFS encryption zones"
           }
-          !secure && undeclared.isEmpty && encryptedDirectory.isEmpty
+          !secure && undeclared.isEmpty && identityKnown && encryptedDirectory.isEmpty
         }
 
         if (!taskValidation.allParquet) {

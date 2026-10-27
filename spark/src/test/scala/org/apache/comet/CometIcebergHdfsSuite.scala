@@ -34,6 +34,7 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hdfs.{MiniDFSCluster, MiniDFSNNTopology}
 import org.apache.hadoop.hdfs.client.HdfsAdmin
 import org.apache.hadoop.util.VersionInfo
+import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.SparkPlan
@@ -402,7 +403,10 @@ class CometIcebergHdfsSuite
       // native reader cannot decrypt, so the scan must be declined at planning, not fail on an
       // executor.
       withHdfsIcebergCatalog(baseUri = s"$ezUri/ez", cleanup = false) { catalog =>
-        spark.sql(s"CREATE TABLE $catalog.db.enc (id INT, name STRING) USING iceberg")
+        // Partitioned, so the probe meets several data directories under one parent.
+        spark.sql(
+          s"CREATE TABLE $catalog.db.enc (id INT, name STRING) USING iceberg " +
+            "PARTITIONED BY (name)")
         spark.sql(s"INSERT INTO $catalog.db.enc VALUES (1, 'a'), (2, 'b')")
         val dataLocation = IcebergReflection
           .getDataLocation(loadIcebergTable(spark, catalog, "db", "enc"))
@@ -429,5 +433,65 @@ class CometIcebergHdfsSuite
         assertSingleNativeScan(cometPlan)
       }
     } finally stopEncryptedCluster()
+  }
+
+  test("one native scan reads data files on two NameNodes") {
+    val haClientConf = startHaCluster()
+    val logicalUri = new URI(s"hdfs://$haNameservice")
+    val hadoopConf = new Configuration()
+    haClientConf.foreach { case (k, v) => hadoopConf.set(k, v) }
+    try {
+      withSQLConf(haClientConf: _*) {
+        // Metadata and the first data file on the single-NameNode cluster.
+        withHdfsIcebergCatalog() { catalog =>
+          spark.sql(s"CREATE TABLE $catalog.db.two (id INT, name STRING) USING iceberg")
+          spark.sql(s"INSERT INTO $catalog.db.two VALUES (1, 'a')")
+
+          // A second data file, written by Iceberg on the HA cluster and registered in the first
+          // table's manifest. Same DDL, so the field ids line up.
+          withHdfsIcebergCatalog(baseUri = logicalUri.toString, cleanup = false) { haCatalog =>
+            spark.sql(s"CREATE TABLE $haCatalog.db.src (id INT, name STRING) USING iceberg")
+            spark.sql(s"INSERT INTO $haCatalog.db.src VALUES (2, 'b')")
+            val src = loadIcebergTable(spark, haCatalog, "db", "src").asInstanceOf[Table]
+            val srcFile = src.newScan().planFiles().iterator().next().file()
+            val srcLocation = IcebergReflection
+              .extractFileLocation(
+                IcebergReflection.loadClass(IcebergReflection.ClassNames.CONTENT_FILE),
+                srcFile)
+              .getOrElse(fail("could not read the source data file location"))
+            assert(srcLocation.startsWith(s"hdfs://$haNameservice/"), srcLocation)
+
+            val table = loadIcebergTable(spark, catalog, "db", "two").asInstanceOf[Table]
+            table
+              .newAppend()
+              .appendFile(
+                DataFiles
+                  .builder(table.spec())
+                  .withPath(srcLocation)
+                  .withFormat(FileFormat.PARQUET)
+                  .withFileSizeInBytes(srcFile.fileSizeInBytes())
+                  .withRecordCount(srcFile.recordCount())
+                  .build())
+              .commit()
+            spark.sql(s"REFRESH TABLE $catalog.db.two")
+          }
+
+          // One FileIO serves both: the host:port authority dialed as written, the nameservice
+          // through the declaration.
+          val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $catalog.db.two ORDER BY id")
+          val scan = assertSingleNativeScan(cometPlan)
+          assert(
+            scan.nativeIcebergScanMetadata.catalogProperties
+              .contains(s"hdfs.name-node.$haNameservice"),
+            s"${scan.nativeIcebergScanMetadata.catalogProperties}")
+          assert(
+            spark.sql(s"SELECT count(*) FROM $catalog.db.two").collect().head.getLong(0) == 2L)
+        }
+      }
+    } finally {
+      try FileSystem.get(logicalUri, hadoopConf).close()
+      catch { case _: Exception => () }
+      stopHaCluster()
+    }
   }
 }

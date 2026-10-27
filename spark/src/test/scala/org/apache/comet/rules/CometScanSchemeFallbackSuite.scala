@@ -885,17 +885,38 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       s"expected the nameservice fall-back reason, got: $reasons")
   }
 
-  test("iceberg scan: a portless plain HDFS host is declined as an undeclared nameservice") {
+  test("iceberg scan: a portless plain HDFS host is claimed on Hadoop's default port") {
     assume(icebergAvailable, "Iceberg not available in classpath")
-    // iceberg-rust has no default NameNode port, so `hdfs://nn.example.com/...` is a nameservice
-    // name to it; declined at planning rather than failing on an executor.
+    // iceberg-rust has no default NameNode port, so `hdfs://nn.example.com/...` would be a
+    // nameservice name to it; Comet declares it on 8020, as the JVM client dials it.
     val (claimed, reasons) =
       planIcebergScanOverHdfs(Seq("hdfs://nn.example.com/warehouse/db/t/a.parquet"))
-    assert(claimed.isEmpty, "a portless host must not be claimed natively")
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+    assert(
+      nameNodeProperties(claimed.head) ==
+        Map("hdfs.name-node.nn.example.com" -> "nn.example.com:8020"))
+  }
+
+  test("iceberg scan: HDFS files are declined when executors would read as another user") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    // The native client connects as HADOOP_USER_NAME or the executor's OS user, never as the
+    // Spark user the JVM reader uses; the scan is claimed only when those are known to agree.
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      Seq("spark.executorEnv.HADOOP_USER_NAME" -> "someone-else"))
+    assert(claimed.isEmpty, "a scan read as another user must not be claimed")
     assert(
       reasons.exists(r =>
-        r.contains("HDFS authority 'nn.example.com'") && r.contains(undeclaredReason)),
-      s"expected the nameservice fall-back reason, got: $reasons")
+        r.contains("'someone-else'") && r.contains("spark.executorEnv.HADOOP_USER_NAME")),
+      s"expected the identity fall-back reason, got: $reasons")
+  }
+
+  test("iceberg scan: HDFS files are claimed when HADOOP_USER_NAME is the Spark user") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      Seq("spark.executorEnv.HADOOP_USER_NAME" -> spark.sparkContext.sparkUser))
+    assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
   }
 
   test("iceberg scan: a host:port HDFS location is claimed with no NameNode declaration") {

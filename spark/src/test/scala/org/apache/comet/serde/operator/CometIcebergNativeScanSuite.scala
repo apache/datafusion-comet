@@ -19,12 +19,17 @@
 
 package org.apache.comet.serde.operator
 
+import java.io.File
 import java.lang.reflect.InvocationTargetException
+import java.net.URI
+import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicInteger
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileStatus, Path, RawLocalFileSystem}
 import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
@@ -253,8 +258,11 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
     val properties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, authorities)
 
-    // NameNodes keep their declaration order, and an authority with a port needs no declaration.
-    properties shouldBe Map("hdfs.name-node.ns1" -> "host2:8020,host1:8020")
+    // NameNodes keep their declaration order, an authority with a port needs no declaration, and
+    // one the configuration knows nothing of is a host on the default port.
+    properties shouldBe Map(
+      "hdfs.name-node.ns1" -> "host2:8020,host1:8020",
+      "hdfs.name-node.ns3" -> "ns3:8020")
     CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe Some("ns2")
     // A catalog's own declaration counts in either form.
     val catalog = Map("hdfs.name-node.ns2" -> "host3:8020", "hadoop.dfs.ha.namenodes.ns3" -> "a")
@@ -272,10 +280,54 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     val properties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, authorities)
 
     // The colons inside the brackets are not a port separator: a bracketed rpc-address keeps
-    // its port, and a bracketed literal without one is a nameservice name, undeclared here.
-    properties shouldBe Map("hdfs.name-node.ns1" -> "[::1]:8020")
-    CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe Some(
-      "[::1]")
+    // its port, and a bracketed literal without one is a portless host, so it gets the default
+    // port like any other undeclared host.
+    properties shouldBe Map(
+      "hdfs.name-node.ns1" -> "[::1]:8020",
+      "hdfs.name-node.[::1]" -> "[::1]:8020")
+    CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe None
+  }
+
+  test("an undeclared portless HDFS host is declared on Hadoop's default NameNode port") {
+    val conf = new Configuration(false)
+    conf.set("dfs.nameservices", "ns1")
+    val authorities = Set("nn.example.com", "ns1")
+
+    val properties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, authorities)
+
+    // What DFSUtilClient.getNNAddress does for the JVM client: a host without a port is dialed on
+    // 8020. A name in dfs.nameservices is logical to Hadoop too; without NameNodes it stays
+    // undeclared rather than becoming a host.
+    properties shouldBe Map("hdfs.name-node.nn.example.com" -> "nn.example.com:8020")
+    CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe Some("ns1")
+  }
+
+  test("the encryption-zone probe lists each parent directory once and caches the answer") {
+    val root = Files.createTempDirectory("comet_ez_probe").toFile
+    val dirs = (1 to 3).map { i =>
+      val dir = new File(root, s"data/p=$i")
+      assert(dir.mkdirs())
+      s"${CountingHdfsFileSystem.PREFIX}${dir.getAbsolutePath}"
+    }.toSet
+    val conf = new Configuration(false)
+    conf.set("fs.hdfs.impl", classOf[CountingHdfsFileSystem].getName)
+    conf.set("fs.hdfs.impl.disable.cache", "true")
+    // A configured key provider makes the probe run; the local filesystem has no zones.
+    conf.set("hadoop.security.key.provider.path", "kms://http@kms.example.com:9600/kms")
+    CountingHdfsFileSystem.reset()
+
+    CometIcebergNativeScan.hdfsEncryptedDirectory(conf, dirs) shouldBe None
+    // The three partition directories share a parent: one listing, no per-directory status.
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 1
+    CountingHdfsFileSystem.getFileStatusCalls.get() shouldBe 0
+
+    CometIcebergNativeScan.hdfsEncryptedDirectory(conf, dirs) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 1
+
+    // A directory at the filesystem root has no parent to list.
+    CometIcebergNativeScan.hdfsEncryptedDirectory(
+      conf,
+      Set(s"${CountingHdfsFileSystem.PREFIX}/")) shouldBe None
   }
 
   private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")
@@ -431,5 +483,37 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   private class NoPathAccessorDeleteFile {
     def keyMetadata(): java.nio.ByteBuffer = null
+  }
+}
+
+/**
+ * A local-disk `hdfs://` filesystem that counts the NameNode calls the planner would make. The
+ * local `listStatus` stats each child itself, which a NameNode listing does not, so those inner
+ * calls are not counted.
+ */
+class CountingHdfsFileSystem extends RawLocalFileSystem {
+  RawLocalFileSystem.useStatIfAvailable()
+  private var listing = false
+  override def getScheme: String = "hdfs"
+  override def getUri: URI = URI.create(CountingHdfsFileSystem.PREFIX)
+  override def listStatus(path: Path): Array[FileStatus] = {
+    CountingHdfsFileSystem.listStatusCalls.incrementAndGet()
+    listing = true
+    try super.listStatus(path)
+    finally listing = false
+  }
+  override def getFileStatus(path: Path): FileStatus = {
+    if (!listing) CountingHdfsFileSystem.getFileStatusCalls.incrementAndGet()
+    super.getFileStatus(path)
+  }
+}
+
+object CountingHdfsFileSystem {
+  val PREFIX = "hdfs://counting"
+  val listStatusCalls = new AtomicInteger()
+  val getFileStatusCalls = new AtomicInteger()
+  def reset(): Unit = {
+    listStatusCalls.set(0)
+    getFileStatusCalls.set(0)
   }
 }
