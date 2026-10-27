@@ -412,7 +412,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("bloom-filter max-bytes accepts only representable power-of-two values") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       Seq("32", "524288", "1048576", "134217728").zipWithIndex.foreach { case (value, index) =>
         val table = s"bloom_max_ok_$index"
         createTable(
@@ -440,7 +440,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
   }
 
   test("unused bloom-filter max-bytes does not force fallback") {
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val nonPowerOfTwoMaxBytes = 100
       createTable(
         "unused_bloom_max",
@@ -467,7 +467,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("bloom-filter max-bytes=32 falls back only when parquet-mr ignores the cap") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val minimumBytes = 32
       val naturallyMinimumNdv = 1
       val bindingFpp = 0.0001
@@ -507,7 +507,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("fall-back: bloom-filter NDV values that overflow parquet-mr sizing arithmetic") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val largestNonOverflowingNdv = Long.MaxValue / 8L
       val cases = Seq(
         (largestNonOverflowingNdv, true),
@@ -536,7 +536,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("bloom-filter enabled=false with NDV follows runtime support and validates NDV") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       val configuredNdv = 1000
       createTable(
         "false_with_ndv",
@@ -564,7 +564,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("bloom-filter enabled=false still validates FPP") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
         "false_with_bad_fpp",
         partitionSpec = "",
@@ -583,7 +583,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("fall-back: invalid enabled-column FPP and NDV") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       Seq(
         ("'write.parquet.bloom-filter-fpp.column.id'='0'", icebergSupportsBloomFpp),
         ("'write.parquet.bloom-filter-fpp.column.id'='1'", icebergSupportsBloomFpp),
@@ -673,7 +673,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   test("Bloom-filter folding must be explicitly enabled for native writes") {
     assumeNativeBloomRuntime()
-    withDetectionCatalog { dir =>
+    withDetectionCatalog { _ =>
       createTable(
         "bloom_folding_opt_in",
         partitionSpec = "",
