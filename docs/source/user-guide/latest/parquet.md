@@ -356,6 +356,15 @@ With `spark.comet.write.parquet.enabled=true`:
   ([#7035](https://github.com/apache/datafusion-comet/issues/7035)).
 - **A `DATE` column read as `INTERVAL YEAR TO MONTH`.** Spark reads it, and Comet fails the read
   ([#5188](https://github.com/apache/datafusion-comet/issues/5188)).
+- **A nested dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
+  2 GiB.** In a struct field, list element, map key or map value, Comet expands the dictionary
+  into one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
+  `spark.comet.batchSize` rows (8192 by default) fails the scan when the values its rows reference
+  add up to more, counting each reference of a shared entry, even for a query that never reads the
+  strings. Values that are not valid UTF-8 decode to up to three times their size, since each
+  ill-formed sequence becomes `U+FFFD`. Spark keeps the dictionary and reads it row by row. Lower
+  `spark.comet.batchSize` so that a batch holds fewer rows
+  ([#7254](https://github.com/apache/datafusion-comet/issues/7254)).
 
 ### Writes that fail where Spark succeeds
 

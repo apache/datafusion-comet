@@ -367,13 +367,18 @@ fn parquet_convert_array_impl(
                 let keys = unsafe { StringArray::new_unchecked(offsets, values, nulls) };
                 return Ok((Arc::new(keys), true));
             }
-            // Binary to Utf8 reads only the binary output style, which a scan leaves unset.
-            let cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
+            // Binary to Utf8 reads only the binary output style, which a scan leaves unset, and
+            // whether the reader owns the input's buffers, which lets valid values share them.
+            let mut cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
+            cast_options.is_adapting_schema = true;
             let len = array.len();
             spark_cast(ColumnarValue::Array(array), to_type, &cast_options)?.into_array(len)
         }
         // The same schema can dictionary-encode such a value. Decode each dictionary value once
-        // through the arm above, then expand the keys, as Arrow's cast would.
+        // through the arm above, then expand the keys, as Arrow's cast would. Expanding flattens
+        // the batch into one string array with 32-bit offsets, so a batch whose rows reference
+        // wide entries many times can decode past `i32::MAX` bytes and fail where Spark, which
+        // keeps the dictionary, succeeds (#7254).
         (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
             let dictionary = array.as_any_dictionary();
             let keys = dictionary.normalized_keys();
@@ -1241,15 +1246,23 @@ mod tests {
     #[test]
     fn nested_binary_to_string_keeps_map_key_bytes() {
         use super::{parquet_convert_array, SparkParquetOptions};
-        use arrow::array::{ArrayRef, AsArray, BinaryArray, MapArray, StructArray};
+        use arrow::array::{
+            ArrayRef, AsArray, BinaryArray, DictionaryArray, Int32Array, MapArray, StructArray,
+        };
         use arrow::buffer::OffsetBuffer;
-        use arrow::datatypes::{DataType, Field, Fields};
+        use arrow::datatypes::{DataType, Field, Fields, Int32Type};
         use datafusion_comet_spark_expr::EvalMode;
         use std::sync::Arc;
 
         let ff: &[u8] = &[0xFF];
         let replacement = "\u{fffd}".as_bytes();
         let key_bytes = BinaryArray::from(vec![ff, replacement]);
+        // The same keys dictionary-encoded, in an order `take` has to follow, past an entry no
+        // key references.
+        let dictionary_keys = DictionaryArray::<Int32Type>::new(
+            Int32Array::from(vec![2, 1]),
+            Arc::new(BinaryArray::from(vec![b"zzz".as_slice(), replacement, ff])),
+        );
         let struct_keys = StructArray::from(vec![(
             Arc::new(Field::new("s", DataType::Binary, true)),
             Arc::new(key_bytes.clone()) as ArrayRef,
@@ -1282,6 +1295,11 @@ mod tests {
                 Arc::new(struct_keys) as ArrayRef,
                 struct_type(DataType::Binary),
                 struct_type(DataType::Utf8),
+            ),
+            (
+                Arc::new(dictionary_keys) as ArrayRef,
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Binary)),
+                DataType::Utf8,
             ),
         ] {
             let from_type = map_type(from_key_type.clone(), DataType::Binary);
