@@ -2833,12 +2833,12 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Data files written without Iceberg field ids and read with no name mapping: iceberg-rust can
-  // only match such a file's struct fields to the table's by position, and only when the counts
-  // agree. Spark's own reader returns NULL nested fields for such a table, so the unpruned native
-  // read is checked for the file's values instead; the pruned read, which asks for fewer fields
-  // than the file holds, is refused rather than guessed at.
-  test("nested schema pruning on data files without field ids") {
+  // Data files written without Iceberg field ids and read with no name mapping: neither reader
+  // can match such a file's nested fields to the table's, so a struct's fields read as NULL.
+  // Spark's reader gives them fallback readers; iceberg-rust, since apache/iceberg-rust#3437,
+  // treats them as absent, whether the struct is read whole or pruned. Top-level columns still
+  // read. A list of structs is the one shape the readers still disagree on.
+  test("nested fields of data files without field ids read as NULL, as in Spark") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     withTempIcebergDir { warehouseDir =>
@@ -2898,30 +2898,35 @@ class CometIcebergNativeSuite
           spark.sql(
             s"ALTER TABLE $table UNSET TBLPROPERTIES IF EXISTS ('schema.name-mapping.default')")
 
-          def nativeRows(query: String, pruneNestedFields: Boolean): Seq[Row] = {
-            var rows = Seq.empty[Row]
+          // Both readers agree, with the struct read whole and read pruned.
+          Seq(
+            s"SELECT id, s FROM $table ORDER BY id",
+            s"SELECT id, s.b FROM $table ORDER BY id",
+            s"SELECT count(*) FROM $table WHERE s.a IS NULL",
+            s"SELECT count(*) FROM $table WHERE s IS NULL").foreach(checkPrunedAndFullReads)
+          // And NULL is what they agree on, not the file's values.
+          val rows = spark.sql(s"SELECT id, s.b FROM $table ORDER BY id").collect()
+          assert(rows.length == 100 && rows.forall(_.isNullAt(1)), rows.mkString(","))
+          // A list of structs: Spark's reader drops the elements and returns an empty list, the
+          // native read keeps each element with its fields NULL.
+          val listQuery = s"SELECT items.x FROM $table ORDER BY id"
+          Seq(true, false).foreach { pruneNestedFields =>
             withSQLConf(
               CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key ->
                 pruneNestedFields.toString) {
-              val df = spark.sql(query)
-              rows = df.collect().toSeq
+              val df = spark.sql(listQuery)
+              val native = df.collect()
               assertSingleNativeScan(df.queryExecution.executedPlan)
+              assert(
+                native.length == 100 && native.forall(_.getSeq[Any](0) == Seq(null)),
+                native.take(3).mkString(","))
             }
-            rows
           }
-          // `s.b` is the struct's last field, so a positional read of a pruned struct would hand
-          // back `s.a`; iceberg-rust refuses it instead.
-          Seq(
-            s"SELECT id, s.b FROM $table ORDER BY id",
-            s"SELECT id, items.x FROM $table ORDER BY id").foreach { query =>
-            val full = nativeRows(query, pruneNestedFields = false)
-            assert(full.length == 100 && full.forall(!_.isNullAt(1)), s"$query: $full")
-            val e = intercept[org.apache.spark.SparkException] {
-              nativeRows(query, pruneNestedFields = true)
-            }
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val vanilla = spark.sql(listQuery).collect()
             assert(
-              e.getMessage.contains("cannot reconcile struct fields by id"),
-              s"$query: ${e.getMessage}")
+              vanilla.length == 100 && vanilla.forall(_.getSeq[Any](0).isEmpty),
+              vanilla.take(3).mkString(","))
           }
 
           spark.sql(s"DROP TABLE $table")
@@ -4624,27 +4629,31 @@ class CometIcebergNativeSuite
             distinctCount == numRows,
             s"Expected $numRows distinct IDs but got $distinctCount")
 
-          // Spark's Iceberg reader returns null for INT96 timestamps inside structs,
-          // so we can't use checkIcebergNativeScan (which compares against Spark) for
-          // ts_struct. Instead, compare Comet's read against the raw Parquet source.
           checkIcebergNativeScan(
             "SELECT id, ts, value, ts_array, ts_map FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts_array FROM test_cat.db.int96_test ORDER BY id")
           checkIcebergNativeScan("SELECT id, ts_map FROM test_cat.db.int96_test ORDER BY id")
-
-          // Validate ts_struct against raw Parquet since Spark's Iceberg reader can't read it
-          val icebergStructDf = spark
-            .sql("SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id")
-            .collect()
-          val parquetStructDf = spark.read
-            .parquet(dataPath)
-            .select("id", "ts_struct")
-            .orderBy("id")
-            .collect()
+          // The imported file has no field ids, so neither reader can read the struct's fields
+          // (apache/iceberg-rust#3437): the native scan returns the struct with NULL fields, and
+          // Spark's reader, which cannot tell an optional struct's own nullness without a field
+          // to read, returns NULL for the struct itself. The native read still decodes the
+          // INT96 leaf, since such a file is read by whole columns, so an overflow would
+          // surface here.
+          val structQuery = "SELECT id, ts_struct FROM test_cat.db.int96_test ORDER BY id"
+          val structDf = spark.sql(structQuery)
+          val nativeStructs = structDf.collect()
+          assertSingleNativeScan(structDf.queryExecution.executedPlan)
           assert(
-            icebergStructDf.sameElements(parquetStructDf),
-            "ts_struct mismatch between Comet Iceberg read and raw Parquet")
+            nativeStructs.length == numRows &&
+              nativeStructs.forall(_.getStruct(1) == Row(null, null)),
+            nativeStructs.take(3).mkString(","))
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val sparkStructs = spark.sql(structQuery).collect()
+            assert(
+              sparkStructs.length == numRows && sparkStructs.forall(_.isNullAt(1)),
+              sparkStructs.take(3).mkString(","))
+          }
 
           spark.sql("DROP TABLE test_cat.db.int96_test")
           spark.sql("DROP TABLE parquet_temp")

@@ -831,11 +831,12 @@ Which entries apply depends on which native paths are enabled:
 
 ### Reads that differ from Spark
 
-- **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
-  a file as NULL, and the native scan returns the values stored in the file
-  ([#6794](https://github.com/apache/datafusion-comet/issues/6794)). A read of only some of a
-  struct's fields fails instead: the native reader matches such a file's fields by position only
-  when it reads the whole struct. Set `spark.comet.scan.icebergNative.nestedSchemaPruning.enabled=false` to read whole structs.
+- **Data files with neither field ids nor a name mapping.** Neither reader can match such a
+  file's nested fields to the table's, so a struct's fields read as NULL in both. The containers
+  differ: Spark's reader returns NULL for an optional struct itself, where the native scan
+  returns a struct of NULL fields, and an empty list for a list of structs, where the native scan
+  returns the list with each element's fields NULL
+  ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values
   ([#6822](https://github.com/apache/datafusion-comet/issues/6822)).

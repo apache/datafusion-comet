@@ -3509,7 +3509,7 @@ dependencies = [
  "once_cell",
  "prost",
  "prost-types",
- "rand 0.10.2",
+ "rand 0.10.3",
  "regex",
  "roxmltree",
  "socket2",
@@ -3729,7 +3729,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=ca21f1587c6caaeb88dd3a9e1cc245747e1aba08#ca21f1587c6caaeb88dd3a9e1cc245747e1aba08"
+source = "git+https://github.com/apache/iceberg-rust?rev=de0a6ac8471da43f63382d66fac27d7e56fd273e#de0a6ac8471da43f63382d66fac27d7e56fd273e"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3787,7 +3787,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=ca21f1587c6caaeb88dd3a9e1cc245747e1aba08#ca21f1587c6caaeb88dd3a9e1cc245747e1aba08"
+source = "git+https://github.com/apache/iceberg-rust?rev=de0a6ac8471da43f63382d66fac27d7e56fd273e#de0a6ac8471da43f63382d66fac27d7e56fd273e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3797,7 +3797,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=ca21f1587c6caaeb88dd3a9e1cc245747e1aba08#ca21f1587c6caaeb88dd3a9e1cc245747e1aba08"
+source = "git+https://github.com/apache/iceberg-rust?rev=de0a6ac8471da43f63382d66fac27d7e56fd273e#de0a6ac8471da43f63382d66fac27d7e56fd273e"
 dependencies = [
  "anyhow",
  "async-trait",
