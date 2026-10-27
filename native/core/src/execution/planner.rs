@@ -590,6 +590,11 @@ impl PhysicalPlanner {
             let url = normalized.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
+            partitioned_file
+                .extensions
+                .insert(crate::parquet::file_error_context::SparkFilePath(
+                    Arc::from(file.file_path.as_str()),
+                ));
 
             // Process partition values
             let partition_values: Result<Vec<_>, _> = file
@@ -771,14 +776,16 @@ impl PhysicalPlanner {
                     registry.get(expr_id)
                 });
 
+                let mut cast_options = SparkCastOptions::new_with_version(
+                    eval_mode,
+                    &expr.timezone,
+                    expr.is_spark4_plus,
+                );
+                cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new_with_version(
-                        eval_mode,
-                        &expr.timezone,
-                        expr.is_spark4_plus,
-                    ),
+                    cast_options,
                     spark_expr.expr_id,
                     query_context,
                 )))

@@ -20,6 +20,7 @@
 #![deny(clippy::clone_on_ref_ptr)]
 
 mod error;
+mod nested_compaction;
 mod query_context;
 
 pub mod kernels;
