@@ -102,7 +102,8 @@ FROM make_date_arguments WHERE m IS NOT NULL
 
 -- A later NULL must not hide an error in the required first argument.
 query expect_error(MonthOfYear)
-SELECT make_date(year(make_date(2024, inner_m, 1)), 1, y) FROM make_date_arguments
+SELECT make_date(year(make_date(2024, inner_m, 1)), 1, y)
+FROM make_date_arguments WHERE y IS NULL
 
 -- These date functions always evaluate their first operand, even when it returns NULL.
 query expect_native(make_date, date_add)
@@ -126,6 +127,11 @@ query expect_native(make_date)
 SELECT array(make_date(y, m, 1), DATE '2024-01-01'),
        named_struct('date', make_date(y, m, 1)) FROM make_date_arguments
 
+-- Greatest and least evaluate every operand, including nullable dates in either position.
+query expect_native(make_date, greatest, least)
+SELECT greatest(make_date(y, m, 1), DATE '2024-02-01'),
+       least(DATE '2024-02-01', make_date(y, m, 1)) FROM make_date_arguments
+
 statement
 CREATE TABLE make_date_parents(lhs INT, guard BOOLEAN, m INT) USING parquet
 
@@ -135,6 +141,11 @@ INSERT INTO make_date_parents VALUES (NULL, true, 13), (1, false, 1)
 -- Native arithmetic/Boolean parents are still eager, so keep these in Spark.
 query expect_fallback(make_date requires Spark evaluation under)
 SELECT lhs + unix_date(make_date(2024, m, 1)) FROM make_date_parents
+
+-- An eager inner parent must not remove an outer parent's short-circuit guard.
+query expect_fallback(make_date requires Spark evaluation under Add)
+SELECT lhs + unix_date(greatest(make_date(2024, m, 1), DATE '2024-01-01'))
+FROM make_date_parents
 
 query expect_fallback(make_date requires Spark evaluation under)
 SELECT guard OR unix_date(make_date(2024, m, 1)) > 0 FROM make_date_parents
