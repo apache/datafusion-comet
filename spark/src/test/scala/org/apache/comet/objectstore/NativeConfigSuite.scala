@@ -824,6 +824,41 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "auth type UserboundSASWithOAuth")
   }
 
+  test("nativeStoreError - passes native's answer through") {
+    val options = Map("a" -> "1", "b" -> "2")
+    var seen = Map.empty[String, String]
+    val error = AbfsAuthResolver.nativeStoreError(
+      "abfss://data@accta.dfs.core.windows.net/",
+      options,
+      (url, keys, values) => {
+        url shouldBe "abfss://data@accta.dfs.core.windows.net/"
+        seen = keys.zip(values).toMap
+        "native says no"
+      })
+    error shouldBe Some("native says no")
+    seen shouldBe options
+    AbfsAuthResolver.nativeStoreError("abfss://d@a/", options, (_, _, _) => null) shouldBe None
+  }
+
+  test("nativeStoreError - assumes the store builds when the native library is not loaded") {
+    AbfsAuthResolver.nativeStoreError(
+      "abfss://d@a/",
+      Map("a" -> "1"),
+      (_, _, _) => throw new UnsatisfiedLinkError("no comet in java.library.path")) shouldBe None
+  }
+
+  test("nativeStoreError - a native failure is a reason to fall back") {
+    val reason = AbfsAuthResolver
+      .nativeStoreError(
+        "abfss://d@a/",
+        Map("a" -> "1"),
+        (_, _, _) => throw new RuntimeException("panicked while building the store"))
+      .get
+    reason should include("could not ask native whether it can build the ABFS store")
+    reason should include("RuntimeException")
+    reason should include("panicked while building the store")
+  }
+
   test("extractScanObjectStoreOptions - a custom SAS token provider falls back to Spark") {
     val providerClass = classOf[NeverInstantiatedSasTokenProvider].getName
     assertFallsBack(

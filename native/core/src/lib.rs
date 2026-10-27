@@ -329,17 +329,15 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_abfsStoreError(
     env: EnvUnowned,
     _: JClass,
     url: JString,
-    keys: JObjectArray,
-    values: JObjectArray,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
 ) -> jstring {
     try_unwrap_or_throw(&env, |env| {
         let url: String = url.try_to_string(env)?;
         let mut configs = HashMap::new();
         for i in 0..keys.len(env)? {
-            let key = keys.get_element(env, i)?;
-            let key = unsafe { JString::from_raw(&*env, key.into_raw()) }.try_to_string(env)?;
-            let value = values.get_element(env, i)?;
-            let value = unsafe { JString::from_raw(&*env, value.into_raw()) }.try_to_string(env)?;
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
             configs.insert(key, value);
         }
         match parquet::objectstore::azure::store_error(&url, &configs) {

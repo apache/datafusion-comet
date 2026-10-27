@@ -508,16 +508,27 @@ private[comet] object AbfsAuthResolver extends Logging {
 
   /**
    * Why native cannot build the store for `url` from `options`, from the same code the scan runs.
-   * When native cannot be asked (the library is not loaded), this assumes it can: such a build
-   * cannot run the native scan anyway.
+   * When native cannot be asked because the library is not loaded (a `LinkageError`), this
+   * assumes it can: such a build cannot run the native scan anyway. Any other failure, such as
+   * the store build panicking, would fail every task of a native scan, so it is a reason to fall
+   * back. `ask` is the JNI call, a parameter so tests can make it fail.
    */
-  private def nativeStoreError(url: String, options: Map[String, String]): Option[String] = {
+  private[objectstore] def nativeStoreError(
+      url: String,
+      options: Map[String, String],
+      ask: (String, Array[String], Array[String]) => String = NativeBase.abfsStoreError)
+      : Option[String] = {
     val (keys, values) = options.toArray.unzip
-    try Option(NativeBase.abfsStoreError(url, keys, values))
+    try Option(ask(url, keys, values))
     catch {
-      case e @ (NonFatal(_) | _: LinkageError) =>
+      case e: LinkageError =>
         logDebug(s"Could not ask native whether it can build the ABFS store for $url", e)
         None
+      case NonFatal(e) =>
+        logWarning(s"Could not ask native whether it can build the ABFS store for $url", e)
+        Some(
+          "could not ask native whether it can build the ABFS store: " +
+            s"${e.getClass.getName}: ${Option(e.getMessage).getOrElse("")}")
     }
   }
 
