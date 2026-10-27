@@ -1880,18 +1880,39 @@ mod tests {
 
     #[test]
     fn flatten_struct_cols_nulls_fields_under_a_null_struct() {
-        // Row 1's struct is null but its field holds a value, which Arrow allows. Spark's
-        // `inline` turns a null struct into a row of nulls, so the value must not surface.
-        let field = Arc::new(Field::new("a", DataType::Int32, true));
+        // Row 1's struct is null but its fields hold values, which Arrow allows. Spark's `inline`
+        // turns a null struct into a row of nulls, so none of those values may surface.
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4)]));
+        let b: ArrayRef = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
+        let fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Int32, false)),
+        ];
         let structs: ArrayRef = Arc::new(StructArray::new(
-            vec![Arc::clone(&field)].into(),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-            Some(NullBuffer::from(vec![true, false, true])),
+            fields.clone().into(),
+            vec![a, b],
+            Some(NullBuffer::from(vec![true, false, true, true])),
         ));
-        let schema = Arc::new(Schema::new(vec![field]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]));
+        let indices = HashSet::from([0]);
 
-        let batch = flatten_struct_cols(&[structs], &schema, &HashSet::from([0])).unwrap();
+        let batch = flatten_struct_cols(&[Arc::clone(&structs)], &schema, &indices).unwrap();
         let a = batch.column(0).as_primitive::<Int32Type>();
-        assert_eq!(a.iter().collect::<Vec<_>>(), [Some(1), None, Some(3)]);
+        let b = batch.column(1).as_primitive::<Int32Type>();
+        assert_eq!(a.iter().collect::<Vec<_>>(), [Some(1), None, None, Some(4)]);
+        assert_eq!(
+            b.iter().collect::<Vec<_>>(),
+            [Some(10), None, Some(30), Some(40)]
+        );
+
+        // A slice keeps the struct's mask aligned with its fields.
+        let batch = flatten_struct_cols(&[structs.slice(1, 2)], &schema, &indices).unwrap();
+        let a = batch.column(0).as_primitive::<Int32Type>();
+        let b = batch.column(1).as_primitive::<Int32Type>();
+        assert_eq!(a.iter().collect::<Vec<_>>(), [None, None]);
+        assert_eq!(b.iter().collect::<Vec<_>>(), [None, Some(30)]);
     }
 }

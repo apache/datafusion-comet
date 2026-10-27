@@ -62,7 +62,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, liftFallbackReasons, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -1952,9 +1952,6 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     val childExprProto = exprToProto(childExpr, op.child.output)
 
     if (childExprProto.isEmpty) {
-      // `stack` builds its array of structs here rather than taking it from the plan, so carry any
-      // reason recorded on the built nodes to the generator, where the operator collects it.
-      liftFallbackReasons(childExpr, op.generator)
       return None
     }
 
