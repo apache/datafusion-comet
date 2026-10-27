@@ -22,8 +22,11 @@ package org.apache.comet.serde
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
+import org.apache.spark.sql.catalyst.expressions.{Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
@@ -50,6 +53,38 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     Seq(nullProbe, firstMatch).foreach { predicate =>
       assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
     }
+  }
+
+  test("make_date IN accepts analyzer casts that only widen candidate nullability") {
+    val year = AttributeReference("y", IntegerType)()
+    val text = AttributeReference("s", StringType)()
+    val inputs = Seq(year, text)
+    val date = MakeDate(year, Literal(1), Literal(1), failOnError = true)
+    def struct(value: Expression): Expression =
+      CreateNamedStruct(Seq(Literal("d"), value, Literal("f"), Literal(0.0d)))
+    def analyze(candidate: Expression): In = {
+      val predicate = In(struct(date), Seq(struct(candidate)))
+      val plan = Project(Seq(Alias(predicate, "matches")()), LocalRelation(inputs))
+      SimpleAnalyzer
+        .execute(plan)
+        .asInstanceOf[Project]
+        .projectList
+        .head
+        .children
+        .head
+        .asInstanceOf[In]
+    }
+
+    val safe = analyze(Literal(java.sql.Date.valueOf("2024-01-01")))
+    // The analyzer coerces the literal's nonnullable date field to match the nullable probe.
+    val cast = safe.list.head.asInstanceOf[Cast]
+    assert(cast.child.dataType != cast.dataType)
+    assert(equalsIgnoreCompatibleNullability(cast.child.dataType, cast.dataType))
+    assert(QueryPlanSerde.exprToProto(safe, inputs).exists(_.hasIn))
+
+    // Value-changing casts remain unsafe inside otherwise safe struct constructors.
+    val unsafe = analyze(Cast(text, DateType, Some("UTC"), ansiEnabled = true))
+    assert(QueryPlanSerde.exprToProto(unsafe, inputs).isEmpty)
   }
 
   test("make_date IN falls back when a candidate can fail on a skipped row") {

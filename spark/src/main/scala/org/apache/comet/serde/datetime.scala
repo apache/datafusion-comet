@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import java.util.Locale
 
 import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, BinaryComparison, CaseWhen, Cast, Coalesce, ConvertTimezone, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, EqualNullSafe, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, If, In, InSet, LastDay, LeafExpression, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, SortOrder, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -459,6 +460,9 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
     case _: Literal | _: Attribute => true
     case _: CreateArray | _: CreateNamedStruct =>
       expr.children.forall(canEvaluateInCandidateEagerly)
+    // IN coercion can widen nested nullability without converting any candidate values.
+    case cast: Cast if equalsIgnoreCompatibleNullability(cast.child.dataType, cast.dataType) =>
+      canEvaluateInCandidateEagerly(cast.child)
     case _ => false
   }
 

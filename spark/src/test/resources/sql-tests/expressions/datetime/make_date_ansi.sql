@@ -86,7 +86,7 @@ query expect_error(CAST_INVALID_INPUT)
 SELECT make_date(y, 1, 1) IN (DATE '2023-01-01', CAST(s AS DATE))
 FROM make_date_membership WHERE y = 2024
 
--- Safe struct constructors retain the native path with constant folding disabled.
+-- Safe structs retain the native path through the analyzer's nullability-widening casts.
 query expect_native(make_date, in)
 SELECT (make_date(y, 1, 1), 0D) IN ((DATE '2024-01-01', 0D), (DATE '2025-01-01', 0D))
 FROM make_date_membership
