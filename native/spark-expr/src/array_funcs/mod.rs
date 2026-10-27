@@ -38,5 +38,5 @@ pub use get_array_struct_fields::GetArrayStructFields;
 pub use list_extract::ListExtract;
 pub use nested_comparison::{spark_comparison, spark_in_list, FloatOperands};
 pub use nested_float_normalize::{normalize_floats, NormalizeNestedFloats};
-pub use sequence::spark_sequence;
+pub use sequence::{spark_sequence, spark_sequence_recomputed};
 pub use size::{spark_size, SparkSizeFunc};

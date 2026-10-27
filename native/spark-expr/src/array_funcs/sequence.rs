@@ -24,6 +24,11 @@
 // path, which allocates two `long[]` per row and copies every element three times, this kernel
 // reserves the Arrow child buffer once for the whole batch and writes each element exactly once.
 //
+// `spark_sequence` matches released Spark, which raises INTERNAL_ERROR("Unreachable code
+// reached.") when `stop - start` overflows a long but the exact length is small.
+// `spark_sequence_recomputed` returns that length instead, as Spark does from SPARK-58821; the
+// Scala serde picks the variant for the Spark version.
+//
 // Date/timestamp sequences are not handled here; the Scala serde only routes IntegralType
 // sequences to this function.
 
@@ -43,7 +48,34 @@ use crate::SparkError;
 /// Spark's ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH (Integer.MAX_VALUE - 15).
 const MAX_ROUNDED_ARRAY_LENGTH: i128 = (i32::MAX - 15) as i128;
 
+/// What `Sequence.sequenceLength` does when `stop - start` overflows a long but the exact length
+/// is within Spark's array limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverflowedLength {
+    /// Released Spark raises INTERNAL_ERROR("Unreachable code reached.").
+    InternalError,
+    /// SPARK-58821 returns the exact length.
+    Recompute,
+}
+
 pub fn spark_sequence(args: &[ColumnarValue], data_type: &DataType) -> Result<ColumnarValue> {
+    sequence(args, data_type, OverflowedLength::InternalError)
+}
+
+/// `spark_sequence` for Spark builds with SPARK-58821, which return the exact length when
+/// `stop - start` overflows a long but the length is small.
+pub fn spark_sequence_recomputed(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+) -> Result<ColumnarValue> {
+    sequence(args, data_type, OverflowedLength::Recompute)
+}
+
+fn sequence(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+    overflowed: OverflowedLength,
+) -> Result<ColumnarValue> {
     let child_field = match data_type {
         DataType::List(field) => Arc::clone(field),
         other => return exec_err!("spark_sequence expects a List return type, got {other:?}"),
@@ -62,18 +94,38 @@ pub fn spark_sequence(args: &[ColumnarValue], data_type: &DataType) -> Result<Co
     let step = arrays.get(2);
 
     let result = match child_field.data_type() {
-        DataType::Int8 => {
-            sequence_integral::<Int8Type>(&arrays[0], &arrays[1], step, child_field, |v| v as i8)
-        }
-        DataType::Int16 => {
-            sequence_integral::<Int16Type>(&arrays[0], &arrays[1], step, child_field, |v| v as i16)
-        }
-        DataType::Int32 => {
-            sequence_integral::<Int32Type>(&arrays[0], &arrays[1], step, child_field, |v| v as i32)
-        }
-        DataType::Int64 => {
-            sequence_integral::<Int64Type>(&arrays[0], &arrays[1], step, child_field, |v| v)
-        }
+        DataType::Int8 => sequence_integral::<Int8Type>(
+            &arrays[0],
+            &arrays[1],
+            step,
+            child_field,
+            overflowed,
+            |v| v as i8,
+        ),
+        DataType::Int16 => sequence_integral::<Int16Type>(
+            &arrays[0],
+            &arrays[1],
+            step,
+            child_field,
+            overflowed,
+            |v| v as i16,
+        ),
+        DataType::Int32 => sequence_integral::<Int32Type>(
+            &arrays[0],
+            &arrays[1],
+            step,
+            child_field,
+            overflowed,
+            |v| v as i32,
+        ),
+        DataType::Int64 => sequence_integral::<Int64Type>(
+            &arrays[0],
+            &arrays[1],
+            step,
+            child_field,
+            overflowed,
+            |v| v,
+        ),
         other => exec_err!("spark_sequence does not support element type {other:?}"),
     }?;
 
@@ -91,6 +143,7 @@ fn sequence_integral<T: ArrowPrimitiveType>(
     stop: &ArrayRef,
     step: Option<&ArrayRef>,
     child_field: FieldRef,
+    overflowed: OverflowedLength,
     from_i64: impl Fn(i64) -> T::Native,
 ) -> Result<ArrayRef>
 where
@@ -130,7 +183,7 @@ where
         }
         let s: i64 = start.value(row).into();
         let e: i64 = stop.value(row).into();
-        let len = sequence_length(s, e, row_step(row, s, e))?;
+        let len = sequence_length(s, e, row_step(row, s, e), overflowed)?;
         total += len;
         lengths.push(len);
     }
@@ -192,7 +245,14 @@ where
 /// Number of elements of `sequence(start, stop, step)`, matching Spark's boundary check and
 /// `Sequence.sequenceLength` (byte-identical from Spark 3.4.3 through 4.1.1), including which
 /// of the three failure paths fires and the exact length value each of them reports.
-fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
+/// `overflowed` selects what the BigInt fallback does with a length within the limit (see
+/// [`OverflowedLength`]).
+fn sequence_length(
+    start: i64,
+    stop: i64,
+    step: i64,
+    overflowed: OverflowedLength,
+) -> Result<usize> {
     if !((step > 0 && start <= stop) || (step < 0 && start >= stop) || (step == 0 && start == stop))
     {
         return Err(DataFusionError::External(Box::new(
@@ -213,7 +273,7 @@ fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
     // Max delta magnitude is |i64::MAX - i64::MIN| = 2 * i64::MAX + 1, which fits in i128 but
     // overflows i64, so the `> i64::MAX` / `< i64::MIN` predicates below are both live.
     let delta = stop as i128 - start as i128;
-    let overflowed = delta > i64::MAX as i128
+    let subtraction_overflowed = delta > i64::MAX as i128
         || delta < i64::MIN as i128
         || (delta == i64::MIN as i128 && step == -1);
     let len = 1 + delta / step as i128;
@@ -226,10 +286,12 @@ fn sequence_length(start: i64, stop: i64, step: i64) -> Result<usize> {
             },
         )));
     }
-    if overflowed {
-        // Spark's BigInt fallback lands on `internalError("Unreachable code reached.")` when
-        // the exact length is within the limit (e.g. sequence spanning more than Long.MaxValue
-        // with a large step); reproduce it for error parity.
+    if subtraction_overflowed && overflowed == OverflowedLength::InternalError {
+        // Released Spark's BigInt fallback lands on `internalError("Unreachable code reached.")`
+        // when the exact length is within the limit (e.g. sequence spanning more than
+        // Long.MaxValue with a large step); reproduce it for error parity. SPARK-58821 returns
+        // that length instead. The boundary check has already rejected a step pointing the
+        // wrong way, so the length is positive and, being within the limit, fits a usize.
         return Err(DataFusionError::External(Box::new(SparkError::Internal(
             "Unreachable code reached.".to_string(),
         ))));
@@ -356,6 +418,48 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("Unreachable code reached."), "{err}");
+    }
+
+    /// SPARK-58821's cases: `stop - start` overflows a long but a large step keeps the exact
+    /// length small, so `spark_sequence_recomputed` returns the elements instead of the internal
+    /// error. `length_limit_and_overflow_edges` covers `spark_sequence`'s internal error. A length
+    /// over the limit is still an error with the new variant.
+    #[test]
+    fn recomputed_length_after_overflow() {
+        let args = vec![
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                Some(i64::MIN),
+                Some(i64::MIN),
+                Some(i64::MAX),
+            ]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                Some(i64::MAX),
+                Some(0),
+                Some(i64::MIN),
+            ]))),
+            ColumnarValue::Array(Arc::new(Int64Array::from(vec![
+                Some(i64::MAX),
+                Some(4611686018427387904),
+                Some(-i64::MAX),
+            ]))),
+        ];
+        let ColumnarValue::Array(arr) =
+            spark_sequence_recomputed(&args, &list_of(DataType::Int64)).unwrap()
+        else {
+            unreachable!("array inputs produce an array")
+        };
+        let list = as_primitive_list(&arr);
+        assert_eq!(row_values(&list, 0), vec![i64::MIN, -1, i64::MAX - 1]);
+        assert_eq!(
+            row_values(&list, 1),
+            vec![i64::MIN, -4611686018427387904, 0]
+        );
+        assert_eq!(row_values(&list, 2), vec![i64::MAX, 0, -i64::MAX]);
+
+        let err = sequence_length(i64::MIN, i64::MAX, 2, OverflowedLength::Recompute)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("9223372036854775808"), "{err}");
     }
 
     #[test]
