@@ -20,11 +20,13 @@
 package org.apache.comet
 
 import java.nio.ByteOrder
+import java.util.regex.Pattern
 
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{SparkSession, SparkSessionExtensions}
-import org.apache.spark.sql.catalyst.expressions.Expression
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
 import org.apache.spark.sql.comet._
@@ -297,6 +299,9 @@ object CometSparkSessionExtensions extends Logging {
    * `CometExecRule.rollUpFallbackReasons` when that operator is left in the Spark plan. See
    * https://github.com/apache/datafusion-comet/issues/5230.
    *
+   * A reason recorded on an expression is prefixed with the expression's name unless it already
+   * names it. See `qualifyReasons`.
+   *
    * @param node
    *   The Spark operator or expression that is falling back to Spark.
    * @param info
@@ -336,22 +341,63 @@ object CometSparkSessionExtensions extends Logging {
    * @return
    *   `node` with fallback reasons attached (as a side effect on its tag map).
    */
-  def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String]): T = {
+  def withFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String]): T =
+    recordFallbackReasons(node, info, qualifyWithExpressionName = true)
+
+  /**
+   * Record reasons that were already recorded on another expression, so they already name the
+   * expression that rejected the input. Qualifying them again would attribute them to the
+   * expression they are lifted onto. See `QueryPlanSerde.liftFallbackReasons`.
+   */
+  private[comet] def withLiftedFallbackReasons[T <: TreeNode[_]](node: T, info: Set[String]): T =
+    recordFallbackReasons(node, info, qualifyWithExpressionName = false)
+
+  private def recordFallbackReasons[T <: TreeNode[_]](
+      node: T,
+      info: Set[String],
+      qualifyWithExpressionName: Boolean): T = {
     if (CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get()) {
       for (reason <- info) {
         logWarning(s"Comet cannot accelerate ${node.getClass.getSimpleName} because: $reason")
       }
     }
+    val named = node match {
+      case expr: Expression if qualifyWithExpressionName => qualifyReasons(expr, info)
+      case _ => info
+    }
+    def previous =
+      node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String])
     val reasons = node match {
       case expr: Expression =>
-        CometExplainInfo.recordFallbackReasons(expr, info).getOrElse {
-          expr.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
-        }
-      case _ =>
-        node.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty[String]) ++ info
+        CometExplainInfo.recordFallbackReasons(expr, named).getOrElse(previous ++ named)
+      case _ => previous ++ named
     }
     node.setTagValue(CometExplainInfo.FALLBACK_REASONS, reasons)
     node
+  }
+
+  /**
+   * Name the expression that recorded each reason. Reasons are lifted onto the enclosing operator
+   * as a flat set of strings, so a reason such as "data type not supported: ..." would not say
+   * which function rejected the type. Leaves, aliases and attributes are left alone: their
+   * reasons describe a type or a config, and their names would add nothing. So are reasons that
+   * already identify their subject, either by mentioning the expression's name or by naming a
+   * `spark.comet.` config key (the key names the expression to enable, which need not be the one
+   * that recorded the reason).
+   */
+  private def qualifyReasons(expr: Expression, reasons: Set[String]): Set[String] = expr match {
+    case _: Attribute | _: Alias | _: Literal => reasons
+    case _ =>
+      val name = CometExplainInfo.exprDisplayName(expr match {
+        case agg: AggregateExpression => agg.aggregateFunction
+        case other => other
+      })
+      lazy val namePattern =
+        Pattern.compile(s"\\b${Pattern.quote(name)}\\b", Pattern.CASE_INSENSITIVE)
+      reasons.map { reason =>
+        if (reason.contains("spark.comet.") || namePattern.matcher(reason).find()) reason
+        else s"$name: $reason"
+      }
   }
 
   /**
