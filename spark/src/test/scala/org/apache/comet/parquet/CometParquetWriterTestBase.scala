@@ -20,6 +20,7 @@
 package org.apache.comet.parquet
 
 import java.io.File
+import java.nio.charset.Charset
 import java.util.concurrent.atomic.AtomicReference
 
 import scala.util.control.NonFatal
@@ -72,12 +73,15 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
    * [[RecordingFileSystem]], whose recordings start empty and are cleared afterwards.
    *
    * The output directory's name has a space, `%`, `#`, `?` and a non-ASCII character, which a
-   * path has to keep as it passes from the commit protocol to Hadoop.
+   * path has to keep as it passes from the commit protocol to Hadoop. The character is left out
+   * when the JVM cannot encode it in a file name, as in a container with the POSIX locale, where
+   * even the job's own cleanup of the directory fails.
    */
   protected def withRecordingFileSystem(source: => DataFrame)(
       write: (DataFrame, String) => Unit): Unit =
     withTempPath { dir =>
-      val outputPath = new File(dir, "output dir %#?\u00e9.parquet").getAbsolutePath
+      val nonAscii = if (canEncodeInFileName('\u00e9')) "\u00e9" else ""
+      val outputPath = new File(dir, s"output dir %#?$nonAscii.parquet").getAbsolutePath
       val sourcePath = new File(dir, "source.parquet").getAbsolutePath
       withNativeWriter {
         val df = materializeAsCometSource(source, sourcePath)
@@ -96,6 +100,12 @@ abstract class CometParquetWriterTestBase extends CometTestBase {
         }
       }
     }
+
+  /** Whether the JVM can name a file with `c`, which depends on `sun.jnu.encoding`. */
+  private def canEncodeInFileName(c: Char): Boolean = {
+    val encoding = System.getProperty("sun.jnu.encoding", "UTF-8")
+    Charset.isSupported(encoding) && Charset.forName(encoding).newEncoder().canEncode(c)
+  }
 
   protected def nativeWriteAllowIncompatKey: String =
     if (isSpark40Plus) {
