@@ -28,7 +28,7 @@ import scala.jdk.CollectionConverters._
 import scala.util.{Random, Using}
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.{FileAlreadyExistsException, FileSystem, Path}
 import org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory
 import org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory
 import org.apache.hadoop.mapreduce.{JobContext, TaskAttemptContext}
@@ -2156,6 +2156,166 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
     }
   }
 
+  /** The message of a TaskOutputFileAlreadyExistException, which the job's error carries. */
+  private val fastFailMessage = "can not write to output file"
+
+  /** Whether `error`, or one of its causes, is or names the exception `simpleName`. */
+  private def mentions(error: Throwable, simpleName: String): Boolean =
+    causeChain(error).exists(e =>
+      e.getClass.getSimpleName == simpleName || Option(e.getMessage).exists(
+        _.contains(simpleName)))
+
+  test("a task file that already exists fails the task as Spark's writer fails it") {
+    // Creating the task's file through Hadoop does not overwrite, as parquet-mr's does not. As in
+    // Spark, whose data writer creates the file in its constructor, outside the handler that
+    // wraps a write failure, the FileAlreadyExistsException is thrown as it is whatever
+    // spark.sql.execution.fastFailOnFileFormatOutput says.
+    Seq(true, false).foreach { fastFail =>
+      withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+        RecordingFileSystemCommitProtocol.createTaskFiles = true
+        withSQLConf(SQLConf.FASTFAIL_ON_FILEFORMAT_OUTPUT.key -> fastFail.toString) {
+          val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+          assertHasCometNativeWriteExec(plan)
+
+          assert(mentions(error, "FileAlreadyExistsException"), s"fastFail=$fastFail: $error")
+          assert(!mentions(error, fastFailMessage), s"$error")
+          assert(!mentions(error, "TASK_WRITE_FAILED"), s"$error")
+        }
+
+        // The file was never created through the recording stream, so nothing needs aborting.
+        assert(RecordingFileSystem.created.isEmpty)
+        assert(RecordingFileSystem.aborted.isEmpty)
+      }
+    }
+  }
+
+  test("a file that exists at task commit fails the task, without a retry if so configured") {
+    // The commit is where a FileAlreadyExistsException reaches the handler that Spark's writer
+    // has around the write and the commit. With
+    // spark.sql.execution.fastFailOnFileFormatOutput the task fails the job without a retry, as
+    // a TaskOutputFileAlreadyExistException, and otherwise as TASK_WRITE_FAILED.
+    Seq(true, false).foreach { fastFail =>
+      withRecordingFileSystem(rows = 100, partitions = 1) { (df, outputPath) =>
+        RecordingFileSystemCommitProtocol.failCommitTask = true
+        withSQLConf(SQLConf.FASTFAIL_ON_FILEFORMAT_OUTPUT.key -> fastFail.toString) {
+          val (plan, error) = captureFailedWritePlan(df.write.parquet(outputPath))
+          assertHasCometNativeWriteExec(plan)
+
+          assert(mentions(error, "FileAlreadyExistsException"), s"fastFail=$fastFail: $error")
+          assert(mentions(error, fastFailMessage) == fastFail, s"$error")
+          assert(mentions(error, "TASK_WRITE_FAILED") != fastFail, s"$error")
+        }
+
+        assert(RecordingFileSystemCommitProtocol.abortedTasks.get == 1)
+        assertNoTaskOutput(outputPath)
+      }
+    }
+  }
+
+  /**
+   * Writes `df` with Spark's own writer, which the native write must match, and checks that
+   * `outputPath` holds the same schema and rows. Parquet files are compared by what Spark reads
+   * from them: the two writers differ in the footer's `created_by` and in the file's layout, so
+   * their bytes are not identical.
+   */
+  private def assertMatchesSparkWriter(df: DataFrame, outputPath: String): Unit =
+    withTempPath { sparkDir =>
+      val sparkPath = new File(sparkDir, "spark.parquet").getAbsolutePath
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "false",
+        SQLConf.FILE_COMMIT_PROTOCOL_CLASS.key ->
+          SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString) {
+        df.write.option("compression", "none").parquet(sparkPath)
+        val expected = spark.read.parquet(sparkPath)
+        val actual = spark.read.parquet(outputPath)
+        assert(actual.schema == expected.schema)
+        checkAnswer(actual, expected)
+        checkAnswer(actual, df)
+      }
+    }
+
+  /**
+   * Nested, nullable and temporal columns around random non-ASCII strings: a struct with an array
+   * and a map, nulls in the struct and the strings, decimals, a date, and a timestamp and a
+   * timestamp_ntz, which the session time zone shifts differently. A file of `rows` of them is
+   * about 800 bytes a row.
+   */
+  private def nestedAndTemporalSource(rows: Int): DataFrame =
+    randomNonAsciiStrings(rows).selectExpr(
+      "id",
+      "named_struct('name', name, 'tags', array(name, substring(name, 1, 10)), " +
+        "'attrs', map(substring(name, 1, 5), cast(id as decimal(20, 4)))) AS nested",
+      "if(id % 7 = 0, null, name) AS maybe_name",
+      "if(id % 5 = 0, null, named_struct('first', name, 'second', cast(id as decimal(10, 2)))) " +
+        "AS maybe_struct",
+      "cast(id * 1000.0001 as decimal(20, 4)) AS amount",
+      "date_add(date'2024-01-15', id % 400) AS day",
+      "timestamp_seconds(1705314600 + id * 7919) AS ts",
+      "cast(timestamp_seconds(1705314600 + id * 7919) as timestamp_ntz) AS ts_ntz")
+
+  test("nested and temporal columns are written through Hadoop as Spark's writer writes them") {
+    // Written in several chunks, since the file is several MiB.
+    withRecordingFileSystem(nestedAndTemporalSource(8000)) { (df, outputPath) =>
+      val plan =
+        captureWritePlan(p => df.write.option("compression", "none").parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
+
+      val parts = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+      assert(parts.length == 1, parts.mkString(", "))
+      assert(parts.head.length() > 4 * 1024 * 1024, s"${parts.head.length()} bytes")
+      assert(RecordingFileSystem.writeLengths.size > 4, RecordingFileSystem.writeLengths)
+      assert(RecordingFileSystem.closed.asScala == RecordingFileSystem.created.asScala)
+
+      assertMatchesSparkWriter(df, outputPath)
+    }
+  }
+
+  test("a write of nested and temporal columns that fails partway is aborted") {
+    withRecordingFileSystem(nestedAndTemporalSource(8000)) { (df, outputPath) =>
+      RecordingFileSystem.failAtWrite = 3
+      val (plan, error) =
+        captureFailedWritePlan(df.write.option("compression", "none").parquet(outputPath))
+      assertHasCometNativeWriteExec(plan)
+      assertWriteFailedWith(error, RecordingFileSystem.WRITE_FAILURE)
+
+      assert(RecordingFileSystem.created.size == 1)
+      assert(RecordingFileSystem.aborted.asScala == RecordingFileSystem.created.asScala)
+      assert(RecordingFileSystem.closed.isEmpty)
+      assertNoTaskOutput(outputPath)
+    }
+  }
+
+  test("the default codec and several tasks match Spark's writer through Hadoop") {
+    withRecordingFileSystem(nestedAndTemporalSource(300).repartition(3)) { (df, outputPath) =>
+      val plan = captureWritePlan(p => df.write.parquet(p), outputPath)
+      assertHasCometNativeWriteExec(plan)
+      assert(RecordingFileSystem.created.size == 3, RecordingFileSystem.created)
+      assertMatchesSparkWriter(df, outputPath)
+    }
+  }
+
+  test("an INSERT into a table of the V2 file source is written natively through Hadoop") {
+    // With Parquet off spark.sql.sources.useV1SourceList the table resolves to the V2 file
+    // source, whose inserts Spark's FallBackFileSourceV2 plans as a V1 write again. Spark plans
+    // no other write to such a table: `DataFrameWriter` never plans a V2 file write (SPARK-28396)
+    // and `writeTo` is rejected ("Cannot write into v1 table"). So this is the one way a V2 file
+    // source reaches the route.
+    withRecordingFileSystem(rows = 100, partitions = 2) { (df, _) =>
+      withSQLConf(SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+        withTable("v2_file_target") {
+          sql("CREATE TABLE v2_file_target (id INT, name STRING) USING parquet")
+          df.createOrReplaceTempView("v2_file_source")
+          val plan =
+            captureWritePlan(sql("INSERT INTO v2_file_target SELECT * FROM v2_file_source"))
+          assertHasCometNativeWriteExec(plan)
+          assert(RecordingFileSystem.created.size == 2, RecordingFileSystem.created)
+          assert(RecordingFileSystem.closed.asScala == RecordingFileSystem.created.asScala)
+          checkAnswer(spark.table("v2_file_target"), df)
+        }
+      }
+    }
+  }
+
   test("S3 writes plan natively when S3A's magic committer commits them") {
     // Planning admits an S3 destination only when the magic committer will commit it, as
     // `PathOutputCommitterFactory` and `S3ACommitterFactory` resolve the committer. Other S3
@@ -2676,7 +2836,21 @@ class RecordingFileSystemCommitProtocol(
       dir: Option[String],
       spec: FileNameSpec): String = {
     val localFile = new Path(super.newTaskTempFile(taskContext, dir, spec))
+    if (RecordingFileSystemCommitProtocol.createTaskFiles) {
+      // As a leftover of an earlier attempt would be, so that creating the task's file fails.
+      val file = new File(localFile.toUri.getPath)
+      file.getParentFile.mkdirs()
+      file.createNewFile()
+    }
     RecordingFileSystem.PREFIX + localFile.toUri.getPath
+  }
+
+  override def commitTask(
+      taskContext: TaskAttemptContext): FileCommitProtocol.TaskCommitMessage = {
+    if (RecordingFileSystemCommitProtocol.failCommitTask) {
+      throw new FileAlreadyExistsException("injected: the task's output already exists")
+    }
+    super.commitTask(taskContext)
   }
 
   override def abortTask(taskContext: TaskAttemptContext): Unit = {
@@ -2690,7 +2864,17 @@ object RecordingFileSystemCommitProtocol {
   /** How many task attempts were aborted. Static, since the tests run in local mode. */
   val abortedTasks = new AtomicInteger(0)
 
-  def reset(): Unit = abortedTasks.set(0)
+  /** Whether a task's file exists already when the task is handed its name. */
+  @volatile var createTaskFiles: Boolean = false
+
+  /** Whether committing a task fails because its output already exists. */
+  @volatile var failCommitTask: Boolean = false
+
+  def reset(): Unit = {
+    abortedTasks.set(0)
+    createTaskFiles = false
+    failCommitTask = false
+  }
 }
 
 /**

@@ -60,13 +60,33 @@ impl JavaOutputStreamSink {
     /// Bytes per upcall, large enough that the upcall costs little next to the copy it carries.
     pub const MAX_WRITE_SIZE: usize = 1024 * 1024;
 
-    /// Captures `output` while running on an attached JVM thread.
-    pub fn try_new(env: &mut Env<'_>, output: &JObject<'_>) -> Result<Self> {
+    /// Fails a write that has no stream to go to.
+    fn check_not_null(output: &JObject<'_>) -> Result<()> {
         if output.is_null() {
             return Err(DataFusionError::Execution(
                 "The output stream of a native write must not be null".to_string(),
             ));
         }
+        Ok(())
+    }
+
+    /// Returns the length of a write of `length` bytes as the `int` the JVM takes, or fails a
+    /// write larger than [`Self::MAX_WRITE_SIZE`], which does not fit the reused Java array.
+    fn checked_write_length(length: usize) -> Result<i32> {
+        if length > Self::MAX_WRITE_SIZE {
+            return Err(DataFusionError::Internal(format!(
+                "A write of {} bytes exceeds the output stream's limit of {} bytes",
+                length,
+                Self::MAX_WRITE_SIZE
+            )));
+        }
+        // Lossless: the length is bounded by MAX_WRITE_SIZE.
+        Ok(length as i32)
+    }
+
+    /// Captures `output` while running on an attached JVM thread.
+    pub fn try_new(env: &mut Env<'_>, output: &JObject<'_>) -> Result<Self> {
+        Self::check_not_null(output)?;
 
         let output_class = env.get_object_class(output).map_err(CometError::from)?;
         let write_method = env
@@ -94,15 +114,7 @@ impl OutputStreamSink for JavaOutputStreamSink {
     }
 
     fn write(&self, data: &[u8]) -> Result<()> {
-        if data.len() > Self::MAX_WRITE_SIZE {
-            return Err(DataFusionError::Internal(format!(
-                "A write of {} bytes exceeds the output stream's limit of {} bytes",
-                data.len(),
-                Self::MAX_WRITE_SIZE
-            )));
-        }
-        // Lossless: the length is bounded by MAX_WRITE_SIZE.
-        let length = data.len() as i32;
+        let length = Self::checked_write_length(data.len())?;
 
         JVMClasses::with_env(|env| {
             // SAFETY: `i8` and `u8` have the same size and alignment, and every bit pattern is
@@ -137,5 +149,51 @@ impl OutputStreamSink for JavaOutputStreamSink {
             result.map_err(CometError::from)?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JavaOutputStreamSink;
+    use datafusion::common::DataFusionError;
+    use jni::objects::JObject;
+
+    #[test]
+    fn accepts_writes_up_to_the_limit() {
+        assert_eq!(JavaOutputStreamSink::checked_write_length(0).unwrap(), 0);
+        assert_eq!(
+            JavaOutputStreamSink::checked_write_length(JavaOutputStreamSink::MAX_WRITE_SIZE)
+                .unwrap(),
+            JavaOutputStreamSink::MAX_WRITE_SIZE as i32
+        );
+    }
+
+    #[test]
+    fn rejects_writes_over_the_limit() {
+        for oversized_length in [
+            JavaOutputStreamSink::MAX_WRITE_SIZE + 1,
+            i32::MAX as usize,
+            i32::MAX as usize + 1,
+            usize::MAX,
+        ] {
+            let error = JavaOutputStreamSink::checked_write_length(oversized_length).unwrap_err();
+            assert!(
+                matches!(error, DataFusionError::Internal(_)),
+                "expected an Internal error, got {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(&format!("A write of {oversized_length} bytes exceeds")));
+            assert!(message.contains(&JavaOutputStreamSink::MAX_WRITE_SIZE.to_string()));
+        }
+    }
+
+    #[test]
+    fn rejects_a_null_output_stream() {
+        let error = JavaOutputStreamSink::check_not_null(&JObject::null()).unwrap_err();
+        assert!(
+            matches!(error, DataFusionError::Execution(_)),
+            "expected an Execution error, got {error:?}"
+        );
+        assert!(error.to_string().contains("must not be null"));
     }
 }
