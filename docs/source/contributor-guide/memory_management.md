@@ -399,7 +399,9 @@ below it stays at half of the share and leaves the aggregate the other half. The
 stream still spills when Spark refuses it. The exemption goes by the stream's name, so it also
 covers a `PartialMerge` that the planner runs as a final aggregate because its input is sorted on
 some of its grouping keys. That one is not a `CometSortAggregateExec` and its input is only
-partially sorted, but it is likewise checked only against the pool and Spark's grant.
+partially sorted, but it is likewise checked only against the pool and Spark's grant. A
+`PartialMerge` over input sorted on every grouping key stays on the hash aggregate, since the final
+aggregate has no spill path there and would only halve the limit of a sort below it.
 
 Three details matter for tuning:
 

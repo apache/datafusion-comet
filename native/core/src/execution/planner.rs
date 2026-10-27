@@ -4794,9 +4794,8 @@ mod tests {
         use datafusion::physical_plan::InputOrderMode;
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
-        // A Spark PartialMerge grouped by (g, k) over a native sort on g, or on g and k, which
-        // DataFusion 55's Single would run with a GroupedHashAggregateStream that can fail to
-        // spill (#6880).
+        // A Spark PartialMerge grouped by (g, k) over a native sort on g, which DataFusion 55's
+        // Single would run with a GroupedHashAggregateStream that can fail to spill (#6880).
         let int64 = create_int64_datatype();
         let v = create_unbound_int64("v");
         let key = |index: i32| Expr {
@@ -4853,54 +4852,53 @@ mod tests {
                 vec![create_max_agg(&v), create_count_agg(&v)],
             )
         };
-        for (sort_keys, input_order_mode) in [
-            (vec![0], InputOrderMode::PartiallySorted(vec![0])),
-            (vec![0, 1], InputOrderMode::Sorted),
-        ] {
-            let (_, _, planned) = planner
-                .create_plan(&max_count(&sort_keys), &mut vec![], 1)
-                .unwrap();
-            assert_eq!("ProjectionExec", planned.native_plan.name());
-            let final_agg = planned.additional_native_plans[0]
-                .downcast_ref::<AggregateExec>()
-                .unwrap();
-            assert_eq!(&AggregateMode::Final, final_agg.mode());
-            assert_eq!(&input_order_mode, final_agg.input_order_mode());
-
-            let input_schema = planned.children[0].schema();
-            let batch = RecordBatch::try_new(
-                Arc::clone(&input_schema),
-                vec![
-                    Arc::new(Int64Array::from(vec![2, 1, 1, 2, 1])),
-                    Arc::new(Int64Array::from(vec![1, 2, 1, 1, 2])),
-                    Arc::new(Int64Array::from(vec![
-                        Some(4),
-                        Some(10),
-                        None,
-                        Some(9),
-                        Some(3),
-                    ])),
-                    Arc::new(Int64Array::from(vec![1, 2, 0, 3, 4])),
-                ],
-            )
+        let (_, _, planned) = planner
+            .create_plan(&max_count(&[0]), &mut vec![], 1)
             .unwrap();
-            let results = collect_over_batches(&planned, vec![batch], Arc::clone(&task_ctx)).await;
-            assert_batches_sorted_eq!(
-                [
-                    "+-------+-------+------------+--------------+",
-                    "| col_0 | col_1 | max[value] | count[count] |",
-                    "+-------+-------+------------+--------------+",
-                    "| 1     | 1     |            | 0            |",
-                    "| 1     | 2     | 10         | 6            |",
-                    "| 2     | 1     | 9          | 4            |",
-                    "+-------+-------+------------+--------------+",
-                ],
-                &results
-            );
-        }
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        let final_agg = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Final, final_agg.mode());
+        assert_eq!(
+            &InputOrderMode::PartiallySorted(vec![0]),
+            final_agg.input_order_mode()
+        );
+
+        let input_schema = planned.children[0].schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![2, 1, 1, 2, 1])),
+                Arc::new(Int64Array::from(vec![1, 2, 1, 1, 2])),
+                Arc::new(Int64Array::from(vec![
+                    Some(4),
+                    Some(10),
+                    None,
+                    Some(9),
+                    Some(3),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 0, 3, 4])),
+            ],
+        )
+        .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], Arc::clone(&task_ctx)).await;
+        assert_batches_sorted_eq!(
+            [
+                "+-------+-------+------------+--------------+",
+                "| col_0 | col_1 | max[value] | count[count] |",
+                "+-------+-------+------------+--------------+",
+                "| 1     | 1     |            | 0            |",
+                "| 1     | 2     | 10         | 6            |",
+                "| 2     | 1     | 9          | 4            |",
+                "+-------+-------+------------+--------------+",
+            ],
+            &results
+        );
 
         // Final reads the keys from the leading columns and each state from the columns after
-        // them, so a PartialMerge whose input is laid out any other way stays Single.
+        // them, so a PartialMerge whose input is laid out any other way stays Single. So does one
+        // over input sorted on every key, where Final has no spill path to offer.
         let with_hash_agg =
             |mut op: Operator, edit: &dyn Fn(&mut spark_operator::HashAggregate)| {
                 if let Some(OpStruct::HashAgg(agg)) = op.op_struct.as_mut() {
@@ -4940,6 +4938,7 @@ mod tests {
             ("swapped keys", swapped_keys),
             ("states after one key", states_after_one_key),
             ("a column after the states", extra_column),
+            ("sorted on every key", max_count(&[0, 1])),
         ] {
             let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
             let single = planned.additional_native_plans[0]

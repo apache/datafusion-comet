@@ -255,6 +255,9 @@ impl OperatorBuilder for HashAggBuilder {
         // OrderedFinalAggregateStream from its fair limit (`limited_to_its_share`), the limit the
         // legacy stream's spill failed against. So this PartialMerge is checked only against the
         // pool and Spark's grant.
+        // Only partially sorted input switches. On input sorted on every key, as in a
+        // CometSortAggregateExec over a native sort, Final has no spill path either, and it would
+        // register as able to spill, which halves the limit of a sort below it.
         // Final reads each state from the columns after the keys and spills its groups in the
         // input's types, so plan the PartialMerge as Final only when its input is its keys
         // followed by native states. A PartialMerge over Spark's binary collect buffers keeps
@@ -266,13 +269,16 @@ impl OperatorBuilder for HashAggBuilder {
         // consumer name prefix in `spill_replay.rs` that the fair pool exemption uses (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
-            && !child
-                .native_plan
-                .equivalence_properties()
-                .find_longest_permutation(&group_by.input_exprs())?
-                .1
-                .is_empty()
-        {
+            && {
+                let keys = group_by.input_exprs();
+                let sorted_on = child
+                    .native_plan
+                    .equivalence_properties()
+                    .find_longest_permutation(&keys)?
+                    .1;
+                // DataFusion's InputOrderMode is PartiallySorted when some, not all, keys match.
+                !sorted_on.is_empty() && sorted_on.len() < keys.len()
+            } {
             DFAggregateMode::Final
         } else {
             mode
