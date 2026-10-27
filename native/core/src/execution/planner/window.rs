@@ -132,9 +132,7 @@ impl OperatorBuilder for WindowBuilder {
         let window_expr = window_expr?;
         let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
 
-        // Spark put no sort below this window when its input reports the order the window
-        // needs, and both window operators reject an input that does not declare its partition
-        // keys' order; see `with_declared_order`.
+        // Both window operators reject an input that does not declare its partition keys' order.
         let input =
             planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {

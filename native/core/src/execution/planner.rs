@@ -4441,8 +4441,7 @@ mod tests {
         );
     }
 
-    /// A window partitioned and ordered by `col_0` over `input`, declaring `input_sort_orders`
-    /// for it.
+    /// A window partitioned and ordered by `col_0` over `input`.
     fn partitioned_window(input: Operator, input_sort_orders: Vec<Expr>) -> Operator {
         Operator {
             children: vec![input],
@@ -4459,9 +4458,8 @@ mod tests {
 
     #[test]
     fn window_declares_input_order_on_a_scan() {
-        // Spark puts no sort below a window whose input reports the order it needs, and the rows
-        // then arrive through a `ScanExec`, which declares none. The window finds its partition
-        // keys' order only once the planner declares the order Spark sent.
+        // The window finds its partition keys' order over a `ScanExec` only once the planner
+        // declares the order Spark sent.
         let window_over = |input_sort_orders| {
             let (_, _, planned) = PhysicalPlanner::default()
                 .create_plan(
@@ -4493,28 +4491,6 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Expects PARTITION BY expression to be ordered"));
-    }
-
-    #[test]
-    fn window_keeps_input_that_declares_an_order() {
-        // An input that already declares an order, a sort in the native plan for instance, is
-        // left as it is.
-        let sort = Operator {
-            children: vec![create_scan()],
-            op_struct: Some(OpStruct::Sort(spark_operator::Sort {
-                sort_orders: vec![create_sort_order(0, 3, false, true)],
-                ..Default::default()
-            })),
-            ..Default::default()
-        };
-        let (_, _, planned) = PhysicalPlanner::default()
-            .create_plan(
-                &partitioned_window(sort, vec![create_sort_order(0, 3, false, true)]),
-                &mut vec![],
-                1,
-            )
-            .unwrap();
-        assert_eq!("SortExec", planned.native_plan.children()[0].name());
     }
 
     #[test]

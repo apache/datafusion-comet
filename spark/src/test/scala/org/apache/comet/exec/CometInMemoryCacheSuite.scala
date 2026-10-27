@@ -3693,10 +3693,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
   }
 
   test("a native window over a sorted cache declares the cache's order") {
-    // The cache reports the order it was written in, so Spark puts no sort below a window
-    // partitioned and ordered by the cache's sort keys. The native window then reads the cache
-    // through a scan that declares no order, and rejected it with "Expects PARTITION BY
-    // expression to be ordered" until the window declared the order Spark sent (#7223).
+    // Spark plans no sort below a window over the cache's sort keys, and the native window
+    // rejected the scan, which declares no order, with "Expects PARTITION BY expression to be
+    // ordered" (#7223).
     Seq(true, false).foreach { nativeCache =>
       withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
