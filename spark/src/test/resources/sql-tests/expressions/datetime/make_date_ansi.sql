@@ -132,11 +132,31 @@ query expect_native(make_date, greatest, least)
 SELECT greatest(make_date(y, m, 1), DATE '2024-02-01'),
        least(DATE '2024-02-01', make_date(y, m, 1)) FROM make_date_arguments
 
+-- Hashes evaluate every operand, even after a NULL, with the date in either position.
+query expect_native(make_date, hash, xxhash64)
+SELECT hash(make_date(y, m, 1), y), xxhash64(y, make_date(y, m, 1))
+FROM make_date_arguments
+
+-- Arithmetic keeps required date operands native when skipped siblings are harmless.
+query expect_native(make_date)
+SELECT unix_date(make_date(y, m, 1)) + 1,
+       unix_date(make_date(y, m, 1)) - y,
+       2 * unix_date(make_date(y, m, 1)) FROM make_date_arguments
+
+-- A NULL date skips a throwing right operand, so the arithmetic must still fall back.
+query expect_fallback(make_date requires Spark evaluation under Add)
+SELECT unix_date(make_date(y, 1, 1)) + CAST(s AS INT)
+FROM make_date_membership WHERE y IS NULL
+
 statement
 CREATE TABLE make_date_parents(lhs INT, guard BOOLEAN, m INT) USING parquet
 
 statement
 INSERT INTO make_date_parents VALUES (NULL, true, 13), (1, false, 1)
+
+-- Division evaluates its right operand first and skips the date when the divisor is NULL.
+query expect_fallback(make_date requires Spark evaluation under Divide)
+SELECT unix_date(make_date(2024, m, 1)) / lhs FROM make_date_parents
 
 -- Native arithmetic/Boolean parents are still eager, so keep these in Spark.
 query expect_fallback(make_date requires Spark evaluation under)
@@ -146,6 +166,12 @@ SELECT lhs + unix_date(make_date(2024, m, 1)) FROM make_date_parents
 query expect_fallback(make_date requires Spark evaluation under Add)
 SELECT lhs + unix_date(greatest(make_date(2024, m, 1), DATE '2024-01-01'))
 FROM make_date_parents
+
+query expect_fallback(make_date requires Spark evaluation under Add)
+SELECT lhs + hash(make_date(2024, m, 1), lhs) FROM make_date_parents
+
+query expect_fallback(make_date requires Spark evaluation under Add)
+SELECT lhs + (unix_date(make_date(2024, m, 1)) + 1) FROM make_date_parents
 
 query expect_fallback(make_date requires Spark evaluation under)
 SELECT guard OR unix_date(make_date(2024, m, 1)) > 0 FROM make_date_parents
