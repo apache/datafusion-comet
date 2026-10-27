@@ -79,9 +79,6 @@ case class CometBroadcastExchangeExec(
     "collectTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to collect"),
     "buildTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to build"),
     "broadcastTime" -> SQLMetrics.createTimingMetric(sparkContext, "time to broadcast"),
-    "nativeProducerBatching" -> SQLMetrics.createMetric(
-      sparkContext,
-      "broadcast exchanges using native producer batching"),
     "numCoalescedBatches" -> SQLMetrics.createMetric(
       sparkContext,
       "number of coalesced batches for broadcast"),
@@ -118,6 +115,8 @@ case class CometBroadcastExchangeExec(
     // Capture the read mode on the driver. A new RDD keeps it local to this broadcast consumer,
     // including when AQE or exchange reuse shares the original shuffle with another operator.
     val input = plan.executeColumnar()
+    // Skip known unsupported schemas without paying for coalescer JNI calls. Native checks
+    // still handle physical representations such as dictionary-encoded strings.
     val supported = plan.output.nonEmpty && plan.output.forall { attribute =>
       attribute.dataType match {
         case IntegerType | LongType | BooleanType | StringType | BinaryType => true
@@ -128,8 +127,7 @@ case class CometBroadcastExchangeExec(
       case shuffle: CometShuffledBatchRDD
           if CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.get(conf) &&
             supported && shuffle.supportsNativeBatchCoalescing =>
-        longMetric("nativeProducerBatching") += 1L
-        shuffle.withNativeBatchCoalescing(math.min(CometConf.COMET_BATCH_SIZE.get(conf), 65536))
+        shuffle.withNativeBatchCoalescing(CometConf.COMET_BATCH_SIZE.get(conf))
       case _ => input
     }
     readInput.mapPartitionsInternal(iter => Utils.serializeBatches(iter))

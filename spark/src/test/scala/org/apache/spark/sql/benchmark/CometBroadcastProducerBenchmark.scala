@@ -41,7 +41,8 @@ import org.apache.comet.vector.NativeUtil
  * arms use the same artifact and differ only in producer batching. This is a producer
  * microbenchmark, not a complete Spark query or a shuffle transport benchmark.
  *
- * Pass --on-first to reverse the case order and an optional scenario-name substring to filter.
+ * Pass --on-first to reverse the case order, --decode-only to include the decoder/FFI cost
+ * without serialization, and an optional scenario-name substring to filter.
  *
  * To run:
  * {{{
@@ -168,10 +169,29 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
     }
   }
 
+  private def decodeOnly(input: Array[Byte], scenario: Scenario, enabled: Boolean): Unit = {
+    val util = new NativeUtil
+    val decoder = NativeBatchDecoderIterator(
+      new ByteArrayInputStream(input),
+      new SQLMetric("nsTiming", 0L),
+      new Native,
+      util,
+      tracingEnabled = false,
+      coalescing = if (enabled) Some(targetRows) else None)
+    var rows = 0L
+    try {
+      while (decoder.hasNext) rows += decoder.next().numRows()
+      assert(rows == scenario.rows.toLong)
+    } finally {
+      try decoder.close()
+      finally util.close()
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     // Initialize SparkEnv, whose compression codec serializeBatches uses.
     spark.sparkContext.setLogLevel("WARN")
-    val scenarioFilters = mainArgs.filterNot(_ == "--on-first")
+    val scenarioFilters = mainArgs.filterNot(Set("--on-first", "--decode-only"))
     val modes = if (mainArgs.contains("--on-first")) {
       Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
     } else {
@@ -195,6 +215,12 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
             val result = produce(input, scenario, enabled, verify = false)
             assert(result == (if (enabled) on else off))
           }
+        }
+        if (mainArgs.contains("--decode-only")) {
+          benchmark.addCase("decode only OFF") { _ =>
+            decodeOnly(input, scenario, enabled = false)
+          }
+          benchmark.addCase("decode only ON") { _ => decodeOnly(input, scenario, enabled = true) }
         }
         benchmark.run()
       }

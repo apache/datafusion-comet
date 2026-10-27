@@ -64,11 +64,9 @@ The broadcast must read directly from a local Comet native shuffle, including an
 read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
 selected shuffle partitions and row order. Large batches pass through without a merge copy.
 
-Each group is limited by `spark.comet.batchSize` (at most 65,536 rows), 1,024 input batches,
-and an 8 MiB estimate of retained buffers and bytes to copy. This is not a total memory limit:
-concatenation temporarily holds inputs and output together, and may retain one lookahead batch.
-These reader buffers are outside Spark's execution memory pool. Measure the setting on your
-workload before enabling it, particularly for wide rows.
+Reader buffers are outside Spark's execution memory pool. Measure the setting on your workload
+before enabling it, particularly for wide rows. The contributor guide describes the
+[grouping limits and memory lifetime](../../../contributor-guide/memory_management.md).
 
 ### Columnar (JVM) Shuffle
 

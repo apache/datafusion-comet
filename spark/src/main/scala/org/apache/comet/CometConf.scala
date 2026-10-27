@@ -668,14 +668,11 @@ object CometConf extends ShimCometConf {
   val COMET_BROADCAST_PRODUCER_COALESCE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.broadcastExchange.producerCoalesce.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Experimental batching for direct local native shuffle reads feeding a broadcast " +
-          "exchange. Combines small INT, BIGINT, BOOLEAN, STRING and BINARY batches before " +
-          "Arrow export and serialization, with at most min(spark.comet.batchSize, 65536) " +
-          "rows, 1024 input batches and an 8 MiB decoded-buffer budget per group. Large " +
-          "batches pass through without copying. The budget bounds grouped inputs, not " +
-          "total memory: concatenation also owns its output and one lookahead input. " +
-          "Other input paths and driver broadcast assembly are unchanged.")
+      .doc("Experimental batching for direct local native shuffle reads feeding a broadcast " +
+        "exchange. Combines small INT, BIGINT, BOOLEAN, STRING and BINARY batches before " +
+        "Arrow export and serialization. Large batches pass through without copying. " +
+        "Measure the setting on your workload before enabling it, particularly for wide rows. " +
+        s"$TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 

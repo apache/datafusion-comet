@@ -25,21 +25,18 @@
 use std::collections::VecDeque;
 use std::ptr::NonNull;
 
-use arrow::array::{Array, AsArray, RecordBatch};
+use arrow::array::RecordBatch;
 use arrow::buffer::Buffer;
 use arrow::compute::concat_batches;
-use arrow::datatypes::{DataType, Int32Type, Int64Type};
+use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, Result};
 
 const MAX_ROWS: usize = 65_536;
 const MAX_GROUP_BATCHES: usize = 1024;
 const MAX_GROUP_BYTES: usize = 8 * 1024 * 1024;
 
-/// Allocation-free accounting for one decoded batch, discarded after admission.
-/// IPC columns normally share their message-body allocation. Remember that first
-/// owner so its slices are charged once; other owners may be overcounted safely.
-/// Logical copy bytes are tracked separately because columns may alias values
-/// that concatenation will materialize independently.
+/// Charge the shared IPC body once, but count each column's output copy separately.
+/// Other shared allocations may be conservatively overcounted.
 #[derive(Default)]
 struct BatchBytes {
     first_owner: Option<NonNull<u8>>,
@@ -48,13 +45,7 @@ struct BatchBytes {
 }
 
 impl BatchBytes {
-    /// Charges a borrowed buffer's allocation and the bytes its output will copy.
-    /// Uses the allocation base, not the slice address, to deduplicate the common
-    /// IPC owner before inspecting its capacity again. Saturating counters
-    /// conservatively reject overflow. No ownership is retained and no memory
-    /// is allocated or read from the buffer contents.
-    fn add_buffer(&mut self, buffer: &Buffer, copied: usize) {
-        self.copied = self.copied.saturating_add(copied);
+    fn add_buffer(&mut self, buffer: &Buffer) {
         let owner = buffer.data_ptr();
         if self.first_owner == Some(owner) {
             return;
@@ -66,20 +57,6 @@ impl BatchBytes {
             }
             self.retained = self.retained.saturating_add(capacity);
         }
-    }
-
-    /// Charges a borrowed concrete array's null buffer and object metadata after
-    /// its values. The caller supplies the rounded output bitmap size. Static
-    /// dispatch avoids repeating trait-object lookups after the array downcast;
-    /// ownership, allocation-free accounting, and saturation match `add_buffer`.
-    #[inline]
-    fn add_nulls_and_metadata<T: Array>(&mut self, array: &T, copied_null_bytes: usize) {
-        if let Some(nulls) = array.nulls() {
-            self.add_buffer(nulls.buffer(), copied_null_bytes);
-        }
-        let array_metadata = std::mem::size_of::<T>();
-        self.retained = self.retained.saturating_add(array_metadata);
-        self.copied = self.copied.saturating_add(array_metadata);
     }
 }
 
@@ -103,7 +80,7 @@ pub struct DecodedBatchCoalescer {
 
 impl DecodedBatchCoalescer {
     /// Creates an empty, reader-owned grouper with the production byte budget.
-    /// Rejects row targets outside 1..=65536 without retaining any buffers.
+    /// Caps positive row targets at 65536.
     pub fn try_new(max_rows: usize) -> Result<Self> {
         Self::try_new_with_limits(max_rows, MAX_GROUP_BYTES)
     }
@@ -112,9 +89,9 @@ impl DecodedBatchCoalescer {
     /// Invalid limits return a configuration error. Keeping the byte budget at
     /// most 8 MiB also keeps every concatenated STRING/BINARY offset within i32.
     fn try_new_with_limits(max_rows: usize, max_bytes: usize) -> Result<Self> {
-        if !(1..=MAX_ROWS).contains(&max_rows) {
+        if max_rows == 0 {
             return Err(DataFusionError::Configuration(
-                "Decoded shuffle grouping requires 1..65536 rows".into(),
+                "Decoded shuffle grouping requires a positive row target".into(),
             ));
         }
         if !(1..=MAX_GROUP_BYTES).contains(&max_bytes) {
@@ -123,7 +100,7 @@ impl DecodedBatchCoalescer {
             ));
         }
         Ok(Self {
-            max_rows,
+            max_rows: max_rows.min(MAX_ROWS),
             max_bytes,
             batches: Vec::new(),
             rows: 0,
@@ -182,13 +159,8 @@ impl DecodedBatchCoalescer {
         self.flush()
     }
 
-    /// Returns the larger of retained and logical copy bytes for a groupable input.
-    /// Examines flat-column buffer metadata and string/binary endpoint offsets,
-    /// never rows. The common shared IPC allocation is charged once. Other shared
-    /// owners can be overcounted safely, and slices retain their full backing
-    /// allocation charge. RecordBatch guarantees matching field and array types,
-    /// so dispatch borrows schema fields without cloning or inspecting array
-    /// trait objects twice. None means pass through without copying.
+    /// Bounds both retained backing allocations and output copies for flat columns.
+    /// None means pass through without copying.
     fn eligible_bytes(&self, batch: &RecordBatch) -> Option<usize> {
         if batch.num_rows() == 0
             || batch.num_rows() >= self.max_rows.div_ceil(2)
@@ -197,41 +169,39 @@ impl DecodedBatchCoalescer {
             return None;
         }
         let rows = batch.num_rows();
-        // Arrow bitmap builders round their allocation to 64-byte blocks.
-        let bitmap_bytes = rows.div_ceil(8).next_multiple_of(64);
+        // ArrayData reports logical bytes; bitmap builders round up to 64-byte blocks.
+        let bitmap_bytes = rows.div_ceil(8);
+        let padded_bitmap_bytes = bitmap_bytes.next_multiple_of(64);
         let mut bytes = BatchBytes::default();
-        for (field, column) in batch.schema_ref().fields().iter().zip(batch.columns()) {
-            match field.data_type() {
-                DataType::Int32 => {
-                    let array = column.as_primitive::<Int32Type>();
-                    bytes.add_buffer(array.values().inner(), rows * 4);
-                    bytes.add_nulls_and_metadata(array, bitmap_bytes);
-                }
-                DataType::Int64 => {
-                    let array = column.as_primitive::<Int64Type>();
-                    bytes.add_buffer(array.values().inner(), rows * 8);
-                    bytes.add_nulls_and_metadata(array, bitmap_bytes);
-                }
-                DataType::Boolean => {
-                    let array = column.as_boolean();
-                    bytes.add_buffer(array.values().inner(), bitmap_bytes);
-                    bytes.add_nulls_and_metadata(array, bitmap_bytes);
-                }
-                DataType::Utf8 => {
-                    let array = column.as_string::<i32>();
-                    let offsets = array.value_offsets();
-                    bytes.add_buffer(array.offsets().inner().inner(), (rows + 1) * 4);
-                    bytes.add_buffer(array.values(), (offsets[rows] - offsets[0]) as usize);
-                    bytes.add_nulls_and_metadata(array, bitmap_bytes);
-                }
-                DataType::Binary => {
-                    let array = column.as_binary::<i32>();
-                    let offsets = array.value_offsets();
-                    bytes.add_buffer(array.offsets().inner().inner(), (rows + 1) * 4);
-                    bytes.add_buffer(array.values(), (offsets[rows] - offsets[0]) as usize);
-                    bytes.add_nulls_and_metadata(array, bitmap_bytes);
-                }
-                _ => return None,
+        for column in batch.columns() {
+            if !matches!(
+                column.data_type(),
+                DataType::Int32
+                    | DataType::Int64
+                    | DataType::Boolean
+                    | DataType::Utf8
+                    | DataType::Binary
+            ) {
+                return None;
+            }
+            let data = column.to_data();
+            let metadata = std::mem::size_of_val(column.as_ref());
+            // to_data may omit an all-valid bitmap; account for the original nulls below.
+            let copied =
+                data.get_slice_memory_size().ok()? - data.nulls().map_or(0, |_| bitmap_bytes);
+            bytes.copied = bytes.copied.saturating_add(copied).saturating_add(metadata);
+            bytes.retained = bytes.retained.saturating_add(metadata);
+            for buffer in data.buffers() {
+                bytes.add_buffer(buffer);
+            }
+            if let Some(nulls) = column.nulls() {
+                bytes.add_buffer(nulls.buffer());
+                bytes.copied = bytes.copied.saturating_add(padded_bitmap_bytes);
+            }
+            if data.data_type() == &DataType::Boolean {
+                bytes.copied = bytes
+                    .copied
+                    .saturating_add(padded_bitmap_bytes - bitmap_bytes);
             }
             if bytes.retained.max(bytes.copied) > self.max_bytes {
                 return None;
@@ -241,15 +211,15 @@ impl DecodedBatchCoalescer {
     }
 
     fn flush(&mut self) -> Result<()> {
-        let batches = std::mem::take(&mut self.batches);
-        self.rows = 0;
-        self.bytes = 0;
-        if batches.len() < 2 {
-            self.ready.extend(batches);
+        if self.batches.len() < 2 {
+            self.ready.extend(self.batches.drain(..));
         } else {
             self.ready
-                .push_back(concat_batches(&batches[0].schema(), &batches)?);
+                .push_back(concat_batches(&self.batches[0].schema(), &self.batches)?);
+            self.batches.clear();
         }
+        self.rows = 0;
+        self.bytes = 0;
         Ok(())
     }
 }
@@ -259,8 +229,10 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
-    use arrow::array::{ArrayRef, BinaryArray, BooleanArray, Int32Array, Int64Array, StringArray};
-    use arrow::datatypes::{Field, Schema};
+    use arrow::array::{
+        ArrayRef, AsArray, BinaryArray, BooleanArray, Int32Array, Int64Array, StringArray,
+    };
+    use arrow::datatypes::{Field, Int32Type, Schema};
     use arrow::ipc::writer::StreamWriter;
 
     fn one_column(array: ArrayRef) -> RecordBatch {
@@ -303,13 +275,22 @@ mod tests {
             }
         }
         coalescer.finish().unwrap();
-        coalescer.finish().unwrap();
         while let Some(batch) = coalescer.take_ready() {
             output.push(batch);
         }
-        coalescer.finish().unwrap();
-        assert!(coalescer.peek_ready().is_none());
         output
+    }
+
+    #[test]
+    fn finishing_repeatedly_emits_the_pending_group_once() {
+        let mut coalescer = DecodedBatchCoalescer::try_new(8).unwrap();
+        coalescer.push(ints(0..1)).unwrap();
+        coalescer.push(ints(1..2)).unwrap();
+        coalescer.finish().unwrap();
+        coalescer.finish().unwrap();
+        assert_eq!(coalescer.take_ready(), Some(ints(0..2)));
+        coalescer.finish().unwrap();
+        assert!(coalescer.take_ready().is_none());
     }
 
     #[test]
@@ -366,7 +347,10 @@ mod tests {
         assert!(coalescer.peek_ready().is_none());
         coalescer.push(inputs[1].clone()).unwrap();
         assert_eq!(coalescer.take_ready(), Some(ints(0..2)));
-        assert_eq!(coalescer.bytes, 0);
+        coalescer.push(inputs[2].clone()).unwrap();
+        assert!(coalescer.take_ready().is_none());
+        coalescer.finish().unwrap();
+        assert_eq!(coalescer.take_ready(), Some(ints(2..3)));
     }
 
     #[test]
@@ -409,6 +393,16 @@ mod tests {
     }
 
     #[test]
+    fn all_valid_null_backing_counts_toward_the_byte_budget() {
+        let nulls = arrow::buffer::NullBuffer::new_valid(16 * 1024).slice(0, 1);
+        let input = one_column(Arc::new(Int32Array::new(vec![1].into(), Some(nulls))));
+        assert!(input.column(0).to_data().nulls().is_none());
+        let output = collect_with_limits(8, 512, vec![ints(0..1), input.clone(), ints(2..3)]);
+        assert_eq!(output, vec![ints(0..1), input.clone(), ints(2..3)]);
+        assert!(Arc::ptr_eq(output[1].column(0), input.column(0)));
+    }
+
+    #[test]
     fn shared_ipc_body_is_charged_once_for_wide_batches() {
         let schema = Arc::new(Schema::new(
             (0..128)
@@ -426,7 +420,6 @@ mod tests {
         let frame = encode_frame(&input);
         let decoded = crate::read_ipc_compressed(&frame).unwrap();
         let mut coalescer = DecodedBatchCoalescer::try_new(8192).unwrap();
-        let charged = coalescer.eligible_bytes(&decoded).unwrap();
         let first_buffer = decoded
             .column(0)
             .as_primitive::<Int32Type>()
@@ -438,8 +431,6 @@ mod tests {
             .values()
             .inner();
         assert_eq!(first_buffer.data_ptr(), last_buffer.data_ptr());
-        assert!(charged < 2 * first_buffer.capacity());
-        assert!(charged * 128 <= MAX_GROUP_BYTES);
         assert!(decoded.get_array_memory_size() > MAX_GROUP_BYTES);
 
         for _ in 0..128 {
@@ -473,8 +464,6 @@ mod tests {
                 .inner()
                 .capacity();
         assert!(copied > retained);
-        let coalescer = DecodedBatchCoalescer::try_new(8192).unwrap();
-        assert_eq!(coalescer.eligible_bytes(&input), Some(copied));
         let output = collect_with_limits(8192, copied * 2 - 1, vec![input.clone(), input.clone()]);
         assert_eq!(output, vec![input.clone(), input]);
         for batch in output {
@@ -485,9 +474,19 @@ mod tests {
     }
 
     #[test]
-    fn invalid_byte_budgets_are_configuration_errors() {
+    fn invalid_limits_are_configuration_errors() {
+        assert!(DecodedBatchCoalescer::try_new(0).is_err());
         assert!(DecodedBatchCoalescer::try_new_with_limits(8, 0).is_err());
         assert!(DecodedBatchCoalescer::try_new_with_limits(8, MAX_GROUP_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn large_row_targets_are_clamped() {
+        let batch = ints(0..(MAX_ROWS / 2) as i32);
+        let mut coalescer = DecodedBatchCoalescer::try_new(usize::MAX).unwrap();
+        coalescer.push(batch.clone()).unwrap();
+        let output = coalescer.take_ready().unwrap();
+        assert!(Arc::ptr_eq(output.column(0), batch.column(0)));
     }
 
     #[test]
@@ -572,11 +571,9 @@ mod tests {
     }
 
     #[test]
-    fn empty_inputs_and_invalid_limits() {
+    fn empty_inputs_and_unit_row_target_pass_through() {
         let empty = ints(0..0);
         assert_eq!(collect(8, vec![empty.clone()]), vec![empty]);
         assert_eq!(collect(1, vec![ints(0..1)]), vec![ints(0..1)]);
-        assert!(DecodedBatchCoalescer::try_new(0).is_err());
-        assert!(DecodedBatchCoalescer::try_new(MAX_ROWS + 1).is_err());
     }
 }

@@ -84,6 +84,8 @@ case class NativeBatchDecoderIterator(
 
       if (coalescing.isDefined) fetchCoalesced() else fetchNext()
     } catch {
+      // A failed append/import may leave pending native batches. Release them immediately,
+      // while preserving the ordinary reader's existing failure and stream-close behavior.
       case NonFatal(failure) if coalescing.isDefined =>
         try close()
         catch {
@@ -184,7 +186,7 @@ case class NativeBatchDecoderIterator(
       if (coalescerHandle == 0L) {
         coalescerHandle = nativeLib.createShuffleBatchCoalescer(coalescing.get)
       }
-      nativeLib.drainShuffleBatch(coalescerHandle, endOfInput, tracingEnabled)
+      nativeLib.peekShuffleBatch(coalescerHandle, endOfInput, tracingEnabled)
     }
     while (columns < 0 && !endOfInput) {
       // As on the ordinary path, transport reads must not prevent task completion from closing
@@ -204,7 +206,7 @@ case class NativeBatchDecoderIterator(
                 tracingEnabled)
             case None =>
               endOfInput = true
-              nativeLib.drainShuffleBatch(coalescerHandle, true, tracingEnabled)
+              nativeLib.peekShuffleBatch(coalescerHandle, true, tracingEnabled)
           }
         } finally decodeTime.add(System.nanoTime() - startTime)
       }

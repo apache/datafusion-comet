@@ -219,9 +219,8 @@ For a direct local native shuffle feeding a broadcast exchange, the opt-in
 blocks. `DecodedBatchCoalescer` groups eligible small decoded batches before FFI export and
 `Utils.serializeBatches`. The read RDD is copied with the same dependency and AQE partition
 specifications, so other consumers of a reused shuffle keep their original reader. Grouping is
-bounded by rows, 1,024 inputs, and 8 MiB of retained/copy buffer estimates. It does not reserve
-Spark execution memory; concatenation also temporarily owns an output and a lookahead input.
-Task completion releases pending native batches, exported Arrow batches, and the raw stream.
+bounded as described in [Memory Management](memory_management.md). Task completion releases
+pending native batches, exported Arrow batches, and the raw stream.
 
 **JVM decode**, used when direct read does not apply:
 

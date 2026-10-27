@@ -2203,6 +2203,11 @@ pub extern "system" fn Java_org_apache_comet_Native_createShuffleBatchCoalescer(
     max_rows: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |_| {
+        if max_rows <= 0 {
+            return Err(CometError::Internal(
+                "Decoded shuffle grouping requires a positive row target".into(),
+            ));
+        }
         let coalescer = DecodedBatchCoalescer::try_new(max_rows as usize)?;
         Ok(Box::into_raw(Box::new(coalescer)) as jlong)
     })
@@ -2222,7 +2227,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_appendShuffleBatch(
     tracing_enabled: jboolean,
 ) -> jint {
     try_unwrap_or_throw(&e, |env| {
-        with_trace("decodeShuffleBlock", tracing_enabled != JNI_FALSE, || {
+        with_trace("appendShuffleBatch", tracing_enabled != JNI_FALSE, || {
             let capacity = env.get_direct_buffer_capacity(&byte_buffer)?;
             if length < 4 || length as usize > capacity || num_columns < 0 {
                 return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
@@ -2240,7 +2245,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_appendShuffleBatch(
 /// Report ready output, flushing the pending group at EOF.
 /// # Safety
 /// The handle must be live and exclusively owned by this reader.
-pub unsafe extern "system" fn Java_org_apache_comet_Native_drainShuffleBatch(
+pub unsafe extern "system" fn Java_org_apache_comet_Native_peekShuffleBatch(
     e: EnvUnowned,
     _class: JClass,
     handle: jlong,

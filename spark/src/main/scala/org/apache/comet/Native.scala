@@ -315,7 +315,7 @@ class Native extends NativeBase {
       tracingEnabled: Boolean): Int
 
   /** Return ready columns, flushing any pending group at EOF. */
-  @native def drainShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
+  @native def peekShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
 
   /** Transfer one ready batch through Arrow FFI, returning its row count. */
   @native def takeShuffleBatch(

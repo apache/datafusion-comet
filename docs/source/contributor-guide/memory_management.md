@@ -121,9 +121,10 @@ usage log reports the allocator's total, and the part of it charged to the impor
 described below, so that the overhead can be sized for it.
 
 The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
-the execution pool. It bounds each group's retained/copy estimates to 8 MiB and 1,024 input
-batches, then concatenates once before Arrow export. Inputs and output coexist during that
-copy, and one decoded lookahead can be retained. The grouping limit therefore does not cap
+the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of
+retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
+Inputs and output coexist during that copy, and one decoded lookahead can be retained.
+The grouping limit therefore does not cap
 total reader RSS, and oversized input batches pass through unchanged.
 
 Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
