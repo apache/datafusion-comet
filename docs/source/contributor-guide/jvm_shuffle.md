@@ -65,9 +65,10 @@ returns an `RDD[InternalRow]`. The rows flow directly to the JVM shuffle writers
 
 ### Comet Columnar Input
 
-When the child plan is a Comet operator (e.g., `CometHashAggregate`) but JVM shuffle is selected
-(due to shuffle mode setting or unsupported partitioning), `CometColumnarExchange` still calls
-`child.execute()`. Comet operators implement `doExecute()` by wrapping themselves with `ColumnarToRowExec`:
+When the child plan is a Comet operator that produces Arrow batches (e.g., `CometHashAggregate`) but
+JVM shuffle is selected (due to shuffle mode setting or unsupported partitioning),
+`CometColumnarExchange` still calls `child.execute()`. Comet operators that extend `CometExec`
+implement `doExecute()` by wrapping themselves with `ColumnarToRowExec`:
 
 ```scala
 // In CometExec base class
@@ -81,7 +82,11 @@ This means the data path becomes:
 Comet operator (Arrow batches) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
-This is less efficient than native shuffle which avoids the columnar-to-row conversion:
+`CometSparkToColumnarExec` is different: its `doExecute()` returns its child's rows directly, so a
+JVM shuffle over it reads those rows without any Arrow conversion.
+
+For a child that produces Arrow batches, this is less efficient than native shuffle, which avoids
+the columnar-to-row conversion:
 
 ```
 Comet operator (Arrow batches) → Native Shuffle → Arrow IPC → columnar

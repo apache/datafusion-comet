@@ -155,11 +155,12 @@ A leaf node in the physical plan that takes Arrow batches from the JVM is a `Sca
 [Arrow C Stream](https://arrow.apache.org/docs/format/CStreamInterface.html) (`org.apache.arrow.c.ArrowArrayStream`),
 and `ScanExec` pulls each input batch through a single C callback rather than making a JNI call per batch. The
 input could be a broadcast, a shuffle read decoded through JNI and imported into the JVM, the output of
-`CometSparkToColumnarExec`, or the output of an earlier Comet block. When direct shuffle read is enabled and the input
-is a Comet shuffle whose output types Comet supports, the input is instead a `ShuffleScanExec`, which pulls compressed
-Arrow IPC blocks from the JVM and decodes them in Rust (see [Shuffle Reads](#shuffle-reads)). Operators that run their
-own Rust plans, such as `CometTakeOrderedAndProjectExec`, read their shuffle input as batches through `ScanExec`. The
-Parquet, Iceberg, and CSV scans read their files in Rust.
+`CometSparkToColumnarExec`, or the output of an earlier Comet block. A shuffle input is a `ShuffleScanExec` instead
+only when it is serialized as a `ShuffleScan` leaf: direct shuffle read is enabled, Adaptive Query Execution has made
+the Comet shuffle a query stage, and Comet supports its output types. `ShuffleScanExec` pulls compressed Arrow IPC
+blocks from the JVM and decodes them in Rust (see [Shuffle Reads](#shuffle-reads)). Otherwise, including without
+Adaptive Query Execution and for operators that run their own Rust plans such as `CometTakeOrderedAndProjectExec`, the
+shuffle is read as batches through `ScanExec`. The Parquet, Iceberg, and CSV scans read their files in Rust.
 
 `CometNativeExec` creates a `CometExecIterator` and applies this iterator to the input RDD
 partitions. Each call to `CometExecIterator.next()` will invoke `Native.executePlan`. Once the plan finishes

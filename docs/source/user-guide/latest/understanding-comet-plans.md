@@ -95,7 +95,7 @@ They serve different purposes and produce output in different places.
 | `spark.comet.explain.format`               | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
 | `spark.comet.explain.native.enabled`       | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
 | `spark.comet.explain.planOnly.enabled`     | Driver log                         | The Comet plan and coverage summary, prefixed `[Comet plan-only]`, while Spark runs the original plan.                                                                    |
-| `spark.comet.explain.rules`                | Driver log                         | Each plan transformation that Comet's planner rules make.                                                                                                                 |
+| `spark.comet.explain.rules`                | Driver log                         | The plan before and after `CometScanRule`, `CometExecRule`, and `EliminateRedundantTransitions`. For stage reverts, use `spark.comet.explain.fallback.log.enabled`.       |
 
 ### `spark.comet.explain.fallback.enabled`
 
