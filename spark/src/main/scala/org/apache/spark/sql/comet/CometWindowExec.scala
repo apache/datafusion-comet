@@ -79,38 +79,38 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     val sortOrders = op.orderSpec.map(exprToProto(_, op.child.output))
 
-    // Spark puts no sort below the window when its input reports the order the window needs, a
-    // relation sorted before it was cached for instance. When those rows enter the native plan
-    // from the JVM, the ScanExec they arrive through declares no order, and the native window
-    // then rejects its input. Send the order so the planner declares it on the window's input;
-    // see SortedInputExec. Nothing is declared when the order the input reports may be false; see
-    // CometHashJoin.mayReportFalseOrder. A key that Comet cannot express, or that holds a
-    // collated string, which Spark orders by its collation but the native side would declare in
-    // raw byte order, sends the window back to Spark.
-    val requiredOrdering = op.requiredChildOrdering.head
-    val inputSortOrders =
-      if (requiredOrdering.nonEmpty &&
-        SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
-        !CometHashJoinExec.mayReportFalseInputOrder(op.child)) {
-        val orders =
-          if (requiredOrdering.exists(order => hasNonDefaultStringCollation(order.dataType))) {
-            Nil
-          } else {
-            requiredOrdering.map(exprToProto(_, op.child.output))
-          }
-        if (orders.isEmpty || !orders.forall(_.isDefined)) {
-          withFallbackReason(
-            op,
-            "the order of the window's input, which Spark relies on, cannot be expressed natively")
-          return None
-        }
-        orders.flatten
-      } else {
-        Nil
-      }
-
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
+      // Spark puts no sort below the window when its input reports the order the window needs,
+      // a relation sorted before it was cached for instance. When those rows enter the native
+      // plan from the JVM, the ScanExec they arrive through declares no order, and the native
+      // window then rejects its input. Send the order so the planner declares it on the window's
+      // input; see SortedInputExec. A native sort below declares its own order, and nothing is
+      // declared when the order the input reports may be false; see
+      // CometHashJoin.mayReportFalseOrder. A key that Comet cannot express, or that holds a
+      // collated string, which Spark orders by its collation but the native side would declare
+      // in raw byte order, sends the window back to Spark.
+      val requiredOrdering = op.requiredChildOrdering.head
+      val inputSortOrders =
+        if (requiredOrdering.nonEmpty && !op.child.isInstanceOf[CometSortExec] &&
+          SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
+          !CometHashJoinExec.mayReportFalseInputOrder(op.child)) {
+          val orders = requiredOrdering.map { order =>
+            if (hasNonDefaultStringCollation(order.dataType)) None
+            else exprToProto(order, op.child.output)
+          }
+          if (!orders.forall(_.isDefined)) {
+            withFallbackReason(
+              op,
+              "the order of the window's input, which Spark relies on, cannot be expressed " +
+                "natively")
+            return None
+          }
+          orders.flatten
+        } else {
+          Nil
+        }
+
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
       windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
