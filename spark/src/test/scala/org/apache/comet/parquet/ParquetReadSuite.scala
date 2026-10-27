@@ -170,6 +170,9 @@ abstract class ParquetReadSuite extends CometTestBase {
           |""".stripMargin)
       val valid = Binary.fromString("one")
       val invalid = Binary.fromConstantByteArray(Array[Byte](0x41, 0xff.toByte, 0x42))
+      // The same bytes with U+FFFD in place of FF: a second map key that decoding would
+      // collapse onto the invalid one.
+      val replaced = Binary.fromString("A\uFFFDB")
       val writer = createParquetWriter(parquetSchema, path)
       try {
         // Valid values, then a null list element, struct field and map value, then invalid
@@ -180,12 +183,15 @@ abstract class ParquetReadSuite extends CometTestBase {
           arr.addGroup("list").append("element", valid)
           val element = arr.addGroup("list")
           val st = row.addGroup("st")
-          val entry =
-            row.addGroup("m").addGroup("key_value").append("key", value.getOrElse(valid))
+          val m = row.addGroup("m")
+          val entry = m.addGroup("key_value").append("key", value.getOrElse(valid))
           value.foreach { value =>
             element.append("element", value)
             st.append("name", value)
             entry.append("value", value)
+          }
+          if (value.contains(invalid)) {
+            m.addGroup("key_value").append("key", replaced).append("value", valid)
           }
           row.add("id", id)
           writer.write(row)
@@ -213,15 +219,19 @@ abstract class ParquetReadSuite extends CometTestBase {
             collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
             s"Expected a CometNativeScanExec:\n${cometPlan.treeString}")
 
-          // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF.
+          // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF, except a map
+          // key, which keeps its bytes as Spark does: the two keys stay distinct, and looking
+          // up the replaced one returns its own value.
           checkAnswer(
             df.where("id = 2")
               .selectExpr(
                 "hex(arr[1])",
                 "hex(st.name)",
                 "hex(map_keys(m)[0])",
-                "hex(map_values(m)[0])"),
-            Row("41EFBFBD42", "41EFBFBD42", "41EFBFBD42", "41EFBFBD42"))
+                "hex(map_values(m)[0])",
+                "size(map_from_entries(map_entries(m)))",
+                "m['A\uFFFDB']"),
+            Row("41EFBFBD42", "41EFBFBD42", "41FF42", "41EFBFBD42", 2, "one"))
         }
       }
     }

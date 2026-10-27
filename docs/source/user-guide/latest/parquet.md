@@ -283,10 +283,11 @@ for production, so do not turn it off to avoid an entry on this page.
 - **BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY column
   without the UTF8 annotation that is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Spark keeps the bytes. In a struct field, list element
-  or map, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
+  or map value, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
   [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Top-level
-  values reach an Arrow string array unchecked: they match Spark in a release build, and a debug
-  build panics on them ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
+  values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
+  differ only in such bytes distinct: they match Spark in a release build, and a debug build
+  panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top

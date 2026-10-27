@@ -884,10 +884,11 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     let start = offsets[0].as_usize();
     let end = offsets[num_rows].as_usize();
     // Bytes of the non-null rows. A null row can still span bytes, for example after `nullif`.
+    // Each run of non-null rows is one subtraction, so sparse nulls don't cost a pass over the rows.
     let live_bytes = match input.nulls().filter(|nulls| nulls.null_count() > 0) {
         Some(nulls) => nulls
-            .valid_indices()
-            .map(|i| offsets[i + 1].as_usize() - offsets[i].as_usize())
+            .valid_slices()
+            .map(|(from, to)| offsets[to].as_usize() - offsets[from].as_usize())
             .sum(),
         None => end - start,
     };
@@ -897,12 +898,14 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
     // valid prefix and decode the rest. Skip this when null rows span more than half of those
     // bytes: decoding the live rows one at a time then reads less and returns a compact buffer
     // instead of keeping the null rows' bytes alive.
-    let mut valid_prefix = "";
-    if matches!(
+    let utf8_style = matches!(
         spark_cast_options.binary_output_style,
         None | Some(BinaryOutputStyle::Utf8)
-    ) && 2 * live_bytes >= end - start
-    {
+    );
+    let mut valid_prefix = "";
+    let mut checked = false;
+    if utf8_style && 2 * live_bytes >= end - start {
+        checked = true;
         let data = input.value_data();
         match std::str::from_utf8(&data[start..end]) {
             Ok(valid) => {
@@ -916,7 +919,6 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                     // such as a sort's charges all of it to every batch that holds it, so the
                     // offsets, values and validity bitmap are copied then, without decoding the
                     // values again.
-                    let fills = |buffer: &Buffer, used: usize| 2 * used >= buffer.capacity();
                     let offset_buffer = input.offsets().inner().inner();
                     let offsets = if start == 0 && fills(offset_buffer, offset_buffer.len()) {
                         input.offsets().clone()
@@ -956,10 +958,14 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
 
     let value_bytes = live_bytes;
     // Upper bound on the encoded length so the value buffer is allocated once. For the
-    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x; the builder grows on the rare
-    // invalid byte that expands to U+FFFD. Base64 rounds up to a full 4-char group via
-    // div_ceil, which already covers the group padding.
+    // JVM-lossy UTF-8 decoder path, valid UTF-8 sits at 1x and the bytes after the first
+    // ill-formed sequence at up to 3x, since U+FFFD takes three bytes; a batch that was not
+    // checked is sized for valid input. Base64 rounds up to a full 4-char group via div_ceil,
+    // which already covers the group padding.
     let capacity = match spark_cast_options.binary_output_style {
+        None | Some(BinaryOutputStyle::Utf8) if checked => {
+            valid_prefix.len() + 3 * value_bytes.saturating_sub(valid_prefix.len())
+        }
         None | Some(BinaryOutputStyle::Utf8) => value_bytes,
         Some(BinaryOutputStyle::Basic) => 6 * value_bytes + 2 * num_rows,
         Some(BinaryOutputStyle::Base64) => 4 * value_bytes.div_ceil(3),
@@ -989,9 +995,23 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
             // such as CAST(CAST(x AS string) AS binary) and value identity is documented in the
             // compatibility guide and tracked by #4764.
             None | Some(BinaryOutputStyle::Utf8) => {
-                match valid_prefix.get(range[0].as_usize() - start..range[1].as_usize() - start) {
+                let row_start = range[0].as_usize() - start;
+                let row_end = range[1].as_usize() - start;
+                match valid_prefix.get(row_start..row_end) {
                     Some(valid) => builder.write_str(valid),
-                    None => builder.write_str(&decode_utf8_spark_lossy(value)),
+                    None => {
+                        // The row holds the first ill-formed sequence, follows it, or starts or
+                        // ends inside a code point. Copy the part of it that was checked when
+                        // the row starts on a character boundary, and decode only the rest: the
+                        // decoder restarts at every boundary, so the result is the same as
+                        // decoding the whole row.
+                        let validated = valid_prefix
+                            .get(row_start..row_end.min(valid_prefix.len()))
+                            .unwrap_or("");
+                        builder.write_str(validated).and_then(|()| {
+                            builder.write_str(&decode_utf8_spark_lossy(&value[validated.len()..]))
+                        })
+                    }
                 }
             }
             Some(BinaryOutputStyle::Basic) => write_bracketed(&mut builder, value, ", ", write_i8),
@@ -1011,7 +1031,25 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
         written.expect("writing to a string builder cannot fail");
         builder.append_value("");
     }
-    Ok(Arc::new(builder.finish()))
+    let strings = builder.finish();
+    // A replacement that grows the value buffer past its capacity doubles the allocation, which
+    // memory accounting then charges in full. Return a compact copy when the rows fill less than
+    // half of it.
+    if utf8_style && !fills(strings.values(), strings.values().len()) {
+        let values = Buffer::from_slice_ref(strings.values().as_slice());
+        let (offsets, _, nulls) = strings.into_parts();
+        // SAFETY: the builder produced valid UTF-8 and offsets on character boundaries, and
+        // only the value buffer's allocation changes.
+        let strings = unsafe { GenericStringArray::<O>::new_unchecked(offsets, values, nulls) };
+        return Ok(Arc::new(strings));
+    }
+    Ok(Arc::new(strings))
+}
+
+/// True when the `used` bytes of `buffer` fill at least half of its allocation, which is when
+/// sharing the buffer costs less than a compact copy.
+fn fills(buffer: &Buffer, used: usize) -> bool {
+    2 * used >= buffer.capacity()
 }
 
 #[cfg(test)]
@@ -1447,6 +1485,111 @@ mod tests {
         let strings = result.as_string::<i32>();
         assert_eq!(strings.values().as_ptr(), mostly_live.value(0).as_ptr());
         assert_eq!(strings.nulls(), mostly_live.nulls());
+    }
+
+    /// One null per 128 short rows still takes the fast path, which counts the live bytes by
+    /// run of non-null rows rather than by row.
+    #[test]
+    fn test_cast_binary_to_string_sparse_nulls_share_buffer() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let rows: Vec<Option<&[u8]>> = (0..8192)
+            .map(|i| (i % 128 != 127).then_some(b"eightbyt".as_slice()))
+            .collect();
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), input.value(0).as_ptr());
+        assert_eq!(strings.null_count(), 64);
+        assert_eq!(strings.value(126), "eightbyt");
+        assert!(strings.is_null(127));
+
+        // Null rows that span bytes count for nothing, run by run.
+        let hidden = BinaryArray::new(
+            input.offsets().clone(),
+            input.values().clone(),
+            Some(NullBuffer::from(
+                (0..8192).map(|i| i % 2 == 0).collect::<Vec<_>>(),
+            )),
+        );
+        let result = cast_binary_to_string::<i32>(&hidden, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.values().as_ptr(), hidden.value(0).as_ptr());
+        assert_eq!(strings.null_count(), 4096);
+    }
+
+    /// The rows from the first ill-formed sequence on decode one at a time. The row that holds
+    /// it reuses its checked prefix, and a row that starts or ends inside a code point is decoded
+    /// whole; both match decoding each row on its own.
+    #[test]
+    fn test_cast_binary_to_string_row_decoding_matches_per_row_decoding() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let wide = "é".repeat(50_000).into_bytes();
+        let truncated: Vec<u8> = [wide.as_slice(), b"abc", &[0xE9]].concat();
+        let rows: Vec<Vec<u8>> = vec![
+            "é".as_bytes().to_vec(),
+            truncated,
+            b"ok".to_vec(),
+            vec![0xC3],
+            vec![0xA9, 0xFF, b'x'],
+            vec![0xFF],
+            "日本".as_bytes().to_vec(),
+        ];
+        // Rows 3 and 4 split a code point between them, so the span of all rows is valid up to
+        // row 1's truncated byte and row 3 starts on a boundary while row 4 does not.
+        for (first, last) in [(0, 7), (3, 7), (0, 4), (1, 2)] {
+            let input = BinaryArray::from_iter_values(rows[first..last].iter());
+            let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+            let strings = result.as_string::<i32>();
+            for (i, row) in rows[first..last].iter().enumerate() {
+                assert_eq!(
+                    strings.value(i),
+                    decode_utf8_spark_lossy(row),
+                    "rows {first}..{last}, row {i}"
+                );
+            }
+        }
+
+        // A slice whose first row is the one with the truncated byte reuses its checked prefix.
+        let input = BinaryArray::from_iter_values(rows.iter()).slice(1, 2);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.value(0), decode_utf8_spark_lossy(&rows[1]));
+        assert_eq!(strings.value(1), "ok");
+    }
+
+    /// A replacement that grows the builder's value buffer past its capacity doubles the
+    /// allocation. The result holds a compact copy instead.
+    #[test]
+    fn test_cast_binary_to_string_fallback_buffer_is_compact() {
+        let cast_options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
+        let payload = [b'a'; 64];
+        let mut rows = vec![payload.as_slice(); 8191];
+        let last = [b"aaaaaaaa".as_slice(), &[0xFF]].concat();
+        rows.push(last.as_slice());
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        let len = strings.values().len();
+        assert_eq!(len, 8191 * 64 + 8 + 3);
+        assert!(
+            strings.values().capacity() < len + 128,
+            "capacity {} for {len} bytes",
+            strings.values().capacity()
+        );
+        assert_eq!(strings.value(0).as_bytes(), payload);
+        assert_eq!(strings.value(8191), "aaaaaaaa\u{fffd}");
+
+        // An ill-formed byte in the first row sizes the buffer for the worst case, which is
+        // then compacted as well.
+        let first = [&[0xFF], b"aaaaaaaa".as_slice()].concat();
+        let mut rows = vec![first.as_slice()];
+        rows.extend(std::iter::repeat_n(payload.as_slice(), 8191));
+        let input = BinaryArray::from(rows);
+        let result = cast_binary_to_string::<i32>(&input, &cast_options).unwrap();
+        let strings = result.as_string::<i32>();
+        let len = strings.values().len();
+        assert!(strings.values().capacity() < len + 128);
+        assert_eq!(strings.value(0), "\u{fffd}aaaaaaaa");
     }
 
     #[test]
