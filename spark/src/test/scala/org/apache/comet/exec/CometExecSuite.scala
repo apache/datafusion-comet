@@ -4010,8 +4010,13 @@ class CometExecSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         withParquetTable(dir.getCanonicalPath, "rebalance_t1") {
-          def checkNotSplit(query: String): Unit = {
+          def checkNotSplit(query: String, expected: Class[_]*): Unit = {
             val (_, cometPlan) = checkSparkAnswer(query)
+            expected.foreach { cls =>
+              assert(
+                collect(cometPlan) { case op if cls.isInstance(op) => op }.nonEmpty,
+                cometPlan)
+            }
             val skewedReads = collect(cometPlan) {
               case r: AQEShuffleReadExec if r.hasSkewedPartition => r
             }
@@ -4027,11 +4032,17 @@ class CometExecSuite extends CometTestBase {
             s"SELECT k, sum(w) FROM (SELECT k, v + 1 AS w FROM $rebalanced WHERE v > 5) GROUP BY k")
           checkNotSplit(window)
           checkNotSplit(s"SELECT * FROM ($window) WHERE rn <= 2")
-          Seq("true", "false").foreach { preferSmj =>
-            withSQLConf(SQLConf.PREFER_SORTMERGEJOIN.key -> preferSmj) {
-              checkNotSplit(
-                s"SELECT a.k, count(*) FROM $rebalanced a JOIN $rebalanced b ON a.k = b.k " +
-                  "GROUP BY a.k")
+
+          // The join is the only operator that needs the clustering, so it alone has to stop the
+          // split. The right side has one row per key, which keeps the join's output small.
+          withParquetTable((0 until 1000).map(i => (i.toLong, i.toLong)), "rebalance_t2") {
+            val rebalanced2 = "(SELECT /*+ REBALANCE(k) */ _1 AS k, _2 AS w FROM rebalance_t2)"
+            val join = s"SELECT a.k, a.v, b.w FROM $rebalanced a JOIN $rebalanced2 b ON a.k = b.k"
+            checkNotSplit(join, classOf[CometSortMergeJoinExec])
+            withSQLConf(
+              SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+              "spark.sql.join.forceApplyShuffledHashJoin" -> "true") {
+              checkNotSplit(join, classOf[CometHashJoinExec])
             }
           }
         }
