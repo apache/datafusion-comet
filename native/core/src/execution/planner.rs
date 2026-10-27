@@ -2739,7 +2739,11 @@ fn parse_file_scan_tasks_from_common(
                 .with_partition_spec(partition_spec)
                 .with_name_mapping(name_mapping)
                 .with_unified_partition_type(unified_partition_type_for_task)
-                .with_case_sensitive(false)
+                // The only consumer is the binding of an equality delete's predicate, whose
+                // column names iceberg-rust takes from the task schema. They match it exactly,
+                // and a case-insensitive binding rejects a schema with two names that differ
+                // only by case.
+                .with_case_sensitive(true)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
                 .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))

@@ -1224,6 +1224,80 @@ class CometIcebergNativeSuite
     }
   }
 
+  // iceberg-rust fails to read a nested field that has a default value and that a data file lacks.
+  // While nested schema pruning is off, the scan reads every nested field of a projected column,
+  // including one the query prunes away, so the check on defaults must cover the task schema.
+  test("nested field with a default value falls back when the scan reads it") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    assume(icebergVersionAtLeast(1, 11), "Nested column defaults require Iceberg 1.11+")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.nested_default"
+        spark.sql(
+          s"CREATE TABLE $table (id INT, s STRUCT<a: INT>) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '3')")
+        spark.sql(
+          s"INSERT INTO $table VALUES (1, named_struct('a', 1)), (2, named_struct('a', 2))")
+        addIcebergIntColumnWithDefault(
+          loadIcebergTable(spark, "test_cat", "db", "nested_default"),
+          "b",
+          7,
+          parent = Some("s"))
+        spark.sql(s"REFRESH TABLE $table")
+
+        // The query prunes s.b, so the pruned task schema omits it.
+        checkIcebergNativeScan(s"SELECT id, s.a FROM $table ORDER BY id")
+        // With pruning off the scan reads s.b too, and the file lacks it.
+        withSQLConf(CometConf.COMET_ICEBERG_NESTED_SCHEMA_PRUNING_ENABLED.key -> "false") {
+          checkIcebergNativeScanFallback(
+            s"SELECT id, s.a FROM $table ORDER BY id",
+            "nested default read by the unpruned task schema")
+        }
+        checkIcebergNativeScanFallback(
+          s"SELECT id, s.b FROM $table ORDER BY id",
+          "nested default read by the query")
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // iceberg-rust binds an equality delete's key by name, and rejects a case-insensitive name that
+  // matches two columns. The delete's key is taken from the task schema, spelled exactly as in it,
+  // so the binding is case sensitive. The query reads neither column, as the batch adaptation
+  // after iceberg-rust rejects a read of two columns that differ only by case.
+  test("equality delete on a column whose name differs from another only by case") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withTempIcebergDir { warehouseDir =>
+      withSQLConf(
+        "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.test_cat.type" -> "hadoop",
+        "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+        SQLConf.CASE_SENSITIVE.key -> "true",
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.eq_delete_case"
+        spark.sql(
+          s"CREATE TABLE $table (id INT, ID STRING, v STRING) USING iceberg " +
+            "TBLPROPERTIES ('format-version' = '2')")
+        spark.sql(s"INSERT INTO $table VALUES (1, 'a', 'x'), (2, 'b', 'y'), (3, 'c', 'z')")
+        commitEqualityDelete("test_cat", "db", "eq_delete_case", "id", 2, warehouseDir)
+
+        // The pruned task schema holds only `v` and the key `id`. The full one holds both columns.
+        checkPrunedAndFullReads(s"SELECT v FROM $table ORDER BY v")
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
   // The key `s.k` is nested, which iceberg-rust cannot look up, so the scan must fall back.
   test("equality delete keyed on a nested field falls back to Spark") {
     assume(icebergAvailable, "Iceberg not available in classpath")

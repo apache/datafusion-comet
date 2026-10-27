@@ -743,17 +743,41 @@ case class CometScanRule(session: SparkSession)
             false
         }
 
+        // Projected roots are matched by field ID so historical snapshots still identify renamed
+        // columns. Both schema checks below use them.
+        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+        val resolver = session.sessionState.conf.resolver
+        val projectedFieldIds = projectedDataColumns.map { attr =>
+          metadata.globalFieldIdMapping.collectFirst {
+            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+          }
+        }
+        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
         // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
         // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
-        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
-        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
-        // failure here is unexpected and also falls back rather than risk a crash.
+        // a column absent from a data file (it fails a nested one), so a scan reading such a
+        // column must fall back. That is the query's schema and, while nested schema pruning is
+        // off, the whole of each projected column in the task schema, which holds nested fields
+        // the query's does not. A V3 table implies an Iceberg version new enough to expose
+        // initialDefault(), so a reflection failure here is unexpected and also falls back rather
+        // than risk a crash.
         val defaultValuesSupported =
           if (!formatVersion.exists(_ >= 3)) {
             true
           } else {
             try {
-              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              val readDefaults = metadata.taskSchema.toSeq.flatMap { schema =>
+                if (hasUnresolvedProjectedFieldIds) {
+                  IcebergReflection.columnsWithInitialDefault(schema)
+                } else {
+                  IcebergReflection.columnsWithInitialDefault(schema, resolvedProjectedFieldIds)
+                }
+              }
+              val defaulted =
+                (IcebergReflection.columnsWithInitialDefault(
+                  metadata.scanSchema) ++ readDefaults).distinct
               if (defaulted.nonEmpty) {
                 fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
                   s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
@@ -768,18 +792,6 @@ case class CometScanRule(session: SparkSession)
                 false
             }
           }
-
-        // Projected roots are matched by field ID so historical snapshots still identify renamed
-        // columns. Both schema checks below use them.
-        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
-        val resolver = session.sessionState.conf.resolver
-        val projectedFieldIds = projectedDataColumns.map { attr =>
-          metadata.globalFieldIdMapping.collectFirst {
-            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-          }
-        }
-        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
-        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
         // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
         // disappear during projection, or reach the adapter with physical field names that

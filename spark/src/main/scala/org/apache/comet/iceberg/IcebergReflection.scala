@@ -1283,6 +1283,24 @@ object IcebergReflection extends Logging {
     columns.asScala.flatMap(walkFieldForDefault).toList
   }
 
+  /**
+   * [[columnsWithInitialDefault]] for only the top-level columns of `schema` whose ids are in
+   * `columnIds`. A scan reads every nested field of such a column that its schema holds, so this
+   * is for the schema the scan reads when that is wider than the query's, as the table's is while
+   * nested schema pruning is off.
+   */
+  def columnsWithInitialDefault(schema: Any, columnIds: Set[Int]): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala
+      .filter(column => columnIds.contains(fieldIdOf(column)))
+      .flatMap {
+        walkFieldForDefault
+      }
+      .toList
+  }
+
   private def walkFieldForDefault(field: Any): List[String] = {
     import scala.jdk.CollectionConverters._
     val name = getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
