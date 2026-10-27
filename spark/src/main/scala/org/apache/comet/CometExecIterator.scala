@@ -449,9 +449,14 @@ object CometExecIterator extends Logging {
     }
   }
 
-  /** Called by the native planner before reducing keys for an eligible semi join. */
+  /**
+   * Called on the Spark task thread before reducing semi-join keys. Only the fair pool can refuse
+   * a sort reservation before Spark can spill another consumer; the greedy pool always asks
+   * Spark.
+   */
   def hasOtherExecutionMemory(context: TaskContext): Boolean = {
-    if (!CometSparkSessionExtensions.isOffHeapEnabled(SparkEnv.get.conf)) {
+    if (!CometSparkSessionExtensions.isOffHeapEnabled(SparkEnv.get.conf) ||
+      COMET_OFFHEAP_MEMORY_POOL_TYPE.get() != "fair_unified") {
       false
     } else {
       val memory = taskMemories.get(context)

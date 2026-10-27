@@ -1809,60 +1809,63 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("right key reduction skips a task with resident JVM execution memory") {
-    val rightRows = 32768
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
-      CometConf.COMET_BATCH_SIZE.key -> "4096",
-      CometConf.COMET_SHUFFLE_MODE.key -> "native",
-      CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
-      withParquetTable(Seq(0, 1, 1, 3, 4).map(Tuple1(_)), "admission_left") {
-        withParquetTable((0 until rightRows).map(i => Tuple1(i % 4)), "admission_right") {
-          for (holdMemory <- Seq(false, true)) {
-            val df = sql("""SELECT /*+ MERGE(r) */ l._1 FROM admission_left l
+  for (pool <- Seq("fair_unified", "greedy_unified")) {
+    test(s"right key reduction admission with resident JVM execution memory ($pool)") {
+      val rightRows = 32768
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "4096",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> pool,
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
+        withParquetTable(Seq(0, 1, 1, 3, 4).map(Tuple1(_)), "admission_left") {
+          withParquetTable((0 until rightRows).map(i => Tuple1(i % 4)), "admission_right") {
+            for (holdMemory <- Seq(false, true)) {
+              val df = sql("""SELECT /*+ MERGE(r) */ l._1 FROM admission_left l
                            |LEFT SEMI JOIN admission_right r ON l._1 = r._1""".stripMargin)
-            val plan = df.queryExecution.executedPlan
-            val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }.get
-            val sort = collectFirst(join.right) { case s: CometSortExec => s }.get
-            assert(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled)
+              val plan = df.queryExecution.executedPlan
+              val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }.get
+              val sort = collectFirst(join.right) { case s: CometSortExec => s }.get
+              assert(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled)
 
-            val result = SQLExecution.withSQLConfPropagated(spark) {
-              plan
-                .execute()
-                .mapPartitions { rows =>
-                  val context = TaskContext.get()
-                  val manager = CometExecIterator.taskMemory(context, 0L).manager.internal
-                  val consumer = new MemoryConsumer(manager, 0L, MemoryMode.OFF_HEAP) {
-                    override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
-                  }
-                  try {
-                    // The native iterator exists, but its plan is built only on the first pull.
-                    if (holdMemory) {
-                      require(consumer.acquireMemory(4096L) == 4096L)
+              val result = SQLExecution.withSQLConfPropagated(spark) {
+                plan
+                  .execute()
+                  .mapPartitions { rows =>
+                    val context = TaskContext.get()
+                    val manager = CometExecIterator.taskMemory(context, 0L).manager.internal
+                    val consumer = new MemoryConsumer(manager, 0L, MemoryMode.OFF_HEAP) {
+                      override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
                     }
-                    Iterator.single(rows.map(_.getInt(0)).toVector)
-                  } finally {
-                    consumer.freeMemory(consumer.getUsed)
+                    try {
+                      // The native iterator exists, but its plan is built only on the first pull.
+                      if (holdMemory) {
+                        require(consumer.acquireMemory(4096L) == 4096L)
+                      }
+                      Iterator.single(rows.map(_.getInt(0)).toVector)
+                    } finally {
+                      consumer.freeMemory(consumer.getUsed)
+                    }
                   }
-                }
-                .collect()
-                .flatten
-                .sorted
-                .toSeq
-            }
-            assert(result == Seq(0, 1, 1, 3))
-            val in = join.longMetric("right_key_reduction_input_rows").value
-            val out = join.longMetric("right_key_reduction_output_rows").value
-            if (holdMemory) {
-              assert(in == 0 && out == 0)
-              assert(sort.longMetric("output_rows").value == rightRows)
-            } else {
-              assert(in == rightRows && out > 0 && out < in)
-              assert(sort.longMetric("output_rows").value == out)
+                  .collect()
+                  .flatten
+                  .sorted
+                  .toSeq
+              }
+              assert(result == Seq(0, 1, 1, 3))
+              val in = join.longMetric("right_key_reduction_input_rows").value
+              val out = join.longMetric("right_key_reduction_output_rows").value
+              if (holdMemory && pool == "fair_unified") {
+                assert(in == 0 && out == 0)
+                assert(sort.longMetric("output_rows").value == rightRows)
+              } else {
+                assert(in == rightRows && out > 0 && out < in)
+                assert(sort.longMetric("output_rows").value == out)
+              }
             }
           }
         }
