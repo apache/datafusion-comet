@@ -32,6 +32,7 @@ import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.metadata.CompressionCodecName
 import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.parquet.schema.{MessageType, Type}
+import org.apache.spark.SPARK_VERSION_SHORT
 import org.apache.spark.internal.io.FileCommitProtocol
 import org.apache.spark.memory.MemoryMode
 import org.apache.spark.sql.{AnalysisException, DataFrame, Row, SaveMode}
@@ -648,6 +649,31 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
 
       checkAnswer(spark.read.parquet(outputPath), df.collect())
       assertParquetCodec(outputPath, CompressionCodecName.LZ4_RAW)
+    }
+  }
+
+  test("parquet write records the Spark version in the footer") {
+    // Spark's ParquetWriteSupport writes org.apache.spark.version, and the datetime rebase logic
+    // of both Spark and Comet's native scan reads it back to tell Spark 3.0+ files from older ones.
+    withTempPath { dir =>
+      val outputPath = new File(dir, "output.parquet").getAbsolutePath
+      val df = spark.range(0, 100).selectExpr("id", "cast(id as string) as name")
+
+      withNativeWriter {
+        val plan = captureWritePlan(path => df.write.parquet(path), outputPath)
+        assertHasCometNativeWriteExec(plan)
+      }
+
+      val conf = spark.sparkContext.hadoopConfiguration
+      val partFiles = new File(outputPath).listFiles().filter(_.getName.startsWith("part-"))
+      assert(partFiles.nonEmpty, s"No part files found under $outputPath")
+      partFiles.foreach { partFile =>
+        val inputFile = HadoopInputFile.fromPath(new Path(partFile.getAbsolutePath), conf)
+        Using.resource(ParquetFileReader.open(inputFile)) { reader =>
+          val metadata = reader.getFooter.getFileMetaData.getKeyValueMetaData
+          assert(metadata.get("org.apache.spark.version") == SPARK_VERSION_SHORT)
+        }
+      }
     }
   }
 
