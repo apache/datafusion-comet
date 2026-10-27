@@ -260,7 +260,8 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 #### Example: dumping window operator output
 
 In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
-the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
+the window operator builds `window_agg` over `input`, the child plan with any
+order Spark sent declared on it, either a `BoundedWindowAggExec` or a
 `WindowAggExec` depending on whether every window expression runs with bounded
 memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` and
 builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
@@ -271,14 +272,14 @@ projection:
 let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
     Arc::new(BoundedWindowAggExec::try_new(
         window_expr,
-        Arc::clone(&child.native_plan),
+        input,
         InputOrderMode::Sorted,
         !partition_exprs.is_empty(),
     )?)
 } else {
     Arc::new(WindowAggExec::try_new(
         window_expr,
-        Arc::clone(&child.native_plan),
+        input,
         !partition_exprs.is_empty(),
     )?)
 };
