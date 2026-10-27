@@ -106,7 +106,7 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
-use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::filter::FilterExecBuilder;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -1691,10 +1691,13 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
-                    predicate,
-                    Arc::clone(&child.native_plan),
-                )?);
+                // FilterExec merges its output up to its own batch size, 8192 rows by default.
+                // Use the session batch size so it doesn't build batches bigger than that.
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(
+                    FilterExecBuilder::new(predicate, Arc::clone(&child.native_plan))
+                        .with_batch_size(self.session_ctx.copied_config().batch_size())
+                        .build()?,
+                );
 
                 Ok((
                     scans,
@@ -3898,6 +3901,73 @@ mod tests {
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
+    fn batch_size_planner(batch_size: usize) -> PhysicalPlanner {
+        let config = SessionConfig::new().with_batch_size(batch_size);
+        PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0)
+    }
+
+    /// The filter merges its output up to the session batch size and no further. Without it, the
+    /// filter merges up to 8192 rows, which can exceed Arrow's 2 GiB limit for large string values.
+    /// The NULL and multi-byte strings check that merging keeps every value.
+    #[tokio::test]
+    async fn filter_output_respects_session_batch_size() {
+        use arrow::array::AsArray;
+
+        let planner = batch_size_planner(2);
+        let scan = Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![
+                    create_proto_datatype(),
+                    spark_expression::DataType {
+                        type_id: 7, // STRING
+                        type_info: None,
+                    },
+                ],
+                source: String::new(),
+            })),
+            ..create_scan()
+        };
+        let op = create_filter(scan, 7);
+        let (mut scans, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        // Five single-row batches that all pass the filter, with NULL and multi-byte strings.
+        let strings = [Some("数据"), None, Some("é"), Some(""), Some("データ")];
+        let mut inputs = [strings
+            .iter()
+            .map(|&value| {
+                let columns = vec![
+                    Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+                    Arc::new(StringArray::from(vec![value])) as ArrayRef,
+                ];
+                InputBatch::Batch(columns, 1)
+            })
+            .chain(std::iter::once(InputBatch::EOF))
+            .collect::<Vec<_>>()
+            .into_iter()];
+        let stream = planned
+            .native_plan
+            .execute(0, SessionContext::new().task_ctx())
+            .unwrap();
+        let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+        let sizes: Vec<_> = batches.iter().map(|batch| batch.num_rows()).collect();
+        let output: Vec<_> = batches
+            .iter()
+            .flat_map(|batch| {
+                let column = batch.column(1).as_string::<i32>();
+                column
+                    .iter()
+                    .map(|value| value.map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(sizes, vec![2, 2, 1]);
+        let expected: Vec<_> = strings
+            .iter()
+            .map(|value| value.map(str::to_string))
+            .collect();
+        assert_eq!(output, expected);
+    }
+
     /// Comparisons follow Spark's float ordering without normalizing their operands, except in the
     /// data filters that a scan pushes into the Parquet reader, where pruning has to see a plain
     /// comparison of the column.
@@ -4889,12 +4959,14 @@ mod tests {
                     })),
                     ..Default::default()
                 };
-                let planner = PhysicalPlanner::default();
+                let planner = batch_size_planner(5);
                 let (mut scans, _, planned) =
                     planner.create_plan(&project, &mut vec![], 1).unwrap();
                 let filter_plan = &planned.native_plan.children()[0];
                 let filter = filter_plan.downcast_ref::<FilterExec>().unwrap();
                 assert_eq!(filter.projection().as_deref(), output.as_deref());
+                // The filter keeps the session batch size, whether or not pruning rebuilt it.
+                assert_eq!(filter.batch_size(), 5);
                 assert_eq!(filter.input().schema().fields().len(), 4);
                 for (index, field) in planned.schema().fields().iter().enumerate() {
                     assert_eq!(field.name(), &format!("col_{index}"));

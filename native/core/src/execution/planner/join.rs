@@ -809,6 +809,7 @@ fn rewrite_physical_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::prelude::{SessionConfig, SessionContext};
     use datafusion_comet_proto::{spark_expression, spark_operator};
 
     fn column() -> Expr {
@@ -868,6 +869,28 @@ mod tests {
             .downcast_ref::<CometFilterExec>()
             .unwrap()
             .allows_runtime_filter_pushdown()
+    }
+
+    /// Wrapping a probe filter, and rebuilding it over a wrapped child, must keep the session
+    /// batch size the planner gave it.
+    #[test]
+    fn probe_filters_keep_session_batch_size() {
+        let config = SessionConfig::new().with_batch_size(5);
+        let planner = PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0);
+        let source = filter(projection(filter(scan(), true)), true);
+        let planned = planner.create_plan(&source, &mut vec![], 1).unwrap().2;
+        let prepared =
+            PhysicalPlanner::prepare_probe_for_runtime_filters(planned, Some(&source)).unwrap();
+        let outer = prepared
+            .native_plan
+            .downcast_ref::<CometFilterExec>()
+            .unwrap();
+        let inner = prepared.children[0].children[0]
+            .native_plan
+            .downcast_ref::<CometFilterExec>()
+            .unwrap();
+        assert_eq!(outer.batch_size(), 5);
+        assert_eq!(inner.batch_size(), 5);
     }
 
     #[test]

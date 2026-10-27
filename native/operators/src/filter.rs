@@ -58,6 +58,11 @@ impl CometFilterExec {
     pub fn has_projection(&self) -> bool {
         self.inner().projection().is_some()
     }
+
+    /// The row count the wrapped filter merges its output up to.
+    pub fn batch_size(&self) -> usize {
+        self.inner().batch_size()
+    }
 }
 
 #[cfg(test)]
