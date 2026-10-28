@@ -241,6 +241,123 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date remains deferred across conditional projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.DATETIME_JAVA8API_ENABLED.key -> "false") {
+      val selectedDate = java.sql.Date.valueOf("2024-01-01")
+      val rows = Seq((2024, 13, None), (2024, 1, Some(selectedDate)))
+      withParquetTable(rows, "make_date_deferred") {
+        def checkProjection(query: String)(checkSparkRows: Seq[Row] => Unit): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          checkSparkRows(expected)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          stripAQEPlan(df.queryExecution.executedPlan)
+        }
+
+        def assertDeferredProjection(plan: SparkPlan): Unit = {
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+        }
+
+        val expressions = Seq(
+          "IF(r < 0, dt, DATE '2024-01-01')",
+          "COALESCE(IF(r >= 0, DATE '2024-01-01', NULL), dt)")
+        for (aqe <- Seq(false, true); expression <- expressions) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            // Reusing nondeterministic r prevents the optimizer from merging the projections.
+            val query = s"""
+              |SELECT r, $expression AS d FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt FROM make_date_deferred
+              |)
+              |""".stripMargin
+            val plan = checkProjection(query) { expected =>
+              assert(expected.map(_.getDate(1)) == Seq.fill(2)(selectedDate))
+            }
+            withClue(s"aqe=$aqe expression=$expression\n${plan.treeString}") {
+              assertDeferredProjection(plan)
+            }
+          }
+        }
+
+        for (aqe <- Seq(false, true)) {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+            val plan = checkProjection("""
+              |SELECT r, datediff(nullable_date, dt) AS d, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, _3 AS nullable_date, make_date(_1, _2, 1) AS dt
+              |  FROM make_date_deferred
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 2)
+              assert(expected.map(_.get(1)).toSet == Set(null, 0))
+            }
+            assertDeferredProjection(plan)
+          }
+        }
+
+        // A nullable date can also hide a throwing sibling produced by the lower projection.
+        withParquetTable(Seq((None, "bad"), (Some(2024), "1")), "make_date_sibling") {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val consumers = Seq(
+              "unix_date(dt) + rhs",
+              "date_add(dt, rhs)",
+              "(dt IS NULL) OR (rhs > 0)",
+              "IF(dt IS NULL, 0, rhs)")
+            for (expression <- consumers) {
+              val plan = checkProjection(s"""
+                |SELECT r, $expression AS result, r + 1 AS repeated_r FROM (
+                |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, CAST(_2 AS INT) AS rhs
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin) { expected =>
+                assert(expected.size == 2)
+              }
+              assertDeferredProjection(plan)
+            }
+          }
+        }
+
+        // Each expression references dt once: repeated uses would force Spark to evaluate it
+        // eagerly and would not exercise the eager-reference analysis for that parent.
+        val eagerExpressions = Seq(
+          "date_add(dt, 1)",
+          "greatest(dt, DATE '2024-02-01')",
+          "hash(dt, 1)",
+          "unix_date(dt) + 1")
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          eagerExpressions.foreach { expression =>
+            val plan = checkProjection(s"""
+              |SELECT r, $expression AS result, IF(r < 0, 0, r + 1) AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt
+              |  FROM make_date_deferred WHERE _2 BETWEEN 1 AND 12
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.size == 1)
+            }
+            withClue(s"expression=$expression\n${plan.treeString}") {
+              assert(countOperators(plan, classOf[CometProjectExec]) == 2)
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+              assert(
+                !new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(_.contains("make_date requires Spark evaluation below PROJECT")))
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("make_date aggregate arguments retain Spark execution") {
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
