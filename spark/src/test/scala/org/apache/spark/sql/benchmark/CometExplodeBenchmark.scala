@@ -22,8 +22,7 @@ package org.apache.spark.sql.benchmark
 import java.io.File
 
 import org.apache.spark.sql.catalyst.optimizer.InferFiltersFromGenerate
-import org.apache.spark.sql.catalyst.plans.logical.Generate
-import org.apache.spark.sql.comet.CometExplodeExec
+import org.apache.spark.sql.comet.{CometExplodeExec, CometNativeScanExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -62,14 +61,15 @@ import org.apache.comet.CometConf
  * plain `explode` in production usually sees an array column with no nulls and no empty rows.
  *
  * Map cases consume both keys and values. The nesting group models event lists as a map keyed by
- * platform, including a second generator over the entries in each map value.
+ * platform, including a second generator over the entries in each map value. That chained case
+ * retains Spark generators above the native scan.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
 
   private val numRows = 256 * 1024
 
   /** One benchmark case: the query to time, and the single row it must produce. */
-  private case class Case(query: String, expected: Seq[Long])
+  private case class Case(query: String, expected: Seq[Long], nativeGenerators: Int = 1)
 
   /** A temp view the benchmark reads: its row count, and the expressions that build it. */
   private case class TempView(name: String, rows: Int, columns: Seq[String])
@@ -298,41 +298,42 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    * work per-row; it cannot change a result, and these queries hold no constant subexpression for
    * it to fold in any case.
    */
-  private def verifySink(name: String, query: String, expected: Seq[Long]): Unit =
+  private def verifySink(name: String, benchmarkCase: Case): Unit =
     Seq(false, true).foreach { cometEnabled =>
       val engine = if (cometEnabled) "Comet" else "Spark"
       withSQLConf(
         CometConf.COMET_ENABLED.key -> cometEnabled.toString,
         CometConf.COMET_EXEC_ENABLED.key -> cometEnabled.toString) {
-        val df = spark.sql(query)
+        val df = spark.sql(benchmarkCase.query)
         val actual = df.collect().head.toSeq.map {
           case null => null
           case value: Number => value.longValue()
           case other => other
         }
-        if (actual != expected) {
+        if (actual != benchmarkCase.expected) {
           throw new AssertionError(
-            s"$name: $engine produced $actual, expected $expected. The case is not aggregating " +
-              s"what it names.\n$query")
+            s"$name: $engine produced $actual, expected ${benchmarkCase.expected}. " +
+              s"The case is not aggregating what it names.\n${benchmarkCase.query}")
         }
         if (cometEnabled) {
-          val expectedGenerators = df.queryExecution.optimizedPlan.collect { case _: Generate =>
-            1
-          }.size
+          val expectedGenerators = benchmarkCase.nativeGenerators
           val nativeGenerators = collect(df.queryExecution.executedPlan) {
             case e: CometExplodeExec => e
           }.size
           assert(
-            expectedGenerators > 0 && nativeGenerators == expectedGenerators,
+            nativeGenerators == expectedGenerators,
             s"$name executed $nativeGenerators of $expectedGenerators generators natively:\n" +
               df.queryExecution.executedPlan)
+          assert(collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+            scan
+          }.nonEmpty)
         }
       }
     }
 
   /** Verifies a case's aggregate under both engines, then times it. */
   private def runCase(name: String, benchmarkCase: Case, rows: Int = numRows): Unit = {
-    verifySink(name, benchmarkCase.query, benchmarkCase.expected)
+    verifySink(name, benchmarkCase)
     runExpressionBenchmark(name, rows.toLong, benchmarkCase.query)
   }
 
@@ -466,7 +467,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
         s"FROM (SELECT k, region, platform, explode(entries) AS entry FROM ($outer))"
 
-    single :+ (s"explode map<string,struct>[$eventsLen] at depth 8, then its inner array" ->
-      Case(chained, Seq(entries, entries, entries * 3, entries)))
+    single :+ (s"map at depth 8, then its inner array (Spark generators)" ->
+      Case(chained, Seq(entries, entries, entries * 3, entries), nativeGenerators = 0))
   }
 }

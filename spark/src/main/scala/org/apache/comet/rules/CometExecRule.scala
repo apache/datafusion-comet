@@ -25,7 +25,7 @@ import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, ExplodeBase, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -189,6 +189,9 @@ object CometExecRule {
    */
   private val TYPED_DATASET_PARTIAL_READER: TreeNodeTag[String] =
     TreeNodeTag[String]("comet.typedDatasetPartialReader")
+
+  private val CHAINED_MAP_GENERATOR: TreeNodeTag[String] =
+    TreeNodeTag[String]("comet.chainedMapGenerator")
 
   /** Why Comet does not convert rows to Arrow in a plan that reads `InputFileBlockHolder`. */
   private val INPUT_FILE_BLOCK_FALLBACK_REASON: String =
@@ -439,12 +442,19 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   private def transform(plan: SparkPlan): SparkPlan = {
     // Walks the whole plan, so it is lazy: only consulted once a node could be converted.
     lazy val readsInputFileBlock = CometScanRule.readsInputFileBlock(plan)
+    tagChainedMapGenerators(plan)
 
     if (CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED.get(conf)) {
       tagPartiallyReadTypedDatasetOutputs(plan)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case generate: GenerateExec
+          if generate.getTagValue(CometExecRule.CHAINED_MAP_GENERATOR).isDefined =>
+        withFallbackReason(
+          generate,
+          generate.getTagValue(CometExecRule.CHAINED_MAP_GENERATOR).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -1442,6 +1452,29 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _ => false
     }
     visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
+  }
+
+  // Spark fuses a generator chain without materializing its carried columns between generators.
+  // Keep that path until native map expansion can avoid the extra repetition too. Tags survive
+  // the child copies made by bottom-up conversion; exchanges end the shared pipeline.
+  private def tagChainedMapGenerators(plan: SparkPlan): Unit = {
+    val enabled = CometConf.COMET_EXEC_EXPLODE_ENABLED.get(conf)
+    def visit(op: SparkPlan, generatorAbove: Boolean): Unit = op match {
+      case generate: GenerateExec =>
+        generate.unsetTagValue(CometExecRule.CHAINED_MAP_GENERATOR)
+        generate.generator match {
+          case explode: ExplodeBase
+              if enabled && generatorAbove && explode.child.dataType.isInstanceOf[MapType] =>
+            generate.setTagValue(
+              CometExecRule.CHAINED_MAP_GENERATOR,
+              "Chained map generators stay on Spark to avoid carried-column materialization")
+          case _ =>
+        }
+        visit(generate.child, generatorAbove = true)
+      case _: ProjectExec | _: FilterExec => visit(op.children.head, generatorAbove)
+      case _ => op.children.foreach(visit(_, generatorAbove = false))
+    }
+    visit(plan, generatorAbove = false)
   }
 
   /**
