@@ -21,7 +21,8 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{AddMonths, Attribute, Cast, ConvertTimezone, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Hour, Hours, LastDay, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, Attribute, BinaryComparison, CaseWhen, Cast, Coalesce, ConvertTimezone, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, EqualNullSafe, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Greatest, HashExpression, Hour, Hours, If, In, InSet, LastDay, LeafExpression, Least, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, Multiply, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, SortOrder, Subtract, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -436,6 +437,97 @@ object CometNextDay extends CometExpressionSerde[NextDay] with CodegenDispatchFa
 
 object CometMakeDate extends CometExpressionSerde[MakeDate] {
 
+  private val sharedArgumentReason =
+    "make_date requires Spark evaluation when a computed argument after a nullable " +
+      "argument cannot preserve Spark's shared-subexpression evaluation."
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(sharedArgumentReason)
+
+  override def getSupportLevel(expr: MakeDate): SupportLevel = {
+    val firstNullable = expr.children.indexWhere(_.nullable)
+    val hasComputedMaskedArgument = firstNullable >= 0 &&
+      expr.children.drop(firstNullable + 1).exists(!_.isInstanceOf[LeafExpression])
+    if (hasComputedMaskedArgument && !canShortCircuitNulls(expr)) {
+      Unsupported(Some(sharedArgumentReason))
+    } else {
+      Compatible()
+    }
+  }
+
+  // Native parents can evaluate operands for the whole batch. These expressions are safe
+  // on rows where Spark skips them after a NULL operand or an IN match.
+  private def canEvaluateEagerly(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute => true
+    case _: CreateArray | _: CreateNamedStruct =>
+      expr.children.forall(canEvaluateEagerly)
+    // IN coercion can widen nested nullability without converting any candidate values.
+    case cast: Cast if equalsIgnoreCompatibleNullability(cast.child.dataType, cast.dataType) =>
+      canEvaluateEagerly(cast.child)
+    case _ => false
+  }
+
+  /** A native parent must preserve Spark's evaluation of a date and its sibling expressions. */
+  private[serde] def unsupportedParentReason(expr: Expression): Option[String] = {
+    var pending: List[(Expression, Option[String])] = (expr, None) :: Nil
+    while (pending.nonEmpty) {
+      val (current, parent) = pending.head
+      pending = pending.tail
+      if (current.isInstanceOf[MakeDate] && parent.isDefined) {
+        return Some(s"make_date requires Spark evaluation under ${parent.get}")
+      }
+      def pushChildren(mask: Option[String]): Unit = {
+        current.children.reverseIterator.foreach(child => pending = (child, mask) :: pending)
+      }
+      if (parent.isDefined) {
+        pushChildren(parent)
+      } else {
+        current match {
+          // These native expressions already select the rows passed to their children.
+          case _: If | _: CaseWhen | _: MakeDate => pushChildren(None)
+          // COALESCE lowers to CASE and evaluates an earlier child again in its result branch.
+          case coalesce: Coalesce if coalesce.deterministic => pushChildren(None)
+          // These parents evaluate every child in Spark, including NULL values.
+          case _: EqualNullSafe | _: CreateArray | _: CreateNamedStruct | _: Greatest | _: Least |
+              _: HashExpression[_] =>
+            pushChildren(None)
+          // Arithmetic always requires left, but a NULL left can hide a throwing right operand.
+          // Admit the date only if native evaluation cannot expose that skipped sibling.
+          case _: Add | _: Subtract | _: Multiply =>
+            val left = current.children.head
+            val right = current.children(1)
+            val rightMask = if (left.nullable) Some(current.nodeName) else None
+            val leftMask = if (left.nullable && !canEvaluateEagerly(right)) rightMask else None
+            pending = (left, leftMask) :: (right, rightMask) :: pending
+          // These parents evaluate left first and skip right only when left is NULL.
+          case _: BinaryComparison | _: DateAdd | _: DateSub | _: DateDiff | _: DateFormatClass =>
+            val left = current.children.head
+            val right = current.children(1)
+            val rightMask = if (left.nullable) Some(current.nodeName) else None
+            pending = (left, None) :: (right, rightMask) :: pending
+          case _: SortOrder => pushChildren(Some(current.nodeName))
+          // Empty membership can skip its sole operand in Spark.
+          case in: In if in.list.isEmpty => pushChildren(Some(current.nodeName))
+          case inSet: InSet if inSet.hset.isEmpty => pushChildren(Some(current.nodeName))
+          // Nonempty IN always evaluates its probe, but may skip candidates on individual rows.
+          case in: In =>
+            in.list.reverseIterator.foreach { child =>
+              pending = (child, Some(in.nodeName)) :: pending
+            }
+            val probeParent = if (in.list.forall(canEvaluateEagerly)) {
+              None
+            } else {
+              Some("In with computed candidates")
+            }
+            pending = (in.value, probeParent) :: pending
+          case _ if current.children.size <= 1 => pushChildren(None)
+          // Other native multi-child expressions may evaluate operands that Spark skips.
+          case _ => pushChildren(Some(current.nodeName))
+        }
+      }
+    }
+    None
+  }
+
   /**
    * `failOnError` mirrors `spark.sql.ansi.enabled`: under ANSI, Spark throws on an invalid
    * `(year, month, day)` triple rather than returning NULL. The resolved flag is passed to native
@@ -449,7 +541,7 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
       DateType,
       expr.failOnError,
       childExpr: _*)
-    optExpr
+    withNullShortCircuit(expr, optExpr)
   }
 }
 
