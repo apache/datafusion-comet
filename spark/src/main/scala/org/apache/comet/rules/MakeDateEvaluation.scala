@@ -49,7 +49,8 @@ private[rules] object MakeDateEvaluation {
   private case class ProjectionDemand(
       boundary: String,
       deferred: AttributeSet,
-      makeDateInputs: AttributeSet)
+      // Deferred inputs whose producers need guarding even when they contain no make_date.
+      guardedInputs: AttributeSet)
 
   // Attributes may stand for deferred expressions in a lower projection, not materialized values.
   private def harmlessValue(expression: Expression): Boolean =
@@ -133,19 +134,20 @@ private[rules] object MakeDateEvaluation {
     def visit(
         node: SparkPlan,
         rowDemand: Option[String],
-        projectionDemand: Option[ProjectionDemand]): (SparkPlan, Option[String]) = {
+        projectionDemand: Option[ProjectionDemand]): (SparkPlan, Option[String], AttributeSet) = {
       node match {
         // Materialized stages are independent producers. Their plans have already been guarded.
-        case _: QueryStageExec | _: ReusedExchangeExec => return (node, None)
+        case _: QueryStageExec | _: ReusedExchangeExec => return (node, None, AttributeSet.empty)
         // These wrappers do not have the child shape of their original Spark operator.
         case wrapper: CometScanWrapper =>
-          val (child, childReason) = visit(wrapper.originalPlan, rowDemand, projectionDemand)
-          return if (childReason.isDefined) (child, childReason)
-          else (wrapper.copy(originalPlan = child), None)
+          val (child, childReason, dateOutputs) =
+            visit(wrapper.originalPlan, rowDemand, projectionDemand)
+          return if (childReason.isDefined) (child, childReason, dateOutputs)
+          else (wrapper.copy(originalPlan = child), None, dateOutputs)
         case sink: CometSinkPlaceHolder =>
-          val (child, childReason) = visit(sink.child, rowDemand, projectionDemand)
-          return if (childReason.isDefined) (child, childReason)
-          else (sink.withNewChildren(Seq(child)), None)
+          val (child, childReason, dateOutputs) = visit(sink.child, rowDemand, projectionDemand)
+          return if (childReason.isDefined) (child, childReason, dateOutputs)
+          else (sink.withNewChildren(Seq(child)), None, dateOutputs)
         case _ =>
       }
 
@@ -160,6 +162,7 @@ private[rules] object MakeDateEvaluation {
         case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
         case _ => node
       }
+      val evaluatesDate = containsMakeDate(original.expressions)
       val exchange = original.isInstanceOf[Exchange]
       val join = original.isInstanceOf[BaseJoinExec]
       val localMaterialization = original match {
@@ -193,7 +196,7 @@ private[rules] object MakeDateEvaluation {
             ProjectionDemand(
               "FILTER",
               filter.child.outputSet,
-              projectionDemand.map(_.makeDateInputs).getOrElse(AttributeSet.empty)))
+              projectionDemand.map(_.guardedInputs).getOrElse(AttributeSet.empty)))
         case project: ProjectExec =>
           val deferred = projectionDemand.map(_.deferred).getOrElse(AttributeSet.empty)
           val eager = project.projectList
@@ -203,13 +206,16 @@ private[rules] object MakeDateEvaluation {
           // remain inlined in a consumer's conditional, even across intervening aliases.
           val skipped = project.child.outputSet -- project.usedInputs -- AttributeSet(eager)
           val inheritedInputs =
-            projectionDemand.map(_.makeDateInputs).getOrElse(AttributeSet.empty)
-          val dateInputs = AttributeSet(project.projectList.flatMap { output =>
+            projectionDemand.map(_.guardedInputs).getOrElse(AttributeSet.empty)
+          // A consumer can require the date but still skip another output of this projection.
+          val guardedOutputs = inheritedInputs ++
+            (if (evaluatesDate) deferred else AttributeSet.empty)
+          val inputsToGuard = AttributeSet(project.projectList.flatMap { output =>
             val direct = output.collect { case date: MakeDate => date }.flatMap(_.references)
             // Follow aliases to the computation, which need not itself contain make_date.
             val inherited =
               if ((output.deterministic || rowDemand.isDefined) &&
-                inheritedInputs.contains(output.toAttribute)) {
+                guardedOutputs.contains(output.toAttribute)) {
                 output.references.toSeq
               } else {
                 Nil
@@ -217,24 +223,42 @@ private[rules] object MakeDateEvaluation {
             direct ++ inherited
           })
           // A lazy row consumer can skip even the date's required arguments on unread rows.
-          val deferredDateInputs =
-            dateInputs.intersect(if (rowDemand.isDefined) project.child.outputSet else skipped)
-          if (skipped.isEmpty && deferredDateInputs.isEmpty) {
+          val guardedChildInputs =
+            inputsToGuard.intersect(if (rowDemand.isDefined) project.child.outputSet else skipped)
+          if (skipped.isEmpty && guardedChildInputs.isEmpty) {
             None
           } else {
             Some(
               ProjectionDemand(
                 projectionDemand.map(_.boundary).getOrElse("PROJECT"),
                 skipped,
-                deferredDateInputs))
+                guardedChildInputs))
           }
         case _ if exchange || localMaterialization || join => None
         case _ => projectionDemand
       }
       val visited = node.children.map(visit(_, childDemand, childProjectionDemand))
       val childReason = visited.flatMap(_._2).headOption
+      val childDateOutputs = AttributeSet(visited.flatMap(_._3))
+      // Date provenance flows up through aliases while deferred evaluation flows down. This
+      // also finds a skipped sibling computed in a projection above the date's producer.
+      val dateDerivedOutputs = if (exchange || localMaterialization || join) {
+        AttributeSet.empty
+      } else {
+        original match {
+          case project: ProjectExec =>
+            AttributeSet(
+              project.projectList
+                .filter { output =>
+                  containsMakeDate(Seq(output)) || output.references
+                    .intersect(childDateOutputs)
+                    .nonEmpty
+                }
+                .map(_.toAttribute))
+          case _ => childDateOutputs.intersect(original.outputSet)
+        }
+      }
       val ownReason = reason(node).orElse {
-        val evaluatesDate = containsMakeDate(original.expressions)
         val rowReason = if (evaluatesDate) {
           rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
         } else None
@@ -249,10 +273,12 @@ private[rules] object MakeDateEvaluation {
                   }
                   val deferredDate = output.deterministic &&
                     demand.deferred.contains(output.toAttribute) && containsMakeDate(Seq(output))
-                  val deferredArgument = (output.deterministic || rowDemand.isDefined) &&
-                    demand.makeDateInputs.contains(output.toAttribute) &&
+                  val deferredComputation = (output.deterministic || rowDemand.isDefined) &&
+                    (demand.guardedInputs.contains(output.toAttribute) ||
+                      (dateDerivedOutputs.nonEmpty && demand.deferred.contains(
+                        output.toAttribute))) &&
                     !CometMakeDate.canEvaluateEagerly(computation)
-                  deferredDate || deferredArgument
+                  deferredDate || deferredComputation
                 })
               .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
           // Join keys/conditions and aggregate updates can be skipped inside the operator.
@@ -263,7 +289,7 @@ private[rules] object MakeDateEvaluation {
         })
       }
       val fallbackReason = ownReason.orElse(if (exchange) None else childReason)
-      val children = visited.map { case (child, _) =>
+      val children = visited.map { case (child, _, _) =>
         if (join && fallbackReason.isDefined) restoreBroadcast(child, fallbackReason.get)
         else child
       }
@@ -281,7 +307,7 @@ private[rules] object MakeDateEvaluation {
       }
       copyLogicalLinks(node, rebuilt)
       fallbackReason.foreach(rebuilt.setTagValue(sparkEvaluation, _))
-      (rebuilt, fallbackReason)
+      (rebuilt, fallbackReason, dateDerivedOutputs)
     }
 
     // Dataset.rdd adds an object-producing root, and its caller may read only a few objects.

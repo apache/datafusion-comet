@@ -324,6 +324,73 @@ class CometExecRuleSuite extends CometTestBase {
               }
               assertDeferredProjection(plan)
             }
+
+            // Selecting dt forces the date eagerly, but the IF branch can still skip rhs.
+            val selected = checkProjection("""
+              |SELECT r, dt, IF(dt IS NULL, 0, rhs) AS result, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, CAST(_2 AS INT) AS rhs
+              |  FROM make_date_sibling
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.map(row => (row.getDate(1), row.getInt(2))).toSet ==
+                Set((null, 0), (selectedDate, 1)))
+            }
+            assertDeferredProjection(selected)
+
+            // A deferred source column stays native; it cannot expose a skipped error.
+            val safeSibling = checkProjection("""
+              |SELECT r, dt, IF(dt IS NULL, 0, rhs) AS result, r + 1 AS repeated_r FROM (
+              |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS dt, _1 AS rhs
+              |  FROM make_date_sibling
+              |)
+              |""".stripMargin) { expected =>
+              assert(expected.map(row => (row.getDate(1), row.getInt(2))).toSet ==
+                Set((null, 0), (selectedDate, 2024)))
+            }
+            assert(
+              countOperators(safeSibling, classOf[CometProjectExec]) == 2,
+              safeSibling.treeString)
+            assert(
+              countOperators(safeSibling, classOf[CometNativeScanExec]) == 1,
+              safeSibling.treeString)
+
+            // Repeated r and r2 retain all three projections. The date and skipped cast can
+            // originate on either side of the intervening alias, so neither placement is safe.
+            val siblingProducers = Seq(
+              (
+                "cast below date",
+                0,
+                """
+                |SELECT r, r + 1 AS repeated_r, rand(11L) AS r2,
+                |       make_date(y, 1, 1) AS dt, raw_rhs AS rhs FROM (
+                |  SELECT rand(7L) AS r, _1 AS y, CAST(_2 AS INT) AS raw_rhs
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin),
+              (
+                "cast above date",
+                1,
+                """
+                |SELECT r, r + 1 AS repeated_r, rand(11L) AS r2,
+                |       original_date AS dt, CAST(s AS INT) AS rhs FROM (
+                |  SELECT rand(7L) AS r, make_date(_1, 1, 1) AS original_date, _2 AS s
+                |  FROM make_date_sibling
+                |)
+                |""".stripMargin))
+            for ((placement, nativeProjects, producer) <- siblingProducers) {
+              val plan = checkProjection(s"""
+                |SELECT r, repeated_r, r2, r2 + 1, dt, IF(dt IS NULL, 0, rhs) AS result
+                |FROM ($producer)
+                |""".stripMargin) { expected =>
+                assert(expected.map(row => (row.getDate(4), row.getInt(5))).toSet ==
+                  Set((null, 0), (selectedDate, 1)))
+              }
+              withClue(s"$placement\n${plan.treeString}") {
+                assert(countOperators(plan, classOf[ProjectExec]) == 3 - nativeProjects)
+                assert(countOperators(plan, classOf[CometProjectExec]) == nativeProjects)
+                assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+              }
+            }
           }
         }
 

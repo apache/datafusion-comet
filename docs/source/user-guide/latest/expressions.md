@@ -727,13 +727,15 @@ and ordered limits; and projections below a window group limit. A parent project
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers
 to remain native when their operands are safe to evaluate. These safeguards also preserve
-NULL short-circuiting when a date argument is computed in an earlier projection.
+NULL short-circuiting when a date argument is computed in an earlier projection. Selecting
+the date eagerly does not force conditionally used sibling expressions; those computations
+also retain Spark evaluation when needed.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
 Exchanges materialize their inputs independently, and local sorts and aggregates can also
 separate date evaluation from an outer limit.
 
-Users who accept eagerly evaluating dates and their projected arguments can set
+Users who accept eagerly evaluating dates, projected arguments, and sibling expressions can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
 these shapes. The default is `true`. Disabling it can expose invalid-date or argument errors
 that Spark would skip under ANSI mode. This setting does not change
