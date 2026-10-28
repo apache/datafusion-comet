@@ -484,11 +484,8 @@ private[comet] object AbfsAuthResolver extends Logging {
   def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
     // The container and host only: a password in the user info stays out of the reason.
     val authority = Option(uri.getRawAuthority).getOrElse("")
-    val at = authority.lastIndexOf('@')
-    val safeAuthority =
-      if (at < 0) authority
-      else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at)
-    val location = s"${uri.getScheme}://$safeAuthority"
+    val safeAuthority = NativeConfig.authorityWithoutPassword(uri)
+    val location = display(uri)
     outcome match {
       case Declined(authType, providerClass, assertionProviderClass) =>
         val classes = providerClass.map(c => s" with provider $c").getOrElse("") +

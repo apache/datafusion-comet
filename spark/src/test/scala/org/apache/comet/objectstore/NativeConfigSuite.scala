@@ -878,6 +878,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       "auth type UserboundSASWithOAuth")
   }
 
+  test("nativeFallbackReason - renders the location as the resolver's other messages do") {
+    val uri =
+      new URI("ABFSS://data:pw-secret@acct.dfs.core.windows.net/dir/f.parquet?sig=SAS-MARKER")
+    val reason =
+      AbfsAuthResolver.nativeFallbackReason(uri, AbfsAuthResolver.Declined("Custom", None)).get
+    reason should include(NativeConfig.displayAuthority(uri))
+    reason should include("abfss://data@acct.dfs.core.windows.net")
+    reason should not include "pw-secret"
+    reason should not include "SAS-MARKER"
+  }
+
   test("nativeStoreError - passes native's answer through") {
     val options = Map("a" -> "1", "b" -> "2")
     var seen = Map.empty[String, String]
