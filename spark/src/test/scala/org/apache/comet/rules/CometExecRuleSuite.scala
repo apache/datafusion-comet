@@ -218,7 +218,7 @@ class CometExecRuleSuite extends CometTestBase {
       CometConf.COMET_SHUFFLE_MODE.key -> "native",
       CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
       for (invalid <- Seq(false, true)) {
-        val rows = Seq.fill(20)((2024, 1, 1)) :+ (2024, if (invalid) 13 else 1, 1)
+        val rows = Seq.fill(20)((2024, 1, 1)) :+ ((2024, if (invalid) 13 else 1, 1))
         withParquetTable(rows, "make_date_shuffle") {
           val df = spark
             .table("make_date_shuffle")
