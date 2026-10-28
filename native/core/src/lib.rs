@@ -30,7 +30,7 @@ extern crate core;
 extern crate datafusion_comet_jni_bridge;
 
 use jni::{
-    objects::{JClass, JString},
+    objects::{JClass, JObjectArray, JString},
     sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
@@ -41,6 +41,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
+use std::collections::HashMap;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
@@ -190,6 +191,22 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
     cfg!(feature = "python-udf")
 }
 
+/// JNI: the `major.minor` version of the embedded Python interpreter, or an empty string when
+/// libcomet was built without the `python-udf` feature. The interpreter is the `libpython` that
+/// libcomet was linked against, so its version is fixed when libcomet is built, while PySpark's
+/// workers may run another Python.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativePythonUdfVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    #[cfg(feature = "python-udf")]
+    let version = execution::python_udf::embedded_python_version();
+    #[cfg(not(feature = "python-udf"))]
+    let version = String::new();
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(version)?.into_raw()))
+}
+
 #[no_mangle]
 /// Releases the global Tokio runtime used by Comet native execution.
 pub extern "system" fn Java_org_apache_comet_NativeBase_release(_e: EnvUnowned, _class: JClass) {
@@ -300,6 +317,33 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
         };
         let joined = builtin_storage_schemes(access_mode).join(",");
         Ok(env.new_string(joined)?.into_raw())
+    })
+}
+
+/// JNI: why the native scan cannot build its ABFS store for `url` from the object store options
+/// `keys`/`values`, or null when it can. The driver asks this when it plans a scan whose ABFS
+/// authentication resolved, so a store native would reject falls back to Spark instead of every
+/// task failing. See `azure::store_error`.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_abfsStoreError(
+    env: EnvUnowned,
+    _: JClass,
+    url: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let url: String = url.try_to_string(env)?;
+        let mut configs = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            configs.insert(key, value);
+        }
+        match parquet::objectstore::azure::store_error(&url, &configs) {
+            Some(message) => Ok(env.new_string(message)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
     })
 }
 

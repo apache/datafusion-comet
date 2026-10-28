@@ -111,6 +111,14 @@ reads that fail where Spark succeeds are listed in
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
   behavior.
 
+### Missing Nested Fields
+
+When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.4
+through 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
+follows this behavior. On Spark 4.1+, the default (`false`) preserves the file's parent nullness.
+Set `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true` for legacy behavior.
+A field that exists in the file but contains only NULL values is not a missing field.
+
 ### Schema Mismatch Handling
 
 The issues in this subsection apply only when the requested read schema differs from the schema written
@@ -160,6 +168,19 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
   `SchemaColumnConvertNotSupportedException`. Spark 4.0+ produces a single-level chain, matching
   vanilla Spark. See [#4354](https://github.com/apache/datafusion-comet/issues/4354).
 
+### Read Error Wrapping
+
+- **Spark 3.x: `TIMESTAMP_MILLIS` overflow past the first batch is wrapped in a file-read error**.
+  When a Parquet `TIMESTAMP_MILLIS` value overflows on conversion to microseconds, Spark's reader
+  throws `ArithmeticException: long overflow`. Spark 3.4 and 3.5 wrap a reader error in a
+  `SparkException` that names the file only while reading the first batch of each file split. For
+  the vectorized reader, that batch is the first `spark.sql.parquet.columnarReaderBatchSize` rows
+  (4096 by default), or the first row group if that is smaller. An overflow in a later batch fails
+  the task with the bare `ArithmeticException`. Spark 4.0+ wraps errors from every batch, and so does
+  Comet on every Spark version. So on Spark 3.x, an overflow past the first batch produces a Comet
+  error that names the file and has one more `SparkException` above the `ArithmeticException` in
+  its cause chain than Spark's error.
+
 ## Writing
 
 Comet can also write Parquet files natively. The native Parquet writer is for testing only and
@@ -169,6 +190,14 @@ partitioned and bucketed writes fall back to Spark, as do writes with
 `spark.sql.files.maxRecordsPerFile` set on Spark 4.0 and later. Parts of Spark's Parquet write
 behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes use a
 different native writer, described on the [Iceberg](iceberg.md#writes) page.
+
+The native writer supports local and HDFS destinations, and S3 writes that the S3A magic committer
+commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
+classpath, and earlier versions for a bucket that sets
+`fs.s3a.bucket.<bucket>.committer.magic.enabled`. S3A creates each of those files, through the same
+call Spark's own writer makes, so the magic committer and S3A's write settings, such as server-side
+encryption, ACLs, storage class and object headers, apply exactly as they do for Spark's writer.
+Other S3 writes fall back to Spark.
 
 ## Tuning
 
@@ -259,11 +288,6 @@ for production, so do not turn it off to avoid an entry on this page.
   read back wrong inside lists written in a legacy layout, as Hive and
   `spark.sql.parquet.writeLegacyFormat=true` write them
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
-- **A struct or array with none of its requested fields in the file.** Spark returns NULL for the
-  column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
-  and 4.0, and to Spark 4.1 and later with
-  `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true`
-  ([#7030](https://github.com/apache/datafusion-comet/issues/7030)).
 - **Nested BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY
   column without the UTF8 annotation that is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Spark returns the bytes. Comet returns NULL for each
@@ -280,11 +304,9 @@ for production, so do not turn it off to avoid an entry on this page.
   `ArithmeticException: long overflow`
   ([#5553](https://github.com/apache/datafusion-comet/issues/5553),
   [#5739](https://github.com/apache/datafusion-comet/issues/5739)).
-- **Reads that Spark rejects.** Comet returns rows where Spark fails the read for
-  `TIMESTAMP(NANOS)` columns read as `timestamp` or `timestamp_ntz`
-  ([#7034](https://github.com/apache/datafusion-comet/issues/7034)), `INT` columns read as
-  `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188)), and
-  Variant-annotated fields read as a plain struct
+- **Reads that Spark rejects.** Comet returns rows where Spark fails the read for `INT` columns
+  read as `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188))
+  and Variant-annotated fields read as a plain struct
   ([#5741](https://github.com/apache/datafusion-comet/issues/5741)).
 
 ### Writes that differ from Spark
