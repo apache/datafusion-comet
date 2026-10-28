@@ -1125,12 +1125,14 @@ metadata (<a class="reference external" href="https://github.com/apache/datafusi
 read back wrong inside lists written in a legacy layout, as Hive and
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.writeLegacyFormat=true</span></code> write them
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7029">#7029</a>).</p></li>
-<li><p><strong>Nested BINARY values that are not valid UTF-8, read as STRING.</strong> This applies to a BINARY
-column without the UTF8 annotation that is read as <code class="docutils literal notranslate"><span class="pre">string</span></code>, through the read schema or
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.binaryAsString=true</span></code>. Spark returns the bytes. Comet returns NULL for each
-such nested value. Top-level values match Spark in a release build, because the invalid bytes
-reach an Arrow string array unchecked. A debug build panics on them
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7032">#7032</a>, part of
+<li><p><strong>BINARY values that are not valid UTF-8, read as STRING.</strong> This applies to a BINARY column
+without the UTF8 annotation that is read as <code class="docutils literal notranslate"><span class="pre">string</span></code>, through the read schema or
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.binaryAsString=true</span></code>. Spark keeps the bytes. In a struct field, list element
+or map value, Comet replaces each ill-formed sequence with <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>, as described in
+<a class="reference internal" href="compatibility/index.html#strings-with-non-utf-8-bytes"><span class="std std-ref">Strings with non-UTF-8 bytes</span></a>. Top-level
+values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
+differ only in such bytes distinct: they match Spark in a release build, and a debug build
+panics on top-level values (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7032">#7032</a>, part of
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/4764">#4764</a>).</p></li>
 <li><p><strong>Field-id reads where one file column matches a field by id and a sibling by name.</strong> With
 <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.fieldId.read.enabled=true</span></code>, Comet returns NULL for the sibling at the top
@@ -1205,6 +1207,15 @@ uses such an encoding, even a column the query does not read
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7035">#7035</a>).</p></li>
 <li><p><strong>A <code class="docutils literal notranslate"><span class="pre">DATE</span></code> column read as <code class="docutils literal notranslate"><span class="pre">INTERVAL</span> <span class="pre">YEAR</span> <span class="pre">TO</span> <span class="pre">MONTH</span></code>.</strong> Spark reads it, and Comet fails the read
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5188">#5188</a>).</p></li>
+<li><p><strong>A nested dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
+2 GiB.</strong> In a struct field, list element, map key or map value, Comet expands the dictionary
+into one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
+<code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> rows (8192 by default) fails the scan when the values its rows reference
+add up to more, counting each reference of a shared entry, even for a query that never reads the
+strings. Values that are not valid UTF-8 decode to up to three times their size, since each
+ill-formed sequence becomes <code class="docutils literal notranslate"><span class="pre">U+FFFD</span></code>. Spark keeps the dictionary and reads it row by row. Lower
+<code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> so that a batch holds fewer rows
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7254">#7254</a>).</p></li>
 </ul>
 </section>
 <section id="writes-that-fail-where-spark-succeeds">
