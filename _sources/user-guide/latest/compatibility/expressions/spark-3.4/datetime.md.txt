@@ -98,6 +98,12 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 - Only `TimestampType` and `TimestampNTZType` inputs are supported.
 
+## MakeDate
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- make_date requires Spark evaluation when a computed argument after a nullable argument cannot preserve Spark's shared-subexpression evaluation.
+
 ## MakeInterval
 
 The following differences from Spark are always present and do not require any additional configuration:

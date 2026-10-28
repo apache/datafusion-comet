@@ -939,6 +939,13 @@ differ.</p>
 <li><p>Only <code class="docutils literal notranslate"><span class="pre">TimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">TimestampNTZType</span></code> inputs are supported.</p></li>
 </ul>
 </section>
+<section id="makedate">
+<h2>MakeDate<a class="headerlink" href="#makedate" title="Link to this heading">#</a></h2>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p>make_date requires Spark evaluation when a computed argument after a nullable argument cannot preserve Spark’s shared-subexpression evaluation.</p></li>
+</ul>
+</section>
 <section id="makeinterval">
 <h2>MakeInterval<a class="headerlink" href="#makeinterval" title="Link to this heading">#</a></h2>
 <p>The following differences from Spark are always present and do not require any additional configuration:</p>
@@ -1070,6 +1077,7 @@ differ.</p>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromutctimestamp">FromUTCTimestamp</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#fromunixtime">FromUnixTime</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hours">Hours</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makedate">MakeDate</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#makeinterval">MakeInterval</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#nextday">NextDay</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#precisetimestampconversion">PreciseTimestampConversion</a></li>
