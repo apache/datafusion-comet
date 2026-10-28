@@ -222,7 +222,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
           1,
           0,
           None,
-          Seq.empty)
+          Seq.empty,
+          None)
 
         failMetrics.set(true)
         // Exhausting the iterator closes it, and the close propagates the metrics failure thrown
@@ -275,7 +276,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
           1,
           0,
           None,
-          Seq.empty)
+          Seq.empty,
+          None)
 
         assert(iter.hasNext && iter.next().numRows() == 2)
         val thrown = intercept[Throwable](iter.hasNext)

@@ -59,7 +59,7 @@ import com.google.protobuf.CodedOutputStream
 
 import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, ConfigEntry, ContribServices}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
-import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
@@ -791,7 +791,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption = None,
-      encryptedFilePaths = Seq.empty)
+      encryptedFilePaths = Seq.empty,
+      outputStream = None)
   }
 
   /**
@@ -826,7 +827,8 @@ object CometExec {
       numParts: Int,
       partitionIdx: Int,
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]],
-      encryptedFilePaths: Seq[String]): CometExecIterator = {
+      encryptedFilePaths: Seq[String],
+      outputStream: Option[HadoopFileOutput]): CometExecIterator = {
     val bytes = serializeNativePlan(nativePlan)
     new CometExecIterator(
       newIterId,
@@ -837,7 +839,8 @@ object CometExec {
       numParts,
       partitionIdx,
       broadcastedHadoopConfForEncryption,
-      encryptedFilePaths)
+      encryptedFilePaths,
+      outputStream = outputStream)
   }
 
   /**
@@ -2492,12 +2495,9 @@ trait CometBaseAggregate[T <: BaseAggregateExec] extends CometOperatorSerde[T] {
       val aggFunc = aggExpr.aggregateFunction
       val bufferAttrs = aggFunc.aggBufferAttributes
       aggFunc match {
-        case cs: CollectSet =>
-          val elementType = cs.children.head.dataType
-          val nativeStateType = ArrayType(elementType, containsNull = true)
-          output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
-        case cl: CollectList =>
-          val elementType = cl.children.head.dataType
+        case _: CollectSet | _: CollectList =>
+          // Match the native planner's collect argument normalization, including nested fields.
+          val elementType = aggFunc.children.head.dataType.asNullable
           val nativeStateType = ArrayType(elementType, containsNull = true)
           output(bufferIdx) = output(bufferIdx).withDataType(nativeStateType)
         case _: Percentile =>

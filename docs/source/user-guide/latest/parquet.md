@@ -191,6 +191,14 @@ partitioned and bucketed writes fall back to Spark, as do writes with
 behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes use a
 different native writer, described on the [Iceberg](iceberg.md#writes) page.
 
+The native writer supports local and HDFS destinations, and S3 writes that the S3A magic committer
+commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
+classpath, and earlier versions for a bucket that sets
+`fs.s3a.bucket.<bucket>.committer.magic.enabled`. S3A creates each of those files, through the same
+call Spark's own writer makes, so the magic committer and S3A's write settings, such as server-side
+encryption, ACLs, storage class and object headers, apply exactly as they do for Spark's writer.
+Other S3 writes fall back to Spark.
+
 ## Tuning
 
 ### Filter Pushdown / Late Materialization
