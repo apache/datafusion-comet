@@ -72,7 +72,8 @@ private[comet] object CachedBatchIpc {
     case "none" => NoCompressionCodec.INSTANCE
     // Comet's subclass of Arrow's codec, which corrects the capacity handed to zstd; see
     // CometZstdCompressionCodec. Constructed directly rather than through
-    // CompressionCodec.Factory, which ignores the level and always builds a codec at zstd's default.
+    // CompressionCodec.Factory, which ignores the level and always builds a codec at zstd's
+    // default.
     case "zstd" => new CometZstdCompressionCodec(zstdLevel)
     // Arrow's LZ4_FRAME format, written with lz4-java rather than Arrow's own pure-Java codec;
     // see Lz4FrameCompressionCodec.

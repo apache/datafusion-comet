@@ -28,7 +28,6 @@ import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters._
 
-import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{BitVector, FixedSizeBinaryVector, IntVector, LargeVarCharVector, VarBinaryVector, VarCharVector}
 import org.apache.arrow.vector.compression.{CompressionCodec, CompressionUtil, NoCompressionCodec}
@@ -2616,49 +2615,49 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // uncompressed-length prefix of zero, and without a codec each is a zero-length window, so
     // this is the batch where every window the read path copies out is empty or nearly so.
     val cacheSchema = StructType(Seq(StructField("i", IntegerType), StructField("s", StringType)))
-    Seq[CompressionCodec](NoCompressionCodec.INSTANCE, new ZstdCompressionCodec(1)).foreach {
-      codec =>
-        val ints = new IntVector("i", CometArrowAllocator)
-        val strings = new VarCharVector("s", CometArrowAllocator)
-        val cached =
-          try {
-            ints.allocateNew()
-            ints.setValueCount(0)
-            strings.allocateNew()
-            strings.setValueCount(0)
-            val batch = new ColumnarBatch(
-              Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(strings)),
-              0)
-            CometCachedBatchHelper.cachedBatch(
-              CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator),
-              0)
-          } finally {
-            ints.close()
-            strings.close()
-          }
-
-        val allocator =
-          CometArrowAllocator.newChildAllocator(
-            s"zero-rows-${codec.getCodecType}",
-            0,
-            Long.MaxValue)
+    val zstd = CometCachedBatchHelper.compressionCodec("zstd")
+    Seq[CompressionCodec](NoCompressionCodec.INSTANCE, zstd).foreach { codec =>
+      val ints = new IntVector("i", CometArrowAllocator)
+      val strings = new VarCharVector("s", CometArrowAllocator)
+      val cached =
         try {
-          Seq(Array(0, 1), Array(1), Array(0)).foreach { selected =>
-            val root = CometCachedBatchHelper.load(cached, cacheSchema, selected, allocator)
-            try {
-              assert(root.getRowCount == 0)
-              assert(
-                root.getSchema.getFields.asScala.map(_.getName) ==
-                  selected.map(cacheSchema(_).name).toSeq,
-                s"${codec.getCodecType} read the wrong columns for ${selected.mkString(",")}")
-            } finally {
-              root.close()
-            }
-          }
-          assert(allocator.getAllocatedMemory == 0)
+          ints.allocateNew()
+          ints.setValueCount(0)
+          strings.allocateNew()
+          strings.setValueCount(0)
+          val batch = new ColumnarBatch(
+            Array[ColumnVector](new CometPlainVector(ints), new CometPlainVector(strings)),
+            0)
+          CometCachedBatchHelper.cachedBatch(
+            CometCachedBatchHelper.serialize(batch, codec, CometArrowAllocator),
+            0)
         } finally {
-          allocator.close()
+          ints.close()
+          strings.close()
         }
+
+      val allocator =
+        CometArrowAllocator.newChildAllocator(
+          s"zero-rows-${codec.getCodecType}",
+          0,
+          Long.MaxValue)
+      try {
+        Seq(Array(0, 1), Array(1), Array(0)).foreach { selected =>
+          val root = CometCachedBatchHelper.load(cached, cacheSchema, selected, allocator)
+          try {
+            assert(root.getRowCount == 0)
+            assert(
+              root.getSchema.getFields.asScala.map(_.getName) ==
+                selected.map(cacheSchema(_).name).toSeq,
+              s"${codec.getCodecType} read the wrong columns for ${selected.mkString(",")}")
+          } finally {
+            root.close()
+          }
+        }
+        assert(allocator.getAllocatedMemory == 0)
+      } finally {
+        allocator.close()
+      }
     }
   }
 
@@ -3207,7 +3206,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
    * failure -- zstd unable to allocate its workspace part way through a batch -- leaves behind.
    */
   private class FailAfterCompressionCodec(succeedFor: Int) extends CompressionCodec {
-    private val delegate = new ZstdCompressionCodec(1)
+    private val delegate = CometCachedBatchHelper.compressionCodec("zstd")
     var compressed: Int = 0
 
     override def compress(allocator: BufferAllocator, buffer: ArrowBuf): ArrowBuf = {
@@ -3315,7 +3314,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
       failure
     }
 
-    assert(write(new ZstdCompressionCodec(1)).isEmpty)
+    assert(write(CometCachedBatchHelper.compressionCodec("zstd")).isEmpty)
 
     // The int column's two buffers compress, then the copy's first one fails.
     val codec = new FailAfterCompressionCodec(succeedFor = 2)
@@ -3357,7 +3356,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
         CometCachedBatchHelper.cachedBatch(
           CometCachedBatchHelper.serialize(
             batch,
-            new ZstdCompressionCodec(1),
+            CometCachedBatchHelper.compressionCodec("zstd"),
             CometArrowAllocator),
           rows)
       } finally {

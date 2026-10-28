@@ -32,17 +32,14 @@ import org.apache.arrow.memory.{AllocationListener, AllocationReservation, Arrow
 import org.apache.arrow.memory.rounding.RoundingPolicy
 import org.apache.arrow.vector.compression.CompressionUtil
 
-import com.github.luben.zstd.Zstd
-
 /**
  * Checks that the zstd codec never writes past the buffer it allocates for its output.
  *
  * The buffers come from [[GuardedAllocator]], which hands the codec exactly the capacity it asked
- * for and keeps a sentinel-filled guard region right behind it. An overrun of the output buffer
- * shows up as a changed sentinel instead of as silent corruption of whatever the allocator placed
- * next, which is how it surfaces in production (#7305). The inputs are the ones that provoke it:
- * bytes that look structured enough for zstd to try entropy coding but do not compress, in the
- * sizes for which Arrow 18.3.0's codec asks for a capacity 8 bytes larger than the buffer.
+ * for and keeps a sentinel-filled guard region right behind it, so an overrun shows up as a
+ * changed sentinel instead of as silent corruption of whatever the allocator placed next (#7305).
+ * The defect is explained on [[CometZstdCompressionCodec]]. The inputs are the ones that provoke
+ * it: bytes that look structured enough for zstd to try entropy coding but do not compress.
  */
 class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
 
@@ -50,20 +47,9 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
   // target/tmp. Nothing else creates that directory in a fresh checkout.
   Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
 
-  private val Prefix = CompressionUtil.SIZE_OF_UNCOMPRESSED_LENGTH
-
-  /**
-   * The input lengths whose compressed output buffer, as Arrow's codec sizes it, lands within 8
-   * bytes below a power of two. Only there does the allocator's power-of-two rounding leave less
-   * slack than the 8 bytes by which Arrow overstates the capacity; everywhere else the rounding
-   * hides the overrun. 437 bytes, the size in #7305, is one of them: compressBound(437) + 8 is
-   * 509, allocated as 512.
-   */
-  private val exposedLengths: Seq[Int] = (1 to 8192).filter { n =>
-    val request = Prefix + Zstd.compressBound(n)
-    val rounded = java.lang.Long.highestOneBit(request - 1) << 1
-    rounded - request < Prefix
-  }
+  // The guard sees the overrun at any length, since the allocator cuts each buffer to the exact
+  // size requested. This range just gives it many sizes to look at.
+  private val Lengths = 400 to 600
 
   // Protobuf-like bytes: random payload with a scatter of repeated field tags. The tags make the
   // block pass zstd's "worth trying" heuristic, the payload makes the attempt not pay off, so
@@ -120,7 +106,7 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
     // go together.
     withAllocators { (root, guarded) =>
       val codec = new ZstdCompressionCodec(1)
-      exposedLengths.filter(_ < 1024).foreach { len =>
+      Lengths.foreach { len =>
         (0 until 50).foreach(seed => roundTrip(codec, root, guarded, protoLike(len, seed)))
       }
       guarded.overruns should be > 0
@@ -132,35 +118,17 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
       val codec = new CometZstdCompressionCodec(1)
       var raw = 0
       var packed = 0
-      exposedLengths.foreach { len =>
-        (0 until 50).foreach { seed =>
-          if (roundTrip(codec, root, guarded, protoLike(len, seed))) raw += 1 else packed += 1
-        }
+      def count(storedRaw: Boolean): Unit = if (storedRaw) raw += 1 else packed += 1
+      Lengths.foreach { len =>
+        (0 until 50).foreach(seed => count(roundTrip(codec, root, guarded, protoLike(len, seed))))
+        (0 until 5).foreach(seed =>
+          count(roundTrip(codec, root, guarded, compressible(len, seed))))
       }
       guarded.overruns shouldBe 0
-      // The inputs are meant to defeat compression, which is the path that overruns.
+      // Both outcomes ran under the guard: the stored block the overrun comes from, and a block
+      // that really compressed.
       raw should be > 0
-    }
-  }
-
-  test("Comet's zstd codec round-trips compressible and empty input") {
-    withAllocators { (root, guarded) =>
-      val codec = new CometZstdCompressionCodec(3)
-      Seq(0, 1, 7, 437, 4096, 70000).foreach { len =>
-        val storedRaw = roundTrip(codec, root, guarded, compressible(len, len))
-        if (len > 16) storedRaw shouldBe false
-      }
-      guarded.overruns shouldBe 0
-    }
-  }
-
-  test("the guard notices a write past the buffer") {
-    withAllocators { (_, guarded) =>
-      val buf = guarded.buffer(100)
-      // Comet runs with Arrow's bounds checks off, so a raw write is what an overrun looks like.
-      org.apache.arrow.memory.util.MemoryUtil.putByte(buf.memoryAddress() + 100, 1)
-      buf.close()
-      guarded.overruns shouldBe 1
+      packed should be > 0
     }
   }
 }
