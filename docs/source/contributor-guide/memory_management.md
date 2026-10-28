@@ -396,7 +396,12 @@ over a native sort, a refusal fails the query, so the pool checks its requests o
 pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
 It still counts as a consumer that can spill when the pool divides the task's share, so a sort
 below it stays at half of the share and leaves the aggregate the other half. The partially sorted
-stream still spills when Spark refuses it.
+stream still spills when Spark refuses it. The exemption goes by the stream's name, so it also
+covers a `PartialMerge` that the planner runs as a final aggregate because its input is sorted on
+some of its grouping keys. That one is not a `CometSortAggregateExec` and its input is only
+partially sorted, but it is likewise checked only against the pool and Spark's grant. A
+`PartialMerge` over input sorted on every grouping key stays on the hash aggregate, since the final
+aggregate has no spill path there and would only halve the limit of a sort below it.
 
 Three details matter for tuning:
 
