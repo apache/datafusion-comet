@@ -307,6 +307,25 @@ class CometDateTimeUtilsSuite extends CometTestBase {
     }
   }
 
+  test("extreme-year session TZ uses historic zone offset") {
+    // Session-TZ casts of years outside chrono's NaiveDate range must use the zone's
+    // historic / LMT offset (not 1970 standard). Compare Comet to Spark via Long
+    // (seconds) so the 422s America/Los_Angeles LMT vs PST gap survives truncation
+    // and toJavaTimestamp range limits are avoided. Also covers years just outside
+    // chrono's [-262143, 262142] bounds that previously panicked in the native probe.
+    for (tz <- Seq("America/Los_Angeles", "Asia/Tokyo")) {
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
+        checkCastToTimestampAsLong(
+          Seq(
+            "-290308-12-21 19:59:05.224192",
+            "-262544-01-01 00:00:00",
+            "-262543-01-01 00:00:00",
+            "262542-01-01 00:00:00",
+            "262543-01-01 00:00:00"))
+      }
+    }
+  }
+
   test("SPARK-37326: cast string to TIMESTAMP_NTZ rejects timezone offsets") {
     checkCastToTimestampNTZ(
       Seq(
