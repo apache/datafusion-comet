@@ -270,6 +270,24 @@ class CometGenerateExecSuite extends CometTestBase {
         }
       }
     }
+
+    test(s"$generator splits a map before repeating a wide carried column") {
+      withSQLConf(
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
+        CometConf.COMET_BATCH_SIZE.key -> "256") {
+        val payload = "x" * (1024 * 1024)
+        val entries = (0 until 2049).map(i => i -> i).toMap
+        withParquetDataFrame(Seq((payload, entries))) { input =>
+          val generated = input.toDF("payload", "m").selectExpr("payload", s"$generator(m)")
+          val aggregates = Seq(
+            "sum(CAST(length(concat(payload, CAST(key AS STRING))) AS BIGINT))",
+            "sum(CAST(value AS BIGINT))") ++
+            (if (generator.startsWith("pos")) Seq("sum(CAST(pos AS BIGINT))") else Nil)
+          val query = generated.selectExpr(aggregates: _*)
+          checkSparkAnswerAndOperator(query, Seq(classOf[CometExplodeExec]))
+        }
+      }
+    }
   }
 
   for (generator <- Seq("explode_outer", "posexplode_outer")) {
