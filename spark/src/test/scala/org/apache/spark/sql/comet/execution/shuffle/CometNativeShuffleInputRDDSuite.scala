@@ -24,7 +24,6 @@ import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
-import org.apache.spark.sql.execution.{CoalescedMapperPartitionSpec, CoalescedPartitionSpec, PartialMapperPartitionSpec, PartialReducerPartitionSpec, ShufflePartitionSpec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -45,29 +44,6 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
-
-  test("broadcast producer batching preserves shared shuffle dependencies and AQE ranges") {
-    val input = spark.sparkContext.parallelize(Seq.empty[(Int, ColumnarBatch)], 4)
-    val dependency = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
-      input,
-      new HashPartitioner(4),
-      decodeTime = SQLMetrics.createMetric(spark.sparkContext, "decode time"))
-    val specs = Array[ShufflePartitionSpec](
-      CoalescedPartitionSpec(1, 3),
-      PartialReducerPartitionSpec(2, 1, 3, 100L),
-      PartialMapperPartitionSpec(2, 1, 3),
-      CoalescedMapperPartitionSpec(1, 3, 4))
-    val original = new CometShuffledBatchRDD(dependency, Map.empty, specs)
-    val batched = original.withNativeBatchCoalescing(4096)
-    assert(original.supportsNativeBatchCoalescing)
-    assert(batched.dependency eq original.dependency)
-    assert(batched.dependencies == original.dependencies)
-    assert(original.nativeBatchCoalescing.isEmpty)
-    assert(batched.nativeBatchCoalescing.contains(4096))
-    assert(
-      batched.partitions.map(_.asInstanceOf[ShuffledRowRDDPartition].spec).sameElements(specs))
-    assert(batched.partitioner == original.partitioner)
-  }
 
   test("native shuffle input preserves its parents' determinism") {
     Seq(

@@ -20,15 +20,12 @@
 package org.apache.spark.sql.benchmark
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
-import java.nio.{ByteBuffer, ByteOrder}
-import java.nio.channels.Channels
 import java.nio.charset.StandardCharsets
 
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{BigIntVector, IntVector, VarCharVector, VectorSchemaRoot}
-import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.spark.benchmark.Benchmark
-import org.apache.spark.sql.comet.execution.shuffle.NativeBatchDecoderIterator
+import org.apache.spark.sql.comet.execution.shuffle.{NativeBatchDecoderIterator, NativeShuffleTestFrames}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.metric.SQLMetric
 
@@ -36,10 +33,8 @@ import org.apache.comet.Native
 import org.apache.comet.vector.NativeUtil
 
 /**
- * Measures native shuffle decoding, Arrow export and broadcast serialization together. Input
- * frames are prepared before timing; output validation and driver decoding are also untimed. Both
- * arms use the same artifact and differ only in producer batching. This is a producer
- * microbenchmark, not a complete Spark query or a shuffle transport benchmark.
+ * Measures native shuffle decoding, Arrow export and broadcast serialization, with input frame
+ * preparation and output validation outside timing.
  *
  * Pass --on-first to reverse the case order, --decode-only to include the decoder/FFI cost
  * without serialization, and an optional scenario-name substring to filter.
@@ -90,22 +85,7 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
           row += 1
         }
         root.setRowCount(count)
-        val ipc = new ByteArrayOutputStream()
-        val writer = new ArrowStreamWriter(root, null, Channels.newChannel(ipc))
-        try {
-          writer.start()
-          writer.writeBatch()
-          writer.end()
-        } finally writer.close()
-        val bytes = ipc.toByteArray
-        val header = ByteBuffer
-          .allocate(20)
-          .order(ByteOrder.LITTLE_ENDIAN)
-          .putLong(12L + bytes.length.toLong)
-          .putLong(root.getFieldVectors.size().toLong)
-          .put(Array[Byte](78, 79, 78, 69)) // NONE codec, followed by Arrow IPC.
-        output.write(header.array())
-        output.write(bytes)
+        output.write(NativeShuffleTestFrames.arrowFrame(root))
         start += count
       }
       output.toByteArray
@@ -116,19 +96,24 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
     }
   }
 
+  private def newDecoder(
+      input: Array[Byte],
+      enabled: Boolean,
+      util: NativeUtil): NativeBatchDecoderIterator = NativeBatchDecoderIterator(
+    new ByteArrayInputStream(input),
+    new SQLMetric("nsTiming", 0L),
+    new Native,
+    util,
+    tracingEnabled = false,
+    coalescing = if (enabled) Some(targetRows) else None)
+
   private def produce(
       input: Array[Byte],
       scenario: Scenario,
       enabled: Boolean,
       verify: Boolean): Result = {
     val util = new NativeUtil
-    val decoder = NativeBatchDecoderIterator(
-      new ByteArrayInputStream(input),
-      new SQLMetric("nsTiming", 0L),
-      new Native,
-      util,
-      tracingEnabled = false,
-      coalescing = if (enabled) Some(targetRows) else None)
+    val decoder = newDecoder(input, enabled, util)
     var rows = 0L
     var streams = 0L
     var bytes = 0L
@@ -171,13 +156,7 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
 
   private def decodeOnly(input: Array[Byte], scenario: Scenario, enabled: Boolean): Unit = {
     val util = new NativeUtil
-    val decoder = NativeBatchDecoderIterator(
-      new ByteArrayInputStream(input),
-      new SQLMetric("nsTiming", 0L),
-      new Native,
-      util,
-      tracingEnabled = false,
-      coalescing = if (enabled) Some(targetRows) else None)
+    val decoder = newDecoder(input, enabled, util)
     var rows = 0L
     try {
       while (decoder.hasNext) rows += decoder.next().numRows()
@@ -192,11 +171,7 @@ object CometBroadcastProducerBenchmark extends CometBenchmarkBase {
     // Initialize SparkEnv, whose compression codec serializeBatches uses.
     spark.sparkContext.setLogLevel("WARN")
     val scenarioFilters = mainArgs.filterNot(Set("--on-first", "--decode-only"))
-    val modes = if (mainArgs.contains("--on-first")) {
-      Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
-    } else {
-      Seq("OFF" -> false, "ON" -> true, "OFF (repeat)" -> false)
-    }
+    val modes = CometBenchmarkBase.onOffModes(mainArgs.contains("--on-first"))
     scenarios.filter(s => scenarioFilters.forall(s.name.contains)).foreach { scenario =>
       val input = frames(scenario)
       runBenchmark(scenario.name) {

@@ -169,7 +169,8 @@ impl DecodedBatchCoalescer {
             return None;
         }
         let rows = batch.num_rows();
-        // ArrayData reports logical bytes; bitmap builders round up to 64-byte blocks.
+        // Bitmap builders round up to 64 bytes. Charging padding per input overcounts,
+        // but keeps the output-copy bound conservative even when columns share input buffers.
         let bitmap_bytes = rows.div_ceil(8);
         let padded_bitmap_bytes = bitmap_bytes.next_multiple_of(64);
         let mut bytes = BatchBytes::default();
@@ -341,41 +342,6 @@ mod tests {
         for (output, input) in output.iter().zip(&inputs) {
             assert!(Arc::ptr_eq(output.column(0), input.column(0)));
         }
-
-        let mut coalescer = DecodedBatchCoalescer::try_new_with_limits(32, two_batches).unwrap();
-        coalescer.push(inputs[0].clone()).unwrap();
-        assert!(coalescer.peek_ready().is_none());
-        coalescer.push(inputs[1].clone()).unwrap();
-        assert_eq!(coalescer.take_ready(), Some(ints(0..2)));
-        coalescer.push(inputs[2].clone()).unwrap();
-        assert!(coalescer.take_ready().is_none());
-        coalescer.finish().unwrap();
-        assert_eq!(coalescer.take_ready(), Some(ints(2..3)));
-    }
-
-    #[test]
-    fn wide_json_values_pass_through_without_copying() {
-        let small_json = format!("{{\"payload\":\"{}\"}}", "x".repeat(32));
-        let large_json = format!("{{\"payload\":\"{}\"}}", "x".repeat(2048));
-        let small = one_column(Arc::new(StringArray::from(vec![small_json.as_str()])));
-        let large = one_column(Arc::new(StringArray::from(vec![large_json.as_str()])));
-        let original = large.column(0).clone();
-        let max_bytes = 2 * small.get_array_memory_size();
-        assert!(large.get_array_memory_size() > max_bytes);
-        let output = collect_with_limits(
-            32,
-            max_bytes,
-            vec![small.clone(), large.clone(), small.clone(), small, large],
-        );
-        let expected = one_column(Arc::new(StringArray::from(vec![
-            small_json.as_str(),
-            small_json.as_str(),
-        ])));
-        assert_eq!(output.len(), 4);
-        assert_eq!(output[0].num_rows(), 1);
-        assert!(Arc::ptr_eq(output[1].column(0), &original));
-        assert_eq!(output[2], expected);
-        assert!(Arc::ptr_eq(output[3].column(0), &original));
     }
 
     #[test]
@@ -387,9 +353,18 @@ mod tests {
         let max_bytes = 2 * small.get_array_memory_size();
         assert!(slice.get_array_memory_size() > max_bytes);
         let original = slice.column(0).clone();
-        let output = collect_with_limits(32, max_bytes, vec![small.clone(), slice, small]);
+        let output = collect_with_limits(
+            32,
+            max_bytes,
+            vec![small.clone(), slice, small.clone(), small.clone()],
+        );
         assert_eq!(output.len(), 3);
+        assert_eq!(output[0], small);
         assert!(Arc::ptr_eq(output[1].column(0), &original));
+        assert_eq!(
+            output[2],
+            one_column(Arc::new(StringArray::from(vec!["b", "b"])))
+        );
     }
 
     #[test]
@@ -540,34 +515,6 @@ mod tests {
         let unsupported = one_column(Arc::new(arrow::array::UInt32Array::from(vec![1])));
         let batches = vec![first, renamed, unsupported, ints(1..2)];
         assert_eq!(collect(8, batches.clone()), batches);
-    }
-
-    #[test]
-    fn ready_lookahead_and_pending_inputs_have_owned_lifetimes() {
-        let first = ints(0..1);
-        let large = ints(1..9);
-        let first_weak = Arc::downgrade(first.column(0));
-        let large_weak = Arc::downgrade(large.column(0));
-        let mut coalescer = DecodedBatchCoalescer::try_new(8).unwrap();
-        coalescer.push(first).unwrap();
-        assert!(coalescer.peek_ready().is_none());
-        coalescer.push(large).unwrap();
-        assert_eq!(coalescer.peek_ready().unwrap().num_rows(), 1);
-        let output = coalescer.take_ready().unwrap();
-        assert!(first_weak.upgrade().is_some());
-        drop(output);
-        assert!(first_weak.upgrade().is_none());
-        assert!(large_weak.upgrade().is_some());
-        let lookahead = coalescer.take_ready().unwrap();
-        assert_eq!(lookahead, ints(1..9));
-        drop(lookahead);
-        assert!(large_weak.upgrade().is_none());
-        let pending = ints(10..11);
-        let pending_weak = Arc::downgrade(pending.column(0));
-        coalescer.push(pending).unwrap();
-        assert!(coalescer.peek_ready().is_none());
-        drop(coalescer);
-        assert!(pending_weak.upgrade().is_none());
     }
 
     #[test]

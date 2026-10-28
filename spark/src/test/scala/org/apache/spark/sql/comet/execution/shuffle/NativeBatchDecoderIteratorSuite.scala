@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.{ByteArrayInputStream, EOFException}
+import java.io.EOFException
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.metric.SQLMetrics
@@ -29,17 +29,7 @@ import org.apache.comet.vector.NativeUtil
 
 class NativeBatchDecoderIteratorSuite extends CometTestBase {
 
-  import NativeShuffleTestFrames.intFrame
-
-  private final class TrackingInputStream(bytes: Array[Byte])
-      extends ByteArrayInputStream(bytes) {
-    var closeCalls = 0
-
-    override def close(): Unit = {
-      closeCalls += 1
-      super.close()
-    }
-  }
+  import NativeShuffleTestFrames.{intFrame, TrackingInputStream}
 
   test("local decoder groups frames, drains passthrough output, and flushes the final batch") {
     val scenarios = Seq(

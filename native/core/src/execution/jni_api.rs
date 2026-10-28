@@ -2203,12 +2203,7 @@ pub extern "system" fn Java_org_apache_comet_Native_createShuffleBatchCoalescer(
     max_rows: jint,
 ) -> jlong {
     try_unwrap_or_throw(&e, |_| {
-        if max_rows <= 0 {
-            return Err(CometError::Internal(
-                "Decoded shuffle grouping requires a positive row target".into(),
-            ));
-        }
-        let coalescer = DecodedBatchCoalescer::try_new(max_rows as usize)?;
+        let coalescer = DecodedBatchCoalescer::try_new(max_rows.max(0) as usize)?;
         Ok(Box::into_raw(Box::new(coalescer)) as jlong)
     })
 }
@@ -2228,12 +2223,10 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_appendShuffleBatch(
 ) -> jint {
     try_unwrap_or_throw(&e, |env| {
         with_trace("appendShuffleBatch", tracing_enabled != JNI_FALSE, || {
-            let capacity = env.get_direct_buffer_capacity(&byte_buffer)?;
-            if length < 4 || length as usize > capacity || num_columns < 0 {
+            if num_columns < 0 {
                 return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
             }
-            let pointer = env.get_direct_buffer_address(&byte_buffer)?;
-            let block = unsafe { std::slice::from_raw_parts(pointer, length as usize) };
+            let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
             let coalescer = unsafe { shuffle_batch_coalescer(handle)? };
             append_shuffle_batch(coalescer, block, num_columns as usize)?;
             Ok(shuffle_batch_ready_columns(coalescer))
@@ -2269,6 +2262,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_peekShuffleBatch(
 /// Transfer one ready output using the ordinary export path, including offset repair.
 /// # Safety
 /// The handle and Arrow FFI output addresses must be live and exclusively owned by this reader.
+/// Both address arrays must have the column count reported by `peekShuffleBatch`.
 pub unsafe extern "system" fn Java_org_apache_comet_Native_takeShuffleBatch(
     e: EnvUnowned,
     _class: JClass,
@@ -2282,13 +2276,6 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_takeShuffleBatch(
             let batch = unsafe { shuffle_batch_coalescer(handle)? }
                 .take_ready()
                 .ok_or_else(|| CometError::Internal("No decoded shuffle batch is ready".into()))?;
-            if array_addrs.len(env)? != batch.num_columns()
-                || schema_addrs.len(env)? != batch.num_columns()
-            {
-                return Err(CometError::Internal(
-                    "Shuffle output column count mismatch".into(),
-                ));
-            }
             prepare_output(env, array_addrs, schema_addrs, batch, false)
         })
     })
@@ -2396,6 +2383,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     })
 }
 
+/// Borrows a codec header and IPC payload from a direct buffer.
+/// # Safety
+/// The buffer's backing memory must remain valid and unmodified for the borrow.
+unsafe fn shuffle_frame_bytes<'a>(
+    env: &mut Env,
+    byte_buffer: &'a JByteBuffer<'_>,
+    length: jint,
+) -> CometResult<&'a [u8]> {
+    let capacity = env.get_direct_buffer_capacity(byte_buffer)?;
+    if length < 4 || length as usize > capacity {
+        return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
+    }
+    let pointer = env.get_direct_buffer_address(byte_buffer)?;
+    Ok(unsafe { std::slice::from_raw_parts(pointer, length as usize) })
+}
+
 /// Converts the JNI arguments of the `decodeShuffleBlock` entry points for
 /// [`decode_shuffle_block`].
 fn decode_shuffle_block_jni(
@@ -2406,9 +2409,7 @@ fn decode_shuffle_block_jni(
     schema_addrs: JLongArray,
     expected_types: Option<&[ArrowDataType]>,
 ) -> CometResult<jlong> {
-    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-    let length = length as usize;
-    let block: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types) }

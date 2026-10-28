@@ -64,8 +64,7 @@ The broadcast must read directly from a local Comet native shuffle, including an
 read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
 selected shuffle partitions and row order. Large batches pass through without a merge copy.
 
-Reader buffers are outside Spark's execution memory pool. Measure the setting on your workload
-before enabling it, particularly for wide rows. The contributor guide describes the
+Reader buffers are outside Spark's execution memory pool. The contributor guide describes the
 [grouping limits and memory lifetime](../../../contributor-guide/memory_management.md).
 
 ### Columnar (JVM) Shuffle

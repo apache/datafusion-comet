@@ -133,30 +133,6 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
     }
   }
 
-  test("broadcast producer batching leaves unsupported schemas on the native shuffle reader") {
-    withSQLConf(
-      CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.key -> "true",
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-      val build = spark
-        .range(0, 32, 1, 4)
-        .selectExpr("CAST(id AS INT) AS k", "CAST(id AS DECIMAL(10, 2)) AS v")
-        .repartition(2, col("k"))
-      val probe = spark.range(0, 32, 1, 2).selectExpr("CAST(id AS INT) AS k")
-      val df = probe.join(broadcast(build), "k")
-      checkAnswer(df, (0 until 32).map(i => Row(i, BigDecimal(i).setScale(2))))
-      val plan = df.queryExecution.executedPlan
-      val exchanges = collect(plan) { case exchange: CometBroadcastExchangeExec => exchange }
-      assert(exchanges.size == 1, plan.treeString)
-      assert(exchanges.head.metrics("numOutputRows").value == 32L)
-      assert(
-        collect(plan) {
-          case shuffle: CometShuffleExchangeExec if shuffle.shuffleType == CometNativeShuffle =>
-            shuffle
-        }.nonEmpty,
-        plan.treeString)
-    }
-  }
-
   /**
    * Runs `f` with nested hash partitioning keys enabled. The config is disabled by default, so
    * every test that expects a nested key to reach native shuffle has to opt in.

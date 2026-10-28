@@ -29,14 +29,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.CometConf
 
 /**
- * A complete local query with a native shuffle on the broadcast build side. Explicit repartition
- * and broadcast keep the plan stable; this measures neither TPC-H nor AQE's SMJ-to-BHJ
- * conversion. Every iteration generates both inputs, writes and reads the shuffle, builds and
- * distributes the broadcast, joins, and aggregates the result. No stage or input is cached
- * between iterations.
- *
- * Before timing, check results, native join/shuffle execution, producer batching activation, and
- * the number of Arrow streams reaching driver assembly. Pass --on-first to reverse case order.
+ * Measures a complete local native-shuffle to broadcast-join query with uncached inputs and a
+ * final aggregation. Pass --on-first to reverse case order.
  *
  * To run with four local workers:
  * {{{
@@ -100,11 +94,7 @@ object CometBroadcastLocalShuffleBenchmark extends CometBenchmarkBase {
       }
       assert(streams(1) > 0 && streams(1) < streams(0), streams)
 
-      val modes = if (mainArgs.contains("--on-first")) {
-        Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
-      } else {
-        Seq("OFF" -> false, "ON" -> true, "OFF (repeat)" -> false)
-      }
+      val modes = CometBenchmarkBase.onOffModes(mainArgs.contains("--on-first"))
       runBenchmark("local native shuffle to broadcast join") {
         val benchmark = new Benchmark(
           "local native shuffle to broadcast join",

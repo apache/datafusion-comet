@@ -19,7 +19,7 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.ByteArrayOutputStream
+import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
 import java.nio.{ByteBuffer, ByteOrder}
 import java.nio.channels.Channels
 
@@ -29,7 +29,16 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 
 /** Local and remote readers consume the same framed Arrow IPC format. */
-private[shuffle] object NativeShuffleTestFrames {
+private[sql] object NativeShuffleTestFrames {
+
+  final class TrackingInputStream(bytes: Array[Byte]) extends ByteArrayInputStream(bytes) {
+    var closeCalls = 0
+
+    override def close(): Unit = {
+      closeCalls += 1
+      super.close()
+    }
+  }
 
   def frameBytes(payload: Byte*): Array[Byte] = ByteBuffer
     .allocate(20 + payload.size)

@@ -59,16 +59,6 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
   import NativeShuffleTestFrames._
   import testImplicits._
 
-  private final class TrackingInputStream(bytes: Array[Byte])
-      extends ByteArrayInputStream(bytes) {
-    var closeCalls = 0
-
-    override def close(): Unit = {
-      closeCalls += 1
-      super.close()
-    }
-  }
-
   private final class RecordingReaderBackend(client: RecordingCelebornRawClient)
       extends ShuffleManager {
     var readRange: Option[(Int, Int, Int, Int)] = None
