@@ -24,7 +24,7 @@ use arrow::array::{make_array, Array, ArrayRef};
 use arrow::datatypes::DataType;
 use arrow::error::{ArrowError, Result};
 use arrow::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
-use datafusion_comet_common::decode_string_arrays;
+use datafusion_comet_common::{decode_string_arrays, SparkError};
 use pyo3::ffi::Py_uintptr_t;
 use pyo3::prelude::*;
 use pyo3::sync::MutexExt;
@@ -334,6 +334,19 @@ fn make_python_symbols_global() -> Result<()> {
     Ok(())
 }
 
+/// The `major.minor` version of the linked Python library, such as `3.11`. `Py_GetVersion` may be
+/// called before the interpreter is initialized, so this does not start it.
+pub fn embedded_python_version() -> String {
+    // SAFETY: Py_GetVersion returns a pointer to a static, null-terminated string.
+    let version = unsafe { std::ffi::CStr::from_ptr(pyo3::ffi::Py_GetVersion()) }.to_string_lossy();
+    // The string starts with the full version, such as "3.11.9 (main, ...)".
+    version
+        .split(['.', ' '])
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// A scalar Arrow UDF loaded from Spark's pickled `(function, returnType)` command.
 /// Spark serializes the return type for its worker; Comet uses the separately
 /// serialized Arrow type from the physical plan instead.
@@ -605,9 +618,10 @@ fn python_error(error: impl std::fmt::Display) -> ArrowError {
     ArrowError::ComputeError(format!("Arrow UDF Python error: {error}"))
 }
 
-/// Formats an exception raised by user code with its Python traceback, as Spark's
-/// `PythonException` message does. Before Python 3.12, PyO3 keeps the traceback
-/// apart from the exception value, so pass the type, value and traceback explicitly.
+/// Reports an exception raised by user code as a [`SparkError::PythonException`], which the
+/// JVM raises as Spark's `PythonException`. The traceback is formatted as a Spark Python worker
+/// reports it. Before Python 3.12, PyO3 keeps the traceback apart from the exception value, so
+/// pass the type, value and traceback explicitly.
 fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
     let formatted = py.import("traceback").and_then(|traceback| {
         traceback
@@ -617,13 +631,11 @@ fn python_traceback_error(py: Python<'_>, error: PyErr) -> ArrowError {
             )?
             .extract::<Vec<String>>()
     });
-    match formatted {
-        Ok(lines) => ArrowError::ComputeError(format!(
-            "Arrow UDF Python error: {}",
-            lines.concat().trim_end()
-        )),
-        Err(_) => python_error(error),
-    }
+    let traceback = match formatted {
+        Ok(lines) => lines.concat().trim_end().to_string(),
+        Err(_) => error.to_string(),
+    };
+    ArrowError::ExternalError(Box::new(SparkError::PythonException { traceback }))
 }
 
 #[cfg(test)]
@@ -804,13 +816,21 @@ mod tests {
                 ArrowPythonUdf::from_command(&command, DataType::Int64, true, true, false, "")
                     .unwrap();
             let input: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-            let error = udf.evaluate(&[input], 1).unwrap_err().to_string();
+            let error = udf.evaluate(&[input], 1).unwrap_err();
+            let traceback = match &error {
+                ArrowError::ExternalError(external) => match external.downcast_ref() {
+                    Some(SparkError::PythonException { traceback }) => traceback,
+                    _ => panic!("expected a PythonException, got {error}"),
+                },
+                _ => panic!("expected a PythonException, got {error}"),
+            };
+            // Spark's PythonException carries the traceback exactly as Python formats it.
             assert!(
-                error.contains("Traceback (most recent call last)"),
-                "{error}"
+                traceback.starts_with("Traceback (most recent call last)"),
+                "{traceback}"
             );
-            assert!(error.contains("line 1"), "{error}");
-            assert!(error.contains("ZeroDivisionError"), "{error}");
+            assert!(traceback.contains("line 1"), "{traceback}");
+            assert!(traceback.contains("ZeroDivisionError"), "{traceback}");
         });
     }
 
@@ -1125,6 +1145,17 @@ mod tests {
             output.status,
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn reports_embedded_python_version_without_initializing() {
+        let version = embedded_python_version();
+        initialize_python().unwrap();
+        let expected = Python::attach(|py| {
+            let info = py.version_info();
+            format!("{}.{}", info.major, info.minor)
+        });
+        assert_eq!(version, expected);
     }
 
     #[test]

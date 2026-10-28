@@ -21,10 +21,10 @@
 //! replays them through an `OrderedFinalAggregateStream` that has no way to spill, so a refused
 //! memory request there fails the task. `FinalHashAggregateStream` does this, and so does
 //! `OrderedFinalAggregateStream` itself, which DataFusion uses when the input is sorted on some of
-//! the grouping keys. So does `SingleHashAggregateStream`, which Comet runs for a Spark
-//! PartialMerge (#6857). The merge reserves read buffers for as many spill files as fit, and those
-//! buffers belong to the same consumer, so the replay often finds the consumer's share already
-//! taken.
+//! the grouping keys, and which Comet also runs for a Spark PartialMerge over such input (#6880).
+//! So does `SingleHashAggregateStream`, which Comet runs for other Spark PartialMerges (#6857).
+//! The merge reserves read buffers for as many spill files as fit, and those buffers belong to the
+//! same consumer, so the replay often finds the consumer's share already taken.
 //!
 //! [`SpillReplayPool`] wraps a Comet pool. When the pool refuses a request from the replay, it
 //! records the request with the pool's `grow` instead, which ignores `CometFairMemoryPool`'s limits
@@ -43,6 +43,11 @@
 //!   is for memory that already exists.
 //! - The replay emits every finished group after each batch, so it holds about one batch of groups,
 //!   and releasing memory repays the overcommit first.
+//! - `OrderedFinalAggregateStream` registers as able to spill even when its input is sorted on
+//!   every grouping key, where it has no spill path, to work around apache/datafusion#17334.
+//!   `CometFairMemoryPool` checks its requests only against the pool for that reason (see
+//!   `limited_to_its_share` in `fair_pool.rs`). Drop that exception once #17334 is fixed and the
+//!   stream registers as able to spill only when it can.
 //!
 //! Remove this, as #6583 describes, once Comet's DataFusion has apache/datafusion#25383, which
 //! leaves the replay room when the merge picks its files. The #6254 tests in `CometAggregateSuite`
@@ -176,25 +181,30 @@ pub(super) fn unwrap_spill_replay(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn
         .map(|replay| &replay.inner)
 }
 
+/// The prefix of the name DataFusion gives the consumer of an `OrderedFinalAggregateStream`.
+/// DataFusion 56 renames the stream and its consumer `ClusteredFinalAggregateStream` (#6410).
+pub(super) const ORDERED_FINAL_AGGREGATE: &str = "OrderedFinalAggregateStream[";
+
 /// Whether `consumer` belongs to a final or single aggregate, whose spill replay can't spill.
 fn is_final_aggregate(consumer: &MemoryConsumer) -> bool {
     let name = consumer.name();
     name.starts_with("FinalHashAggregateStream[")
-        || name.starts_with("OrderedFinalAggregateStream[")
+        || name.starts_with(ORDERED_FINAL_AGGREGATE)
         || name.starts_with("SingleHashAggregateStream[")
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::spark_memory::fake::FakeSpark;
-    use super::super::{create_pool, overcommit, MemoryPoolConfig, MemoryPoolType};
+    use super::super::testing::spillable;
+    use super::super::{create_pool, overcommit, MemoryPoolConfig, MemoryPoolType, RunningTasks};
     use super::*;
     use datafusion::execution::memory_pool::UnboundedMemoryPool;
 
-    /// A pool of each type, built the way `createPlan` builds it and connected to a fake Spark
-    /// that grants at most 100 bytes. The fair pool's own limits are far above that, so only
-    /// Spark refuses. Task-shared pools are keyed by task attempt process-wide, so each pool needs
-    /// its own id.
+    /// A pool of each type for a task that runs alone, built the way `createPlan` builds it and
+    /// connected to a fake Spark that grants at most 100 bytes. The fair pool's own limits are far
+    /// above that, so only Spark refuses. Task-shared pools are keyed by task attempt process-wide,
+    /// so each pool needs its own id.
     fn each_pool_type(
         task_attempt_ids: [i64; 2],
     ) -> Vec<(&'static str, Arc<dyn MemoryPool>, Arc<FakeSpark>)> {
@@ -207,18 +217,23 @@ mod tests {
         .map(|((name, pool_type), task_attempt_id)| {
             let fake = FakeSpark::with(100);
             let config = MemoryPoolConfig::new(pool_type, 1000);
-            let pool = create_pool(&config, task_attempt_id, || fake.memory());
+            let pool = create_pool(&config, task_attempt_id, &RunningTasks::default(), || {
+                fake.memory()
+            });
             (name, pool, fake)
         })
         .collect()
     }
 
-    /// A `fair_unified` pool of `pool_size` bytes, built the way `createPlan` builds it and
-    /// connected to a fake Spark that grants everything, so only the pool's own limits refuse.
+    /// A `fair_unified` pool of `pool_size` bytes for a task that runs alone, built the way
+    /// `createPlan` builds it and connected to a fake Spark that grants everything, so only the
+    /// pool's own limits refuse.
     fn fair_pool(task_attempt_id: i64, pool_size: usize) -> (Arc<dyn MemoryPool>, Arc<FakeSpark>) {
         let fake = FakeSpark::with(usize::MAX);
         let config = MemoryPoolConfig::new(MemoryPoolType::FairUnified, pool_size);
-        let pool = create_pool(&config, task_attempt_id, || fake.memory());
+        let pool = create_pool(&config, task_attempt_id, &RunningTasks::default(), || {
+            fake.memory()
+        });
         (pool, fake)
     }
 
@@ -227,7 +242,7 @@ mod tests {
         for (name, pool, fake) in each_pool_type([-3011, -3012]) {
             // Like DataFusion 55's final hash aggregate, whose spill merge and replay table are
             // sibling reservations of one consumer.
-            let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+            let merge = spillable("FinalHashAggregateStream[0]", &pool);
             let replay = merge.new_empty();
             merge.try_grow(90).unwrap();
 
@@ -251,7 +266,7 @@ mod tests {
     #[test]
     fn a_final_aggregate_reading_its_spill_files_back_may_pass_its_fair_limit() {
         let (pool, fake) = fair_pool(-3013, 100);
-        let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+        let merge = spillable("FinalHashAggregateStream[0]", &pool);
         let replay = merge.new_empty();
         merge.try_grow(90).unwrap();
 
@@ -265,9 +280,9 @@ mod tests {
     #[test]
     fn a_final_aggregate_reading_its_spill_files_back_may_pass_the_pool_limit() {
         let (pool, fake) = fair_pool(-3014, 100);
-        let sort = MemoryConsumer::new("ExternalSorter[0]").register(&pool);
+        let sort = spillable("ExternalSorter[0]", &pool);
         sort.try_grow(70).unwrap();
-        let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+        let merge = spillable("FinalHashAggregateStream[0]", &pool);
         let replay = merge.new_empty();
         merge.try_grow(25).unwrap();
 
@@ -283,7 +298,7 @@ mod tests {
         for (name, pool, fake) in each_pool_type([-3015, -3016]) {
             // While the aggregate reads its input, its table is the consumer's only reservation
             // holding memory, so a refusal makes it spill.
-            let table = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+            let table = spillable("FinalHashAggregateStream[0]", &pool);
             let replay = table.new_empty();
             table.try_grow(90).unwrap();
             assert!(table.try_grow(30).is_err(), "{name}");
@@ -314,8 +329,10 @@ mod tests {
         ] {
             let fake = FakeSpark::failing();
             let config = MemoryPoolConfig::new(pool_type, 1000);
-            let pool = create_pool(&config, task_attempt_id, || fake.memory());
-            let merge = MemoryConsumer::new("FinalHashAggregateStream[0]").register(&pool);
+            let pool = create_pool(&config, task_attempt_id, &RunningTasks::default(), || {
+                fake.memory()
+            });
+            let merge = spillable("FinalHashAggregateStream[0]", &pool);
             let replay = merge.new_empty();
             merge.grow(90);
 

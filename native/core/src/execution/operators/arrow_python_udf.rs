@@ -33,6 +33,7 @@ use datafusion::physical_plan::{
     apply_expression_roots, DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties,
     PlanProperties, SendableRecordBatchStream,
 };
+use datafusion_comet_common::unwrap_arrow_external_error;
 use futures::stream;
 use futures::StreamExt;
 
@@ -239,7 +240,13 @@ impl ArrowPythonUdfExec {
                 .map(|array| array.slice(offset, length))
                 .collect();
             let _timer = python_time.timer();
-            columns.push(worker.evaluate_named(&sliced_args, &spec.arg_names, length)?);
+            // A UDF's own exception arrives as a `SparkError::PythonException` inside
+            // `ArrowError::ExternalError`; unwrap it so the JVM raises a `PythonException`.
+            columns.push(
+                worker
+                    .evaluate_named(&sliced_args, &spec.arg_names, length)
+                    .map_err(unwrap_arrow_external_error)?,
+            );
         }
         Ok(RecordBatch::try_new(schema, columns)?)
     }
@@ -431,6 +438,7 @@ mod tests {
     use datafusion::execution::TaskContext;
     use datafusion::physical_expr::expressions::Column;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion_comet_common::SparkError;
     use futures::StreamExt;
     use pyo3::prelude::*;
 
@@ -488,7 +496,18 @@ mod tests {
             .collect()
             .await;
         assert_eq!(results.len(), 1);
-        assert!(results[0].is_err());
+        // The UDF's exception reaches JNI as a direct `SparkError`, which the JVM raises as
+        // Spark's `PythonException`.
+        match &results[0] {
+            Err(datafusion::error::DataFusionError::External(error)) => assert!(
+                matches!(
+                    error.downcast_ref::<SparkError>(),
+                    Some(SparkError::PythonException { .. })
+                ),
+                "{error}"
+            ),
+            other => panic!("expected a PythonException, got {other:?}"),
+        }
         let calls: i64 = Python::attach(|py| {
             py.import("sys")
                 .unwrap()

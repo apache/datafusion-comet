@@ -124,7 +124,9 @@ several tasks.
 The executor's embedded Python must be able to import `pyspark`, `pyarrow`, and the user's Python
 modules. Spark serializes the callable and a PySpark return type with `pyspark.cloudpickle`, so
 `pyspark` is required even when the callable itself only uses PyArrow. Build the `python-udf`
-feature against the same Python major/minor version used by PySpark workers. Install those packages
+feature against the same Python major/minor version used by PySpark workers. A UDF whose PySpark
+Python version differs from the embedded interpreter's, for example after a Python upgrade without a
+rebuild of the native library, stays on Spark's Python worker path. Install those packages
 into that Python environment and ensure the executor process can find them through the embedded
 interpreter's `sys.path`, for example by setting `PYTHONPATH` in the executor's environment. On a
 cluster manager, `spark.executorEnv.PYTHONPATH` does this and keeps the native path enabled. In
@@ -173,8 +175,10 @@ interpreter lock, keeps the task's core until that code returns. The exception c
 between a lock's `acquire()` and the `try` block that releases it, as in `logging` before Python
 3.13, and then the lock stays held for every task in the executor's shared interpreter. Set
 `spark.comet.exec.nativeArrowPythonUDF.interruptOnKill.enabled=false` to let a killed task's
-running call return on its own instead. A failing UDF reports its Python traceback in a Comet
-native error rather than in Spark's `PythonException`. The operator reports the time spent in
+running call return on its own instead. A failing UDF raises Spark's `PythonException`
+with its Python traceback, which PySpark raises as `pyspark.errors.PythonException`. Errors outside
+the UDF's own code, such as a result of the wrong length or type, are still reported as Comet native
+errors. The operator reports the time spent in
 Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
