@@ -24,6 +24,7 @@ import org.apache.spark.sql.comet.CometExplodeExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.hive.{CometHiveUDTFs, CountingUDTF}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -234,6 +235,20 @@ class CometGenerateExecSuite extends CometTestBase {
       checkSparkAnswerAndFallbackReason(
         df,
         "Comet only supports explode/explode_outer for arrays, not maps")
+    }
+  }
+
+  test("stack with an argument Comet cannot run natively falls back") {
+    withSQLConf(
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      spark.udf.register("plus_one", (i: Int) => i + 1)
+      val df = Seq((1, 10), (2, 20))
+        .toDF("id", "v")
+        .selectExpr("id", "stack(2, v, plus_one(v))")
+      checkSparkAnswerAndFallbackReason(
+        df,
+        s"${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
     }
   }
 
@@ -722,4 +737,98 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
+  /** Run `f` over a single-file Parquet table `t` of `(id, s, js)` rows. */
+  private def withGeneratorTable(f: => Unit): Unit = {
+    val rows = Seq(
+      (1, "a", """{"a": 1, "b": "x"}"""),
+      (2, null, """{"a": null}"""),
+      (3, "c", "not json"),
+      (4, "d", null))
+    withTempPath { path =>
+      rows.toDF("id", "s", "js").repartition(1).write.parquet(path.getAbsolutePath)
+      withParquetTable(path.getAbsolutePath, "t")(f)
+    }
+  }
+
+  /** Check `df` against Spark, and that its generator ran in Comet's native operator. */
+  private def checkSparkAnswerWithNativeGenerate(df: DataFrame): Unit = {
+    val (_, cometPlan) = checkSparkAnswer(df)
+    assert(
+      collectFirst(cometPlan) { case generate: CometExplodeExec => generate }.isDefined,
+      s"Expected a native generator in\n$cometPlan")
+  }
+
+  test("Hive UDTF runs natively and emits its terminate rows") {
+    CometHiveUDTFs.register(spark, "counting_udtf", classOf[CountingUDTF])
+    withGeneratorTable {
+      // The row `close` emits carries the last input row's `id`, as in Spark.
+      checkSparkAnswerAndOperator(sql("SELECT id, counting_udtf(s) FROM t"))
+      checkSparkAnswerAndOperator(
+        sql("SELECT id, value, n FROM t LATERAL VIEW OUTER counting_udtf(s) u AS value, n"))
+      // With no input rows only the `close` row remains.
+      checkSparkAnswerAndOperator(sql("SELECT counting_udtf(s) FROM t WHERE id > 10"))
+      // Two identical UDTFs in one plan each keep their own count.
+      checkSparkAnswerAndOperator(sql("""
+          |SELECT id, a.value, a.n, b.value, b.n FROM t
+          |LATERAL VIEW counting_udtf(s) a AS value, n
+          |LATERAL VIEW counting_udtf(s) b AS value, n""".stripMargin))
+    }
+  }
+
+  test("Hive UDTF keeps separate state per partition") {
+    CometHiveUDTFs.register(spark, "counting_udtf", classOf[CountingUDTF])
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "3") {
+      withGeneratorTable {
+        // Each partition ends with one `close` row holding its own count, so the counts add up
+        // to the input rows whichever partition each row lands in.
+        checkSparkAnswerWithNativeGenerate(sql("""
+            |SELECT count(*), sum(n) FROM (
+            |  SELECT counting_udtf(s) FROM (SELECT * FROM t DISTRIBUTE BY id))
+            |WHERE value = 'total'""".stripMargin))
+      }
+    }
+  }
+
+  test("json_tuple runs natively") {
+    withGeneratorTable {
+      checkSparkAnswerAndOperator(sql("SELECT id, json_tuple(js, 'a', 'b') FROM t"))
+      checkSparkAnswerAndOperator(
+        sql("SELECT id, a FROM t LATERAL VIEW OUTER json_tuple(js, 'a') j AS a WHERE a IS NULL"))
+    }
+  }
+
+  test("EXCEPT ALL replicates rows through a JVM generator") {
+    withGeneratorTable {
+      checkSparkAnswerWithNativeGenerate(
+        sql("SELECT s FROM t UNION ALL SELECT s FROM t EXCEPT ALL SELECT 'a'"))
+    }
+  }
+
+  test("a generator without a native implementation falls back when the JVM path is off") {
+    withSQLConf(CometConf.COMET_EXEC_JVM_GENERATOR_ENABLED.key -> "false") {
+      withGeneratorTable {
+        checkSparkAnswerAndFallbackReason(
+          sql("SELECT id, json_tuple(js, 'a') FROM t"),
+          "Unsupported generator: JsonTuple")
+      }
+    }
+  }
+
+  test("EXCEPT ALL in a correlated subquery keeps the carried columns") {
+    // The decorrelated plan carries t0a and t0b past `ReplicateRows`, whose output reuses
+    // those attribute ids.
+    withTempView("t0", "t1", "t2") {
+      sql("CREATE TEMP VIEW t0(t0a, t0b) AS VALUES (1, 1), (2, 0)")
+      sql("CREATE TEMP VIEW t1(t1a, t1c) AS VALUES (1, 3)")
+      sql("CREATE TEMP VIEW t2(t2b, t2c) AS VALUES (1, 5), (2, 7)")
+      checkSparkAnswerWithNativeGenerate(sql("""
+          |SELECT t0a, (SELECT count(t1c) FROM
+          |  (SELECT t1c FROM t1 WHERE t1a = t0a
+          |   EXCEPT ALL
+          |   SELECT t2c FROM t2 WHERE t2b = t0b))
+          |FROM t0""".stripMargin))
+    }
+  }
 }

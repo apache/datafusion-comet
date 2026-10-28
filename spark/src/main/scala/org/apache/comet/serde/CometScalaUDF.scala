@@ -117,6 +117,18 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
   }
 
   /**
+   * `expr` serialized with Spark's closure serializer, which respects the task context
+   * ClassLoader so classes from user jars resolve, and is how the JVM side of a `JvmScalarUdf`
+   * reads it back. Throws when the tree holds something the serializer refuses.
+   */
+  def closureSerialize(expr: Expression): Array[Byte] = {
+    val buffer = SparkEnv.get.closureSerializer.newInstance().serialize(expr)
+    val serialized = new Array[Byte](buffer.remaining())
+    buffer.get(serialized)
+    serialized
+  }
+
+  /**
    * Bind `expr`, closure-serialize it, and emit a `JvmScalarUdf` proto routed through
    * [[CometScalaUDFCodegen]] so that native execution evaluates the expression inside the
    * Arrow-direct codegen dispatcher. The dispatcher will Janino-compile `expr.doGenCode` into a
@@ -202,11 +214,7 @@ object CometScalaUDF extends CometExpressionSerde[ScalaUDF] {
     // kernels and state on the executor (see `DispatchOccurrence`).
     val bytes =
       try {
-        val serializer = SparkEnv.get.closureSerializer.newInstance()
-        val buffer = serializer.serialize(DispatchOccurrence.tag(boundExpr))
-        val serialized = new Array[Byte](buffer.remaining())
-        buffer.get(serialized)
-        serialized
+        closureSerialize(DispatchOccurrence.tag(boundExpr))
       } catch {
         // `NonFatal` rather than `NotSerializableException`: Java serialization reports an
         // unserializable object graph as one of several exception types depending on where in

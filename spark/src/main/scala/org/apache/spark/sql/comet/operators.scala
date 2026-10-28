@@ -19,8 +19,6 @@
 
 package org.apache.spark.sql.comet
 
-import java.util.Locale
-
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -30,7 +28,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, CreateArray, CreateNamedStruct, ExplodeBase, Expression, ExpressionSet, Generator, Inline, LeafExpression, Literal, NamedExpression, SortOrder, Stack, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -64,7 +62,7 @@ import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, liftFallbackReasons, supportedSortType}
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.MergeRowsMetricsShim
 
@@ -1923,22 +1921,27 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     if (!op.generator.deterministic) {
       return Unsupported(Some("Only deterministic generators are supported"))
     }
-    if (op.generator.children.length != 1) {
-      return Unsupported(Some("generators with multiple inputs are not supported"))
-    }
-    val nodeName = op.generator.nodeName.toLowerCase(Locale.ROOT)
-    if (nodeName != "explode" && nodeName != "posexplode") {
-      return Unsupported(Some(s"Unsupported generator: ${op.generator.nodeName}"))
-    }
-    op.generator.children.head.dataType match {
-      case _: ArrayType =>
+    op.generator match {
+      // Spark only accepts an array of structs for `inline`, and `stack` is planned as `inline`;
+      // see `stackAsStructArray`.
+      case _: Inline | _: Stack =>
         Compatible()
-      case _: MapType =>
-        // TODO add support for map types
-        // https://github.com/apache/datafusion-comet/issues/2837
-        Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
+      case explode: ExplodeBase =>
+        explode.child.dataType match {
+          case _: ArrayType =>
+            Compatible()
+          case _: MapType =>
+            // TODO add support for map types
+            // https://github.com/apache/datafusion-comet/issues/2837
+            Unsupported(Some("Comet only supports explode/explode_outer for arrays, not maps"))
+          case other =>
+            Unsupported(Some(s"Unsupported data type: $other"))
+        }
       case other =>
-        Unsupported(Some(s"Unsupported data type: $other"))
+        CometGeneratorUDF.declineReason(other) match {
+          case Some(reason) => Unsupported(Some(reason))
+          case None => Compatible()
+        }
     }
   }
 
@@ -1946,17 +1949,43 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       op: GenerateExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val childExpr = op.generator.children.head
-    val childExprProto = exprToProto(childExpr, op.child.output)
+    val explodeBuilder = OperatorOuterClass.Explode.newBuilder().setOuter(op.outer)
+    val childExprProto = op.generator match {
+      case inline: Inline =>
+        explodeBuilder.setInline(true)
+        exprToProto(inline.child, op.child.output)
+      case stack: Stack =>
+        explodeBuilder.setInline(true)
+        val array = stackAsStructArray(stack)
+        exprToProto(array, op.child.output).orElse {
+          // The array of structs is built here rather than taken from the plan, so carry any
+          // reason recorded on the built nodes to the generator, where the operator collects it.
+          liftFallbackReasons(array, op.generator)
+          None
+        }
+      case explode: ExplodeBase =>
+        explodeBuilder.setPosition(explode.position)
+        exprToProto(explode.child, op.child.output)
+      case generator =>
+        // The JVM generator yields, for each input row, an array of the structs it emits.
+        explodeBuilder.setInline(true)
+        CometGeneratorUDF.calls(generator, op.child.output) match {
+          case Right((process, terminate)) =>
+            explodeBuilder.setTerminate(terminate)
+            Some(process)
+          case Left(reason) =>
+            withFallbackReason(op, reason)
+            None
+        }
+    }
 
     if (childExprProto.isEmpty) {
       return None
     }
 
-    // Convert the projection expressions (columns to carry forward)
-    // These are the non-generator output columns
-    val generatorOutput = op.generatorOutput.toSet
-    val projectExprs = op.output.filterNot(generatorOutput.contains).map { attr =>
+    // The child columns carried forward. Not derived from `op.output` minus the generator output:
+    // a generator may reuse its child's attribute ids, as `ReplicateRows` does for EXCEPT ALL.
+    val projectExprs = op.requiredChildOutput.map { attr =>
       exprToProto(attr, op.child.output)
     }
 
@@ -1964,16 +1993,28 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
       return None
     }
 
-    val isPosExplode = op.generator.nodeName.toLowerCase(Locale.ROOT) == "posexplode"
-
-    val explodeBuilder = OperatorOuterClass.Explode
-      .newBuilder()
+    explodeBuilder
       .setChild(childExprProto.get)
-      .setOuter(op.outer)
-      .setPosition(isPosExplode)
       .addAllProjectList(projectExprs.map(_.get).asJava)
 
     Some(builder.setExplode(explodeBuilder).build())
+  }
+
+  /**
+   * `stack(n, v1, ..., vk)` emits `n` rows of `ceil(k / n)` columns, filled row by row and padded
+   * with nulls. That is `inline` over an array holding one struct per output row.
+   */
+  private def stackAsStructArray(stack: Stack): Expression = {
+    val numRows = stack.children.head.eval().asInstanceOf[Int]
+    val values = stack.children.tail
+    val fields = stack.elementSchema.fields.toSeq
+    CreateArray(Seq.tabulate(numRows) { row =>
+      CreateNamedStruct(fields.zipWithIndex.flatMap { case (field, col) =>
+        val index = row * fields.length + col
+        val value = if (index < values.length) values(index) else Literal(null, field.dataType)
+        Seq(Literal(field.name), value)
+      })
+    })
   }
 
   override def createExec(nativeOp: Operator, op: GenerateExec): CometNativeExec = {

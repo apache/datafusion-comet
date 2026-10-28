@@ -780,6 +780,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_JVM_GENERATOR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.jvmGenerator.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether to run a generator that Comet has no native implementation of, such as a " +
+          "Hive UDTF or `json_tuple`, inside Comet's native generate operator, which calls the " +
+          "generator on the JVM for each batch. When disabled, such a generator falls back to " +
+          "Spark.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.hash.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")
