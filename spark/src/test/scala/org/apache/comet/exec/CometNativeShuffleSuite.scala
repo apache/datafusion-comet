@@ -1996,15 +1996,10 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         CometConf.COMET_BATCH_SIZE.key -> "10") {
         val df = spark.read.parquet(dir.toString).repartition(2, col("k"))
-        // A job launched from the query's RDD runs outside a SQL execution, so Spark does not
-        // pass the session's configs to the map stage's tasks.
+        // Runs outside a SQL execution, so Spark passes no configs to the map tasks.
         df.queryExecution.toRdd.foreach(_ => ())
-        val exchange = find(df.queryExecution.executedPlan) {
-          case _: CometShuffleExchangeExec => true
-          case _ => false
-        }.get
-        // The scan fused into the shuffle writer emits 10-row batches, not one of the default
-        // 8192 rows.
+        val exchange = checkCometExchange(df, 1, native = true).head
+        // 1000 rows in batches of 10. The default batch size would give 1.
         assert(exchange.metrics("input_batches").value == 100)
       }
     }

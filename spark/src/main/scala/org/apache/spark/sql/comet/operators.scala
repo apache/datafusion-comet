@@ -798,6 +798,7 @@ object CometExec {
   /**
    * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
    * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   * `sqlConf` is captured on the driver; see [[CapturedSQLConf]].
    */
   def getCometIterator(
       inputObjects: Array[Object],
@@ -805,7 +806,8 @@ object CometExec {
       serializedPlan: Array[Byte],
       numParts: Int,
       partitionIdx: Int,
-      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
+      sqlConf: CapturedSQLConf,
+      outputTypes: Seq[DataType]): CometExecIterator = sqlConf.withConf {
     new CometExecIterator(
       newIterId,
       inputObjects,

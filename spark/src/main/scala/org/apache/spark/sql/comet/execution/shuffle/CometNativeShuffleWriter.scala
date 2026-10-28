@@ -95,7 +95,8 @@ class CometNativeShuffleWriter[K, V](
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {
     try {
-      spec.sqlConf.withConf(writeInternal(inputs))
+      val input = nativeShuffleInput(inputs)
+      input.sqlConf.withConf(writeInternal(input))
     } catch {
       case failure: Throwable =>
         remoteDestination.foreach { destination =>
@@ -111,7 +112,20 @@ class CometNativeShuffleWriter[K, V](
     }
   }
 
-  private def writeInternal(inputs: Iterator[Product2[K, V]]): Unit = {
+  // The dep's _rdd is always a CometNativeShuffleInputRDD on this path. Pattern-match instead
+  // of asInstanceOf so a future RDD-layering change produces a clear error here rather than a
+  // bare ClassCastException deeper in the stack.
+  private def nativeShuffleInput(
+      inputs: Iterator[Product2[K, V]]): CometNativeShuffleInputIterator = inputs match {
+    case it: CometNativeShuffleInputIterator => it
+    case other =>
+      throw new IllegalStateException(
+        "CometNativeShuffleWriter expects its input iterator to be a " +
+          "CometNativeShuffleInputIterator (produced by CometNativeShuffleInputRDD), got " +
+          s"${other.getClass.getName}")
+  }
+
+  private def writeInternal(shuffleInputIter: CometNativeShuffleInputIterator): Unit = {
     val localOutput = if (remoteDestination.isEmpty) {
       val resolver =
         SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
@@ -123,17 +137,6 @@ class CometNativeShuffleWriter[K, V](
       None
     }
 
-    // The dep's _rdd is always a CometNativeShuffleInputRDD on this path. Pattern-match instead
-    // of asInstanceOf so a future RDD-layering change produces a clear error here rather than a
-    // bare ClassCastException deeper in the stack.
-    val shuffleInputIter = inputs match {
-      case it: CometNativeShuffleInputIterator => it
-      case other =>
-        throw new IllegalStateException(
-          "CometNativeShuffleWriter expects its input iterator to be a " +
-            "CometNativeShuffleInputIterator (produced by CometNativeShuffleInputRDD), got " +
-            s"${other.getClass.getName}")
-    }
     val partitionIdx = shuffleInputIter.partitionIndex
     val inputObjects = shuffleInputIter.inputObjects
     val shuffleBlockIters = shuffleInputIter.shuffleBlockIterators

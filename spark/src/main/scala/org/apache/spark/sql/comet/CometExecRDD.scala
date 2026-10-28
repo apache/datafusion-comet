@@ -93,8 +93,6 @@ private[spark] class CometExecRDD(
     s"All per-partition arrays must have length $numPartitions, but found: " +
       perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
 
-  // Captured here, on the driver, so that the native plan gets the session's settings in a job
-  // that runs outside a SQL execution. See CapturedSQLConf.
   private val sqlConf = CapturedSQLConf.capture()
 
   override protected def getPartitions: Array[Partition] = {

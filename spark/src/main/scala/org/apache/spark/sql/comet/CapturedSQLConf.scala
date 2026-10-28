@@ -20,25 +20,17 @@
 package org.apache.spark.sql.comet
 
 import org.apache.spark.TaskContext
-import org.apache.spark.sql.execution.SQLExecution
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{ReadOnlySQLConf, SQLConf}
+
+import org.apache.comet.CometConf
 
 /**
- * The SQL configs of the session that planned a Comet plan, captured on the driver so that the
- * plan's tasks read the same values however its job was launched.
- *
- * On an executor, `SQLConf.get` reads the task's local properties, which Spark fills with the
- * session's configs only for a job that runs inside a SQL execution. A job launched from a
- * query's RDD (`Dataset.rdd`, `QueryExecution.toRdd`) can run outside one, and Spark's
- * `SQLExecutionRDD` re-applies the session's configs only in the stage that computes it, the last
- * one. Without this, every earlier stage resolves each `spark.comet.*` setting to its default,
- * including the memory pool and the configs passed to the native plan.
- *
- * Works like `SQLExecutionRDD`: outside a SQL execution, [[withConf]] makes the captured configs
- * what `SQLConf.get` returns on the task thread while it runs. Inside one, the task's local
- * properties already carry the session's configs, and nothing changes.
+ * The session's `spark.comet.*` configs, captured on the driver. Spark passes them to tasks as
+ * local properties only inside a SQL execution, so jobs launched from `Dataset.rdd` or
+ * `QueryExecution.toRdd` read Comet defaults in every stage before the last, which
+ * `SQLExecutionRDD` covers. [[withConf]] fills that gap the same way.
  */
-private[spark] class CapturedSQLConf private (configs: Map[String, String]) extends Serializable {
+class CapturedSQLConf private (configs: Map[String, String]) extends Serializable {
 
   @transient private lazy val executorSideConf: SQLConf = {
     val conf = new SQLConf()
@@ -47,13 +39,13 @@ private[spark] class CapturedSQLConf private (configs: Map[String, String]) exte
   }
 
   /**
-   * Runs `f` with the captured configs as `SQLConf.get` on this thread, if it is a task thread
-   * outside a SQL execution. Only reads made while `f` runs see them, so `f` has to read the
-   * settings it needs, as the `CometExecIterator` constructor does.
+   * Runs `f` with the captured configs as `SQLConf.get`, unless this is not a task thread, a conf
+   * is already set on it, or Spark passed the task the session's configs (it passes all or none).
    */
   def withConf[T](f: => T): T = {
     val context = TaskContext.get()
-    if (context == null || context.getLocalProperty(SQLExecution.EXECUTION_ID_KEY) != null) {
+    if (configs.isEmpty || context == null || !SQLConf.get.isInstanceOf[ReadOnlySQLConf] ||
+      configs.keys.exists(context.getLocalProperty(_) != null)) {
       f
     } else {
       SQLConf.withExistingConf(executorSideConf)(f)
@@ -61,8 +53,9 @@ private[spark] class CapturedSQLConf private (configs: Map[String, String]) exte
   }
 }
 
-private[spark] object CapturedSQLConf {
+object CapturedSQLConf {
 
-  /** Captures the configs of the active session. Call it on the driver, while planning. */
-  def capture(): CapturedSQLConf = new CapturedSQLConf(SQLConf.get.getAllConfs)
+  /** Captures the active session's Comet configs. Call it on the driver. */
+  def capture(): CapturedSQLConf =
+    new CapturedSQLConf(SQLConf.get.getAllConfs.filter(_._1.startsWith(CometConf.COMET_PREFIX)))
 }

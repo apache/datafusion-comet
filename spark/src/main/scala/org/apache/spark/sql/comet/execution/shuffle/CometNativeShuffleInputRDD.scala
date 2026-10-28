@@ -38,8 +38,7 @@ import org.apache.comet.CometShuffleBlockIterator
  *   whether the writer fed by this RDD places rows by position rather than by content; see
  *   [[CometShuffleExchangeExec.positionalRoundRobinSpec]] and `getOutputDeterministicLevel`.
  * @param sqlConf
- *   the session's configs, captured on the driver, for resolving the inputs in a job that runs
- *   outside a SQL execution. See [[CapturedSQLConf]].
+ *   the session's Comet configs, which the writer also applies; see [[CapturedSQLConf]].
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -127,7 +126,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
       partition.index,
       inputObjects,
       shuffleBlockIters,
-      partition.planDataByKey)
+      partition.planDataByKey,
+      sqlConf)
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
@@ -164,7 +164,8 @@ private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
     val inputObjects: Array[Object],
     val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator],
-    val planDataByKey: Map[String, Array[Byte]])
+    val planDataByKey: Map[String, Array[Byte]],
+    val sqlConf: CapturedSQLConf)
     extends Iterator[Product2[Int, ColumnarBatch]] {
 
   override def hasNext: Boolean = false
