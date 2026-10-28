@@ -273,6 +273,20 @@ these events, and one without Comet on its classpath logs once that it dropped t
 `spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
 event log.
 
+## Returning Freed Native Memory Between Stages
+
+On Linux, glibc's allocator keeps much of the memory that Comet's native operators free instead of
+returning it to the operating system, and it keeps it per thread. Spills free a lot of memory, and
+one stage's native plans run on different threads than the next stage's, so an executor's resident
+memory can stay near the peak of one stage while the next stage allocates on top of it. The executor
+can then outgrow its container while the memory usage log shows little allocated.
+
+Setting `spark.comet.memory.trimNativeHeapWhenIdle.enabled=true` makes an executor call glibc's
+`malloc_trim` when its last running native plan finishes, which is typically between stages, and log
+at INFO level how long that took and its resident memory before and after. Set it when the
+application is submitted. It does nothing on other platforms, or in builds with the `jemalloc` or
+`mimalloc` feature.
+
 ## Batch Size
 
 Comet processes data in columnar batches. The batch size is controlled by `spark.comet.batchSize` (default

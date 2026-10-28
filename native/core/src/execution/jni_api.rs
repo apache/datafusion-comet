@@ -125,6 +125,7 @@ use tokio::task::JoinHandle;
 use crate::execution::memory_pools::{
     create_memory_pool, overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
+use crate::execution::native_heap_trim;
 use crate::execution::operators::{ScanExec, ShuffleScanExec};
 use crate::execution::shuffle::{
     decode_remote_shuffle_batch, read_ipc_compressed, CompressionCodec, ShuffleWriterExec,
@@ -141,8 +142,9 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE, COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED,
+    COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED, COMET_STRICT_TIMESTAMP_LABELS,
+    COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
 };
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
@@ -282,6 +284,15 @@ fn snapshot_registry(thread_id: Option<u64>) -> RegistrySnapshot {
 
 fn sum_reserved(pools: &[Arc<dyn MemoryPool>]) -> usize {
     pools.iter().map(|pool| pool.reserved()).sum()
+}
+
+/// The number of native plans registered on this executor, that is created and not yet released.
+fn live_plan_count() -> usize {
+    get_thread_memory_pools()
+        .lock()
+        .values()
+        .map(HashMap::len)
+        .sum()
 }
 
 /// Bytes reserved across `pools`, less the part that Spark has not granted them; see
@@ -597,6 +608,9 @@ struct ExecutionContext {
     pub output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
+    /// Whether releasing this plan trims the native heap when no other plan is left running on
+    /// the executor; see [`crate::execution::native_heap_trim`].
+    trim_native_heap_when_idle: bool,
 }
 
 /// Accept serialized query plan and return the address of the native query plan.
@@ -728,6 +742,7 @@ struct PlanSettings {
     tracing_enabled: bool,
     max_temp_directory_size: u64,
     logging_memory_pool: bool,
+    trim_native_heap_when_idle: bool,
 }
 
 /// Deserializes the Spark configs of a plan and initializes the Tokio runtime from them. The
@@ -750,6 +765,7 @@ fn prepare_plan_settings(serialized_spark_configs: &[u8]) -> CometResult<PlanSet
         max_temp_directory_size: spark_config
             .get_u64(COMET_MAX_TEMP_DIRECTORY_SIZE, 100 * 1024 * 1024 * 1024),
         logging_memory_pool: spark_config.get_bool(COMET_DEBUG_MEMORY),
+        trim_native_heap_when_idle: spark_config.get_bool(COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE),
         spark_config,
     })
 }
@@ -909,6 +925,7 @@ fn create_execution_context(
         shuffle_partition_pusher: None,
         output_stream: None,
         memory_pool_registration,
+        trim_native_heap_when_idle: settings.trim_native_heap_when_idle,
     }))
 }
 
@@ -1671,6 +1688,7 @@ fn release_plan(
     // to other tasks. Dropping the plan aborts the tasks its operators spawned, and they give
     // back what they hold the next time they yield, so wait for them.
     let id = execution_context.id;
+    let trim_native_heap_when_idle = execution_context.trim_native_heap_when_idle;
     let plan_memory = Arc::clone(&execution_context.plan_memory);
     drop(execution_context);
     let held = plan_memory.wait_until_released(Instant::now() + PLAN_MEMORY_RELEASE_TIMEOUT);
@@ -1681,6 +1699,12 @@ fn release_plan(
              which can be after the Spark task has ended and its memory has been given to \
              another task."
         );
+    }
+
+    // The plan has freed its memory. If no other plan is left running, hand what the allocator
+    // kept of it back to the operating system before the next stage allocates on top of it.
+    if trim_native_heap_when_idle {
+        native_heap_trim::trim_if_idle(live_plan_count());
     }
 
     producer_stopped.and(metrics_flushed)

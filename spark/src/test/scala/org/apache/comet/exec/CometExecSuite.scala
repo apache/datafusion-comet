@@ -116,6 +116,14 @@ class CometExecSuite extends CometTestBase {
     withSQLConf(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key -> "TRUE") {
       assert(entries.get(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key) == "true")
     }
+
+    // Trimming the native heap is an executor setting: it crosses resolved from the executor's
+    // configuration, and a value set in the session does not change it.
+    val trimKey = CometConf.COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE.key
+    assert(defaults.get(trimKey) == "false")
+    withSQLConf(trimKey -> "true") {
+      assert(entries.get(trimKey) == "false")
+    }
   }
 
   test("native sort spill files are compressed with the default spill codec") {

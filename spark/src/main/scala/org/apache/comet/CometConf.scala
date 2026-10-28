@@ -583,6 +583,26 @@ object CometConf extends ShimCometConf {
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))
 
+  val COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE: ConfigEntry[Boolean] =
+    conf("spark.comet.memory.trimNativeHeapWhenIdle.enabled")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Whether an executor hands the memory that the C allocator keeps cached back to the " +
+          "operating system when its last running Comet native plan finishes, which is " +
+          "typically between stages. glibc keeps much of the memory that native operators free " +
+          "instead of returning it, so the executor's resident memory can stay near the peak " +
+          "of one stage while the next stage allocates on top of it, and the container can run " +
+          "out of memory while Comet's memory pools stay within their limits. With this " +
+          "enabled, Comet calls glibc's malloc_trim when no native plan is left running on the " +
+          "executor, and logs at INFO level how long it took and the resident memory before " +
+          "and after. Only Linux builds that use glibc and the default system allocator trim. " +
+          "Elsewhere, and in builds with the jemalloc or mimalloc feature, this does nothing. " +
+          "This is an executor setting, read from the application's configuration, so it must " +
+          "be set when the application is submitted. An invalid value disables trimming with " +
+          s"a warning. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")
