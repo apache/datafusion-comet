@@ -713,6 +713,16 @@ Comet also accelerates a number of Catalyst expressions that have no Spark SQL f
 
 This list is illustrative, not exhaustive: the per-function tables are not the complete set of expressions Comet can accelerate.
 
+Struct-typed scalar subqueries, including results introduced by Spark's subquery merging, run
+natively when every field is a supported scalar or nested struct. Field names must be distinct at
+every level. Empty structs, arrays, maps, intervals, non-default strings, and unsupported decimal
+scales retain Spark fallback. A field read remains scalar until its consuming operator broadcasts
+it, preserving NULL parents and nested field metadata.
+
+String fields follow the existing [invalid UTF-8 compatibility rules](compatibility/index.md#strings-with-non-utf-8-bytes):
+transferring a scalar subquery result replaces malformed bytes, so byte-sensitive operations can
+differ from Spark.
+
 ## See also
 
 - [Comet Compatibility Guide](compatibility/index.md) - known incompatibilities and edge cases for supported expressions.

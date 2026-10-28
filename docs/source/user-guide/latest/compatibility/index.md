@@ -108,6 +108,9 @@ a result:
   `spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
   or map value. Top-level values and map keys are not checked; see
   [Parquet](../parquet.md#reads-that-differ-from-spark).
+- **Scalar subquery results.** Transferring a string result from Spark to native execution decodes
+  malformed UTF-8. This also applies recursively to string fields in struct scalar subqueries.
+  Rendered text matches Spark, but byte-sensitive operations retain the differences described above.
 - **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
   encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
   them when it converts a Text scan to Arrow, which it does only when

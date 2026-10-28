@@ -99,9 +99,12 @@ impl PhysicalExpr for GetStructField {
                     self.ordinal,
                 )?))
             }
-            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => Ok(ColumnarValue::Array(
-                child_with_parent_nulls(&struct_array, self.ordinal)?,
-            )),
+            ColumnarValue::Scalar(ScalarValue::Struct(struct_array)) => {
+                let child = child_with_parent_nulls(&struct_array, self.ordinal)?;
+                Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    &child, 0,
+                )?))
+            }
             value => Err(DataFusionError::Execution(format!(
                 "Expected a struct array, got {value:?}"
             ))),
@@ -136,10 +139,60 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int64Array};
+    use arrow::array::{new_null_array, ArrayRef, Int64Array};
     use arrow::buffer::NullBuffer;
     use arrow::datatypes::Fields;
-    use datafusion::physical_expr::expressions::Column;
+    use datafusion::physical_expr::expressions::{Column, Literal};
+
+    #[test]
+    fn scalar_fields_keep_the_scalar_contract_for_every_batch_size() {
+        let nested = ScalarValue::Struct(Arc::new(StructArray::new(
+            vec![Field::new("n", DataType::Int64, true)].into(),
+            vec![Arc::new(Int64Array::from(vec![Some(42)]))],
+            None,
+        )));
+        for value in [
+            ScalarValue::Int64(Some(42)),
+            ScalarValue::Int64(None),
+            nested,
+        ] {
+            let fields: Fields = vec![Field::new("value", value.data_type(), true)].into();
+            let present: ArrayRef = Arc::new(StructArray::new(
+                fields.clone(),
+                vec![value.to_array().unwrap()],
+                None,
+            ));
+            let absent = new_null_array(&DataType::Struct(fields), 1);
+            for (parent, expected) in [
+                (present, value.clone()),
+                (absent, ScalarValue::try_from(&value.data_type()).unwrap()),
+            ] {
+                let expr = GetStructField::new(
+                    Arc::new(Literal::new(
+                        ScalarValue::try_from_array(&parent, 0).unwrap(),
+                    )),
+                    0,
+                );
+                for rows in [0, 1, 4] {
+                    let batch = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+                        vec![Arc::new(Int64Array::from_iter_values(0..rows as i64))],
+                    )
+                    .unwrap();
+                    let result = expr.evaluate(&batch).unwrap();
+                    let ColumnarValue::Scalar(actual) = &result else {
+                        panic!("A scalar struct field must stay scalar");
+                    };
+                    assert_eq!(actual, &expected);
+                    let output = result.into_array(rows).unwrap();
+                    assert_eq!(output.len(), rows);
+                    for row in 0..rows {
+                        assert_eq!(ScalarValue::try_from_array(&output, row).unwrap(), expected);
+                    }
+                }
+            }
+        }
+    }
 
     // A field of a NULL struct must be NULL (Spark semantics) even when the child buffer holds a
     // non-null value at that row -- Arrow stores child validity independently of the parent
