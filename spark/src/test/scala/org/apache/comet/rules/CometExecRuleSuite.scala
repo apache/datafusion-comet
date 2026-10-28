@@ -46,6 +46,7 @@ import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, ObjectHashAg
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExchangeExec, ShuffleExchangeExec}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
+import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
 
@@ -204,6 +205,45 @@ class CometExecRuleSuite extends CometTestBase {
             !new ExtendedExplainInfo()
               .getFallbackReasons(result)
               .exists(_.contains("make_date requires Spark evaluation below LIMIT")))
+        }
+      }
+    }
+  }
+
+  test("make_date shuffle keys remain eager below a limit") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key -> "true") {
+      for (invalid <- Seq(false, true)) {
+        val rows = Seq.fill(20)((2024, 1, 1)) :+ (2024, if (invalid) 13 else 1, 1)
+        withParquetTable(rows, "make_date_shuffle") {
+          val df = spark
+            .table("make_date_shuffle")
+            .repartition(8, expr("make_date(_1, _2, _3)"))
+            .limit(10)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          val exchanges = plan.collect { case exchange: CometShuffleExchangeExec => exchange }
+          withClue(plan.treeString) {
+            assert(exchanges.size == 1)
+            assert(exchanges.head.shuffleType == CometNativeShuffle)
+            assert(
+              exchanges.head.originalPlan.expressions.exists(_.exists(_.isInstanceOf[MakeDate])))
+          }
+          if (invalid) {
+            // LIMIT cannot hide an invalid key, even when enough valid input rows precede it.
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+              withClue(s"$engine: ") {
+                assert(
+                  error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+              }
+            }
+          } else {
+            checkSparkAnswer(df)
+          }
         }
       }
     }

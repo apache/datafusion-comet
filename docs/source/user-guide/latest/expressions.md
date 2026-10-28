@@ -735,8 +735,9 @@ Selecting the date eagerly does not force conditionally used sibling expressions
 computations also retain Spark evaluation when needed.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
-Exchanges materialize their inputs independently, and local sorts and aggregates can also
-separate date evaluation from an outer limit.
+Exchanges materialize their inputs and partition keys independently, so an outer limit does
+not force an eager date partition key to Spark. Local sorts and aggregates can also separate
+date evaluation from an outer limit.
 
 Users who accept eagerly evaluating dates, projected arguments, and sibling expressions can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for

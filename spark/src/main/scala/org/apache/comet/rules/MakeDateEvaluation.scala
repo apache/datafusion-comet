@@ -307,7 +307,8 @@ private[rules] object MakeDateEvaluation {
         }
       }
       val ownReason = reason(node).orElse {
-        val rowReason = if (evaluatesDate) {
+        // An exchange evaluates its partition keys for every input before a consumer reads rows.
+        val rowReason = if (evaluatesDate && !exchange) {
           rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
         } else None
         rowReason.orElse(original match {
