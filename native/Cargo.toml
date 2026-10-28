@@ -20,7 +20,8 @@ default-members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuff
 members = ["core", "spark-expr", "common", "proto", "jni-bridge", "shuffle", "operators", "comet-udf-sdk", "comet-test-udfs"]
 # Crates under ../contrib are intentionally NOT workspace members. Core pulls them in as
 # optional path dependencies when their corresponding contrib feature is enabled.
-exclude = ["../contrib"]
+# native-executors is its own workspace, so that this one never depends on Ballista.
+exclude = ["../contrib", "native-executors"]
 resolver = "2"
 
 [workspace.package]
