@@ -358,6 +358,74 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date keeps deferred arguments in their producing projections") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val rows = Seq((None, None, "bad"), (Some(2024), Some(1), "1"))
+      withParquetTable(rows, "make_date_arguments") {
+        def checkProjection(
+            query: String,
+            expectedDates: Set[Any],
+            dateIndex: Int = 1): SparkPlan = {
+          var expected = Seq.empty[Row]
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            expected = sql(query).collect().toSeq
+          }
+          assert(expected.map(_.get(dateIndex)).toSet == expectedDates)
+          val df = sql(query)
+          checkCometAnswer(df, expected)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)
+          plan
+        }
+
+        val cases = Seq(
+          ("_1 AS y, CAST(_3 AS INT) AS m", "make_date(y, m, 1)", "", true),
+          ("_2 AS m, CAST(_3 AS INT) AS d", "make_date(2024, m, d)", "", true),
+          // Reading a column is safe even if make_date skips the argument.
+          ("_1 AS y, _2 AS m", "make_date(y, m, 1)", "", false),
+          // The year is always evaluated, so its producer can remain native.
+          (
+            "CAST(_3 AS INT) + 2023 AS y, _2 AS m",
+            "make_date(y, m, 1)",
+            "WHERE _1 IS NOT NULL",
+            false))
+        for ((arguments, date, filter, deferred) <- cases) {
+          // Repeated r keeps the projections separate without forcing the date arguments.
+          val query = s"""
+            |SELECT r, unix_date($date) AS d, r + 1 AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, $arguments FROM make_date_arguments $filter
+            |)
+            |""".stripMargin
+          val expectedDates: Set[Any] = if (filter.isEmpty) Set(null, 19723) else Set(19723)
+          val plan = checkProjection(query, expectedDates)
+          withClue(s"arguments=$arguments date=$date\n${plan.treeString}") {
+            assert(countOperators(plan, classOf[ProjectExec]) == (if (deferred) 2 else 0))
+            assert(countOperators(plan, classOf[CometProjectExec]) == (if (deferred) 0 else 2))
+            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+            assert(reasons.exists(_.contains("make_date requires Spark evaluation")) == deferred)
+          }
+        }
+
+        // Repeated r and r2 retain an intervening projection that only aliases the month.
+        val aliased = checkProjection(
+          """
+            |SELECT r, repeated_r, r2, r2 + 1, unix_date(make_date(y, month_alias, 1)) FROM (
+            |  SELECT r, r + 1 AS repeated_r, rand(11L) AS r2, y, m AS month_alias FROM (
+            |    SELECT rand(7L) AS r, _1 AS y, CAST(_3 AS INT) AS m FROM make_date_arguments
+            |  )
+            |)
+            |""".stripMargin,
+          Set(null, 19723),
+          dateIndex = 4)
+        assert(countOperators(aliased, classOf[ProjectExec]) == 3, aliased.treeString)
+        assert(countOperators(aliased, classOf[CometProjectExec]) == 0, aliased.treeString)
+      }
+    }
+  }
+
   test("make_date aggregate arguments retain Spark execution") {
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",

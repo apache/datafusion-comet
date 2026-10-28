@@ -72,7 +72,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
           spark
             .range(2)
             .coalesce(1)
-            .selectExpr("CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m")
+            .selectExpr(
+              "CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m",
+              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text")
             .write
             .parquet(path.getCanonicalPath)
         }
@@ -112,6 +114,24 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                   assert(consume(sql(unlimited)) == expected)
                 }
               }
+
+              // LIMIT can also skip an eager date argument produced by an earlier projection.
+              val yearQuery = """
+                |SELECT r, unix_date(make_date(y, 1, 1)), r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(yearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val yearDf = sql(yearQuery)
+              assert(yearDf.collect().toSeq == expected)
+              val yearPlan = stripAQEPlan(yearDf.queryExecution.executedPlan)
+              assert(yearPlan.collect { case p: ProjectExec => p }.size == 2, yearPlan.treeString)
+              assert(
+                yearPlan.collect { case p: CometProjectExec => p }.isEmpty,
+                yearPlan.treeString)
 
               // A full collection must still evaluate the second row in the native expression.
               val full = sql(unlimited)

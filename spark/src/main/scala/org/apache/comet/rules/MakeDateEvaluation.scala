@@ -46,7 +46,10 @@ private[rules] object MakeDateEvaluation {
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
 
-  private case class ProjectionDemand(boundary: String, deferred: AttributeSet)
+  private case class ProjectionDemand(
+      boundary: String,
+      deferred: AttributeSet,
+      makeDateInputs: AttributeSet)
 
   // Attributes may stand for deferred expressions in a lower projection, not materialized values.
   private def harmlessValue(expression: Expression): Boolean =
@@ -57,6 +60,9 @@ private[rules] object MakeDateEvaluation {
     case attribute: Attribute => AttributeSet(Seq(attribute))
     case _ =>
       val children = expression match {
+        case date: MakeDate =>
+          val firstNullable = date.children.indexWhere(_.nullable)
+          date.children.take(if (firstNullable < 0) date.children.size else firstNullable + 1)
         case conditional: ConditionalExpression =>
           val required = conditional.alwaysEvaluatedInputs
           if (conditional.children.filterNot(required.contains).forall(harmlessValue)) required
@@ -182,7 +188,12 @@ private[rules] object MakeDateEvaluation {
       }
       val childProjectionDemand = original match {
         // Generated filters can defer deterministic projection outputs until a row is accepted.
-        case filter: FilterExec => Some(ProjectionDemand("FILTER", filter.child.outputSet))
+        case filter: FilterExec =>
+          Some(
+            ProjectionDemand(
+              "FILTER",
+              filter.child.outputSet,
+              projectionDemand.map(_.makeDateInputs).getOrElse(AttributeSet.empty)))
         case project: ProjectExec =>
           val deferred = projectionDemand.map(_.deferred).getOrElse(AttributeSet.empty)
           val eager = project.projectList
@@ -191,10 +202,31 @@ private[rules] object MakeDateEvaluation {
           // ProjectExec forces repeated inputs and nondeterministic outputs. Other inputs can
           // remain inlined in a consumer's conditional, even across intervening aliases.
           val skipped = project.child.outputSet -- project.usedInputs -- AttributeSet(eager)
-          if (skipped.isEmpty) {
+          val inheritedInputs =
+            projectionDemand.map(_.makeDateInputs).getOrElse(AttributeSet.empty)
+          val dateInputs = AttributeSet(project.projectList.flatMap { output =>
+            val direct = output.collect { case date: MakeDate => date }.flatMap(_.references)
+            // Follow aliases to the computation, which need not itself contain make_date.
+            val inherited =
+              if ((output.deterministic || rowDemand.isDefined) &&
+                inheritedInputs.contains(output.toAttribute)) {
+                output.references.toSeq
+              } else {
+                Nil
+              }
+            direct ++ inherited
+          })
+          // A lazy row consumer can skip even the date's required arguments on unread rows.
+          val deferredDateInputs =
+            dateInputs.intersect(if (rowDemand.isDefined) project.child.outputSet else skipped)
+          if (skipped.isEmpty && deferredDateInputs.isEmpty) {
             None
           } else {
-            Some(ProjectionDemand(projectionDemand.map(_.boundary).getOrElse("PROJECT"), skipped))
+            Some(
+              ProjectionDemand(
+                projectionDemand.map(_.boundary).getOrElse("PROJECT"),
+                skipped,
+                deferredDateInputs))
           }
         case _ if exchange || localMaterialization || join => None
         case _ => projectionDemand
@@ -202,23 +234,33 @@ private[rules] object MakeDateEvaluation {
       val visited = node.children.map(visit(_, childDemand, childProjectionDemand))
       val childReason = visited.flatMap(_._2).headOption
       val ownReason = reason(node).orElse {
-        if (containsMakeDate(original.expressions)) {
-          rowDemand
-            .map(boundary => s"make_date requires Spark evaluation below $boundary")
-            .orElse(original match {
-              case project: ProjectExec =>
-                projectionDemand
-                  .filter(demand =>
-                    project.projectList.exists(output =>
-                      output.deterministic && demand.deferred.contains(output.toAttribute) &&
-                        containsMakeDate(Seq(output))))
-                  .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
-              // Join keys/conditions and aggregate updates can be skipped inside the operator.
-              case _: BaseJoinExec | _: BaseAggregateExec | _: TakeOrderedAndProjectExec =>
-                Some(s"make_date requires Spark evaluation in ${original.nodeName}")
-              case _ => None
-            })
+        val evaluatesDate = containsMakeDate(original.expressions)
+        val rowReason = if (evaluatesDate) {
+          rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
         } else None
+        rowReason.orElse(original match {
+          case project: ProjectExec =>
+            projectionDemand
+              .filter(demand =>
+                project.projectList.exists { output =>
+                  val computation = output match {
+                    case alias: Alias => alias.child
+                    case other => other
+                  }
+                  val deferredDate = output.deterministic &&
+                    demand.deferred.contains(output.toAttribute) && containsMakeDate(Seq(output))
+                  val deferredArgument = (output.deterministic || rowDemand.isDefined) &&
+                    demand.makeDateInputs.contains(output.toAttribute) &&
+                    !CometMakeDate.canEvaluateEagerly(computation)
+                  deferredDate || deferredArgument
+                })
+              .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
+          // Join keys/conditions and aggregate updates can be skipped inside the operator.
+          case _: BaseJoinExec | _: BaseAggregateExec | _: TakeOrderedAndProjectExec
+              if evaluatesDate =>
+            Some(s"make_date requires Spark evaluation in ${original.nodeName}")
+          case _ => None
+        })
       }
       val fallbackReason = ownReason.orElse(if (exchange) None else childReason)
       val children = visited.map { case (child, _) =>

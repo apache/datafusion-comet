@@ -726,16 +726,17 @@ This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers
-to remain native when their operands are safe to evaluate.
+to remain native when their operands are safe to evaluate. These safeguards also preserve
+NULL short-circuiting when a date argument is computed in an earlier projection.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
 Exchanges materialize their inputs independently, and local sorts and aggregates can also
 separate date evaluation from an outer limit.
 
-Users who accept evaluating dates on rows Spark would skip can set
+Users who accept eagerly evaluating dates and their projected arguments can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
-these shapes. The default is `true`. Disabling it can produce an invalid-date error where
-Spark would return rows successfully under ANSI mode. This setting does not change
+these shapes. The default is `true`. Disabling it can expose invalid-date or argument errors
+that Spark would skip under ANSI mode. This setting does not change
 `make_date`'s invalid-date handling or the expression-level safeguards for skipped
 arguments and operands. For example, an empty `IN` predicate containing `make_date`
 still falls back when needed.
