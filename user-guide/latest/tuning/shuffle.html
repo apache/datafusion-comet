@@ -913,6 +913,18 @@ grow marginally because Spark’s row-based serializer generally compresses less
 even when both of those aggregates run on Spark.</p>
 </section>
 </section>
+<section id="native-shuffle-writer-memory">
+<h2>Native Shuffle Writer Memory<a class="headerlink" href="#native-shuffle-writer-memory" title="Link to this heading">#</a></h2>
+<p>The native shuffle writer buffers a task’s output in memory and spills it to disk. By default
+(<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes=0</span></code>) it spills only when the memory pool denies an allocation, so it holds
+as much of the task’s share of the off-heap pool as it can get. That can leave a sort or an aggregation in the same
+task without memory, and the large buffers it frees at the end of the task can stay resident in the native allocator,
+adding to the executor’s memory footprint.</p>
+<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.maxBufferBytes</span></code> makes the writer spill whenever it has buffered that many bytes.
+The limit applies to each task’s writer, so it does not grow with the size of the executor. A value such as <code class="docutils literal notranslate"><span class="pre">256m</span></code>
+keeps the writer’s footprint small at the cost of more spills and a slightly larger shuffle. Much smaller values write
+small shuffle blocks, which slows down the stage that reads them.</p>
+</section>
 <section id="shuffle-compression">
 <h2>Shuffle Compression<a class="headerlink" href="#shuffle-compression" title="Link to this heading">#</a></h2>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code> controls the codec used to compress shuffle data written by
@@ -988,6 +1000,7 @@ single-node setups with fast NVMe drives, at the expense of increased disk space
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#automatic-revert-to-spark-shuffle">Automatic Revert to Spark Shuffle</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#native-shuffle-writer-memory">Native Shuffle Writer Memory</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-compression">Shuffle Compression</a></li>
 </ul>
   </nav></div>
