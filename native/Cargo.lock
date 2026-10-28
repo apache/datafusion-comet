@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "comet-contrib-delta"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "datafusion",
  "datafusion-comet-proto",
@@ -1479,7 +1479,7 @@ dependencies = [
 
 [[package]]
 name = "comet-contrib-lance"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "datafusion",
  "datafusion-comet-proto",
@@ -1487,7 +1487,7 @@ dependencies = [
 
 [[package]]
 name = "comet-test-udfs"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "comet-udf-sdk",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "comet-udf-sdk"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
 ]
@@ -1976,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "assertables",
@@ -2051,7 +2051,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-common"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "datafusion",
@@ -2063,12 +2063,13 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-jni-bridge"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "assertables",
  "datafusion",
  "datafusion-comet-common",
+ "futures",
  "jni",
  "lazy_static",
  "once_cell",
@@ -2082,7 +2083,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-operators"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "criterion",
@@ -2096,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-proto"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "prost",
  "prost-build",
@@ -2104,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-shuffle"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "arrow-data",
@@ -2134,7 +2135,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion-comet-spark-expr"
-version = "1.2.0"
+version = "1.3.0"
 dependencies = [
  "arrow",
  "base64 0.23.1",

@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -98,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.

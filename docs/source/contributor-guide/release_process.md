@@ -167,8 +167,9 @@ git add docs/source/user-guide/latest/
 git commit -m "Generate docs for 0.13.0 release"
 ```
 
-The script runs one Maven build per supported Spark version, so it takes a while. Open a PR with this commit
-targeting the release branch.
+The script runs one Maven build per supported Spark version, so it takes a while. It formats the generated
+pages with the latest prettier, which is what CI installs, so it needs network access to npm. Open a PR with this
+commit targeting the release branch.
 
 ### Update Maven Version
 

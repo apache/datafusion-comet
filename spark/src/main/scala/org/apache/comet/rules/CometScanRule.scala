@@ -781,6 +781,20 @@ case class CometScanRule(session: SparkSession)
         val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
         val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
+        // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
+        // disappear during projection, or reach the adapter with physical field names that
+        // cannot distinguish a mapped alias from a genuinely missing field. Schema history
+        // does not detect names that already differed when the files were imported.
+        val nestedNameMappingSupported = !(metadata.nameMapping.isDefined &&
+          projectedDataColumns.exists(_.dataType match {
+            case _: StructType | _: ArrayType | _: MapType => true
+            case _ => false
+          }))
+        if (!nestedNameMappingSupported) {
+          fallbackReasons += "Nested columns with Iceberg name mapping are not yet supported " +
+            "by Comet's native reader (#6790)"
+        }
+
         // The full task schema can be serialized to native, but iceberg-rust can represent
         // Variant in that schema as long as no projected field contains one. Check projected
         // roots strictly, and allow Variant only under entirely unprojected roots. Other
@@ -1111,7 +1125,7 @@ case class CometScanRule(session: SparkSession)
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
           metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported && taskSchemaNamesSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported && nestedNameMappingSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,

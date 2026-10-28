@@ -341,19 +341,8 @@ object NativeConfig {
     val scheme = Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT)).getOrElse("file")
 
     import scala.jdk.CollectionConverters._
-    val options = scala.collection.mutable.Map[String, String]()
-
-    // Scheme lists consumed on the native side ride along in the options map (both empty by
-    // default).
-    val libhdfsSchemes = hadoopConf.get(COMET_LIBHDFS_SCHEMES_KEY)
-    if (StringUtils.isNotBlank(libhdfsSchemes)) {
-      options(COMET_LIBHDFS_SCHEMES_KEY) = libhdfsSchemes
-    }
-    val s3CompliantRaw = hadoopConf.get(COMET_S3_COMPLIANT_SCHEMES_KEY)
-    if (StringUtils.isNotBlank(s3CompliantRaw)) {
-      options(COMET_S3_COMPLIANT_SCHEMES_KEY) = s3CompliantRaw
-    }
-    val s3CompliantSchemes = parseSchemeSet(s3CompliantRaw)
+    val options = scala.collection.mutable.Map[String, String]() ++= schemeListOptions(hadoopConf)
+    val s3CompliantSchemes = resolveS3CompliantSchemes(hadoopConf)
 
     // ABFS: Hadoop resolves the mechanism and values for this URI's account on the driver, and
     // only those travel to native (never another account's keys, never the whole namespace).
@@ -399,6 +388,12 @@ object NativeConfig {
     (options.toMap, aliasOptions)
   }
 
+  /** The scheme lists consumed on the native side; both are empty by default. */
+  private def schemeListOptions(hadoopConf: Configuration): Map[String, String] =
+    Seq(COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY).flatMap { key =>
+      Option(hadoopConf.get(key)).filter(StringUtils.isNotBlank).map(key -> _)
+    }.toMap
+
   /**
    * The object store options for a scan over `uris`, or the reason the native scan cannot read
    * them. A scan without ABFS files forwards the options of every scheme it reads (see
@@ -406,6 +401,8 @@ object NativeConfig {
    * container and account of one URI and forwarded under global key names, so a scan whose ABFS
    * files span more than one container or account, or that mixes ABFS and other schemes, is
    * declined, and one that stays in a single container forwards the resolution of its first file.
+   * A resolution the native store cannot use (see [[AbfsAuthResolver.nativeFallbackReason]])
+   * declines the scan too, so that Spark reads it instead of every task failing.
    */
   def extractScanObjectStoreOptions(
       hadoopConf: Configuration,
@@ -430,7 +427,11 @@ object NativeConfig {
       }
     }
     if (firstIsAbfs) {
-      Right(extractObjectStoreOptions(hadoopConf, first))
+      val outcome = AbfsAuthResolver.resolve(hadoopConf, first)
+      AbfsAuthResolver.nativeFallbackReason(first, outcome) match {
+        case Some(reason) => Left(reason)
+        case None => Right(schemeListOptions(hadoopConf) ++ AbfsAuthResolver.toOptions(outcome))
+      }
     } else {
       Right(extractObjectStoreOptions(hadoopConf, uris))
     }
