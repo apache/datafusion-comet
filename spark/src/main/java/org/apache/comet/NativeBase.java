@@ -384,4 +384,17 @@ public abstract class NativeBase {
    * @return the supported schemes joined by commas, e.g. "file,memory,gs,s3,s3a"
    */
   public static native String icebergStorageSchemes(boolean forWrite);
+
+  /**
+   * Why the native scan cannot build its ABFS object store for {@code url} from the given object
+   * store options, or null when it can. This runs the store construction the scan itself runs, so
+   * the planner falls back on exactly the configurations native rejects rather than a copy of its
+   * rules. Building the store makes no request, and the message names option keys, never values.
+   *
+   * @param url an {@code abfs} or {@code abfss} URL naming the container and account
+   * @param keys the option keys, as produced by {@code AbfsAuthResolver.toOptions}
+   * @param values the option values, in the order of {@code keys}
+   * @return the reason the store cannot be built, or null
+   */
+  public static native String abfsStoreError(String url, String[] keys, String[] values);
 }

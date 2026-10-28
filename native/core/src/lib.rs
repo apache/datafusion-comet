@@ -30,7 +30,7 @@ extern crate core;
 extern crate datafusion_comet_jni_bridge;
 
 use jni::{
-    objects::{JClass, JString},
+    objects::{JClass, JObjectArray, JString},
     sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
@@ -41,6 +41,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
+use std::collections::HashMap;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
@@ -300,6 +301,33 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
         };
         let joined = builtin_storage_schemes(access_mode).join(",");
         Ok(env.new_string(joined)?.into_raw())
+    })
+}
+
+/// JNI: why the native scan cannot build its ABFS store for `url` from the object store options
+/// `keys`/`values`, or null when it can. The driver asks this when it plans a scan whose ABFS
+/// authentication resolved, so a store native would reject falls back to Spark instead of every
+/// task failing. See `azure::store_error`.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_abfsStoreError(
+    env: EnvUnowned,
+    _: JClass,
+    url: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let url: String = url.try_to_string(env)?;
+        let mut configs = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            configs.insert(key, value);
+        }
+        match parquet::objectstore::azure::store_error(&url, &configs) {
+            Some(message) => Ok(env.new_string(message)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
     })
 }
 
