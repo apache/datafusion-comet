@@ -134,6 +134,9 @@ pub struct SparkCastOptions {
     /// True when running against Spark 4.0+. Enables version-specific cast behaviour
     /// such as the handling of leading whitespace before T-prefixed time-only strings.
     pub is_spark4_plus: bool,
+    /// True when the running Spark casts a zero string with any exponent ("0e39") to decimal as
+    /// 0 instead of applying the integral-digit limit to it (SPARK-60118).
+    pub decimal_zero_any_exponent: bool,
     /// Support casting unsigned ints to signed ints (used by Parquet SchemaAdapter)
     pub allow_cast_unsigned_ints: bool,
     /// We also use the cast logic for adapting Parquet schemas, so this flag is used
@@ -152,6 +155,7 @@ impl SparkCastOptions {
             timezone: timezone.to_string(),
             allow_incompat,
             is_spark4_plus: false,
+            decimal_zero_any_exponent: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -165,6 +169,7 @@ impl SparkCastOptions {
             timezone: "".to_string(),
             allow_incompat,
             is_spark4_plus: false,
+            decimal_zero_any_exponent: false,
             allow_cast_unsigned_ints: false,
             is_adapting_schema: false,
             null_string: "null".to_string(),
@@ -275,12 +280,22 @@ pub(crate) fn cast_array(
             Ok(cast_with_options(&array, to_type, &CAST_OPTIONS)?)
         }
         (Utf8, Float32 | Float64) => cast_string_to_float(&array, to_type, eval_mode),
-        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
-        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => {
-            cast_string_to_decimal(&array, to_type, precision, scale, eval_mode)
-        }
+        (Utf8 | LargeUtf8, Decimal128(precision, scale)) => cast_string_to_decimal(
+            &array,
+            to_type,
+            precision,
+            scale,
+            eval_mode,
+            cast_options.decimal_zero_any_exponent,
+        ),
+        (Utf8 | LargeUtf8, Decimal256(precision, scale)) => cast_string_to_decimal(
+            &array,
+            to_type,
+            precision,
+            scale,
+            eval_mode,
+            cast_options.decimal_zero_any_exponent,
+        ),
         (Int64, Int32)
         | (Int64, Int16)
         | (Int64, Int8)
