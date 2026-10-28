@@ -940,6 +940,44 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     }
   }
 
+  // Runs on every Spark version, unlike the cache test above. The root decides the format: a root
+  // that cannot output rows was planned for columnar output, and a row-only root for rows.
+  for (adaptive <- Seq(false, true)) {
+    test(s"transition-heavy revert keeps the output format of the result root: AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        CometConf.COMET_EXEC_TRANSITION_REVERT_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_TRANSITION_REVERT_MAX_TRANSITIONS.key -> "0") {
+        val leaf = createSparkPlan("SELECT id FROM VALUES (1) AS t(id)")
+          .collectFirst { case node: LeafExecNode => node }
+          .getOrElse(fail("expected a leaf node in test plan"))
+        // The reverted filter outputs rows only, so a stage that wants batches needs a transition.
+        assert(!leaf.supportsColumnar, s"test requires a row-only leaf:\n$leaf")
+        val rule = RevertNativeForTransitionHeavyStages(spark)
+
+        val columnarRoot =
+          CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(leaf)))
+        assert(columnarRoot.supportsColumnar && !columnarRoot.supportsRowBased)
+        assert(rule.countTransitions(columnarRoot) == 1)
+        val columnar = rule(columnarRoot)
+        columnar match {
+          case RowToColumnarExec(filter: FilterExec) =>
+            assert(filter.child eq leaf, s"expected the Spark filter over the leaf:\n$columnar")
+          case other => fail(s"expected RowToColumnarExec over the reverted root, got:\n$other")
+        }
+        assert(countCometExecs(columnar) == 0, s"the stage must be reverted:\n$columnar")
+
+        val rowRoot = ColumnarToRowExec(columnarRoot)
+        assert(rowRoot.supportsRowBased && !rowRoot.supportsColumnar)
+        val rows = rule(rowRoot)
+        assert(!rows.supportsColumnar, s"the root must keep rows as its output:\n$rows")
+        assert(rows.collect { case _: RowToColumnarExec => true }.isEmpty, s"got:\n$rows")
+        assert(rows.collect { case _: FilterExec => true }.size == 1, s"got:\n$rows")
+        assert(countCometExecs(rows) == 0, s"the stage must be reverted:\n$rows")
+      }
+    }
+  }
+
   for (adaptive <- Seq(false, true); columnarRoot <- Seq(false, true)) {
     test(
       s"transition-heavy map-stage fallback supplies Arrow: AQE=$adaptive, columnar=$columnarRoot") {
