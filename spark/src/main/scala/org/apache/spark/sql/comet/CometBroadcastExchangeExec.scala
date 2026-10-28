@@ -143,7 +143,7 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Coalesce the many small per-shuffle-block buffers, usually into a single buffer.
         // Without this, each consumer task deserializes one Arrow IPC stream per
         // shuffle block (one per writer task per partition), which is very expensive
         // when there are hundreds of writer tasks and partitions. See the scaladoc
@@ -167,7 +167,7 @@ case class CometBroadcastExchangeExec(
 
         // (3.4 only) SPARK-39983 - Broadcast the relation without caching the unserialized object.
         val broadcasted = sparkContext
-          .broadcastInternal(batches, true)
+          .broadcastInternal(new CometBroadcastValue(batches), true)
           .asInstanceOf[broadcast.Broadcast[Any]]
         longMetric("broadcastTime") += NANOSECONDS.toMillis(System.nanoTime() - beforeBroadcast)
         val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
@@ -210,9 +210,9 @@ case class CometBroadcastExchangeExec(
 
   // This is basically for unit test only, called by `executeCollect` indirectly.
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
-    val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
+    val broadcasted = executeBroadcast[CometBroadcastValue]()
 
-    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted)
+    new CometBatchRDD(sparkContext, getNumPartitions(), broadcasted, shareDecoded)
   }
 
   // After https://issues.apache.org/jira/browse/SPARK-48195, Spark plan will cache created RDD.
@@ -223,9 +223,12 @@ case class CometBroadcastExchangeExec(
       throw SparkException.internalError("A canonicalized plan is not supposed to be executed.")
     }
 
-    val broadcasted = executeBroadcast[Array[ChunkedByteBuffer]]()
-    new CometBatchRDD(sparkContext, numPartitions, broadcasted)
+    val broadcasted = executeBroadcast[CometBroadcastValue]()
+    new CometBatchRDD(sparkContext, numPartitions, broadcasted, shareDecoded)
   }
+
+  private def shareDecoded: Boolean =
+    CometConf.COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED.get(conf)
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
     try {
@@ -286,11 +289,15 @@ object CometBroadcastExchangeExec extends CometSink[BroadcastExchangeExec] {
  *   number of partitions
  * @param value
  *   the broadcasted batches which are serialized into an array of [[ChunkedByteBuffer]]s
+ * @param shareDecoded
+ *   whether the tasks of an executor that read the broadcast at the same time share one decoded
+ *   copy of it, through [[CometBroadcastValue]]
  */
 class CometBatchRDD(
     sc: SparkContext,
     val numPartitions: Int,
-    value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
+    value: broadcast.Broadcast[CometBroadcastValue],
+    shareDecoded: Boolean)
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override def getPartitions: Array[Partition] = (0 until numPartitions).toArray.map { i =>
@@ -299,12 +306,16 @@ class CometBatchRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometBatchPartition]
-    partition.value.value.iterator
-      .flatMap(Utils.decodeBatches(_, this.getClass.getSimpleName))
+    val source = this.getClass.getSimpleName
+    if (shareDecoded && context != null) {
+      partition.value.value.batches(context, source)
+    } else {
+      partition.value.value.chunks.iterator.flatMap(Utils.decodeBatches(_, source))
+    }
   }
 }
 
 class CometBatchPartition(
     override val index: Int,
-    val value: broadcast.Broadcast[Array[ChunkedByteBuffer]])
+    val value: broadcast.Broadcast[CometBroadcastValue])
     extends Partition {}

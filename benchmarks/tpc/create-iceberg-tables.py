@@ -118,7 +118,26 @@ def main(benchmark: str, parquet_path: str, warehouse: str, catalog: str, databa
         pass
 
     for table in table_names:
-        parquet_table_path = f"{parquet_path}/{table}.parquet"
+        parquet_file_path = f"{parquet_path}/{table}.parquet"
+        parquet_dir_path = f"{parquet_path}/{table}"
+        parquet_file_exists = os.path.exists(parquet_file_path)
+        parquet_dir_exists = os.path.exists(parquet_dir_path)
+
+        if parquet_file_exists:
+            parquet_table_path = parquet_file_path
+            if parquet_dir_exists:
+                print(
+                    f"Warning: both '{parquet_file_path}' and '{parquet_dir_path}' exist; "
+                    f"using '{parquet_file_path}'",
+                    file=sys.stderr,
+                )
+        elif parquet_dir_exists:
+            parquet_table_path = parquet_dir_path
+        else:
+            raise FileNotFoundError(
+                f"Could not find Parquet data for table '{table}'. "
+                f"Expected '{parquet_file_path}' or '{parquet_dir_path}'."
+            )
         iceberg_table = f"{catalog}.{database}.{table}"
 
         print(f"Converting {parquet_table_path} -> {iceberg_table}")

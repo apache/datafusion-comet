@@ -38,13 +38,13 @@ import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.{CometTestBase, DataFrame, Observation, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, AttributeReference, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, LessThan, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.LeftOuter
+import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoinExec, CometInMemoryTableScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
@@ -57,7 +57,7 @@ import org.apache.spark.storage.StorageLevel
 
 import org.apache.comet.{CometArrowAllocator, CometConf, CometKryoRegistrator, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
-import org.apache.comet.rules.CometCacheColumnarRule
+import org.apache.comet.rules.{CometCacheBuildRule, CometCacheColumnarRule}
 import org.apache.comet.vector.{CometPlainVector, CometVector}
 
 import net.jpountz.lz4.LZ4FrameInputStream
@@ -325,6 +325,105 @@ class CometInMemoryCacheSuite extends CometTestBase {
             }
           }
         }
+      }
+    }
+  }
+
+  test("AQE builds a cache whose final stage ends in a Spark operator straight into Arrow") {
+    assume(isSpark40Plus, "Spark builds a cache from AQE's columnar output only from 4.0")
+    // AQE plans a cached query's final stage for columnar output, and a stage that ends in a row
+    // operator, a Spark Project here, gets a transition on top. Spark's RowToColumnarExec would fill
+    // its own column vectors for the serializer to copy into Arrow, so Comet writes Arrow straight
+    // from the rows instead (#6952). It leaves Spark's transition when Comet's cache is off, in
+    // plan-only mode, and for a schema CometSparkToColumnarExec cannot convert.
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 1000, 1, 2)
+          .selectExpr("id", "cast(id % 10 AS int) AS a", "concat('s', id) AS s")
+          .write
+          .parquet(path.toString)
+      }
+      val source = s"(SELECT /*+ REPARTITION(4, a) */ * FROM parquet.`${path.toString}`)"
+      val cases = Seq(
+        ("converted", "id + 1 AS id1, a, s", Nil, true),
+        (
+          "Comet's cache off",
+          "id + 1 AS id1, a, s",
+          Seq(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "false"),
+          false),
+        (
+          "plan-only mode",
+          "id + 1 AS id1, a, s",
+          Seq(CometConf.COMET_EXPLAIN_PLAN_ONLY_ENABLED.key -> "true"),
+          false),
+        ("array of int", "id + 1 AS id1, array(a) AS arr, s", Nil, false))
+      for ((name, projection, confs, converted) <- cases) {
+        withSQLConf(
+          Seq(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+            SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
+            SQLConf.COLUMN_BATCH_SIZE.key -> "100",
+            CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false") ++ confs: _*) {
+          val query = s"SELECT $projection FROM $source"
+          val expected = uncachedSparkAnswer(query)
+          val df = spark.sql(query)
+          df.cache()
+          try {
+            assert(df.count() == 1000)
+            val cached = spark.sharedState.cacheManager.lookupCachedData(df).get
+            val finalPlan = stripAQEPlan(cached.cachedRepresentation.cacheBuilder.cachedPlan)
+            withClue(s"$name:\n$finalPlan\n") {
+              val conversions = collect(finalPlan) { case c: CometSparkToColumnarExec => c }
+              val transitions = collect(finalPlan) { case r: RowToColumnarExec => r }
+              if (converted) {
+                assert(transitions.isEmpty)
+                assert(conversions.length == 1)
+                // 1000 rows cut at the cache's batch size of 100, not spark.comet.batchSize.
+                assert(conversions.head.metrics("numOutputBatches").value >= 10)
+              } else {
+                assert(conversions.isEmpty)
+                assert(transitions.length == 1)
+              }
+              assert(
+                cached.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+                  .map(_.getClass.getName)
+                  .distinct()
+                  .collect()
+                  .toSeq == Seq("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+              assert(QueryTest.sameRows(expected.toSeq, df.collect().toSeq).isEmpty)
+            }
+          } finally {
+            df.unpersist(blocking = true)
+          }
+        }
+      }
+    }
+  }
+
+  test("CometCacheBuildRule converts a root transition only for Comet's cache serializer") {
+    // Another serializer gets the batches Spark planned for it. The serializer is a static conf
+    // that this suite pins to Comet's, so the rule is applied directly under a cloned conf.
+    withSQLConf(CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+      val transition = RowToColumnarExec(spark.range(10).queryExecution.sparkPlan)
+      val rule = CometCacheBuildRule()
+      assert(rule(transition).isInstanceOf[CometSparkToColumnarExec])
+      // The batches are cut at the cache's batch size, as Spark's transition and the serializer's
+      // row path do, not at spark.comet.batchSize.
+      withSQLConf(
+        SQLConf.COLUMN_BATCH_SIZE.key -> "1234",
+        CometConf.COMET_BATCH_SIZE.key -> "4321") {
+        assert(rule(transition).asInstanceOf[CometSparkToColumnarExec].batchSize == Some(1234))
+      }
+      // Only the root, which is where Spark puts the transition for a stage's columnar output.
+      val filtered = FilterExec(Literal.TrueLiteral, transition)
+      assert(rule(filtered) eq filtered)
+      val otherSerializer = spark.sessionState.conf.clone()
+      otherSerializer.setConf(
+        StaticSQLConf.SPARK_CACHE_SERIALIZER,
+        "org.apache.spark.sql.execution.columnar.DefaultCachedBatchSerializer")
+      SQLConf.withExistingConf(otherSerializer) {
+        assert(rule(transition) eq transition)
       }
     }
   }
@@ -1144,6 +1243,117 @@ class CometInMemoryCacheSuite extends CometTestBase {
       withSparkColumnarCache("extreme_stats_columnar")(path => df.write.parquet(path)) { _ =>
         checkStats("extreme_stats_columnar")
       }
+    }
+  }
+
+  // Each column's null count summed over the cached batches. Asserts first that the relation is
+  // stored in Comet's format, because Spark's DefaultCachedBatch records the same null counts and
+  // no bounds for binary, nested and void columns, and then that no batch records bounds for a
+  // column.
+  private def nullCountsWithoutBounds(view: String): Seq[Long] = {
+    val batchTypes = cachedBatchTypes(view)
+    assert(
+      batchTypes.sameElements(
+        Array("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch")),
+      s"$view was cached as ${batchTypes.mkString(", ")}")
+    val relation = spark.sharedState.cacheManager.lookupCachedData(spark.table(view)).get
+    val stats = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+      .collect()
+      .map(_.asInstanceOf[SimpleMetricsCachedBatch].stats)
+    relation.cachedRepresentation.output.indices.map { i =>
+      stats.foreach(s => assert(s.isNullAt(i * 5) && s.isNullAt(i * 5 + 1), s"column $i"))
+      stats.map(_.getInt(i * 5 + 2).toLong).sum
+    }
+  }
+
+  test("Comet in-memory cache statistics count nulls in columns that record no bounds") {
+    // These columns record a null count and no bounds: binary and nested types, and a bigint
+    // column with no values. The count is the one the written Arrow vectors hold, so it is checked
+    // from the row write path and Comet's native scan, which produce those vectors, and from
+    // Spark's vectorized reader, whose batches are converted to them first.
+    val df = spark
+      .range(1000)
+      .selectExpr("if(id % 7 = 0, NULL, id) AS v")
+      .selectExpr(
+        "cast(concat('b', v) AS binary) AS bin",
+        "if(v IS NULL, NULL, array(v, v + 1)) AS arr",
+        "if(v IS NULL, NULL, map(concat('k', v), v)) AS mp",
+        "if(v IS NULL, NULL, named_struct('a', v, 'b', cast(v AS string))) AS st",
+        "cast(NULL AS bigint) AS no_values")
+    // 143 of the ids 0 to 999 are multiples of 7.
+    val expected = Seq(143L, 143L, 143L, 143L, 1000L)
+
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      // Only the row write path can take a void column; Parquet cannot store one.
+      val rows = df.withColumn("nt", lit(null))
+      rows.createOrReplaceTempView("no_bounds_rows")
+      rows.cache()
+      try {
+        rows.count()
+        assert(nullCountsWithoutBounds("no_bounds_rows") == expected :+ 1000L)
+      } finally {
+        rows.unpersist(blocking = true)
+        spark.catalog.dropTempView("no_bounds_rows")
+      }
+    }
+
+    withTempPath { path =>
+      df.write.parquet(path.toString)
+      withNativeCache {
+        spark.read.parquet(path.toString).createOrReplaceTempView("no_bounds_native")
+        spark.catalog.cacheTable("no_bounds_native")
+        spark.table("no_bounds_native").count()
+        val cachedPlan = spark.sharedState.cacheManager
+          .lookupCachedData(spark.table("no_bounds_native"))
+          .get
+          .cachedRepresentation
+          .cacheBuilder
+          .cachedPlan
+        assert(cachedPlan.isInstanceOf[CometNativeScanExec], cachedPlan)
+        assert(nullCountsWithoutBounds("no_bounds_native") == expected)
+      }
+    }
+
+    withSparkColumnarCache(
+      "no_bounds_columnar",
+      SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true") { path =>
+      df.write.parquet(path)
+    } { _ =>
+      assert(nullCountsWithoutBounds("no_bounds_columnar") == expected)
+    }
+  }
+
+  test("Comet in-memory cache statistics count the nulls of a column missing from a file") {
+    // Spark's vectorized Parquet reader marks a column that a file lacks all-null without counting
+    // any nulls, so that vector's numNulls is 0 while every row isNullAt. A binary column records
+    // that count and no bounds, so taking it from that vector would record no nulls, and the
+    // IsNull filter below would prune every batch read from the file that lacks the column.
+    withSparkColumnarCache(
+      "missing_column_columnar",
+      SQLConf.PARQUET_SCHEMA_MERGING_ENABLED.key -> "true") { path =>
+      spark.range(0, 400).selectExpr("id").write.parquet(path)
+      spark
+        .range(400, 1000)
+        .selectExpr("id", "cast(cast(id AS string) AS binary) AS b")
+        .write
+        .mode("append")
+        .parquet(path)
+    } { _ =>
+      val relation = spark.sharedState.cacheManager
+        .lookupCachedData(spark.table("missing_column_columnar"))
+        .get
+        .cachedRepresentation
+      assert(relation.cacheBuilder.cachedPlan.isInstanceOf[FileSourceScanExec])
+      checkAnswer(
+        spark.sql("SELECT count(*) FROM missing_column_columnar WHERE b IS NULL"),
+        Row(400L))
+      val b = relation.output.indexWhere(_.name == "b")
+      val stats = relation.cacheBuilder.cachedColumnBuffers
+        .collect()
+        .map(_.asInstanceOf[SimpleMetricsCachedBatch].stats)
+      assert(stats.map(_.getInt(b * 5 + 2)).sum == 400)
     }
   }
 
@@ -2588,6 +2798,31 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache converts a batch whose vectors hold more than its rows") {
+    // The statistics are gathered from the batch that is written, and a vector's null count covers
+    // all of its values. Here the batch reports 2 rows over vectors of 4 whose last two values are
+    // null, so a count taken from the vectors would be 2, which equals the batch's row count: the
+    // batch would be recorded all null and pruned by IsNotNull without being decoded. Converting
+    // copies only the batch's rows.
+    val cacheSchema = StructType(Seq(StructField("b", BinaryType)))
+    val binaries = new VarBinaryVector("b", CometArrowAllocator)
+    try {
+      binaries.allocateNew(4)
+      Seq(0, 1).foreach(r => binaries.set(r, Array[Byte](r.toByte)))
+      Seq(2, 3).foreach(r => binaries.setNull(r))
+      binaries.setValueCount(4)
+      val longer = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 2)
+      assert(Utils.isArrowBacked(longer))
+      assert(
+        !CometCachedBatchHelper.writesDirectly(longer, cacheSchema),
+        "a vector longer than its batch must be converted, not written as it stands")
+      val exact = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(binaries)), 4)
+      assert(CometCachedBatchHelper.writesDirectly(exact, cacheSchema))
+    } finally {
+      binaries.close()
+    }
+  }
+
   // Ordering by the JSON form rather than by the columns themselves, since a projection that
   // excludes `id` has no orderable key of its own and ORDER BY over a map is not allowed.
   private def orderedByJson(cols: Seq[String], from: String): String =
@@ -3541,6 +3776,100 @@ class CometInMemoryCacheSuite extends CometTestBase {
               }
             } finally {
               spark.catalog.clearCache()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("an outer hash join over a cache of an outer hash join over a native filter keeps order") {
+    // The filter keeps the serde from seeing that the first join declared its order, so the
+    // second join, reading that join's cache from the JVM, cannot check the order.
+    for {
+      rightOuter <- Seq(false, true)
+      nativeCache <- Seq(true, false)
+      adaptive <- Seq(false, true)
+    } {
+      val (joinType, buildSide) =
+        if (rightOuter) (RightOuter, BuildLeft) else (LeftOuter, BuildRight)
+      def outerJoin(streamed: String, small: String, on: String): String =
+        if (rightOuter) s"$small RIGHT JOIN $streamed ON $on"
+        else s"$streamed LEFT JOIN $small ON $on"
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        SQLConf.COLUMN_BATCH_SIZE.key -> "8",
+        CometConf.COMET_BATCH_SIZE.key -> "8",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString,
+        CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> (!nativeCache).toString) {
+        withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
+          withParquetTable((0 until 40 by 2).map(m => (m * 1000, m)), "small") {
+            withTempView("cached", "joined") {
+              try {
+                spark
+                  .table("big")
+                  .toDF("k", "v")
+                  .repartition(2, $"k")
+                  .sortWithinPartitions("k")
+                  .cache()
+                  .createOrReplaceTempView("cached")
+                spark.table("cached").count()
+                sql("SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w FROM " +
+                  outerJoin("(SELECT * FROM cached WHERE v >= 0) a", "small b", "a.k = b._1"))
+                  .cache()
+                  .createOrReplaceTempView("joined")
+                spark.table("joined").count()
+                val cachedPlan = cachedPlanOf(spark.table("joined"))
+                val context = s"$joinType nativeCache=$nativeCache AQE=$adaptive"
+                assert(
+                  find(cachedPlan) {
+                    case join: CometBroadcastHashJoinExec =>
+                      join.joinType == joinType && join.buildSide == buildSide &&
+                      join.nativeOp.getHashJoin.getStreamedSortOrdersCount > 0
+                    case _ => false
+                  }.isDefined,
+                  s"$context: the cache was not written by a native outer join that sent the " +
+                    s"order:\n$cachedPlan")
+                assert(
+                  partitionsInOrder(spark.table("joined"), keyOrder(Ascending)),
+                  s"$context: the cached outer join rows are out of order")
+
+                def df: DataFrame = sql("SELECT /*+ BROADCAST(c) */ j.k, j.v, c._2 FROM " +
+                  outerJoin("joined j", "small c", "j.k = c._1"))
+                  .sortWithinPartitions("k")
+                val (_, plan) =
+                  checkSparkAnswerAndFallbackReason(
+                    df,
+                    CometHashJoin.uncheckedStreamedOrderReason)
+                val planContext = s"$context\n$plan"
+                if (nativeCache) {
+                  assert(
+                    collect(plan) { case s: CometInMemoryTableScanExec => s }.size == 1,
+                    planContext)
+                } else {
+                  assert(
+                    collect(plan) { case s: InMemoryTableScanExec => s }.size == 1,
+                    planContext)
+                  assert(
+                    collect(plan) { case s: CometInMemoryTableScanExec => s }.isEmpty,
+                    planContext)
+                }
+                assert(
+                  collect(plan) { case j: BroadcastHashJoinExec =>
+                    (j.joinType, j.buildSide)
+                  } == Seq((joinType, buildSide)),
+                  planContext)
+                assert(
+                  collect(plan) { case j: CometBroadcastHashJoinExec => j }.isEmpty,
+                  planContext)
+                assert(
+                  collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+                  planContext)
+                assert(partitionsInOrder(df, keyOrder(Ascending)), planContext)
+              } finally {
+                spark.catalog.clearCache()
+              }
             }
           }
         }

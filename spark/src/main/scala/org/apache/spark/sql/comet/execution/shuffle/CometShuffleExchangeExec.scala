@@ -51,7 +51,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -717,11 +717,11 @@ object CometShuffleExchangeExec
           return reasons.toSeq
         }
         for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+          val (result, expressionReasons) =
+            QueryPlanSerde.exprToProtoWithFallbackReasons(o, inputs)
+          if (result.isEmpty) {
             reasons += s"unsupported range partitioning sort order: $o"
-            // Roll up fallback reasons recorded on the sort-order expression (e.g. strict
-            // floating-point sort) so they surface in the shuffle's explain output.
-            o.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+            reasons ++= expressionReasons
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
