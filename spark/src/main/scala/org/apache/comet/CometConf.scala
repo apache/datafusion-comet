@@ -144,6 +144,34 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_ICEBERG_COMPACTION_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.compaction.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether Comet runs the Iceberg `rewrite_data_files` procedure with the `binpack` " +
+          "strategy itself. Comet plans the file groups the way Iceberg does, rewrites each " +
+          "group through its native Iceberg scan and, when `spark.comet.write.iceberg.enabled` " +
+          "is also true, its native Iceberg writer, and commits the result with the same " +
+          "options and defaults as Iceberg. A call Comet cannot reproduce, such as a sort or " +
+          "z-order strategy, an unsupported option or a non-Iceberg table, runs Iceberg's own " +
+          "procedure instead. Requires Spark 4.0 or later.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_ICEBERG_COMPACTION_SINGLE_JOB_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.iceberg.compaction.singleJob.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a compaction run by `spark.comet.iceberg.compaction.enabled` rewrites the file " +
+          "groups of each commit in one Spark job, in which every Spark task reads and rewrites " +
+          "about one output file of data. Iceberg runs one job per file group, " +
+          "`max-concurrent-file-group-rewrites` of them at a time, so a table with many small " +
+          "groups leaves most of the cluster idle. When false, or when Comet's native Iceberg " +
+          "scan cannot read a group, each group is rewritten in a job of its own as Iceberg " +
+          "does it.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT: ConfigEntry[Int] =
     conf("spark.comet.scan.icebergNative.dataFileConcurrencyLimit")
       .category(CATEGORY_SCAN)

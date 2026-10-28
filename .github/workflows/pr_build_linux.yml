@@ -516,6 +516,11 @@ jobs:
               org.apache.comet.CometIcebergResidualPushdownSuite
               org.apache.comet.iceberg.IcebergReflectionSuite
               org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite
+              org.apache.comet.CometIcebergCompactionSuite
+              org.apache.comet.iceberg.compaction.BinPackPlannerSuite
+              org.apache.comet.iceberg.compaction.CompactionSourceSuite
+              org.apache.comet.iceberg.compaction.CompactionScanIcebergSuite
+              org.apache.comet.iceberg.compaction.CompactionOptionsSuite
               org.apache.comet.csv.CometCsvNativeReadSuite
               org.apache.comet.CometFuzzTestSuite
               org.apache.comet.CometFuzzIcebergSuite

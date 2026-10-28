@@ -25,8 +25,11 @@ Comet accelerates Iceberg tables whose data files are Parquet, in two ways:
   files in Rust. It is enabled by default.
 - **[Writing](#writes)**: with `spark.comet.write.iceberg.enabled=true`, Comet writes the data
   files of eligible writes natively. It is disabled by default.
+- **[Compaction](#compaction)**: with `spark.comet.iceberg.compaction.enabled=true`, Comet runs
+  the `rewrite_data_files` procedure's bin-pack rewrite itself, on Spark 4.0 and later. It is
+  disabled by default.
 
-This page covers both, followed by the [known issues](#known-issues). Behavior that applies to
+This page covers all three, followed by the [known issues](#known-issues). Behavior that applies to
 Parquet files in general is documented on the [Parquet](parquet.md) page.
 
 ## Native Reader
@@ -781,6 +784,96 @@ All content not listed above — the logical data, statistics values, and manife
 must match iceberg-java exactly, or the write falls back. The open bugs in which a native write
 still differs are listed in
 [Known Issues](#writes-that-differ-from-spark).
+
+## Compaction
+
+On Spark 4.0 and later, Comet can run Iceberg's `rewrite_data_files` procedure with the `binpack`
+strategy itself. It is disabled by default. Set `spark.comet.iceberg.compaction.enabled=true` to
+turn it on, and `spark.comet.write.iceberg.enabled=true` as well to have the new files written by
+the [native writer](#writes).
+
+```sql
+CALL catalog.system.rewrite_data_files(
+  table => 'db.events',
+  where => 'event_date = "2026-10-27"',
+  options => map('min-input-files', '10', 'partial-progress.enabled', 'true'))
+```
+
+The call, its arguments, its options and its result row are Iceberg's. Comet follows the steps of
+Iceberg's own `RewriteDataFilesSparkAction`, so a call plans the same file groups with either
+engine.
+
+### How Comet runs a rewrite
+
+1. **Plan.** Comet lists the data files of the table's current snapshot that match `where`, and
+   groups them the way Iceberg's `BinPackRewriteFilePlanner` does. A file is a candidate when its
+   size is outside `min-file-size-bytes` and `max-file-size-bytes`, or when it has at least
+   `delete-file-threshold` delete files, or when `delete-ratio-threshold` of its rows are deleted.
+   Candidates are packed within each partition into groups of up to `max-file-group-size-bytes`.
+   A group is kept when it has several files and at least `min-input-files` of them, when it has
+   several files and more than the target size, when it holds more than `max-file-size-bytes`, or
+   when one of its files qualifies for its deletes.
+2. **Rewrite.** Comet reads the files of a group with the [native Iceberg reader](#native-reader),
+   in splits sized so that each becomes about one new file, and writes them back with the
+   [native writer](#writes) when it is eligible and Iceberg's writer otherwise. Deletes are
+   applied while reading, so the new files do not contain deleted rows. Iceberg rewrites each
+   group in a Spark job of its own, `max-concurrent-file-group-rewrites` jobs at a time, so a table
+   with many partitions has many small jobs and most of the cluster is idle. Comet rewrites all the
+   groups of a commit in one job, in which every Spark task reads one split and writes about one
+   file. A job covers at most 10,000 splits. A group is rewritten in a job of its own, as Iceberg
+   does it, when the native reader cannot read it, when its files are not in the output
+   partition spec, when the table is format version 3, or when
+   `spark.comet.iceberg.compaction.singleJob.enabled` is `false`.
+3. **Commit.** The groups are committed as one `replace` snapshot that is validated against the
+   snapshot the plan read, so a concurrent change to a rewritten file fails the commit instead of
+   losing it. With `partial-progress.enabled`, groups are committed in up to
+   `partial-progress.max-commits` snapshots as they finish, and a job covers the groups of one
+   commit. If a commit fails, the files it wrote are deleted.
+
+### Supported calls
+
+- `strategy` is `binpack` or not given. `sort` and `zorder` run Iceberg's procedure.
+- `sort_order` is not supported. A call that has one runs Iceberg's procedure.
+- `where` is supported and converted by Iceberg.
+- These options are supported, with Iceberg's defaults: `target-file-size-bytes`,
+  `min-file-size-bytes`, `max-file-size-bytes`, `min-input-files`, `rewrite-all`,
+  `max-file-group-size-bytes`, `delete-file-threshold`, `delete-ratio-threshold`,
+  `rewrite-job-order`, `max-files-to-rewrite`, `max-concurrent-file-group-rewrites`,
+  `partial-progress.enabled`, `partial-progress.max-commits`,
+  `partial-progress.max-failed-commits` and `use-starting-sequence-number`.
+- `output-spec-id` is supported for the table's current spec only.
+- `remove-dangling-deletes` is supported when it is `false`.
+
+### When Comet leaves a call to Iceberg
+
+Comet runs Iceberg's own procedure, with the call unchanged, when the call has something Comet does
+not reproduce. That covers the strategies and options listed above, an option Comet does not know,
+a value Iceberg would reject, a `where` that does not convert, and a table that is not an Iceberg
+table. Running Iceberg's procedure is also how an invalid call gets Iceberg's error message. The
+check happens before anything is written, so a call that Comet declines is never half done. The
+driver logs the reason at `INFO`.
+
+A failure after the rewrite has started is the call's failure, as it is with Iceberg.
+
+### Telling which engine ran
+
+The jobs of a rewrite that Comet ran have the job group `COMET-REWRITE-DATA-FILES-<n>` in the
+Spark UI, and Iceberg's have `REWRITE-DATA-FILES-<n>`.
+
+### Differences from Iceberg
+
+- A Spark job covers several file groups, so a task failure fails all of them. Without partial
+  progress the rewrite fails as it does in Iceberg when any group fails. With partial progress, a
+  job covers the groups of one commit, so a failure costs that commit. The files the job wrote are
+  deleted, and the rest of the rewrite goes on.
+- `max-concurrent-file-group-rewrites` counts Spark jobs, which cover several groups each.
+- Groups are started in the order the table's scan returned their partitions when
+  `rewrite-job-order` is `none`. Iceberg's order depends on how it hashes partitions. The other job
+  orders sort the same way.
+- Comet commits one batch of groups at a time in `partial-progress` mode. Iceberg commits from
+  the thread that finished the group, so batches can commit at the same time.
+- Spark 3.x is not supported yet. There, Iceberg's SQL extensions plan their own `CALL` node, which
+  Comet does not intercept.
 
 ## Known Issues
 
