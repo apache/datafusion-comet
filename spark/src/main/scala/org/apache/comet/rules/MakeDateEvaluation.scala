@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, Greatest, HashExpression, IsNotNull, IsNull, Least, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
+import org.apache.spark.sql.catalyst.optimizer.BuildLeft
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
@@ -27,7 +28,7 @@ import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
-import org.apache.spark.sql.execution.joins.BaseJoinExec
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.CometMakeDate
@@ -165,6 +166,15 @@ private[rules] object MakeDateEvaluation {
       val evaluatesDate = containsMakeDate(original.expressions)
       val exchange = original.isInstanceOf[Exchange]
       val join = original.isInstanceOf[BaseJoinExec]
+      // Broadcast joins can inline streamed expressions into their consumer. Their build side
+      // materializes rows; shuffled hash and sort-merge joins also isolate the streamed input.
+      val streamedChildIndex = original match {
+        case hash: BroadcastHashJoinExec if hash.supportCodegen =>
+          Some(if (hash.buildSide == BuildLeft) 1 else 0)
+        case nestedLoop: BroadcastNestedLoopJoinExec if nestedLoop.supportCodegen =>
+          Some(if (nestedLoop.buildSide == BuildLeft) 1 else 0)
+        case _ => None
+      }
       val localMaterialization = original match {
         case _: SortExec | _: HashAggregateExec | _: ObjectHashAggregateExec => true
         case _: TakeOrderedAndProjectExec => true
@@ -234,15 +244,35 @@ private[rules] object MakeDateEvaluation {
                 skipped,
                 guardedChildInputs))
           }
-        case _ if exchange || localMaterialization || join => None
+        case _ if exchange || localMaterialization => None
         case _ => projectionDemand
       }
-      val visited = node.children.map(visit(_, childDemand, childProjectionDemand))
+      val visited = node.children.zipWithIndex.map { case (child, index) =>
+        val demand = if (!join) {
+          childProjectionDemand
+        } else if (streamedChildIndex.contains(index)) {
+          childProjectionDemand.map { demand =>
+            // Keys and conditions force their inputs on each visited row. An outer row consumer
+            // can still skip that row altogether, so retain its guarded inputs in that case.
+            val required = if (rowDemand.isDefined) AttributeSet.empty else original.references
+            val forwarded = original.children(index).outputSet -- required
+            demand.copy(
+              deferred = demand.deferred.intersect(forwarded),
+              guardedInputs = demand.guardedInputs.intersect(forwarded))
+          }
+        } else {
+          None
+        }
+        visit(child, childDemand, demand)
+      }
       val childReason = visited.flatMap(_._2).headOption
-      val childDateOutputs = AttributeSet(visited.flatMap(_._3))
+      val childDateOutputs = AttributeSet(visited.zipWithIndex.flatMap {
+        case ((_, _, outputs), index) if !join || streamedChildIndex.contains(index) => outputs
+        case _ => AttributeSet.empty
+      })
       // Date provenance flows up through aliases while deferred evaluation flows down. This
       // also finds a skipped sibling computed in a projection above the date's producer.
-      val dateDerivedOutputs = if (exchange || localMaterialization || join) {
+      val dateDerivedOutputs = if (exchange || localMaterialization) {
         AttributeSet.empty
       } else {
         original match {

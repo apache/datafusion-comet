@@ -727,9 +727,10 @@ and ordered limits; and projections below a window group limit. A parent project
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers
 to remain native when their operands are safe to evaluate. These safeguards also preserve
-NULL short-circuiting when a date argument is computed in an earlier projection. Selecting
-the date eagerly does not force conditionally used sibling expressions; those computations
-also retain Spark evaluation when needed.
+NULL short-circuiting when a date argument is computed in an earlier projection, including
+across the streamed side of a broadcast join. The materialized build side remains independent.
+Selecting the date eagerly does not force conditionally used sibling expressions; those
+computations also retain Spark evaluation when needed.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
 Exchanges materialize their inputs independently, and local sorts and aggregates can also

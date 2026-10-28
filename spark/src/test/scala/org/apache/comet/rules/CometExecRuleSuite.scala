@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
-import org.apache.spark.sql.catalyst.optimizer.{BuildRight, NormalizeNaNAndZero}
+import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans.Inner
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, IdentityBroadcastMode, RoundRobinPartitioning, SinglePartition}
@@ -475,6 +475,66 @@ class CometExecRuleSuite extends CometTestBase {
             assert(reasons.exists(_.contains("make_date requires Spark evaluation")) == deferred)
           }
         }
+
+        // Broadcast joins can forward a streamed-side expression without evaluating it. The raw
+        // string join key does not force the month cast when the upper date sees a null year.
+        for (buildLeft <- Seq(false, true); deferred <- Seq(true, false)) {
+          val month = if (deferred) "CAST(_3 AS INT)" else "_2"
+          val probe = s"""(
+            |  SELECT rand(7L) AS r, _1 AS y, _3 AS s, $month AS m
+            |  FROM make_date_arguments
+            |) p""".stripMargin
+          val build = "(SELECT 'bad' AS k UNION ALL SELECT '1' AS k) b"
+          val inputs = if (buildLeft) s"$build JOIN $probe" else s"$probe JOIN $build"
+          val joined = checkProjection(
+            s"""
+              |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, p.m, 1)) AS d,
+              |       p.r + 1 AS repeated_r
+              |FROM $inputs ON p.s = b.k
+              |""".stripMargin,
+            Set(null, 19723))
+          withClue(s"buildLeft=$buildLeft deferred=$deferred\n${joined.treeString}") {
+            // Exclude the literal projections used to construct the broadcast input.
+            val sparkProjects = joined.collect {
+              case p: ProjectExec if p.output.exists(_.name == "r") => p
+            }
+            val nativeProjects = joined.collect {
+              case p: CometProjectExec if p.output.exists(_.name == "r") => p
+            }
+            assert(sparkProjects.size == (if (deferred) 2 else 0))
+            assert(nativeProjects.size == (if (deferred) 0 else 2))
+            assert(
+              countOperators(joined, classOf[BroadcastHashJoinExec]) ==
+                (if (deferred) 1 else 0))
+            assert(
+              countOperators(joined, classOf[CometBroadcastHashJoinExec]) ==
+                (if (deferred) 0 else 1))
+            val buildSides = joined.collect {
+              case join: BroadcastHashJoinExec => join.buildSide
+              case join: CometBroadcastHashJoinExec => join.buildSide
+            }
+            assert(buildSides == Seq(if (buildLeft) BuildLeft else BuildRight))
+          }
+        }
+
+        // A join key forces the cast before the date can skip its month argument.
+        val keyRequired = checkProjection(
+          """
+            |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, p.m, 1)), p.r + 1 FROM (
+            |  SELECT rand(7L) AS r, _1 AS y,
+            |         CAST(COALESCE(CAST(_2 AS STRING), '1') AS INT) AS m
+            |  FROM make_date_arguments
+            |) p JOIN (SELECT 1 AS k UNION ALL SELECT 2 AS k) b ON p.m = b.k
+            |""".stripMargin,
+          Set(null, 19723))
+        assert(
+          keyRequired.collect {
+            case p: CometProjectExec if p.output.exists(_.name == "r") => p
+          }.size == 2,
+          keyRequired.treeString)
+        assert(
+          countOperators(keyRequired, classOf[CometBroadcastHashJoinExec]) == 1,
+          keyRequired.treeString)
 
         // Repeated r and r2 retain an intervening projection that only aliases the month.
         val aliased = checkProjection(

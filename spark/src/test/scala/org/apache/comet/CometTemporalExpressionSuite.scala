@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -132,6 +133,29 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
               assert(
                 yearPlan.collect { case p: CometProjectExec => p }.isEmpty,
                 yearPlan.treeString)
+
+              // A join key needs the cast on visited rows, but LIMIT still skips later rows.
+              val joinedYearQuery = """
+                |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, 1, 1)), p.r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) p JOIN (SELECT 2024 AS k UNION ALL SELECT 2025 AS k) b ON p.y = b.k
+                |LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(joinedYearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val joinedYearDf = sql(joinedYearQuery)
+              assert(joinedYearDf.collect().toSeq == expected)
+              val joinedYearPlan = stripAQEPlan(joinedYearDf.queryExecution.executedPlan)
+              assert(
+                joinedYearPlan.collect {
+                  case p: ProjectExec if p.output.exists(_.name == "r") => p
+                }.size == 2,
+                joinedYearPlan.treeString)
+              assert(
+                joinedYearPlan.collect { case join: BroadcastHashJoinExec => join }.size == 1,
+                joinedYearPlan.treeString)
 
               // A full collection must still evaluate the second row in the native expression.
               val full = sql(unlimited)
