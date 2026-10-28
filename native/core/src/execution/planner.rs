@@ -29,6 +29,8 @@ mod shuffle;
 mod window;
 mod write;
 
+pub(crate) use shuffle::align_shuffle_writer_input;
+
 // Glue that wires the optional Delta integration into core's plan-tree builder.
 // Compiled only under `--features contrib-delta`; default builds carry zero Delta
 // surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
@@ -50,10 +52,11 @@ use crate::execution::operators::TopKReaderFilterExec;
 #[cfg(feature = "python-udf")]
 use crate::execution::operators::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 use crate::execution::{
-    operators::{ExecutionError, ScanExec, ShuffleScanExec},
+    operators::{schema_from_data_types, ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
+    shuffle::SchemaAlignExec,
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, OutputStreamSink, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
@@ -127,7 +130,10 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
@@ -207,6 +213,18 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    /// What feeds the block's input leaves (`Scan` and `ShuffleScan`) in place of the JVM. Set
+    /// when Comet runs outside a Spark executor, which also means there is no JVM to call; see
+    /// [`crate::execution::native_executors`].
+    native_inputs: Option<Arc<NativeInputs>>,
+}
+
+/// What feeds a block's input leaves when Comet runs outside a Spark executor.
+enum NativeInputs {
+    /// The plans left to feed the leaves, in the order the planner meets them.
+    Plans(Mutex<VecDeque<Arc<dyn ExecutionPlan>>>),
+    /// Nothing: the block is planned without its data. See [`PhysicalPlanner::without_data`].
+    Empty,
 }
 
 impl Default for PhysicalPlanner {
@@ -229,6 +247,7 @@ impl PhysicalPlanner {
             output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            native_inputs: None,
         }
     }
 
@@ -319,6 +338,92 @@ impl PhysicalPlanner {
     pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
         self.strict_timestamp_labels = strict;
         self
+    }
+
+    /// Feeds the block's input leaves from `inputs` instead of the JVM, one per leaf in the order
+    /// the planner meets them. Each input's output is cast to the types Spark declared for its
+    /// leaf. Expressions that call into the JVM fail to plan, since there is no JVM.
+    pub fn with_native_inputs(mut self, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Self {
+        self.native_inputs = Some(Arc::new(NativeInputs::Plans(Mutex::new(inputs.into()))));
+        self
+    }
+
+    /// Like [`Self::with_native_inputs`], but plans a block without its data, to check it and
+    /// learn its schema: each input leaf is empty, and each file scan is planned with its files
+    /// but builds no object store for them, since nothing reads them. Planning then uses no
+    /// storage credentials.
+    pub fn without_data(mut self) -> Self {
+        self.native_inputs = Some(Arc::new(NativeInputs::Empty));
+        self
+    }
+
+    /// Whether the planner plans the block without its data; see [`Self::without_data`].
+    fn plans_without_data(&self) -> bool {
+        matches!(self.native_inputs.as_deref(), Some(NativeInputs::Empty))
+    }
+
+    /// Registers the object store a scan reads `file` through, configured by `options`, and
+    /// returns its URL and backend. When planning without data, the scan gets the local file
+    /// system instead, which is always registered, and no store is built.
+    fn scan_store(
+        &self,
+        file: &str,
+        options: &HashMap<String, String>,
+    ) -> Result<(ObjectStoreUrl, ObjectStoreBackend), ExecutionError> {
+        if self.plans_without_data() {
+            return Ok((
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+            ));
+        }
+        let (url, _, backend) = prepare_object_store_with_configs(
+            self.session_ctx.runtime_env(),
+            file.to_string(),
+            options,
+        )?;
+        Ok((url, backend))
+    }
+
+    /// Plans `spark_plan` as the next native input when it is an input leaf and the planner has
+    /// native inputs. `None` otherwise.
+    fn native_input_leaf(
+        &self,
+        spark_plan: &Operator,
+    ) -> Result<Option<Arc<SparkPlan>>, ExecutionError> {
+        let Some(native_inputs) = &self.native_inputs else {
+            return Ok(None);
+        };
+        let fields = match spark_plan.op_struct.as_ref() {
+            Some(OpStruct::Scan(scan)) => &scan.fields,
+            Some(OpStruct::ShuffleScan(scan)) => &scan.fields,
+            _ => return Ok(None),
+        };
+        let data_types = fields.iter().map(to_arrow_datatype).collect_vec();
+        let schema = schema_from_data_types(&data_types);
+        let input = match native_inputs.as_ref() {
+            NativeInputs::Plans(plans) => {
+                let input = plans.lock().unwrap().pop_front().ok_or_else(|| {
+                    GeneralError("The plan has more input leaves than native inputs".to_string())
+                })?;
+                SchemaAlignExec::try_new_or_passthrough(input, &schema)?
+            }
+            NativeInputs::Empty => Arc::new(EmptyExec::new(schema)),
+        };
+        Ok(Some(Arc::new(SparkPlan::new(
+            spark_plan.plan_id,
+            input,
+            vec![],
+        ))))
+    }
+
+    /// Fails to plan `what`, which calls into the JVM, when the plan runs without one.
+    fn require_jvm(&self, what: &str) -> Result<(), ExecutionError> {
+        if self.native_inputs.is_some() {
+            return Err(GeneralError(format!(
+                "{what} calls into the JVM, so it cannot run on Comet Native Executors"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn strict_timestamp_labels(&self) -> bool {
@@ -507,7 +612,7 @@ impl PhysicalPlanner {
         partition_files: &SparkFilePartition,
     ) -> Result<(ObjectStoreUrl, ObjectStoreBackend, Vec<PartitionedFile>), ExecutionError> {
         let one_file = match partition_files.partitioned_file.first() {
-            Some(f) => f.file_path.clone(),
+            Some(f) => f.file_path.as_str(),
             None => {
                 // Empty partition: no store to resolve; the URL and backend are unused because
                 // the file group is empty and build_parquet_scan_plan returns EmptyExec.
@@ -523,11 +628,8 @@ impl PhysicalPlanner {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let (object_store_url, _, object_store_backend) = prepare_object_store_with_configs(
-            self.session_ctx.runtime_env(),
-            one_file,
-            &object_store_options,
-        )?;
+        let (object_store_url, object_store_backend) =
+            self.scan_store(one_file, &object_store_options)?;
         let files = self.get_partitioned_files(partition_files, &object_store_options)?;
         Ok((object_store_url, object_store_backend, files))
     }
@@ -857,6 +959,7 @@ impl PhysicalPlanner {
                 Ok(Arc::new(CastExpr::new(child, data_type, None)))
             }
             ExprStruct::Subquery(expr) => {
+                self.require_jvm("A scalar subquery")?;
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
@@ -1023,6 +1126,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::JvmScalarUdf(udf) => {
+                self.require_jvm(&format!("The JVM UDF {}", udf.class_name))?;
                 let args = udf
                     .args
                     .iter()
@@ -1524,6 +1628,10 @@ impl PhysicalPlanner {
         inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
     ) -> PlanCreationResult {
+        if let Some(input) = self.native_input_leaf(spark_plan)? {
+            return Ok((vec![], vec![], input));
+        }
+
         // Try to use the modular registry first - this automatically handles any registered operator types
         if OperatorRegistry::global().can_handle(spark_plan) {
             return OperatorRegistry::global().create_plan(
@@ -1776,14 +1884,7 @@ impl PhysicalPlanner {
                 // Build the store from this partition's files; other partitions may read
                 // from a different one.
                 let object_store_url = match partition.partitioned_file.first() {
-                    Some(file) => {
-                        prepare_object_store_with_configs(
-                            self.session_ctx.runtime_env(),
-                            file.file_path.clone(),
-                            &object_store_options,
-                        )?
-                        .0
-                    }
+                    Some(file) => self.scan_store(&file.file_path, &object_store_options)?.0,
                     None => ObjectStoreUrl::local_filesystem(),
                 };
                 let files = self.get_partitioned_files(partition, &object_store_options)?;

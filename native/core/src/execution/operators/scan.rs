@@ -192,7 +192,8 @@ fn import_column(col: &ArrayRef) -> Result<ArrayRef, CometError> {
     Ok(decode_string_arrays(col)?)
 }
 
-fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
+/// The schema of an input leaf whose columns have `data_types`, without dictionary types.
+pub(crate) fn schema_from_data_types(data_types: &[DataType]) -> SchemaRef {
     let fields = data_types
         .iter()
         .enumerate()
