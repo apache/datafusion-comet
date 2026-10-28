@@ -302,36 +302,44 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Runs `write` on `root` itself when every offset buffer in it starts at zero, and otherwise on
-   * a slice of it that rebases the offsets to zero and leaves out the bytes before the first of
-   * them, which Arrow Java would write. The slice shares the other buffers and holds its own
-   * references on them, so it is closed whether `write` returns or fails, as it does when a
-   * cancelled broadcast interrupts the task.
+   * Runs `write` on `root` itself when none of its vectors is a slice of a larger one, and
+   * otherwise on a slice of it that rebases the offsets to zero and leaves out the bytes or
+   * elements outside them, which Arrow Java would write. The slice shares the other buffers and
+   * holds its own references on them, so it is closed whether `write` returns or fails, as it
+   * does when a cancelled broadcast interrupts the task.
    */
-  private[comet] def withRebasedOffsets[T](root: VectorSchemaRoot)(
+  private[sql] def withRebasedOffsets[T](root: VectorSchemaRoot)(
       write: VectorSchemaRoot => T): T = {
     val written =
-      if (root.getFieldVectors.asScala.forall(offsetsStartAtZero)) root
+      if (root.getFieldVectors.asScala.forall(holdsOnlyItsOwnValues)) root
       else root.slice(0, root.getRowCount)
     try write(written)
     finally if (written ne root) written.close()
   }
 
   /**
-   * Whether every offset buffer in `vector`, its children included, starts at zero.
+   * Whether every vector in `vector`, its children included, holds only the bytes or elements its
+   * own offsets cover.
    *
    * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
    * the C Data import keeps them, so a vector imported from a sliced native array has offsets
    * that start past zero. The rows before the slice stay at the front of its data buffer, or of
-   * its child vector for a list or map.
+   * its child vector for a list or map. The first slice of an array starts at zero instead, and a
+   * list or map still has the elements of the later slices in its child, which is longer than the
+   * last offset. A string or binary vector stops writing its data at the last offset, so only its
+   * first offset can show a slice.
    */
-  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
-    val firstOffset = vector match {
-      case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case _ => 0
+  private def holdsOnlyItsOwnValues(vector: FieldVector): Boolean = {
+    val ownsItsValues = vector match {
+      case v: BaseVariableWidthVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0
+      case v: BaseRepeatedValueVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0 &&
+        v.getOffsetBuffer.getInt(v.getValueCount.toLong * BaseRepeatedValueVector.OFFSET_WIDTH) ==
+          v.getDataVector.getValueCount
+      case _ => true
     }
-    firstOffset == 0 && vector.getChildrenFromFields.asScala.forall(offsetsStartAtZero)
+    ownsItsValues && vector.getChildrenFromFields.asScala.forall(holdsOnlyItsOwnValues)
   }
 
   /**
