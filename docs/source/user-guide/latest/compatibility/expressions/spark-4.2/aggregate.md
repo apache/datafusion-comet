@@ -156,4 +156,5 @@ The following cases are not supported by Comet and always fall back to Spark, re
 - Pivot column of a type other than Boolean, Byte, Short, Int, Long, Float, Double, Decimal, String (UTF8_BINARY collation), Date, Timestamp or TimestampNTZ, which includes the struct that a pivot on more than one column builds
 - Pivot values list is empty
 - Pivot values list contains duplicates, including `0.0` next to `-0.0`
+
 <!--END:EXPR_COMPAT-->

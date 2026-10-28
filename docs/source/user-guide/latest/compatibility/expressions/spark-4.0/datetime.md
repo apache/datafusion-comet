@@ -162,4 +162,5 @@ The following cases have no native implementation and always run in the JVM usin
 The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
 
 - String inputs, including collated strings, have no native implementation.
+
 <!--END:EXPR_COMPAT-->

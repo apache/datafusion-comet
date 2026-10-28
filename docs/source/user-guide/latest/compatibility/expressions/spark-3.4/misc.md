@@ -62,4 +62,5 @@ The following cases are not supported by Comet and always fall back to Spark, re
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - uuid requires a resolved random seed
+
 <!--END:EXPR_COMPAT-->

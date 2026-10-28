@@ -109,4 +109,5 @@ The following cases have no native implementation and always run in the JVM usin
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
 - shuffle requires a resolved random seed
+
 <!--END:EXPR_COMPAT-->

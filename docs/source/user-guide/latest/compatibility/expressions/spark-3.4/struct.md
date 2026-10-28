@@ -48,4 +48,5 @@ The following cases have no native implementation and always run in the JVM usin
 By default, `StructsToJson` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.StructsToJson.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
 
 - Does not support `+Infinity` and `-Infinity` for numeric types (float, double). (https://github.com/apache/datafusion-comet/issues/3016)
+
 <!--END:EXPR_COMPAT-->
