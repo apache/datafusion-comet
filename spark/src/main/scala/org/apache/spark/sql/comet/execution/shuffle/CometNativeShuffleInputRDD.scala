@@ -38,7 +38,8 @@ import org.apache.comet.CometShuffleBlockIterator
  *   whether the writer fed by this RDD places rows by position rather than by content; see
  *   [[CometShuffleExchangeExec.positionalRoundRobinSpec]] and `getOutputDeterministicLevel`.
  * @param sqlConf
- *   the session's Comet configs, which the writer also applies; see [[CapturedSQLConf]].
+ *   the session's Comet configs, captured on the driver, which the writer applies; see
+ *   [[CapturedSQLConf]].
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -47,8 +48,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
-    positionalRoundRobin: Boolean = false,
-    sqlConf: CapturedSQLConf = CapturedSQLConf.capture())
+    sqlConf: CapturedSQLConf,
+    positionalRoundRobin: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
@@ -66,8 +67,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
       shuffleScanIndices,
       spillMetricNode,
       perPartitionByKey,
-      positionalRoundRobin,
-      sqlConf)
+      sqlConf,
+      positionalRoundRobin)
 
   /**
    * Spark's `isOrderSensitive` rule, applied to the RDD graph below the native plan. Spark only
@@ -113,7 +114,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
 
   override def compute(
       split: Partition,
-      context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = sqlConf.withConf {
+      context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
     spillMetricNode.reportSpillMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =

@@ -23,7 +23,7 @@ import org.apache.spark.{HashPartitioner, Partition, TaskContext}
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -61,7 +61,8 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         Seq(parent),
         0,
         Set.empty,
-        CometMetricNode(Map.empty))
+        CometMetricNode(Map.empty),
+        sqlConf = CapturedSQLConf.capture())
       assert(input.outputDeterministicLevel == level)
       assert(input.copyForLocalShuffle().outputDeterministicLevel == level)
     }
@@ -90,6 +91,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
           0,
           Set.empty,
           CometMetricNode(Map.empty),
+          sqlConf = CapturedSQLConf.capture(),
           positionalRoundRobin = true)
         assert(input.outputDeterministicLevel == expected, s"parent was $parentLevel")
         // The flag has to survive the copy, or a local-shuffle fallback silently drops the
@@ -119,7 +121,8 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
       2,
       Set.empty,
       CometMetricNode(Map.empty),
-      planData)
+      planData,
+      CapturedSQLConf.capture())
     val local = remote.copyForLocalShuffle()
 
     assert(local.id != remote.id)
@@ -172,7 +175,8 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         Seq(nestedInput),
         1,
         Set.empty,
-        CometMetricNode(writerMetrics, Seq(childMetrics)))
+        CometMetricNode(writerMetrics, Seq(childMetrics)),
+        sqlConf = CapturedSQLConf.capture())
 
       inputRDD.iterator(inputRDD.partitions.head, taskContext)
       new CometNativeShuffleWriter[Int, Any](
@@ -218,7 +222,8 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         numPartitionsParam = numPartitions,
         shuffleScanIndices = Set.empty,
         spillMetricNode = CometMetricNode(writerMetrics, Seq(childMetricNode)),
-        perPartitionByKey = perPartitionByKey)
+        perPartitionByKey = perPartitionByKey,
+        sqlConf = CapturedSQLConf.capture())
       val execContext = NativeExecContext(
         inputs = Seq.empty,
         numPartitions = numPartitions,

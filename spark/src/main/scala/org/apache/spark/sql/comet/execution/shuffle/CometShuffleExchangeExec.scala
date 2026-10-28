@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -144,6 +144,7 @@ case class CometShuffleExchangeExec(
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey,
+          CapturedSQLConf.capture(),
           positionalRoundRobin.isDefined)
       case None =>
         child match {
@@ -946,7 +947,8 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       streamRDD.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)),
+      sqlConf = CapturedSQLConf.capture())
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
