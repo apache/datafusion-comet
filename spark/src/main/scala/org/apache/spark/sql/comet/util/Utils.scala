@@ -789,7 +789,7 @@ object Utils extends CometTypeShim with Logging {
       if (numValues > 0) {
         // An Arrow Java vector has no array offset, so validity bit i belongs to value i even when
         // the offsets start past zero, and the bitmap is copied from bit 0.
-        val validityBytes = BitVectorHelper.getValidityBufferSize(numValues).toLong
+        val validityBytes = BitVectorHelper.getValidityBufferSizeFromCount(numValues).toLong
         narrow.getValidityBuffer.setBytes(0, large.getValidityBuffer, 0, validityBytes)
         val offsets = narrow.getOffsetBuffer
         (0 to numValues).foreach { i =>

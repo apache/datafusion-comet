@@ -60,6 +60,11 @@ public class ArrowImporter {
       vector = field.createVector(allocator);
       ArrayImporter importer = new ArrayImporter(allocator, vector, provider);
       importer.importArray(array);
+      // Arrow Java 19 stopped closing the source struct once its contents move into the importer's
+      // copy (GH-765), so free it here; earlier versions closed it already.
+      if (!array.isClosed()) {
+        array.close();
+      }
       return vector;
     } catch (RuntimeException | Error failure) {
       if (vector != null) {
@@ -68,9 +73,9 @@ public class ArrowImporter {
       if (field != null) {
         closeDictionaries(field, provider, failure);
       }
-      // ArrayImporter.importArray moves the array into a copy it owns and closes the source
-      // before doImport can fail, so a closed array means the importer already took it and
-      // releasing it again would be a double release.
+      // ArrayImporter.importArray moves the array into a copy it owns before doImport can fail, so
+      // the source's release callback is already cleared and release() is then a no-op. Earlier
+      // Arrow versions also closed the source, and a closed array must not be released again.
       if (!array.isClosed()) {
         AutoCloseables.close(failure, array::release, array);
       }

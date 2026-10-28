@@ -88,7 +88,7 @@ under the License.
     <parquet.version>1.16.0</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
     <hadoop.version>3.3.4</hadoop.version>
-    <arrow.version>18.3.0</arrow.version>
+    <arrow.version>19.0.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
     <!-- semanticdb-scalac is published per Scala patch version, so the 2.13 profiles need a
