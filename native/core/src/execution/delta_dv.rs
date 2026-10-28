@@ -129,8 +129,8 @@ pub fn deserialize_dv_bitmap(data: &[u8]) -> Result<RoaringTreemap, ExecutionErr
                 )));
             }
             let mut pos = 4usize;
-            let mut treemap = RoaringTreemap::new();
-            for key in 0..count as u64 {
+            let mut bitmaps = Vec::new();
+            for key in 0..count as u32 {
                 if rest.len() < pos + 4 {
                     return Err(GeneralError(
                         "Native deletion vector bitmap truncated".to_string(),
@@ -148,11 +148,11 @@ pub fn deserialize_dv_bitmap(data: &[u8]) -> Result<RoaringTreemap, ExecutionErr
                         GeneralError(format!("Invalid deletion vector sub-bitmap: {e}"))
                     })?;
                 pos += size as usize;
-                for value in bitmap {
-                    treemap.insert((key << 32) | value as u64);
+                if !bitmap.is_empty() {
+                    bitmaps.push((key, bitmap));
                 }
             }
-            Ok(treemap)
+            Ok(RoaringTreemap::from_bitmaps(bitmaps))
         }
         other => Err(GeneralError(format!(
             "Unexpected RoaringBitmapArray magic number {other}"
@@ -579,13 +579,15 @@ const DV_FETCH_CONCURRENCY: usize = 8;
 /// Registers one memory consumer for the whole call and hands every DV'd file
 /// its own empty reservation from that one registration. The per-file grow,
 /// resize and release stay as they are, but the pool sees one consumer for the
-/// partition rather than one per file. That matters for `CometFairMemoryPool`,
-/// which divides the pool by the number of registered consumers: the
-/// reservations live in the returned files until the task ends, so one
-/// consumer per file would lower the fair limit of every other native operator
-/// in the task, including a hash join build that cannot spill. The registration
-/// itself is dropped when the last file holding a reservation from it is
-/// dropped. When no file carries a DV, it is dropped when this call returns.
+/// partition rather than one per file. A partition can have thousands of DV'd
+/// files, and the pool keeps an entry for every registered consumer, as does
+/// `TrackConsumersPool` (whose out-of-memory report lists the ten consumers
+/// holding the most), so one consumer per file would grow those maps with the
+/// number of files and fill the report with this one operator's files. The
+/// reservations live in the returned files until the task ends. The
+/// registration itself is dropped when the last file holding a reservation from
+/// it is dropped. When no file carries a DV, it is dropped when this call
+/// returns.
 pub async fn attach_access_plans(
     runtime_env: Arc<RuntimeEnv>,
     files: Vec<DvScanFile>,
@@ -1120,10 +1122,50 @@ mod tests {
 
     #[test]
     fn native_format_decodes() {
-        let values = [0u64, 2, 3, 100, (1u64 << 32) + 7];
+        let values = [0u64, 2, 3, 100, (2u64 << 32) + 7];
         let decoded = deserialize_dv_bitmap(&native_bytes(&values)).unwrap();
         let expected: RoaringTreemap = values.into_iter().collect();
         assert_eq!(decoded, expected);
+        // `native_bytes` emits an entry for every key up to the maximum, so key 1 is an empty
+        // partition. The decoder must omit it without shifting key 2's partition index.
+        let keys: Vec<u32> = decoded.bitmaps().map(|(key, _)| key).collect();
+        assert_eq!(keys, vec![0, 2]);
+    }
+
+    #[test]
+    fn native_decode_preserves_dense_bitmap_compression() {
+        let mut bitmap = RoaringBitmap::new();
+        bitmap.insert_range(0..1_000_000);
+        let compressed_size = bitmap.serialized_size();
+        let mut bitmap_bytes = Vec::new();
+        bitmap.serialize_into(&mut bitmap_bytes).unwrap();
+
+        let mut data = NATIVE_MAGIC.to_le_bytes().to_vec();
+        data.extend(1i32.to_le_bytes());
+        data.extend((bitmap_bytes.len() as i32).to_le_bytes());
+        data.extend(bitmap_bytes);
+
+        let decoded = deserialize_dv_bitmap(&data).unwrap();
+        let (_, decoded_bitmap) = decoded.bitmaps().next().unwrap();
+        assert_eq!(decoded_bitmap.serialized_size(), compressed_size);
+
+        // Dense native DVs now reach `build_access_plan`, so the same container must survive
+        // plan construction. Group 0 (rows 0..600_000) is fully deleted and must be skipped;
+        // group 1 (rows 600_000..1_200_000) has its first 400_000 rows deleted, leaving a
+        // trailing run of 200_000 live rows to select.
+        assert_eq!(decoded.len(), 1_000_000);
+        let plan = full_file_access_plan(&[600_000, 600_000], &decoded).unwrap();
+        assert_eq!(&plan.inner()[0], &RowGroupAccess::Skip);
+        match &plan.inner()[1] {
+            RowGroupAccess::Selection(sel) => {
+                let selectors: Vec<RowSelector> = sel.clone().into();
+                assert_eq!(
+                    selectors,
+                    vec![RowSelector::skip(400_000), RowSelector::select(200_000)]
+                );
+            }
+            other => panic!("expected selection, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1728,31 +1770,21 @@ mod tests {
         );
     }
 
-    /// Mirrors `CometFairMemoryPool`'s admission check without a JVM: every registered
-    /// consumer counts toward the fair limit, `pool_size / registered`, and a grow is rejected
-    /// once the pool's total would exceed it. Also counts every `register` call so a test can
-    /// pin how many consumers one `attach_access_plans` call adds to the task.
-    #[derive(Debug)]
-    struct FairLimitPool {
-        pool_size: usize,
-        state: std::sync::Mutex<FairLimitState>,
+    /// Counts the consumers registered with it, and every `register` call, so a test can pin
+    /// how many consumers one `attach_access_plans` call adds to the task.
+    #[derive(Debug, Default)]
+    struct RegistrationCountingPool {
+        state: std::sync::Mutex<RegistrationState>,
     }
 
     #[derive(Debug, Default)]
-    struct FairLimitState {
+    struct RegistrationState {
         used: usize,
         registered: usize,
         register_calls: usize,
     }
 
-    impl FairLimitPool {
-        fn new(pool_size: usize) -> Self {
-            Self {
-                pool_size,
-                state: std::sync::Mutex::new(FairLimitState::default()),
-            }
-        }
-
+    impl RegistrationCountingPool {
         /// Consumers registered right now (register calls minus unregister calls).
         fn registered(&self) -> usize {
             self.state.lock().unwrap().registered
@@ -1764,20 +1796,20 @@ mod tests {
         }
     }
 
-    impl std::fmt::Display for FairLimitPool {
+    impl std::fmt::Display for RegistrationCountingPool {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             let state = self.state.lock().unwrap();
             write!(
                 f,
-                "FairLimitPool(pool_size={}, used={}, registered={})",
-                self.pool_size, state.used, state.registered
+                "RegistrationCountingPool(used={}, registered={})",
+                state.used, state.registered
             )
         }
     }
 
-    impl MemoryPool for FairLimitPool {
+    impl MemoryPool for RegistrationCountingPool {
         fn name(&self) -> &str {
-            "FairLimitPool"
+            "RegistrationCountingPool"
         }
 
         fn register(&self, _: &MemoryConsumer) {
@@ -1794,8 +1826,8 @@ mod tests {
                 .expect("unregister without a matching register");
         }
 
-        fn grow(&self, reservation: &MemoryReservation, additional: usize) {
-            self.try_grow(reservation, additional).unwrap();
+        fn grow(&self, _: &MemoryReservation, additional: usize) {
+            self.state.lock().unwrap().used += additional;
         }
 
         fn shrink(&self, _: &MemoryReservation, subtractive: usize) {
@@ -1808,26 +1840,10 @@ mod tests {
 
         fn try_grow(
             &self,
-            _: &MemoryReservation,
+            reservation: &MemoryReservation,
             additional: usize,
         ) -> datafusion::common::Result<()> {
-            if additional == 0 {
-                return Ok(());
-            }
-            let mut state = self.state.lock().unwrap();
-            let registered = state.registered;
-            let limit = self
-                .pool_size
-                .checked_div(registered)
-                .expect("try_grow with no registered consumer");
-            let used = state.used;
-            if limit < used + additional {
-                return datafusion::common::resources_err!(
-                    "Failed to acquire {additional} bytes where {used} bytes already reserved \
-                     and the fair limit is {limit} bytes, {registered} registered"
-                );
-            }
-            state.used += additional;
+            self.grow(reservation, additional);
             Ok(())
         }
 
@@ -1837,21 +1853,18 @@ mod tests {
     }
 
     /// One `attach_access_plans` call must add exactly one consumer to the task's pool no
-    /// matter how many DV'd files it attaches. `CometFairMemoryPool` divides the pool by the
-    /// number of registered consumers, and the reservations live in the returned files until
-    /// the task ends, so one consumer per file would lower every other native operator's fair
-    /// limit for the whole task even when the DV bytes themselves are tiny. Three DV'd files
-    /// must leave a later consumer (a hash join build, say) its half of the pool. Each file's
+    /// matter how many DV'd files it attaches, because the pool keeps an entry for each
+    /// registered consumer, and a partition can have thousands of DV'd files. Each file's
     /// bytes must still return to the pool when that file alone drops, while the shared
-    /// registration stays until the last file is gone.
+    /// registration stays until the last file is gone, whatever other consumers the task
+    /// registers meanwhile.
     #[tokio::test]
     async fn attach_access_plans_registers_one_consumer_per_call() {
         let tmp_a = tempfile::tempdir().unwrap();
         let tmp_b = tempfile::tempdir().unwrap();
         let tmp_c = tempfile::tempdir().unwrap();
-        let pool_size = 1_000_000usize;
-        let fair_pool = Arc::new(FairLimitPool::new(pool_size));
-        let pool: Arc<dyn MemoryPool> = Arc::clone(&fair_pool) as Arc<dyn MemoryPool>;
+        let counting_pool = Arc::new(RegistrationCountingPool::default());
+        let pool: Arc<dyn MemoryPool> = Arc::clone(&counting_pool) as Arc<dyn MemoryPool>;
         let runtime_env = Arc::new(
             RuntimeEnvBuilder::new()
                 .with_memory_pool(Arc::clone(&pool))
@@ -1873,46 +1886,39 @@ mod tests {
         .unwrap();
         assert_eq!(out.len(), 3);
         assert_eq!(
-            fair_pool.register_calls(),
+            counting_pool.register_calls(),
             1,
             "one attach_access_plans call should register exactly one consumer, not one per file"
         );
         assert_eq!(
-            fair_pool.registered(),
+            counting_pool.registered(),
             1,
             "the one registration should stay while the returned files are alive"
         );
         assert_eq!(pool.reserved(), bytes_a + bytes_b + bytes_c);
 
-        // A second consumer in the same task sees a fair limit of half the pool. A third of
-        // the pool fits under that, and would not fit under a quarter or less.
-        let build_bytes = pool_size / 3;
-        assert!(
-            bytes_a + bytes_b + bytes_c + build_bytes <= pool_size / 2,
-            "test setup invariant: the DV bytes plus the build must fit under half the pool"
-        );
+        // Another consumer of the same task, such as a hash join build.
+        let build_bytes = 1000;
         let build = MemoryConsumer::new("HashJoinBuild").register(&pool);
-        build.try_grow(build_bytes).unwrap_or_else(|e| {
-            panic!("a second consumer should get its fair half of the pool: {e}")
-        });
-        assert_eq!(fair_pool.registered(), 2);
+        build.try_grow(build_bytes).unwrap();
+        assert_eq!(counting_pool.registered(), 2);
 
         // Dropping one file returns only that file's bytes and keeps the shared registration.
         let last = out.pop().unwrap();
         drop(last);
         assert_eq!(pool.reserved(), bytes_a + bytes_b + build_bytes);
-        assert_eq!(fair_pool.registered(), 2);
+        assert_eq!(counting_pool.registered(), 2);
 
         drop(out);
         assert_eq!(pool.reserved(), build_bytes);
         assert_eq!(
-            fair_pool.registered(),
+            counting_pool.registered(),
             1,
             "the shared registration should go once the last file drops"
         );
         drop(build);
         assert_eq!(pool.reserved(), 0);
-        assert_eq!(fair_pool.registered(), 0);
+        assert_eq!(counting_pool.registered(), 0);
     }
 
     /// A pool sized to fit only the larger of two files' selector bytes must reject the whole

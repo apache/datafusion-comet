@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>1.2.0-SNAPSHOT</version>
+    <version>1.3.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -110,6 +110,10 @@ under the License.
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
       <classifier>tests</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
     </dependency>
     <dependency>
       <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can

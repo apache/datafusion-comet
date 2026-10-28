@@ -44,7 +44,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.udf.CometUdfBridge
@@ -74,6 +74,9 @@ import org.apache.comet.vector.NativeUtil
  *   Paths to encrypted Parquet files that need key unwrapping.
  * @param shufflePartitionPusher
  *   Optional task-owned callback that receives remote shuffle output.
+ * @param outputStream
+ *   Optional file that the JVM created for the plan's Parquet writer, which writes the file's
+ *   bytes to it rather than creating the file natively.
  * @param capturePartitionOffsets
  *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
  *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
@@ -95,6 +98,7 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
     outputTypes: Seq[DataType] = Seq.empty)
     extends Iterator[ColumnarBatch]
@@ -149,6 +153,7 @@ class CometExecIterator(
       memoryConfig.offHeapMode,
       memoryConfig.memoryPoolType,
       memoryConfig.memoryLimit,
+      memoryConfig.offHeapSize,
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
@@ -164,6 +169,7 @@ class CometExecIterator(
       shufflePartitionPusher.foreach { pusher =>
         nativeLib.setShufflePartitionPusher(createdPlan, pusher)
       }
+      outputStream.foreach(output => nativeLib.setOutputStream(createdPlan, output))
       createdPlan
     } catch {
       case failure: Throwable =>
@@ -925,13 +931,13 @@ object CometExecIterator extends Logging {
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
           s"memoryLimit=${toMB(memoryLimit)}")
-      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit)
+      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit, offHeapSize)
     } else {
       // On-heap mode exists only so that the Spark SQL tests can run against Comet without
       // changing Spark's memory configuration, and native memory cannot be charged to Spark's
       // on-heap pool, so nothing is accounted. See the memory management contributor guide.
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
-      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
+      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0, offHeapSize = 0)
     }
   }
 
@@ -1010,4 +1016,8 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    offHeapSize: Long)
