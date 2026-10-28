@@ -1,0 +1,112 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Array Expressions
+
+<!--BEGIN:EXPR_COMPAT[array]-->
+
+## ArrayAppend
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- array_append with a nullable array and a nondeterministic operand such as `rand()`: the native NULL guard evaluates the operands more than once, on subsets of the rows
+
+## ArrayContains
+
+For applicable cases that are not selected for native execution automatically, `ArrayContains` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayContains.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match each other; Comet's native array_contains applies that only to flat FLOAT and DOUBLE elements, and nested float elements stay on Spark's comparison
+- array_contains evaluates its value eagerly, while Spark skips it when the array is null
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_contains compares raw bytes
+
+## ArrayDistinct
+
+The following incompatibilities cause `ArrayDistinct` to fall back to Spark by default. Set `spark.comet.expression.ArrayDistinct.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Floating-point elements match Spark's signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_distinct compares raw bytes
+
+## ArrayExcept
+
+By default, `ArrayExcept` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayExcept.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Null handling and ordering may differ from Spark
+
+## ArrayIntersect
+
+By default, `ArrayIntersect` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayIntersect.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- Result array element order may differ from Spark when the right array is longer than the left (DataFusion probes the longer side).
+- array_intersect does not propagate non-UTF8_BINARY collations to the output array elements (https://github.com/apache/datafusion-comet/issues/2190)
+
+## ArrayJoin
+
+By default, `ArrayJoin` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline), which matches Spark exactly. Set `spark.comet.expression.ArrayJoin.allowIncompatible=true` to opt into Comet's native implementation instead, which has the following differences from Spark:
+
+- array_join does not propagate non-UTF8_BINARY collations to the output string (https://github.com/apache/datafusion-comet/issues/2190)
+- array_join evaluates its delimiter and null replacement eagerly, while Spark short-circuits past them (https://github.com/apache/datafusion-comet/issues/3178)
+
+## ArrayMax
+
+For applicable cases that are not selected for native execution automatically, `ArrayMax` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayMax.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).
+
+## ArrayMin
+
+For applicable cases that are not selected for native execution automatically, `ArrayMin` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArrayMin.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Array extrema use binary string ordering for non-UTF8_BINARY collations (https://github.com/apache/datafusion-comet/issues/4496).
+
+## ArrayUnion
+
+The following incompatibilities cause `ArrayUnion` to fall back to Spark by default. Set `spark.comet.expression.ArrayUnion.allowIncompatible=true` to enable Comet acceleration despite these differences.
+
+- Floating-point elements match Spark's signed-zero semantics natively only on Spark 4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions (SPARK-54918, SPARK-59602)
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native array_union compares raw bytes
+
+## ArraysOverlap
+
+For applicable cases that are not selected for native execution automatically, `ArraysOverlap` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.ArraysOverlap.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark compares non-UTF8_BINARY collated string elements under their collation, while Comet's native arrays_overlap compares raw bytes
+
+## ArraysZip
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Not all input data types are supported; falls back to Spark for unsupported types
+
+## Sequence
+
+The following differences from Spark are always present and do not require any additional configuration:
+
+- When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 and later return its elements (SPARK-58821), and earlier releases raise `INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor build that reports an older version but includes SPARK-58821, Comet raises the error where Spark returns the elements.
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- date and timestamp element types run through the JVM codegen dispatcher
+- sequence arguments must be literals or column references; other shapes run through the JVM codegen dispatcher to preserve Spark's per-row null short-circuit
+
+## Shuffle
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- shuffle requires a resolved random seed
+<!--END:EXPR_COMPAT-->

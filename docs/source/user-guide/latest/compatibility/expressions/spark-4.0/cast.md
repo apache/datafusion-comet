@@ -1,0 +1,324 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Cast
+
+Cast operations in Comet fall into three levels of support:
+
+- **C (Compatible)**: The results match Apache Spark
+- **I (Incompatible)**: Comet's native cast may produce different results from Apache Spark for some inputs. By
+  default, Comet instead runs Spark's own code-generated cast inside the Comet pipeline, so the results match Spark.
+  Setting `spark.comet.expression.Cast.allowIncompatible=true` selects the native cast, but this is not recommended
+  for production use.
+- **U (Unsupported)**: Comet does not provide a native version of this cast, so it runs Spark's own code-generated
+  cast inside the Comet pipeline.
+- **N/A**: Spark does not support this cast.
+
+Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
+example, casts involving `VariantType`) or when `spark.comet.exec.scalaUDF.codegen.enabled=false`.
+
+The tables at the end of this page cover casts between primitive types. See [Complex Types](#complex-types) for
+casts involving arrays, structs, and maps.
+
+## ANSI Mode Support
+
+Enabling ANSI mode does not by itself make a cast fall back to Spark or require
+`spark.comet.expression.Cast.allowIncompatible=true`: every cast that Spark permits in ANSI mode has the same support
+level as in legacy mode. See the [ANSI Mode](#ansi-mode) table below for per-pair support, and the
+[Comet Supported Expressions Guide](../../../expressions.md) for more information on the `allowIncompatible` setting.
+
+## Whitespace Trimming in Casts from String
+
+Spark uses two different notions of whitespace when casting from string, and Comet reproduces
+both:
+
+| Trim set                               | Cast targets                                                                            |
+| -------------------------------------- | --------------------------------------------------------------------------------------- |
+| Bytes `0x00`-`0x20` and `0x7F` (`DEL`) | `BOOLEAN`, `TINYINT`, `SMALLINT`, `INT`, `BIGINT`, `DATE`, `TIMESTAMP`, `TIMESTAMP_NTZ` |
+| Bytes `0x00`-`0x20` only               | `FLOAT`, `DOUBLE`, `DECIMAL`                                                            |
+
+Neither set includes any non-ASCII whitespace, so padding a value with `U+0085`, `U+00A0`,
+`U+1680`, `U+2000`-`U+200A`, `U+2028`, `U+2029`, `U+202F`, `U+205F` or `U+3000` produces `NULL`
+(or raises under ANSI mode), even though those codepoints are whitespace to Unicode. Whitespace
+inside a value is never trimmed.
+
+## String to Decimal
+
+Comet's native `CAST(string AS DECIMAL)` implementation matches Apache Spark's behavior,
+including:
+
+- Leading and trailing bytes `0x00`-`0x20` are trimmed before parsing, matching the
+  `java.lang.String.trim` that Spark applies before handing the value to `BigDecimal`.
+- Null bytes (`\u0000`) at the start or end of a string are therefore trimmed. Null bytes
+  embedded in the middle of a string produce `NULL`.
+- Non-ASCII decimal digits that Java's `BigDecimal` accepts, i.e. every Unicode `Nd` digit in
+  the Basic Multilingual Plane (fullwidth `１２３.４５`, Arabic-Indic `١٢٣`, Devanagari `१२३`,
+  ...), are treated as their ASCII equivalents in both the mantissa and the exponent, so
+  `CAST('١٢٣.٤٥' AS DECIMAL(10,2))` returns `123.45`. Digits outside the Basic Multilingual
+  Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by Spark.
+- Scientific notation (e.g. `1.23E+5`) is supported.
+- Special values (`inf`, `infinity`, `nan`) produce `NULL`.
+
+A zero with a large exponent, such as `'0e39'`, casts to `0` on Spark 4.0.5, 4.1.4, 4.2.1 and later
+(SPARK-60118). Earlier releases return `NULL` for it, or raise `NUMERIC_OUT_OF_SUPPORTED_RANGE`
+under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
+reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
+returns `0`.
+
+## String to Date
+
+Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years
+between 262143 BC and 262142 AD. This range limitation comes from the underlying chrono library's
+`NaiveDate` type. Spark itself supports a wider range. All three eval modes (Legacy, ANSI, Try)
+are supported.
+
+Supported input formats match Spark exactly:
+
+- `yyyy`, `yyyy-[m]m`, `yyyy-[m]m-[d]d`
+- Optional `T` suffix with arbitrary trailing text (e.g. `2020-01-01T12:34:56`)
+- Leading/trailing bytes `0x00`-`0x20` and `0x7F` are trimmed
+- Optional sign prefix (`-` for negative years)
+- Leading zeros (e.g. `0002020-01-01` is year 2020)
+
+## Date to Timestamp
+
+Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
+date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
+are handled correctly, including spring-forward gaps (where midnight may not exist) and
+fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
+`LocalDate.atStartOfDay(zoneId)` behavior).
+
+## Date to TimestampNTZ
+
+Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast is
+timezone-independent: each date is converted to midnight as pure arithmetic
+(`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
+is the same regardless of the session timezone setting.
+
+## Date to Numeric Types
+
+In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all other numeric
+types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
+this by short-circuiting to a null literal during query planning, so no native execution
+is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
+execution reaches Comet). The short-circuit applies only to a top-level cast. See
+[Complex Types](#complex-types) for `DATE` values inside structs and maps.
+
+## String to Timestamp
+
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
+(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
+suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
+(-290308 to 294247).
+
+## String to TimestampNTZ
+
+Comet's native `CAST(string AS TIMESTAMP_NTZ)` implementation matches Apache Spark's behavior.
+Unlike `CAST(string AS TIMESTAMP)`, this cast is timezone-independent: any timezone offset in
+the input string (e.g. `+08:00`, `Z`, `UTC`) is silently discarded, and the local date-time
+components are preserved as-is. Time-only strings (e.g. `T12:34:56`, `12:34`) produce `NULL`.
+The result is always a wall-clock timestamp with no timezone conversion or DST adjustment.
+
+## TimestampNTZ Casts
+
+Comet supports the following `TIMESTAMP_NTZ` casts natively:
+
+| Cast                               | Compatible | Notes                                                             |
+| ---------------------------------- | ---------- | ----------------------------------------------------------------- |
+| `CAST(timestamp_ntz AS STRING)`    | Yes        | Formats local time as-is, timezone-independent                    |
+| `CAST(timestamp_ntz AS DATE)`      | Yes        | Extracts the date component, timezone-independent                 |
+| `CAST(timestamp_ntz AS TIMESTAMP)` | Yes        | Interprets NTZ as local time in session TZ, converts to UTC epoch |
+| `CAST(date AS TIMESTAMP_NTZ)`      | Yes        | Pure arithmetic, timezone-independent                             |
+| `CAST(timestamp AS TIMESTAMP_NTZ)` | Yes        | Shifts UTC epoch to local time in session TZ                      |
+| `CAST(string AS TIMESTAMP_NTZ)`    | Yes        | See [String to TimestampNTZ](#string-to-timestampntz) above       |
+
+The NTZ-to-Timestamp and Timestamp-to-NTZ casts are session-timezone-dependent (the session
+timezone determines the UTC offset). All other NTZ casts are timezone-independent and produce
+the same result regardless of the session timezone.
+
+## Date to String
+
+Comet's native `CAST(date AS STRING)` is compatible with Spark. Years below 1000 are
+zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
+rendered without truncation. The cast is timezone-independent.
+
+## Decimal with Negative Scale to String
+
+Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
+`spark.sql.legacy.allowNegativeScaleOfDecimal` is `false` (the default). When that config is
+disabled, Spark cannot create negative-scale decimals, so by default Comet runs Spark's
+code-generated cast instead of the native one.
+
+When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible. Comet matches
+Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
+notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
+as `"1.23E+4"`).
+
+## Decimal with Negative Scale to Integer and Timestamp
+
+Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
+`LongType` or `TimestampType` has no native implementation, and neither does casting any of the
+integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
+routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
+pipeline, so the results match Spark exactly.
+
+The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
+overflows when the scale is negative. See
+[#5013](https://github.com/apache/datafusion-comet/issues/5013).
+
+All other cast directions to and from negative-scale decimals run natively: `FloatType` and
+`DoubleType`, `StringType` in both directions (subject to the config gate described above),
+casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
+not specific to a negative one.
+
+## Complex Types
+
+Comet casts arrays, structs, and maps by casting each element, field, key, and value with the
+rules for primitive types, using the table for the same eval mode. A complex-type cast is
+therefore compatible only when every cast it contains is compatible. For example, casting
+`ARRAY<INT>` to `ARRAY<BIGINT>` has the same support level as casting `INT` to `BIGINT`, and a
+struct cast with one unsupported field cast is unsupported. The rules apply at every level of
+nesting, so casting `ARRAY<STRUCT<a: INT>>` to `ARRAY<STRUCT<a: BIGINT>>` also has the same
+support level as casting `INT` to `BIGINT`.
+
+| From        | To            | Support level                                                                |
+| ----------- | ------------- | ---------------------------------------------------------------------------- |
+| `ARRAY<T>`  | `ARRAY<U>`    | Same as `T` to `U`                                                           |
+| `ARRAY<T>`  | `STRING`      | Same as `T` to `STRING`                                                      |
+| `STRUCT`    | `STRUCT`      | Compatible if every field cast is compatible. Fields are matched by position |
+| `STRUCT`    | `STRING`      | Compatible if the cast from every field to `STRING` is compatible            |
+| `MAP<K, V>` | `MAP<K2, V2>` | Compatible if `K` to `K2` and `V` to `V2` are both compatible                |
+| `MAP<K, V>` | `STRING`      | Unsupported                                                                  |
+
+The following casts are exceptions to these rules:
+
+- `ARRAY<DATE>` can only be cast natively to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
+  types are unsupported.
+- A cast from a `DATE` struct field or map value to a numeric or boolean type is unsupported. In
+  Legacy mode these casts always return `NULL` (see [Date to Numeric Types](#date-to-numeric-types)).
+- When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
+  maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
+  string format.
+
+In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
+a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
+casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
+`STRING` key cast at analysis.
+
+## Decimal with Negative Scale to Integral Types
+
+Casting a `DecimalType` with a negative scale, which Spark only creates when
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
+or `LongType` is not supported natively in any eval mode. The native kernels divide by
+`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
+
+## Legacy Mode
+
+<!--BEGIN:CAST_LEGACY_TABLE-->
+<!-- prettier-ignore-start -->
+
+|               | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+| ------------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- | ------------- |
+| binary        | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       | N/A           |
+| boolean       | N/A    | -       | C    | N/A  | U       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| byte          | C      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| date          | N/A    | C       | C    | -    | C       | C      | C     | C       | C    | C     | C      | C         | C             |
+| decimal       | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| double        | N/A    | C       | C    | N/A  | C       | -      | C     | C       | C    | C     | C      | C         | N/A           |
+| float         | N/A    | C       | C    | N/A  | C       | C      | -     | C       | C    | C     | C      | C         | N/A           |
+| integer       | C      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         | N/A           |
+| long          | C      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         | N/A           |
+| short         | C      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         | N/A           |
+| string        | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         | C             |
+| timestamp     | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         | C             |
+| timestamp_ntz | N/A    | N/A     | N/A  | C    | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | C         | -             |
+
+**Notes:**
+
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+  <!-- prettier-ignore-end -->
+  <!--END:CAST_LEGACY_TABLE-->
+
+## Try Mode
+
+<!--BEGIN:CAST_TRY_TABLE-->
+<!-- prettier-ignore-start -->
+
+|               | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+| ------------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- | ------------- |
+| binary        | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       | N/A           |
+| boolean       | N/A    | -       | C    | N/A  | U       | C      | C     | C       | C    | C     | C      | U         | N/A           |
+| byte          | U      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| date          | N/A    | U       | U    | -    | U       | U      | U     | U       | U    | U     | C      | C         | C             |
+| decimal       | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| double        | N/A    | C       | C    | N/A  | C       | -      | C     | C       | C    | C     | C      | C         | N/A           |
+| float         | N/A    | C       | C    | N/A  | C       | C      | -     | C       | C    | C     | C      | C         | N/A           |
+| integer       | U      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         | N/A           |
+| long          | U      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         | N/A           |
+| short         | U      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         | N/A           |
+| string        | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         | C             |
+| timestamp     | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         | C             |
+| timestamp_ntz | N/A    | N/A     | N/A  | C    | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | C         | -             |
+
+**Notes:**
+
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+  <!-- prettier-ignore-end -->
+  <!--END:CAST_TRY_TABLE-->
+
+## ANSI Mode
+
+<!--BEGIN:CAST_ANSI_TABLE-->
+<!-- prettier-ignore-start -->
+
+|               | binary | boolean | byte | date | decimal | double | float | integer | long | short | string | timestamp | timestamp_ntz |
+| ------------- | ------ | ------- | ---- | ---- | ------- | ------ | ----- | ------- | ---- | ----- | ------ | --------- | ------------- |
+| binary        | -      | N/A     | N/A  | N/A  | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | N/A       | N/A           |
+| boolean       | N/A    | -       | C    | N/A  | U       | C      | C     | C       | C    | C     | C      | U         | N/A           |
+| byte          | U      | C       | -    | N/A  | C       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| date          | N/A    | U       | U    | -    | U       | U      | U     | U       | U    | U     | C      | C         | C             |
+| decimal       | N/A    | C       | C    | N/A  | -       | C      | C     | C       | C    | C     | C      | C         | N/A           |
+| double        | N/A    | C       | C    | N/A  | C       | -      | C     | C       | C    | C     | C      | C         | N/A           |
+| float         | N/A    | C       | C    | N/A  | C       | C      | -     | C       | C    | C     | C      | C         | N/A           |
+| integer       | U      | C       | C    | N/A  | C       | C      | C     | -       | C    | C     | C      | C         | N/A           |
+| long          | U      | C       | C    | N/A  | C       | C      | C     | C       | -    | C     | C      | C         | N/A           |
+| short         | U      | C       | C    | N/A  | C       | C      | C     | C       | C    | -     | C      | C         | N/A           |
+| string        | C      | C       | C    | C    | C       | C      | C     | C       | C    | C     | -      | C         | C             |
+| timestamp     | N/A    | U       | U    | C    | U       | U      | U     | U       | C    | U     | C      | -         | C             |
+| timestamp_ntz | N/A    | N/A     | N/A  | C    | N/A     | N/A    | N/A   | N/A     | N/A  | N/A   | C      | C         | -             |
+
+**Notes:**
+
+- **double -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **double -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **float -> decimal**: Rounding matches Spark on JDK 19 and later. On older JDKs, Spark's own result may differ for values whose shortest decimal form falls exactly on a rounding tie
+- **float -> string**: String formatting can differ for floating-point values near precision limits or when scientific notation is used
+- **string -> date**: Only supports years between 262143 BC and 262142 AD
+  <!-- prettier-ignore-end -->
+  <!--END:CAST_ANSI_TABLE-->
