@@ -29,6 +29,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.BaseJoinExec
 
+import org.apache.comet.CometConf
 import org.apache.comet.serde.CometMakeDate
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
@@ -36,8 +37,11 @@ import org.apache.comet.shims.ShimCometWindowGroupLimit
 private[rules] object MakeDateEvaluation {
   private val sparkEvaluation = TreeNodeTag[String]("comet.makeDateSparkEvaluation")
 
+  private def enabled(plan: SparkPlan): Boolean =
+    CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.get(plan.conf)
+
   def reason(plan: SparkPlan): Option[String] =
-    plan.getTagValue(sparkEvaluation)
+    if (enabled(plan)) plan.getTagValue(sparkEvaluation) else None
 
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
@@ -118,6 +122,8 @@ private[rules] object MakeDateEvaluation {
    * local sorts and aggregates do so only after their consumer requests input.
    */
   def preserve(plan: SparkPlan): SparkPlan = {
+    if (!enabled(plan)) return plan
+
     def visit(
         node: SparkPlan,
         rowDemand: Option[String],

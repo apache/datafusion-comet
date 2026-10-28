@@ -481,6 +481,71 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date operator opt-out retains invalid-date errors and expression guards") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true") {
+      val input = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
+      val date = Alias(MakeDate(input.output.head, Literal(1), Literal(1), true), "date")()
+      // Tag the Spark plan before disabling the setting.
+      val guarded = MakeDateEvaluation.preserve(LocalLimitExec(1, ProjectExec(Seq(date), input)))
+      assert(countOperators(guarded, classOf[ProjectExec]) == 1, guarded.treeString)
+      assert(MakeDateEvaluation.reason(guarded).isDefined, guarded.treeString)
+      withSQLConf(CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.key -> "false") {
+        assert(MakeDateEvaluation.reason(guarded).isEmpty)
+        val converted = applyCometExecRule(guarded)
+        assert(countOperators(converted, classOf[CometProjectExec]) == 1, converted.treeString)
+        assert(countOperators(converted, classOf[CometLocalLimitExec]) == 1, converted.treeString)
+        withParquetTable(Seq((2024, 1, 1), (2025, 1, 1)), "make_date_opt_out") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT unix_date(make_date(_1, _2, _3)) FROM make_date_opt_out LIMIT 1"),
+            Seq(classOf[CometProjectExec], classOf[CometCollectLimitExec]))
+          val (_, joinPlan) = checkSparkAnswerAndOperator(
+            sql("""
+              |SELECT /*+ BROADCAST(b) */ unix_date(p.d), b._1 FROM (
+              |  SELECT _1 AS y, make_date(_1, _2, _3) AS d FROM make_date_opt_out
+              |) p JOIN make_date_opt_out b ON p.y = b._1
+              |""".stripMargin),
+            Seq(classOf[CometProjectExec], classOf[CometBroadcastHashJoinExec]))
+          val join = joinPlan.collectFirst { case j: CometBroadcastHashJoinExec => j }.get
+          assert(
+            join.left.exists {
+              case p: CometProjectExec =>
+                p.originalPlan.expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+              case _ => false
+            },
+            joinPlan.treeString)
+
+          val invalidDate = sql("SELECT make_date(_1, _2 + 12, _3) FROM make_date_opt_out")
+          checkCometOperators(stripAQEPlan(invalidDate.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(invalidDate)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            withClue(s"$engine: ") {
+              assert(error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+            }
+          }
+        }
+
+        // A nullable left operand must still skip a throwing date on the right of arithmetic.
+        withParquetTable(Seq((None, 13), (Some(1), 1)), "make_date_opt_out_expression") {
+          val df = sql("""
+            |SELECT _1 + unix_date(make_date(2024, _2, 1)) FROM make_date_opt_out_expression
+            |""".stripMargin)
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(countOperators(plan, classOf[ProjectExec]) == 1, plan.treeString)
+          assert(
+            new ExtendedExplainInfo()
+              .getFallbackReasons(plan)
+              .exists(_.contains("make_date requires Spark evaluation under Add")),
+            plan.treeString)
+          checkCometAnswer(df, Seq(Row(null), Row(19724)))
+        }
+      }
+    }
+  }
+
   test("make_date fallback reuses native broadcast rows in Spark's broadcast representation") {
     for (nestedLoop <- Seq(false, true)) {
       withSQLConf(
