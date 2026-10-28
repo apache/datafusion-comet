@@ -28,13 +28,13 @@ import org.scalatest.PrivateMethodTester._
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.FunctionIdentifier
+import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, Not, RuntimeReplaceable, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RoundRobinPartitioning}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, IdentityBroadcastMode, RoundRobinPartitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.comet._
 import org.apache.spark.sql.comet.CometExec.nativeLeaves
@@ -96,6 +96,31 @@ class CometExecRuleSuite extends CometTestBase {
   /** Helper method to apply CometExecRule and return the transformed plan */
   private def applyCometExecRule(plan: SparkPlan): SparkPlan = {
     CometExecRule(spark).apply(stripAQEPlan(plan))
+  }
+
+  test("columnar-to-row identity broadcasts retain every build row") {
+    for (direct <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true",
+        CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_ENABLED.key -> direct.toString,
+        CometConf.COMET_DIRECT_COLUMNAR_TO_ROW_MIN_BATCH_SIZE.key -> "1") {
+        val build = applyCometExecRule(
+          createSparkPlan(spark, "SELECT CAST(id AS INT) AS y FROM range(2024, 2028, 1, 2)"))
+        assert(build.isInstanceOf[CometNativeExec], build.treeString)
+        val mode = IdentityBroadcastMode
+        val original = BroadcastExchangeExec(mode, build)
+        val exchange = CometBroadcastExchangeExec(original, build.output, mode, build)
+        val rows = CometColumnarToRowExec(exchange)
+          .executeBroadcast[Array[InternalRow]]()
+          .value
+        // Two rows per partition expose row reuse in both JVM conversion paths.
+        withClue(s"direct=$direct: ") {
+          assert(rows.map(_.getInt(0)).sorted.toSeq == Seq(2024, 2025, 2026, 2027))
+        }
+      }
+    }
   }
 
   /** Create a test data frame that is used in all tests */
