@@ -45,8 +45,6 @@ object CometMin extends CometAggregateExpressionSerde[Min] {
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
 
-  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
-
   override def getSupportLevel(expr: Min): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
 
@@ -87,8 +85,6 @@ object CometMax extends CometAggregateExpressionSerde[Max] {
   override def supportsNativePartialToSparkFinal(fn: Max): Boolean = true
 
   override def getUnsupportedReasons(): Seq[String] = AggSerde.minMaxUnsupportedReasons
-
-  override def getIncompatibleReasons(): Seq[String] = AggSerde.minMaxIncompatibleReasons
 
   override def getSupportLevel(expr: Max): SupportLevel =
     AggSerde.minMaxSupportLevel(expr.dataType)
@@ -1649,10 +1645,10 @@ object AggSerde extends CometTypeShim {
   }
 
   /**
-   * DataFusion compares struct fields with Arrow's total order for floats, which differs from
-   * Spark for -0.0 and negative NaN. It also skips a null field when comparing two structs, while
-   * Spark orders null as the smallest value, so a struct is only Compatible when none of its
-   * fields (at any depth) can be null.
+   * The native accumulator compares structs by their Arrow row encoding, ascending with nulls
+   * first, which orders fields the way Spark does, a null field below every value included. The
+   * encoding orders floats by IEEE total order, which differs from Spark for -0.0 and NaN with
+   * the sign bit set, so float and double fields fall back.
    */
   private def minMaxStructSupportLevel(st: StructType): SupportLevel = {
     if (st.fields.isEmpty) {
@@ -1662,13 +1658,12 @@ object AggSerde extends CometTypeShim {
     } else if (SupportLevel.containsType(st, classOf[FloatType], classOf[DoubleType])) {
       Unsupported(
         Some(
-          "Struct min/max over a float or double field. DataFusion orders -0.0 below 0.0 and" +
+          "Struct min/max over a float or double field. Comet orders -0.0 below 0.0 and" +
             " a NaN with the sign bit set below every value, while Spark treats -0.0 and 0.0" +
             " as equal and every NaN as the largest value"))
     } else {
       unsupportedStructLeaf(st) match {
         case Some(dt) => Unsupported(Some(s"Struct min/max over a field of type $dt"))
-        case None if structHasNullableField(st) => Incompatible(Some(minMaxNullableStructReason))
         case None => Compatible()
       }
     }
@@ -1686,26 +1681,12 @@ object AggSerde extends CometTypeShim {
       }
   }
 
-  private def structHasNullableField(dt: DataType): Boolean = dt match {
-    case st: StructType => st.fields.exists(f => f.nullable || structHasNullableField(f.dataType))
-    case _ => false
-  }
-
-  private val minMaxNullableStructReason =
-    "Struct min/max with nullable fields (at any depth). DataFusion skips a null field when" +
-      " comparing structs, while Spark orders null as the smallest value. When a field that" +
-      " decides the order is null, the result can differ from Spark, and can also differ" +
-      " between runs because the skipping comparison does not give a consistent order."
-
-  /** Reasons a struct min/max is not Compatible, for the generated compatibility guide. */
-  val minMaxIncompatibleReasons: Seq[String] = Seq(minMaxNullableStructReason)
-
   /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
   val minMaxUnsupportedReasons: Seq[String] = Seq(
     "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
       " string or binary, such as timestamp without time zone, intervals, arrays and maps." +
       " A struct is supported only if all of its fields are of supported types other than" +
-      " float and double, since DataFusion orders -0.0 and NaN with the sign bit set" +
+      " float and double, since Comet orders -0.0 and NaN with the sign bit set" +
       " differently from Spark inside a struct.",
     "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
       " while Comet compares raw bytes.")

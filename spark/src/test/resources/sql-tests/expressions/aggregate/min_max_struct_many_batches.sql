@@ -16,8 +16,7 @@
 -- under the License.
 
 -- Struct min/max over many small batches and many groups, so the accumulator carries each group's
--- winner from batch to batch instead of seeing all rows at once. range() produces non-nullable
--- values, so the struct stays Compatible.
+-- winner from batch to batch instead of seeing all rows at once.
 
 -- Config: spark.comet.batchSize=64
 

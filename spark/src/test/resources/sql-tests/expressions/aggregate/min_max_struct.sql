@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- min/max over a struct. Compatible only when no field can be null and no field is float/double.
--- Structs with nullable fields are opt-in because DataFusion skips null fields when comparing.
+-- min/max over a struct. Spark orders structs field by field, with a null field below every
+-- value. Float and double fields fall back. Null fields are covered in min_max_struct_nullable.sql.
 
 statement
 CREATE TABLE test_mm_struct(g int, ts bigint, s string, d decimal(38,0), dt date, t timestamp, n string)
@@ -31,7 +31,7 @@ INSERT INTO test_mm_struct VALUES
   (2, -9223372036854775808, 'c', 2, DATE'1980-01-02', TIMESTAMP'1999-12-31 23:59:58', 'w'),
   (3, 1, 'only', 3, DATE'2020-01-01', TIMESTAMP'2020-01-01 00:00:00', NULL)
 
--- Non-nullable fields via coalesce: native.
+-- Non-nullable fields.
 query
 SELECT g, min(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)),
   max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s))
@@ -51,8 +51,8 @@ FROM test_mm_struct GROUP BY g ORDER BY g
 query
 SELECT min(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)) FROM test_mm_struct
 
--- Nullable fields: opt-in, falls back by default.
-query expect_fallback(Struct min/max with nullable fields)
+-- Nullable fields, including a null in the deciding field.
+query
 SELECT g, max(struct(ts, s, n)) FROM test_mm_struct GROUP BY g ORDER BY g
 
 -- Float and double fields: NaN ordering differs, so fall back.
@@ -71,8 +71,7 @@ SELECT g, max(struct(coalesce(ts, 0L) AS ts, map('k', 1) AS m)) FROM test_mm_str
 query expect_fallback(Struct min/max over a field of type TimestampNTZType)
 SELECT g, max(struct(coalesce(ts, 0L) AS ts, TIMESTAMP_NTZ'2020-01-01 00:00:00' AS t)) FROM test_mm_struct GROUP BY g ORDER BY g
 
--- Boolean, integral and binary fields. Spark marks narrowing casts nullable, so each one is
--- wrapped in coalesce to keep the struct Compatible.
+-- Boolean, integral and binary fields.
 query
 SELECT g,
   min(struct(coalesce(ts, 0L) > 5 AS b, coalesce(CAST(ts % 100 AS TINYINT), 0Y) AS i8,
@@ -114,13 +113,12 @@ query
 SELECT g, max(struct(coalesce(ts, 0L) AS ts, coalesce(s, '') AS s)) FILTER (WHERE ts < 9)
 FROM test_mm_struct GROUP BY g ORDER BY g
 
--- A nested struct that can be null makes the outer struct opt-in.
-query expect_fallback(Struct min/max with nullable fields)
+-- A nested struct that can be null orders below every non-null nested struct.
+query
 SELECT g, max(struct(coalesce(ts, 0L) AS ts, CASE WHEN ts > 5 THEN struct(coalesce(s, '') AS s) END AS inner))
 FROM test_mm_struct GROUP BY g ORDER BY g
 
--- Spark reads file-source schemas as nullable, so min/max over a struct column read from a table
--- is opt-in even when every stored value is non-null.
+-- A struct column read from a table, whose fields Spark reads as nullable.
 statement
 CREATE TABLE test_mm_struct_col(g int, st struct<ts: bigint, s: string>) USING parquet
 
@@ -129,5 +127,5 @@ INSERT INTO test_mm_struct_col VALUES
   (1, named_struct('ts', 5L, 's', 'b')), (1, named_struct('ts', 9L, 's', '日本語')),
   (2, named_struct('ts', 1L, 's', 'a')), (2, NULL)
 
-query expect_fallback(Struct min/max with nullable fields)
+query
 SELECT g, min(st), max(st) FROM test_mm_struct_col GROUP BY g ORDER BY g

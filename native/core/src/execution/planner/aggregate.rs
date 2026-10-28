@@ -54,7 +54,8 @@ use datafusion_comet_spark_expr::{
     ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, Cast, CometCollectList, CometCollectSet,
     Correlation, Covariance, EvalMode, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode,
     Regr, RegrType, SparkBloomFilterVersion, SparkCastOptions, SparkListAgg, SparkMinMax,
-    SparkPercentile, SparkPivotFirst, Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
+    SparkPercentile, SparkPivotFirst, SparkStructMinMax, Stddev, SumDecimal, SumInteger, Variance,
+    ZeroOrder,
 };
 use jni::objects::{Global, JObject};
 
@@ -915,13 +916,15 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     }
 }
 
-/// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
-/// differently, and DataFusion's for every other type.
+/// `min` or `max` over `data_type`: Spark's version for floats and structs, which DataFusion
+/// orders differently, and DataFusion's for every other type.
 pub(super) fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
     // Spark has only 32- and 64-bit floating-point types. Keep Float16 on DataFusion's path so
     // an internal plan using it does not reach SparkMinMax, whose accumulators reject that type.
     if matches!(data_type, DataType::Float32 | DataType::Float64) {
         Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
+    } else if matches!(data_type, DataType::Struct(_)) {
+        Arc::new(AggregateUDF::new_from_impl(SparkStructMinMax::new(is_max)))
     } else if is_max {
         max_udaf()
     } else {
