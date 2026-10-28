@@ -1,0 +1,71 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Fork runs: a push to a branch of a contributor's fork runs the pull request
+# tier on the contributor's own GitHub runners, so a fork pull request does not
+# spend ASF's shared capacity on it. ci.yml upstream skips the PR tier for a
+# fork pull request into main (see `is_fork_pull_request` in
+# dev/ci/compute-changes.py), keeping only the preflight checks and the opt-in
+# `run-*` suites, and fork_ci_status.yml mirrors this run onto the pull request
+# as the informational `CI (fork)` check. The merge queue runs every suite on
+# the merge result, so a fork run is feedback and never a gate.
+#
+# This is a separate workflow, and not a wider `push` trigger on ci.yml, for the
+# same reason ci_label.yml is one. A skipped job still publishes a check run
+# under its own name, and a push to a branch of this repository can land on the
+# very commit a pull request is testing. A skipped `Required Checks` from that
+# push would compete with the pull request's real verdict. Here the only job
+# that can be skipped is named after this workflow's own run, and upstream it is
+# always skipped.
+#
+# `main` is excluded because ci.yml already runs on push to main, in a fork as
+# upstream. There it refreshes the fork's cache entries and runs the PR tier
+# for what the push changed, which is what makes a fork's branch runs fast: a
+# branch can restore caches saved on its own ref or on the default branch only.
+name: Comet CI (fork run)
+
+# No `concurrency` here. ci.yml declares its own group, which for a push to a
+# fork is keyed on the branch, so the next push to the branch supersedes this
+# one. The same group on the caller as well would deadlock the two.
+on:
+  push:
+    branches-ignore:
+      - main
+      - asf-site
+      # Merge queue branches exist only in this repository; the guard below
+      # would skip them anyway.
+      - 'gh-readonly-queue/**'
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Fork run
+    # Upstream, a push to any branch other than main is a pull request's own
+    # business: the pull request run tests it, and a second run here would
+    # test it twice.
+    if: github.repository != 'apache/datafusion-comet'
+    # The union of what ci.yml's jobs request, for the same reason as in
+    # ci_label.yml: GitHub checks a called workflow's permissions against
+    # this ceiling for every job when the run starts, including the ones this
+    # event skips.
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+    uses: ./.github/workflows/ci.yml

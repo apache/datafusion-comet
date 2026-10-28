@@ -100,6 +100,9 @@ verdict like any other suite. See
 [Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips)
 for the mechanics.
 
+For a pull request from a fork, the pull request column's "yes" rows run on your fork rather than
+here; see [Pull requests from forks](#pull-requests-from-forks).
+
 Every job's result feeds one flat job named `Required Checks`, and that is the only status check
 `main` requires. A job that is skipped because the change did not touch its inputs counts as a
 pass. A job that fails or is cancelled turns `Required Checks` red.
@@ -110,6 +113,56 @@ cases that pin both down.
 
 A pull request against a release branch runs all three tiers at once; see
 [Release branches](#release-branches).
+
+## Pull requests from forks
+
+Nearly every pull request comes from a fork, and the PR tier is the largest share of the runner time
+the project spends on CI. So for a pull request from a fork into `main`, the PR tier runs on **your
+fork's** GitHub runners, not on the Apache Software Foundation's shared ones. What stays here is the
+preflight checks, `Required Checks`, and any `run-*` suite a maintainer opts the pull request
+into. The merge queue, which also stays here, runs every suite on the merge result before anything
+lands. This is the arrangement `apache/datafusion` and `apache/arrow-rs` use.
+
+To get it working:
+
+1. **Enable GitHub Actions on your fork.** GitHub disables workflows on a new fork. Open the
+   fork's **Actions** tab and choose **I understand my workflows, go ahead and enable them**.
+2. **Sync your fork and rebase your branch onto `main`.** The workflows that run on your fork are
+   the ones in your branch, so a branch cut before this arrangement existed runs nothing. Keep your
+   fork's own `main` in sync as well, for the reason under "The first run is slow" below.
+3. **Push your branch.** Each push to a branch other than `main` starts a `Comet CI (fork run)` in
+   your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
+   the PR tier for the files your branch changes relative to your fork's `main`: the Linux build,
+   lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites against Spark 4.1.
+
+On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is updated when
+the upstream run finishes and every 15 minutes after, so it can lag the fork. Read the details in
+your fork and re-run failed jobs there. If the check says **Enable CI on your fork** or **No fork CI
+run for this commit**, no run was found for the pull request's head commit: Actions is disabled, the
+branch does not include the fork workflows, or the run has not appeared yet.
+
+Some things to know:
+
+- **`CI (fork)` is informational.** `Required Checks` does not depend on it, because a contributor
+  controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
+  queue is the gate, and it tests your change merged with `main` and everything queued ahead of it,
+  where the fork run tests your branch head alone.
+- **The first run is slow.** Caches are scoped to a branch or to the repository's default branch.
+  A fork whose `main` has never run starts every branch with empty caches. A cold run of the PR tier
+  on a fork took about an hour of wall time and 240 runner-minutes, of which the native build alone
+  was 23 minutes; with warm caches the native build takes about 4. Syncing your fork's `main` runs
+  the workflow there once, which writes the caches your branches then restore.
+- **Opt-in suites still run here.** A fork cannot see the `run-*` labels on your pull request, so
+  those suites, and the `labeled` runs that start when a maintainer applies one, are unchanged. See
+  [Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips).
+- **Not everything moves.** A pull request from a branch of this repository, such as a
+  committer's or dependabot's, and a pull request that targets a release branch, keep the PR tier here.
+  A release branch has no queue to catch what a fork run misses.
+- **Opening a pull request inside your own fork** runs the full PR tier there, as it did before.
+
+If you cannot enable Actions on your fork, say so on the pull request. Nothing else will run the PR
+tier for you before the queue does, so a maintainer may ask you to reproduce a failure with
+[`dev/local-ci.sh`](#reproducing-a-suite-failure-locally) first.
 
 ## Opting a pull request into a suite the PR tier skips
 
@@ -449,7 +502,8 @@ The umbrella workflow, the reusable workflows it calls, and the routing tables a
 `dev/ci/check-ci-config.py`, which runs in preflight. It enforces that every job feeds
 `Required Checks`, that the required check name in `.asf.yaml` matches the job that publishes it,
 that artifact names are unique per producer, that the routing policy matches its test cases, and
-that every job in `pr_build_linux.yml` is either a cache writer or skipped on push. Run it locally
+that every job in `pr_build_linux.yml` is either a cache writer or skipped on push, and that the fork
+workflows (`ci_fork.yml`, `fork_ci_status.yml`) and `ci.yml`'s push trigger agree. Run it locally
 before pushing a CI change:
 
 ```sh

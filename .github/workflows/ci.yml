@@ -73,9 +73,11 @@ name: Comet CI
 # each other. Every other run is keyed on its event name: opened, synchronize
 # and reopened all map to `pull_request`, so a new push still supersedes its
 # predecessor, while a scheduled run at the tip of main never cancels that
-# commit's push run.
+# commit's push run. A push to a fork (ci_fork.yml) is keyed on its branch
+# instead of its commit, so the next push to the branch cancels the run in
+# flight.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
+  group: ${{ github.repository }}-${{ github.head_ref || (github.event_name == 'push' && github.repository != 'apache/datafusion-comet' && github.ref) || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
 # No `labeled` here: ci_label.yml handles that event and calls this file
@@ -194,6 +196,9 @@ jobs:
       - name: Check pull request type labeling
         run: node --test dev/ci/pr-type-label.test.mjs
 
+      - name: Check fork CI status bridge
+        run: node --test dev/ci/test-fork-ci-status.cjs
+
       - name: Check Iceberg shard inventory validation
         run: python3 dev/ci/test-iceberg-shards.py
 
@@ -282,6 +287,10 @@ jobs:
           LABEL_NAME:   ${{ github.event.label.name }}
           PR_LABELS:    ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY:   ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PUSH_REF:     ${{ github.ref }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -329,8 +338,22 @@ jobs:
             # merge_group runs; the queue's ALLGREEN strategy is what makes
             # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
+          elif [[ "$REPOSITORY" != "apache/datafusion-comet" && "$PUSH_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            # A push to a feature branch of a contributor's fork (ci_fork.yml).
+            # There is no pull request to diff against, and the fork cannot know
+            # what upstream main is, so diff against the fork's own default
+            # branch. A fork that has not synced yet diffs against an older
+            # main, which can only select more suites than the pull request
+            # needs, never fewer. Without a default branch to diff against, or
+            # without a merge base, run everything the tier selects.
+            if git merge-base "origin/$DEFAULT_BRANCH" HEAD >/dev/null 2>&1; then
+              git diff --name-only "origin/$DEFAULT_BRANCH"..."$PUSH_AFTER" > changed_files.txt
+            else
+              git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
+            fi
           else
-            # push to main; first push to a branch has all-zero before sha
+            # push to main, upstream or a fork's own; the first push to a
+            # branch has an all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             else
