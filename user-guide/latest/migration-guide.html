@@ -981,6 +981,43 @@ without an <code class="docutils literal notranslate"><span class="pre">ORDER</s
 files interleave. Spark does not guarantee the order of such a result. To read one file at a time in
 the order Spark assigned them, as before, set the setting to <code class="docutils literal notranslate"><span class="pre">1</span></code>. See <a class="reference internal" href="iceberg.html#tuning"><span class="std std-ref">Iceberg tuning</span></a>.</p>
 </section>
+<section id="known-differences-from-spark-that-are-new-in-1-2-0">
+<h3>Known Differences From Spark That Are New in 1.2.0<a class="headerlink" href="#known-differences-from-spark-that-are-new-in-1-2-0" title="Link to this heading">#</a></h3>
+<p>The three differences below were not in Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code>. They come from operators and expressions that
+now run natively where <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> fell back to Spark, so they are listed here although they are not
+behavior changes that a legacy key restores. Each one has an issue, and each has a setting that
+makes Comet use Spark’s implementation instead.</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">collect_set</span></code> over <code class="docutils literal notranslate"><span class="pre">FLOAT</span></code> or <code class="docutils literal notranslate"><span class="pre">DOUBLE</span></code> next to <code class="docutils literal notranslate"><span class="pre">count(DISTINCT</span> <span class="pre">...)</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7203">#7203</a>).</strong> On Spark before 4.2, a query
+that mixes <code class="docutils literal notranslate"><span class="pre">count(DISTINCT</span> <span class="pre">...)</span></code> with other aggregates, such as
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">x,</span> <span class="pre">count(DISTINCT</span> <span class="pre">y),</span> <span class="pre">collect_set(z)</span> <span class="pre">FROM</span> <span class="pre">t</span> <span class="pre">GROUP</span> <span class="pre">BY</span> <span class="pre">x</span></code>, now runs <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> natively.
+Comet <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> ran that query in Spark. Native <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> keeps <code class="docutils literal notranslate"><span class="pre">-0.0</span></code> and <code class="docutils literal notranslate"><span class="pre">0.0</span></code> as two entries
+and merges every <code class="docutils literal notranslate"><span class="pre">NaN</span></code> into one, where Spark collapses the zeros and keeps each <code class="docutils literal notranslate"><span class="pre">NaN</span></code>. The
+<a class="reference internal" href="compatibility/floating-point.html"><span class="std std-doc">compatibility guide</span></a> already lists this difference for
+<code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on its own. Spark 4.2 is not affected. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>
+to make <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> over floating-point values fall back to Spark.</p></li>
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">RANGE</span></code> window frames over a <code class="docutils literal notranslate"><span class="pre">DATE</span></code> column with a very large offset
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5022">#5022</a>).</strong> A <code class="docutils literal notranslate"><span class="pre">RANGE</span></code> frame with an
+explicit <code class="docutils literal notranslate"><span class="pre">PRECEDING</span></code> or <code class="docutils literal notranslate"><span class="pre">FOLLOWING</span></code> offset over a <code class="docutils literal notranslate"><span class="pre">DATE</span></code> <code class="docutils literal notranslate"><span class="pre">ORDER</span> <span class="pre">BY</span></code> column now runs natively,
+where <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> fell back for every such frame. When the offset is roughly 92 million days (about
+250,000 years) or more, the frame bound overflows the date range, and Comet can put rows with a
+<code class="docutils literal notranslate"><span class="pre">NULL</span></code> date in the frame where Spark does not. Comet falls back above 2,144,550,751 days. Offsets
+of a realistic size are not affected. To avoid it for larger offsets, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled=false</span></code>, which runs every window operator in Spark.</p></li>
+<li><p><strong>Native <code class="docutils literal notranslate"><span class="pre">min</span></code> and <code class="docutils literal notranslate"><span class="pre">max</span></code> over <code class="docutils literal notranslate"><span class="pre">STRING</span></code> or <code class="docutils literal notranslate"><span class="pre">BINARY</span></code> under-report their memory
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6936">#6936</a>).</strong> Comet <code class="docutils literal notranslate"><span class="pre">1.2.0</span></code> runs these
+natively, where <code class="docutils literal notranslate"><span class="pre">1.1.0</span></code> fell back. In a hash aggregate, DataFusion’s accumulator counts the
+length of each group’s current value rather than the memory it holds, so a group whose extreme
+value gets shorter, such as the <code class="docutils literal notranslate"><span class="pre">min</span></code> of URLs where a prefix arrives after a longer value, holds
+more memory than Comet’s memory pool sees. The aggregate then spills later than it should, and a
+task can run out of memory. Results are not affected. Spark plans a hash aggregate for this when
+the query also has an aggregate such as <code class="docutils literal notranslate"><span class="pre">collect_set</span></code>, as in
+<code class="docutils literal notranslate"><span class="pre">SELECT</span> <span class="pre">k,</span> <span class="pre">min(s),</span> <span class="pre">collect_set(tag)</span> <span class="pre">FROM</span> <span class="pre">t</span> <span class="pre">GROUP</span> <span class="pre">BY</span> <span class="pre">k</span></code>. A plain <code class="docutils literal notranslate"><span class="pre">min</span></code> or <code class="docutils literal notranslate"><span class="pre">max</span></code> over a string is
+not affected. Set <code class="docutils literal notranslate"><span class="pre">spark.sql.execution.useObjectHashAggregateExec=false</span></code> to make Spark plan a
+sort aggregate for these queries, which is not affected.</p></li>
+</ul>
+</section>
 </section>
 <section id="upgrading-to-comet-1-1-0">
 <h2>Upgrading to Comet 1.1.0<a class="headerlink" href="#upgrading-to-comet-1-1-0" title="Link to this heading">#</a></h2>
@@ -1139,6 +1176,7 @@ release, review the release notes for the versions in between.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-writes">Iceberg Writes</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#memory-pool-limits">Memory Pool Limits</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-iceberg-scan-file-concurrency">Native Iceberg Scan File Concurrency</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#known-differences-from-spark-that-are-new-in-1-2-0">Known Differences From Spark That Are New in 1.2.0</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-1-0">Upgrading to Comet 1.1.0</a><ul class="nav section-nav flex-column">

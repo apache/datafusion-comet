@@ -1,0 +1,1075 @@
+<!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" data-theme="light">
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>DataFusion Comet 1.2.0 Changelog &#8212; Apache DataFusion Comet  documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "light";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "light";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/theme_overrides.css?v=bfdde722" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=5929fcd5"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'changelog/1.2.0';</script>
+    <script async="true" defer="true" src="https://buttons.github.io/buttons.js"></script>
+    <script src="../_static/comet-ux.js?v=97577a30"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="DataFusion Comet 1.1.0 Changelog" href="1.1.0.html" />
+    <link rel="prev" title="Changelog" href="index.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="preload" as="style"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      media="print" onload="this.media='all'">
+<noscript>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+</noscript>
+
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="light">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+    
+    <img src="../_static/DataFusionComet-Logo-Light.png" class="logo__image only-light" alt="Apache DataFusion Comet  documentation - Home"/>
+    <img src="../_static/DataFusionComet-Logo-Dark.png" class="logo__image only-dark pst-js-only" alt="Apache DataFusion Comet  documentation - Home"/>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../user-guide/index.html">
+    User Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../contributor-guide/index.html">
+    Contributor Guide
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="index.html">
+    Changelog
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../about/index.html">
+    About
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/apache/datafusion-comet" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+        <div class="sidebar-primary-item"><!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+
+
+
+  
+
+<nav class="bd-links" id="bd-docs-nav" aria-label="Main navigation">
+  <div class="bd-toc-item active">
+    
+      <ul class="current nav bd-sidenav">
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">1.2.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="1.1.0.html">1.1.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="1.0.0.html">1.0.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.17.1.html">0.17.1</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.17.0.html">0.17.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.16.0.html">0.16.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.15.0.html">0.15.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.14.1.html">0.14.1</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.14.0.html">0.14.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.13.0.html">0.13.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.12.0.html">0.12.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.11.0.html">0.11.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.10.0.html">0.10.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.9.1.html">0.9.1</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.9.0.html">0.9.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.8.0.html">0.8.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.7.0.html">0.7.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.6.0.html">0.6.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.5.0.html">0.5.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.4.0.html">0.4.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.3.0.html">0.3.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.2.0.html">0.2.0</a></li>
+<li class="toctree-l1"><a class="reference internal" href="0.1.0.html">0.1.0</a></li>
+</ul>
+
+    
+  </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="index.html" class="nav-link">Changelog</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">DataFusion Comet 1.2.0 Changelog</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <!--
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+<section id="datafusion-comet-1-2-0-changelog">
+<h1>DataFusion Comet 1.2.0 Changelog<a class="headerlink" href="#datafusion-comet-1-2-0-changelog" title="Link to this heading">#</a></h1>
+<p>This release consists of 396 commits from 40 contributors. See credits at the end of this changelog for more information.</p>
+<p><strong>Fixed bugs:</strong></p>
+<ul class="simple">
+<li><p>fix: reject a file without field ids at any depth whether or not id matching is on <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6116">#6116</a> (dwsmith1983)</p></li>
+<li><p>fix: decline native Iceberg writes with a custom location provider <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6216">#6216</a> (liupoyi-1031)</p></li>
+<li><p>fix: report task input metrics after the native iterator closes and add to Spark’s counters <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5880">#5880</a> (dwsmith1983)</p></li>
+<li><p>fix: Native S3 scan on EKS/IRSA turns a transient STS throttle into a hard 403 storm <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6025">#6025</a> (parthchandra)</p></li>
+<li><p>fix: log partial memory grants at DEBUG and drop the memory usage dump <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6269">#6269</a> (andygrove)</p></li>
+<li><p>fix: prevent libhdfs thread destructor use-after-free <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5036">#5036</a> (peterxcli)</p></li>
+<li><p>fix: return a native plan’s memory before its Spark task ends <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6261">#6261</a> (andygrove)</p></li>
+<li><p>fix: native ansi-errors raised as spark error <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5169">#5169</a> (peterxcli)</p></li>
+<li><p>fix: credit co-authors of a PR in the generated changelog <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6358">#6358</a> (andygrove)</p></li>
+<li><p>fix: validate map constructor row lengths and null short-circuiting <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5846">#5846</a> (sunchao)</p></li>
+<li><p>fix: match Spark ordering in native array extrema <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5403">#5403</a> (sunchao)</p></li>
+<li><p>fix: label native timestamp_seconds results as UTC timestamps <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6341">#6341</a> (andygrove)</p></li>
+<li><p>fix: keep the input’s timezone label on native date_trunc results <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6345">#6345</a> (andygrove)</p></li>
+<li><p>fix: validate spark.comet.shuffle.jvm.batchSize and spark.comet.exec.memoryPool <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6287">#6287</a> (andygrove)</p></li>
+<li><p>fix: reject non-default collations in all sort keys <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6206">#6206</a> (LinSimon-901101)</p></li>
+<li><p>fix: zero sliced boolean offsets at every level before exporting to the JVM <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6339">#6339</a> (andygrove)</p></li>
+<li><p>fix: count pool overcommit as untracked memory in the native memory usage log <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6271">#6271</a> (andygrove)</p></li>
+<li><p>fix: install Comet’s cache serializer only when Comet and native execution are enabled <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6360">#6360</a> (andygrove)</p></li>
+<li><p>fix: fall back from the native CSV scan for timestamps outside UTC <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6349">#6349</a> (andygrove)</p></li>
+<li><p>fix: key each scan’s planning data by its plan node in a native block <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6297">#6297</a> (dwsmith1983)</p></li>
+<li><p>fix: derive the native memory limit the way YARN and Kubernetes size executor containers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6375">#6375</a> (andygrove)</p></li>
+<li><p>fix: route nested DATE to numeric casts in structs and maps through the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6319">#6319</a> (andygrove)</p></li>
+<li><p>fix: match iceberg-java for Iceberg partitions past year 262142 in the native writer <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6239">#6239</a> (andygrove)</p></li>
+<li><p>fix: count each reused exchange once in extended explain <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6379">#6379</a> (andygrove)</p></li>
+<li><p>fix: normalize session timezone IDs before passing them to native code <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6351">#6351</a> (andygrove)</p></li>
+<li><p>fix: count every hash-based JVM shuffle batch as shuffle bytes written <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6369">#6369</a> (andygrove)</p></li>
+<li><p>fix: release input Arrow streams that native never takes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6372">#6372</a> (andygrove)</p></li>
+<li><p>fix: make benchmark cases over ShortType columns exercise Comet <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6376">#6376</a> (andygrove)</p></li>
+<li><p>fix: fail a native plan whose producer task is cancelled before its stream ends <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6362">#6362</a> (andygrove)</p></li>
+<li><p>fix: relabel CASE and COALESCE timestamp branches instead of panicking <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6347">#6347</a> (andygrove)</p></li>
+<li><p>fix: warn about unreleased native memory only after a task’s last native plan closes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6374">#6374</a> (andygrove)</p></li>
+<li><p>fix: cap spark.comet.shuffle.jvm.batchSize at spark.comet.batchSize where it is read <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6366">#6366</a> (andygrove)</p></li>
+<li><p>fix: warn when native and JVM timezone databases differ <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6353">#6353</a> (andygrove)</p></li>
+<li><p>fix: describe CometInMemoryTableScan by the scan it replaces in EXPLAIN <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6453">#6453</a> (andygrove)</p></li>
+<li><p>fix: remove nested planner placeholders after recursive conversion <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6439">#6439</a> (sunchao)</p></li>
+<li><p>fix: fall back to Spark for RANK and DENSE_RANK limits over nested floating-point keys <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6468">#6468</a> (andygrove)</p></li>
+<li><p>fix: make adaptive partial aggregation opt-in with spark.comet.exec.aggregate.skipPartial.enabled <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6474">#6474</a> (andygrove)</p></li>
+<li><p>fix: fall back when struct field names collide case-insensitively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6326">#6326</a> (comphead)</p></li>
+<li><p>fix: reject casts involving non-default collated strings <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5302">#5302</a> (stantheman0128)</p></li>
+<li><p>fix: <code class="docutils literal notranslate"><span class="pre">get_json_object</span></code> returns first value for duplicate keys to match Spark <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4971">#4971</a> (u70b3)</p></li>
+<li><p>fix: build with Rust 1.99, which deprecates the legacy f64 constants and fetch_update <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6507">#6507</a> (andygrove)</p></li>
+<li><p>fix: fall back to Spark for _metadata.file_block_start and file_block_length <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6510">#6510</a> (andygrove)</p></li>
+<li><p>fix: report a cached relation’s decoded size to the planner, not its compressed size <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6412">#6412</a> (andygrove)</p></li>
+<li><p>fix: Route collated instr, substring_index, trim, greatest and least through the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6480">#6480</a> (viirya)</p></li>
+<li><p>fix: keep Spark’s cache scan for a relation whose cached plan records observed metrics <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6421">#6421</a> (andygrove)</p></li>
+<li><p>fix: load the bundled native library only once per class loader <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6493">#6493</a> (zhangfengcdt)</p></li>
+<li><p>fix: match Iceberg’s rounding for pre-1970 timestamps in native years/months/days/hours <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6456">#6456</a> (andygrove)</p></li>
+<li><p>fix: cast native IF branches to a common type like CASE WHEN <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6458">#6458</a> (andygrove)</p></li>
+<li><p>fix: fall back to Spark for regr_* aggregates until their merge matches Spark <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6451">#6451</a> (andygrove)</p></li>
+<li><p>fix: defer Parquet conversion errors until a row group is decoded, as Spark does <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6515">#6515</a> (andygrove)</p></li>
+<li><p>fix: publish metrics on the update interval for native blocks without a JVM input <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6314">#6314</a> (andygrove)</p></li>
+<li><p>fix: match Spark’s whitespace trimming in casts from string to timestamp and timestamp_ntz <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6445">#6445</a> (andygrove)</p></li>
+<li><p>fix: run reverse of a binary value through the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6461">#6461</a> (andygrove)</p></li>
+<li><p>fix: match Spark’s float semantics in array_remove and sort_array <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6518">#6518</a> (andygrove)</p></li>
+<li><p>fix: fall back from the native Iceberg scan when a nested field was added or renamed <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6543">#6543</a> (andygrove)</p></li>
+<li><p>fix: dispatch StaticInvoke and Invoke only into Spark’s own classes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6542">#6542</a> (andygrove)</p></li>
+<li><p>fix: fall back for Iceberg writes with float or double identity partitions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6531">#6531</a> (zhangfengcdt)</p></li>
+<li><p>fix: match Spark’s float ordering for sort and window keys nested in arrays and structs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6475">#6475</a> (andygrove)</p></li>
+<li><p>fix: check accelerated mapInArrow output against the declared schema <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6365">#6365</a> (andygrove)</p></li>
+<li><p>fix: gate array distinct and union signed-zero semantics by Spark version <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5750">#5750</a> (peterxcli)</p></li>
+<li><p>fix: hash NaN the way Spark does in hash, xxhash64 and native shuffle <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6413">#6413</a> (andygrove)</p></li>
+<li><p>fix: return -0.0 for signum(-0.0), as Spark does <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6556">#6556</a> (zhangfengcdt)</p></li>
+<li><p>fix: validate release build ref before building <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6571">#6571</a> (andygrove)</p></li>
+<li><p>fix: draw the cached plan below CometInMemoryTableScan in EXPLAIN <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6574">#6574</a> (comphead)</p></li>
+<li><p>fix: stop the leak of Arrow memory from struct outputs of the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6552">#6552</a> (peterxcli)</p></li>
+<li><p>fix: keep Spark’s cache format when Kryo would reject Comet’s or Comet disables itself <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6537">#6537</a> (andygrove)</p></li>
+<li><p>fix: add native metrics from every plan a task runs instead of keeping the last <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6416">#6416</a> (dwsmith1983)</p></li>
+<li><p>fix: keep a folded single-entry map literal with a null key on Spark <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6585">#6585</a> (Smallfu666)</p></li>
+<li><p>fix: match Spark’s float ordering in min, max, greatest and least <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6457">#6457</a> (andygrove)</p></li>
+<li><p>fix: convert native ReadAncientDatetime errors to SparkUpgradeException <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6559">#6559</a> (dwsmith1983)</p></li>
+<li><p>fix: choose get_json_object number-limit behavior from the runtime Jackson version <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6600">#6600</a> (andygrove)</p></li>
+<li><p>fix: align wide-decimal ANSI overflow value with Spark <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5276">#5276</a> (sam-1112)</p></li>
+<li><p>fix: draw the cached plan below CometInMemoryTableScan in the SQL tab and event log <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6577">#6577</a> (comphead)</p></li>
+<li><p>fix: preserve DPP filters during transition revert <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6137">#6137</a> (sam-1112)</p></li>
+<li><p>fix: close Iceberg cleanup ownership gap during JVM handoff <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6582">#6582</a> (unikdahal)</p></li>
+<li><p>fix(iceberg): preserve Spark 4.2 write transactions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6587">#6587</a> (unikdahal)</p></li>
+<li><p>fix: read the Iceberg write gate’s storage scheme the same way the native factory does <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6502">#6502</a> (0lai0)</p></li>
+<li><p>fix: keep parquet view types out of the shuffle benchmark input <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5804">#5804</a> (peterxcli)</p></li>
+<li><p>fix: make the native Iceberg per-I/O timeout configurable <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6649">#6649</a> (comphead)</p></li>
+<li><p>fix: refresh stale shuffle scans when AQE prepares a stage, not while it re-plans <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6646">#6646</a> (andygrove)</p></li>
+<li><p>fix: compact already-sliced batches before the native Iceberg writer counts NaNs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6238">#6238</a> (andygrove)</p></li>
+<li><p>fix: ship NOTICE.txt as META-INF/NOTICE in the comet-spark jar and sources jar <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6657">#6657</a> (andygrove)</p></li>
+<li><p>fix: match Spark ANSI integral overflow errors (#6217) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6249">#6249</a> (LinSimon-901101)</p></li>
+<li><p>fix: fall back for RANGE frames over nested keys that can hold a null <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6684">#6684</a> (andygrove)</p></li>
+<li><p>fix: decline native Iceberg writes through a void partition field whose source column was dropped <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6677">#6677</a> (andygrove)</p></li>
+<li><p>fix: let a spilled final aggregate read its spill files back past its memory share <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6544">#6544</a> (andygrove)</p></li>
+<li><p>fix: drop values under NULL parents before the native Iceberg writer counts NaNs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6658">#6658</a> (andygrove)</p></li>
+<li><p>fix: have native shuffle read a converted child’s Arrow stream <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6689">#6689</a> (andygrove)</p></li>
+<li><p>fix: coalesce shuffle partitions under Comet unions the way Spark does <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6459">#6459</a> (andygrove)</p></li>
+<li><p>fix: fall back for nested sort keys whose null elements Spark orders differently <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6683">#6683</a> (andygrove)</p></li>
+<li><p>fix: gate unsupported Iceberg S3 write settings <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6441">#6441</a> (sam-1112)</p></li>
+<li><p>fix: rethrow the exception a JVM input throws instead of a CometNativeException <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6243">#6243</a> (andygrove)</p></li>
+<li><p>fix: initialize dispatched kernels with the partition the native plan computes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6700">#6700</a> (comphead)</p></li>
+<li><p>fix: restore Spark write execs when reverting transition-heavy stages <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5957">#5957</a> (sam-1112)</p></li>
+<li><p>fix: count the days partition transform in UTC <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6348">#6348</a> (andygrove)</p></li>
+<li><p>fix: normalize float operands in the native comparison builder <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6447">#6447</a> (andygrove)</p></li>
+<li><p>fix: keep a Spark scan unconverted when the plan reads input_file_name <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6703">#6703</a> (kazuyukitanimura)</p></li>
+<li><p>fix: load the Iceberg storage scheme lists from the native factory <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6065">#6065</a> (dwsmith1983)</p></li>
+<li><p>fix: Route collated array element comparisons through the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6471">#6471</a> (viirya)</p></li>
+<li><p>fix: match Spark 4.2 date_trunc overflow for SECOND and MILLISECOND <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6740">#6740</a> (andygrove)</p></li>
+<li><p>fix: make Iceberg delete-file reflection failures fatal <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5515">#5515</a> (unikdahal)</p></li>
+<li><p>fix: honor Spark’s commit protocol in Spark 3.x native writes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4746">#4746</a> (peterxcli, andygrove)</p></li>
+<li><p>fix: retry a shuffle page allocation that Spark failed after dropping the task’s entry <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6403">#6403</a> (dwsmith1983)</p></li>
+<li><p>fix: truncate per-row date_trunc formats with the literal-format kernel <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6354">#6354</a> (andygrove)</p></li>
+<li><p>fix: don’t let S3A committer, delete and read defaults block native Iceberg writes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6808">#6808</a> (andygrove)</p></li>
+<li><p>fix: run InsertIntoHadoopFsRelationCommand’s post-write steps in the Spark 3.x native writer <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6821">#6821</a> (viirya)</p></li>
+<li><p>fix: retry a native acquire that Spark failed after dropping the task’s entry <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6310">#6310</a> (dwsmith1983)</p></li>
+<li><p>fix: check native UDF types at registration and explain planning-time evaluation <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6777">#6777</a> (andygrove)</p></li>
+<li><p>fix: match Spark percentile ordering for negative NaNs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6829">#6829</a> (rich7420)</p></li>
+<li><p>fix: resolve Azure ABFS authentication through Hadoop and keep ambient credentials out <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6059">#6059</a> (dwsmith1983)</p></li>
+<li><p>fix: fall back from native V2 scans when the plan reads input_file_name <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6754">#6754</a> (zhangfengcdt)</p></li>
+<li><p>fix: accept all BMP Unicode decimal digits in cast(string as decimal) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6841">#6841</a> (viirya)</p></li>
+<li><p>fix: preserve CASE WHEN struct field names from the first THEN branch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6827">#6827</a> (pingzh)</p></li>
+<li><p>fix: keep one row per key in a native PartialMerge that runs short of memory <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6867">#6867</a> (andygrove)</p></li>
+<li><p>fix: use Spark-compatible shuffle for wide decimal hash keys <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6005">#6005</a> (sunchao, andygrove)</p></li>
+<li><p>fix: [spark34] preserve empty Iceberg partitions after dynamic pruning <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6814">#6814</a> (LinSimon-901101)</p></li>
+<li><p>fix: restore localReads assertion in AdaptiveQueryExecSuite diffs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6382">#6382</a> (mizulun)</p></li>
+<li><p>fix: do not resolve DPP subqueries when AQE reads a native scan’s partitioning <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6268">#6268</a> (dwsmith1983)</p></li>
+<li><p>fix: skip an array or map function’s later arguments where the array or map is NULL <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6716">#6716</a> (andygrove)</p></li>
+<li><p>fix: share the missing task entry retry and stop retrying it after the task has ended <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6813">#6813</a> (viirya)</p></li>
+<li><p>fix: return an empty array from CASE WHEN for an empty batch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6763">#6763</a> (viirya)</p></li>
+<li><p>fix: compare greatest and least struct arguments by position <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6760">#6760</a> (viirya)</p></li>
+<li><p>fix: order nulls inside nested values first in least <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6761">#6761</a> (viirya)</p></li>
+<li><p>fix: handle truncation operands in scalar evaluation and rewrites <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6831">#6831</a> (nat-openai)</p></li>
+<li><p>fix: match Spark statistical aggregate updates and merges <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6076">#6076</a> (rich7420)</p></li>
+<li><p>fix: make Comet’s in-memory cache opt-in again <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6963">#6963</a> (andygrove)</p></li>
+<li><p>fix: keep the values of sliced batches when coalescing a broadcast <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6900">#6900</a> (comphead)</p></li>
+<li><p>fix: compact oversized nested list_extract buffers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6498">#6498</a> (rich7420)</p></li>
+<li><p>fix: raise DIVIDE_BY_ZERO from native corr on a zero denominator in ANSI mode <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6830">#6830</a> (kazuyukitanimura, rich7420)</p></li>
+<li><p>fix: report row contents to native write statistics trackers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6383">#6383</a> (LinSimon-901101)</p></li>
+<li><p>fix: fall back to Spark for decimal AVG cases that return wrong results <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7017">#7017</a> (andygrove)</p></li>
+<li><p>fix: do not fail planning on a cast of a literal that fails to evaluate <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6826">#6826</a> (viirya)</p></li>
+<li><p>fix: read each native scan partition through the object store its files live in <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6753">#6753</a> (dwsmith1983)</p></li>
+<li><p>fix: compare a Remainder divisor with zero in Spark’s ordering without ANSI <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6896">#6896</a> (andygrove)</p></li>
+<li><p>fix: include try_add suggestion in ANSI SUM overflow error <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6732">#6732</a> (DeviousCardi)</p></li>
+<li><p>fix: give each nondeterministic dispatched expression its own kernel <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6712">#6712</a> (dwsmith1983)</p></li>
+<li><p>fix: honor subexpression elimination off in the native null short-circuit <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6986">#6986</a> (dwsmith1983)</p></li>
+<li><p>fix: read fs.comet.libhdfs.schemes for the scan rule from the Hadoop conf <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6838">#6838</a> (dwsmith1983)</p></li>
+<li><p>fix: keep unconverted DPP filters in a scan’s canonical form <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6270">#6270</a> (dwsmith1983)</p></li>
+<li><p>fix: fall back to Spark for NOT IN over an ordered streamed side <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6810">#6810</a> (dwsmith1983)</p></li>
+<li><p>fix: stop building maps natively when the key type holds a FLOAT or DOUBLE <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6992">#6992</a> (andygrove)</p></li>
+<li><p>fix: return errors instead of panicking in native planner <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7087">#7087</a> (0lai0)</p></li>
+<li><p>fix: handle NullType struct fields in JVM columnar shuffle <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7099">#7099</a> (jadenfix)</p></li>
+<li><p>fix: size the native runtime for standalone executors without spark.executor.cores <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6368">#6368</a> (andygrove)</p></li>
+<li><p>fix: fall back to Spark when Iceberg reports an output ordering <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7043">#7043</a> (parthchandra, andygrove)</p></li>
+<li><p>fix: build release jars from the same commit as the native libraries <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6377">#6377</a> (andygrove)</p></li>
+<li><p>fix: count grouped integer SUM state in the aggregate’s memory reservation <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6370">#6370</a> (andygrove)</p></li>
+<li><p>fix: preserve Parquet root field IDs after nested pruning <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7081">#7081</a> (LinSimon-901101)</p></li>
+<li><p>fix: serialize large-offset string and binary vectors with 32-bit offsets <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6371">#6371</a> (andygrove)</p></li>
+<li><p>fix: keep a streamed side sorted outside the native plan in order through outer hash joins <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6835">#6835</a> (andygrove)</p></li>
+<li><p>fix: treat -0.0 and 0.0 as one value in arrays_overlap on Spark 4.0.5, 4.1.4 and 4.2.1 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6989">#6989</a> (andygrove)</p></li>
+<li><p>fix: preserve Spark nested null ordering in native sort <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6968">#6968</a> (Weijun-H)</p></li>
+<li><p>fix: fall back when an Iceberg equality delete is keyed on a nested field <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7122">#7122</a> (yunchipang)</p></li>
+<li><p>fix: fall back for duplicate from_json fields <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6651">#6651</a> (Samearth17)</p></li>
+<li><p>fix: evaluate the array_append item on rows whose array is NULL <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7025">#7025</a> (kazuyukitanimura)</p></li>
+<li><p>fix: fall back to Spark for negative-scale decimal casts and arithmetic <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5050">#5050</a> (0lai0, andygrove)</p></li>
+<li><p>fix: extract bundled native libraries into private directories <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6987">#6987</a> (manuzhang)</p></li>
+<li><p>fix: preserve Spark AVG buffer and overflow semantics <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5420">#5420</a> (sunchao)</p></li>
+<li><p>fix: log native panic backtraces instead of attaching them to the exception <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7042">#7042</a> (viirya)</p></li>
+<li><p>fix: report output rows and time of the native window operator <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7140">#7140</a> (comphead)</p></li>
+<li><p>fix: [branch-1.2] keep Text build sides on Spark by default and add Text conversion configs (#7123) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7205">#7205</a> (andygrove)</p></li>
+<li><p>fix: [branch-1.2] don’t treat planner-inserted casts as Parquet schema conversions (#7159) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7262">#7262</a> (snmvaughan)</p></li>
+<li><p>fix: [branch-1.2] match SPARK-58821 and SPARK-60118 in sequence and string to decimal cast (#7171) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7263">#7263</a> (snmvaughan)</p></li>
+<li><p>fix: [branch-1.2] fall back to Spark when the driver cannot use the ABFS authentication (#7221) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7285">#7285</a> (andygrove)</p></li>
+<li><p>fix: [branch-1.2] spill a native PartialMerge whose input is sorted on some of its keys (#7222) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7286">#7286</a> (andygrove)</p></li>
+</ul>
+<p><strong>Performance related:</strong></p>
+<ul class="simple">
+<li><p>perf: optimize string contains function <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5322">#5322</a> (kazantsev-maksim)</p></li>
+<li><p>perf: cache Iceberg FileIO per executor instead of building one per task <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6106">#6106</a> (mixermt)</p></li>
+<li><p>perf: copy off-heap strings directly into Arrow <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6281">#6281</a> (pingzh)</p></li>
+<li><p>perf: reuse Variant reconstruction buffers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6342">#6342</a> (peterxcli)</p></li>
+<li><p>perf: memoize Comet-subtree check in EliminateRedundantTransitions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5213">#5213</a> (andygrove)</p></li>
+<li><p>perf: optimize native <code class="docutils literal notranslate"><span class="pre">CASE</span> <span class="pre">WHEN</span></code> and <code class="docutils literal notranslate"><span class="pre">IF</span></code> (up to 12x faster) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6350">#6350</a> (andygrove)</p></li>
+<li><p>perf: optimize levenshtein function <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5042">#5042</a> (kazantsev-maksim)</p></li>
+<li><p>perf: read the shuffle natively in operators AQE reuses from the initial plan <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6547">#6547</a> (dwsmith1983)</p></li>
+<li><p>perf: classify string-to-timestamp shapes in one byte scan (up to 5.6x faster) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5130">#5130</a> (andygrove)</p></li>
+<li><p>perf: write Spark columns to Arrow in bulk in CometSparkToColumnarExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6566">#6566</a> (andygrove)</p></li>
+<li><p>perf: prune unused filter output columns <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6396">#6396</a> (rich7420)</p></li>
+<li><p>perf: speed up string, map and array conversion in JVM columnar shuffle <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6604">#6604</a> (andygrove)</p></li>
+<li><p>test: cover IF branch selection and short-circuiting <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6397">#6397</a> (rich7420)</p></li>
+<li><p>perf: fuse Comet cache vector reads into Spark codegen <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5859">#5859</a> (peterxcli)</p></li>
+<li><p>perf: choose dictionary encoding like iceberg-java in the native Iceberg writer <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6241">#6241</a> (andygrove)</p></li>
+<li><p>perf: skip Spark’s encoders for boxed primitive Scala UDF values in the codegen dispatcher <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6714">#6714</a> (andygrove)</p></li>
+<li><p>perf: key the codegen dispatcher’s kernel cache on a digest of the expression <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6709">#6709</a> (andygrove)</p></li>
+<li><p>perf: convert Spark’s unsafe rows to Arrow straight from their memory <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6730">#6730</a> (andygrove)</p></li>
+<li><p>perf: keep the sort-merge join when the forced hash join’s build side is too large <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6384">#6384</a> (dwsmith1983)</p></li>
+<li><p>perf: compare floats in Spark’s order without normalizing copies of the operands <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6691">#6691</a> (andygrove)</p></li>
+<li><p>perf: run Spark’s null guard for a Scala UDF inside the codegen kernel <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6715">#6715</a> (andygrove)</p></li>
+<li><p>perf: bulk-append long nullable primitive arrays in SparkUnsafeArray conversion <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6824">#6824</a> (andygrove, sandugood)</p></li>
+<li><p>perf: skip DecimalPrecision.promote’s rewrite when there is no decimal arithmetic <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5216">#5216</a> (andygrove)</p></li>
+<li><p>perf: integral sequence optimisation <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6833">#6833</a> (nat-openai)</p></li>
+<li><p>perf: generate the columnar-to-row projection once per executor instead of per partition <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6858">#6858</a> (andygrove)</p></li>
+<li><p>perf: read shuffle blocks in 64 KiB pieces instead of through <code class="docutils literal notranslate"><span class="pre">Channels.newChannel</span></code> <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6805">#6805</a> (comphead)</p></li>
+<li><p>perf: presize collections and reuse buffers in native loops <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6861">#6861</a> (comphead)</p></li>
+<li><p>perf: read native-written Parquet footers without parsing Hadoop’s configuration <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6923">#6923</a> (andygrove)</p></li>
+<li><p>perf: avoid duplicate Hadoop configs in Iceberg write detection <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6925">#6925</a> (andygrove)</p></li>
+<li><p>perf: generate the in-memory cache reader’s class once per executor <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6860">#6860</a> (andygrove)</p></li>
+<li><p>perf: store shuffle offsets as lengths with zstd <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6943">#6943</a> (andygrove)</p></li>
+<li><p>perf: read only the nested fields Spark keeps in the native Iceberg scan <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6725">#6725</a> (comphead)</p></li>
+<li><p>perf: make the native Iceberg writer’s dictionary pre-pass 1.8x to 3.9x faster <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6937">#6937</a> (andygrove)</p></li>
+<li><p>perf: reuse validity buffers and use unary kernels in native expressions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6953">#6953</a> (comphead)</p></li>
+<li><p>perf: optimize JVM columnar-to-row conversion <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5496">#5496</a> (peterxcli)</p></li>
+<li><p>perf: start bypass shuffle partition writers on small pages that grow <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7059">#7059</a> (andygrove)</p></li>
+<li><p>perf: write every partition of a JVM shuffle spill in one native call <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7065">#7065</a> (andygrove)</p></li>
+<li><p>perf: create a native plan’s spill directories on its first spill <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7066">#7066</a> (andygrove)</p></li>
+<li><p>perf: vectorize int, decimal, float and boolean casts to timestamp <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6969">#6969</a> (Ersa-tech)</p></li>
+<li><p>perf: sort JVM shuffle spill pointers in the sorter’s scratch space <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7125">#7125</a> (viirya)</p></li>
+<li><p>perf: load the next Parquet file’s footer and page index while the current file is read <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7094">#7094</a> (andygrove)</p></li>
+<li><p>perf: default the native Iceberg scan to two concurrent data files <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7132">#7132</a> (andygrove)</p></li>
+<li><p>perf: share one decoded copy of a broadcast among the tasks of an executor <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7016">#7016</a> (andygrove)</p></li>
+</ul>
+<p><strong>Implemented enhancements:</strong></p>
+<ul class="simple">
+<li><p>test: report which writer ran each Iceberg write in the Iceberg CI jobs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6155">#6155</a> (andygrove)</p></li>
+<li><p>test: wait for Parquet write plan callbacks <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6108">#6108</a> (rich7420)</p></li>
+<li><p>feat: add opt-in local TopK fusion for native Parquet scans <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6181">#6181</a> (pingzh)</p></li>
+<li><p>feat: route timestamp_seconds decimal, byte and short input through codegen dispatch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6204">#6204</a> (0lai0)</p></li>
+<li><p>chore: add branch protection for branch-1.0 and branch-1.1 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6267">#6267</a> (andygrove)</p></li>
+<li><p>test: cover native Iceberg mid-write retry cleanup <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6111">#6111</a> (sam-1112)</p></li>
+<li><p>feat: built-in S3 credential provider adapters for the native Parquet scan <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6023">#6023</a> (parthchandra)</p></li>
+<li><p>feat: report JVM Arrow memory in the executor memory usage log <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6250">#6250</a> (andygrove)</p></li>
+<li><p>test: cover matching nested nulls in collect aggregates <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5970">#5970</a> (sunchao)</p></li>
+<li><p>test: fix flaky mixed field id directory test on Spark 3.4 and 3.5 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6312">#6312</a> (andygrove)</p></li>
+<li><p>feat: support Spark HyperLogLog sketch functions (hll_sketch_agg, hll_union_agg, hll_sketch_estimate, hll_union) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4802">#4802</a> (andygrove)</p></li>
+<li><p>build: enable Spark SQL tests for released Spark 4.2.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4950">#4950</a> (andygrove)</p></li>
+<li><p>feat: support divide_dt_interval with codegen dispatch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4901">#4901</a> (peterxcli)</p></li>
+<li><p>chore: start 1.2.0 development <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6311">#6311</a> (andygrove)</p></li>
+<li><p>test: compare in-memory caches with independent answers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6262">#6262</a> (LinSimon-901101)</p></li>
+<li><p>test: cover native Iceberg write handoff cleanup <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6117">#6117</a> (sam-1112)</p></li>
+<li><p>chore: Fix Scala code warnings <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5876">#5876</a> (athlcode)</p></li>
+<li><p>test: backport the upstream fix for a flaky Iceberg 1.9.1 rewrite test <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6242">#6242</a> (andygrove)</p></li>
+<li><p>ci: retry dependency downloads in the Spark SQL test jobs and the Iceberg Gradle wrapper <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6394">#6394</a> (andygrove)</p></li>
+<li><p>ci: rebalance the Spark SQL test shards <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6393">#6393</a> (andygrove)</p></li>
+<li><p>ci: raise the merge queue’s build concurrency from 2 to 4 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6391">#6391</a> (andygrove)</p></li>
+<li><p>ci: stop main’s cargo build cache from being evicted <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6392">#6392</a> (andygrove)</p></li>
+<li><p>refactor: move native -0.0 and NaN handling into one float_semantics module <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6400">#6400</a> (andygrove)</p></li>
+<li><p>build: bump the Spark 4.2 test diff to Comet 1.2.0-SNAPSHOT <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6398">#6398</a> (andygrove)</p></li>
+<li><p>test: check Iceberg DPP pruning by planned file tasks <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6280">#6280</a> (dwsmith1983)</p></li>
+<li><p>ci: keep a macOS native build cache on main <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6395">#6395</a> (andygrove)</p></li>
+<li><p>test: cover integer bounds in cache pruning tests <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6381">#6381</a> (LinSimon-901101)</p></li>
+<li><p>chore: remove AlignedArrowStreamReader and fix the Native to JVM FFI docs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6364">#6364</a> (andygrove)</p></li>
+<li><p>feat: push local TopK thresholds into Parquet readers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6263">#6263</a> (pingzh)</p></li>
+<li><p>feat: write the executor memory usage log to the Spark event log <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6401">#6401</a> (comphead)</p></li>
+<li><p>refactor: separate JNI-free core logic and error classification at the native boundary <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6435">#6435</a> (viirya)</p></li>
+<li><p>feat: admit string maps in Spark-to-Comet conversion <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6036">#6036</a> (sunchao, jeffw13)</p></li>
+<li><p>test: cover Iceberg driver commit cleanup <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6119">#6119</a> (sam-1112)</p></li>
+<li><p>refactor: move the remaining PhysicalExpr impls from core into spark-expr <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6450">#6450</a> (andygrove)</p></li>
+<li><p>build: bump semanticdb to 4.13.10 so scalafix runs on Spark 4.1 and 4.2 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6448">#6448</a> (andygrove)</p></li>
+<li><p>test: cover booleans in native explode output past the first batch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6473">#6473</a> (andygrove)</p></li>
+<li><p>test: cover typed Dataset filters over sliced aggregate batches <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6497">#6497</a> (rich7420)</p></li>
+<li><p>chore: move native write configs under spark.comet.write <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6494">#6494</a> (zhangfengcdt)</p></li>
+<li><p>refactor: move the self-contained operators from core into a new operators crate <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6503">#6503</a> (andygrove)</p></li>
+<li><p>refactor: move write planning into dedicated module <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6529">#6529</a> (andygrove)</p></li>
+<li><p>feat: wire native existence join support <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4587">#4587</a> (coderfender)</p></li>
+<li><p>test: sweep Spark’s -0.0 and NaN semantics across operators and float expressions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6521">#6521</a> (andygrove)</p></li>
+<li><p>feat: reuse S3 credentials until shortly before their reported expiry <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6509">#6509</a> (snmvaughan)</p></li>
+<li><p>test: run Comet in Spark SQL and Iceberg suites that build their own sessions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6415">#6415</a> (andygrove)</p></li>
+<li><p>feat: record why Spark scans a relation cached in Comet’s format when Comet is off <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6538">#6538</a> (andygrove)</p></li>
+<li><p>refactor: move shuffle planning into dedicated module <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6535">#6535</a> (andygrove)</p></li>
+<li><p>ci: grant label runs the contents: write the docs job requests <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6409">#6409</a> (andygrove)</p></li>
+<li><p>feat: per-location credentials for native Iceberg reads and writes <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6478">#6478</a> (snmvaughan)</p></li>
+<li><p>feat: add a native Comet version of RangeExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6553">#6553</a> (andygrove)</p></li>
+<li><p>feat: support multiply_ym_interval with YearMonth interval codegen dispatch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4715">#4715</a> (peterxcli)</p></li>
+<li><p>feat: add native distinct-combined collect_list aggregate support <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4727">#4727</a> (peterxcli)</p></li>
+<li><p>test: add seeded fuzz coverage for PyArrow UDFs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6074">#6074</a> (LinSimon-901101)</p></li>
+<li><p>feat: add native support for MergeRowsExec (row-level MERGE INTO) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5318">#5318</a> (unikdahal)</p></li>
+<li><p>feat: give each default Spark-to-Arrow conversion its own spark.comet.convert config <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6602">#6602</a> (andygrove)</p></li>
+<li><p>test: use the renamed native write flag in the Iceberg 1.11 WAP-branch suite <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6644">#6644</a> (andygrove)</p></li>
+<li><p>feat: support Spark 4.1 TIME type and expressions via codegen dispatch <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4821">#4821</a> (andygrove)</p></li>
+<li><p>refactor: move the remaining JNI-free entry point logic into core functions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6534">#6534</a> (viirya)</p></li>
+<li><p>feat: support native MergeSummary on Spark 4.1+ <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6640">#6640</a> (unikdahal)</p></li>
+<li><p>ci: check licenses on release source tarball <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6639">#6639</a> (andygrove)</p></li>
+<li><p>test: cover sequence’s per-batch element limit and the batch size remedy <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6302">#6302</a> (dwsmith1983)</p></li>
+<li><p>ci: drop non-existent suites from the Linux and macOS test matrices <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6099">#6099</a> (ErikBPF)</p></li>
+<li><p>feat: run the operators above a typed Dataset operation natively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6564">#6564</a> (andygrove)</p></li>
+<li><p>chore: update the NOTICE copyright year to 2024-2026 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6675">#6675</a> (manuzhang)</p></li>
+<li><p>chore: Add contributor sentiment to contribute <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6688">#6688</a> (comphead)</p></li>
+<li><p>feat: support SortAggregateExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4565">#4565</a> (andygrove)</p></li>
+<li><p>feat: custom Rust UDFs via arrow-ffi [experimental] <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4459">#4459</a> (andygrove)</p></li>
+<li><p>test: keep the Iceberg job-abort test’s wait off Comet’s Tokio workers <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6699">#6699</a> (andygrove)</p></li>
+<li><p>chore: raise the native rust-version to 1.95, which iceberg-rust requires <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6690">#6690</a> (manuzhang)</p></li>
+<li><p>feat: add a spark.comet.convert config for RowDataSourceScanExec <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6662">#6662</a> (andygrove)</p></li>
+<li><p>feat: support native Iceberg writes to format-version 3 tables <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6672">#6672</a> (andygrove)</p></li>
+<li><p>feat: convert OneRowRelation to Arrow by default <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6666">#6666</a> (andygrove)</p></li>
+<li><p>feat: charge native write buffers to the task’s memory pool <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6247">#6247</a> (andygrove)</p></li>
+<li><p>test: move mixed-type shift coverage to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6652">#6652</a> (rich7420)</p></li>
+<li><p>feat: Use DataFusion date_trunc for scalar-format timestamp truncation <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5956">#5956</a> (sam-1112)</p></li>
+<li><p>chore: add benches for remaining comet native kernels <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6648">#6648</a> (coderfender)</p></li>
+<li><p>chore: update documentation links for 1.1.0 release <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6736">#6736</a> (andygrove)</p></li>
+<li><p>feat: add a spill compression codec config, defaulting to lz4 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6698">#6698</a> (comphead)</p></li>
+<li><p>feat(iceberg): plan WriteDelta in the split write path and keep it on the JVM DeltaWriter <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6693">#6693</a> (unikdahal)</p></li>
+<li><p>feat: use native shuffle for row input by converting it to Arrow <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6607">#6607</a> (andygrove)</p></li>
+<li><p>test: preserve regex escapes in SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6745">#6745</a> (rich7420)</p></li>
+<li><p>test: enable SPARK-57298 collect_set tests <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5228">#5228</a> (peterxcli)</p></li>
+<li><p>test: add optimizer controls and config isolation to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6731">#6731</a> (rich7420)</p></li>
+<li><p>chore: move CometCollationSuite to spark-4.1+ test shim <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4864">#4864</a> (0lai0)</p></li>
+<li><p>test: drain the listener bus before registering Iceberg test listeners <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6809">#6809</a> (viirya)</p></li>
+<li><p>feat: run nullable nested float sort keys natively in strict floating-point mode <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6735">#6735</a> (andygrove)</p></li>
+<li><p>feat: enable Comet’s in-memory cache by default <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5634">#5634</a> (andygrove)</p></li>
+<li><p>feat: run array_contains on float elements natively with Spark’s equa… <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6599">#6599</a> (zhangfengcdt)</p></li>
+<li><p>refactor: move the plan entry point logic into core functions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6695">#6695</a> (viirya)</p></li>
+<li><p>refactor: remove unused cast compatibility flag <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6135">#6135</a> (sam-1112, andygrove)</p></li>
+<li><p>test: move bit_count boundary coverage to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6655">#6655</a> (rich7420)</p></li>
+<li><p>test: cover container field ids next to INT96 timestamps in the native Parquet scan <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6862">#6862</a> (dwsmith1983)</p></li>
+<li><p>feat: filter decoded probe batches before intermediate joins <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6433">#6433</a> (sunchao)</p></li>
+<li><p>test: count the partitions and batches the native cache scan reads <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6836">#6836</a> (andygrove)</p></li>
+<li><p>feat: add lz4 as an opt-in codec for Comet’s in-memory cache <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6859">#6859</a> (andygrove)</p></li>
+<li><p>chore: re-enable unused-parameter warnings in strict profile <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6846">#6846</a> (rich7420)</p></li>
+<li><p>test: migrate required-child hash regressions to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6864">#6864</a> (rich7420)</p></li>
+<li><p>test: fail Comet tests when a native plan mislabels a timestamp’s timezone <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6868">#6868</a> (andygrove)</p></li>
+<li><p>test: migrate regex extraction and position coverage to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6882">#6882</a> (rich7420)</p></li>
+<li><p>refactor: stop normalizing float divisors now that percentile_approx orders NaN as Spark does <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6866">#6866</a> (andygrove)</p></li>
+<li><p>test: migrate scalar hash coverage to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6881">#6881</a> (rich7420)</p></li>
+<li><p>test: migrate Java RLIKE semantics and batch coverage to SQL fixtures <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6863">#6863</a> (rich7420)</p></li>
+<li><p>test: add SQL error-class parity checks <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6650">#6650</a> (rich7420)</p></li>
+<li><p>test: run the S3 suites against an available MinIO image <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6887">#6887</a> (dwsmith1983)</p></li>
+<li><p>build: stop publishing comet-common, the parent pom and comet-spark-integration <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6888">#6888</a> (andygrove)</p></li>
+<li><p>feat: close fanout partitions early when the memory pool refuses the native Iceberg writer <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6773">#6773</a> (andygrove)</p></li>
+<li><p>test: expect Spark 3.5’s empty LocalTableScan in the single-split DPP join test <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6902">#6902</a> (dwsmith1983)</p></li>
+<li><p>feat: add native Delta Lake scan contrib module (page/row-group pruning) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5365">#5365</a> (dwsmith1983, sunchao, andygrove)</p></li>
+<li><p>test: Deflake SQLAppStatusListenerMemoryLeakSuite <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6905">#6905</a> (LinSimon-901101)</p></li>
+<li><p>feat: enable native Iceberg writes by default <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6664">#6664</a> (andygrove)</p></li>
+<li><p>test: add an end-to-end Iceberg read, repartition, and write benchmark <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6910">#6910</a> (andygrove)</p></li>
+<li><p>ci: retry the scalafix lint when Maven cannot resolve the plugin <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6061">#6061</a> (andygrove)</p></li>
+<li><p>feat: run min and max over string and binary columns natively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6927">#6927</a> (comphead)</p></li>
+<li><p>build: drop the compiled maven-wrapper.jar by switching to the script-only wrapper <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6678">#6678</a> (manuzhang)</p></li>
+<li><p>feat: run global aggregates with no grouping keys or functions natively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6899">#6899</a> (andygrove)</p></li>
+<li><p>feat: normalize floats in native array_distinct and array_union <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6563">#6563</a> (andygrove)</p></li>
+<li><p>test: tag the Azure ABFS suites with AzureTest <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6942">#6942</a> (comphead)</p></li>
+<li><p>feat: make native Iceberg writes opt-in for 1.2.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6962">#6962</a> (andygrove)</p></li>
+<li><p>feat: run broadcast joins natively when an unsupported scan is on the build side <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6786">#6786</a> (parthchandra)</p></li>
+<li><p>feat: expose per-scan S3 HTTP coverage and retries <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6429">#6429</a> (sunchao)</p></li>
+<li><p>build: use a single jni version across the native workspace <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6998">#6998</a> (andygrove)</p></li>
+<li><p>feat: add nested benchmark derived from TPC-H <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7044">#7044</a> (comphead)</p></li>
+<li><p>refactor: simplify shuffle support predicates <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7045">#7045</a> (0lai0)</p></li>
+<li><p>feat: native RANGE window frames with explicit offset on DATE ORDER BY <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4974">#4974</a> (0lai0)</p></li>
+<li><p>feat: support PivotFirst aggregate for the optimized PIVOT fast path <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4798">#4798</a> (andygrove)</p></li>
+<li><p>feat: bump iceberg-rust and write float and double identity partitions natively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6851">#6851</a> (andygrove, mbutrovich)</p></li>
+<li><p>refactor: move MergeRows, Explode, aggregate, join and window planning into dedicated modules <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7014">#7014</a> (andygrove)</p></li>
+<li><p>ci: label Delta pull requests with area:Delta <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6965">#6965</a> (dwsmith1983)</p></li>
+<li><p>test: write ancient dates with CORRECTED rebase mode in the DATE RANGE window test <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7103">#7103</a> (andygrove)</p></li>
+<li><p>refactor: share window frame bound offset serialization between lower and upper bounds <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7107">#7107</a> (0lai0)</p></li>
+<li><p>ci: give the Delta contrib Maven cache its own key prefix <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7111">#7111</a> (andygrove)</p></li>
+<li><p>chore: fix stddev accumulator size and resolve session libhdfs schemes once per scan rule <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7120">#7120</a> (viirya)</p></li>
+<li><p>feat: add config to disable or restrict native UDF library loading, and load libraries without a global lock <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6775">#6775</a> (andygrove)</p></li>
+<li><p>feat: support native wide-decimal hashing <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6548">#6548</a> (rich7420)</p></li>
+<li><p>refactor: deduplicate split list-array construction <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7004">#7004</a> (arminazimi)</p></li>
+<li><p>test: verify native timestamp output timezone labels <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6930">#6930</a> (LinSimon-901101)</p></li>
+<li><p>feat: enable native replace for safe inputs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6680">#6680</a> (sam-1112)</p></li>
+<li><p>feat: opt in to join filter pushdown through deterministic residuals <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6431">#6431</a> (sunchao)</p></li>
+<li><p>chore: limit open PRs for users without write access to 3 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7135">#7135</a> (andygrove)</p></li>
+<li><p>test: add window operator benchmarks <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7139">#7139</a> (comphead)</p></li>
+<li><p>test: cover positional struct reconciliation in native CASE WHEN and COALESCE <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7149">#7149</a> (kazuyukitanimura)</p></li>
+<li><p>refactor: share Parquet field-id and name resolution between root and nested fields <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6990">#6990</a> (andygrove)</p></li>
+<li><p>feat: execute scalar Arrow Python UDFs in native Comet <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6130">#6130</a> (viirya)</p></li>
+<li><p>feat: support AtLeastNNonNulls natively <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6180">#6180</a> (rich7420)</p></li>
+<li><p>chore: [branch-1.2] change version from 1.2.0-SNAPSHOT to 1.2.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7165">#7165</a> (andygrove)</p></li>
+<li><p>feat: [branch-1.2] support the S3A magic committer in native Parquet writes (#6940) <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7281">#7281</a> (andygrove)</p></li>
+</ul>
+<p><strong>Documentation updates:</strong></p>
+<ul class="simple">
+<li><p>docs: add a simple diagram of how Comet uses executor memory <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6237">#6237</a> (andygrove)</p></li>
+<li><p>docs: split the tuning guide into multiple pages <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6244">#6244</a> (andygrove)</p></li>
+<li><p>docs: fix redirects that lead to missing pages <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6245">#6245</a> (andygrove)</p></li>
+<li><p>docs: add 1.1.0 upgrade notes for fixed, deprecated and removed settings <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6248">#6248</a> (andygrove)</p></li>
+<li><p>ci: run every tier on release-branch pull requests, and the full suite before an RC <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6218">#6218</a> (andygrove)</p></li>
+<li><p>docs: remove nonexistent GROUPS frame references <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6299">#6299</a> (manuzhang)</p></li>
+<li><p>docs: add contributor guide page on timezone handling <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6337">#6337</a> (andygrove)</p></li>
+<li><p>docs: simplify the memory tuning page <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6343">#6343</a> (andygrove)</p></li>
+<li><p>docs: correct the Tokio worker default and release_runtime’s shutdown comment <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6300">#6300</a> (andygrove)</p></li>
+<li><p>docs: add a backporting policy to the contributor guide <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6357">#6357</a> (andygrove)</p></li>
+<li><p>docs: explain operator plan identity and exchange reuse <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6352">#6352</a> (rich7420)</p></li>
+<li><p>docs: redraw the home page architecture diagram as a simple SVG <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6322">#6322</a> (andygrove)</p></li>
+<li><p>docs: update TPC-DS benchmark results for Comet 1.1.0 on Spark 4.2 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6308">#6308</a> (andygrove)</p></li>
+<li><p>docs: correct what the Iceberg split-operator plan moves into AQE <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6407">#6407</a> (andygrove)</p></li>
+<li><p>docs: refresh stale roadmap entries <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6309">#6309</a> (andygrove)</p></li>
+<li><p>docs: add a Celeborn integration guide <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6373">#6373</a> (pingzh)</p></li>
+<li><p>docs: request changes for correctness and performance findings in the review skill <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6483">#6483</a> (andygrove)</p></li>
+<li><p>docs: promote Spark 4.2 from experimental to supported <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6417">#6417</a> (andygrove)</p></li>
+<li><p>docs: cut the release branch before fixing regressions, and add a diagram <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6517">#6517</a> (andygrove)</p></li>
+<li><p>docs: explain which Spark operators Comet leaves in place <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6551">#6551</a> (andygrove)</p></li>
+<li><p>docs: note that the peak native aggregate memory metric is not reported <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6557">#6557</a> (andygrove)</p></li>
+<li><p>docs: add release-behavior checks and the 1.1.0 audit’s lessons to the review skills <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6516">#6516</a> (andygrove)</p></li>
+<li><p>docs: note in the 1.1.0 upgrade guide that native Iceberg reads no longer fall back from IRSA <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6603">#6603</a> (andygrove)</p></li>
+<li><p>docs: name the AQE query stages on the operator support page <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6660">#6660</a> (andygrove)</p></li>
+<li><p>docs: date the float value and null count divergence to Iceberg 1.9 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6681">#6681</a> (andygrove)</p></li>
+<li><p>docs: update the timezone page for the fixes from the timezone EPIC <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6686">#6686</a> (andygrove)</p></li>
+<li><p>docs: check timezone handling against the contributor guide in the PR review skills <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6340">#6340</a> (andygrove)</p></li>
+<li><p>docs: add 1.1.0 changelog <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6728">#6728</a> (andygrove)</p></li>
+<li><p>docs: add an FAQ page with an answer on vectorized Java/Scala UDFs <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6778">#6778</a> (andygrove)</p></li>
+<li><p>docs: expand the FAQ and refresh the Gluten comparison <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6783">#6783</a> (andygrove)</p></li>
+<li><p>docs: list the S3A settings the Iceberg native-write gate ignores <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6828">#6828</a> (andygrove)</p></li>
+<li><p>docs: prefer behavior-named parameters over Spark versions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6776">#6776</a> (andygrove)</p></li>
+<li><p>docs: add proposal to establish Apache Comet as a top-level project <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6817">#6817</a> (andygrove)</p></li>
+<li><p>docs: correct native Iceberg write docs that drifted from the code <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7009">#7009</a> (andygrove)</p></li>
+<li><p>docs: document casts involving arrays, structs, and maps <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6320">#6320</a> (andygrove)</p></li>
+<li><p>docs: list known Parquet and Iceberg issues and add a data source audit log <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7052">#7052</a> (andygrove)</p></li>
+<li><p>docs: consolidate Parquet and Iceberg documentation into one page each <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7090">#7090</a> (andygrove)</p></li>
+<li><p>docs: [branch-1.2] document known differences new in 1.2.0 in the upgrade guide <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7287">#7287</a> (andygrove)</p></li>
+</ul>
+<p><strong>Other:</strong></p>
+<ul class="simple">
+<li><p>chore: add benches remaining scalars <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6541">#6541</a> (coderfender)</p></li>
+<li><p>chore: add benches for remaining agg functions <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6647">#6647</a> (coderfender)</p></li>
+<li><p>build(deps): bump rustls from 0.23.44 to 0.23.45 in /native <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6701">#6701</a> (dependabot[bot])</p></li>
+<li><p>deps: bump to datafusion 55.2.0 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/6766">#6766</a> (andygrove)</p></li>
+<li><p>build(deps): bump actions/setup-python from 6 to 7 <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7046">#7046</a> (dependabot[bot])</p></li>
+</ul>
+<section id="credits">
+<h2>Credits<a class="headerlink" href="#credits" title="Link to this heading">#</a></h2>
+<p>Thank you to everyone who contributed to this release. Here is a breakdown of commits (PRs merged) per contributor. A PR with commits from more than one person counts for each of them.</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>   212	Andy Grove
+    25	dustin
+    21	KUAN-HAO HUANG
+    18	Oleks V
+    17	Liang-Chi Hsieh
+    13	Peter Lee
+    11	Chao Sun
+    10	LinSimon-901101
+     8	ChenChen Lai
+     6	Feng Zhang
+     6	Unik Dahal
+     5	Manu Zhang
+     5	Ping Zhang
+     5	Yu Hsun Hung
+     5	sam-1112
+     4	Bhargava Vadlamani
+     4	KAZUYUKI TANIMURA
+     4	Parth Chandra
+     4	Steve Vaughan
+     2	Kazantsev Maksim
+     2	dependabot[bot]
+     2	nat-openai
+     1	Alex Huang
+     1	Armin Azimi
+     1	Bill
+     1	DeviousCardi
+     1	Erik Bogado
+     1	Han-Yin Chang
+     1	Jaden Fix
+     1	Jeff Wang
+     1	Krishna Sudarshan J
+     1	Matt Butrovich
+     1	Michael Taranov
+     1	Po-Han (Stan) Shih · 施博瀚
+     1	Samarth Mukhija
+     1	YuLun Mao
+     1	Yunchi Pang
+     1	kid
+     1	liupoyi-1031
+     1	sandudb
+</pre></div>
+</div>
+<p>Thank you also to everyone who contributed in other ways such as filing issues, reviewing PRs, and providing feedback on this release.</p>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="index.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Changelog</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="1.1.0.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">DataFusion Comet 1.1.0 Changelog</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#credits">Credits</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+<footer class="comet-footer" role="contentinfo">
+  <div class="comet-footer__inner">
+
+    <!-- Brand: logo only — no duplicated tagline -->
+    <a class="comet-footer__brand" href="../index.html" aria-label="Apache DataFusion Comet — home">
+      <img src="../_static/images/DataFusionComet-Logo-Light.png"
+           class="comet-footer__logo only-light"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+      <img src="../_static/images/DataFusionComet-Logo-Dark.png"
+           class="comet-footer__logo only-dark pst-js-only"
+           width="3256" height="836"
+           loading="lazy" decoding="async"
+           alt="" />
+    </a>
+
+    <!-- Two compact link columns: documentation + community -->
+    <nav class="comet-footer__links" aria-label="Footer navigation">
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Documentation</div>
+        <a href="../user-guide/index.html">User Guide</a>
+        <a href="../contributor-guide/index.html">Contributor Guide</a>
+        <a href="index.html">Changelog</a>
+      </div>
+
+      <div class="comet-footer__col">
+        <div class="comet-footer__col-title">Community</div>
+        <a href="https://github.com/apache/datafusion-comet" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://datafusion.apache.org/contributor-guide/communication.html" target="_blank" rel="noopener">Slack &amp; Discord</a>
+        <a href="https://apache.org" target="_blank" rel="noopener">Apache Software Foundation</a>
+      </div>
+    </nav>
+  </div>
+
+  <!-- Legal: license, copyright, trademark — single quiet line -->
+  <div class="comet-footer__legal">
+    <p>
+      &copy; 2023&ndash;2026 Apache Software Foundation &nbsp;·&nbsp;
+      Licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0" target="_blank" rel="noopener">Apache License 2.0</a>
+    </p>
+    <p class="comet-footer__trademark">
+      Apache DataFusion, Apache DataFusion Comet, the Apache feather logo, and the Apache DataFusion project logo are trademarks of The Apache Software Foundation.
+    </p>
+  </div>
+</footer>
+
+  </body>
+</html>

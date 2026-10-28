@@ -704,8 +704,9 @@ git<span class="w"> </span>add<span class="w"> </span>docs/source/user-guide/lat
 git<span class="w"> </span>commit<span class="w"> </span>-m<span class="w"> </span><span class="s2">"Generate docs for 0.13.0 release"</span>
 </pre></div>
 </div>
-<p>The script runs one Maven build per supported Spark version, so it takes a while. Open a PR with this commit
-targeting the release branch.</p>
+<p>The script runs one Maven build per supported Spark version, so it takes a while. It formats the generated
+pages with the latest prettier, which is what CI installs, so it needs network access to npm. Open a PR with this
+commit targeting the release branch.</p>
 </section>
 <section id="update-maven-version">
 <h3>Update Maven Version<a class="headerlink" href="#update-maven-version" title="Link to this heading">#</a></h3>
