@@ -445,6 +445,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if MakeDateEvaluation.reason(op).isDefined =>
+        withFallbackReason(op, MakeDateEvaluation.reason(op).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -1041,15 +1044,16 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
+      val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        RewriteJoin.restoreRequiredOrdering(plan.transformUp { case p =>
-          RewriteJoin.rewrite(p, conf)
+        RewriteJoin.restoreRequiredOrdering(planWithDateEvaluation.transformUp { case p =>
+          if (MakeDateEvaluation.reason(p).isDefined) p else RewriteJoin.rewrite(p, conf)
         })
       } else {
-        plan
+        planWithDateEvaluation
       }
 
       // Tag Partial aggregates that must not be converted to Comet because a
