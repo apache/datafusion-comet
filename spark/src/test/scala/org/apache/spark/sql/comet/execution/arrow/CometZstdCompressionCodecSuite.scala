@@ -72,9 +72,9 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
       allocator: BufferAllocator,
       guarded: GuardedAllocator,
       bytes: Array[Byte]): Boolean = {
-    val input = allocator.buffer(bytes.length)
+    val input = allocator.buffer(bytes.length.toLong)
     input.setBytes(0, bytes)
-    input.writerIndex(bytes.length)
+    input.writerIndex(bytes.length.toLong)
     // compress consumes the input reference and allocates its output from the guarded allocator.
     val compressed = codec.compress(guarded, input)
     val storedRaw = compressed.getLong(0) == CompressionUtil.NO_COMPRESSION_LENGTH
