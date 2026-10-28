@@ -152,6 +152,7 @@ case class CometTakeOrderedAndProjectExec(
 
   protected override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val childRDD = child.executeColumnar()
+    val sqlConf = CapturedSQLConf.capture()
     if (childRDD.getNumPartitions == 0 || limit == 0) {
       new ParallelCollectionRDD(sparkContext, Seq.empty[ColumnarBatch], 1, Map.empty)
     } else {
@@ -172,13 +173,16 @@ case class CometTakeOrderedAndProjectExec(
           val numOutputCols = child.output.length
           val inputSchema = CometUtils.fromAttributes(child.output)
           childRDD.mapPartitionsWithIndexInternal { case (idx, iter) =>
-            CometExec.getCometIterator(
-              CometArrowStream.inputObjects(iter, inputSchema, "CometTakeOrderedAndProject-topK"),
-              numOutputCols,
-              serializedTopK,
-              numParts,
-              idx,
-              child.output.map(_.dataType))
+            sqlConf.withConf {
+              CometExec.getCometIterator(
+                CometArrowStream
+                  .inputObjects(iter, inputSchema, "CometTakeOrderedAndProject-topK"),
+                numOutputCols,
+                serializedTopK,
+                numParts,
+                idx,
+                child.output.map(_.dataType))
+            }
           }
         }
 
@@ -200,14 +204,16 @@ case class CometTakeOrderedAndProjectExec(
       val finalOutputTypes = output.map(_.dataType)
       val finalInputSchema = CometUtils.fromAttributes(child.output)
       singlePartitionRDD.mapPartitionsInternal { iter =>
-        val it = CometExec.getCometIterator(
-          CometArrowStream
-            .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
-          finalOutputTypes.length,
-          serializedFinalPlan,
-          1,
-          0,
-          finalOutputTypes)
+        val it = sqlConf.withConf {
+          CometExec.getCometIterator(
+            CometArrowStream
+              .inputObjects(iter, finalInputSchema, "CometTakeOrderedAndProject-final"),
+            finalOutputTypes.length,
+            serializedFinalPlan,
+            1,
+            0,
+            finalOutputTypes)
+        }
         setSubqueries(it.id, this)
 
         Option(TaskContext.get()).foreach { context =>

@@ -28,7 +28,7 @@ import org.apache.spark.shuffle.ShuffleWriteProcessor
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
@@ -51,7 +51,12 @@ case class NativeShuffleSpec(
      * size so that a re-executed map task places rows exactly as the attempt it replaces. See
      * `CometShuffleExchangeExec.positionalRoundRobinSpec`.
      */
-    positionalRoundRobin: Option[PositionalRoundRobin] = None)
+    positionalRoundRobin: Option[PositionalRoundRobin] = None,
+    /**
+     * The session's configs, captured on the driver, which the writer applies while it builds and
+     * runs the native plan in a job that runs outside a SQL execution. See [[CapturedSQLConf]].
+     */
+    sqlConf: CapturedSQLConf = CapturedSQLConf.capture())
 
 /**
  * Parameters for positional round-robin placement, resolved on the driver.

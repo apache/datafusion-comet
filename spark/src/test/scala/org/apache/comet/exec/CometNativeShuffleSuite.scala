@@ -1983,4 +1983,30 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
       }
     }
   }
+
+  // https://github.com/apache/datafusion-comet/issues/7301
+  test("map stage of a job outside a SQL execution uses the session's Comet configs") {
+    withTempPath { dir =>
+      spark
+        .range(0, 1000, 1, 1)
+        .selectExpr("id % 10 as k", "id as v")
+        .write
+        .parquet(dir.toString)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "10") {
+        val df = spark.read.parquet(dir.toString).repartition(2, col("k"))
+        // A job launched from the query's RDD runs outside a SQL execution, so Spark does not
+        // pass the session's configs to the map stage's tasks.
+        df.queryExecution.toRdd.foreach(_ => ())
+        val exchange = find(df.queryExecution.executedPlan) {
+          case _: CometShuffleExchangeExec => true
+          case _ => false
+        }.get
+        // The scan fused into the shuffle writer emits 10-row batches, not one of the default
+        // 8192 rows.
+        assert(exchange.metrics("input_batches").value == 100)
+      }
+    }
+  }
 }

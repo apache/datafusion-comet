@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
-import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -37,6 +37,9 @@ import org.apache.comet.CometShuffleBlockIterator
  * @param positionalRoundRobin
  *   whether the writer fed by this RDD places rows by position rather than by content; see
  *   [[CometShuffleExchangeExec.positionalRoundRobinSpec]] and `getOutputDeterministicLevel`.
+ * @param sqlConf
+ *   the session's configs, captured on the driver, for resolving the inputs in a job that runs
+ *   outside a SQL execution. See [[CapturedSQLConf]].
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -45,7 +48,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
-    positionalRoundRobin: Boolean = false)
+    positionalRoundRobin: Boolean = false,
+    sqlConf: CapturedSQLConf = CapturedSQLConf.capture())
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
       inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
@@ -63,7 +67,8 @@ private[shuffle] class CometNativeShuffleInputRDD(
       shuffleScanIndices,
       spillMetricNode,
       perPartitionByKey,
-      positionalRoundRobin)
+      positionalRoundRobin,
+      sqlConf)
 
   /**
    * Spark's `isOrderSensitive` rule, applied to the RDD graph below the native plan. Spark only
@@ -109,7 +114,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
 
   override def compute(
       split: Partition,
-      context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = {
+      context: TaskContext): Iterator[Product2[Int, ColumnarBatch]] = sqlConf.withConf {
     spillMetricNode.reportSpillMetrics(context)
     val partition = split.asInstanceOf[CometNativeShuffleInputPartition]
     val (inputObjects, shuffleBlockIters) =

@@ -72,14 +72,17 @@ object CometExecUtils {
     val limitOp = CometExecUtils.getLimitNativePlan(outputAttribute, limit, offset).get
     val serializedPlan = CometExec.serializeNativePlan(limitOp)
     val inputSchema = Utils.fromAttributes(outputAttribute)
+    val sqlConf = CapturedSQLConf.capture()
     childPlan.mapPartitionsWithIndexInternal { case (idx, iter) =>
-      CometExec.getCometIterator(
-        CometArrowStream.inputObjects(iter, inputSchema, "CometExecUtils-getNativeLimit"),
-        outputAttribute.length,
-        serializedPlan,
-        numParts,
-        idx,
-        outputAttribute.map(_.dataType))
+      sqlConf.withConf {
+        CometExec.getCometIterator(
+          CometArrowStream.inputObjects(iter, inputSchema, "CometExecUtils-getNativeLimit"),
+          outputAttribute.length,
+          serializedPlan,
+          numParts,
+          idx,
+          outputAttribute.map(_.dataType))
+      }
     }
   }
 
