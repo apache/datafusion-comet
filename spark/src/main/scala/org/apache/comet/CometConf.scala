@@ -508,6 +508,28 @@ object CometConf extends ShimCometConf {
       .checkValue(v => v > 0 && v <= Int.MaxValue, "Must be positive and fit in an Int.")
       .createWithDefault(1024 * 1024)
 
+  val COMET_NATIVE_EXECUTORS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.nativeExecutors.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. When enabled, Comet runs each query on a Comet Native Executor cluster " +
+          "instead of on Spark's executors: the driver plans the query and submits it to the " +
+          "cluster's scheduler (`spark.comet.nativeExecutors.scheduler.url`), and the results " +
+          "come back to the driver. A query that cannot run entirely natively fails, naming " +
+          "the operator that cannot. See https://github.com/apache/datafusion-comet/issues/7288.")
+      .internal()
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_NATIVE_EXECUTORS_SCHEDULER_URL: ConfigEntry[String] =
+    conf("spark.comet.nativeExecutors.scheduler.url")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental. The Arrow Flight URL of a Comet Native Executor cluster's scheduler, " +
+        "such as `http://host:50060`. See `spark.comet.nativeExecutors.enabled`.")
+      .internal()
+      .stringConf
+      .createWithDefault("http://localhost:50060")
+
   val COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)

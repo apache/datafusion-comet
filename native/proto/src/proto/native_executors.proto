@@ -80,3 +80,17 @@ message StageInput {
   // Every partition of this stage reads the producer's whole output.
   bool broadcast = 3;
 }
+
+// The result partitions of a query, in order. The driver's native library converts the
+// endpoints of the FlightInfo the scheduler returns into this message for the JVM.
+message ResultEndpoints {
+  repeated ResultEndpoint endpoints = 1;
+}
+
+message ResultEndpoint {
+  // Arrow Flight location of the executor that holds the partition, such as
+  // grpc+tcp://host:port.
+  string location = 1;
+  // Opaque ticket to pass to DoGet.
+  bytes ticket = 2;
+}

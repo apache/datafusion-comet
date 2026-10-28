@@ -54,6 +54,9 @@ async-trait = { workspace = true }
 log = "0.4"
 log4rs = "1.4.0"
 prost = "0.14.3"
+# The driver's client of a Comet Native Executor cluster; see the native-executors feature.
+arrow-flight = { version = "59.2.0", optional = true }
+tonic = { version = "0.14", optional = true }
 jni = { workspace = true }
 rand = { workspace = true }
 num = { workspace = true }
@@ -132,6 +135,9 @@ python-udf = ["dep:pyo3", "dep:libc"]
 contrib-lance = ["dep:comet-contrib-lance"]
 hdfs-opendal = ["opendal/services-hdfs", "object_store_opendal", "hdfs-sys"]
 jemalloc = ["tikv-jemallocator", "tikv-jemalloc-ctl"]
+# The JNI client a Spark driver uses to run queries on Comet Native Executors (issue #7288). Off
+# by default while the feature is experimental, so the standard build links no gRPC client.
+native-executors = ["dep:arrow-flight", "dep:tonic"]
 # Native Delta Lake scan support for the JVM-planned path (contrib/delta-spark).
 # In the default set so trying the contrib needs only the jar and the config,
 # not a custom native build. It is inert at runtime unless the contrib jar is
