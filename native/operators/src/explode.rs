@@ -51,7 +51,9 @@
 //! * dropping upstream's `ListUnnest` declaration in favor of importing the public one;
 //! * `find_longest_length` applies the empty-list bump once after the row-wise maximum rather
 //!   than once per array, which is equivalent because `max` is associative;
-//! * `list_output_lens` and the contiguous-run fast path described above.
+//! * `list_output_lens` and the contiguous-run fast path described above;
+//! * `flatten_struct_cols` folds a struct's null mask into each field it flattens, since the
+//!   field values under a null struct are unspecified and Spark's `inline` emits nulls there.
 //!
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
@@ -82,6 +84,7 @@ use datafusion::physical_plan::metrics::{
     SplitMetrics,
 };
 use datafusion::physical_plan::stream::BatchSplitStream;
+use datafusion_comet_common::children_with_parent_nulls;
 // `ListUnnest` is the one item the copied region below does NOT need to duplicate: unlike the
 // kernels, upstream exports it publicly.
 use datafusion::physical_plan::unnest::ListUnnest;
@@ -573,7 +576,9 @@ fn flatten_struct_cols(
             Some(_) => match column_data.data_type() {
                 DataType::Struct(_) => {
                     let struct_arr = column_data.as_any().downcast_ref::<StructArray>().unwrap();
-                    columns_expanded.extend_from_slice(struct_arr.columns());
+                    // Arrow leaves the field values under a null struct unspecified, so they
+                    // must not leak out once the struct is flattened.
+                    columns_expanded.extend(children_with_parent_nulls(struct_arr)?);
                 }
                 data_type => {
                     return internal_err!(
@@ -1871,5 +1876,43 @@ mod tests {
             Some(vec![true, false, true, true]),
         );
         assert_output_lens(with_nulls.slice(1, 3), [&[0, 0, 3], &[1, 0, 3], &[1, 1, 3]]);
+    }
+
+    #[test]
+    fn flatten_struct_cols_nulls_fields_under_a_null_struct() {
+        // Row 1's struct is null but its fields hold values, which Arrow allows. Spark's `inline`
+        // turns a null struct into a row of nulls, so none of those values may surface.
+        let a: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4)]));
+        let b: ArrayRef = Arc::new(Int32Array::from(vec![10, 20, 30, 40]));
+        let fields = vec![
+            Arc::new(Field::new("a", DataType::Int32, true)),
+            Arc::new(Field::new("b", DataType::Int32, false)),
+        ];
+        let structs: ArrayRef = Arc::new(StructArray::new(
+            fields.clone().into(),
+            vec![a, b],
+            Some(NullBuffer::from(vec![true, false, true, true])),
+        ));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, true),
+            Field::new("b", DataType::Int32, true),
+        ]));
+        let indices = HashSet::from([0]);
+
+        let batch = flatten_struct_cols(&[Arc::clone(&structs)], &schema, &indices).unwrap();
+        let a = batch.column(0).as_primitive::<Int32Type>();
+        let b = batch.column(1).as_primitive::<Int32Type>();
+        assert_eq!(a.iter().collect::<Vec<_>>(), [Some(1), None, None, Some(4)]);
+        assert_eq!(
+            b.iter().collect::<Vec<_>>(),
+            [Some(10), None, Some(30), Some(40)]
+        );
+
+        // A slice keeps the struct's mask aligned with its fields.
+        let batch = flatten_struct_cols(&[structs.slice(1, 2)], &schema, &indices).unwrap();
+        let a = batch.column(0).as_primitive::<Int32Type>();
+        let b = batch.column(1).as_primitive::<Int32Type>();
+        assert_eq!(a.iter().collect::<Vec<_>>(), [None, None]);
+        assert_eq!(b.iter().collect::<Vec<_>>(), [None, Some(30)]);
     }
 }

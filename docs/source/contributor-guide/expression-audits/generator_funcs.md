@@ -37,4 +37,16 @@
 
 - Same `CometExplodeExec` path as `posexplode`. Compatible for array inputs; empty and NULL arrays both emit one row with null `pos` and null `value` per Spark's `outer` semantics, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`.
 
+## inline
+
+- Same `CometExplodeExec` path as `explode`, with the unnested struct flattened into one column per field. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation: a NULL struct element yields a row of NULLs, which the native flattening reproduces by folding the struct's validity into each field. Every generated column is reported nullable.
+
+## inline_outer
+
+- Same path as `inline`. Empty and NULL arrays both emit one row of NULLs, which the planner requests as DataFusion's `NullHandling::PreserveAndExpandEmpty`.
+
+## stack
+
+- Planned as `inline` over an array holding one struct per output row, so `stack(n, v1, ..., vk)` evaluates each argument once per input row, as Spark does, and pads the last row with NULLs. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation. An argument that cannot run natively falls back with that argument's own reason.
+
 [Spark Expression Support]: ../../user-guide/latest/expressions.md

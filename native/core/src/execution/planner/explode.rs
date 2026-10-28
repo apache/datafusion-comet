@@ -15,8 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Builder for the native `Explode` operator, which plans Spark's `explode`, `posexplode`, and
-//! their `_outer` variants as a projection followed by Comet's `ExplodeExec`.
+//! Builder for the native `Explode` operator, which plans Spark's `explode`, `posexplode`,
+//! `inline`, and their `_outer` variants as a projection followed by Comet's `ExplodeExec`.
+//! Spark's `stack` arrives here as `inline` over an array of structs built by the JVM serde.
 
 use std::sync::Arc;
 
@@ -162,11 +163,30 @@ impl OperatorBuilder for ExplodeBuilder {
             }
         };
 
-        output_fields.push(Field::new(
-            array_field.name(),
-            element_type,
-            true, // Element is nullable after unnesting
-        ));
+        // `inline` flattens each struct element into one column per field. Every field is
+        // nullable after unnesting: a null struct element, or the row `inline_outer` emits for a
+        // NULL or empty array, yields a row of nulls.
+        let struct_column_indices = if explode.inline {
+            let DataType::Struct(struct_fields) = &element_type else {
+                return Err(ExecutionError::GeneralError(format!(
+                    "Expected List of Struct for inline, got {:?}",
+                    array_field.data_type()
+                )));
+            };
+            output_fields.extend(
+                struct_fields
+                    .iter()
+                    .map(|f| f.as_ref().clone().with_nullable(true)),
+            );
+            vec![array_input_index]
+        } else {
+            output_fields.push(Field::new(
+                array_field.name(),
+                element_type,
+                true, // Element is nullable after unnesting
+            ));
+            vec![]
+        };
 
         let output_schema = Arc::new(Schema::new(output_fields));
 
@@ -196,7 +216,7 @@ impl OperatorBuilder for ExplodeBuilder {
         let unnest_exec = Arc::new(ExplodeExec::new(
             project_exec,
             list_unnests,
-            vec![], // No struct columns to unnest
+            struct_column_indices,
             output_schema,
             unnest_options,
         )?);
