@@ -210,11 +210,78 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  /**
+   * TPC-H's `lineitem`: the table under `SPARK_TPCH_DATA` when it is set, as for
+   * `CometTPCHQuerySuite`, and otherwise generated data with the same schema.
+   */
+  private def withLineitem(body: => Unit): Unit = sys.env.get("SPARK_TPCH_DATA") match {
+    case Some(path) =>
+      spark.read.parquet(s"$path/lineitem").createOrReplaceTempView("lineitem")
+      withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "32m")(body)
+    case None =>
+      withTempPath { dir =>
+        spark
+          .range(0, 100000, 1, 8)
+          .selectExpr(
+            "CAST(id % 50 + 1 AS DECIMAL(15, 2)) AS l_quantity",
+            "CAST((id % 1000) * 1.37 + 900 AS DECIMAL(15, 2)) AS l_extendedprice",
+            "CAST((id % 11) / 100.0 AS DECIMAL(15, 2)) AS l_discount",
+            "CAST((id % 9) / 100.0 AS DECIMAL(15, 2)) AS l_tax",
+            "ELT(CAST(id % 3 AS INT) + 1, 'A', 'N', 'R') AS l_returnflag",
+            "ELT(CAST(id % 2 AS INT) + 1, 'F', 'O') AS l_linestatus",
+            "DATE_ADD(DATE '1992-01-01', CAST(id % 2500 AS INT)) AS l_shipdate")
+          .write
+          .parquet(dir.getCanonicalPath)
+        spark.read.parquet(dir.getCanonicalPath).createOrReplaceTempView("lineitem")
+        withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "131072")(body)
+      }
+  }
+
+  private val q1Aggregate = """
+    |select
+    |  l_returnflag,
+    |  l_linestatus,
+    |  sum(l_quantity) as sum_qty,
+    |  sum(l_extendedprice) as sum_base_price,
+    |  sum(l_extendedprice * (1 - l_discount)) as sum_disc_price,
+    |  sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) as sum_charge,
+    |  avg(l_quantity) as avg_qty,
+    |  avg(l_extendedprice) as avg_price,
+    |  avg(l_discount) as avg_disc,
+    |  count(*) as count_order
+    |from
+    |  lineitem
+    |where
+    |  l_shipdate <= date '1998-12-01' - interval '90' day
+    |group by
+    |  l_returnflag,
+    |  l_linestatus""".stripMargin
+
+  nativeExecutorsTest("TPC-H q1 without its order by") {
+    withLineitem {
+      checkOnCluster(sql(q1Aggregate))
+    }
+  }
+
+  nativeExecutorsTest("TPC-H q1") {
+    withLineitem {
+      // A new Dataset each time, since a Dataset keeps the plan it was first run with.
+      def q1 = sql(s"$q1Aggregate\norder by\n  l_returnflag,\n  l_linestatus")
+      checkOnCluster(q1)
+      // checkAnswer ignores the order of the rows.
+      val expected = q1.collect().toSeq
+      onCluster(assert(q1.collect().toSeq == expected))
+    }
+  }
+
   nativeExecutorsTest("a query the cluster cannot run fails, naming the operator") {
     withTable { path =>
       onCluster {
-        // A global sort needs a range exchange, which the prototype doesn't support.
-        val error = intercept[Exception](spark.read.parquet(path).orderBy("v").collect())
+        // A small join is broadcast, and the prototype doesn't support broadcast exchanges.
+        val left = spark.read.parquet(path)
+        val right = spark.read.parquet(path).where("id < 10").select(col("k").as("k2"))
+        val error =
+          intercept[Exception](left.join(right, left("k") === right("k2")).collect())
         val messages = Iterator
           .iterate[Throwable](error)(_.getCause)
           .takeWhile(_ != null)
@@ -223,7 +290,7 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
         assert(
           messages.exists(message =>
             message.contains("Comet Native Executors cannot run this query") &&
-              message.contains("rangepartitioning")),
+              message.contains("CometBroadcastExchange")),
           error)
       }
     }

@@ -28,7 +28,7 @@ import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, SinglePartition}
+import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, DeserializeToObjectExec, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
@@ -324,6 +324,18 @@ object CometNativeExecutors {
             PartitioningOuterClass.HashPartition
               .newBuilder()
               .addAllHashExpression(keys.asJava)
+              .setNumPartitions(numPartitions))
+        case RangePartitioning(ordering, numPartitions) =>
+          // Without bounds: the cluster decides how to range-partition.
+          val sortOrders = ordering.map { order =>
+            QueryPlanSerde
+              .exprToProto(order, exchange.child.output)
+              .getOrElse(fail(exchange, s"its sort key $order cannot run natively"))
+          }
+          partitioning.setRangePartition(
+            PartitioningOuterClass.RangePartition
+              .newBuilder()
+              .addAllSortOrders(sortOrders.asJava)
               .setNumPartitions(numPartitions))
         case SinglePartition =>
           partitioning.setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder())
