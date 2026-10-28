@@ -30,7 +30,7 @@ import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, Descending, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Final, Min, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Count, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
 import org.apache.spark.sql.catalyst.plans.Inner
@@ -673,12 +673,47 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date single-argument count evaluates its nullable argument eagerly") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val rows = Seq((0, Some(2024), 1), (0, None, 1), (1, Some(2025), 1))
+      withParquetTable(rows, "make_date_count") {
+        val query = "SELECT _1, count(make_date(_2, _3, 1)), sum(_3) " +
+          "FROM make_date_count GROUP BY _1"
+        val df = sql(query)
+        checkCometAnswer(df, Seq(Row(0, 1L, 2L), Row(1, 1L, 1L)))
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(countOperators(plan, classOf[HashAggregateExec]) == 0, plan.treeString)
+        assert(countOperators(plan, classOf[CometHashAggregateExec]) == 2, plan.treeString)
+
+        // A physical plan bypasses the optimizer's COUNT(non-nullable) -> COUNT(1) rewrite.
+        // Spark does not evaluate this invalid date, so it must not reach a native update.
+        val partial = createSparkPlan(spark, query).collectFirst {
+          case aggregate: HashAggregateExec
+              if aggregate.aggregateExpressions.forall(_.mode == Partial) =>
+            aggregate
+        }.get
+        val skippedDate = MakeDate(Literal(2024), Literal(13), Literal(1), failOnError = true)
+        assert(!skippedDate.nullable)
+        val nonNullableCount =
+          partial.copy(aggregateExpressions = partial.aggregateExpressions.map {
+            case expression if expression.aggregateFunction.isInstanceOf[Count] =>
+              expression.copy(aggregateFunction = Count(Seq(skippedDate)))
+            case expression => expression
+          })
+        assert(MakeDateEvaluation.reason(MakeDateEvaluation.preserve(nonNullableCount)).isDefined)
+      }
+    }
+  }
+
   test("make_date aggregate arguments retain Spark execution") {
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.USE_OBJECT_HASH_AGG.key -> "true") {
-      withParquetTable(Seq((2024, 1), (2024, 13), (2025, 1)), "make_date_aggregate") {
+      val rows = Seq((2024, 1, Some(1)), (2024, 13, None), (2025, 1, Some(1)))
+      withParquetTable(rows, "make_date_aggregate") {
         val cases = Seq(
           (
             "unix_date(min(make_date(_1, _2, 1)) FILTER (WHERE _2 <= 12))",
@@ -688,7 +723,12 @@ class CometExecRuleSuite extends CometTestBase {
             "sort_array(collect_list(unix_date(make_date(_1, _2, 1))) " +
               "FILTER (WHERE _2 <= 12))",
             classOf[ObjectHashAggregateExec],
-            Row(Seq(19723, 20089))))
+            Row(Seq(19723, 20089))),
+          (
+            "count(make_date(_1, _2, 1)) FILTER (WHERE _2 <= 12)",
+            classOf[HashAggregateExec],
+            Row(2L)),
+          ("count(_3, make_date(_1, _2, 1))", classOf[HashAggregateExec], Row(2L)))
         cases.foreach { case (expression, aggregateClass, expected) =>
           val df = sql(s"SELECT $expression FROM make_date_aggregate")
           val plan = stripAQEPlan(df.queryExecution.executedPlan)

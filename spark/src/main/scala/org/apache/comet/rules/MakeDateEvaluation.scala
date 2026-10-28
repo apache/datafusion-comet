@@ -20,6 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, Greatest, HashExpression, IsNotNull, IsNull, Least, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Count}
 import org.apache.spark.sql.catalyst.optimizer.BuildLeft
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.comet._
@@ -46,6 +47,14 @@ private[rules] object MakeDateEvaluation {
 
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+
+  private def containsDeferredAggregateDate(expression: Expression): Boolean = expression match {
+    // COUNT checks its sole nullable argument on every input row. Filters, other nullable
+    // arguments, and a non-nullable argument can let Spark skip evaluating the date.
+    case AggregateExpression(Count(Seq(child)), _, _, None, _) if child.nullable => false
+    case _: MakeDate => true
+    case _ => expression.children.exists(containsDeferredAggregateDate)
+  }
 
   private case class ProjectionDemand(
       boundary: String,
@@ -330,9 +339,11 @@ private[rules] object MakeDateEvaluation {
                   deferredDate || deferredComputation
                 })
               .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
-          // Join keys/conditions and aggregate updates can be skipped inside the operator.
-          case _: BaseJoinExec | _: BaseAggregateExec | _: TakeOrderedAndProjectExec
-              if evaluatesDate =>
+          case aggregate: BaseAggregateExec
+              if aggregate.expressions.exists(containsDeferredAggregateDate) =>
+            Some(s"make_date requires Spark evaluation in ${original.nodeName}")
+          // Join keys/conditions and top-k outputs can be skipped inside the operator.
+          case _: BaseJoinExec | _: TakeOrderedAndProjectExec if evaluatesDate =>
             Some(s"make_date requires Spark evaluation in ${original.nodeName}")
           case _ => None
         })
