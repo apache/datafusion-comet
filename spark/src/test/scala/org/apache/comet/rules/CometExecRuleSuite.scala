@@ -553,6 +553,86 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
+  test("make_date arguments remain deferred for unmatched broadcast join rows") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, "2024"), (2, "bad")), "make_date_join_probe") {
+        withParquetTable(Seq(Tuple1(1)), "make_date_join_build") {
+          def checkJoined(query: String, dateIndex: Int, projects: Int, scans: Int): SparkPlan = {
+            var expected = Seq.empty[Row]
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              expected = sql(query).collect().toSeq
+            }
+            assert(expected.size == 1 && expected.head.getInt(dateIndex) == 19723)
+            val df = sql(query)
+            checkCometAnswer(df, expected)
+            val plan = stripAQEPlan(df.queryExecution.executedPlan)
+            withClue(plan.treeString) {
+              assert(plan.collect {
+                case p: ProjectExec if p.output.exists(_.name == "r") => p
+              }.size == projects)
+              assert(plan.collect {
+                case p: CometProjectExec if p.output.exists(_.name == "r") => p
+              }.isEmpty)
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == scans)
+            }
+            plan
+          }
+
+          val probe = """(
+            |  SELECT _1 AS k, rand(7L) AS r, CAST(_2 AS INT) AS y
+            |  FROM make_date_join_probe
+            |) p""".stripMargin
+          val build = "make_date_join_build b"
+          for (buildLeft <- Seq(false, true)) {
+            val inputs = if (buildLeft) s"$build JOIN $probe" else s"$probe JOIN $build"
+            val plan = checkJoined(
+              s"""
+                |SELECT /*+ BROADCAST(b) */ p.r, p.r + 1, unix_date(make_date(p.y, 1, 1))
+                |FROM $inputs ON p.k = b._1
+                |""".stripMargin,
+              dateIndex = 2,
+              projects = 2,
+              scans = 2)
+            withClue(s"buildLeft=$buildLeft\n${plan.treeString}") {
+              val joins = plan.collect { case join: BroadcastHashJoinExec => join }
+              assert(joins.map(_.buildSide) == Seq(if (buildLeft) BuildLeft else BuildRight))
+            }
+          }
+
+          // Repeated r2 retains the alias projection above the join that discards the bad row.
+          val aliased = checkJoined(
+            s"""
+              |SELECT r, repeated_r, r2, r2 + 1, unix_date(make_date(date_year, 1, 1)) FROM (
+              |  SELECT /*+ BROADCAST(b) */ p.r, p.r + 1 AS repeated_r, rand(11L) AS r2,
+              |         p.y AS date_year FROM $probe JOIN $build ON p.k = b._1
+              |)
+              |""".stripMargin,
+            dateIndex = 4,
+            projects = 3,
+            scans = 2)
+          assert(countOperators(aliased, classOf[BroadcastHashJoinExec]) == 1, aliased.treeString)
+
+          // The outer join requires y only after the inner join accepts a row. Null-safe equality
+          // keeps an inferred isNotNull(y) filter from evaluating the cast before either join.
+          // Spark also inserts a projection between the joins to drop the inner join keys.
+          val nested = checkJoined(
+            s"""
+              |SELECT /*+ BROADCAST(b, c) */ p.r, p.r + 1, unix_date(make_date(p.y, 1, 1))
+              |FROM $probe JOIN $build ON p.k = b._1
+              |JOIN (SELECT _1 + 2023 AS y FROM make_date_join_build) c ON p.y <=> c.y
+              |""".stripMargin,
+            dateIndex = 2,
+            projects = 3,
+            scans = 3)
+          assert(countOperators(nested, classOf[BroadcastHashJoinExec]) == 2, nested.treeString)
+        }
+      }
+    }
+  }
+
   test("make_date aggregate arguments retain Spark execution") {
     withSQLConf(
       SQLConf.ANSI_ENABLED.key -> "true",

@@ -51,7 +51,9 @@ private[rules] object MakeDateEvaluation {
       boundary: String,
       deferred: AttributeSet,
       // Deferred inputs whose producers need guarding even when they contain no make_date.
-      guardedInputs: AttributeSet)
+      guardedInputs: AttributeSet,
+      // Date argument lineage retained until a streamed join can skip its input rows.
+      dateInputs: AttributeSet)
 
   // Attributes may stand for deferred expressions in a lower projection, not materialized values.
   private def harmlessValue(expression: Expression): Boolean =
@@ -206,7 +208,8 @@ private[rules] object MakeDateEvaluation {
             ProjectionDemand(
               "FILTER",
               filter.child.outputSet,
-              projectionDemand.map(_.guardedInputs).getOrElse(AttributeSet.empty)))
+              projectionDemand.map(_.guardedInputs).getOrElse(AttributeSet.empty),
+              projectionDemand.map(_.dateInputs).getOrElse(AttributeSet.empty)))
         case project: ProjectExec =>
           val deferred = projectionDemand.map(_.deferred).getOrElse(AttributeSet.empty)
           val eager = project.projectList
@@ -220,29 +223,40 @@ private[rules] object MakeDateEvaluation {
           // A consumer can require the date but still skip another output of this projection.
           val guardedOutputs = inheritedInputs ++
             (if (evaluatesDate) deferred else AttributeSet.empty)
-          val inputsToGuard = AttributeSet(project.projectList.flatMap { output =>
-            val direct = output.collect { case date: MakeDate => date }.flatMap(_.references)
-            // Follow aliases to the computation, which need not itself contain make_date.
-            val inherited =
+          val directDateInputs = AttributeSet(project.projectList.flatMap { output =>
+            output.collect { case date: MakeDate => date }.flatMap(_.references)
+          })
+          val inputsToGuard =
+            directDateInputs ++ AttributeSet(project.projectList.flatMap { output =>
               if ((output.deterministic || rowDemand.isDefined) &&
                 guardedOutputs.contains(output.toAttribute)) {
                 output.references.toSeq
               } else {
                 Nil
               }
-            direct ++ inherited
-          })
+            })
+          // Keep argument lineage through eager aliases too. A join below this projection can
+          // discard an input row before this projection ever requires the argument's value.
+          val dateInputs =
+            directDateInputs ++ AttributeSet(project.projectList.flatMap { output =>
+              if (projectionDemand.exists(_.dateInputs.contains(output.toAttribute))) {
+                output.references.toSeq
+              } else {
+                Nil
+              }
+            })
           // A lazy row consumer can skip even the date's required arguments on unread rows.
           val guardedChildInputs =
             inputsToGuard.intersect(if (rowDemand.isDefined) project.child.outputSet else skipped)
-          if (skipped.isEmpty && guardedChildInputs.isEmpty) {
+          if (skipped.isEmpty && guardedChildInputs.isEmpty && dateInputs.isEmpty) {
             None
           } else {
             Some(
               ProjectionDemand(
                 projectionDemand.map(_.boundary).getOrElse("PROJECT"),
                 skipped,
-                guardedChildInputs))
+                guardedChildInputs,
+                dateInputs))
           }
         case _ if exchange || localMaterialization => None
         case _ => projectionDemand
@@ -255,10 +269,14 @@ private[rules] object MakeDateEvaluation {
             // Keys and conditions force their inputs on each visited row. An outer row consumer
             // can still skip that row altogether, so retain its guarded inputs in that case.
             val required = if (rowDemand.isDefined) AttributeSet.empty else original.references
-            val forwarded = original.children(index).outputSet -- required
+            val streamedOutputs = original.children(index).outputSet
+            val forwarded = streamedOutputs -- required
             demand.copy(
               deferred = demand.deferred.intersect(forwarded),
-              guardedInputs = demand.guardedInputs.intersect(forwarded))
+              guardedInputs = (demand.guardedInputs ++ demand.dateInputs).intersect(forwarded),
+              // A key is required only on this join's input rows. An earlier join can still
+              // discard rows before producing that key, so retain its argument lineage.
+              dateInputs = demand.dateInputs.intersect(streamedOutputs))
           }
         } else {
           None

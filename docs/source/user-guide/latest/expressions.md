@@ -729,6 +729,8 @@ it. Comet preserves that evaluation across projections while allowing eager date
 to remain native when their operands are safe to evaluate. These safeguards also preserve
 NULL short-circuiting when a date argument is computed in an earlier projection, including
 across the streamed side of a broadcast join. The materialized build side remains independent.
+These safeguards also cover required arguments, such as a computed year, on input rows that
+the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
 
