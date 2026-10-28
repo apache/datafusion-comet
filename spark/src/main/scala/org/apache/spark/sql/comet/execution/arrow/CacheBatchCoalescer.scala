@@ -51,9 +51,11 @@ import org.apache.comet.vector.NativeUtil
  * and nested columns, and offsets that do not start at zero, as a native producer's sliced arrays
  * can have. Arrow's `VectorAppender` assumes they start at zero.
  *
- * Row order is kept: the rows copied so far are emitted before a batch that passes through. Each
- * batch is copied before the input is advanced, because a native producer releases the batch it
- * returned last when it is asked for the next one.
+ * Row order is kept: the rows copied so far are emitted before a batch that passes through. A
+ * large input is copied one output batch at a time, as the consumer asks for them, so the batches
+ * open at once do not grow with its size. The input is not advanced until it has been copied in
+ * full, because a native producer releases the batch it returned last when it is asked for the
+ * next one.
  *
  * The batches built here are owned here. Each is released when the next batch is requested, and
  * whatever is still open when the task completes is released then. A batch passed through still
@@ -79,6 +81,10 @@ private[arrow] class CacheBatchCoalescer(
   private var pending: VectorSchemaRoot = null
   private var pendingWriter: ArrowWriter = null
   private var pendingRows = 0
+
+  // The input batch being copied, and the first of its rows that has not been copied yet.
+  private var current: ColumnarBatch = null
+  private var currentStart = 0
 
   // Batches built here and filled, in input order, ahead of `held`.
   private val filled = mutable.Queue.empty[VectorSchemaRoot]
@@ -131,18 +137,24 @@ private[arrow] class CacheBatchCoalescer(
       readyRoot = null
       pending = null
       pendingWriter = null
+      current = null
       held = null
     }
   }
 
   private def advance(): Unit = {
-    while (filled.isEmpty && held == null && input.hasNext) {
-      val batch = input.next()
-      if (passesThrough(batch)) {
-        finishPending()
-        held = batch
+    while (filled.isEmpty && held == null && (current != null || input.hasNext)) {
+      if (current != null) {
+        copyRows()
       } else {
-        append(batch)
+        val batch = input.next()
+        if (passesThrough(batch)) {
+          finishPending()
+          held = batch
+        } else if (batch.numRows() > 0) {
+          current = batch
+          currentStart = 0
+        }
       }
     }
     if (filled.isEmpty && held == null) {
@@ -163,21 +175,20 @@ private[arrow] class CacheBatchCoalescer(
       Utils.isArrowBacked(batch) &&
       CachedBatchIpc.matchesReaderLayout(batch, readerFields)
 
-  // Copies every row of `batch`, filling batches of targetRows rows.
-  private def append(batch: ColumnarBatch): Unit = {
-    val numRows = batch.numRows()
-    var start = 0
-    while (start < numRows) {
-      if (pending == null) {
-        startPending()
-      }
-      val rows = math.min(numRows - start, targetRows - pendingRows)
-      pendingWriter.writeColumns(batch, start, rows)
-      pendingRows += rows
-      start += rows
-      if (pendingRows == targetRows) {
-        finishPending()
-      }
+  // Copies rows of `current` until the batch being filled is full or `current` is exhausted.
+  private def copyRows(): Unit = {
+    if (pending == null) {
+      startPending()
+    }
+    val rows = math.min(current.numRows() - currentStart, targetRows - pendingRows)
+    pendingWriter.writeColumns(current, currentStart, rows)
+    pendingRows += rows
+    currentStart += rows
+    if (currentStart == current.numRows()) {
+      current = null
+    }
+    if (pendingRows == targetRows) {
+      finishPending()
     }
   }
 

@@ -497,6 +497,7 @@ jobs:
           - name: "scans"
             value: |
               org.apache.comet.parquet.CometParquetWriterSuite
+              org.apache.comet.parquet.CometParquetWriterRetrySuite
               org.apache.comet.parquet.CometEmptyRelationParquetWriterSuite
               org.apache.spark.sql.comet.CometNativeWriteSuite
               org.apache.comet.parquet.ParquetReadV1Suite
@@ -541,6 +542,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffleWriterSuite
               org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
+              org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite
@@ -629,6 +631,8 @@ jobs:
               org.apache.comet.CometFuzzAggregateSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowStreamSuite
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
+              org.apache.spark.sql.comet.execution.arrow.CacheBatchCoalescerSuite
+              org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchStatsSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
@@ -676,6 +680,7 @@ jobs:
               org.apache.comet.serde.CometScalarFunctionSuite
               org.apache.comet.serde.CometLiteralSuite
               org.apache.comet.serde.QueryPlanSerdeSuite
+              org.apache.comet.serde.SparkFixesSuite
               org.apache.comet.CometFallbackInvarianceSuite
       fail-fast: false
     name: ${{ matrix.profile.name }} [${{ matrix.suite.name }}]
