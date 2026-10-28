@@ -1019,6 +1019,13 @@ partitioned and bucketed writes fall back to Spark, as do writes with
 <code class="docutils literal notranslate"><span class="pre">spark.sql.files.maxRecordsPerFile</span></code> set on Spark 4.0 and later. Parts of Spark’s Parquet write
 behavior are not reproduced, as listed under <a class="reference internal" href="#known-issues">Known Issues</a>. Iceberg writes use a
 different native writer, described on the <a class="reference internal" href="iceberg.html#writes"><span class="std std-ref">Iceberg</span></a> page.</p>
+<p>The native writer supports local and HDFS destinations, and S3 writes that the S3A magic committer
+commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
+classpath, and earlier versions for a bucket that sets
+<code class="docutils literal notranslate"><span class="pre">fs.s3a.bucket.&lt;bucket&gt;.committer.magic.enabled</span></code>. S3A creates each of those files, through the same
+call Spark’s own writer makes, so the magic committer and S3A’s write settings, such as server-side
+encryption, ACLs, storage class and object headers, apply exactly as they do for Spark’s writer.
+Other S3 writes fall back to Spark.</p>
 </section>
 <section id="tuning">
 <h2>Tuning<a class="headerlink" href="#tuning" title="Link to this heading">#</a></h2>
