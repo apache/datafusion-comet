@@ -33,6 +33,7 @@
 //!   consumes them, avoiding allocations whose contents never reach the output.
 //! * repeating carried short strings by input row, with fixed-size byte copies instead of
 //!   a variable-size copy for every output row.
+//! * filling non-null primitive runs directly instead of building and gathering take indices.
 //! * splitting individual List rows before repeating carried values, including a repetition
 //!   bound that prevents copied variable-width buffers and child offsets from overflowing.
 //!
@@ -1390,6 +1391,15 @@ fn repeat_arrs(
                         return Ok(Arc::new(strings) as ArrayRef);
                     }
                 }
+                if arr.null_count() == 0 && total_length >= arr.len().saturating_mul(5) {
+                    let repeated = arrow::array::downcast_primitive_array! {
+                        arr => { Some(Arc::new(repeat_primitive(arr, lengths, total_length)) as ArrayRef) }
+                        _ => None,
+                    };
+                    if let Some(repeated) = repeated {
+                        return Ok(repeated);
+                    }
+                }
                 let indices =
                     indices.get_or_insert_with(|| create_take_indices(lengths, total_length));
                 Ok(kernels::take::take(arr, indices, None)?)
@@ -1398,6 +1408,19 @@ fn repeat_arrs(
             }
         })
         .collect()
+}
+
+/// Repeat non-null primitives by input runs without allocating gather indices.
+fn repeat_primitive<T: arrow::datatypes::ArrowPrimitiveType>(
+    array: &PrimitiveArray<T>,
+    lengths: &Int64Array,
+    total_length: usize,
+) -> PrimitiveArray<T> {
+    let mut values = Vec::with_capacity(total_length);
+    for (&value, &repeat) in array.values().iter().zip(lengths.values()) {
+        values.resize(values.len() + repeat as usize, value);
+    }
+    PrimitiveArray::new(values.into(), None).with_data_type(array.data_type().clone())
 }
 
 /// Repeat short Utf8 values using the input runs rather than gathering every output value.
@@ -1461,6 +1484,9 @@ fn repeat_short_strings(
         }
         let start = range[0] as usize;
         let len = (range[1] - range[0]) as usize;
+        if len > 0 {
+            offsets.extend((1..=repeat).map(|j| (position + len * j) as i32));
+        }
         // Fixed-size copies avoid a tiny variable-size memcpy per output value. The source
         // must contain the whole copy, even for a sliced array's final value. Extra bytes
         // overwrite only future values or the output padding; later copies replace
@@ -1472,21 +1498,18 @@ fn repeat_short_strings(
             for _ in 0..repeat {
                 values[position..position + 8].copy_from_slice(value);
                 position += len;
-                offsets.push(position as i32);
             }
         } else if len <= SHORT_STRING_BYTES && data.len() - start >= SHORT_STRING_BYTES {
             let value = &data[start..start + SHORT_STRING_BYTES];
             for _ in 0..repeat {
                 values[position..position + SHORT_STRING_BYTES].copy_from_slice(value);
                 position += len;
-                offsets.push(position as i32);
             }
         } else {
             let value = &data[start..start + len];
             for _ in 0..repeat {
                 values[position..position + len].copy_from_slice(value);
                 position += len;
-                offsets.push(position as i32);
             }
         }
         if let Some(nulls) = &mut nulls {
@@ -1522,6 +1545,62 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+
+    #[test]
+    fn primitive_repetition_preserves_buffers_and_type_metadata() {
+        use arrow::array::{Decimal128Array, Float64Array, TimestampMicrosecondArray};
+
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(Int64Array::from(vec![1, -2, 3, 4, 5])),
+            Arc::new(Int64Array::from(vec![
+                Some(1),
+                None,
+                Some(3),
+                None,
+                Some(5),
+            ])),
+            Arc::new(Int64Array::from(vec![None; 5])),
+            Arc::new(Float64Array::from(vec![
+                f64::from_bits(0x7ff0000000000001),
+                -0.0,
+                f64::NEG_INFINITY,
+                f64::from_bits(0x7ff8000000000002),
+                1.0,
+            ])),
+            Arc::new(
+                TimestampMicrosecondArray::from(vec![0, -1, 1, 100, 200])
+                    .with_timezone("Asia/Taipei"),
+            ),
+            Arc::new(
+                Decimal128Array::from(vec![0, -12345, 12345, 100, 200])
+                    .with_precision_and_scale(20, 4)
+                    .unwrap(),
+            ),
+        ];
+        for array in arrays {
+            for start in [0, 1] {
+                let array = array.slice(start, array.len() - start);
+                for fan_out in [0, 1, 2, 5, 100] {
+                    let lengths = Int64Array::from_iter_values((0..array.len()).map(|i| {
+                        if i % 3 == 1 {
+                            0
+                        } else {
+                            fan_out
+                        }
+                    }));
+                    let total = lengths.values().iter().sum::<i64>() as usize;
+                    let indices = create_take_indices(&lengths, total);
+                    let expected = kernels::take::take(&array, &indices, None).unwrap();
+                    let actual =
+                        repeat_arrs(std::slice::from_ref(&array), &lengths, total, &[true])
+                            .unwrap();
+                    assert_eq!(actual[0].data_type(), expected.data_type());
+                    assert_eq!(actual[0].to_data().buffers(), expected.to_data().buffers());
+                    assert_eq!(actual[0].nulls(), expected.nulls());
+                }
+            }
+        }
+    }
 
     #[test]
     fn short_string_repetition_matches_take_buffers() {

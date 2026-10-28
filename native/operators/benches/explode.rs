@@ -463,6 +463,12 @@ fn criterion_benchmark(c: &mut Criterion) {
             b.iter(|| run(&runtime, &plan, &ctx))
         });
     }
+    for fan_out in [1usize, 2, 100] {
+        let plan = explode_plan(Element::Int64, fan_out, 3, RowMix::Dense, false);
+        group.bench_function(format!("fan_out_{fan_out}"), |b| {
+            b.iter(|| run(&runtime, &plan, &ctx))
+        });
+    }
     group.finish();
 
     // NULL and empty rows under outer semantics are padded, so this is the shape that cannot be
