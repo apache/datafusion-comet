@@ -29,6 +29,7 @@ import org.apache.commons.lang3.StringUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 
+import org.apache.comet.NativeBase
 import org.apache.comet.objectstore.AbfsReflection.Handles
 
 /**
@@ -41,7 +42,9 @@ import org.apache.comet.objectstore.AbfsReflection.Handles
  * (container-, account- or globally-scoped keys, credential providers, `${...}` references). The
  * resolver forwards the resolved values under the global key names plus `comet.azure.*` markers,
  * never a key for another account, and never the environment. Anything Hadoop throws becomes an
- * error marker: the native scan fails with it instead of trying a lookup of its own.
+ * error marker instead of a lookup of its own. A scan whose resolution the native store cannot
+ * use falls back to Spark (see [[nativeFallbackReason]]); the markers still carry the outcome to
+ * native for the other callers, which fail with it.
  *
  * `AbfsAuthParitySuite` pins the outcome of every configuration shape per hadoop-azure version
  * (`spark/src/test/resources/abfs-auth-parity/expected-<version>.json`) and cross-checks it
@@ -465,6 +468,68 @@ private[comet] object AbfsAuthResolver extends Logging {
         Markers.RESOLUTION -> Markers.ERROR,
         Markers.ERROR_CLASS -> exceptionClass,
         Markers.ERROR_MESSAGE -> message)
+  }
+
+  /**
+   * Why the native store cannot read `uri` under `outcome`, or None when it can: a mechanism
+   * Hadoop named that runs Java code per request, a resolution that failed, or resolved values
+   * the native store rejects. All are known on the driver, so the scan falls back to Spark's own
+   * reader, which authenticates through hadoop-azure, instead of planning natively and failing
+   * every task. For `Resolved`, native itself answers (see [[nativeStoreError]]), so the rules
+   * live in one place.
+   */
+  def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
+    // The container and host only: a password in the user info stays out of the reason.
+    val authority = Option(uri.getRawAuthority).getOrElse("")
+    val at = authority.lastIndexOf('@')
+    val safeAuthority =
+      if (at < 0) authority
+      else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at)
+    val location = s"${uri.getScheme}://$safeAuthority"
+    outcome match {
+      case Declined(authType, providerClass, assertionProviderClass) =>
+        val classes = providerClass.map(c => s" with provider $c").getOrElse("") +
+          assertionProviderClass.map(c => s" and client assertion provider $c").getOrElse("")
+        Some(
+          s"Native scan does not support ABFS authentication auth type $authType$classes " +
+            s"for $location")
+      case resolved: Resolved =>
+        // The message names option keys, never their values.
+        nativeStoreError(s"$location/", toOptions(resolved)).map(message =>
+          s"Native scan cannot use the ABFS authentication for $location: $message")
+      case Failed(_, message) =>
+        // Some of Hadoop's own messages quote the whole URI, user info included.
+        val safeMessage =
+          if (authority.isEmpty) message else message.replace(authority, safeAuthority)
+        Some(s"Hadoop ABFS authentication failed on the driver for $location: $safeMessage")
+      case Unconfigured => None
+    }
+  }
+
+  /**
+   * Why native cannot build the store for `url` from `options`, from the same code the scan runs.
+   * When native cannot be asked because the library is not loaded (a `LinkageError`), this
+   * assumes it can: such a build cannot run the native scan anyway. Any other failure, such as
+   * the store build panicking, would fail every task of a native scan, so it is a reason to fall
+   * back. `ask` is the JNI call, a parameter so tests can make it fail.
+   */
+  private[objectstore] def nativeStoreError(
+      url: String,
+      options: Map[String, String],
+      ask: (String, Array[String], Array[String]) => String = NativeBase.abfsStoreError)
+      : Option[String] = {
+    val (keys, values) = options.toArray.unzip
+    try Option(ask(url, keys, values))
+    catch {
+      case e: LinkageError =>
+        logDebug(s"Could not ask native whether it can build the ABFS store for $url", e)
+        None
+      case NonFatal(e) =>
+        logWarning(s"Could not ask native whether it can build the ABFS store for $url", e)
+        Some(
+          "could not ask native whether it can build the ABFS store: " +
+            s"${e.getClass.getName}: ${Option(e.getMessage).getOrElse("")}")
+    }
   }
 
   private def providerMarker(authType: String): String =
