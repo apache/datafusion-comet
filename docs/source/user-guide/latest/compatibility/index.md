@@ -77,7 +77,8 @@ codegen dispatcher covers only scalar expressions; see the
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
 the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
-`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+`CAST(binary AS string)`, a columnar shuffle, or a nested Parquet BINARY value read as a string),
+it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
 character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
 materialized (collected, printed, or passed to most string functions), so the rendered result
@@ -96,8 +97,12 @@ underlying bytes rather than on the rendered text:
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
 Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
-string paths is tracked by
+UTF8-annotated Parquet columns or produced by string expressions. A BINARY column without the UTF8
+annotation can hold such bytes when it is read as `string`, through the read schema or
+`spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
+or map value. Top-level values and map keys are not checked
+([#7032](https://github.com/apache/datafusion-comet/issues/7032)). Consistent handling of invalid
+UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not

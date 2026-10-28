@@ -535,6 +535,88 @@ mod tests {
         }
     }
 
+    /// The reader keeps the nested types of a file's ARROW:schema, so an Arrow writer's
+    /// `LargeBinary`, `BinaryView` or dictionary-encoded list elements reach the conversion to
+    /// Spark's string type as those types, not as `Binary`. A malformed value must still decode
+    /// to U+FFFD.
+    #[tokio::test]
+    async fn nested_arrow_binary_types_read_as_string_decode_invalid_utf8() {
+        use arrow::array::{Array, AsArray, BinaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+
+        for binary_type in [
+            DataType::LargeBinary,
+            DataType::BinaryView,
+            DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Binary)),
+            DataType::Dictionary(Box::new(DataType::Int8), Box::new(DataType::LargeBinary)),
+        ] {
+            let element = Arc::new(Field::new("element", binary_type.clone(), true));
+            let values = arrow::compute::cast(
+                &BinaryArray::from(vec![b"one".as_slice(), &[0xff]]),
+                &binary_type,
+            )
+            .unwrap();
+            let list = ListArray::new(element, OffsetBuffer::new(vec![0, 2].into()), values, None);
+            let file_schema = Arc::new(Schema::new(vec![Field::new(
+                "s",
+                list.data_type().clone(),
+                true,
+            )]));
+            let batch =
+                RecordBatch::try_new(Arc::clone(&file_schema), vec![Arc::new(list)]).unwrap();
+
+            let filename = get_temp_filename()
+                .as_path()
+                .as_os_str()
+                .to_str()
+                .unwrap()
+                .to_string();
+            let file = File::create(&filename).unwrap();
+            let mut writer = ArrowWriter::try_new(file, file_schema, None).unwrap();
+            writer.write(&batch).unwrap();
+            writer.close().unwrap();
+
+            let string_list = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+            let required_schema = Arc::new(Schema::new(vec![Field::new("s", string_list, true)]));
+            let session_ctx = Arc::new(SessionContext::new());
+            let scan = init_datasource_exec(
+                required_schema,
+                None,
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+                vec![vec![PartitionedFile::from_path(filename).unwrap()]],
+                None,
+                None,
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session_ctx,
+                false,
+                false,
+                false,
+            )
+            .unwrap();
+
+            let mut strings = Vec::new();
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            while let Some(batch) = stream.next().await {
+                let batch = batch.unwrap();
+                let values = batch.column(0).as_list::<i32>().values();
+                let values = values.as_string::<i32>();
+                strings.extend(values.iter().map(|v| v.map(str::to_string)));
+            }
+            assert_eq!(
+                strings,
+                vec![Some("one".to_string()), Some("\u{fffd}".to_string())],
+                "{binary_type}"
+            );
+        }
+    }
+
     // Regression test for #4990: a fresh `TableParquetOptions::new()` ignored session-level
     // `datafusion.execution.parquet.*` settings entirely, so `spark.comet.datafusion.
     // execution.parquet.*` (behind `respectDataFusionConfigs`) and `spark.comet.parquet.
