@@ -2005,6 +2005,7 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   /** Runs `df` from its RDD and checks that every native plan got the session's memory pool. */
   private def checkNativePlansUseSessionConfs(df: DataFrame): Unit = {
     val appender = new LogAppender("native plan memory pools")
+    appender.setThreshold(Level.DEBUG)
     withLogAppender(appender, Seq(classOf[CometExecIterator].getName), Some(Level.DEBUG)) {
       df.queryExecution.toRdd.foreach(_ => ())
     }

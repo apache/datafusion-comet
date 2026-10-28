@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
-import org.apache.spark.sql.comet.{CapturedSQLConf, CometExecRDD, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -37,9 +37,6 @@ import org.apache.comet.CometShuffleBlockIterator
  * @param positionalRoundRobin
  *   whether the writer fed by this RDD places rows by position rather than by content; see
  *   [[CometShuffleExchangeExec.positionalRoundRobinSpec]] and `getOutputDeterministicLevel`.
- * @param sqlConf
- *   the session's Comet configs, captured on the driver, which the writer applies; see
- *   [[CapturedSQLConf]].
  */
 private[shuffle] class CometNativeShuffleInputRDD(
     sc: SparkContext,
@@ -48,7 +45,6 @@ private[shuffle] class CometNativeShuffleInputRDD(
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
     @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
-    sqlConf: CapturedSQLConf,
     positionalRoundRobin: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
@@ -67,7 +63,6 @@ private[shuffle] class CometNativeShuffleInputRDD(
       shuffleScanIndices,
       spillMetricNode,
       perPartitionByKey,
-      sqlConf,
       positionalRoundRobin)
 
   /**
@@ -127,8 +122,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
       partition.index,
       inputObjects,
       shuffleBlockIters,
-      partition.planDataByKey,
-      sqlConf)
+      partition.planDataByKey)
   }
 
   override def getPreferredLocations(split: Partition): Seq[String] = {
@@ -165,8 +159,7 @@ private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
     val inputObjects: Array[Object],
     val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator],
-    val planDataByKey: Map[String, Array[Byte]],
-    val sqlConf: CapturedSQLConf)
+    val planDataByKey: Map[String, Array[Byte]])
     extends Iterator[Product2[Int, ColumnarBatch]] {
 
   override def hasNext: Boolean = false

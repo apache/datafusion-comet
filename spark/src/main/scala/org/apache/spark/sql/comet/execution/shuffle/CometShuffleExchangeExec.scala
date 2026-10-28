@@ -144,7 +144,6 @@ case class CometShuffleExchangeExec(
           ctx.shuffleScanIndices,
           CometMetricNode(metrics, Seq(nativeChildMetricNode)),
           ctx.perPartitionByKey,
-          CapturedSQLConf.capture(),
           positionalRoundRobin.isDefined)
       case None =>
         child match {
@@ -236,6 +235,7 @@ case class CometShuffleExchangeExec(
               nativeChild.nativeOp,
               nativeChildMetricNode,
               ctx,
+              CapturedSQLConf.capture(),
               positionalRoundRobin))
         case None =>
           child match {
@@ -947,8 +947,7 @@ object CometShuffleExchangeExec
       Seq(streamRDD),
       streamRDD.getNumPartitions,
       shuffleScanIndices = Set.empty,
-      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)),
-      sqlConf = CapturedSQLConf.capture())
+      spillMetricNode = CometMetricNode(metrics, Seq(childMetricNode)))
 
     val ctx = NativeExecContext(
       inputs = Seq(streamRDD),
@@ -970,7 +969,7 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      NativeShuffleSpec(scanOp, childMetricNode, ctx))
+      NativeShuffleSpec(scanOp, childMetricNode, ctx, CapturedSQLConf.capture()))
   }
 
   /**
