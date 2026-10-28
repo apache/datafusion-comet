@@ -19,7 +19,7 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, Greatest, HashExpression, IsNotNull, IsNull, Least, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, GetDateField, Greatest, HashExpression, IsNotNull, IsNull, Least, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Count}
 import org.apache.spark.sql.catalyst.optimizer.BuildLeft
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -80,7 +80,8 @@ private[rules] object MakeDateEvaluation {
           val required = conditional.alwaysEvaluatedInputs
           if (conditional.children.filterNot(required.contains).forall(harmlessValue)) required
           else Nil
-        case _: Alias | _: Cast | _: IsNull | _: IsNotNull | _: Not | _: UnixDate =>
+        case _: Alias | _: Cast | _: IsNull | _: IsNotNull | _: Not | _: UnixDate |
+            _: GetDateField =>
           expression.children
         case _: EqualNullSafe | _: CreateArray | _: CreateNamedStruct | _: Greatest | _: Least |
             _: HashExpression[_] =>

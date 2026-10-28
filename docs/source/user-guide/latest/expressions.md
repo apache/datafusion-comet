@@ -725,8 +725,9 @@ This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
 `mapPartitions`, and `Dataset.rdd` consumers; date expressions inside joins, aggregates,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
-it. Comet preserves that evaluation across projections while allowing eager date consumers
-to remain native when their operands are safe to evaluate. These safeguards also preserve
+it. Comet preserves that evaluation across projections while allowing eager date consumers,
+such as `YEAR(dt)`, to remain native when their operands are safe to evaluate. An enclosing
+conditional can still defer the extractor's date input. These safeguards also preserve
 NULL short-circuiting when a date argument is computed in an earlier projection, including
 across the streamed side of a broadcast join. The materialized build side remains independent.
 These safeguards also cover required arguments, such as a computed year, on input rows that

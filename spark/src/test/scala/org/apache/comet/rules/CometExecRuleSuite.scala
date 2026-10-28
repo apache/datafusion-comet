@@ -437,11 +437,23 @@ class CometExecRuleSuite extends CometTestBase {
         // Each expression references dt once: repeated uses would force Spark to evaluate it
         // eagerly and would not exercise the eager-reference analysis for that parent.
         val eagerExpressions = Seq(
+          "year(dt)",
+          "month(dt)",
           "date_add(dt, 1)",
           "greatest(dt, DATE '2024-02-01')",
           "hash(dt, 1)",
           "unix_date(dt) + 1")
         withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          // YEAR evaluates its child only when its enclosing IF selects that branch.
+          val maskedYear = checkProjection("""
+            |SELECT r, IF(r < 0, YEAR(dt), 1) AS result, r + 1 AS repeated_r FROM (
+            |  SELECT rand(7L) AS r, make_date(_1, _2, 1) AS dt FROM make_date_deferred
+            |)
+            |""".stripMargin) { expected =>
+            assert(expected.map(_.getInt(1)) == Seq(1, 1))
+          }
+          assertDeferredProjection(maskedYear)
+
           eagerExpressions.foreach { expression =>
             val plan = checkProjection(s"""
               |SELECT r, $expression AS result, IF(r < 0, 0, r + 1) AS repeated_r FROM (
