@@ -248,25 +248,16 @@ impl OperatorBuilder for HashAggBuilder {
             .collect();
 
         // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
-        // GroupedHashAggregateStream, whose spill can ask for more than its share of the pool
-        // (#6880). Its Final runs an OrderedFinalAggregateStream there instead, which spills, and
-        // MergeAsPartial evaluates to its state under Final too. Two things make the task succeed
-        // there: the new stream's spill path, and the fair pool exempting every consumer named
-        // OrderedFinalAggregateStream from its fair limit (`limited_to_its_share`), the limit the
-        // legacy stream's spill failed against. So this PartialMerge is checked only against the
-        // pool and Spark's grant.
-        // Only partially sorted input switches. On input sorted on every key, as in a
-        // CometSortAggregateExec over a native sort, Final has no spill path either, and it would
-        // register as able to spill, which halves the limit of a sort below it.
-        // Final reads each state from the columns after the keys and spills its groups in the
-        // input's types, so plan the PartialMerge as Final only when its input is its keys
-        // followed by native states. A PartialMerge over Spark's binary collect buffers keeps
-        // Single, but that input arrives through a ScanExec with no ordering, so it is not
-        // expected to be sorted on a key.
-        // DataFusion 56 runs Single over this input with a ClusteredSingleAggregateStream, and
-        // renames this stream ClusteredFinalAggregateStream, which is also its consumer name
-        // (apache/datafusion#24697). So on that upgrade, drop this switch and update the
-        // consumer name prefix in `spill_replay.rs` that the fair pool exemption uses (#6410).
+        // GroupedHashAggregateStream, whose spill can fail against the fair limit (#6880). Final
+        // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
+        // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
+        // Final as under Single.
+        // Only partially sorted input switches: with fully sorted input Final has no spill path
+        // and would halve the limit of a sort below it. Final also reads states from the columns
+        // after the keys, so the input must be the keys followed by native states (Spark's binary
+        // collect buffers keep Single, and arrive unordered anyway).
+        // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
+        // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
             && {
