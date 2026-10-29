@@ -1471,12 +1471,21 @@ fn parse_timestamp_to_micros<T: TimeZone>(
             };
         // Look up the zone offset at the same local civil time on a year inside chrono's
         // range that is congruent modulo the 400-year Gregorian cycle (leap days match).
-        // 1600 + rem_euclid(400) lands in 1600..=1999. For America/Los_Angeles far-past
-        // extremes this is still in the local-mean-time era (matching Spark's ZoneRules),
-        // instead of the standard -08:00 offset that probing 1970-01-01 would return.
-        // Fixed offsets and UTC are unchanged. Far-future DST after chrono-tz's last
-        // transition (~2099) is a separate gap (#6816).
-        let probe_year = (1600 + year.rem_euclid(400)) as i32;
+        // Far-past and far-future need different eras: a single 1600..=1999 window can
+        // land after a zone's LMT→standard transition (e.g. LA 1883, Tokyo ~1888) for
+        // some far-past residues, and still in the LMT era for far-future residues
+        // (262543 → 1743), disagreeing with Spark/Java which use the first offset before
+        // any transition and the modern/standard offset for post-horizon dates.
+        //   far-past  → 400..=799  (before every IANA transition we care about → LMT)
+        //   far-future → 2000..=2399 (modern standard; January matches Spark; summer DST
+        //                after chrono-tz's last timespan remains a separate gap #6816)
+        // Fixed offsets and UTC are unchanged either way.
+        let rem = year.rem_euclid(400);
+        let probe_year = if year > CHRONO_MAX_YEAR {
+            (2000 + rem) as i32
+        } else {
+            (400 + rem) as i32
+        };
         let probe_date =
             NaiveDate::from_ymd_opt(probe_year, timestamp_info.month, timestamp_info.day)
                 .expect("month/day valid across a 400-year shift");
@@ -3123,16 +3132,41 @@ mod tests {
 
     #[test]
     fn extreme_year_session_tz_uses_historic_offset() {
-        // Session-TZ (no zone suffix) extremes must use the zone's historic /
-        // local-mean-time offset, not the 1970 standard offset. Spark's
-        // America/Los_Angeles ZoneRules use LMT -07:52:58 before 1883; probing
-        // 1970 gave -08:00 and was 422s off (issue #7210).
-        // Spark-backed coverage of these (and Asia/Tokyo) lives in
-        // CometDateTimeUtilsSuite; this unit test pins the micros value.
+        // Session-TZ (no zone suffix) extremes: far-past uses historic / LMT offset;
+        // far-future uses modern/standard offset (matching Spark/Java ZoneRules).
+        // Spark's America/Los_Angeles uses LMT -07:52:58 before 1883 and -08:00 in
+        // January after; Asia/Tokyo uses LMT +09:18:59 then +09:00. A single
+        // 1600+rem probe mixed those eras (issue #7210 / review on #7255).
+        // Spark-backed coverage lives in CometDateTimeUtilsSuite.
         let la = &Tz::from_str("America/Los_Angeles").unwrap();
+        let tokyo = &Tz::from_str("Asia/Tokyo").unwrap();
+        // Far-past Long.MinValue civil: LMT -07:52:58 → +28378s vs UTC parse.
         assert_eq!(
             timestamp_parser("-290308-12-21 19:59:05.224192", EvalMode::Legacy, la, true).unwrap(),
             Some(-9223372008476775808),
+        );
+        // Far-past residue that lands after 1883 under a 1600+rem probe (1900) must
+        // still get LMT, not PST/JST.
+        assert_eq!(
+            timestamp_parser("-262500-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(-8345867069222000000),
+        );
+        assert_eq!(
+            timestamp_parser("-262500-01-01", EvalMode::Legacy, tokyo, true).unwrap(),
+            Some(-8345867131139000000),
+        );
+        assert_eq!(
+            timestamp_parser("-262544-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(-8347255603622000000),
+        );
+        // Far-future January: modern standard (-08:00 / +09:00), not LMT.
+        assert_eq!(
+            timestamp_parser("262543-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(8222889686400000000),
+        );
+        assert_eq!(
+            timestamp_parser("262543-01-01", EvalMode::Legacy, tokyo, true).unwrap(),
+            Some(8222889625200000000),
         );
         let plus2 = &Tz::from_str("+02:00").unwrap();
         // Local = UTC+2, so the UTC instant is 2h earlier than the UTC-session parse.
@@ -3149,6 +3183,7 @@ mod tests {
     }
 
     #[test]
+
     fn extreme_year_chrono_bound_neighbours_do_not_panic() {
         // chrono 0.4.45 accepts [-262143, 262142]. Years just outside that used to
         // land on 262143 / -262144 after the old while-loop shift and panic in
@@ -3165,7 +3200,11 @@ mod tests {
             ("-262143-01-01", -262143),
         ] {
             let days = ymd_to_epoch_day(year, 1, 1).unwrap();
-            let expected = days.checked_mul(86400).unwrap().checked_mul(1_000_000).unwrap();
+            let expected = days
+                .checked_mul(86400)
+                .unwrap()
+                .checked_mul(1_000_000)
+                .unwrap();
             assert_eq!(
                 timestamp_parser(s, EvalMode::Legacy, utc, true).unwrap(),
                 Some(expected),
