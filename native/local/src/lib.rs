@@ -36,41 +36,29 @@ use datafusion::common::{DataFusionError, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
-    execute_stream, ExecutionPlan, ExecutionPlanProperties, RecordBatchStream,
-    SendableRecordBatchStream,
+    ExecutionPlan, ExecutionPlanProperties, RecordBatchStream, SendableRecordBatchStream,
 };
 use futures::future::poll_fn;
 use futures::{FutureExt, Stream, StreamExt};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
-/// Batches each root partition may always hold ahead of delivery, when results are delivered in
-/// partition order, whatever the read-ahead limit.
+/// Batches each root partition may always hold ahead of delivery, whatever the read-ahead
+/// limit.
 const PARTITION_BUFFER: usize = 2;
 
 /// One execution's graph and resources. Consumed when execution starts; not a plan cache.
 pub struct LocalQuery {
     plan: Arc<dyn ExecutionPlan>,
     context: Arc<TaskContext>,
-    /// Delivers the partitions in order, with at most this many running at once and this many
-    /// bytes read ahead.
-    in_partition_order: Option<(usize, usize)>,
+    max_running: usize,
+    read_ahead: usize,
 }
 
 impl LocalQuery {
     /// Takes ownership of a fresh graph and its query-scoped context.
     ///
-    /// The planner must satisfy operator distribution and ordering requirements. It must not
-    /// reuse stateful operator instances from another query or attempt.
-    pub fn new(plan: Arc<dyn ExecutionPlan>, context: Arc<TaskContext>) -> Self {
-        Self {
-            plan,
-            context,
-            in_partition_order: None,
-        }
-    }
-
-    /// Delivers the root partitions one after another, in partition order, as Spark returns
+    /// The root partitions are delivered one after another, in partition order, as Spark returns
     /// the partitions of a result. Up to `max_running` partitions run at once, and the next one
     /// starts when the first is delivered, as Spark runs at most as many tasks as it has cores.
     /// A partition's operators register their memory consumers when it starts, so this also
@@ -78,28 +66,34 @@ impl LocalQuery {
     ///
     /// The running partitions do not wait for their turn: each runs ahead of delivery while the
     /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
-    /// that. Only for roots whose partitions do not share an exchange: a partition that waits to
-    /// be delivered would otherwise leave its exchange buffering for the others.
-    pub fn in_partition_order(mut self, max_running: usize, read_ahead: usize) -> Self {
-        self.in_partition_order = Some((max_running.max(1), read_ahead));
-        self
+    /// that. The root's partitions must not share an exchange: a partition that waits to be
+    /// delivered would otherwise leave its exchange buffering for the others.
+    ///
+    /// The planner must satisfy operator distribution and ordering requirements. It must not
+    /// reuse stateful operator instances from another query or attempt.
+    pub fn new(
+        plan: Arc<dyn ExecutionPlan>,
+        context: Arc<TaskContext>,
+        max_running: usize,
+        read_ahead: usize,
+    ) -> Self {
+        Self {
+            plan,
+            context,
+            max_running: max_running.max(1),
+            read_ahead,
+        }
     }
 
-    /// Starts all root partitions and exposes one streaming result.
-    ///
-    /// By default the partitions are coalesced as they produce batches, which does not
-    /// preserve their order. A single-partition root preserves its ordering either way. No
-    /// result-wide collection is performed here.
+    /// Starts the first root partitions and exposes one streaming result. No result-wide
+    /// collection is performed here.
     pub fn execute(self) -> Result<LocalQueryStream> {
         tokio::runtime::Handle::try_current().map_err(|_| {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
         let schema = self.plan.schema();
-        let stream = if let Some((max_running, read_ahead)) = self.in_partition_order {
-            in_partition_order(&self.plan, &self.context, max_running, read_ahead)?
-        } else {
-            execute_stream(Arc::clone(&self.plan), Arc::clone(&self.context))?
-        };
+        let stream =
+            in_partition_order(&self.plan, &self.context, self.max_running, self.read_ahead)?;
         Ok(LocalQueryStream {
             stream: Some(stream),
             query: Some(self),

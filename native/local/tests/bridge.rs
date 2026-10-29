@@ -73,13 +73,17 @@ fn values(batch: &RecordBatch) -> &[i64] {
 }
 
 #[test]
-fn partition_order_is_preserved_through_the_handoff() {
+fn partition_order_is_preserved_through_the_handle() {
     let runtime = runtime();
     let plan = ranges(&[(0, 10), (10, 10), (10, 25), (25, 26)], 3);
     let refs = Arc::downgrade(&plan);
     let query = QueryHandle::start(
-        LocalQuery::new(plan, Arc::new(TaskContext::default()))
-            .in_partition_order(usize::MAX, usize::MAX),
+        LocalQuery::new(
+            plan,
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX,
+        ),
         runtime.handle(),
     )
     .unwrap();
@@ -107,7 +111,12 @@ fn pending_is_distinct_from_eof_and_drop_releases_graph() {
     let plan = BlockingExec::new(schema(), 4);
     let refs = plan.refs();
     let query = QueryHandle::start(
-        LocalQuery::new(Arc::new(plan), Arc::new(TaskContext::default())),
+        LocalQuery::new(
+            Arc::new(plan),
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX,
+        ),
         runtime.handle(),
     )
     .unwrap();
@@ -132,7 +141,12 @@ fn worker_panic_is_an_error_not_successful_eof() {
     let runtime = runtime();
     let plan = Arc::new(PanicExec::new(schema(), 2));
     let query = QueryHandle::start(
-        LocalQuery::new(plan, Arc::new(TaskContext::default())),
+        LocalQuery::new(
+            plan,
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX,
+        ),
         runtime.handle(),
     )
     .unwrap();
@@ -155,7 +169,12 @@ fn startup_failure_is_returned() {
     let runtime = runtime();
     let plan = Arc::new(ErrorExec::new());
     assert!(QueryHandle::start(
-        LocalQuery::new(plan, Arc::new(TaskContext::default())),
+        LocalQuery::new(
+            plan,
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX
+        ),
         runtime.handle()
     )
     .is_err());
@@ -168,6 +187,8 @@ fn runtime_shutdown_is_an_error_not_successful_eof() {
         LocalQuery::new(
             Arc::new(BlockingExec::new(schema(), 4)),
             Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX,
         ),
         runtime.handle(),
     )
@@ -190,18 +211,19 @@ fn backpressured_query_does_not_starve_other_queries_and_cancel_releases_graph()
         let stalled = ranges(&[(0, 100_000), (100_000, 200_000)], 5);
         let refs = Arc::downgrade(&stalled);
         let stalled = QueryHandle::start(
-            LocalQuery::new(stalled, Arc::new(TaskContext::default()))
-                .in_partition_order(usize::MAX, usize::MAX),
+            LocalQuery::new(stalled, Arc::new(TaskContext::default()), usize::MAX, 0),
             runtime.handle(),
         )
         .unwrap();
-        // Leave its one-batch result channel unread while a second query makes progress.
+        // Leave it unread, with its partitions at their read-ahead bound, while a second query
+        // makes progress.
         let healthy = QueryHandle::start(
             LocalQuery::new(
                 ranges(&[(100, 150), (150, 200), (200, 237)], 3),
                 Arc::new(TaskContext::default()),
-            )
-            .in_partition_order(usize::MAX, usize::MAX),
+                usize::MAX,
+                usize::MAX,
+            ),
             runtime.handle(),
         )
         .unwrap();
@@ -239,7 +261,13 @@ fn backpressured_query_does_not_starve_other_queries_and_cancel_releases_graph()
 fn shutdown_after_partial_output_never_silently_truncates_the_result() {
     let runtime = runtime();
     let query = QueryHandle::start(
-        LocalQuery::new(ranges(&[(0, 100_000)], 5), Arc::new(TaskContext::default())),
+        // No read-ahead, so the partition holds at most two batches ahead of delivery.
+        LocalQuery::new(
+            ranges(&[(0, 100_000)], 5),
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            0,
+        ),
         runtime.handle(),
     )
     .unwrap();
@@ -260,7 +288,10 @@ fn shutdown_after_partial_output_never_silently_truncates_the_result() {
         match query.poll(Duration::from_millis(20)) {
             Ok(QueryPoll::Batch(_)) => {
                 queued += 1;
-                assert!(queued <= 1, "handoff exceeded its one-batch bound");
+                assert!(
+                    queued <= 2,
+                    "the partition held more than two batches ahead"
+                );
             }
             Ok(QueryPoll::Pending) => (),
             Ok(QueryPoll::Finished) => panic!("partial output was reported as complete"),
@@ -278,8 +309,12 @@ fn cancel_releases_the_graph_while_every_worker_is_busy() {
     let plan = BlockingExec::new(schema(), 3);
     let refs = plan.refs();
     let query = QueryHandle::start(
-        LocalQuery::new(Arc::new(plan), Arc::new(TaskContext::default()))
-            .in_partition_order(usize::MAX, usize::MAX),
+        LocalQuery::new(
+            Arc::new(plan),
+            Arc::new(TaskContext::default()),
+            usize::MAX,
+            usize::MAX,
+        ),
         runtime.handle(),
     )
     .unwrap();

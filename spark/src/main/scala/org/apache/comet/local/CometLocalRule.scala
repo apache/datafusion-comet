@@ -25,7 +25,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{SortOrder, SubqueryExpression}
 import org.apache.spark.sql.catalyst.plans.physical.RangePartitioning
 import org.apache.spark.sql.comet.{CometNativeExec, CometRangeExec}
-import org.apache.spark.sql.execution.{CollectLimitExec, QueryExecution, SparkPlan}
+import org.apache.spark.sql.execution.{QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
 import com.google.protobuf.Descriptors.FieldDescriptor.JavaType
@@ -48,17 +48,16 @@ private[comet] object CometLocalRule {
   /** Expressions that call back into the JVM, which a local query does not do. */
   private val JvmCallbacks = Set(Expr.ExprStructCase.SUBQUERY, Expr.ExprStructCase.JVM_SCALAR_UDF)
 
-  /** An already admitted local query, with or without its result boundary or limit wrapper. */
+  /** An already admitted local query, with or without its result boundary. */
   def isLocal(plan: SparkPlan): Boolean = plan match {
     case _: CometLocalExec | _: CometLocalResultExec => true
-    case limit: CollectLimitExec => isLocal(limit.child)
     case _ => false
   }
 
   /**
    * `plan` as a local query if it is admitted, and otherwise as `convert`, Comet's ordinary
-   * conversion, produces it. A root `CollectLimitExec` (from `take`, `head` or `show`) is kept:
-   * it reads the result through `CometLocalResultExec.executeTake`.
+   * conversion, produces it. A root `CollectLimitExec` (from `take`, `head` or `show`) is not
+   * admitted: only `collect` runs locally, and a limit collects through `executeTake`.
    */
   def apply(
       session: SparkSession,
@@ -68,19 +67,13 @@ private[comet] object CometLocalRule {
         .get(SQLConf.get) || !environmentAdmits(session, plan)) {
       return convert(plan)
     }
-    val limit = plan match {
-      case limit: CollectLimitExec if limit.offset == 0 => Some(limit)
-      case _ => None
-    }
-    convert(limit.map(_.child).getOrElse(plan)) match {
+    convert(plan) match {
       case block: CometNativeExec if admits(block) =>
         val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
         val spec = LocalQuerySpec(block.serializedPlanOpt.plan.get, partitions, block.output.size)
-        val local = CometLocalResultExec(
+        CometLocalResultExec(
           CometLocalExec(block.output, spec, resultOrdering(block, partitions), block))
-        limit.map(_.copy(child = local)).getOrElse(local)
-      case converted if limit.isEmpty => converted
-      case _ => convert(plan)
+      case converted => converted
     }
   }
 

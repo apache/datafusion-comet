@@ -42,9 +42,10 @@ admitted when:
   which the serialized plan is also checked for;
 - it has between 1 and 1024 partitions.
 
-A root `CollectLimitExec`, which Spark plans for `take`, `head` and `show`, is kept above the
-local query, and reads it as described under result delivery. Such plans have no exchange, so AQE does not wrap them and they are admitted
-whether or not AQE is enabled.
+A root `CollectLimitExec`, which Spark plans for `take`, `head`, `show` and `limit`, is not
+admitted: it collects through `executeTake`, which does not run locally, so such a query keeps
+ordinary Comet execution. Admitted plans have no exchange, so AQE does not wrap them and they are
+admitted whether or not AQE is enabled.
 
 ## Execution
 
@@ -90,10 +91,12 @@ metrics; `CometLocalExec` counts the rows and batches it delivers.
 
 ## Result delivery
 
-The native side hands batches to the JVM through a queue that holds at most one batch. Exported
+The JVM's pull polls the query's stream on its own thread, so a batch reaches it straight from
+its partition's task; the read-ahead bound above is the only buffering. Exported
 Arrow arrays use `prepare_output` and `NativeUtil`; an imported batch stays valid after its
 native query is closed, until the JVM closes it. A pull returns "pending" after 50 ms, so that
-the task can check whether it was killed.
+the task can check whether it was killed. It waits by parking its thread rather than on a Tokio
+timer, which only fires once a worker is free.
 
 `CometLocalResultExec` sits above Spark's columnar-to-row transition. For `collect` it still
 runs the single task as a Spark job, which keeps cancellation, job groups and SQL metrics, but
@@ -104,9 +107,8 @@ bytes and stops reading, which closes the native query, once they exceed
 so this check is the stricter one. On a non-local master the node uses Spark's ordinary
 collect.
 
-Every other action reads the result as an RDD of the block's partitions: a take requests
-partitions in growing batches until it has enough rows, an iterator fetches one partition at a
-time so that it holds at most one, a tail scans partitions from the last one, and a cache,
+Every other action reads the result as an RDD of the block's partitions: an iterator fetches
+one partition at a time so that it holds at most one, a tail scans partitions from the last one, and a cache,
 `df.rdd`, `foreachPartition`, `localCheckpoint` or PySpark's collect and `toLocalIterator` keep
 the partitions for later reads. So `CometLocalResultExec` executes as the ordinary native block,
 one Spark task per partition, for everything but `collect`. The partitions these actions
@@ -117,9 +119,9 @@ is scanned as many partitions as without local execution.
 
 The JNI registry holds numeric, never reused IDs for at most 1024 live queries. EOF, errors,
 early termination and task completion remove an entry. A concurrent pull holds an `Arc`, so a
-close cannot free an entry that is being read, and cancellation does not take the reader lock.
-A query records when it has delivered its last batch; if the runtime stops it before that, the
-reader reports an error instead of a truncated result.
+close cannot free an entry that is being read, and cancellation wakes a waiting pull, so it waits
+only for a poll the pull is already in. Each partition records when it has sent its last batch;
+if the runtime stops it before that, the reader reports an error instead of a truncated result.
 
 Closing a query drops its streams on the calling thread, as `releasePlan` does for an ordinary
 plan without JVM input: cancelling a Tokio task only takes effect once a worker is free, and
@@ -138,7 +140,7 @@ cd ..
 ```
 
 The native tests cover partition-order delivery, the bound on running partitions, read-ahead, errors reported in a partition's turn, cancellation with busy workers,
-the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
+the pull that waits on its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, takes and limits, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, limits left to ordinary execution, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

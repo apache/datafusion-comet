@@ -179,8 +179,11 @@ class CometLocalExecutionSuite
     }
   }
 
-  test("limits read partitions in order and take, head and show close early") {
+  test("limits, takes, heads and shows keep ordinary execution") {
     val query = spark.range(0, 1000, 1, 7).toDF()
+    assert(
+      localNodes(query.limit(10)).isEmpty,
+      query.limit(10).queryExecution.executedPlan.toString)
     // Unordered limits return the first rows of the first partitions, as Spark does.
     for (_ <- 0 until 3) {
       assert(
@@ -268,7 +271,7 @@ class CometLocalExecutionSuite
           .filter("id >= 99999")
           .selectExpr("100L DIV (100000L - id) AS v")
           .limit(1)
-      assert(localNodes(query()).size == 1, query().queryExecution.executedPlan.toString)
+      assert(localNodes(query()).isEmpty, query().queryExecution.executedPlan.toString)
       // Spark reads only the first partition; the second divides by zero at id 100000.
       assert(query().collect().toSeq == Seq(Row(100L)))
       assert(query().collect().toSeq == expected(query()))
@@ -280,6 +283,21 @@ class CometLocalExecutionSuite
           .selectExpr("100L DIV (100000L - id) AS v")
       val failure = intercept[Exception](all().collect())
       assert(failure.getMessage.contains("DIVIDE_BY_ZERO"), failure.getMessage)
+      // A limit read as an RDD takes rows in every partition, as Spark does, so it reaches the
+      // third partition's division by zero at id 4.
+      def iterated(): Seq[Row] =
+        spark
+          .range(0, 6, 1, 3)
+          .selectExpr("100L DIV (4L - id) AS v")
+          .limit(1)
+          .toLocalIterator()
+          .asScala
+          .toSeq
+      val iteratorFailure = intercept[Exception](iterated())
+      assert(iteratorFailure.getMessage.contains("DIVIDE_BY_ZERO"), iteratorFailure.getMessage)
+      val sparkFailure =
+        withConf("spark.comet.enabled", "false")(intercept[Exception](iterated()))
+      assert(sparkFailure.getMessage.contains("DIVIDE_BY_ZERO"), sparkFailure.getMessage)
     }
   }
 
@@ -359,7 +377,7 @@ class CometLocalExecutionSuite
           .filter("id % 2 = 0")
           .selectExpr("100L DIV (4L - id) AS v")
           .limit(2)
-      assert(localNodes(query()).size == 1, query().queryExecution.executedPlan.toString)
+      assert(localNodes(query()).isEmpty, query().queryExecution.executedPlan.toString)
       val failure = intercept[Exception](query().collect())
       assert(failure.getMessage.contains("DIVIDE_BY_ZERO"), failure.getMessage)
       val sparkFailure = withConf("spark.comet.enabled", "false") {

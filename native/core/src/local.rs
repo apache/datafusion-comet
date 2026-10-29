@@ -135,8 +135,12 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
                 "Local output schema width mismatch".into(),
             ));
         }
-        let query = LocalQuery::new(plan, context.session_ctx.task_ctx())
-            .in_partition_order(max_running, read_ahead_bytes.max(0) as usize);
+        let query = LocalQuery::new(
+            plan,
+            context.session_ctx.task_ctx(),
+            max_running,
+            read_ahead_bytes.max(0) as usize,
+        );
         let query = QueryHandle::start(query, &get_runtime())?;
         register(
             id,
