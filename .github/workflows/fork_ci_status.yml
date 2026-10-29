@@ -116,7 +116,9 @@ jobs:
               // A fork's default branch is never tested: ci_fork.yml skips it, and a
               // push there is a sync, which runs nothing. Looking for a run would
               // find none, or worse, one that tested nothing and passed.
-              const fromMain = pr.head.ref === pr.head.repo.default_branch;
+              // Actions compares branch names without regard to case, so `Main` is
+              // the default branch `main` to ci_fork.yml's job guard. Compare the same way.
+              const fromMain = pr.head.ref.toLowerCase() === String(pr.head.repo.default_branch).toLowerCase();
               const data = fromMain ? null : await optional(() => github.rest.actions.listWorkflowRuns({
                 ...fork, workflow_id: WORKFLOW, head_sha: sha, branch: pr.head.ref, per_page: 100,
               }));

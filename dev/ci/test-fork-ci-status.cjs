@@ -302,6 +302,15 @@ for (const defaultBranch of ['main', 'develop']) {
   });
 }
 
+test('a PR from a case variant of the default branch is told to use a branch', async () => {
+  // Actions compares branch names without regard to case, so ci_fork.yml skips Main
+  // in a fork whose default branch is main, and there is no run to find.
+  const head = { ...pr.head, ref: 'Main' };
+  const variantPr = { ...pr, head };
+  const { writes, calls } = await execute({ recent: [variantPr], slice: [variantPr] });
+  assert.equal(calls.filter(([kind]) => kind === 'runs').length, 0);
+  assert.equal(writes[0].output.title, 'Open the pull request from a branch');
+});
 test('a branch called main in a fork whose default branch is not main is mirrored', async () => {
   // ci.yml triggers on push to a branch called main as well, but it skips that run
   // unless ci_fork.yml called it, so ci_fork.yml is the one workflow to look up.
@@ -328,10 +337,14 @@ const pullRequest = (number, extra = {}) => ({
   ...forkPush, repository: 'apache/datafusion-comet', event_name: 'pull_request',
   event: { pull_request: { number } }, ref: 'refs/pull/' + number + '/merge', ...extra,
 });
-test('successive fork pushes share a cancellation group, separate branches do not', () => {
-  assert.equal(ciConcurrency[2], 'true');
-  assert.equal(group(forkPush), group({ ...forkPush, sha: 'second' }));
-  assert.notEqual(group(forkPush), group({ ...forkPush, ref: 'refs/heads/other' }));
+test('fork pushes get a group each, so none is cancelled by a case variant of its branch', () => {
+  // Group names compare without regard to case, so a group keyed on the branch would
+  // let a push to `Feature` cancel `feature`. ci_fork.yml's supersede job cancels
+  // older runs of exactly one branch instead.
+  assert.notEqual(group(forkPush), group({ ...forkPush, sha: 'second' }));
+  assert.equal(
+    group({ ...forkPush, ref: 'refs/heads/feature' }).toLowerCase(),
+    group({ ...forkPush, ref: 'refs/heads/Feature' }).toLowerCase());
 });
 test('upstream pushes and queue runs stay separate per commit', () => {
   for (const event_name of ['push', 'merge_group']) {
@@ -354,4 +367,51 @@ test('a label run is not cancelled by the commit run, or by another label', () =
   const labeled = (name) => pullRequest(7, { event: { action: 'labeled', label: { name }, pull_request: { number: 7 } } });
   assert.notEqual(group(labeled('run-iceberg-tests')), group(pullRequest(7)));
   assert.notEqual(group(labeled('run-iceberg-tests')), group(labeled('run-delta-tests')));
+});
+
+// The supersede job in ci_fork.yml cancels older runs of exactly one branch.
+const supersedeScript = scriptOf(workflowText('ci_fork.yml'));
+const supersede = new AsyncFunction('github', 'context', 'core', supersedeScript);
+async function runSupersede({ runs, cancelError, branch = 'feature', runNumber = 5 }) {
+  const cancelled = [];
+  const github = { rest: { actions: {} } };
+  github.rest.actions.listWorkflowRuns = async () => {};
+  github.rest.actions.cancelWorkflowRun = async ({ run_id }) => {
+    if (cancelError) throw Object.assign(new Error('conflict'), { status: cancelError });
+    cancelled.push(run_id);
+  };
+  let calls = 0;
+  github.paginate = async (fn, params) => {
+    assert.equal(fn, github.rest.actions.listWorkflowRuns);
+    assert.equal(params.workflow_id, 'ci_fork.yml');
+    // One listing per status, so each run appears once.
+    return runs.filter((r) => r.status === params.status);
+  };
+  await supersede(github, { repo: { owner: 'contributor', repo: 'datafusion-comet' },
+    ref: 'refs/heads/' + branch, runNumber }, { info: () => { calls += 1; } });
+  return cancelled;
+}
+const branchRun = (id, extra = {}) => ({
+  id, run_number: id, head_branch: 'feature', status: 'in_progress', ...extra,
+});
+test('a push cancels the older queued and running runs of its branch', async () => {
+  const cancelled = await runSupersede({ runs: [
+    branchRun(2), branchRun(3, { status: 'queued' }), branchRun(4),
+  ] });
+  assert.deepEqual(cancelled.sort(), [2, 3, 4]);
+});
+test('a push does not cancel itself, a newer run or a rerun of itself', async () => {
+  const cancelled = await runSupersede({ runs: [branchRun(5), branchRun(6), branchRun(7)] });
+  assert.deepEqual(cancelled, []);
+});
+test('a push cancels no run of a branch that differs only by case', async () => {
+  const cancelled = await runSupersede({ runs: [
+    branchRun(2, { head_branch: 'Feature' }), branchRun(3, { head_branch: 'other' }), branchRun(4),
+  ] });
+  assert.deepEqual(cancelled, [4]);
+});
+test('a run that finished before it was cancelled is not an error', async () => {
+  const cancelled = await runSupersede({ runs: [branchRun(2)], cancelError: 409 });
+  assert.deepEqual(cancelled, []);
+  await assert.rejects(runSupersede({ runs: [branchRun(2)], cancelError: 500 }), /conflict/);
 });

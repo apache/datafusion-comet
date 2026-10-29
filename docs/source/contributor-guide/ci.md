@@ -154,13 +154,15 @@ Some things to know:
   queue is the gate, and it tests your change merged with `main` and everything queued ahead of it,
   where the fork run tests your branch head alone.
 - **Runs are cold.** Caches are scoped to a branch or to the repository's default branch, and a
-  push to your fork's `main` runs nothing, because it is a sync of commits the merge queue already
-  tested. So the Cargo and Maven caches are never warm on a fork, and a run rebuilds the native
+  push to your fork's default branch, usually `main`, does not run the Comet PR tier, because it is a
+  sync of commits the merge queue already tested. So the Cargo and Maven caches are never warm on a fork, and a run rebuilds the native
   library: a run of the PR tier on a fork took about an hour of wall time and 240 runner-minutes, of
   which the native build alone was 23 minutes. The same run with warm caches took 50 minutes and 213
   runner-minutes.
-- **Open the pull request from a branch.** Nothing runs on your fork's `main`, so a pull request
-  from it gets no CI before the merge queue. `CI (fork)` says so.
+- **Open the pull request from a branch.** The Comet PR tier does not run on your fork's default
+  branch, usually `main`, so a pull request from it gets no CI before the merge queue. `CI (fork)`
+  says so. A branch that differs from the default only in capitalization, such as `Main`, counts as
+  the default branch, because GitHub Actions compares branch names without regard to case.
 - **Scheduled runs stay upstream.** The nightly run, Miri, the stale-PR closer and the weekly
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
   start no job. Miri can still be run on your fork by dispatching it.

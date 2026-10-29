@@ -1724,23 +1724,34 @@ def check_fork_runs():
         body = FORK_WORKFLOW.read_text(encoding="utf-8")
         if not CALLS_CI.search(body):
             failures.append(f"{FORK_WORKFLOW} does not call ./.github/workflows/ci.yml")
+        # The trigger comes first: a branch it ignores never reaches a job's `if:`,
+        # so a condition table alone cannot see an exclusion that is too wide.
         ignored = re.search(r"^    branches-ignore:\n((?:      .*\n)+)", body, re.M)
-        if not ignored or "- asf-site\n" not in ignored.group(1):
-            failures.append(f"{FORK_WORKFLOW} must list asf-site under `push: branches-ignore`")
-        failures.extend(
-            condition_failures(
-                FORK_WORKFLOW,
-                "ci",
-                [
-                    (actions_context("push", UPSTREAM, fork_name, "feature"), False, "an upstream branch push"),
-                    (actions_context("push", UPSTREAM, fork_name, "main"), False, "an upstream push to main"),
-                    (actions_context("push", FORK, fork_name, "feature"), True, "a fork branch"),
-                    (actions_context("push", FORK, fork_name, "main", "develop"), True, "a branch called main in a fork whose default is develop"),
-                    (actions_context("push", FORK, fork_name, "main", "main"), False, "a sync of a fork's main"),
-                    (actions_context("push", FORK, fork_name, "develop", "develop"), False, "a sync of a fork whose default is develop"),
-                ],
-            )
-        )
+        patterns = re.findall(r"^\s+- (\S+)\s*$", ignored.group(1), re.M) if ignored else []
+        patterns = [p.strip("'\"") for p in patterns]
+        compute = load_filters()
+        for branch, admitted in (
+            ("feature", True), ("main", True), ("Main", True), ("release/1.1", True), ("asf-site", False),
+        ):
+            actual = not any(re.match(compute.glob_to_regex(p), branch) for p in patterns)
+            if actual != admitted:
+                failures.append(
+                    f"{FORK_WORKFLOW}'s `push: branches-ignore` {patterns} "
+                    f"{'admits' if actual else 'ignores'} a push to `{branch}`, and it should "
+                    f"{'ignore' if actual else 'admit'} it; a fork's `main` is an ordinary branch "
+                    f"unless it is the default, which the jobs' `if:` decides"
+                )
+        cases = [
+            (actions_context("push", UPSTREAM, fork_name, "feature"), False, "an upstream branch push"),
+            (actions_context("push", UPSTREAM, fork_name, "main"), False, "an upstream push to main"),
+            (actions_context("push", FORK, fork_name, "feature"), True, "a fork branch"),
+            (actions_context("push", FORK, fork_name, "main", "develop"), True, "a branch called main in a fork whose default is develop"),
+            (actions_context("push", FORK, fork_name, "main", "main"), False, "a sync of a fork's main"),
+            (actions_context("push", FORK, fork_name, "develop", "develop"), False, "a sync of a fork whose default is develop"),
+            (actions_context("push", FORK, fork_name, "Main", "main"), False, "a case variant of the default branch, which Actions compares as equal"),
+        ]
+        for job in ("supersede", "ci"):
+            failures.extend(condition_failures(FORK_WORKFLOW, job, cases))
         if re.search(r"^concurrency:", body, re.M):
             failures.append(
                 f"{FORK_WORKFLOW} declares `concurrency`; ci.yml's own group is keyed on the "
@@ -1812,11 +1823,23 @@ def job_condition(block):
     return re.sub(r"^\s*[>|][-+]?\s*", "", text)
 
 
+class _Comparisons(ast.NodeTransformer):
+    """Rewrite `a == b` and `a != b` into calls that ignore case, as Actions does."""
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        name = "_eq" if isinstance(node.ops[0], ast.Eq) else "_ne"
+        call = ast.Call(func=ast.Name(id=name, ctx=ast.Load()),
+                        args=[node.left, node.comparators[0]], keywords=[])
+        return ast.copy_location(call, node)
+
+
 def evaluate_condition(text, context):
     """Evaluate an `if:` made of ==, !=, &&, ||, parentheses, string literals and
-    context properties. A property absent from `context` is the empty string, as
-    in Actions. Anything else, a function call say, is an error: better to say a
-    condition cannot be checked than to pass it."""
+    context properties. A property absent from `context` is the empty string, and
+    strings compare without regard to case, as in Actions: `Main` equals `main`.
+    Anything else, a function call say, is an error: better to say a condition
+    cannot be checked than to pass it."""
     expression = " ".join(text.split())
     expression = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", expression)
     expression = CONTEXT_PROPERTY.sub(lambda m: f"_v('{m.group(0)}')", expression)
@@ -1829,7 +1852,16 @@ def evaluate_condition(text, context):
             isinstance(node.func, ast.Name) and node.func.id == "_v"
         ):
             raise ValueError(f"unsupported call in `{text.strip()}`")
-    values = {"_v": lambda name: context.get(name, "")}
+        if isinstance(node, ast.Compare) and (
+            len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+        ):
+            raise ValueError(f"unsupported comparison in `{text.strip()}`")
+    tree = ast.fix_missing_locations(_Comparisons().visit(tree))
+    values = {
+        "_v": lambda name: context.get(name, ""),
+        "_eq": lambda a, b: str(a).lower() == str(b).lower(),
+        "_ne": lambda a, b: str(a).lower() != str(b).lower(),
+    }
     return bool(eval(compile(tree, "<if>", "eval"), {"__builtins__": {}}, values))  # noqa: S307
 
 
