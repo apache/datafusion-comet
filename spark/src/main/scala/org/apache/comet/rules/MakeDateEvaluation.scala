@@ -19,7 +19,9 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, GetDateField, Greatest, HashExpression, IsNotNull, IsNull, Least, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
+import java.time.LocalDate
+
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, And, Attribute, AttributeSet, BinaryComparison, Cast, ConditionalExpression, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateSub, EqualNullSafe, Expression, GetDateField, Greatest, HashExpression, IsNotNull, IsNull, Least, Literal, MakeDate, Multiply, Not, Or, SortOrder, Subtract, UnixDate}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Count}
 import org.apache.spark.sql.catalyst.optimizer.BuildLeft
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -30,6 +32,7 @@ import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QuerySt
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
+import org.apache.spark.sql.types.{ByteType, IntegerType, ShortType}
 
 import org.apache.comet.CometConf
 import org.apache.comet.serde.CometMakeDate
@@ -47,6 +50,34 @@ private[rules] object MakeDateEvaluation {
 
   private def containsMakeDate(expressions: Seq[Expression]): Boolean =
     expressions.exists(_.exists(_.isInstanceOf[MakeDate]))
+
+  // Spark's epoch-day conversion can overflow even with ANSI disabled. Exclude the two
+  // partially representable boundary years, so every valid month/day fits in Date32.
+  private val firstCompleteYear = LocalDate.ofEpochDay(Int.MinValue.toLong).getYear + 1
+  private val lastCompleteYear = LocalDate.ofEpochDay(Int.MaxValue.toLong).getYear - 1
+
+  private def isSmallIntegerWidening(cast: Cast): Boolean =
+    cast.dataType == IntegerType &&
+      (cast.child.dataType == ByteType || cast.child.dataType == ShortType)
+
+  // This only describes computations over their input values. An attribute may still name a
+  // deferred producer, so argument lineage and sibling provenance must be tracked separately.
+  private def canEvaluateProjectionEagerly(expression: Expression): Boolean = expression match {
+    case Alias(child, _) => canEvaluateProjectionEagerly(child)
+    case date: MakeDate if !date.failOnError =>
+      val boundedYear = date.year match {
+        case Literal(year: Int, IntegerType) =>
+          year >= firstCompleteYear && year <= lastCompleteYear
+        case cast: Cast if isSmallIntegerWidening(cast) => true
+        case _ => false
+      }
+      boundedYear && date.children.forall {
+        case cast: Cast if isSmallIntegerWidening(cast) =>
+          CometMakeDate.canEvaluateEagerly(cast.child)
+        case child => CometMakeDate.canEvaluateEagerly(child)
+      }
+    case _ => CometMakeDate.canEvaluateEagerly(expression)
+  }
 
   private def containsDeferredAggregateDate(expression: Expression): Boolean = expression match {
     // COUNT checks its sole nullable argument on every input row. Filters, other nullable
@@ -318,7 +349,11 @@ private[rules] object MakeDateEvaluation {
       }
       val ownReason = reason(node).orElse {
         // An exchange evaluates its partition keys for every input before a consumer reads rows.
-        val rowReason = if (evaluatesDate && !exchange) {
+        val safeProjection = original match {
+          case project: ProjectExec => project.projectList.forall(canEvaluateProjectionEagerly)
+          case _ => false
+        }
+        val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
           rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
         } else None
         rowReason.orElse(original match {
@@ -331,12 +366,14 @@ private[rules] object MakeDateEvaluation {
                     case other => other
                   }
                   val deferredDate = output.deterministic &&
-                    demand.deferred.contains(output.toAttribute) && containsMakeDate(Seq(output))
+                    demand.deferred.contains(output.toAttribute) && containsMakeDate(
+                      Seq(output)) &&
+                    !canEvaluateProjectionEagerly(output)
                   val deferredComputation = (output.deterministic || rowDemand.isDefined) &&
                     (demand.guardedInputs.contains(output.toAttribute) ||
                       (dateDerivedOutputs.nonEmpty && demand.deferred.contains(
                         output.toAttribute))) &&
-                    !CometMakeDate.canEvaluateEagerly(computation)
+                    !canEvaluateProjectionEagerly(computation)
                   deferredDate || deferredComputation
                 })
               .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")

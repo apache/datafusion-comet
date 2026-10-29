@@ -735,6 +735,13 @@ the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
 
+With ANSI disabled, a direct date projection can remain native below these consumers when
+all its computations are safe to evaluate early. This includes `make_date(2024, month, day)`
+over input columns and years widened from `TINYINT` or `SMALLINT`. An unrestricted integer
+year still needs the safeguard: Spark's conversion to Date32 can overflow independently of
+ANSI mode. Computed arguments, their deferred producers, and throwing sibling expressions
+retain their safeguards. Expression-level parent guards remain in effect.
+
 An unfiltered `COUNT(make_date(...))` can remain native when its sole argument is nullable,
 because Spark checks that argument on every input row. Filtered counts and counts with
 multiple arguments retain the safeguard when they can skip date evaluation.
