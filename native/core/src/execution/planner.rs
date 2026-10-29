@@ -66,8 +66,11 @@ use datafusion::{
     execution::FunctionRegistry,
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
-        PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
+        expressions::{
+            BinaryExpr, CastExpr, Column, IsNullExpr, LambdaExpr, LambdaVariable,
+            Literal as DataFusionLiteral,
+        },
+        HigherOrderFunctionExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         empty::EmptyExec, limit::LocalLimitExec, sorts::sort::SortExec, ExecutionPlan,
@@ -93,6 +96,7 @@ use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
+use datafusion::functions_nested::array_filter::array_filter_higher_order_function;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
@@ -1247,6 +1251,61 @@ impl PhysicalPlanner {
                     Arc::new(ConfigOptions::default()),
                 ));
                 Ok(expr)
+            }
+            ExprStruct::HigherOrderFunc(hof) => {
+                let array =
+                    self.create_expr(hof.array.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                // The lambda parameter takes the element field of the array as planned, since
+                // DataFusion checks it against the field of the list it evaluates.
+                let array_field = array.return_field(input_schema.as_ref())?;
+                let element_field = match array_field.data_type() {
+                    DataType::List(f) | DataType::LargeList(f) => f,
+                    other => {
+                        return Err(GeneralError(format!(
+                            "{} expects an array argument, got {other}",
+                            hof.func
+                        )))
+                    }
+                };
+                // The lambda body sees the enclosing schema with the parameter appended, so
+                // `BoundReference`s keep their indexes and a `LambdaVariable` is found by name.
+                let mut fields: Vec<FieldRef> = input_schema.fields().iter().cloned().collect();
+                fields.push(Arc::new(
+                    element_field.as_ref().clone().with_name(&hof.param_name),
+                ));
+                let lambda_schema = Arc::new(Schema::new_with_metadata(
+                    fields,
+                    input_schema.metadata().clone(),
+                ));
+                let body = self.create_expr(hof.body.as_ref().unwrap(), lambda_schema)?;
+                let lambda: Arc<dyn PhysicalExpr> =
+                    Arc::new(LambdaExpr::try_new(vec![hof.param_name.clone()], body)?);
+                let func = match hof.func.as_str() {
+                    "array_filter" => array_filter_higher_order_function(),
+                    other => {
+                        return Err(GeneralError(format!(
+                            "Unsupported higher-order function '{other}'"
+                        )))
+                    }
+                };
+                Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
+                    func,
+                    vec![array, lambda],
+                    input_schema.as_ref(),
+                    Arc::new(ConfigOptions::default()),
+                )?))
+            }
+            ExprStruct::LambdaVariable(var) => {
+                let idx = input_schema.index_of(&var.name).map_err(|_| {
+                    GeneralError(format!(
+                        "Lambda variable '{}' is not in scope. Schema: {input_schema}",
+                        var.name
+                    ))
+                })?;
+                Ok(Arc::new(LambdaVariable::new(
+                    idx,
+                    Arc::clone(&input_schema.fields()[idx]),
+                )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }

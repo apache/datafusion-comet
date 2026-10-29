@@ -35,6 +35,8 @@ guide is split into the following pages:
   `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`.
 - [Operator Tuning](tuning/operators.md): joins, adaptive partial aggregation, and sorting on
   floating-point values.
+- [Expression Tuning](tuning/expressions.md): lambdas and higher-order functions such as `filter`, and the
+  built-in array functions that replace them.
 - [Reducing Row/Columnar Conversion Overhead](tuning/transitions.md): stages in which many
   operators fall back to Spark, and the experimental direct columnar-to-row converter.
 

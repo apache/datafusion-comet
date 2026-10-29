@@ -23,12 +23,13 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, ElementAt, EmptyRow, EndsWith, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, NamedLambdaVariable, Not, Or, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
+import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
@@ -1026,7 +1027,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
+object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometTypeShim {
 
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
@@ -1041,12 +1042,130 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] {
         // restore the native serde here (avoids per-batch JNI). Guard requires the IsNotNull
         // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
-      case _ =>
-        // General lambda: run Spark's own evaluation through the codegen dispatcher so the result
-        // matches Spark exactly, like the other higher-order functions (`transform`, `exists`).
-        // Falls back to Spark when the dispatcher is disabled.
-        CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
+          if binding && nativeLambdaSupported(expr, body) =>
+        // The body is made of expressions Comet evaluates natively, so run the lambda over the
+        // flattened elements of the whole batch instead of once per element in the JVM.
+        convertLambda(expr, lambdaVar, body, inputs, binding).orElse(
+          dispatch(expr, inputs, binding))
+      case _ => dispatch(expr, inputs, binding)
     }
+  }
+
+  /**
+   * General lambda: run Spark's own evaluation through the codegen dispatcher so the result
+   * matches Spark exactly, like the other higher-order functions (`transform`, `exists`). Falls
+   * back to Spark when the dispatcher is disabled.
+   */
+  private def dispatch(
+      expr: ArrayFilter,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+
+  // The native lambda has the same semantics as Spark's `filter` for a one-parameter lambda
+  // whose body is deterministic, contains no nested lambda, and whose parameter is a type the
+  // native side can type-check against the list's element field. It needs bound references: the
+  // native side re-indexes the columns the body captures, which it cannot do for unbound ones.
+  private def nativeLambdaSupported(expr: ArrayFilter, body: Expression): Boolean =
+    CometConf.COMET_NATIVE_LAMBDA_ENABLED.get() &&
+      body.deterministic &&
+      body.find(_.isInstanceOf[HigherOrderFunction]).isEmpty &&
+      shortCircuitSafe(body) &&
+      (expr.argument.dataType match {
+        case ArrayType(elementType, _) => isLambdaElementType(elementType)
+        case _ => false
+      })
+
+  /**
+   * Spark evaluates `a AND b`, `a OR b` and `x IN (a, b)` lazily, so `x != 0 AND 100 / x > 1`
+   * never divides by zero. The native side evaluates every operand over the whole batch, so under
+   * ANSI mode the same lambda raises on the element Spark skips. `CASE WHEN`, `IF` and `COALESCE`
+   * are not affected. When ANSI mode is on, a body that short-circuits stays on the dispatcher
+   * unless every expression in it is one that cannot raise.
+   */
+  private def shortCircuitSafe(body: Expression): Boolean =
+    !SQLConf.get.ansiEnabled ||
+      !body.exists {
+        case _: And | _: Or | _: In | _: InSet => true
+        case _ => false
+      } || !body.exists(!neverRaises(_))
+
+  private def neverRaises(e: Expression): Boolean = e match {
+    case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
+        _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+        _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen | _: Length | _: Upper |
+        _: Lower | _: StartsWith | _: EndsWith | _: Contains =>
+      true
+    case _ => false
+  }
+
+  private def isLambdaElementType(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        DateType | TimestampType | TimestampNTZType | BinaryType | _: DecimalType =>
+      true
+    case _: StringType => !hasNonDefaultStringCollation(dt)
+    case _ => false
+  }
+
+  private def convertLambda(
+      expr: ArrayFilter,
+      lambdaVar: NamedLambdaVariable,
+      body: Expression,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    for {
+      arrayProto <- exprToProtoInternal(expr.argument, inputs, binding)
+      bodyProto <- exprToProtoInternal(body, inputs, binding)
+      // A subexpression the serde routed through the JVM codegen dispatcher cannot be part of the
+      // lambda. Its call out to the JVM would receive the lambda parameter as an argument, and
+      // the whole lambda is cheaper to run in the dispatcher than to split across the boundary.
+      if !CometArrayFilterProto.containsJvmScalarUdf(bodyProto)
+    } yield {
+      val hof = ExprOuterClass.HigherOrderFunc
+        .newBuilder()
+        .setFunc("array_filter")
+        .setArray(arrayProto)
+        .setParamName(CometNamedLambdaVariable.uniqueName(lambdaVar))
+        .setBody(bodyProto)
+      ExprOuterClass.Expr.newBuilder().setHigherOrderFunc(hof).build()
+    }
+  }
+}
+
+object CometArrayFilterProto {
+
+  /** Whether `message`, or any message nested in it, is a call out to the JVM. */
+  def containsJvmScalarUdf(message: com.google.protobuf.Message): Boolean =
+    message.isInstanceOf[ExprOuterClass.JvmScalarUdf] ||
+      message.getAllFields.values.asScala.exists {
+        case m: com.google.protobuf.Message => containsJvmScalarUdf(m)
+        case l: java.util.List[_] =>
+          l.asScala.exists {
+            case m: com.google.protobuf.Message => containsJvmScalarUdf(m)
+            case _ => false
+          }
+        case _ => false
+      }
+}
+
+/**
+ * A lambda parameter inside the body of a higher-order function that Comet runs natively. It is
+ * only reachable from such a body: the enclosing serde decides whether to serialize the body.
+ */
+object CometNamedLambdaVariable extends CometExpressionSerde[NamedLambdaVariable] {
+
+  /**
+   * The native side resolves a lambda variable by name, so the name must be unique per lambda.
+   */
+  def uniqueName(v: NamedLambdaVariable): String = s"${v.name}#${v.exprId.id}"
+
+  override def convert(
+      expr: NamedLambdaVariable,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val variable = ExprOuterClass.LambdaVariable.newBuilder().setName(uniqueName(expr))
+    Some(ExprOuterClass.Expr.newBuilder().setLambdaVariable(variable).build())
   }
 }
 

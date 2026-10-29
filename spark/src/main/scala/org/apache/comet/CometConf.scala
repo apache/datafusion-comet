@@ -767,6 +767,19 @@ object CometConf extends ShimCometConf {
       .toSequence
       .createWithDefault(Nil)
 
+  val COMET_NATIVE_LAMBDA_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.nativeLambda.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Whether to evaluate the lambda of a higher-order function natively when its body " +
+        "is made only of expressions that Comet supports natively. The lambda then runs " +
+        "vectorized over all the elements of a batch instead of once per element in the JVM. " +
+        "Currently applies to `filter` over an array of a primitive, decimal, string, binary, " +
+        "date or timestamp element type, with a lambda of one parameter. Other lambdas run " +
+        "through the JVM codegen dispatcher " +
+        "(see `spark.comet.exec.scalaUDF.codegen.enabled`).")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_SCALA_UDF_CODEGEN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.scalaUDF.codegen.enabled")
       .category(CATEGORY_EXEC)
