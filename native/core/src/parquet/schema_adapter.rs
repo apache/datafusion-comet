@@ -596,9 +596,14 @@ fn spark_has_updater(
     // Integer-to-decimal narrowing. Spark's `canReadAsDecimal` requires
     // `precision - scale >= 10` for an INT32 source and `>= 20` for INT64.
     // Unconditional in all Spark versions. See #4344.
+    //
+    // `Timestamp(Second, _)` is included because ArrowWriter stores second
+    // timestamps as unannotated INT64 (Parquet has no second unit), and an
+    // `ARROW:schema` hint can restore them as Timestamp. Spark still sees
+    // INT64 and applies the INT64 decimal rule. See #7227.
     let int_decimal_min_int_precision = match physical_type {
         DataType::Int8 | DataType::Int16 | DataType::Int32 => Some(10i32),
-        DataType::Int64 => Some(20i32),
+        DataType::Int64 | DataType::Timestamp(TimeUnit::Second, _) => Some(20i32),
         _ => None,
     };
     if let Some(min_int_precision) = int_decimal_min_int_precision {
@@ -642,10 +647,15 @@ fn spark_has_updater(
     //     so reaching this branch means the column was un-annotated.
     //   - `Date32 -> Timestamp(LTZ)`: Spark only allows Date -> TimestampNTZ.
     //   - `Timestamp -> Date32`: no Timestamp updater branches into Date.
-    //   - `Timestamp -> Int8/16/32, Float*, Decimal*`: INT96 updaters produce
-    //     only timestamps, and INT64 ones a timestamp or a long (a decimal
-    //     needs a decimal annotation, which `isDecimalTypeMatched` refuses for
-    //     a timestamp annotation). See #7214.
+    //   - `Timestamp -> Int8/16/32, Float*`: INT96 updaters produce only
+    //     timestamps, and annotated INT64 ones a timestamp or a long. See #7214.
+    //   - `Timestamp -> Decimal*` for millis/micros/nanos (and INT96): a decimal
+    //     needs a decimal annotation, which `isDecimalTypeMatched` refuses for a
+    //     timestamp annotation. `Timestamp(Second, _)` is excluded: Parquet has
+    //     no second unit, so ArrowWriter writes it as unannotated INT64 and an
+    //     `ARROW:schema` hint can restore Timestamp; Spark still reads INT64 and
+    //     accepts `decimal(20,0)`. The INT64 `canReadAsDecimal` rule above covers
+    //     that case. See #7227.
     //   - `Date32 -> Float32, Decimal*`: the INT32 case has no FloatType
     //     branch, and `isDecimalTypeMatched` refuses a date annotation.
     //
@@ -683,16 +693,14 @@ fn spark_has_updater(
         | (DataType::Date32, DataType::Timestamp(_, Some(_)))
         // Timestamp -> Date.
         | (DataType::Timestamp(_, _), DataType::Date32)
-        // Timestamp -> narrower int, floating point or decimal.
+        // Timestamp -> narrower int or floating point (any unit).
         | (
             DataType::Timestamp(_, _),
             DataType::Int8
                 | DataType::Int16
                 | DataType::Int32
                 | DataType::Float32
-                | DataType::Float64
-                | DataType::Decimal128(_, _)
-                | DataType::Decimal256(_, _),
+                | DataType::Float64,
         )
         // Date -> float or decimal.
         | (
@@ -700,7 +708,16 @@ fn spark_has_updater(
             DataType::Float32 | DataType::Decimal128(_, _) | DataType::Decimal256(_, _),
         )
     );
-    if is_spark_rejected_conversion {
+    // Annotated timestamps (millis/micros/nanos, INT96) cannot be read as decimal.
+    // Second is the ArrowWriter/unannotated-INT64 case; see comment above.
+    let is_annotated_timestamp_to_decimal = matches!(
+        (physical_type, target_type),
+        (
+            DataType::Timestamp(unit, _),
+            DataType::Decimal128(_, _) | DataType::Decimal256(_, _),
+        ) if !matches!(unit, TimeUnit::Second)
+    );
+    if is_spark_rejected_conversion || is_annotated_timestamp_to_decimal {
         return false;
     }
 
@@ -1873,7 +1890,7 @@ pub(crate) mod test {
         new_null_array, Array, ArrayRef, BinaryArray, Date32Array, Decimal128Array,
         DictionaryArray, FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array,
         LargeListArray, ListArray, MapArray, StringArray, StructArray, TimestampMicrosecondArray,
-        TimestampMillisecondArray, TimestampNanosecondArray,
+        TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
     };
     use arrow::buffer::OffsetBuffer;
     use arrow::datatypes::SchemaRef;
@@ -2874,6 +2891,78 @@ pub(crate) mod test {
             matches!(check, ConversionCheck::Accept),
             "INT64 timestamp as bigint"
         );
+        Ok(())
+    }
+
+    /// ArrowWriter stores `Timestamp(Second, UTC)` as unannotated INT64 (Parquet has no second
+    /// unit). An `ARROW:schema` hint restores Timestamp, but Spark still reads INT64 and accepts
+    /// `decimal(20,0)`. The conversion check and the runtime adapter must match that. See #7227.
+    #[test]
+    fn unannotated_int64_timestamp_second_as_decimal_follows_int64_rules() -> Result<(), DataFusionError> {
+        let options = default_options();
+        for tz in [None, Some("UTC")] {
+            let seconds = Field::new(
+                "t",
+                DataType::Timestamp(TimeUnit::Second, tz.map(Into::into)),
+                true,
+            );
+            let ok = check_field_conversion(&seconds, &DataType::Decimal128(20, 0), "t", &options)?;
+            assert!(
+                matches!(ok, ConversionCheck::Accept),
+                "tz {tz:?}: Second as decimal(20,0) must follow INT64 canReadAsDecimal"
+            );
+            let narrow =
+                check_field_conversion(&seconds, &DataType::Decimal128(19, 0), "t", &options)?;
+            assert!(
+                matches!(narrow, ConversionCheck::RejectOnNonEmpty { .. }),
+                "tz {tz:?}: Second as decimal(19,0) must fail the INT64 precision floor"
+            );
+        }
+        // Annotated micros still reject decimal even at precision 20.
+        let micros = Field::new("t", DataType::Timestamp(TimeUnit::Microsecond, None), true);
+        let annotated =
+            check_field_conversion(&micros, &DataType::Decimal128(20, 0), "t", &options)?;
+        assert!(
+            matches!(annotated, ConversionCheck::RejectOnNonEmpty { .. }),
+            "TIMESTAMP(MICROS) as decimal must stay rejected"
+        );
+        // Plain INT64 (footer path after mark_parquet_leaves rewrites Second→Int64) accepts.
+        let int64 = Field::new("t", DataType::Int64, true);
+        let rewritten =
+            check_field_conversion(&int64, &DataType::Decimal128(20, 0), "t", &options)?;
+        assert!(
+            matches!(rewritten, ConversionCheck::Accept),
+            "unannotated INT64 as decimal(20,0)"
+        );
+        Ok(())
+    }
+
+    /// Runtime path: ArrowWriter `Timestamp(Second, UTC)` file read as `decimal(20,0)` succeeds
+    /// with the raw INT64 seconds as the unscaled decimal, matching Spark.
+    #[tokio::test]
+    async fn parquet_arrow_writer_timestamp_second_read_as_decimal20() -> Result<(), DataFusionError>
+    {
+        let values = Arc::new(
+            TimestampSecondArray::from(vec![Some(1_577_840_523i64), Some(0), None])
+                .with_timezone("UTC"),
+        ) as Arc<dyn arrow::array::Array>;
+        let file_schema = Arc::new(Schema::new(vec![Field::new(
+            "t",
+            DataType::Timestamp(TimeUnit::Second, Some("UTC".into())),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![values])?;
+        let required = Arc::new(Schema::new(vec![Field::new(
+            "t",
+            DataType::Decimal128(20, 0),
+            true,
+        )]));
+        let read = roundtrip(&batch, required).await?;
+        assert_eq!(read.column(0).data_type(), &DataType::Decimal128(20, 0));
+        let decimals = read.column(0).as_primitive::<arrow::datatypes::Decimal128Type>();
+        assert_eq!(decimals.value(0), 1_577_840_523i128);
+        assert_eq!(decimals.value(1), 0i128);
+        assert!(decimals.is_null(2));
         Ok(())
     }
 

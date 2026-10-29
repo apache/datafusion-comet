@@ -545,11 +545,27 @@ fn is_int96(column: &ColumnDescPtr) -> bool {
     column.physical_type() == parquet::basic::Type::INT96
 }
 
+/// INT64 leaf with a timestamp logical / converted annotation (millis, micros, or nanos).
+fn is_annotated_int64_timestamp(column: &ColumnDescPtr) -> bool {
+    column.physical_type() == parquet::basic::Type::INT64
+        && (matches!(
+            column.logical_type_ref(),
+            Some(LogicalType::Timestamp(_))
+        ) || matches!(
+            column.converted_type(),
+            ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS
+        ))
+}
+
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
 /// `TIMESTAMP(NANOS)` leaves the same nanosecond timestamp type (and INT96 coercion later makes
 /// INT96 look like an INT64 timestamp). Carry the repeated primitive, `TIMESTAMP(NANOS)` and
 /// INT96 distinctions in an ephemeral schema used by the conversion check, never in the shared
 /// footer cache or in the schema given to the decoder.
+///
+/// Also rewrite an Arrow `Timestamp` restored by `ARROW:schema` over an unannotated INT64
+/// leaf back to `Int64`, matching Spark's Parquet-type reading. ArrowWriter stores
+/// `Timestamp(Second, _)` that way because Parquet has no second unit. See #7227.
 fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
     fn mark(field: &FieldRef, columns: &[ColumnDescPtr], index: &mut usize) -> FieldRef {
         let data_type = match field.data_type() {
@@ -578,6 +594,16 @@ fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
                 let nanos = column.is_some_and(is_nanos_timestamp);
                 let int96 = column.is_some_and(is_int96);
                 let mut field = field.as_ref().clone();
+                // `ARROW:schema` can restore Timestamp over unannotated INT64 (ArrowWriter
+                // seconds). Spark reads the Parquet type, so the footer check must too.
+                if matches!(field.data_type(), DataType::Timestamp(_, _))
+                    && column.is_some_and(|column| {
+                        column.physical_type() == parquet::basic::Type::INT64
+                            && !is_annotated_int64_timestamp(column)
+                    })
+                {
+                    field = field.with_data_type(DataType::Int64);
+                }
                 if repeated || nanos || int96 {
                     let mut metadata = field.metadata().clone();
                     if repeated {
