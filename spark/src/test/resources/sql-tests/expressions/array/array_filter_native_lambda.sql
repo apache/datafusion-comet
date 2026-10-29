@@ -162,3 +162,23 @@ SELECT id, filter(ints, v -> exists(ints, w -> w = v + 1)) FROM test_filter_lamb
 -- A two-parameter lambda runs through the dispatcher.
 query
 SELECT id, filter(ints, (v, i) -> v > i) FROM test_filter_lambda
+
+-- Literal arrays, with and without a captured column. No input column feeds the array.
+query
+SELECT id, filter(array(1, NULL, 3, 5), v -> v > 1) FROM test_filter_lambda
+
+query
+SELECT id, filter(array('a', NULL, '', 'b'), v -> nvl(v, '') != '') FROM test_filter_lambda
+
+query
+SELECT id, filter(array(1, 2, 3, 4), v -> v > threshold) FROM test_filter_lambda
+
+-- Batches of one shape: every array NULL, every array empty, and no rows at all.
+query
+SELECT id, filter(ints, v -> v > 0) FROM test_filter_lambda WHERE id = 3
+
+query
+SELECT id, filter(strs, v -> nvl(v, '') != '') FROM test_filter_lambda WHERE id = 2
+
+query
+SELECT id, filter(ints, v -> v > 0) FROM test_filter_lambda WHERE id < 0

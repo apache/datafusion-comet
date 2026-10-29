@@ -34,7 +34,7 @@ use datafusion::common::{
 use datafusion::logical_expr::type_coercion::binary::type_union_coercion;
 use datafusion::logical_expr::{ColumnarValue, Operator};
 use datafusion::physical_expr::expressions::{
-    BinaryExpr, CaseExpr, Column, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
+    BinaryExpr, CaseExpr, Column, IsNotNullExpr, IsNullExpr, LambdaVariable, Literal, NotExpr,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
@@ -451,7 +451,7 @@ pub(super) fn cannot_fail(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -
 }
 
 fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool) -> bool {
-    if expr.is::<Column>() || expr.is::<Literal>() {
+    if expr.is::<Column>() || expr.is::<Literal>() || expr.is::<LambdaVariable>() {
         return true;
     }
     let node_is_infallible = if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {

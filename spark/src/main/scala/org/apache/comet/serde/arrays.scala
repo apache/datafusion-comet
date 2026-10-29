@@ -1070,7 +1070,7 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
   private def nativeLambdaSupported(expr: ArrayFilter, body: Expression): Boolean =
     CometConf.COMET_NATIVE_LAMBDA_ENABLED.get() &&
       body.deterministic &&
-      body.find(_.isInstanceOf[HigherOrderFunction]).isEmpty &&
+      !body.exists(_.isInstanceOf[HigherOrderFunction]) &&
       shortCircuitSafe(body) &&
       (expr.argument.dataType match {
         case ArrayType(elementType, _) => isLambdaElementType(elementType)
@@ -1082,7 +1082,8 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
    * never divides by zero. The native side evaluates every operand over the whole batch, so under
    * ANSI mode the same lambda raises on the element Spark skips. `CASE WHEN`, `IF` and `COALESCE`
    * are not affected. When ANSI mode is on, a body that short-circuits stays on the dispatcher
-   * unless every expression in it is one that cannot raise.
+   * unless every expression in it is one that cannot raise. `infallible` in `case_when.rs` is the
+   * native counterpart of `neverRaises`.
    */
   private def shortCircuitSafe(body: Expression): Boolean =
     !SQLConf.get.ansiEnabled ||
@@ -1116,11 +1117,9 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     for {
       arrayProto <- exprToProtoInternal(expr.argument, inputs, binding)
+      // A subexpression that needs the JVM codegen dispatcher cannot be part of the lambda: the
+      // dispatcher declines a tree that reads the lambda parameter, so the body fails to convert.
       bodyProto <- exprToProtoInternal(body, inputs, binding)
-      // A subexpression the serde routed through the JVM codegen dispatcher cannot be part of the
-      // lambda. Its call out to the JVM would receive the lambda parameter as an argument, and
-      // the whole lambda is cheaper to run in the dispatcher than to split across the boundary.
-      if !CometArrayFilterProto.containsJvmScalarUdf(bodyProto)
     } yield {
       val hof = ExprOuterClass.HigherOrderFunc
         .newBuilder()
@@ -1131,22 +1130,6 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
       ExprOuterClass.Expr.newBuilder().setHigherOrderFunc(hof).build()
     }
   }
-}
-
-object CometArrayFilterProto {
-
-  /** Whether `message`, or any message nested in it, is a call out to the JVM. */
-  def containsJvmScalarUdf(message: com.google.protobuf.Message): Boolean =
-    message.isInstanceOf[ExprOuterClass.JvmScalarUdf] ||
-      message.getAllFields.values.asScala.exists {
-        case m: com.google.protobuf.Message => containsJvmScalarUdf(m)
-        case l: java.util.List[_] =>
-          l.asScala.exists {
-            case m: com.google.protobuf.Message => containsJvmScalarUdf(m)
-            case _ => false
-          }
-        case _ => false
-      }
 }
 
 /**

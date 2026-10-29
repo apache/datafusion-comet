@@ -23,8 +23,6 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.udf.codegen.CometScalaUDFCodegen
-
 /**
  * Higher-order function regression coverage for the codegen dispatcher.
  *
@@ -134,28 +132,18 @@ class CometCodegenHOFSuite
     }
   }
 
-  private def dispatcherActivity(f: => Unit): Long = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val stats = CometScalaUDFCodegen.stats()
-    stats.compileCount + stats.cacheHitCount
-  }
-
   test("ArrayFilter with a natively supported lambda body does not use the dispatcher") {
     withStringArrayTable {
       Seq(
         "SELECT filter(a, x -> nvl(x, '') != '') FROM t",
         "SELECT filter(a, x -> x IS NOT NULL AND length(x) > c) FROM t").foreach { query =>
-        val native = dispatcherActivity {
+        assertNoCodegen {
           checkSparkAnswerAndOperator(sql(query))
         }
-        assert(native == 0, s"expected no dispatcher activity for $query")
-
         withSQLConf(CometConf.COMET_NATIVE_LAMBDA_ENABLED.key -> "false") {
-          val dispatched = dispatcherActivity {
+          assertCodegenRan {
             checkSparkAnswerAndOperator(sql(query))
           }
-          assert(dispatched >= 1, s"expected the dispatcher to run $query")
         }
       }
     }
@@ -164,16 +152,15 @@ class CometCodegenHOFSuite
   test("ArrayFilter keeps a lambda the native side cannot evaluate on the dispatcher") {
     withStringArrayTable {
       Seq(
-        // The body calls out to the JVM, so it cannot be split from the dispatcher.
+        // The body needs the dispatcher, which cannot see the lambda parameter.
         "SELECT filter(a, x -> x RLIKE '^a') FROM t",
         // A nested lambda.
         "SELECT filter(a, x -> exists(a, y -> y = x)) FROM t",
         // A lambda of two parameters.
         "SELECT filter(a, (x, i) -> i > 0) FROM t").foreach { query =>
-        val activity = dispatcherActivity {
+        assertCodegenRan {
           checkSparkAnswerAndOperator(sql(query))
         }
-        assert(activity >= 1, s"expected the dispatcher to run $query")
       }
     }
   }
@@ -182,18 +169,16 @@ class CometCodegenHOFSuite
     "ArrayFilter keeps a lambda that short-circuits an operation that can raise on the dispatcher") {
     withArrayIntTable("(array(0, 1, 5)), (array()), (null)") {
       val query = "SELECT filter(a, x -> x != 0 AND 100 / x > 1) FROM t"
+      // Spark skips `100 / x` for the element 0. The native side would raise on it.
       withSQLConf("spark.sql.ansi.enabled" -> "true") {
-        // Spark skips `100 / x` for the element 0. The native side would raise on it.
-        val ansi = dispatcherActivity {
+        assertCodegenRan {
           checkSparkAnswerAndOperator(sql(query))
         }
-        assert(ansi >= 1, "expected the dispatcher to run the lambda under ANSI mode")
       }
       withSQLConf("spark.sql.ansi.enabled" -> "false") {
-        val nonAnsi = dispatcherActivity {
+        assertNoCodegen {
           checkSparkAnswerAndOperator(sql(query))
         }
-        assert(nonAnsi == 0, "expected the lambda to run natively when ANSI mode is off")
       }
     }
   }

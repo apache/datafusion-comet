@@ -1269,7 +1269,7 @@ impl PhysicalPlanner {
                 };
                 // The lambda body sees the enclosing schema with the parameter appended, so
                 // `BoundReference`s keep their indexes and a `LambdaVariable` is found by name.
-                let mut fields: Vec<FieldRef> = input_schema.fields().iter().cloned().collect();
+                let mut fields: Vec<FieldRef> = input_schema.fields().to_vec();
                 fields.push(Arc::new(
                     element_field.as_ref().clone().with_name(&hof.param_name),
                 ));
@@ -5414,6 +5414,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_higher_order_filter() -> Result<(), DataFusionError> {
+        use arrow::array::ListBuilder;
+        use arrow::array::StringBuilder;
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, BoundReference, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
+            spark_expression::Expr {
+                expr_struct: Some(expr_struct),
+                query_context: None,
+                expr_id: None,
+            }
+        }
+        fn bound(index: i32) -> spark_expression::Expr {
+            expr(Bound(BoundReference {
+                index,
+                datatype: None,
+            }))
+        }
+        fn variable(name: &str) -> spark_expression::Expr {
+            expr(ExprStruct::LambdaVariable(LambdaVariable {
+                name: name.to_string(),
+            }))
+        }
+        fn string_lists(rows: Vec<Option<Vec<Option<&str>>>>) -> ListArray {
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for row in rows {
+                match row {
+                    Some(values) => {
+                        values
+                            .into_iter()
+                            .for_each(|v| builder.values().append_option(v));
+                        builder.append(true);
+                    }
+                    None => builder.append(false),
+                }
+            }
+            builder.finish()
+        }
+
+        // array_filter(a, x#1 -> x#1 = c) over a: array<string> and c: string
+        fn filter(func: &str, array: spark_expression::Expr) -> spark_expression::Expr {
+            expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+                func: func.to_string(),
+                array: Some(Box::new(array)),
+                param_name: "x#1".to_string(),
+                body: Some(Box::new(expr(ExprStruct::Eq(Box::new(BinaryExpr {
+                    left: Some(Box::new(variable("x#1"))),
+                    right: Some(Box::new(bound(1))),
+                }))))),
+            })))
+        }
+
+        let list = string_lists(vec![
+            Some(vec![Some("a"), None, Some("b"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![Some("b")]),
+        ]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "a", "x"])),
+            ],
+        )?;
+
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // The lambda keeps the elements equal to the captured column, and drops NULL elements.
+        let physical = planner
+            .create_expr(&filter("array_filter", bound(0)), Arc::clone(&schema))
+            .unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = string_lists(vec![
+            Some(vec![Some("a"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![]),
+        ]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // The argument must be an array, and only array_filter is implemented.
+        let not_array = planner.create_expr(&filter("array_filter", bound(1)), Arc::clone(&schema));
+        assert!(not_array
+            .unwrap_err()
+            .to_string()
+            .contains("expects an array argument"));
+        let unknown = planner.create_expr(&filter("array_zip", bound(0)), Arc::clone(&schema));
+        assert!(unknown
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported higher-order function"));
+        Ok(())
     }
 
     #[test]

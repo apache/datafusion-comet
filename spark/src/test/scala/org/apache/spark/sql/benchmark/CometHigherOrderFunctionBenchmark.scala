@@ -65,8 +65,6 @@ object CometHigherOrderFunctionBenchmark extends CometBenchmarkBase {
       Seq(
         "string: filter(x -> nvl(x, '') != '')" ->
           "SELECT filter(str_arr, x -> nvl(x, '') != '') FROM parquetV1Table",
-        "string: array_remove(array_compact(arr), '')" ->
-          "SELECT array_remove(array_compact(str_arr), '') FROM parquetV1Table",
         "int: filter(x -> nvl(x, '') != '')" ->
           "SELECT filter(int_arr, x -> nvl(x, '') != '') FROM parquetV1Table",
         "int: filter(x -> x IS NOT NULL)" ->
@@ -75,22 +73,23 @@ object CometHigherOrderFunctionBenchmark extends CometBenchmarkBase {
           "SELECT filter(int_arr, x -> x > threshold) FROM parquetV1Table").foreach {
         case (name, query) =>
           runExpressionBenchmark(name, values.toLong, query)
-          if (query.contains("->")) {
-            // The same lambda through the JVM codegen dispatcher, which is what Comet did before
-            // it evaluated lambdas natively.
-            runExpressionBenchmark(
-              s"$name [dispatcher]",
-              values.toLong,
-              query,
-              Map(CometConf.COMET_NATIVE_LAMBDA_ENABLED.key -> "false"))
-          }
+          // The same lambda through the JVM codegen dispatcher, which is what Comet did before it
+          // evaluated lambdas natively.
+          runExpressionBenchmark(
+            s"$name [dispatcher]",
+            values.toLong,
+            query,
+            Map(CometConf.COMET_NATIVE_LAMBDA_ENABLED.key -> "false"))
       }
+      // The built-in functions that replace a lambda have no native-lambda variant to compare.
+      runExpressionBenchmark(
+        "string: array_remove(array_compact(arr), '')",
+        values.toLong,
+        "SELECT array_remove(array_compact(str_arr), '') FROM parquetV1Table")
     }
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("FilterLambda", 1024 * 1024) { v =>
-      filterLambdaBenchmark(v)
-    }
+    runBenchmarkWithTable("FilterLambda", 1024 * 1024)(filterLambdaBenchmark)
   }
 }
