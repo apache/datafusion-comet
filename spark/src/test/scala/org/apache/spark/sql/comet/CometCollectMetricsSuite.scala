@@ -110,6 +110,89 @@ class CometCollectMetricsSuite extends CometTestBase {
     }
   }
 
+  test("observation preserves reader-owned structs across batches") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      CometConf.COMET_BATCH_SIZE.key -> "2") {
+      val values = (0 until 10).map(i => s"(named_struct('v', $i))").mkString(",")
+      def run(comet: Boolean): (Seq[Long], Map[String, Any], SparkPlan) = {
+        withCometEnabled(comet) {
+          val observation = Observation("struct_batches")
+          val result = sql(s"SELECT * FROM VALUES $values AS t(a)")
+            .observe(observation, count(lit(1)).as("rows"))
+            .selectExpr("xxhash64(a)")
+            .repartition(2)
+          val hashes = result.collect().map(_.getLong(0)).sorted.toSeq
+          (hashes, observedMetrics(observation), result.queryExecution.executedPlan)
+        }
+      }
+
+      val (expected, expectedMetrics, _) = run(comet = false)
+      val (actual, actualMetrics, plan) = run(comet = true)
+      assert(actual == expected)
+      assert(actual.size == 10)
+      assert(actualMetrics == expectedMetrics)
+      assert(actualMetrics == Map("rows" -> 10L))
+      val scan = collect(plan) { case op: CometLocalTableScanExec => op }.head
+      assert(collect(plan) { case _: CometCollectMetricsExec => true }.size == 1)
+      assert(collect(plan) { case _: CometProjectExec => true }.nonEmpty)
+      // Spark's row conversion may close individual columns instead of the batch.
+      val sourceValues = scan
+        .executeColumnar()
+        .mapPartitions { batches =>
+          batches.flatMap { batch =>
+            val values = (0 until batch.numRows()).map(batch.column(0).getStruct(_).getInt(0))
+            batch.column(0).close()
+            values
+          }
+        }
+        .collect()
+      assert(sourceValues.sorted.toSeq == (0 until 10))
+    }
+  }
+
+  test("observation collects structs containing calendar intervals") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      def run(comet: Boolean): (Map[String, List[Row]], SparkPlan) = {
+        withCometEnabled(comet) {
+          val observation = Observation("interval_structs")
+          val result = sql("""
+              |SELECT * FROM VALUES
+              |  (0, named_struct('i', make_interval(0, 1), 'id', 0)),
+              |  (1, named_struct('i', make_interval(0, 1), 'id', 1)) AS t(id, v)
+              |""".stripMargin)
+            .observe(observation, collect_list($"v").as("list"), collect_set($"v").as("set"))
+            .select("id")
+            .repartition(2)
+          assert(result.collect().map(_.getInt(0)).sorted.toSeq == Seq(0, 1))
+          val metrics = observedMetrics(observation).map { case (name, values) =>
+            name -> values.asInstanceOf[scala.collection.Seq[Row]].sortBy(_.getInt(1)).toList
+          }
+          (metrics, result.queryExecution.executedPlan)
+        }
+      }
+
+      val (expected, _) = run(comet = false)
+      val (actual, plan) = run(comet = true)
+      assert(actual == expected)
+      assert(actual("list").size == 2)
+      assert(actual("set") == actual("list"))
+      assert(collect(plan) { case _: CometLocalTableScanExec => true }.nonEmpty)
+      assert(collect(plan) { case _: CometCollectMetricsExec => true }.size == 1)
+    }
+  }
+
   test("observation publishes collect_list state without an executor merge") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withTempPath { path =>
@@ -331,7 +414,7 @@ class CometCollectMetricsSuite extends CometTestBase {
               // A local sort drains the observation before the iterator takes its first row.
               val input =
                 if (sortBeforeTake) observed.sortWithinPartitions($"id".desc) else observed
-              val result = input.as[Long].mapPartitions(_.take(1))
+              val result = input.as[Long].mapPartitions(_.take(1)).repartition(2)
               val rows = result.collect().toSeq
               (rows, observedMetrics(observation), result.queryExecution.executedPlan)
             }

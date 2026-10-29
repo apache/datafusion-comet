@@ -25,6 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.NamedExpression
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.{AggregatingAccumulator, CollectMetricsExec, ColumnarToRowExec, SparkPlan}
+import org.apache.spark.sql.types.CalendarIntervalType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -104,7 +105,14 @@ class CometCollectMetricsExec(
     if (!isSpark40Plus) {
       collector.reset()
     }
+    val inputAttributes = child.output
+    val requiresUnsafeRows = metricExpressions.exists(_.references.exists(attribute =>
+      SupportLevel.containsType(attribute.dataType, classOf[CalendarIntervalType])))
     child.executeColumnar().mapPartitions { batches =>
+      // Retaining aggregates copy their inputs, but ColumnarRow.copy cannot copy calendar
+      // intervals, including nested ones. Preserve the accumulator's input ordinals.
+      val toObservationRow: InternalRow => InternalRow =
+        if (requiresUnsafeRows) CometUnsafeProjection.create(inputAttributes) else identity
       // Publish only at task completion, as Spark does, so heartbeats cannot expose partial
       // updates. Spark's accumulator registration also excludes failed task attempts.
       val updater = collector.copyAndReset()
@@ -114,7 +122,7 @@ class CometCollectMetricsExec(
       batches.map { batch =>
         val rows = batch.rowIterator()
         while (rows.hasNext) {
-          updater.add(rows.next())
+          updater.add(toObservationRow(rows.next()))
         }
         batch
       }
