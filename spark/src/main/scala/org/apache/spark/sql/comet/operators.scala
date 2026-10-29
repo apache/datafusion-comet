@@ -736,6 +736,17 @@ abstract class CometExec extends CometPlan {
   }
 }
 
+/**
+ * Declares the distribution of the Spark operator that a Comet operator replaces. Without it
+ * AQE's OptimizeSkewInRebalancePartitions can split a skewed partition under an operator that
+ * needs its input clustered, because ValidateRequirements has nothing to reject, and one key then
+ * yields several rows. Mix it into operators that replace a clustering aggregate, window or join.
+ */
+trait CometDelegatesRequiredChildDistribution extends CometExec {
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
+}
+
 object CometExec {
   final class InvalidSparkFallbackException(message: String)
       extends IllegalArgumentException(message)
@@ -2716,6 +2727,7 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
  */
 abstract class CometBaseAggregateExec
     extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution
     with PartitioningPreservingUnaryExecNode {
 
   def groupingExpressions: Seq[NamedExpression]
@@ -3343,7 +3355,8 @@ case class CometHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3709,7 +3722,8 @@ case class CometSortMergeJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
