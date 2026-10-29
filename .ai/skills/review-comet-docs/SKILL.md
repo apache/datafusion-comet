@@ -41,7 +41,7 @@ This skill gives advice to a human. Never edit files, commit, push, or post comm
 so save the variables you set in a state file named for this run, and load it in later calls:
 
 ```bash
-STATE="$(git rev-parse --git-dir)/review-comet-docs-<pr-or-name>.env"
+STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" | tr / -).env"
 { printf 'R=%q\n' "$R"; printf 'HEAD_SHA=%q\n' "$HEAD_SHA"; printf 'BASE=%q\n' "$BASE";
   printf 'TARGET=%q\n' "$TARGET"; printf 'ADDED=%q\n' "$ADDED"; } > "$STATE"
 . "$STATE"
@@ -84,7 +84,9 @@ git fetch "$R" "+refs/heads/main:refs/review/main"
 or report the comparison as incomplete:
 
 ```bash
-BASE=$(git merge-base "$TARGET" "$HEAD_SHA") || git fetch --deepen=1000 "$R"
+BASE=$(git merge-base "$TARGET" "$HEAD_SHA") ||
+  { git fetch --deepen=1000 "$R" && BASE=$(git merge-base "$TARGET" "$HEAD_SHA"); } ||
+  { echo "no merge base: report the comparison as incomplete" >&2; false; }
 ```
 
 If `git rev-list --count "$BASE..$TARGET"` is not zero, the target branch has moved since the change
@@ -345,10 +347,10 @@ If there are no findings, say so.
 After changing this skill or the style guide, run it on these cases and compare the results. The
 expected results were checked on `main` in October 2026, so a later fix to a page can change them.
 
-| Run                                                                | Expected                                                                                                                         |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| PR mode on #6786                                                   | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                          |
-| Audit `docs/source/user-guide/latest/understanding-comet-plans.md` | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys; `N5` for "Spark's native shuffle" |
-| Audit `docs/source/contributor-guide/timezones.md`                 | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                     |
-| Audit `docs/source/user-guide/latest/compatibility/expressions`    | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers     |
-| Audit a scratch page containing `_native execution_`               | `N1` finding                                                                                                                     |
+| Run                                                                               | Expected                                                                                                                     |
+| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| PR mode on #6786                                                                  | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
+| Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
+| Audit `docs/source/contributor-guide/timezones.md`                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
+| Audit `docs/source/user-guide/latest/compatibility/expressions`                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
+| Audit a scratch page containing `_native execution_` and "Spark's native shuffle" | `N1` and `N5` findings                                                                                                       |
