@@ -290,22 +290,6 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  for (generator <- Seq("explode_outer", "posexplode_outer")) {
-    test(s"$generator with batches containing only null and empty maps") {
-      withSQLConf(
-        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
-        CometConf.COMET_BATCH_SIZE.key -> "4") {
-        val rows = (0 until 16).map { i =>
-          val m = if (i % 2 == 0) null else Map.empty[Int, java.lang.Boolean]
-          (i, m)
-        }
-        withParquetDataFrame(rows) { input =>
-          checkMapGenerator(input.toDF("id", "m"), "m", generator)
-        }
-      }
-    }
-  }
-
   private def checkMapGenerator(input: DataFrame, name: String, generator: String): Unit = {
     val query = input.selectExpr("id", name, s"$generator($name)")
     checkSparkAnswerAndOperator(query, Seq(classOf[CometExplodeExec]))

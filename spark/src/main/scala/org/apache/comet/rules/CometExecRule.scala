@@ -1454,9 +1454,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     visit(plan, if (producesObjects(plan)) Some("code reading Dataset.rdd") else None)
   }
 
-  // Spark fuses a generator chain without materializing its carried columns between generators.
-  // Keep that path until native map expansion can avoid the extra repetition too. Tags survive
-  // the child copies made by bottom-up conversion; exchanges end the shared pipeline.
+  // Native generator chains materialize carried columns for both arrays and maps. Preserve
+  // Spark's fused path for newly supported map chains and the existing eligibility of arrays.
+  // Tags survive child copies made by bottom-up conversion; exchanges end the shared pipeline.
   private def tagChainedMapGenerators(plan: SparkPlan): Unit = {
     val enabled = CometConf.COMET_EXEC_EXPLODE_ENABLED.get(conf)
     def visit(op: SparkPlan, generatorAbove: Boolean): Unit = op match {

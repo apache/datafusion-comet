@@ -29,13 +29,9 @@
 //!   in one pass over the offsets instead of chaining six arrow kernels;
 //! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
 //!   values instead of gathering them, and the buffer fills in `create_take_indices`.
-//! * retaining input arrays as unnest placeholders and skipping take indices when no column
-//!   consumes them, avoiding allocations whose contents never reach the output.
-//! * repeating carried short strings by input row, with fixed-size byte copies instead of
-//!   a variable-size copy for every output row.
-//! * filling non-null primitive runs directly instead of building and gathering take indices.
 //! * splitting individual List rows before repeating carried values, including a repetition
 //!   bound that prevents copied variable-width buffers and child offsets from overflowing.
+//! * skipping gather indices and placeholders when every column is being unnested.
 //!
 //! # Deleting this file
 //!
@@ -63,9 +59,9 @@
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
-    Array, ArrayData, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
-    LargeListArray, LargeListViewArray, ListArray, ListViewArray, NullBufferBuilder,
-    PrimitiveArray, Scalar, StringArray, StructArray,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
+    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
+    StructArray,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::compute::kernels::length::length;
@@ -310,8 +306,8 @@ struct PendingInput {
     row_offset: usize,
     /// Elements already emitted from the current input row.
     element_offset: usize,
-    /// Maximum expansion of one row per build, for Comet's depth-1 List inputs.
-    split_limit: Option<usize>,
+    /// Repetition safe for every slice of this input. None for unsupported list shapes.
+    safe_repetitions: Option<usize>,
     /// How many output rows each input row expands into, indexed by input row.
     ///
     /// `None` when the expansion factor cannot be predicted from the input alone, in which
@@ -338,10 +334,7 @@ impl PendingInput {
         let batch_size = batch_size as i64;
         let mut output_rows = 0i64;
         for (rows, len) in lens.iter().enumerate() {
-            if rows > 0
-                && (output_rows + len > batch_size
-                    || self.split_limit.is_some_and(|limit| *len as usize > limit))
-            {
+            if rows > 0 && output_rows + len > batch_size {
                 return rows;
             }
             output_rows += len;
@@ -362,12 +355,31 @@ impl PendingInput {
         batch_size: usize,
         list_columns: &[ListUnnest],
     ) -> Result<(RecordBatch, Option<Int64Array>)> {
-        if let Some(limit) = self.split_limit {
+        let mut rows = self.next_chunk_rows(batch_size);
+        let mut chunk = self.batch.slice(self.row_offset, rows);
+        let mut lengths = self.chunk_lengths(rows);
+        if let Some(safe_repetitions) = self.safe_repetitions {
+            // Check the selected rows, not buffers retained from the rest of the input.
+            // A chunk's largest repetition times its offset span bounds every copied offset.
+            // The input-wide bound only skips checks; it never shrinks a chunk.
+            let limit = if safe_repetitions >= batch_size {
+                batch_size
+            } else {
+                loop {
+                    let limit = batch_size.min(repetition_limit(&chunk, list_columns));
+                    let max_repeat = *lengths.as_ref().unwrap().values().iter().max().unwrap();
+                    if rows == 1 || max_repeat as usize <= limit {
+                        break limit;
+                    }
+                    rows = rows.div_ceil(2);
+                    chunk = self.batch.slice(self.row_offset, rows);
+                    lengths = self.chunk_lengths(rows);
+                }
+            };
             let row_length = self.output_lens.as_ref().unwrap().value(self.row_offset) as usize;
             if row_length > limit {
                 let length = limit.min(row_length - self.element_offset);
-                let row = self.batch.slice(self.row_offset, 1);
-                let mut columns = row.columns().to_vec();
+                let mut columns = chunk.columns().to_vec();
                 for unnest in list_columns {
                     let list = columns[unnest.index_in_input_schema].as_list::<i32>();
                     let DataType::List(field) = list.data_type() else {
@@ -396,28 +408,63 @@ impl PendingInput {
                     self.element_offset = 0;
                 }
                 return Ok((
-                    RecordBatch::try_new(row.schema(), columns)?,
+                    RecordBatch::try_new(chunk.schema(), columns)?,
                     Some(Int64Array::from(vec![length as i64])),
                 ));
             }
         }
-        let rows = self.next_chunk_rows(batch_size);
-        let chunk = self.batch.slice(self.row_offset, rows);
-        let lengths = self.chunk_lengths(rows);
         self.row_offset += rows;
         Ok((chunk, lengths))
     }
 }
 
-/// If every row repeats at most R times, no copied buffer or child offset span exceeds R
-/// times its entire source span. Count elements too: List<Null> has no child value buffer.
+/// Bound repetition by the visible spans addressed by 32-bit offsets. Fixed-width
+/// buffers do not constrain these offsets; a sliced list still needs its selected child count
+/// even when that child has no buffers, as with List<Null>.
 fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
-    fn max_span(data: &ArrayData) -> usize {
-        std::iter::once(data.len())
-            .chain(data.buffers().iter().map(|buffer| buffer.len()))
-            .chain(data.child_data().iter().map(max_span))
-            .max()
-            .unwrap_or(0)
+    fn max_offset_span(array: &dyn Array) -> usize {
+        match array.data_type() {
+            DataType::Utf8 => {
+                let offsets = array.as_string::<i32>().value_offsets();
+                (offsets[array.len()] - offsets[0]) as usize
+            }
+            DataType::Binary => {
+                let offsets = array.as_binary::<i32>().value_offsets();
+                (offsets[array.len()] - offsets[0]) as usize
+            }
+            DataType::List(_) => {
+                let list = array.as_list::<i32>();
+                let offsets = list.value_offsets();
+                let start = offsets[0] as usize;
+                let length = offsets[list.len()] as usize - start;
+                length.max(max_offset_span(list.values().slice(start, length).as_ref()))
+            }
+            DataType::Map(_, _) => {
+                let map = array.as_map();
+                let offsets = map.value_offsets();
+                let start = offsets[0] as usize;
+                let length = offsets[map.len()] as usize - start;
+                length.max(max_offset_span(&map.entries().slice(start, length)))
+            }
+            DataType::Struct(_) => array
+                .as_struct()
+                .columns()
+                .iter()
+                .map(|column| max_offset_span(column.as_ref()))
+                .max()
+                .unwrap_or(0),
+            DataType::LargeList(_) => {
+                let list = array.as_list::<i64>();
+                let offsets = list.value_offsets();
+                let start = offsets[0] as usize;
+                let length = offsets[list.len()] as usize - start;
+                max_offset_span(list.values().slice(start, length).as_ref())
+            }
+            DataType::FixedSizeList(_, _) => {
+                max_offset_span(array.as_fixed_size_list().values().as_ref())
+            }
+            _ => 0,
+        }
     }
     let span = batch
         .columns()
@@ -428,7 +475,7 @@ fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
                 .iter()
                 .any(|list| list.index_in_input_schema == *index)
         })
-        .map(|(_, column)| max_span(&column.to_data()))
+        .map(|(_, column)| max_offset_span(column.as_ref()))
         .max()
         .unwrap_or(0);
     (i32::MAX as usize / span.max(1)).max(1)
@@ -474,8 +521,7 @@ impl ExplodeStream {
         loop {
             // Unnest the next chunk of the input batch already in hand.
             if let Some(pending) = self.pending_input.as_mut() {
-                // `PendingInput` is only built from a non-empty batch and `next_chunk_rows`
-                // always consumes at least one row, so it is dropped the moment it drains.
+                // Pending input is non-empty; each chunk advances a row or its element cursor.
                 debug_assert!(pending.remaining_rows() > 0);
 
                 let (chunk, chunk_lengths) =
@@ -520,7 +566,7 @@ impl ExplodeStream {
                     if batch.num_rows() > 0 {
                         let timer = self.baseline_metrics.elapsed_compute().timer();
                         let output_lens = self.predict_output_lens(&batch);
-                        let split_limit = (!self.list_type_columns.is_empty()
+                        let safe_repetitions = (!self.list_type_columns.is_empty()
                             && self.list_type_columns.iter().all(|unnest| {
                                 unnest.depth == 1
                                     && matches!(
@@ -528,16 +574,13 @@ impl ExplodeStream {
                                         DataType::List(_)
                                     )
                             }))
-                        .then(|| {
-                            self.batch_size
-                                .min(repetition_limit(&batch, &self.list_type_columns))
-                        });
+                        .then(|| repetition_limit(&batch, &self.list_type_columns));
                         timer.done();
                         self.pending_input = Some(PendingInput {
                             batch,
                             row_offset: 0,
                             element_offset: 0,
-                            split_limit,
+                            safe_repetitions,
                             output_lens: output_lens?,
                         });
                     }
@@ -808,9 +851,10 @@ fn list_unnest_at_level(
     // Dimension of arrays in batch is untouched, but the values are repeated
     // as the side effect of unnesting
     let ret = if repeat_mask.iter().any(|&repeat| repeat) {
-        repeat_arrs(batch, unnested_length, total_length, &repeat_mask)?
+        let take_indices = create_take_indices(unnested_length, total_length);
+        repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?
     } else {
-        // Every column is a placeholder for an unnest result. No column consumes take indices.
+        // Every column is replaced by an unnested result before the output is built.
         batch.to_vec()
     };
 
@@ -1341,11 +1385,11 @@ fn create_take_indices(
     PrimitiveArray::<Int64Type>::from(indices)
 }
 
-/// Create a batch of arrays based on an input `batch` and per-row repetition lengths.
-/// Take indices are created only for columns that need the take kernel to repeat values
+/// Create a batch of arrays based on an input `batch` and a `indices` array.
+/// The `indices` array is used by the take kernel to repeat values in the arrays
 /// that are marked with `true` in the `repeat_mask`. Arrays marked with `false`
-/// are placeholders: they are replaced by their unnested versions before the
-/// output batch is built. Keep those arrays instead of allocating unused null arrays.
+/// in the `repeat_mask` will be replaced with arrays filled with nulls of the
+/// appropriate length.
 ///
 /// For example if we have the following batch:
 ///
@@ -1361,10 +1405,11 @@ fn create_take_indices(
 /// c1: 1, null, 2, 3, 4, null, 5, 6
 /// ```
 ///
-/// Each value in `c2` is repeated by its row's length:
+/// And the `indices` array contains the indices that are used by `take` kernel to
+/// repeat the values in `c2`:
 ///
 /// ```ignore
-/// 1, 1, 3, 1, 2
+/// 0, 1, 2, 2, 2, 3, 4, 4
 /// ```
 ///
 /// so that the final batch will look like:
@@ -1374,168 +1419,40 @@ fn create_take_indices(
 /// c2: 'a', 'b', 'c', 'c', 'c', null, 'd', 'd'
 /// ```
 ///
-fn repeat_arrs(
+/// The `repeat_mask` determines whether an array's values are repeated or replaced with nulls.
+/// For example, if the `repeat_mask` is:
+///
+/// ```ignore
+/// [true, false]
+/// ```
+///
+/// The final batch will look like:
+///
+/// ```ignore
+/// c1: 1, null, 2, 3, 4, null, 5, 6  // Repeated using `indices`
+/// c2: null, null, null, null, null, null, null, null  // Replaced with nulls
+fn repeat_arrs_from_indices(
     batch: &[ArrayRef],
-    lengths: &PrimitiveArray<Int64Type>,
-    total_length: usize,
+    indices: &PrimitiveArray<Int64Type>,
     repeat_mask: &[bool],
 ) -> Result<Vec<Arc<dyn Array>>> {
-    let mut indices = None;
     batch
         .iter()
         .zip(repeat_mask.iter())
         .map(|(arr, &repeat)| {
             if repeat {
-                if let Some(strings) = arr.as_string_opt::<i32>() {
-                    if let Some(strings) = repeat_short_strings(strings, lengths, total_length) {
-                        return Ok(Arc::new(strings) as ArrayRef);
-                    }
-                }
-                if arr.null_count() == 0 && total_length >= arr.len().saturating_mul(5) {
-                    let repeated = arrow::array::downcast_primitive_array! {
-                        arr => { Some(Arc::new(repeat_primitive(arr, lengths, total_length)) as ArrayRef) }
-                        _ => None,
-                    };
-                    if let Some(repeated) = repeated {
-                        return Ok(repeated);
-                    }
-                }
-                let indices =
-                    indices.get_or_insert_with(|| create_take_indices(lengths, total_length));
                 Ok(kernels::take::take(arr, indices, None)?)
             } else {
-                Ok(Arc::clone(arr))
+                Ok(new_null_array(arr.data_type(), arr.len()))
             }
         })
         .collect()
 }
 
-/// Repeat non-null primitives by input runs without allocating gather indices.
-fn repeat_primitive<T: arrow::datatypes::ArrowPrimitiveType>(
-    array: &PrimitiveArray<T>,
-    lengths: &Int64Array,
-    total_length: usize,
-) -> PrimitiveArray<T> {
-    let mut values = Vec::with_capacity(total_length);
-    for (&value, &repeat) in array.values().iter().zip(lengths.values()) {
-        values.resize(values.len() + repeat as usize, value);
-    }
-    PrimitiveArray::new(values.into(), None).with_data_type(array.data_type().clone())
-}
-
-/// Repeat short Utf8 values using the input runs rather than gathering every output value.
-/// Batches dominated by long strings or with less than twofold expansion use Arrow's take instead.
-fn repeat_short_strings(
-    array: &StringArray,
-    lengths: &PrimitiveArray<Int64Type>,
-    total_length: usize,
-) -> Option<StringArray> {
-    const SHORT_STRING_BYTES: usize = 16;
-
-    debug_assert_eq!(array.len(), lengths.len());
-    debug_assert_eq!(lengths.null_count(), 0);
-    debug_assert!(lengths.values().iter().all(|&n| n >= 0));
-    if total_length < array.len().saturating_mul(2) {
-        return None;
-    }
-    if array.null_count() == array.len() {
-        return Some(StringArray::new_null(total_length));
-    }
-
-    // Reject wide input batches in O(1), before scanning their repetition lengths. This
-    // also avoids paying a guard pass followed by take for mixed short/long batches.
-    let input_offsets = array.value_offsets();
-    let input_bytes = (input_offsets[array.len()] - input_offsets[0]) as usize;
-    if input_bytes > array.len().checked_mul(SHORT_STRING_BYTES)? {
-        return None;
-    }
-    let mut capacity = 0usize;
-    let mut valid_rows = 0usize;
-    for (i, (range, &repeat)) in input_offsets.windows(2).zip(lengths.values()).enumerate() {
-        if repeat == 0 || array.is_null(i) {
-            continue;
-        }
-        let len = (range[1] - range[0]) as usize;
-        capacity = capacity.checked_add(len.checked_mul(repeat as usize)?)?;
-        valid_rows = valid_rows.checked_add(repeat as usize)?;
-        // Stop early on long-string batches. Occasional longer values among short strings
-        // can use exact-size copies below, avoiding a full guard pass followed by take.
-        if capacity > valid_rows.checked_mul(SHORT_STRING_BYTES)? {
-            return None;
-        }
-    }
-    // Leave offset overflow to the existing take kernel, including its error reporting.
-    i32::try_from(capacity).ok()?;
-    let mut values = vec![0u8; capacity.checked_add(SHORT_STRING_BYTES)?];
-    let mut offsets = Vec::with_capacity(total_length + 1);
-    offsets.push(0i32);
-    let mut nulls = (array.null_count() > 0).then(|| NullBufferBuilder::new(total_length));
-    let data = array.value_data();
-    let mut position = 0usize;
-    for (i, (range, &repeat)) in input_offsets.windows(2).zip(lengths.values()).enumerate() {
-        let repeat = repeat as usize;
-        if repeat == 0 {
-            continue;
-        }
-        if array.is_null(i) {
-            offsets.resize(offsets.len() + repeat, position as i32);
-            nulls.as_mut().unwrap().append_n_nulls(repeat);
-            continue;
-        }
-        let start = range[0] as usize;
-        let len = (range[1] - range[0]) as usize;
-        if len > 0 {
-            offsets.extend((1..=repeat).map(|j| (position + len * j) as i32));
-        }
-        // Fixed-size copies avoid a tiny variable-size memcpy per output value. The source
-        // must contain the whole copy, even for a sliced array's final value. Extra bytes
-        // overwrite only future values or the output padding; later copies replace
-        // them before we truncate to the logical byte length.
-        if len == 0 {
-            offsets.resize(offsets.len() + repeat, position as i32);
-        } else if len <= 8 && data.len() - start >= 8 {
-            let value = &data[start..start + 8];
-            for _ in 0..repeat {
-                values[position..position + 8].copy_from_slice(value);
-                position += len;
-            }
-        } else if len <= SHORT_STRING_BYTES && data.len() - start >= SHORT_STRING_BYTES {
-            let value = &data[start..start + SHORT_STRING_BYTES];
-            for _ in 0..repeat {
-                values[position..position + SHORT_STRING_BYTES].copy_from_slice(value);
-                position += len;
-            }
-        } else {
-            let value = &data[start..start + len];
-            for _ in 0..repeat {
-                values[position..position + len].copy_from_slice(value);
-                position += len;
-            }
-        }
-        if let Some(nulls) = &mut nulls {
-            nulls.append_n_non_nulls(repeat);
-        }
-    }
-    debug_assert_eq!(position, capacity);
-    debug_assert_eq!(offsets.len(), total_length + 1);
-    values.truncate(capacity);
-    let nulls = nulls
-        .and_then(|mut nulls| nulls.finish())
-        .filter(|nulls| nulls.null_count() > 0);
-    // SAFETY: offsets are monotonic, fit i32, and end at the checked byte capacity. Each
-    // logical range copies a complete input Utf8 value, relying on the input array's Utf8
-    // invariant; null ranges are empty. Safe slices bound every copy, values is fully
-    // initialized, and there is one validity entry per output value, by construction.
-    // Avoid validating the same input Utf8 again for every repetition.
-    Some(unsafe {
-        StringArray::new_unchecked(OffsetBuffer::new(offsets.into()), values.into(), nulls)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
     use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
     use arrow::datatypes::{Field, Int32Type, Schema};
     use datafusion::common::NullHandling;
@@ -1545,264 +1462,6 @@ mod tests {
     use datafusion::prelude::SessionConfig;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-
-    #[test]
-    fn primitive_repetition_preserves_buffers_and_type_metadata() {
-        use arrow::array::{Decimal128Array, Float64Array, TimestampMicrosecondArray};
-
-        let arrays: Vec<ArrayRef> = vec![
-            Arc::new(Int64Array::from(vec![1, -2, 3, 4, 5])),
-            Arc::new(Int64Array::from(vec![
-                Some(1),
-                None,
-                Some(3),
-                None,
-                Some(5),
-            ])),
-            Arc::new(Int64Array::from(vec![None; 5])),
-            Arc::new(Float64Array::from(vec![
-                f64::from_bits(0x7ff0000000000001),
-                -0.0,
-                f64::NEG_INFINITY,
-                f64::from_bits(0x7ff8000000000002),
-                1.0,
-            ])),
-            Arc::new(
-                TimestampMicrosecondArray::from(vec![0, -1, 1, 100, 200])
-                    .with_timezone("Asia/Taipei"),
-            ),
-            Arc::new(
-                Decimal128Array::from(vec![0, -12345, 12345, 100, 200])
-                    .with_precision_and_scale(20, 4)
-                    .unwrap(),
-            ),
-        ];
-        for array in arrays {
-            for start in [0, 1] {
-                let array = array.slice(start, array.len() - start);
-                for fan_out in [0, 1, 2, 5, 100] {
-                    let lengths = Int64Array::from_iter_values((0..array.len()).map(|i| {
-                        if i % 3 == 1 {
-                            0
-                        } else {
-                            fan_out
-                        }
-                    }));
-                    let total = lengths.values().iter().sum::<i64>() as usize;
-                    let indices = create_take_indices(&lengths, total);
-                    let expected = kernels::take::take(&array, &indices, None).unwrap();
-                    let actual =
-                        repeat_arrs(std::slice::from_ref(&array), &lengths, total, &[true])
-                            .unwrap();
-                    assert_eq!(actual[0].data_type(), expected.data_type());
-                    assert_eq!(actual[0].to_data().buffers(), expected.to_data().buffers());
-                    assert_eq!(actual[0].nulls(), expected.nulls());
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn short_string_repetition_matches_take_buffers() {
-        let words = [
-            "",
-            "a",
-            "abc",
-            "four",
-            "eight888",
-            "nine99999",
-            "sixteen_12345678",
-            "中文",
-            "😀",
-            "z",
-        ];
-        for null_stride in [0usize, 2, 7, 1] {
-            let source = StringArray::from_iter((0..60).map(|i| {
-                (null_stride == 0 || i % null_stride != 0).then_some(words[i % words.len()])
-            }));
-            for start in [0usize, 3, 59] {
-                let source = source.slice(start, 60 - start);
-                for fanout in [1i64, 5, 100] {
-                    let lengths = Int64Array::from_iter_values((0..source.len()).map(|i| {
-                        if i % 4 == 0 {
-                            0
-                        } else {
-                            fanout
-                        }
-                    }));
-                    let total = lengths.values().iter().sum::<i64>() as usize;
-                    if total > source.len() {
-                        assert_string_repeat_buffers(&source, &lengths);
-                    }
-                }
-            }
-        }
-        // The last value has no following bytes to support a wider source copy.
-        for word in words {
-            assert_string_repeat_buffers(
-                &StringArray::from(vec![word]),
-                &Int64Array::from(vec![5]),
-            );
-        }
-        // A null can own nonempty bytes; take must discard them. The middle slice also
-        // starts inside both the offset buffer and the validity bitmap.
-        let source = StringArray::new(
-            OffsetBuffer::new(vec![0, 3, 8, 9, 12].into()),
-            arrow::buffer::Buffer::from_slice_ref(b"abcHIDDENxyz"),
-            Some(NullBuffer::from(vec![true, false, false, true])),
-        );
-        for lengths in [vec![5, 5, 5, 5], vec![5, 0, 0, 5], vec![0, 5, 5, 0]] {
-            assert_string_repeat_buffers(&source, &Int64Array::from(lengths));
-        }
-        assert_string_repeat_buffers(&source.slice(1, 3), &Int64Array::from(vec![1, 0, 5]));
-        let valid = StringArray::new(
-            source.offsets().clone(),
-            source.values().clone(),
-            Some(NullBuffer::new_valid(source.len())),
-        );
-        assert_string_repeat_buffers(&valid, &Int64Array::from(vec![5, 5, 5, 5]));
-    }
-
-    fn assert_string_repeat_buffers(source: &StringArray, lengths: &Int64Array) {
-        let total = lengths.values().iter().sum::<i64>() as usize;
-        let actual = repeat_short_strings(source, lengths, total).expect("short string fast path");
-        let indices = create_take_indices(lengths, total);
-        let expected = kernels::take::take(source, &indices, None).unwrap();
-        let expected = expected.as_string::<i32>();
-        assert_eq!(actual.value_offsets(), expected.value_offsets());
-        assert_eq!(actual.value_data(), expected.value_data());
-        assert_eq!(actual.nulls(), expected.nulls());
-        actual.to_data().validate_full().unwrap();
-    }
-
-    #[test]
-    fn short_string_repetition_defers_long_unexpanded_and_overflowing_values() {
-        let lengths = Int64Array::from(vec![5]);
-        let long = StringArray::from(vec!["this string is longer than sixteen bytes"]);
-        assert!(repeat_short_strings(&long, &lengths, 5).is_none());
-        let short = StringArray::from(vec!["abc"]);
-        assert!(repeat_short_strings(&short, &Int64Array::from(vec![1]), 1).is_none());
-        assert!(repeat_short_strings(&short, &Int64Array::from(vec![0]), 0).is_none());
-        let overflow = i32::MAX as i64;
-        assert!(
-            repeat_short_strings(&short, &Int64Array::from(vec![overflow]), overflow as usize)
-                .is_none()
-        );
-        // Long values that are not selected do not disqualify the short values.
-        let mixed = StringArray::from(vec!["a very long unselected value", "abc"]);
-        assert_string_repeat_buffers(&mixed, &Int64Array::from(vec![0, 5]));
-        // A late long value among short strings must not trigger a complete guard pass
-        // followed by take. It uses an exact-size copy while the short values use wider ones.
-        let mixed = StringArray::from_iter_values((0..32).map(|i| {
-            if i == 31 {
-                "x".repeat(64)
-            } else {
-                "abc".to_owned()
-            }
-        }));
-        assert_string_repeat_buffers(&mixed, &Int64Array::from(vec![5; 32]));
-        let almost_flat = StringArray::from(vec!["a", "b", "c", "d"]);
-        assert!(
-            repeat_short_strings(&almost_flat, &Int64Array::from(vec![2, 1, 1, 1]), 5).is_none()
-        );
-    }
-
-    #[test]
-    fn unnest_placeholders_share_the_input() {
-        let list = Arc::clone(list_batch(&[Some(2), Some(1)]).column(0));
-        let batch: Vec<ArrayRef> = vec![
-            Arc::clone(&list),
-            Arc::new(Int32Array::from(vec![10, 20])),
-            Arc::new(StringArray::from(vec!["abc", "中文"])),
-            Arc::new(StringArray::from(vec![
-                "a long value that uses Arrow take",
-                "another value longer than sixteen bytes",
-            ])),
-            Arc::new(Int64Array::from(vec![Some(1), None])),
-        ];
-        let lengths = Int64Array::from(vec![2, 2]);
-        let result = repeat_arrs(&batch, &lengths, 4, &[false, true, true, true, true]).unwrap();
-        assert!(Arc::ptr_eq(&result[0], &list));
-        let indices = create_take_indices(&lengths, 4);
-        for (input, output) in batch.iter().zip(&result).skip(1) {
-            let expected = kernels::take::take(input, &indices, None).unwrap();
-            assert_eq!(output.to_data(), expected.to_data());
-        }
-    }
-
-    #[test]
-    fn recursive_unnest_replaces_placeholders_with_and_without_carried_columns() {
-        let inner = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
-            Some(vec![Some(10), None]),
-            None,
-            Some(vec![]),
-            Some(vec![Some(20)]),
-            Some(vec![Some(30), Some(40)]),
-        ]);
-        let outer: ArrayRef = Arc::new(ListArray::new(
-            Arc::new(Field::new("item", inner.data_type().clone(), true)),
-            OffsetBuffer::new(ScalarBuffer::from(vec![0, 3, 5, 5, 5])),
-            Arc::new(inner),
-            Some(NullBuffer::from(vec![true, true, false, true])),
-        ));
-        for carried in [false, true] {
-            for handling in [NullHandling::Drop, NullHandling::PreserveAndExpandEmpty] {
-                let mut columns = vec![Arc::clone(&outer)];
-                let mut fields = vec![Field::new("lists", outer.data_type().clone(), true)];
-                let mut output_fields = vec![Field::new("value", DataType::Int32, true)];
-                if carried {
-                    columns.push(Arc::new(Int32Array::from(vec![1, 2, 3, 4])));
-                    fields.push(Field::new("id", DataType::Int32, false));
-                    output_fields.push(Field::new("id", DataType::Int32, false));
-                }
-                let input = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
-                let output = build_batch(
-                    &input,
-                    &Arc::new(Schema::new(output_fields)),
-                    &[ListUnnest {
-                        index_in_input_schema: 0,
-                        depth: 2,
-                    }],
-                    &HashSet::new(),
-                    &UnnestOptions::new().with_null_handling(handling),
-                    None,
-                )
-                .unwrap()
-                .unwrap();
-                let (expected, ids) = if handling == NullHandling::Drop {
-                    (
-                        vec![Some(10), None, Some(20), Some(30), Some(40)],
-                        vec![1, 1, 2, 2, 2],
-                    )
-                } else {
-                    (
-                        vec![
-                            Some(10),
-                            None,
-                            None,
-                            None,
-                            Some(20),
-                            Some(30),
-                            Some(40),
-                            None,
-                            None,
-                        ],
-                        vec![1, 1, 1, 1, 2, 2, 2, 3, 4],
-                    )
-                };
-                assert_eq!(
-                    output.column(0).as_primitive::<Int32Type>(),
-                    &Int32Array::from(expected)
-                );
-                if carried {
-                    assert_eq!(
-                        output.column(1).as_primitive::<Int32Type>(),
-                        &Int32Array::from(ids)
-                    );
-                }
-            }
-        }
-    }
 
     /// Build a single-column `List<Int32>` batch where row `i` holds `lens[i]` elements,
     /// numbered consecutively across the whole batch. `None` is a NULL list.
@@ -1928,6 +1587,168 @@ mod tests {
             .unwrap();
         assert_eq!(sizes(&batches), vec![10, 10, 5]);
         assert_eq!(values(&batches), seq(25));
+    }
+
+    #[tokio::test]
+    async fn ordinary_carried_strings_keep_multi_row_chunks() {
+        let lists = list_batch(&vec![Some(300); 8192]);
+        let payload = "x".repeat(1024);
+        let strings = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            payload.as_str(),
+            8192,
+        ))) as ArrayRef;
+        let schema = Arc::new(Schema::new(vec![
+            lists.schema().field(0).clone(),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::clone(lists.column(0)), strings],
+        )
+        .unwrap();
+        let source = MemorySourceConfig::try_new_exec(&[vec![input]], schema, None).unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("l", DataType::Int32, true),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let exec = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap();
+        let context = Arc::new(
+            TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(8192)),
+        );
+        let mut stream = exec.execute(0, context).unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.num_rows(), 27 * 300);
+        assert_eq!(
+            first.column(1).as_string::<i32>().value_data().len(),
+            8100 * 1024
+        );
+    }
+
+    #[test]
+    fn repetition_limit_ignores_fixed_width_buffers() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "id",
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(repetition_limit(&batch, &[]), i32::MAX as usize);
+    }
+
+    #[test]
+    fn repetition_limit_uses_selected_nested_offsets() {
+        use arrow::array::NullArray;
+
+        let length = i32::MAX as usize / 2 + 1;
+        let list = ListArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            OffsetBuffer::new(vec![0, length as i32 - 1, length as i32].into()),
+            Arc::new(NullArray::new(length)),
+            None,
+        );
+        let batch =
+            RecordBatch::try_from_iter(vec![("carried", Arc::new(list) as ArrayRef)]).unwrap();
+        assert_eq!(repetition_limit(&batch.slice(1, 1), &[]), i32::MAX as usize);
+    }
+
+    #[test]
+    fn repetition_limit_follows_nested_variable_width_slices() {
+        use arrow::array::{BinaryArray, MapArray};
+
+        let strings = Arc::new(StringArray::from(vec!["ignored prefix", "a", "bc"])) as ArrayRef;
+        let field = Arc::new(Field::new("item", DataType::Utf8, false));
+        let list = ListArray::new(
+            Arc::clone(&field),
+            OffsetBuffer::new(vec![0, 1, 3].into()),
+            Arc::clone(&strings),
+            None,
+        );
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![0, 1, 2])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Utf8, false)),
+                Arc::clone(&strings),
+            ),
+        ]);
+        let map = MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            list.offsets().clone(),
+            entries,
+            None,
+            false,
+        );
+        let arrays: Vec<ArrayRef> = vec![
+            strings.slice(1, 2),
+            Arc::new(BinaryArray::from(vec![b"prefix".as_slice(), b"a", b"bc"]).slice(1, 2)),
+            Arc::new(list.slice(1, 1)),
+            Arc::new(map.slice(1, 1)),
+            Arc::new(
+                StructArray::from(vec![(Arc::clone(&field), Arc::clone(&strings))]).slice(1, 2),
+            ),
+            Arc::new(
+                LargeListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(vec![0i64, 1, 3].into()),
+                    Arc::clone(&strings),
+                    None,
+                )
+                .slice(1, 1),
+            ),
+            Arc::new(FixedSizeListArray::new(field, 1, strings, None).slice(1, 2)),
+        ];
+        for array in arrays {
+            let batch = RecordBatch::try_from_iter(vec![("carried", array)]).unwrap();
+            assert_eq!(repetition_limit(&batch, &[]), i32::MAX as usize / 3);
+        }
+    }
+
+    #[test]
+    fn chunk_offset_bound_counts_all_repeated_rows() {
+        use arrow::array::NullArray;
+
+        let child_length = i32::MAX / 3;
+        let carried = ListArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            OffsetBuffer::new(vec![0, child_length, 2 * child_length].into()),
+            Arc::new(NullArray::new(2 * child_length as usize)),
+            None,
+        );
+        let lists = list_batch(&[Some(2), Some(2)]);
+        let batch = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("carried", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let list_columns = [ListUnnest {
+            index_in_input_schema: 0,
+            depth: 1,
+        }];
+        let mut pending = PendingInput {
+            batch,
+            row_offset: 0,
+            element_offset: 0,
+            safe_repetitions: Some(1),
+            output_lens: Some(Int64Array::from(vec![2, 2])),
+        };
+        // Each row can repeat twice, but their combined child offsets would overflow.
+        for _ in 0..2 {
+            let (chunk, lengths) = pending.next_chunk(4, &list_columns).unwrap();
+            assert_eq!(chunk.num_rows(), 1);
+            assert_eq!(lengths.unwrap().values(), &[2]);
+        }
+        assert_eq!(pending.remaining_rows(), 0);
     }
 
     #[tokio::test]

@@ -131,9 +131,10 @@ combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinEx
 | `UnionExec`    | ✅     |                                                                                                                           |
 | `CoalesceExec` | ✅     |                                                                                                                           |
 
-Map generators followed by another generator through projections or filters stay on Spark to
-avoid repeated carried-column materialization. A single map generator, including maps with nested
-values, remains eligible for native execution. An exchange separates generator chains.
+Map generators followed by another generator through projections or filters stay on Spark's fused
+generator path. Native generator chains materialize carried columns between generators for both
+arrays and maps. Array chains retain their native support. A single map generator, including maps
+with nested values, remains eligible for native execution. An exchange separates generator chains.
 
 ## Writes
 

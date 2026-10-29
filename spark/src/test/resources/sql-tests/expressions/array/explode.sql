@@ -328,20 +328,6 @@ CREATE TABLE test_explode_empty(id int, arr array<int>) USING parquet
 query
 SELECT id, explode_outer(arr) FROM test_explode_empty
 
--- ===== Map inputs: outer form preserves empty and null maps =====
-
-statement
-CREATE TABLE test_explode_map(id int, m map<string, int>) USING parquet
-
-statement
-INSERT INTO test_explode_map VALUES
-  (1, map('k1', 1, 'k2', 2)),
-  (2, map()),
-  (3, NULL)
-
-query
-SELECT id, explode_outer(m) FROM test_explode_map
-
 -- ===== TIMESTAMP_NTZ (Spark 3.4+): distinct Arrow layout (no tz) from LTZ =====
 
 statement

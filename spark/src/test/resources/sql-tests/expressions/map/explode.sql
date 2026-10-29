@@ -16,6 +16,7 @@
 -- under the License.
 
 -- Config: spark.comet.exec.explode.enabled=true
+-- Config: spark.comet.batchSize=4
 
 statement
 CREATE TABLE explode_maps(id int, m map<string, int>) USING parquet
@@ -46,6 +47,19 @@ WHERE k IS NULL OR v IS NULL
 query
 SELECT id, p, k, v FROM explode_maps LATERAL VIEW OUTER posexplode(m) e AS p, k, v
 WHERE p = 0 OR p IS NULL
+
+statement
+CREATE TABLE explode_empty_maps(id int, m map<int, boolean>) USING parquet
+
+statement
+INSERT INTO explode_empty_maps SELECT id, CASE WHEN id % 2 = 0 THEN NULL
+  ELSE cast(map() AS map<int, boolean>) END FROM range(16)
+
+query
+SELECT id, m, explode_outer(m) FROM explode_empty_maps
+
+query
+SELECT id, m, posexplode_outer(m) FROM explode_empty_maps
 
 -- Native map producers feed the generator directly, without a Parquet map column.
 statement

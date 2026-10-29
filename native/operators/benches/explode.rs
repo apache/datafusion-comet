@@ -32,9 +32,9 @@ use arrow::array::{
     Array, ArrayRef, AsArray, Int32Array, Int64Array, ListArray, StringArray, StructArray,
 };
 use arrow::buffer::{NullBuffer, OffsetBuffer};
-use arrow::datatypes::{DataType, Field, Fields, Int64Type, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, Fields, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::{NullHandling, UnnestOptions};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::execution::TaskContext;
@@ -42,6 +42,7 @@ use datafusion::physical_plan::unnest::ListUnnest;
 use datafusion::physical_plan::{common::collect, ExecutionPlan};
 use datafusion::prelude::SessionConfig;
 use datafusion_comet_operators::ExplodeExec;
+use futures::StreamExt;
 use tokio::runtime::Runtime;
 
 /// Input rows per batch, and batches per run. 8192 is DataFusion's default `batch_size`, so the
@@ -266,171 +267,59 @@ fn run(runtime: &Runtime, plan: &Arc<dyn ExecutionPlan>, ctx: &Arc<TaskContext>)
     assert!(!batches.is_empty());
 }
 
-// The inner generator in CometExplodeBenchmark's chained map case carries k, region and
-// platform through five entries per map value. The existing carried-column group only has
-// Int64 columns, so it cannot expose the string gathers in this shape.
-const CHAINED_FAN_OUT: usize = 5;
-const K: usize = 0;
-const REGION: usize = 1;
-const PLATFORM: usize = 2;
-
-fn chained_entries(start: usize) -> ListArray {
-    let entry_fields = Fields::from(vec![
-        Field::new("type", DataType::Utf8, true),
-        Field::new("ts", DataType::Int64, true),
-        Field::new("page", DataType::Utf8, true),
-        Field::new("source", DataType::Utf8, true),
-    ]);
-    let entry_start = start * CHAINED_FAN_OUT;
-    let entry_count = ROWS_PER_BATCH * CHAINED_FAN_OUT;
-    let entries = StructArray::new(
-        entry_fields,
-        vec![
-            Arc::new(StringArray::from_iter_values(
-                (0..entry_count).map(|i| format!("t_{}", i % CHAINED_FAN_OUT)),
-            )),
-            Arc::new(Int64Array::from_iter_values(
-                (entry_start..entry_start + entry_count).map(|i| i as i64),
-            )),
-            Arc::new(StringArray::from_iter_values(
-                (entry_start..entry_start + entry_count).map(|i| format!("page_{i}")),
-            )),
-            Arc::new(StringArray::from_iter_values(
-                (0..entry_count).map(|i| format!("src_{}", i % 4)),
-            )),
-        ],
+fn wide_carried_plan() -> Arc<dyn ExecutionPlan> {
+    let values = Arc::new(Int64Array::from_iter_values(
+        0..(ROWS_PER_BATCH * 300) as i64,
+    ));
+    let list = ListArray::new(
+        Arc::new(Field::new("item", DataType::Int64, false)),
+        OffsetBuffer::from_lengths(std::iter::repeat_n(300, ROWS_PER_BATCH)),
+        values,
         None,
     );
-    ListArray::new(
-        Arc::new(Field::new("item", entries.data_type().clone(), true)),
-        OffsetBuffer::from_lengths(std::iter::repeat_n(CHAINED_FAN_OUT, ROWS_PER_BATCH)),
-        Arc::new(entries),
-        None,
-    )
-}
-
-fn chained_plan(carried: &[usize], nullable: bool) -> (Arc<dyn ExecutionPlan>, Vec<RecordBatch>) {
-    let batches: Vec<_> = (0..BATCHES)
-        .map(|batch| {
-            let start = batch * ROWS_PER_BATCH;
-            let list = chained_entries(start);
-            let k = Int64Array::from_iter(
-                (start..start + ROWS_PER_BATCH)
-                    .map(|i| (!nullable || !i.is_multiple_of(10)).then_some((i / 4) as i64)),
-            );
-            let region =
-                StringArray::from_iter((start..start + ROWS_PER_BATCH).map(|i| {
-                    (!nullable || !i.is_multiple_of(10)).then(|| format!("r_{}", i / 4 % 8))
-                }));
-            let platform = StringArray::from_iter_values(
-                (start..start + ROWS_PER_BATCH).map(|i| format!("p_{}", i % 4 + 1)),
-            );
-            let payload: [ArrayRef; 3] = [Arc::new(k), Arc::new(region), Arc::new(platform)];
-            let names = ["k", "region", "platform"];
-            let mut fields = vec![Field::new("entries", list.data_type().clone(), true)];
-            let mut columns: Vec<ArrayRef> = vec![Arc::new(list)];
-            for &i in carried {
-                fields.push(Field::new(
-                    names[i],
-                    payload[i].data_type().clone(),
-                    i != PLATFORM,
-                ));
-                columns.push(Arc::clone(&payload[i]));
-            }
-            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
-        })
-        .collect();
-    let schema = batches[0].schema();
-    let output_fields = std::iter::once(Arc::new(Field::new(
-        "entry",
-        batches[0].column(0).as_list::<i32>().value_type(),
-        true,
-    )))
-    .chain(schema.fields().iter().skip(1).cloned())
-    .collect::<Vec<_>>();
-    let source =
-        MemorySourceConfig::try_new_exec(std::slice::from_ref(&batches), schema, None).unwrap();
-    let plan = ExplodeExec::new(
-        source,
-        vec![ListUnnest {
-            index_in_input_schema: 0,
-            depth: 1,
-        }],
-        vec![],
-        Arc::new(Schema::new(output_fields)),
-        UnnestOptions::new().with_null_handling(NullHandling::Drop),
-    )
+    let payload = "x".repeat(1024);
+    let batch = RecordBatch::try_from_iter(vec![
+        ("l", Arc::new(list) as ArrayRef),
+        (
+            "payload",
+            Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                payload.as_str(),
+                ROWS_PER_BATCH,
+            ))) as ArrayRef,
+        ),
+    ])
     .unwrap();
-    (Arc::new(plan), batches)
+    let source =
+        MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
+    Arc::new(
+        ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            Arc::new(Schema::new(vec![
+                Field::new("l", DataType::Int64, false),
+                Field::new("payload", DataType::Utf8, false),
+            ])),
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap(),
+    )
 }
 
-fn verify_chained(
-    runtime: &Runtime,
-    plan: &Arc<dyn ExecutionPlan>,
-    ctx: &Arc<TaskContext>,
-    input: &[RecordBatch],
-    carried: &[usize],
-    nullable: bool,
-) {
-    let output = runtime
-        .block_on(collect(plan.execute(0, Arc::clone(ctx)).unwrap()))
-        .unwrap();
-    let mut row = 0;
-    let mut null_counts = vec![0; carried.len()];
-    for batch in output {
-        assert!(batch.num_rows() <= ROWS_PER_BATCH);
-        let entries = batch.column(0).as_struct();
-        let source_batch = row / (ROWS_PER_BATCH * CHAINED_FAN_OUT);
-        let source_list = input[source_batch].column(0).as_list::<i32>();
-        let source_entries = source_list.values().as_struct();
-        // String slicing retains the full values buffer. A gather would allocate a new one.
-        let page = entries.column(2).as_string::<i32>();
-        let source_page = source_entries.column(2).as_string::<i32>();
-        assert_eq!(
-            page.value_data().as_ptr(),
-            source_page.value_data().as_ptr()
-        );
-        let ts = entries.column(1).as_primitive::<Int64Type>();
-        for (position, &column) in carried.iter().enumerate() {
-            let array = batch.column(position + 1);
-            null_counts[position] += array.null_count();
-            for j in 0..batch.num_rows() {
-                let input_row = (row + j) / CHAINED_FAN_OUT;
-                let is_null = nullable && column != PLATFORM && input_row.is_multiple_of(10);
-                assert_eq!(array.is_null(j), is_null);
-                if is_null {
-                    continue;
-                }
-                if column == K {
-                    assert_eq!(
-                        array.as_primitive::<Int64Type>().value(j),
-                        (input_row / 4) as i64
-                    );
-                } else {
-                    let expected = if column == REGION {
-                        format!("r_{}", input_row / 4 % 8)
-                    } else {
-                        format!("p_{}", input_row % 4 + 1)
-                    };
-                    let value = array.as_string::<i32>().value(j);
-                    assert_eq!(value, expected);
-                }
-            }
+fn run_wide(runtime: &Runtime, plan: &Arc<dyn ExecutionPlan>, ctx: &Arc<TaskContext>) -> usize {
+    runtime.block_on(async {
+        let mut stream = plan.execute(0, Arc::clone(ctx)).unwrap();
+        let mut bytes = 0;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            bytes += batch.column(1).as_string::<i32>().value_data().len();
+            std::hint::black_box(batch);
         }
-        for j in 0..batch.num_rows() {
-            assert_eq!(ts.value(j), (row + j) as i64);
-        }
-        row += batch.num_rows();
-    }
-    assert_eq!(row, ROWS_PER_BATCH * BATCHES * CHAINED_FAN_OUT);
-    for (position, &column) in carried.iter().enumerate() {
-        let expected = if nullable && column != PLATFORM {
-            (ROWS_PER_BATCH * BATCHES).div_ceil(10) * CHAINED_FAN_OUT
-        } else {
-            0
-        };
-        assert_eq!(null_counts[position], expected);
-    }
+        bytes
+    })
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
@@ -463,12 +352,6 @@ fn criterion_benchmark(c: &mut Criterion) {
             b.iter(|| run(&runtime, &plan, &ctx))
         });
     }
-    for fan_out in [1usize, 2, 100] {
-        let plan = explode_plan(Element::Int64, fan_out, 3, RowMix::Dense, false);
-        group.bench_function(format!("fan_out_{fan_out}"), |b| {
-            b.iter(|| run(&runtime, &plan, &ctx))
-        });
-    }
     group.finish();
 
     // NULL and empty rows under outer semantics are padded, so this is the shape that cannot be
@@ -496,23 +379,11 @@ fn criterion_benchmark(c: &mut Criterion) {
     }
     group.finish();
 
-    let mut group = c.benchmark_group("explode_chained_carry");
-    group.throughput(Throughput::Elements(
-        (ROWS_PER_BATCH * BATCHES * CHAINED_FAN_OUT) as u64,
-    ));
-    for (name, carried, nullable) in [
-        ("none", &[][..], false),
-        ("k", &[K][..], false),
-        ("region", &[REGION][..], false),
-        ("platform", &[PLATFORM][..], false),
-        ("full", &[K, REGION, PLATFORM][..], false),
-        ("full_nulls", &[K, REGION, PLATFORM][..], true),
-    ] {
-        let (plan, input) = chained_plan(carried, nullable);
-        verify_chained(&runtime, &plan, &ctx, &input, carried, nullable);
-        group.bench_function(name, |b| b.iter(|| run(&runtime, &plan, &ctx)));
-    }
-    group.finish();
+    let plan = wide_carried_plan();
+    assert_eq!(run_wide(&runtime, &plan, &ctx), ROWS_PER_BATCH * 300 * 1024);
+    c.bench_function("explode_1kib_carried_fan_out_300", |b| {
+        b.iter(|| run_wide(&runtime, &plan, &ctx))
+    });
 }
 
 criterion_group!(benches, criterion_benchmark);

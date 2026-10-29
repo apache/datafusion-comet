@@ -5205,6 +5205,21 @@ mod tests {
                         .collect();
                     assert_eq!(values, expected_values.repeat(2), "{context}");
                     if map {
+                        let schema = native_plan.schema();
+                        for (index, id) in [
+                            (schema.fields().len() - 2, "10"),
+                            (schema.fields().len() - 1, "11"),
+                        ] {
+                            assert_eq!(
+                                schema
+                                    .field(index)
+                                    .metadata()
+                                    .get("PARQUET:field_id")
+                                    .map(String::as_str),
+                                Some(id)
+                            );
+                        }
+                        assert_eq!(schema.field(schema.fields().len() - 2).is_nullable(), outer);
                         let expected_keys = if outer {
                             vec![Some(1), Some(2), None, None, Some(3)]
                         } else {

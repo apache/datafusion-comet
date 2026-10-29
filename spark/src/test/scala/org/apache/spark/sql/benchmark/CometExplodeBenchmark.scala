@@ -60,9 +60,9 @@ import org.apache.comet.CometConf
  * processes. Worth knowing when reading these numbers: real queries do get that filter, so a
  * plain `explode` in production usually sees an array column with no nulls and no empty rows.
  *
- * Map cases consume both keys and values. The nesting group models event lists as a map keyed by
- * platform, including a second generator over the entries in each map value. That chained case
- * retains Spark generators above the native scan.
+ * Map cases consume both keys and values. The nesting group compares maps keyed by platform with
+ * equivalent arrays of structs, including a second generator over each platform's event list. The
+ * chained map case retains Spark generators above the native scan.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
 
@@ -163,13 +163,17 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
        |  'entries', ${fullArray(entryStruct, entriesLen, "y")})""".stripMargin
 
   private val eventsMap = mapColumn(eventStruct, eventsLen)
+  private val eventsArray = arrayColumn(
+    s"named_struct('platform', concat('p_', CAST(x AS STRING)), " +
+      s"'entries', ${fullArray(entryStruct, entriesLen, "y")})",
+    eventsLen)
 
-  /** [[eventsMap]] wrapped in the struct chain that puts it eight accessors down. */
-  private val profileColumn = {
+  /** The collection wrapped in the struct chain that puts it eight accessors down. */
+  private def profileColumn(events: String): String = {
     val sessions =
       s"""named_struct(
          |  'device', named_struct('type', 'mobile', 'os', 'iOS'),
-         |  'events', $eventsMap)""".stripMargin
+         |  'events', $events)""".stripMargin
     val account = accountPath.foldRight(s"named_struct('sessions', $sessions)") {
       (field, inner) => s"named_struct('$field', $inner)"
     }
@@ -184,9 +188,9 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    *
    * Each collection column gets its own view rather than sharing one wide table, so that a case
    * is never charged for scanning a column it does not read. The nesting group is the exception:
-   * `events` and `profile` hold the same map at two different depths, and keeping them in one
-   * view is what makes them the same map. Nested schema pruning stops either case from reading
-   * the other's copy.
+   * `events` and `profile` hold the same collection at two different depths, and keeping them in
+   * one view is what makes them the same collection. Nested schema pruning stops either case from
+   * reading the other's copy.
    */
   private val views: Seq[TempView] = Seq(
     TempView("arr_len2", numRows, Seq(s"${arrayColumn("id + x", 2)} AS arr")),
@@ -208,14 +212,18 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
         s"${nullableExpr("id", "id < 0")} AS k",
         s"${nullableExpr("CAST(id AS STRING)", "id < 0")} AS s",
         s"${nullableExpr("id * 2", "id < 0")} AS v")),
+    nestedView("nested_map", eventsMap),
+    nestedView("nested_array", eventsArray))
+
+  private def nestedView(name: String, events: String): TempView =
     TempView(
-      "nested",
+      name,
       nestedRows,
       Seq(
         s"${nullableExpr("id", "id < 0")} AS k",
         s"${nullableExpr("concat('r_', CAST(id % 8 AS STRING))", "id < 0")} AS region",
-        s"$eventsMap AS events",
-        s"$profileColumn AS profile")))
+        s"$events AS events",
+        s"${profileColumn(events)} AS profile"))
 
   /** Writes a view's rows to Parquet and registers it. */
   private def createView(dir: File, view: TempView): Unit = {
@@ -428,31 +436,37 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    *
    * The shape is the one asked for in review: a customer profile whose event list sits eight
    * struct accessors down, holding a second array of four-field structs inside each element. The
-   * outer container is a `map<string, struct<entries: array<struct<...>>>>` keyed by platform.
+   * outer container is a `map<string, struct<entries: array<struct<...>>>>` keyed by platform, or
+   * the equivalent `array<struct<platform, entries>>`.
    *
    * The whole event struct is counted rather than one of its fields, so nested schema pruning
    * cannot narrow the exploded element and leave the case measuring a two-column gather. It does
    * prune the siblings no case reads: on the executed plan the `depth 8` scan's `profile` column
-   * is `struct<account:struct<...sessions:struct<events:map<...>>>>` with `billing`, `addresses`
-   * and `device` gone, and the `depth 1` scan does not project `profile` at all.
+   * retains only the event collection, with `billing`, `addresses` and `device` gone, and the
+   * `depth 1` scan does not project `profile` at all.
    *
-   * `depth 1` and `depth 8` explode the same map, written twice into the same file, so the pair
-   * measures what the struct chain costs: extra definition levels in the Parquet column and a
-   * chain of `GetStructField` above the scan. `then its inner array` chains a second generator
+   * `depth 1` and `depth 8` explode the same collection, written twice into the same file, so the
+   * pair measures what the struct chain costs: extra definition levels in the Parquet column and
+   * a chain of `GetStructField` above the scan. `then its inner array` chains a second generator
    * onto the first, which is the shape the review asked about; its fan-out is 20 against the
    * other two's 4, so read it on its own rather than against them.
    */
-  private def nestedInputCases: Seq[(String, Case)] = {
+  private def nestedInputCases: Seq[(String, Case)] =
+    Seq(true, false).flatMap(mapInput => nestedInputCases(mapInput))
+
+  private def nestedInputCases(mapInput: Boolean): Seq[(String, Case)] = {
+    val view = if (mapInput) "nested_map" else "nested_array"
+    val element = if (mapInput) "map<string,struct>" else "array<struct>"
     val carried = Seq("k", "region")
     val single = Seq("depth 1" -> "events", "depth 8" -> deepEvents).map { case (label, path) =>
-      s"explode map<string,struct>[$eventsLen] at $label" ->
+      s"explode $element[$eventsLen] at $label" ->
         generatorCase(
           "explode",
-          "nested",
+          view,
           eventsLen,
           rows = nestedRows,
           collectionExpr = path,
-          mapInput = true,
+          mapInput = mapInput,
           carried = carried)
     }
 
@@ -460,14 +474,22 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
     // fan-out is the product of the two lengths.
     val events = nonEmptyRows(nestedRows) * eventsLen
     val entries = events * entriesLen
-    val outer =
+    val outer = if (mapInput) {
       "SELECT k, region, platform, ev.entries AS entries " +
-        s"FROM (SELECT k, region, explode($deepEvents) AS (platform, ev) FROM nested)"
+        s"FROM (SELECT k, region, explode($deepEvents) AS (platform, ev) FROM $view)"
+    } else {
+      "SELECT k, region, ev.platform AS platform, ev.entries AS entries " +
+        s"FROM (SELECT k, region, explode($deepEvents) AS ev FROM $view)"
+    }
     val chained =
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
         s"FROM (SELECT k, region, platform, explode(entries) AS entry FROM ($outer))"
 
-    single :+ ("map at depth 8, then its inner array (Spark generators)" ->
-      Case(chained, Seq(entries, entries, entries * 3, entries), nativeGenerators = 0))
+    val execution = if (mapInput) "Spark generators" else "native generators"
+    single :+ (s"$element at depth 8, then its inner array ($execution)" ->
+      Case(
+        chained,
+        Seq(entries, entries, entries * 3, entries),
+        nativeGenerators = if (mapInput) 0 else 2))
   }
 }
