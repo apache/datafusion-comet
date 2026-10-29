@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.NamedExpression
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.{AggregatingAccumulator, CollectMetricsExec, ColumnarToRowExec, SparkPlan}
-import org.apache.spark.sql.types.CalendarIntervalType
+import org.apache.spark.sql.types.{CalendarIntervalType, DataType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -68,6 +68,10 @@ object CometCollectMetricsExec extends CometSink[CollectMetricsExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
     Some(CometConf.COMET_EXEC_COLLECT_METRICS_ENABLED)
 
+  // Forwarded batches can carry widened nested nullability, as local table scans do. Preserve
+  // it at the next native scan instead of narrowing back to the original Catalyst field types.
+  override protected def scanFieldType(dt: DataType): DataType = dt.asNullable
+
   override def getSupportLevel(op: CollectMetricsExec): SupportLevel = {
     if (op.getTagValue(REQUIRES_ROW_CONSUMPTION).contains(true)) {
       Unsupported(Some("Observation below a short-circuiting consumer requires Spark rows"))
@@ -78,11 +82,15 @@ object CometCollectMetricsExec extends CometSink[CollectMetricsExec] {
 
   override def createExec(
       nativeOp: OperatorOuterClass.Operator,
-      op: CollectMetricsExec): CometNativeExec = {
-    val collector = new CometCollectMetricsExec(op.name, op.metricExpressions, op.child)
-    collector.copyTagsFrom(op)
-    op.logicalLink.foreach(collector.setLogicalLink)
-    CometSinkPlaceHolder(nativeOp, op, collector)
+      op: CollectMetricsExec): CometNativeExec = op match {
+    case collector: CometCollectMetricsExec =>
+      // Replanning must retain the existing accumulator while using the same scan schema.
+      CometScanWrapper(nativeOp, collector)
+    case _ =>
+      val collector = new CometCollectMetricsExec(op.name, op.metricExpressions, op.child)
+      collector.copyTagsFrom(op)
+      op.logicalLink.foreach(collector.setLogicalLink)
+      CometSinkPlaceHolder(nativeOp, op, collector)
   }
 }
 

@@ -543,7 +543,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         if (c.getTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION).contains(true)) {
           c.toSpark
         } else {
-          convertToComet(c, CometScanWrapper).getOrElse(c)
+          convertToComet(c, CometCollectMetricsExec).getOrElse(c)
         }
 
       // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The

@@ -23,16 +23,20 @@ import java.util.concurrent.{FutureTask, TimeUnit}
 
 import org.apache.spark.sql.{CometTestBase, Observation, Row}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
-import org.apache.spark.sql.execution.{CollectMetricsExec, MapPartitionsExec, QueryExecution, SortExec, SparkPlan}
+import org.apache.spark.sql.catalyst.plans.physical.RoundRobinPartitioning
+import org.apache.spark.sql.execution.{CollectMetricsExec, MapPartitionsExec, ProjectExec, QueryExecution, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
+import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.joins.SortMergeJoinExec
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{ArrayType, IntegerType}
 import org.apache.spark.sql.util.QueryExecutionListener
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.rules.CometExecRule
 
 class CometCollectMetricsSuite extends CometTestBase {
 
@@ -153,6 +157,63 @@ class CometCollectMetricsSuite extends CometTestBase {
         }
         .collect()
       assert(sourceValues.sorted.toSeq == (0 until 10))
+    }
+  }
+
+  for (adaptive <- Seq(false, true)) {
+    test(s"observation preserves widened array nullability, AQE=$adaptive") {
+      assume(isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+          "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+        def run(comet: Boolean): (Seq[Row], Map[String, Any], SparkPlan) = {
+          withCometEnabled(comet) {
+            val input = Seq(Seq(1, 2)).toDF("x")
+            assert(input.schema("x").dataType == ArrayType(IntegerType, containsNull = false))
+            val observation = Observation("array_elements")
+            val result = input
+              .observe(observation, count(lit(1)).as("rows"))
+              .selectExpr("array_insert(x, 4, 9)")
+              .repartition(2)
+            val rows = result.collect().toSeq
+            (rows, observedMetrics(observation), result.queryExecution.executedPlan)
+          }
+        }
+
+        val (expected, expectedMetrics, _) = run(comet = false)
+        val (actual, actualMetrics, plan) = run(comet = true)
+        assert(expected == Seq(Row(Seq[Integer](1, 2, null, 9))))
+        assert(actual == expected)
+        assert(actualMetrics == expectedMetrics)
+        assert(actualMetrics == Map("rows" -> 1L))
+        assert(collect(plan) { case _: CometLocalTableScanExec => true }.nonEmpty)
+        val collectors = collect(plan) { case op: CometCollectMetricsExec => op }
+        assert(collectors.size == 1)
+        val project = collect(plan) { case op: CometProjectExec => op }.head
+        if (adaptive) {
+          // AQE can replan parents over an existing collector without replacing its accumulator.
+          val collector = new CometCollectMetricsExec(
+            "replanned_arrays",
+            collectors.head.metricExpressions,
+            collectors.head.child)
+          val replanned = CometExecRule(spark).apply(
+            ShuffleExchangeExec(
+              RoundRobinPartitioning(2),
+              ProjectExec(project.projectList, collector)))
+          assert(collect(replanned) { case op: CometCollectMetricsExec => op }.head eq collector)
+          assert(collect(replanned) { case _: CometProjectExec => true }.nonEmpty)
+          val rows = replanned
+            .executeCollect()
+            .map { row =>
+              Row(row.getArray(0).toObjectArray(IntegerType).toSeq)
+            }
+            .toSeq
+          assert(rows == expected)
+          assert(CollectMetricsExec.collect(replanned)("replanned_arrays") == Row(1L))
+        }
+      }
     }
   }
 
