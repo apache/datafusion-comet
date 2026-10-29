@@ -345,7 +345,7 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
     }
 }
 
-/// Builder for `CrossJoin`: Spark's CartesianProductExec, delegated to DataFusion's CrossJoinExec.
+/// Builder for `CrossJoin` (Spark's `CartesianProductExec`).
 pub struct CrossJoinBuilder;
 
 impl OperatorBuilder for CrossJoinBuilder {
@@ -358,9 +358,8 @@ impl OperatorBuilder for CrossJoinBuilder {
     ) -> PlanCreationResult {
         let children = &spark_plan.children;
 
-        // A pure cross product has no join keys and no condition; the Inner join type here only
-        // satisfies the shared helper and is unused by CrossJoinExec. CrossJoinExec emits left
-        // columns followed by right columns, matching Spark's output order.
+        // No keys or condition. The join type only satisfies the helper; CrossJoinExec emits left
+        // then right columns, as Spark does.
         let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
             inputs,
             children,

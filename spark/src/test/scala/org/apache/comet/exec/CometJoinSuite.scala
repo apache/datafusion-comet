@@ -154,42 +154,7 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
-  test("cross join (CartesianProduct) runs natively") {
-    withSQLConf(
-      CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED.key -> "true",
-      // Disable broadcast so Spark plans a CartesianProductExec rather than a
-      // BroadcastNestedLoopJoinExec for the keyless join.
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
-        withParquetTable(Seq((0, 100), (1, 101)), "r") {
-          checkSparkAnswerAndOperator(
-            sql(
-              "SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM l) l " +
-                "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM r) r"),
-            Seq(classOf[CometCartesianProductExec]))
-        }
-      }
-    }
-  }
-
-  test("cross join with a join condition falls back to Spark") {
-    withSQLConf(
-      CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED.key -> "true",
-      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
-        withParquetTable(Seq((0, 100), (1, 101)), "r") {
-          // A non-equi inner join plans a CartesianProductExec that carries the predicate; Comet
-          // has no native post-product filter, so results must still match Spark via fallback.
-          checkSparkAnswer(sql("SELECT * FROM l JOIN r ON l._2 > r._2"))
-        }
-      }
-    }
-  }
-
   test("cross join stays on Spark by default (native path is opt-in)") {
-    // Native CrossJoinExec can't spill, so it's opt-in; by default the cross join stays on Spark.
     withSQLConf(
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
       SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",

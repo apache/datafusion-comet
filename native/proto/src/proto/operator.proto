@@ -1157,9 +1157,7 @@ message BroadcastNestedLoopJoin {
   optional spark.spark_expression.Expr condition = 3;
 }
 
-// Spark's CartesianProductExec, delegated to DataFusion's CrossJoinExec. A pure cross product has
-// no join keys and no condition, so the message carries nothing beyond the two child operators
-// (Spark folds any cross-join predicate into a separate FilterExec above this node).
+// Spark's CartesianProductExec without a condition (one with a condition falls back to Spark).
 message CrossJoin {
 }
 

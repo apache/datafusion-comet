@@ -366,10 +366,9 @@ object CometConf extends ShimCometConf {
       "cartesianProduct",
       defaultValue = false,
       notes = Some(
-        "Opt-in: DataFusion's CrossJoinExec buffers the entire left input in memory and " +
-          "cannot spill, so a large left input can exhaust memory where Spark's spillable " +
-          "CartesianProduct succeeds. Only single-partition, condition-free cross joins are " +
-          "eligible; everything else falls back to Spark"))
+        "Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill. Only " +
+          "condition-free products of single-partition inputs run natively, such as after " +
+          "COALESCE(1); never a bare file scan"))
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)

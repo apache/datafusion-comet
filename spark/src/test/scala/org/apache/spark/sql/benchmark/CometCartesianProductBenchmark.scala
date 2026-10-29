@@ -30,18 +30,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
 /**
- * Benchmark to measure performance of `CartesianProductExec`, which Spark plans for a cross join
- * with no equi key when neither side can be broadcast. Comet runs it natively only when both
- * inputs are a single partition and there is no join condition, so every case reads one Parquet
- * file per side, coalesces each to one partition and crosses them without a predicate.
- *
- * DataFusion's `CrossJoinExec` buffers the whole left input and streams the right one, while
- * Spark's `CartesianProductExec` buffers the right input, so the cases cover a small and a large
- * left side as well as a square product.
- *
- * Each case runs Spark, Comet with the product left in Spark, which is how Comet runs it while
- * `spark.comet.exec.cartesianProduct.enabled` is off by default, and Comet. To run this
- * benchmark:
+ * Benchmark for `CartesianProductExec`. Comet runs it natively only for a condition-free product
+ * of single-partition inputs, so each side is one Parquet file coalesced to one partition. The
+ * cases cover a small left side, a large left side (`CrossJoinExec` buffers the left) and a
+ * square product, each run with Spark, Comet with the product in Spark, and Comet. To run it:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometCartesianProductBenchmark
  * }}}
@@ -58,8 +50,7 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
       .set(
         "spark.shuffle.manager",
         "org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager")
-      // Off-heap memory is disabled, so Comet runs in on-heap mode, which must be enabled
-      // explicitly or Comet stays disabled and every case measures Spark.
+      // Off-heap memory is disabled, so Comet needs on-heap mode enabled.
       .set("spark.comet.exec.onHeap.enabled", "true")
 
     val sparkSession = SparkSession
@@ -72,12 +63,10 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
     sparkSession.conf.set(CometConf.COMET_EXEC_ENABLED.key, "false")
     sparkSession.conf.set(SQLConf.ANSI_ENABLED.key, "false")
     sparkSession.conf.set("spark.sql.shuffle.partitions", "2")
-    // Nothing is broadcast, so Spark plans a CartesianProductExec rather than a broadcast nested
-    // loop join.
+    // No broadcast, so Spark plans a CartesianProductExec.
     sparkSession.conf.set(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
     sparkSession.conf.set(SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key, "-1")
-    // Each side is one Parquet file, and a large split size keeps each scan to one task, so the
-    // COALESCE(1) in the query does not merge splits.
+    // Keep each one-file scan to one task.
     sparkSession.conf.set(SQLConf.FILES_MAX_PARTITION_BYTES.key, (1L << 30).toString)
 
     sparkSession
@@ -101,10 +90,8 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
     CometConf.COMET_EXEC_ENABLED.key -> "true",
     CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED.key -> "true")
 
-  // The sum reads a column from each side, so the product has to produce both, and only its one
-  // row leaves the native plan. A file scan reports UnknownPartitioning(0) even when it reads one
-  // file, which the native product rejects, so each side is coalesced to a single partition, as
-  // in CometJoinSuite. Every arm runs the same query.
+  // A file scan reports UnknownPartitioning(0), which the native product rejects, so each side is
+  // coalesced to one partition. The sum reads both sides.
   private val query =
     "SELECT sum(l.v + r.w) FROM (SELECT /*+ COALESCE(1) */ * FROM lhs) l " +
       "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM rhs) r"
@@ -147,8 +134,8 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
     }
 
   /**
-   * Fails unless every arm runs the product its name claims, the Spark product produces
-   * `productRows` rows, the Comet arm is fully native, and the three arms return the same sum.
+   * Fails unless each arm runs the product it claims, the Comet arm is fully native, and all arms
+   * return the same sum.
    */
   private def verify(name: String, productRows: Long): Unit = {
     val arms = Seq(
@@ -156,8 +143,7 @@ object CometCartesianProductBenchmark extends CometBenchmarkBase {
       ProductInSparkCaseName -> productInSparkConfigs,
       CometCaseName -> cometConfigs)
     val sums = arms.map { case (arm, configs) =>
-      // Assigned to a local rather than returned from the block: Spark 3.4 and 3.5 declare
-      // `SQLHelper.withSQLConf` as returning `Unit`.
+      // A local, because `withSQLConf` returns `Unit` on Spark 3.4 and 3.5.
       var sum: Any = null
       withSQLConf(configs: _*) {
         val df = spark.sql(query)

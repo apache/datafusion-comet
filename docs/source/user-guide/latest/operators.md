@@ -53,7 +53,6 @@ The following operator families fall back to Spark and are not on the current ro
 omitted from the tables below and may be reconsidered based on demand:
 
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
-- **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
 - **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively. The operators above them can still run natively: set `spark.comet.convert.typedDataset.enabled=true` and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.
 
@@ -102,6 +101,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
 | `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                               |
 | `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
+| `CartesianProductExec`        | ✅     | Opt-in (`spark.comet.exec.cartesianProduct.enabled`). Only condition-free products of single-partition inputs, such as after `COALESCE(1)`; never a bare file scan.           |
 
 `ExistenceJoin` (produced when `EXISTS` / `IN` is combined with another predicate via `OR`) runs
 natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-merge joins, residual

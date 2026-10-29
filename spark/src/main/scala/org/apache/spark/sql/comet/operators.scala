@@ -3282,9 +3282,7 @@ case class CometCartesianProductExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometBinaryExec {
 
-  // outputPartitioning is inherited from the base exec (originalPlan.outputPartitioning), which
-  // matches Spark's CartesianProductExec (UnknownPartitioning), so downstream exchange planning
-  // is unchanged.
+  // Inherits Spark's UnknownPartitioning from originalPlan, so exchange planning is unchanged.
 
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
@@ -3315,17 +3313,13 @@ object CometCartesianProductExec extends CometOperatorSerde[CartesianProductExec
     Some(CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED)
 
   override def getSupportLevel(op: CartesianProductExec): SupportLevel = {
-    // Spark folds a cross-join predicate into a separate FilterExec above the product, so the
-    // common CartesianProductExec has no condition. DataFusion's CrossJoinExec has no post-product
-    // filter, so fall back to Spark when a condition is attached.
+    // CartesianProductExec carries its own condition, and CrossJoinExec has no post-product filter.
     if (op.condition.isDefined) {
       Unsupported(Some("CartesianProduct with a join condition is not supported natively"))
     } else if (op.left.outputPartitioning.numPartitions != 1 ||
       op.right.outputPartitioning.numPartitions != 1) {
-      // Comet runs a native plan per Spark partition and cannot inject an exchange here
-      // (EnsureRequirements has already run). A cross product is cross-partition, so it is only
-      // correct natively when both inputs are a single partition; otherwise fall back to Spark's
-      // CartesianProductExec, which crosses every left x right partition pair via CartesianRDD.
+      // A native plan runs per partition and cannot add an exchange here, so a cross product is
+      // only correct when both inputs are a single partition.
       Unsupported(
         Some(
           "Native CartesianProduct requires single-partition inputs (a multi-partition " +
