@@ -314,21 +314,37 @@ function group(github) {
 }
 const forkPush = {
   // GitHub expressions resolve absent properties to an empty string.
-  repository: 'contributor/datafusion-comet', event_name: 'push', event: {}, head_ref: '',
+  repository: 'contributor/datafusion-comet', event_name: 'push', event: { pull_request: { number: '' } },
   ref: 'refs/heads/feature', sha: 'first', workflow: 'Comet CI (fork run)',
 };
+const pullRequest = (number, extra = {}) => ({
+  ...forkPush, repository: 'apache/datafusion-comet', event_name: 'pull_request',
+  event: { pull_request: { number } }, ref: 'refs/pull/' + number + '/merge', ...extra,
+});
 test('successive fork pushes share a cancellation group, separate branches do not', () => {
   assert.equal(ciConcurrency[2], 'true');
   assert.equal(group(forkPush), group({ ...forkPush, sha: 'second' }));
   assert.notEqual(group(forkPush), group({ ...forkPush, ref: 'refs/heads/other' }));
 });
-test('upstream pushes, queue runs and pull requests stay separate per commit or head', () => {
+test('upstream pushes and queue runs stay separate per commit', () => {
   for (const event_name of ['push', 'merge_group']) {
     const upstream = { ...forkPush, repository: 'apache/datafusion-comet', event_name };
     assert.notEqual(group(upstream), group({ ...upstream, sha: 'second' }));
   }
   const upstream = { ...forkPush, repository: 'apache/datafusion-comet' };
   assert.notEqual(group(upstream), group({ ...upstream, event_name: 'merge_group' }));
-  const pull = { ...upstream, event_name: 'pull_request', head_ref: 'feature' };
-  assert.equal(group(pull), group({ ...pull, sha: 'second' }));
+});
+test('a push to a pull request supersedes the last one, whatever the commit', () => {
+  assert.equal(group(pullRequest(7, { sha: 'first' })), group(pullRequest(7, { sha: 'second' })));
+});
+test('same-named branches from different forks cannot cancel each other', () => {
+  // github.head_ref is the branch name alone, so it is the same for both.
+  const one = pullRequest(7, { head_ref: 'patch-1' });
+  const other = pullRequest(8, { head_ref: 'patch-1' });
+  assert.notEqual(group(one), group(other));
+});
+test('a label run is not cancelled by the commit run, or by another label', () => {
+  const labeled = (name) => pullRequest(7, { event: { action: 'labeled', label: { name }, pull_request: { number: 7 } } });
+  assert.notEqual(group(labeled('run-iceberg-tests')), group(pullRequest(7)));
+  assert.notEqual(group(labeled('run-iceberg-tests')), group(labeled('run-delta-tests')));
 });
