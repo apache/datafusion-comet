@@ -372,6 +372,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Reduce duplicate keys when an unfiltered left-semi sort-merge join reads its single " +
+          s"integer equality key directly from a Comet shuffle. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)

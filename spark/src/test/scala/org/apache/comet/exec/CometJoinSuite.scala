@@ -27,28 +27,32 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.SparkException
+import org.apache.spark.{SparkException, TaskContext}
+import org.apache.spark.memory.{MemoryConsumer, MemoryMode}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Descending, DynamicPruningExpression, IsNotNull, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Cast, Descending, DynamicPruningExpression, Expression, IsNotNull, Literal, SortOrder}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
-import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
+import org.apache.spark.sql.catalyst.plans.{Inner, JoinType, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
+import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
+import org.apache.spark.sql.execution.{CoalesceExec, ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
-import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeLike}
+import org.apache.spark.sql.execution.exchange.{ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.{array, count, lit, struct, sum}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DoubleType, IntegerType, LongType, MetadataBuilder, StructField, StructType}
 
-import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
+import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus}
 import org.apache.comet.rules.RewriteJoin
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometJoinSuite extends CometTestBase {
 
@@ -1675,6 +1679,195 @@ class CometJoinSuite extends CometTestBase {
               "SELECT /*+ SHUFFLE_HASH(tbl_a) */ * FROM tbl_a FULL JOIN tbl_b " +
                 "ON tbl_a._2 = tbl_b._1 AND tbl_a._1 > tbl_b._2")
           checkSparkAnswerAndOperator(df3)
+        }
+      }
+    }
+  }
+
+  test("right key reduction requires an unfiltered left-semi join sorted over a Comet shuffle") {
+    val config = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED
+    val right = spark.range(1).queryExecution.sparkPlan
+    val exchange = ShuffleExchangeExec(SinglePartition, right)
+    val shuffle = CometShuffleExchangeExec(SinglePartition, right, exchange)
+    val child = OperatorOuterClass.Operator.getDefaultInstance
+    withSQLConf(
+      config.key -> "true",
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_WITH_JOIN_FILTER_ENABLED.key -> "true") {
+      def eligible(
+          input: SparkPlan,
+          keys: Seq[Expression],
+          kind: JoinType = LeftSemi,
+          condition: Option[Expression] = None): Boolean = {
+        val sort = SortExec(keys.map(SortOrder(_, Ascending)), global = false, input)
+        val sorted = CometSortExec.createExec(child, sort)
+        val join = SortMergeJoinExec(keys, keys, kind, condition, input, sorted)
+        CometSortMergeJoinExec
+          .convert(join, OperatorOuterClass.Operator.newBuilder(), child, child)
+          .get
+          .getSortMergeJoin
+          .getRightKeyReductionEnabled
+      }
+      val keys = right.output
+      assert(eligible(shuffle, keys))
+      assert(!eligible(right, keys))
+      assert(!eligible(CoalesceExec(1, shuffle), keys))
+      assert(!eligible(shuffle, keys, Inner))
+      assert(!eligible(shuffle, keys, condition = Some(Literal.TrueLiteral)))
+      assert(!eligible(shuffle, Seq(Cast(keys.head, IntegerType))))
+    }
+  }
+
+  test("right key reduction sorts fewer BIGINT rows and keeps a match in the final batch") {
+    val config = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED
+    val wideKey = 1L << 32
+    val left = Seq[(Int, java.lang.Long, Int)](
+      (1, null, 10),
+      (1, null, 10),
+      (2, 0L, 10),
+      (3, 1L, 10),
+      (3, 1L, 10),
+      (4, null, 20),
+      (5, 0L, 20),
+      (6, wideKey, 20),
+      (7, -1L, 20),
+      (8, wideKey - 1, 20))
+    val keys = Seq[(java.lang.Long, Int)]((null, 10), (1L, 10), (0L, 20), (wideKey, 20))
+    val right = (0 until 32768).map(i => keys(i % keys.size)) :+ (Long.box(-1L) -> 20)
+
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_BATCH_SIZE.key -> "4096") {
+      withParquetTable(left, "reduction_left") {
+        withParquetTable(right, "reduction_right") {
+          def run(condition: String, expected: Seq[Int]): DataFrame = {
+            val df = sql(s"""SELECT /*+ MERGE(r) */ l._1 FROM reduction_left l
+                            |LEFT SEMI JOIN reduction_right r ON $condition""".stripMargin)
+            assert(df.collect().map(_.getInt(0)).sorted.toSeq == expected)
+            df
+          }
+          val equality = "l._2 = r._1"
+          val expected = Seq(2, 3, 3, 5, 6, 7)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val plan = run(equality, expected).queryExecution.executedPlan
+            assert(collectFirst(plan) { case j: SortMergeJoinExec => j }.isDefined)
+          }
+          var baselineSortRows = 0L
+          for {
+            (adaptive, directRead, writer) <-
+              Seq((false, true, "native"), (true, false, "jvm"), (true, true, "native"))
+            enabled <- Seq(false, true)
+          } {
+            withSQLConf(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+              SQLConf.SHUFFLE_PARTITIONS.key -> (if (adaptive) "2" else "1"),
+              CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> directRead.toString,
+              CometConf.COMET_SHUFFLE_MODE.key -> writer,
+              config.key -> enabled.toString) {
+              val plan = run(equality, expected).queryExecution.executedPlan
+              val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+                .getOrElse(fail(plan.treeString))
+              assert(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled == enabled)
+              val sort = collectFirst(join.right) { case s: CometSortExec => s }
+                .getOrElse(fail(plan.treeString))
+              val sortRows = sort.longMetric("output_rows").value
+              assert(sortRows > 0, plan.treeString)
+              if (enabled) {
+                val in = join.longMetric("right_key_reduction_input_rows").value
+                val out = join.longMetric("right_key_reduction_output_rows").value
+                assert(out > 0 && out < in, plan.treeString)
+                if (!adaptive) {
+                  // One file and one shuffle partition put the new key alone in the final batch.
+                  assert(join.longMetric("right_key_reduction_bypass_rows").value == 8192L + 1)
+                }
+                assert(out == sortRows && join.longMetric("output_rows").value == expected.size)
+                assert(!sort.metrics.contains("right_key_reduction_output_rows"))
+                assert(sortRows < baselineSortRows, plan.treeString)
+              } else {
+                assert(!join.metrics.contains("right_key_reduction_input_rows"))
+                baselineSortRows = sortRows
+              }
+            }
+          }
+          withSQLConf(
+            config.key -> "true",
+            CometConf.COMET_SHUFFLE_MODE.key -> "native",
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            for ((condition, ids) <- Seq(
+                ("l._2 <=> r._1", Seq(1, 1, 2, 3, 3, 4, 5, 6, 7)),
+                (s"$equality AND l._3 = r._2", Seq(3, 3, 5, 6, 7)))) {
+              val plan = run(condition, ids).queryExecution.executedPlan
+              val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }
+                .getOrElse(fail(plan.treeString))
+              assert(!join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled)
+              assert(!join.metrics.contains("right_key_reduction_input_rows"))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (pool <- Seq("fair_unified", "greedy_unified")) {
+    test(s"right key reduction admission with resident JVM execution memory ($pool)") {
+      val rightRows = 32768
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "4096",
+        CometConf.COMET_SHUFFLE_MODE.key -> "native",
+        CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> pool,
+        CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
+        withParquetTable(Seq(0, 1, 1, 3, 4).map(Tuple1(_)), "admission_left") {
+          withParquetTable((0 until rightRows).map(i => Tuple1(i % 4)), "admission_right") {
+            for (holdMemory <- Seq(false, true)) {
+              val df = sql("""SELECT /*+ MERGE(r) */ l._1 FROM admission_left l
+                           |LEFT SEMI JOIN admission_right r ON l._1 = r._1""".stripMargin)
+              val plan = df.queryExecution.executedPlan
+              val join = collectFirst(plan) { case j: CometSortMergeJoinExec => j }.get
+              val sort = collectFirst(join.right) { case s: CometSortExec => s }.get
+              assert(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled)
+
+              val result = SQLExecution.withSQLConfPropagated(spark) {
+                plan
+                  .execute()
+                  .mapPartitions { rows =>
+                    val context = TaskContext.get()
+                    val manager = CometExecIterator.taskMemory(context, 0L).manager.internal
+                    val consumer = new MemoryConsumer(manager, 0L, MemoryMode.OFF_HEAP) {
+                      override def spill(size: Long, trigger: MemoryConsumer): Long = 0L
+                    }
+                    try {
+                      // The native iterator exists, but its plan is built only on the first pull.
+                      if (holdMemory) {
+                        require(consumer.acquireMemory(4096L) == 4096L)
+                      }
+                      Iterator.single(rows.map(_.getInt(0)).toVector)
+                    } finally {
+                      consumer.freeMemory(consumer.getUsed)
+                    }
+                  }
+                  .collect()
+                  .flatten
+                  .sorted
+                  .toSeq
+              }
+              assert(result == Seq(0, 1, 1, 3))
+              val in = join.longMetric("right_key_reduction_input_rows").value
+              val out = join.longMetric("right_key_reduction_output_rows").value
+              if (holdMemory && pool == "fair_unified") {
+                assert(in == 0 && out == 0)
+                assert(sort.longMetric("output_rows").value == rightRows)
+              } else {
+                assert(in == rightRows && out > 0 && out < in)
+                assert(sort.longMetric("output_rows").value == out)
+              }
+            }
+          }
         }
       }
     }
