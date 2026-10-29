@@ -76,7 +76,8 @@ none of the driver plugin's steps run for them.
 
 On initialization, this class registers Comet's rules with Spark. The main one is `CometRule`, which converts the
 plan. When Adaptive Query Execution is disabled, it runs once for the entire plan, before Spark inserts columnar
-transitions. When Adaptive Query Execution is enabled, it runs as a query stage preparation rule.
+transitions. When Adaptive Query Execution is enabled, it runs as a query stage preparation rule, and again on
+each new query stage before Spark inserts that stage's transitions.
 The class also registers rules that run after the transitions are inserted, such as
 `RevertNativeForTransitionHeavyStages` and `EliminateRedundantTransitions`, Adaptive Query Execution stage optimizer
 rules on Spark 3.5 and later, and the `IcebergWriteStrategy` planner strategy. The comment on
@@ -155,7 +156,7 @@ A leaf node in the physical plan that takes Arrow batches from the JVM is a `Sca
 [Arrow C Stream](https://arrow.apache.org/docs/format/CStreamInterface.html) (`org.apache.arrow.c.ArrowArrayStream`),
 and `ScanExec` pulls each input batch through a single C callback rather than making a JNI call per batch. The
 input could be a broadcast, a shuffle read decoded through JNI and imported into the JVM, the output of
-`CometSparkToColumnarExec`, or the output of an earlier Comet block. A shuffle input is a `ShuffleScanExec` instead
+`CometSparkToColumnarExec`, or the output of an earlier Rust plan. A shuffle input is a `ShuffleScanExec` instead
 only when it is serialized as a `ShuffleScan` leaf: direct shuffle read is enabled, Adaptive Query Execution has made
 the Comet shuffle a query stage, and Comet supports its output types. `ShuffleScanExec` pulls compressed Arrow IPC
 blocks from the JVM and decodes them in Rust (see [Shuffle Reads](#shuffle-reads)). Otherwise, including without
@@ -199,9 +200,9 @@ IPC. See [JVM Shuffle](jvm_shuffle.md) for details.
 
 For shuffle reads, `CometShuffledBatchRDD` requests a `ShuffleReader` from the shuffle manager and gets a
 `CometBlockStoreShuffleReader`, which fetches blocks with Spark's `ShuffleBlockFetcherIterator`. Both shuffle
-implementations write the same Arrow IPC block format, so the same reader serves both. When a Comet block reads the
+implementations write the same Arrow IPC block format, so the same reader serves both. When a Rust plan reads the
 shuffle output as a `ShuffleScan` input (see [Query Execution](#query-execution)) and
-`spark.comet.shuffle.directRead.enabled` is `true`, the default, the compressed IPC blocks go to its Rust plan,
+`spark.comet.shuffle.directRead.enabled` is `true`, the default, the compressed IPC blocks go to that plan,
 which decodes them. Otherwise `NativeBatchDecoderIterator` decodes each block in native code through JNI, and Arrow
 FFI imports the result into the JVM as a `ColumnarBatch`. See
 [Read Path](native_shuffle.md#read-path) for details.
