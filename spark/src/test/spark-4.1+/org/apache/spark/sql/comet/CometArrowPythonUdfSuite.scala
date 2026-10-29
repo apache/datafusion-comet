@@ -602,12 +602,14 @@ class CometArrowPythonUdfSuite extends CometTestBase {
         case _ =>
       }
     }
+    val group = "comet-arrow-udf-kill"
     spark.sparkContext.addSparkListener(listener)
     try {
-      val group = "comet-arrow-udf-kill"
       val running = Future {
         spark.sparkContext.setJobGroup(group, "native Arrow UDF loop", interruptOnCancel = true)
-        job
+        // The job group lives in this pooled thread's local properties; clear it for later work.
+        try job
+        finally spark.sparkContext.clearJobGroup()
       }(ExecutionContext.global)
       val deadline = 60.seconds.fromNow
       while (!started.exists()) {
@@ -619,6 +621,8 @@ class CometArrowPythonUdfSuite extends CometTestBase {
       assert(killed.await(30, TimeUnit.SECONDS), "the task running the UDF was not killed")
       intercept[SparkException](ThreadUtils.awaitResult(running, 30.seconds))
     } finally {
+      // Cancel again when an assertion failed first, so a looping task does not outlive the test.
+      spark.sparkContext.cancelJobGroup(group)
       spark.sparkContext.removeSparkListener(listener)
     }
   }
