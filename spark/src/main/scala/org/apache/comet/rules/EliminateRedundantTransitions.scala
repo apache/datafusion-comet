@@ -128,7 +128,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
         range.originalPlan
       case CometNativeColumnarToRowExec(range: CometRangeExec) =>
         range.originalPlan
-      case CometSparkToColumnarExec(child: CometSparkToColumnarExec) => child
+      case CometSparkToColumnarExec(child: CometSparkToColumnarExec, _) => child
       // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
       // a ColumnarToRow child with CometMapInBatchExec, eliminating the input and output
       // UnsafeProjection copies and keeping the stage columnar. The matchers are

@@ -17,14 +17,91 @@
 
 use arrow::array::{Array, Date32Array, Int32Array};
 use arrow::compute::cast;
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, FieldRef, Schema};
+use arrow::record_batch::RecordBatch;
 use datafusion::common::{utils::take_function_args, DataFusionError, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion::physical_expr::PhysicalExpr;
+use std::fmt::{Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::{conversion_funcs::ymd_to_epoch_day, SparkError};
+
+/// Skips the entire date expression on empty input, before any argument can raise an error.
+/// `inner` retains the planner's argument evaluation, including NULL short-circuiting when enabled.
+#[derive(Debug, Eq)]
+pub struct MakeDateExpr {
+    inner: Arc<dyn PhysicalExpr>,
+}
+
+impl MakeDateExpr {
+    pub fn new(inner: Arc<dyn PhysicalExpr>) -> Self {
+        Self { inner }
+    }
+}
+
+impl PartialEq for MakeDateExpr {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.eq(&other.inner)
+    }
+}
+
+impl Hash for MakeDateExpr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.hash(state);
+    }
+}
+
+impl Display for MakeDateExpr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(&self.inner, f)
+    }
+}
+
+impl PhysicalExpr for MakeDateExpr {
+    fn data_type(&self, input_schema: &Schema) -> Result<DataType> {
+        self.inner.data_type(input_schema)
+    }
+
+    fn nullable(&self, input_schema: &Schema) -> Result<bool> {
+        self.inner.nullable(input_schema)
+    }
+
+    fn return_field(&self, input_schema: &Schema) -> Result<FieldRef> {
+        self.inner.return_field(input_schema)
+    }
+
+    fn evaluate(&self, batch: &RecordBatch) -> Result<ColumnarValue> {
+        if batch.num_rows() == 0 {
+            return Ok(ColumnarValue::Array(Arc::new(Date32Array::new_null(0))));
+        }
+        self.inner.evaluate(batch)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
+        self.inner.children()
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        children: Vec<Arc<dyn PhysicalExpr>>,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        Ok(Arc::new(Self::new(
+            Arc::clone(&self.inner).with_new_children(children)?,
+        )))
+    }
+
+    fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt_sql(f)
+    }
+
+    fn is_volatile_node(&self) -> bool {
+        self.inner.is_volatile_node()
+    }
+}
 
 /// Spark-compatible make_date function.
 /// Creates a date from year, month, and day columns.
@@ -192,6 +269,92 @@ impl ScalarUDFImpl for SparkMakeDate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Cast, EvalMode, NullShortCircuit, SparkCastOptions};
+    use arrow::datatypes::{Field, Schema};
+    use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+    use datafusion::common::ScalarValue;
+    use datafusion::config::ConfigOptions;
+    use datafusion::logical_expr::ScalarUDF;
+    use datafusion::physical_expr::expressions::{col, lit, Literal};
+    use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
+
+    #[test]
+    fn scalar_arguments_do_not_validate_dates_on_empty_batches() {
+        let expression = MakeDateExpr::new(Arc::new(ScalarFunctionExpr::new(
+            "make_date",
+            Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(true))),
+            [2024, 13, 1]
+                .into_iter()
+                .map(|value| {
+                    Arc::new(Literal::new(ScalarValue::Int32(Some(value)))) as Arc<dyn PhysicalExpr>
+                })
+                .collect(),
+            Arc::new(Field::new("make_date", DataType::Date32, true)),
+            Arc::new(ConfigOptions::default()),
+        )));
+        let batch = |number_rows| {
+            RecordBatch::try_new_with_options(
+                Arc::new(Schema::empty()),
+                vec![],
+                &RecordBatchOptions::new().with_row_count(Some(number_rows)),
+            )
+            .unwrap()
+        };
+        let result = expression
+            .evaluate(&batch(0))
+            .unwrap()
+            .into_array(0)
+            .unwrap();
+        assert_eq!(result.data_type(), &DataType::Date32);
+        assert!(result.is_empty());
+        assert!(expression.evaluate(&batch(1)).is_err());
+    }
+
+    #[test]
+    fn empty_batches_do_not_evaluate_make_date_arguments() {
+        let schema = Arc::new(Schema::new(vec![Field::new("y", DataType::Int32, true)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![2024]))],
+        )
+        .unwrap();
+        let bad_cast: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
+            lit("bad"),
+            DataType::Int32,
+            SparkCastOptions::new_without_timezone(EvalMode::Ansi),
+            None,
+            None,
+        ));
+        // Cover the first argument, where NullShortCircuit elides its wrapper, as well as
+        // later arguments. The empty-input check is also required without NULL short-circuiting.
+        for argument in 0..3 {
+            for short_circuit in [false, true] {
+                let mut args = vec![col("y", &schema).unwrap(), lit(1i32), lit(1i32)];
+                args[argument] = Arc::clone(&bad_cast);
+                let inner: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+                    "make_date",
+                    Arc::new(ScalarUDF::new_from_impl(SparkMakeDate::new(true))),
+                    args,
+                    Arc::new(Field::new("make_date", DataType::Date32, true)),
+                    Arc::new(ConfigOptions::default()),
+                ));
+                let inner = if short_circuit {
+                    NullShortCircuit::wrap(inner, &schema).unwrap()
+                } else {
+                    inner
+                };
+                let expression = MakeDateExpr::new(inner);
+                let ColumnarValue::Array(result) = expression.evaluate(&batch.slice(0, 0)).unwrap()
+                else {
+                    panic!("make_date must return an empty array for an empty batch");
+                };
+                assert_eq!(result.data_type(), &DataType::Date32);
+                assert!(result.is_empty());
+                let error = expression.evaluate(&batch).unwrap_err().to_string();
+                assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
+            }
+        }
+    }
 
     #[test]
     fn test_make_date_valid() {

@@ -96,6 +96,19 @@ This optimization is enabled by default and can be disabled by setting
 `spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep its shuffle
 even when both of those aggregates run on Spark.
 
+## Native Shuffle Writer Memory
+
+The native shuffle writer buffers a task's output in memory and spills it to disk. By default
+(`spark.comet.shuffle.native.maxBufferBytes=0`) it spills only when the memory pool denies an allocation, so it holds
+as much of the task's share of the off-heap pool as it can get. That can leave a sort or an aggregation in the same
+task without memory, and the large buffers it frees at the end of the task can stay resident in the native allocator,
+adding to the executor's memory footprint.
+
+Setting `spark.comet.shuffle.native.maxBufferBytes` makes the writer spill whenever it has buffered that many bytes.
+The limit applies to each task's writer, so it does not grow with the size of the executor. A value such as `256m`
+keeps the writer's footprint small at the cost of more spills and a slightly larger shuffle. Much smaller values write
+small shuffle blocks, which slows down the stage that reads them.
+
 ## Shuffle Compression
 
 `spark.comet.shuffle.compression.codec` controls the codec used to compress shuffle data written by
