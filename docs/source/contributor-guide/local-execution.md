@@ -20,8 +20,9 @@ under the License.
 # Local Execution
 
 Local execution is an experimental mode for Spark applications that run with a local master.
-Instead of running a query as Spark tasks that each create and run a native plan, it runs the
-whole query as one DataFusion graph inside a single Spark task, for every partition at once.
+Instead of running a query as Spark tasks that each create and run a native plan, a `collect`
+runs the whole query as one DataFusion graph inside a single Spark task, for every partition at
+once. Other actions run the query as ordinary Comet execution; see result delivery.
 
 The internal `spark.comet.exec.local.enabled` option, false by default, turns it on. A query
 is admitted only as a whole. Every other query uses ordinary Comet execution.
@@ -67,14 +68,22 @@ single partition. That partition's task creates the native graph:
 - The running partitions do not wait for their turn to produce batches, so they all make
   progress, as Spark's tasks do. What they hold ahead of delivery is bounded by
   `spark.driver.maxResultSize`, the most a collect may bring to the driver; past it, each holds
-  at most two batches until the earlier partitions are delivered.
+  at most two batches until the earlier partitions are delivered. These batches are not reserved
+  in the memory pool: a reservation could not be given back when an operator later needs the
+  memory, so it would fail queries that ordinary execution runs. Spark's own collect also holds
+  its task results outside the execution pool, on the driver.
+- All the partitions' memory consumers share the one task's pool, where ordinary execution gives
+  each task its own share. Consumers that can spill each get a share of the task's pool, as they
+  would of a task's. Consumers that cannot spill, such as a sort's merge, are bounded together by
+  the pool, as the tasks' consumers are together, but no longer each by one task's share: one
+  partition can take more than a task could, leaving less for the others.
 
-`CometLocalExec` reports `UnknownPartitioning(1)`: the result is one partition, but its rows
-are not clustered by anything, so a query over a cached local result still gets the exchange
-its distribution requires. Spark's ordering of the block holds within each partition, so the
-result reports it only when it holds across the concatenated partitions: with one partition, or
-when the partitions are ranges of a prefix of that ordering, as a range's slices are. Sorting
-within partitions, for example, reports no ordering.
+`CometLocalExec` reports `UnknownPartitioning(1)`: its RDD is one partition, but its rows are
+not clustered by anything. Spark's ordering of the block holds within each partition, so
+`CometLocalExec` reports it only when it holds across the concatenated partitions: with one
+partition, or when the partitions are ranges of a prefix of that ordering, as a range's slices
+are. Sorting within partitions, for example, reports no ordering. `CometLocalResultExec` reports
+the block's own partitioning and ordering, which hold for the partitions it returns.
 
 Explain shows the native block under `CometLocalExec`. Its native operators do not report SQL
 metrics; `CometLocalExec` counts the rows and batches it delivers.
@@ -95,15 +104,14 @@ bytes and stops reading, which closes the native query, once they exceed
 so this check is the stricter one. On a non-local master the node uses Spark's ordinary
 collect.
 
-Spark's other actions read a result partition by partition: a take requests partitions in
-growing batches until it has enough rows, an iterator fetches one partition at a time so that it
-holds at most one, and a tail scans partitions from the last one. A local query has a single
-partition holding the whole result, so `take`, `head`, `show`, `limit(n).collect()`,
-`toLocalIterator` (which also serves the Thrift server's incremental collect) and PySpark's
-`tail` run the native block as ordinary Comet execution, one Spark task per partition. The
-partitions they evaluate, and so the rows they return and the errors they raise, are Spark's.
-Consumers that read the result RDD partition by partition, such as PySpark's `toLocalIterator`,
-still receive the whole result as one partition.
+Every other action reads the result as an RDD of the block's partitions: a take requests
+partitions in growing batches until it has enough rows, an iterator fetches one partition at a
+time so that it holds at most one, a tail scans partitions from the last one, and a cache,
+`df.rdd`, `foreachPartition`, `localCheckpoint` or PySpark's collect and `toLocalIterator` keep
+the partitions for later reads. So `CometLocalResultExec` executes as the ordinary native block,
+one Spark task per partition, for everything but `collect`. The partitions these actions
+evaluate, and so the rows they return and the errors they raise, are Spark's, and a cached result
+is scanned as many partitions as without local execution.
 
 ## Lifecycle and cancellation
 
@@ -132,5 +140,5 @@ cd ..
 The native tests cover partition-order delivery, the bound on running partitions, read-ahead, errors reported in a partition's turn, cancellation with busy workers,
 the one-batch handoff and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
-AQE, reported orderings, takes and limits, iterators, tails, many partitions with sorts in a small memory pool, caching, the result size limit, job and task cancellation, and native errors. After
+AQE, reported orderings, takes and limits, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

@@ -32,33 +32,28 @@ import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 
 /**
- * Row result boundary of a local query. Spark's collect encodes and compresses every row of a
- * result partition in its task, then decodes them on the driver. A local query has one result
- * partition, so that work would run on a single thread. Admission requires an in-process local
- * master, so collect still runs one Spark task (keeping cancellation, job groups and SQL metrics)
- * but hands copied rows to the driver in this JVM.
+ * Row result boundary of a local query. Spark's collect encodes and compresses every row of each
+ * result partition in its task, then decodes them on the driver. A local collect instead runs the
+ * whole query as one native graph in a single Spark task (keeping cancellation, job groups and
+ * SQL metrics), which hands copied rows to the driver in this JVM, since admission requires an
+ * in-process local master.
+ *
+ * Only `collect` runs that way. Everything else reads the result as an RDD: a take requests
+ * partitions in growing batches, an iterator fetches one partition at a time, a tail scans from
+ * the last one, and a cache, `df.rdd` or PySpark's collect keep its partitions. So the node
+ * executes as the ordinary native block otherwise, one Spark task per partition, and reports the
+ * block's partitioning and ordering.
  */
 case class CometLocalResultExec(child: SparkPlan) extends UnaryExecNode {
   override def output: Seq[Attribute] = child.output
-  override def outputPartitioning: Partitioning = child.outputPartitioning
-  override def outputOrdering: Seq[SortOrder] = child.outputOrdering
+  override def outputPartitioning: Partitioning = ordinary.outputPartitioning
+  override def outputOrdering: Seq[SortOrder] = ordinary.outputOrdering
 
-  override protected def doExecute(): RDD[InternalRow] = child.execute()
+  override protected def doExecute(): RDD[InternalRow] = ordinary.execute()
 
   override def executeCollect(): Array[InternalRow] =
-    if (sparkContext.isLocal) LocalResultHandoff.collect(execute(), maxResultSize)
+    if (sparkContext.isLocal) LocalResultHandoff.collect(child.execute(), maxResultSize)
     else super.executeCollect()
-
-  // A take requests partitions in growing batches until it has enough rows, an iterator fetches
-  // one result partition at a time to bound what it holds, and a tail scans partitions from the
-  // last one. A local query has a single partition holding the whole result, so these run the
-  // native block as ordinary Comet execution instead, one Spark task per partition, as without
-  // local execution. Which partitions they evaluate, and so which errors they raise, match Spark.
-  override def executeTake(n: Int): Array[InternalRow] = ordinary.executeTake(n)
-
-  override def executeToIterator(): Iterator[InternalRow] = ordinary.executeToIterator()
-
-  override def executeTail(n: Int): Array[InternalRow] = ordinary.executeTail(n)
 
   private def ordinary: SparkPlan =
     child

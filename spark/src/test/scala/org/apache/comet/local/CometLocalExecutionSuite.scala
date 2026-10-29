@@ -194,18 +194,18 @@ class CometLocalExecutionSuite
     unbounded.show(2)
   }
 
-  test("a query over a cached local result keeps its required distribution") {
+  test("a cached result keeps the partitions of ordinary execution") {
     withConf("spark.sql.adaptive.enabled", "false") {
       val cached = spark.range(0, 1000, 1, 7).selectExpr("id", "id % 5 AS k")
       assert(localNodes(cached).size == 1)
       cached.cache()
       try {
         val counts = cached.groupBy("k").count()
-        // The cache holds the local result, a single partition with no clustering.
-        val cachedPlans = counts.queryExecution.withCachedData.collect {
-          case relation: InMemoryRelation => relation.cacheBuilder.cachedPlan
+        val relations = counts.queryExecution.withCachedData.collect {
+          case relation: InMemoryRelation => relation
         }
-        assert(cachedPlans.flatMap(_.collect { case p: CometLocalExec => p }).size == 1)
+        assert(relations.size == 1)
+        assert(relations.head.cacheBuilder.cachedColumnBuffers.getNumPartitions == 7)
         val plan = counts.queryExecution.executedPlan
         assert(plan.collect { case e: ShuffleExchangeLike => e }.nonEmpty, plan.toString)
         assert(
@@ -213,6 +213,17 @@ class CometLocalExecutionSuite
             (0L until 5L).map(_ -> 200L).toMap)
       } finally cached.unpersist(blocking = true)
     }
+  }
+
+  test("RDD consumers read the partitions of ordinary execution") {
+    val query = spark.range(0, 300, 1, 6).selectExpr("id", "id * 2 AS v")
+    assert(localNodes(query).size == 1)
+    assert(query.rdd.getNumPartitions == 6)
+    assert(query.queryExecution.toRdd.getNumPartitions == 6)
+    assert(query.queryExecution.executedPlan.outputPartitioning.numPartitions == 6)
+    assert(
+      query.rdd.mapPartitions(rows => Iterator(rows.size)).collect().toSeq == Seq.fill(6)(50))
+    assert(query.localCheckpoint().rdd.getNumPartitions == 6)
   }
 
   test("only an ordering that holds across concatenated partitions is reported") {
@@ -390,14 +401,14 @@ class CometLocalExecutionSuite
     assert(plan.isInstanceOf[CometLocalResultExec], plan.toString)
     // Each two-long UnsafeRow is 24 bytes, so 1,000 bytes fit 41 rows and the 42nd exceeds it.
     val failure = intercept[SparkException] {
-      LocalResultHandoff.collect(plan.execute(), 1000)
+      LocalResultHandoff.collect(localNodes(query).head.execute(), 1000)
     }
     assert(failure.getMessage.contains("spark.driver.maxResultSize"), failure.getMessage)
     assert(failure.getMessage.contains("at least 1008 bytes"), failure.getMessage)
     assert(new NativeLocal().activeQueries() == 0)
     // A result within the limit still succeeds against the same bound.
     def bounded(rows: Long) =
-      spark.range(0, rows, 1, 7).selectExpr("id", "id AS other").queryExecution.executedPlan
+      localNodes(spark.range(0, rows, 1, 7).selectExpr("id", "id AS other")).head
     assert(LocalResultHandoff.collect(bounded(41).execute(), 1000).length == 41)
     // Non-positive limits mean unlimited, as in Spark.
     assert(LocalResultHandoff.collect(bounded(100).execute(), 0).length == 100)
@@ -410,7 +421,7 @@ class CometLocalExecutionSuite
     val future = executor.submit(new Callable[Unit] {
       override def call(): Unit = {
         spark.sparkContext.setJobGroup("comet-local-cancel", "local cancellation", true)
-        query.queryExecution.executedPlan.execute().foreachPartition { rows =>
+        localNodes(query).head.execute().foreachPartition { rows =>
           while (rows.hasNext) rows.next()
         }
       }

@@ -44,8 +44,7 @@ case class CometLocalExec private[local] (
     extends LeafExecNode {
   override def supportsColumnar: Boolean = true
 
-  // The result is one partition, but its rows are not clustered by anything. A query over a
-  // cached local result must still exchange to get its required distribution.
+  // The result is one partition, but its rows are not clustered by anything.
   override def outputPartitioning: Partitioning = UnknownPartitioning(1)
 
   // The ordering of the whole result, which admission derives from the block's partitions.

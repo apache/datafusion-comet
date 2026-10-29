@@ -598,6 +598,9 @@ diverge for several structural reasons:
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
+- **Local execution's read-ahead.** The partitions of a local query hold the batches they produce
+  ahead of delivery, up to `spark.driver.maxResultSize` in all, without reserving them (see
+  [Local Execution](local-execution.md)).
 - **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
   `grow` asked for, Comet holds the difference anyway and deliberately does not tell Spark about it
   (see [The unified pools](#the-unified-pools)). `reserved()` includes it, but Spark's memory
