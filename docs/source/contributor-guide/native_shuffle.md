@@ -54,9 +54,11 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 1. **Shuffle mode allows native shuffle**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
 2. **Child plan is a Comet operator**: The child must be a `CometPlan` that produces
-   columnar output. With the Celeborn shuffle manager, the child must be a `CometNativeExec`, and
-   when it is not, Spark's shuffle is used, because Celeborn has no JVM columnar shuffle to fall
-   back to. Row-based Spark operators require JVM shuffle, unless
+   columnar output. With the Celeborn shuffle manager, `spark.comet.shuffle.mode` must be `native`,
+   the child must be a `CometNativeExec`, and Celeborn must pass its own
+   [support checks](../user-guide/latest/celeborn.md#support-status). Otherwise Spark's shuffle is
+   used, because Celeborn has no JVM columnar shuffle to fall back to. Row-based Spark operators
+   require JVM shuffle, unless
    `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
    uses native shuffle instead, provided native shuffle supports the partitioning and the
    columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle

@@ -59,8 +59,8 @@ must guard against manually at runtime. For a component that runs inside every S
 untrusted data, this reduces the risk of memory-corruption crashes and security vulnerabilities. DataFusion achieves
 this safety without a garbage collector, so there is no additional runtime overhead compared to C++.
 
-If you want to speed up your existing Spark jobs and do not need to implement UDFs in Rust or C++, we suggest
-benchmarking both solutions and choosing the faster one for your workload.
+If you want to speed up your existing Spark jobs and do not need to implement UDFs in Rust or C++,
+benchmark both and choose the faster one for your workload.
 
 ## Community and Governance
 
@@ -131,7 +131,7 @@ experimental, opt-in scan in a separate contrib module that no release publishes
 Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its [Iceberg documentation] says that reads of unpartitioned tables are offloaded, including tables with
 position deletes, while reads of partitioned tables mostly fall back to Spark, as do equality deletes and all writes.
-Users who need acceleration for Delta, Hudi, or Paimon will find broader coverage in Gluten today.
+If you need acceleration for Delta, Hudi, or Paimon, Gluten covers more today.
 
 [Iceberg documentation]: https://github.com/apache/gluten/blob/v1.7.0/docs/get-started/VeloxIceberg.md
 
