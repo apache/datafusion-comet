@@ -25,7 +25,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.NamedExpression
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.execution.{AggregatingAccumulator, CollectMetricsExec, ColumnarToRowExec, SparkPlan}
-import org.apache.spark.sql.types.{CalendarIntervalType, DataType}
+import org.apache.spark.sql.types.{ArrayType, CalendarIntervalType, DataType, MapType, StringType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, ConfigEntry}
@@ -114,11 +114,19 @@ class CometCollectMetricsExec(
       collector.reset()
     }
     val inputAttributes = child.output
-    val requiresUnsafeRows = metricExpressions.exists(_.references.exists(attribute =>
-      SupportLevel.containsType(attribute.dataType, classOf[CalendarIntervalType])))
+    val requiresUnsafeRows = metricExpressions.exists(
+      _.references.exists(attribute =>
+        SupportLevel.containsType(
+          attribute.dataType,
+          classOf[StructType],
+          classOf[ArrayType],
+          classOf[MapType],
+          classOf[StringType],
+          classOf[CalendarIntervalType])))
     child.executeColumnar().mapPartitions { batches =>
-      // Retaining aggregates copy their inputs, but ColumnarRow.copy cannot copy calendar
-      // intervals, including nested ones. Preserve the accumulator's input ordinals.
+      // Complex aggregate keys need Spark's consistent row representation, and expression
+      // argument caches must not retain Arrow-backed values after the batch closes. UnsafeRows
+      // also support copying calendar intervals. Preserve the accumulator's input ordinals.
       val toObservationRow: InternalRow => InternalRow =
         if (requiresUnsafeRows) CometUnsafeProjection.create(inputAttributes) else identity
       // Publish only at task completion, as Spark does, so heartbeats cannot expose partial

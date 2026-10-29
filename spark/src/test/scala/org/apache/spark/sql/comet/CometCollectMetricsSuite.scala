@@ -254,6 +254,78 @@ class CometCollectMetricsSuite extends CometTestBase {
     }
   }
 
+  test("observation mode compares complex keys from rows and scalar subqueries") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+      withTempPath { path =>
+        val input = spark
+          .range(0, 10, 1, 1)
+          .select($"id", struct(when($"id" < 6, 1).otherwise(2).as("x")).as("v"))
+        input.write.parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "observed_structs") {
+          def run(comet: Boolean): (Any, SparkPlan) = {
+            withCometEnabled(comet) {
+              val observation = Observation("complex_mode")
+              val metric = expr("""mode(if(id between 3 and 5,
+                  |(select v from observed_structs where id = 0), v))""".stripMargin)
+              val result = spark
+                .table("observed_structs")
+                .observe(observation, metric.as("m"))
+                .select("id")
+                .repartition(2)
+              assert(result.collect().map(_.getLong(0)).sorted.toSeq == (0L until 10L))
+              (observedMetrics(observation)("m"), result.queryExecution.executedPlan)
+            }
+          }
+
+          val (expected, _) = run(comet = false)
+          val (actual, plan) = run(comet = true)
+          assert(expected == Row(1))
+          assert(actual == expected)
+          assert(collect(plan) { case _: CometCollectMetricsExec => true }.size == 1)
+          assert(collect(plan) { case _: CometNativeScanExec => true }.nonEmpty)
+        }
+      }
+    }
+  }
+
+  test("observation serializes JSON expressions over complex values") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.LEAF_NODE_DEFAULT_PARALLELISM.key -> "1") {
+      withTempPath { path =>
+        val input =
+          spark.range(0, 2, 1, 1).select($"id", struct(($"id" + 1).cast("int").as("x")).as("v"))
+        input.write.parquet(path.getCanonicalPath)
+        withParquetTable(path.getCanonicalPath, "observed_structs") {
+          def run(comet: Boolean): (Set[String], SparkPlan) = {
+            withCometEnabled(comet) {
+              val observation = Observation("complex_json")
+              val result = spark
+                .table("observed_structs")
+                .observe(observation, collect_set(to_json($"v")).as("m"))
+                .select("id")
+                .repartition(2)
+              assert(result.collect().map(_.getLong(0)).sorted.toSeq == Seq(0L, 1L))
+              val values = observedMetrics(observation)("m")
+                .asInstanceOf[scala.collection.Seq[String]]
+                .toSet
+              (values, result.queryExecution.executedPlan)
+            }
+          }
+
+          val (expected, _) = run(comet = false)
+          val (actual, plan) = run(comet = true)
+          assert(expected == Set("""{"x":1}""", """{"x":2}"""))
+          assert(actual == expected)
+          assert(collect(plan) { case _: CometCollectMetricsExec => true }.size == 1)
+          assert(collect(plan) { case _: CometNativeScanExec => true }.nonEmpty)
+        }
+      }
+    }
+  }
+
   test("observation publishes collect_list state without an executor merge") {
     withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
       withTempPath { path =>
@@ -537,7 +609,7 @@ class CometCollectMetricsSuite extends CometTestBase {
               }
               spark.listenerManager.register(listener)
               try {
-                result.foreachPartition { rows: Iterator[Row] =>
+                result.foreachPartition { (rows: Iterator[Row]) =>
                   rows.take(consumeRows).foreach(_ => consumed.add(1L))
                 }
                 spark.sparkContext.listenerBus.waitUntilEmpty()
