@@ -24,7 +24,7 @@ use crate::float_semantics::{
     normalize_floats, normalize_nested_floats, spark_comparator_ignoring_nulls,
     spark_equality_ignoring_nulls, NormalizeNestedFloats,
 };
-use crate::lazy_in_list;
+use crate::{lazy_in_list, LazyLogical};
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 use arrow::compute::{not, or_kleene};
@@ -495,7 +495,8 @@ pub enum FloatOperands {
 /// nested values with `spark_comparator`. Nested `=` and `<>` compare with `spark_equality`, which
 /// also serves `IN`. A literal is normalized while planning. Operands of any other type, such as
 /// dictionary-encoded floats, go through [`normalize_comparison_operand`] and a plain
-/// [`BinaryExpr`], and so does any other operator, such as `AND`.
+/// [`BinaryExpr`], and so does any other operator. `AND` and `OR` are a [`LazyLogical`], which
+/// evaluates a right operand that can fail only for the rows that the left one has not decided.
 ///
 /// The planner reconciles the nullability of nested operands before calling this.
 pub fn spark_comparison(
@@ -510,7 +511,13 @@ pub fn spark_comparison(
         op,
         Eq | NotEq | Lt | LtEq | Gt | GtEq | IsDistinctFrom | IsNotDistinctFrom
     ) {
-        return Ok(Arc::new(BinaryExpr::new(left, op, right)));
+        // AND and OR evaluate the right operand only for the rows that the left one has not
+        // decided
+        return if matches!(op, And | Or) {
+            LazyLogical::wrap(left, op, right, schema)
+        } else {
+            Ok(Arc::new(BinaryExpr::new(left, op, right)))
+        };
     }
     // An operand whose type does not resolve against this schema falls back to the plain
     // comparison, the way `reconcile_nested_comparison_types` already leaves such operands alone.

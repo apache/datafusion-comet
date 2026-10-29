@@ -16,10 +16,10 @@
 // under the License.
 
 use super::case_when::cannot_fail;
-use super::null_short_circuit::project;
+use super::null_short_circuit::{evaluate_projected, project};
 use crate::{spark_comparison, FloatOperands};
 use arrow::array::{Array, BooleanArray};
-use arrow::compute::{and_kleene, not, or_kleene};
+use arrow::compute::{and_kleene, or_kleene};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::cast::as_boolean_array;
@@ -51,7 +51,7 @@ pub struct LazyLogical {
 }
 
 impl LazyLogical {
-    /// Creates `left op right` for an `AND` or `OR` over Boolean operands. It evaluates `right`
+    /// Creates `left op right`, where `op` is `AND` or `OR`, over Boolean operands. It evaluates `right`
     /// lazily if `right` could fail on a row that `left` decides, and is a plain [`BinaryExpr`]
     /// otherwise.
     pub fn wrap(
@@ -60,8 +60,7 @@ impl LazyLogical {
         right: Arc<dyn PhysicalExpr>,
         input_schema: &Schema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        let booleans = matches!(op, Operator::And | Operator::Or)
-            && left.data_type(input_schema).ok() == Some(DataType::Boolean)
+        let booleans = left.data_type(input_schema).ok() == Some(DataType::Boolean)
             && right.data_type(input_schema).ok() == Some(DataType::Boolean);
         if !booleans || cannot_fail(&right, input_schema) {
             return Ok(Arc::new(BinaryExpr::new(left, op, right)));
@@ -100,46 +99,34 @@ pub fn lazy_in_list(
     negated: bool,
     schema: &Schema,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
-    if candidates.len() < 2
-        || candidates[1..].iter().all(|c| cannot_fail(c, schema))
-        || !cannot_fail(value, schema)
-    {
+    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !cannot_fail(value, schema) {
         return Ok(None);
     }
     let value_type = value.data_type(schema)?;
-    for candidate in candidates {
-        if candidate.data_type(schema)? != value_type {
-            return Ok(None);
-        }
+    if !candidates
+        .iter()
+        .all(|c| c.data_type(schema).is_ok_and(|t| t == value_type))
+    {
+        return Ok(None);
     }
-    let mut chain: Option<Arc<dyn PhysicalExpr>> = None;
-    for candidate in candidates {
-        let equal = spark_comparison(
+    let equal = |candidate: &Arc<dyn PhysicalExpr>| {
+        spark_comparison(
             Arc::clone(value),
             Operator::Eq,
             Arc::clone(candidate),
             schema,
             FloatOperands::Normalize,
-        )?;
-        chain = Some(match chain {
-            Some(matched) => LazyLogical::wrap(matched, Operator::Or, equal, schema)?,
-            None => equal,
-        });
+        )
+    };
+    let mut chain = equal(&candidates[0])?;
+    for candidate in &candidates[1..] {
+        chain = LazyLogical::wrap(chain, Operator::Or, equal(candidate)?, schema)?;
     }
-    let chain = chain.expect("candidates is not empty");
     Ok(Some(if negated {
         Arc::new(NotExpr::new(chain))
     } else {
         chain
     }))
-}
-
-/// The rows where `array` is true, with no NULL
-fn is_true(array: &BooleanArray) -> BooleanArray {
-    match array.nulls() {
-        Some(nulls) => BooleanArray::new(array.values() & nulls.inner(), None),
-        None => BooleanArray::new(array.values().clone(), None),
-    }
 }
 
 impl Hash for LazyLogical {
@@ -177,24 +164,20 @@ impl PhysicalExpr for LazyLogical {
         let num_rows = batch.num_rows();
         let left = self.left.evaluate(batch)?.into_array(num_rows)?;
         let left = as_boolean_array(&left)?;
-        // The rows that the left operand decides: false for AND, true for OR
-        let decided = match self.op {
-            Operator::And => is_true(&not(left)?),
-            _ => is_true(left),
+        // The rows that the left operand has not decided: not false for AND, not true for OR
+        let pending = match (self.op, left.nulls()) {
+            (Operator::And, None) => left.values().clone(),
+            (Operator::And, Some(nulls)) => left.values() | &!nulls.inner(),
+            (_, None) => !left.values(),
+            (_, Some(nulls)) => !&(left.values() & nulls.inner()),
         };
-        let pending = not(&decided)?;
-        let pending_rows = pending.true_count();
-        if pending_rows == 0 {
+        if pending.count_set_bits() == 0 {
             // No row needs the right operand, and the left one is the result on every row
             return Ok(ColumnarValue::Array(Arc::new(left.clone())));
         }
-        let args = batch.project(&self.projection)?;
-        let right = if pending_rows == num_rows {
-            self.projected.evaluate(&args)?
-        } else {
-            self.projected.evaluate_selection(&args, &pending)?
-        }
-        .into_array(num_rows)?;
+        let pending = BooleanArray::new(pending, None);
+        let right = evaluate_projected(&self.projection, &self.projected, batch, Some(&pending))?
+            .into_array(num_rows)?;
         let right = as_boolean_array(&right)?;
         // The right operand is NULL on the rows it was skipped for, which the left one decides
         let result: BooleanArray = match self.op {
@@ -231,7 +214,7 @@ impl PhysicalExpr for LazyLogical {
 mod tests {
     use super::*;
     use crate::{Cast, EvalMode, SparkCastOptions};
-    use arrow::array::{ArrayRef, Int32Array, StringArray};
+    use arrow::array::{ArrayRef, Float64Array, Int32Array, StringArray};
     use arrow::datatypes::Field;
     use datafusion::common::ScalarValue;
     use datafusion::physical_expr::expressions::{col, lit, Literal};
@@ -251,20 +234,41 @@ mod tests {
         .unwrap()
     }
 
-    /// `CAST(s AS INT) > 1` under ANSI, which fails on a string that is not an integer
-    fn parsed_gt_one(schema: &Schema) -> Arc<dyn PhysicalExpr> {
-        let cast = Arc::new(Cast::new(
-            col("s", schema).unwrap(),
-            DataType::Int32,
+    /// An ANSI cast, which fails on a string that is not a number
+    fn ansi_cast(child: Arc<dyn PhysicalExpr>, to: DataType) -> Arc<dyn PhysicalExpr> {
+        Arc::new(Cast::new(
+            child,
+            to,
             SparkCastOptions::new_without_timezone(EvalMode::Ansi),
             None,
             None,
-        ));
+        ))
+    }
+
+    /// `CAST(s AS INT) > 1` under ANSI
+    fn parsed_gt_one(schema: &Schema) -> Arc<dyn PhysicalExpr> {
+        let cast = ansi_cast(col("s", schema).unwrap(), DataType::Int32);
         Arc::new(BinaryExpr::new(cast, Operator::Gt, lit(1)))
     }
 
     fn v_cmp(schema: &Schema, op: Operator, value: i32) -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(col("v", schema).unwrap(), op, lit(value)))
+    }
+
+    /// `v <guard> value`, then `op`, then `CAST(s AS INT) > 1`
+    fn guarded(
+        schema: &Schema,
+        guard: Operator,
+        value: i32,
+        op: Operator,
+    ) -> Arc<dyn PhysicalExpr> {
+        let lazy = LazyLogical::wrap(
+            v_cmp(schema, guard, value),
+            op,
+            parsed_gt_one(schema),
+            schema,
+        );
+        lazy.unwrap()
     }
 
     fn evaluate(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> Result<Vec<Option<bool>>> {
@@ -273,43 +277,18 @@ mod tests {
     }
 
     #[test]
-    fn and_skips_rows_the_left_operand_decides() -> Result<()> {
+    fn skips_rows_the_left_operand_decides() -> Result<()> {
         let batch = batch(vec![Some(0), Some(1), Some(0)], vec!["bad", "5", "worse"]);
         let schema = batch.schema();
-        // BinaryExpr fails on the 'bad' of a row with v = 0
-        let eager: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
-            v_cmp(&schema, Operator::NotEq, 0),
-            Operator::And,
-            parsed_gt_one(&schema),
-        ));
-        assert!(evaluate(&eager, &batch).is_err());
-
-        let lazy = LazyLogical::wrap(
-            v_cmp(&schema, Operator::NotEq, 0),
-            Operator::And,
-            parsed_gt_one(&schema),
-            &schema,
-        )?;
-        assert!(lazy.is::<LazyLogical>());
+        let and = guarded(&schema, Operator::NotEq, 0, Operator::And);
+        assert!(and.is::<LazyLogical>());
         assert_eq!(
-            evaluate(&lazy, &batch)?,
+            evaluate(&and, &batch)?,
             vec![Some(false), Some(true), Some(false)]
         );
-        Ok(())
-    }
-
-    #[test]
-    fn or_skips_rows_the_left_operand_decides() -> Result<()> {
-        let batch = batch(vec![Some(0), Some(1), Some(0)], vec!["bad", "5", "worse"]);
-        let schema = batch.schema();
-        let lazy = LazyLogical::wrap(
-            v_cmp(&schema, Operator::Eq, 0),
-            Operator::Or,
-            parsed_gt_one(&schema),
-            &schema,
-        )?;
+        let or = guarded(&schema, Operator::Eq, 0, Operator::Or);
         assert_eq!(
-            evaluate(&lazy, &batch)?,
+            evaluate(&or, &batch)?,
             vec![Some(true), Some(true), Some(true)]
         );
         Ok(())
@@ -320,12 +299,7 @@ mod tests {
         let failing = batch(vec![None], vec!["bad"]);
         let batch = batch(vec![None, Some(0), None], vec!["5", "bad", "0"]);
         let schema = batch.schema();
-        let and = LazyLogical::wrap(
-            v_cmp(&schema, Operator::NotEq, 0),
-            Operator::And,
-            parsed_gt_one(&schema),
-            &schema,
-        )?;
+        let and = guarded(&schema, Operator::NotEq, 0, Operator::And);
         // NULL AND true is NULL, false AND (not evaluated) is false, NULL AND false is false
         assert_eq!(
             evaluate(&and, &batch)?,
@@ -340,15 +314,10 @@ mod tests {
     fn evaluates_every_row_when_none_is_decided() -> Result<()> {
         let batch = batch(vec![Some(1), Some(2)], vec!["5", "0"]);
         let schema = batch.schema();
-        let lazy = LazyLogical::wrap(
-            v_cmp(&schema, Operator::NotEq, 0),
-            Operator::And,
-            parsed_gt_one(&schema),
-            &schema,
-        )?;
-        assert_eq!(evaluate(&lazy, &batch)?, vec![Some(true), Some(false)]);
+        let and = guarded(&schema, Operator::NotEq, 0, Operator::And);
+        assert_eq!(evaluate(&and, &batch)?, vec![Some(true), Some(false)]);
         // An empty batch evaluates nothing
-        assert!(evaluate(&lazy, &batch.slice(0, 0))?.is_empty());
+        assert!(evaluate(&and, &batch.slice(0, 0))?.is_empty());
         Ok(())
     }
 
@@ -380,14 +349,35 @@ mod tests {
         Ok(())
     }
 
-    fn parsed(schema: &Schema) -> Arc<dyn PhysicalExpr> {
-        Arc::new(Cast::new(
-            col("s", schema).unwrap(),
-            DataType::Int32,
-            SparkCastOptions::new_without_timezone(EvalMode::Ansi),
-            None,
-            None,
-        ))
+    #[test]
+    fn right_operand_that_reads_no_column() -> Result<()> {
+        // CAST('bad' AS INT) > 1 fails for any row it is evaluated for
+        let batch = batch(vec![Some(0), Some(1)], vec!["a", "b"]);
+        let schema = batch.schema();
+        let failing: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            ansi_cast(lit("bad"), DataType::Int32),
+            Operator::Gt,
+            lit(1),
+        ));
+        let or = |value| {
+            LazyLogical::wrap(
+                v_cmp(&schema, Operator::Eq, value),
+                Operator::Or,
+                Arc::clone(&failing),
+                &schema,
+            )
+        };
+        // Row 0 is decided by `v = 0`, and row 1 is not
+        assert!(evaluate(&or(0)?, &batch).is_err());
+        // Every row is decided
+        let decided = LazyLogical::wrap(
+            v_cmp(&schema, Operator::Lt, 5),
+            Operator::Or,
+            Arc::clone(&failing),
+            &schema,
+        )?;
+        assert_eq!(evaluate(&decided, &batch)?, vec![Some(true); 2]);
+        Ok(())
     }
 
     #[test]
@@ -398,7 +388,7 @@ mod tests {
             vec!["bad", "5", "1", "8"],
         );
         let schema = batch.schema();
-        let candidates = vec![lit(0), parsed(&schema)];
+        let candidates = vec![lit(0), ansi_cast(col("s", &schema)?, DataType::Int32)];
         let value = col("v", &schema)?;
         let expr = crate::spark_in_list(Arc::clone(&value), candidates.clone(), false, &schema)?;
         assert_eq!(
@@ -409,6 +399,30 @@ mod tests {
         assert_eq!(
             evaluate(&expr, &batch)?,
             vec![Some(false), Some(false), None, Some(true)]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_of_floats_matches_nan() -> Result<()> {
+        let d = Float64Array::from(vec![Some(f64::NAN), Some(1.5), Some(0.0), None]);
+        let s = StringArray::from(vec!["bad", "bad", "2.5", "1"]);
+        let schema = Schema::new(vec![
+            Field::new("d", DataType::Float64, true),
+            Field::new("s", DataType::Utf8, false),
+        ]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(d), Arc::new(s)])?;
+        let schema = batch.schema();
+        let candidates: Vec<Arc<dyn PhysicalExpr>> = vec![
+            lit(f64::NAN),
+            lit(1.5f64),
+            ansi_cast(col("s", &schema)?, DataType::Float64),
+        ];
+        // The rows with 'bad' match an earlier candidate, so the cast is never evaluated for them
+        let expr = crate::spark_in_list(col("d", &schema)?, candidates, false, &schema)?;
+        assert_eq!(
+            evaluate(&expr, &batch)?,
+            vec![Some(true), Some(true), Some(false), None]
         );
         Ok(())
     }

@@ -17,42 +17,18 @@
 
 //! Logical expression builders
 
-use crate::execution::operators::ExecutionError;
-use crate::execution::planner::expression_registry::ExpressionBuilder;
-use crate::execution::planner::PhysicalPlanner;
-use crate::{extract_expr, unary_expr_builder};
-use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion::physical_expr::expressions::NotExpr;
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::LazyLogical;
-use std::sync::Arc;
 
-/// Builds `AND` and `OR`, which Spark evaluates for the right operand only on the rows that the
-/// left one has not decided.
-macro_rules! lazy_logical_builder {
-    ($builder_name:ident, $expr_type:ident, $operator:expr) => {
-        pub struct $builder_name;
+use crate::{binary_expr_builder, unary_expr_builder};
 
-        impl ExpressionBuilder for $builder_name {
-            fn build(
-                &self,
-                spark_expr: &Expr,
-                input_schema: SchemaRef,
-                planner: &PhysicalPlanner,
-            ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-                let expr = extract_expr!(spark_expr, $expr_type);
-                let left =
-                    planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                let right =
-                    planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
-                Ok(LazyLogical::wrap(left, $operator, right, &input_schema)?)
-            }
-        }
+/// Macro to define all logical builders at once
+macro_rules! define_logical_builders {
+    () => {
+        binary_expr_builder!(AndBuilder, And, DataFusionOperator::And);
+        binary_expr_builder!(OrBuilder, Or, DataFusionOperator::Or);
+        unary_expr_builder!(NotBuilder, Not, NotExpr::new);
     };
 }
 
-lazy_logical_builder!(AndBuilder, And, DataFusionOperator::And);
-lazy_logical_builder!(OrBuilder, Or, DataFusionOperator::Or);
-unary_expr_builder!(NotBuilder, Not, NotExpr::new);
+define_logical_builders!();
