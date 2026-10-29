@@ -395,7 +395,19 @@ private[rules] object MakeDateEvaluation {
       val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
         rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
       } else None
+      // A safe date producer can remain native, but its NULL output can still hide a throwing
+      // arithmetic operand in the consumer. The expression serde only sees an attribute here.
+      val maskedDateSibling = childDateOutputs.nonEmpty && original.expressions.exists(_.exists {
+        case arithmetic @ (_: Add | _: Subtract | _: Multiply) =>
+          val left = arithmetic.children.head
+          val right = arithmetic.children(1)
+          left.nullable && left.references.intersect(childDateOutputs).nonEmpty &&
+          !CometMakeDate.canEvaluateEagerly(right)
+        case _ => false
+      })
       val operatorReason = original match {
+        case _ if maskedDateSibling =>
+          Some(s"make_date requires Spark evaluation in ${original.nodeName}")
         case project: ProjectExec =>
           projectionDemand
             .filter(demand =>

@@ -741,6 +741,9 @@ over input columns and years widened from `TINYINT` or `SMALLINT`. An unrestrict
 year still needs the safeguard: Spark's conversion to Date32 can overflow independently of
 ANSI mode. Computed arguments, their deferred producers, and throwing sibling expressions
 retain their safeguards. Expression-level parent guards remain in effect.
+For example, if `dt` is a nullable date alias, `unix_date(dt) + element_at(values, i)`
+keeps its consuming operator in Spark when a NULL date can skip an invalid array index.
+The safe date-producing projection can remain native.
 
 An unfiltered `COUNT(make_date(...))` can remain native when its sole argument is nullable,
 because Spark checks that argument on every input row. Filtered counts and counts with

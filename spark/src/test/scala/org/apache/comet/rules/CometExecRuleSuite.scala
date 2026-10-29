@@ -249,6 +249,31 @@ class CometExecRuleSuite extends CometTestBase {
           assert(
             countOperators(deferred.queryExecution.executedPlan, classOf[CometProjectExec]) == 2)
 
+          // A harmless date producer can still yield NULL and hide a throwing operand in
+          // its consumer. Repeated r keeps the date and arithmetic in separate projections.
+          val consumers = Seq(
+            ("unix_date(dt) + element_at(array(1), i)", true),
+            ("unix_date(dt) - element_at(array(1), i)", true),
+            ("unix_date(dt) * element_at(array(1), i)", true),
+            ("unix_date(dt) + 1", false),
+            ("unix_date(dt) + i", false),
+            ("i + unix_date(dt)", false))
+          for ((consumer, fallback) <- consumers) {
+            val df = sql(s"""
+              |SELECT r, r + 1, $consumer AS result FROM (
+              |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt, _3 AS i
+              |  FROM make_date_non_ansi
+              |)
+              |""".stripMargin)
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            withClue(s"consumer=$consumer\n${plan.treeString}") {
+              assert(countOperators(plan, classOf[ProjectExec]) == (if (fallback) 1 else 0))
+              assert(countOperators(plan, classOf[CometProjectExec]) == (if (fallback) 1 else 2))
+              assert(countOperators(plan, classOf[CometNativeScanExec]) == 1)
+            }
+          }
+
           // Index zero throws even with ANSI off. A limit can skip a throwing date argument,
           // and a NULL date can skip an unrelated right operand in Spark's arithmetic.
           val guarded = Seq(
