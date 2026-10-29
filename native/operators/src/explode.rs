@@ -30,7 +30,8 @@
 //! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
 //!   values instead of gathering them, and the buffer fills in `create_take_indices`.
 //! * splitting individual List rows before repeating carried values, including a repetition
-//!   bound that prevents copied variable-width buffers and child offsets from overflowing.
+//!   bound that prevents copied variable-width buffers and child offsets from overflowing, and
+//!   trimming list children so retained slices do not inflate Arrow take's preallocation.
 //! * skipping gather indices and placeholders when every column is being unnested.
 //!
 //! # Deleting this file
@@ -59,9 +60,9 @@
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
-    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
-    StructArray,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray,
+    GenericListArray, Int64Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray,
+    MapArray, OffsetSizeTrait, PrimitiveArray, Scalar, StructArray,
 };
 use arrow::buffer::OffsetBuffer;
 use arrow::compute::kernels::length::length;
@@ -1385,6 +1386,78 @@ fn create_take_indices(
     PrimitiveArray::<Int64Type>::from(indices)
 }
 
+/// Arrow take estimates list child capacity from its full length, even for a sliced parent.
+/// Restrict that estimate to the referenced children before repeating carried columns.
+fn trim_list_children(array: &ArrayRef) -> Result<Option<ArrayRef>> {
+    fn trim_list<O: OffsetSizeTrait>(list: &GenericListArray<O>) -> Result<Option<ArrayRef>> {
+        let start = list.value_offsets()[0].as_usize();
+        let end = list.value_offsets()[list.len()].as_usize();
+        if start == 0 && end == list.values().len() {
+            return Ok(None);
+        }
+        let (field, offsets, values, nulls) = list.clone().into_parts();
+        let base = offsets[0];
+        Ok(Some(Arc::new(GenericListArray::<O>::try_new(
+            field,
+            offsets.subtract(base),
+            values.slice(start, end - start),
+            nulls,
+        )?)))
+    }
+
+    let trimmed: ArrayRef = match array.data_type() {
+        DataType::List(_) => return trim_list(array.as_list::<i32>()),
+        DataType::LargeList(_) => return trim_list(array.as_list::<i64>()),
+        DataType::Map(field, ordered) => {
+            let map = array.as_map();
+            let start = map.value_offsets()[0] as usize;
+            let end = map.value_offsets()[map.len()] as usize;
+            if start == 0 && end == map.entries().len() {
+                return Ok(None);
+            }
+            Arc::new(MapArray::try_new(
+                Arc::clone(field),
+                map.offsets().clone().subtract(start as i32),
+                map.entries().slice(start, end - start),
+                map.nulls().cloned(),
+                *ordered,
+            )?)
+        }
+        DataType::Struct(fields) => {
+            let array = array.as_struct();
+            let mut columns = None;
+            for (index, column) in array.columns().iter().enumerate() {
+                if let Some(trimmed) = trim_list_children(column)? {
+                    columns.get_or_insert_with(|| array.columns().to_vec())[index] = trimmed;
+                }
+            }
+            let Some(columns) = columns else {
+                return Ok(None);
+            };
+            Arc::new(StructArray::try_new(
+                fields.clone(),
+                columns,
+                array.nulls().cloned(),
+            )?)
+        }
+        DataType::FixedSizeList(field, size) => {
+            let array = array.as_fixed_size_list();
+            let Some(values) = trim_list_children(array.values())? else {
+                return Ok(None);
+            };
+            Arc::new(FixedSizeListArray::try_new_with_length(
+                Arc::clone(field),
+                *size,
+                values,
+                array.nulls().cloned(),
+                array.len(),
+            )?)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(trimmed))
+}
+
 /// Create a batch of arrays based on an input `batch` and a `indices` array.
 /// The `indices` array is used by the take kernel to repeat values in the arrays
 /// that are marked with `true` in the `repeat_mask`. Arrays marked with `false`
@@ -1441,7 +1514,12 @@ fn repeat_arrs_from_indices(
         .zip(repeat_mask.iter())
         .map(|(arr, &repeat)| {
             if repeat {
-                Ok(kernels::take::take(arr, indices, None)?)
+                let trimmed = trim_list_children(arr)?;
+                Ok(kernels::take::take(
+                    trimmed.as_ref().unwrap_or(arr),
+                    indices,
+                    None,
+                )?)
             } else {
                 Ok(new_null_array(arr.data_type(), arr.len()))
             }
@@ -1642,6 +1720,133 @@ mod tests {
         )])
         .unwrap();
         assert_eq!(repetition_limit(&batch, &[]), i32::MAX as usize);
+    }
+
+    #[tokio::test]
+    async fn carried_nested_columns_do_not_preallocate_for_unselected_children() {
+        use arrow::array::MapArray;
+
+        let lists = list_batch(&vec![Some(2); 1024]);
+        let list = lists.column(0).as_list::<i32>();
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::clone(list.values()),
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Int32, true)),
+                Arc::clone(list.values()),
+            ),
+        ]);
+        let map = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            list.offsets().clone(),
+            entries,
+            None,
+            false,
+        )) as ArrayRef;
+        let nested_field = Arc::new(Field::new("item", map.data_type().clone(), true));
+        let carried: Vec<ArrayRef> = vec![
+            Arc::clone(&map),
+            Arc::clone(lists.column(0)),
+            Arc::new(LargeListArray::new(
+                Arc::new(Field::new("item", DataType::Int32, true)),
+                OffsetBuffer::new(list.value_offsets().iter().map(|&o| i64::from(o)).collect()),
+                Arc::clone(list.values()),
+                None,
+            )),
+            Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("m", map.data_type().clone(), true)),
+                Arc::clone(&map),
+            )])),
+            Arc::new(FixedSizeListArray::new(
+                Arc::clone(&nested_field),
+                1,
+                Arc::clone(&map),
+                None,
+            )),
+            Arc::new(ListArray::new(
+                nested_field,
+                OffsetBuffer::new((0..=1024).collect()),
+                map,
+                None,
+            )),
+        ];
+
+        fn assert_small_buffers(array: &ArrayRef) {
+            match array.data_type() {
+                DataType::Map(_, _) => {
+                    for column in array.as_map().entries().columns() {
+                        assert_small_buffers(column);
+                    }
+                }
+                DataType::List(_) => assert_small_buffers(array.as_list::<i32>().values()),
+                DataType::LargeList(_) => assert_small_buffers(array.as_list::<i64>().values()),
+                DataType::FixedSizeList(_, _) => {
+                    assert_small_buffers(array.as_fixed_size_list().values());
+                }
+                DataType::Struct(_) => {
+                    for column in array.as_struct().columns() {
+                        assert_small_buffers(column);
+                    }
+                }
+                _ => assert!(
+                    array.get_buffer_memory_size() <= 1024,
+                    "eight output rows must not allocate for the 1024-row source: {} bytes",
+                    array.get_buffer_memory_size()
+                ),
+            }
+        }
+
+        for carried in carried {
+            let input = RecordBatch::try_from_iter(vec![
+                ("l", Arc::clone(lists.column(0))),
+                ("carried", Arc::clone(&carried)),
+            ])
+            .unwrap();
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("l", DataType::Int32, true),
+                input.schema().field(1).clone(),
+            ]));
+            let input_schema = input.schema();
+            let source =
+                MemorySourceConfig::try_new_exec(&[vec![input]], input_schema, None).unwrap();
+            let exec = ExplodeExec::new(
+                source,
+                vec![ListUnnest {
+                    index_in_input_schema: 0,
+                    depth: 1,
+                }],
+                vec![],
+                Arc::clone(&schema),
+                UnnestOptions::new(),
+            )
+            .unwrap();
+            let context = Arc::new(
+                TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(8)),
+            );
+            let mut stream = exec.execute(0, context).unwrap();
+            for start in [0, 8] {
+                let actual = stream.next().await.unwrap().unwrap();
+                let expected = RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int32Array::from_iter_values(start..start + 8)),
+                        kernels::take::take(
+                            &carried,
+                            &Int64Array::from_iter_values(
+                                (start / 2..start / 2 + 4).flat_map(|row| [i64::from(row); 2]),
+                            ),
+                            None,
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_small_buffers(actual.column(1));
+            }
+        }
     }
 
     #[test]
