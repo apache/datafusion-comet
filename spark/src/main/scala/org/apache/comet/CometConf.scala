@@ -361,6 +361,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_CARTESIAN_PRODUCT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "cartesianProduct",
+      defaultValue = false,
+      notes = Some(
+        "Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill. Only " +
+          "condition-free products of single-partition inputs run natively, such as after " +
+          "COALESCE(1); never a bare file scan"))
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)

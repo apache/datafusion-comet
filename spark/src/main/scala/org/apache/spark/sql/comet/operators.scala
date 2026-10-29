@@ -45,7 +45,7 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
@@ -3270,6 +3270,75 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
       op.left,
       op.right,
       SerializedPlan(None))
+  }
+}
+
+case class CometCartesianProductExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  // Inherits Spark's UnknownPartitioning from originalPlan, so exchange planning is unchanged.
+
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] = Iterator(left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometCartesianProductExec =>
+        this.output == other.output &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.joinMetrics(sparkContext)
+}
+
+object CometCartesianProductExec extends CometOperatorSerde[CartesianProductExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED)
+
+  override def getSupportLevel(op: CartesianProductExec): SupportLevel = {
+    // CartesianProductExec carries its own condition, and CrossJoinExec has no post-product filter.
+    if (op.condition.isDefined) {
+      Unsupported(Some("CartesianProduct with a join condition is not supported natively"))
+    } else if (op.left.outputPartitioning.numPartitions != 1 ||
+      op.right.outputPartitioning.numPartitions != 1) {
+      // A native plan runs per partition and cannot add an exchange here, so a cross product is
+      // only correct when both inputs are a single partition.
+      Unsupported(
+        Some(
+          "Native CartesianProduct requires single-partition inputs (a multi-partition " +
+            "cross product cannot be expressed per-partition)"))
+    } else {
+      Compatible(None)
+    }
+  }
+
+  override def convert(
+      op: CartesianProductExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+    val joinBuilder = OperatorOuterClass.CrossJoin.newBuilder()
+    Some(builder.setCrossJoin(joinBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: CartesianProductExec): CometNativeExec = {
+    CometCartesianProductExec(nativeOp, op, op.output, op.left, op.right, SerializedPlan(None))
   }
 }
 
