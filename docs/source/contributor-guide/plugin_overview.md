@@ -199,8 +199,9 @@ IPC. See [JVM Shuffle](jvm_shuffle.md) for details.
 
 For shuffle reads, `CometShuffledBatchRDD` requests a `ShuffleReader` from the shuffle manager and gets a
 `CometBlockStoreShuffleReader`, which fetches blocks with Spark's `ShuffleBlockFetcherIterator`. Both shuffle
-implementations write the same Arrow IPC block format, so the same reader serves both. When a native plan consumes the
-shuffle output and `spark.comet.shuffle.directRead.enabled` is `true`, the default, the compressed blocks are passed
-to that plan, which decodes them itself. Otherwise `NativeBatchDecoderIterator` decodes each block in native
-code through JNI, and Arrow FFI imports the result into the JVM as a `ColumnarBatch`. See
+implementations write the same Arrow IPC block format, so the same reader serves both. When a Comet block reads the
+shuffle output as a `ShuffleScan` input (see [Query Execution](#query-execution)) and
+`spark.comet.shuffle.directRead.enabled` is `true`, the default, the compressed IPC blocks go to its Rust plan,
+which decodes them. Otherwise `NativeBatchDecoderIterator` decodes each block in native code through JNI, and Arrow
+FFI imports the result into the JVM as a `ColumnarBatch`. See
 [Read Path](native_shuffle.md#read-path) for details.

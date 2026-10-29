@@ -78,7 +78,7 @@ Speeds up your existing Spark queries by running them on Apache Arrow columnar d
 <div class="comet-feature__copy">
 <p class="comet-feature__eyebrow">Spark Compatibility</p>
 <h2 class="comet-feature__title">100% compatibility with supported Spark versions.</h2>
-<p class="comet-feature__body">Comet aims for 100% compatibility with all supported versions of Apache Spark, allowing you to integrate Comet into your existing Spark deployments and workflows seamlessly. With no code changes required, you can immediately harness the benefits of Comet's acceleration capabilities without disrupting your Spark applications. The Comet extension automatically detects unsupported features and falls back to the Spark engine.</p>
+<p class="comet-feature__body">Comet aims for 100% compatibility with all supported versions of Apache Spark, so you can add Comet to existing Spark deployments and workflows without changing any code. The Comet extension automatically detects unsupported features and falls back to the Spark engine.</p>
 <p class="comet-feature__links">
 <a href="user-guide/latest/compatibility/spark-versions.html">Spark version compatibility &rarr;</a>
 </p>
