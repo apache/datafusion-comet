@@ -58,6 +58,15 @@ for each partition. Ballista moves the data between stages:
 | Single partition, broadcast | `CoalescePartitionsExec`                                                                                                          |
 | Range                       | `CoalescePartitionsExec`, so a sort runs in one task ([ballista#2680](https://github.com/apache/datafusion-ballista/issues/2680)) |
 
+A stage that fails to plan is refused, not run wrongly or loaded with code it names:
+
+- A stage can't call into the JVM: scalar subqueries and JVM UDFs fail to plan, and a scan whose
+  object store needs a JVM credential provider fails when it runs.
+- A stage can't load a native UDF library. These processes serve every client, and a plan names
+  the library path, so a client would choose what the processes load.
+- A stage that reads files can't also read a hash exchange. Spark places the rows of a bucketed
+  scan with Murmur3, so a join with a side shuffled by DataFusion's hash would return wrong rows.
+
 ## Building and running
 
 ```shell
@@ -84,4 +93,5 @@ binaries and runs queries through the scheduler's Flight service, as a driver wo
 This workspace builds Comet's native crates by path against the Ballista release on the same
 DataFusion major version, and CI builds and tests it in the `linux-test-native-executors` job. When
 Comet moves to a DataFusion major that Ballista hasn't released yet, the upgrade can turn that job
-off until Ballista catches up.
+off until Ballista catches up. Dependabot updates this workspace's lockfile, which is separate from
+`native/Cargo.lock`, so the two can resolve a crate to different versions between updates.
