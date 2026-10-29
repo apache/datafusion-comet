@@ -19,7 +19,8 @@
 //!
 //! The upstream datafusion-spark crate uses the `url` crate (WHATWG URL Standard),
 //! which diverges from Spark's java.net.URI (RFC 3986) on several edge cases.
-//! This module uses RFC 3986 Appendix B regex parsing to match Spark exactly.
+//! This module preserves raw URI components using RFC 3986 Appendix B decomposition,
+//! with delimiter parsing for common HTTP/HTTPS URLs.
 
 use std::cell::RefCell;
 use std::sync::{Arc, LazyLock};
@@ -43,7 +44,7 @@ static URI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$").unwrap()
 });
 
-fn extract_host(authority: &str) -> Option<String> {
+fn extract_host(authority: &str) -> Option<&str> {
     let host_port = match authority.rfind('@') {
         Some(pos) => &authority[pos + 1..],
         None => authority,
@@ -54,26 +55,26 @@ fn extract_host(authority: &str) -> Option<String> {
     if host_port.starts_with('[') {
         // IPv6: [::1] or [::1]:8080
         let bracket_end = host_port.find(']')?;
-        Some(host_port[..=bracket_end].to_string())
+        Some(&host_port[..=bracket_end])
     } else {
         // host or host:port - strip port
         match host_port.rfind(':') {
             Some(colon_pos) => {
                 let after_colon = &host_port[colon_pos + 1..];
                 if after_colon.is_empty() || after_colon.bytes().all(|b| b.is_ascii_digit()) {
-                    Some(host_port[..colon_pos].to_string())
+                    Some(&host_port[..colon_pos])
                 } else {
                     // java.net.URI rejects non-digit ports
                     None
                 }
             }
-            None => Some(host_port.to_string()),
+            None => Some(host_port),
         }
     }
 }
 
-fn extract_userinfo(authority: &str) -> Option<String> {
-    authority.rfind('@').map(|pos| authority[..pos].to_string())
+fn extract_userinfo(authority: &str) -> Option<&str> {
+    authority.rfind('@').map(|pos| &authority[..pos])
 }
 
 thread_local! {
@@ -86,7 +87,7 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
-fn extract_query_value(query: &str, key: &str) -> Option<String> {
+fn extract_query_value<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     // Spark uses Pattern.compile("(&|^)" + key + "=([^&]*)") with no escaping,
     // so the key is treated as a regex pattern.
     QUERY_KEY_REGEX.with(|cell| {
@@ -101,7 +102,7 @@ fn extract_query_value(query: &str, key: &str) -> Option<String> {
         });
         let re = re.as_ref()?;
         re.captures(query)
-            .and_then(|caps| caps.get(2).map(|m| m.as_str().to_string()))
+            .and_then(|caps| caps.get(2).map(|m| m.as_str()))
     })
 }
 
@@ -117,14 +118,74 @@ fn invalid_url_err(value: &str) -> datafusion::common::DataFusionError {
     .into()
 }
 
-fn parse_url_component(value: &str, part: &str, key: Option<&str>) -> Result<Option<String>> {
+// These slices preserve the raw URI components, including empty query/fragment values.
+#[derive(Debug, PartialEq)]
+struct UriParts<'a> {
+    scheme: Option<&'a str>,
+    authority: Option<&'a str>,
+    path: &'a str,
+    // FILE is the contiguous raw path and optional query, including the '?'.
+    file: &'a str,
+    query: Option<&'a str>,
+    fragment: Option<&'a str>,
+}
+
+fn decompose_generic(value: &str) -> Option<UriParts<'_>> {
+    let caps = URI_REGEX.captures(value)?;
+    let path = caps.get(5)?;
+    let query = caps.get(7);
+    Some(UriParts {
+        scheme: caps.get(2).map(|m| m.as_str()),
+        authority: caps.get(4).map(|m| m.as_str()),
+        path: path.as_str(),
+        file: &value[path.start()..query.map_or(path.end(), |m| m.end())],
+        query: query.map(|m| m.as_str()),
+        fragment: caps.get(9).map(|m| m.as_str()),
+    })
+}
+
+// Skip regex decomposition for common HTTP prefixes. The caller still validates
+// the entire URL, including components that are not being extracted. Other schemes
+// and differently cased prefixes retain the generic parser.
+fn decompose_http(value: &str) -> Option<UriParts<'_>> {
+    let (scheme, rest) = if let Some(rest) = value.strip_prefix("https://") {
+        ("https", rest)
+    } else {
+        ("http", value.strip_prefix("http://")?)
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let tail = &rest[authority_end..];
+    let (before_fragment, fragment) = match tail.split_once('#') {
+        Some((prefix, fragment)) => (prefix, Some(fragment)),
+        None => (tail, None),
+    };
+    let (path, query) = match before_fragment.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (before_fragment, None),
+    };
+    Some(UriParts {
+        scheme: Some(scheme),
+        authority: Some(authority),
+        path,
+        file: before_fragment,
+        query,
+        fragment,
+    })
+}
+
+fn parse_url_component<'a>(
+    value: &'a str,
+    part: &str,
+    key: Option<&str>,
+) -> Result<Option<&'a str>> {
     if key.is_some() && part != "QUERY" {
         return Ok(None);
     }
 
     if value.is_empty() {
         return match part {
-            "PATH" | "FILE" => Ok(Some(String::new())),
+            "PATH" | "FILE" => Ok(Some(value)),
             _ => Ok(None),
         };
     }
@@ -133,16 +194,17 @@ fn parse_url_component(value: &str, part: &str, key: Option<&str>) -> Result<Opt
         return Err(invalid_url_err(value));
     }
 
-    let caps = match URI_REGEX.captures(value) {
-        Some(c) => c,
-        None => return Ok(None),
+    let Some(UriParts {
+        scheme,
+        authority,
+        path,
+        file,
+        query,
+        fragment,
+    }) = decompose_http(value).or_else(|| decompose_generic(value))
+    else {
+        return Ok(None);
     };
-
-    let scheme = caps.get(2).map(|m| m.as_str());
-    let authority = caps.get(4).map(|m| m.as_str());
-    let path = caps.get(5).map_or("", |m| m.as_str());
-    let query = caps.get(7).map(|m| m.as_str());
-    let fragment = caps.get(9).map(|m| m.as_str());
 
     if scheme.is_none() {
         if value.contains("://") {
@@ -162,18 +224,15 @@ fn parse_url_component(value: &str, part: &str, key: Option<&str>) -> Result<Opt
 
     match part {
         "HOST" => Ok(authority.and_then(extract_host)),
-        "PATH" => Ok(Some(path.to_string())),
+        "PATH" => Ok(Some(path)),
         "QUERY" => match key {
-            None => Ok(query.map(String::from)),
+            None => Ok(query),
             Some(k) => Ok(query.and_then(|q| extract_query_value(q, k))),
         },
-        "REF" => Ok(fragment.map(String::from)),
-        "PROTOCOL" => Ok(scheme.map(String::from)),
-        "FILE" => match query {
-            Some(q) => Ok(Some(format!("{path}?{q}"))),
-            None => Ok(Some(path.to_string())),
-        },
-        "AUTHORITY" => Ok(authority.filter(|a| !a.is_empty()).map(String::from)),
+        "REF" => Ok(fragment),
+        "PROTOCOL" => Ok(scheme),
+        "FILE" => Ok(Some(file)),
+        "AUTHORITY" => Ok(authority.filter(|a| !a.is_empty())),
         "USERINFO" => Ok(authority.and_then(extract_userinfo)),
         _ => Ok(None),
     }
@@ -254,7 +313,7 @@ impl ScalarUDFImpl for CometTryParseUrl {
 
 fn invoke_parse_url(
     args: &[ColumnarValue],
-    handle: impl Fn(Result<Option<String>>) -> Result<Option<String>>,
+    handle: impl for<'s> Fn(Result<Option<&'s str>>) -> Result<Option<&'s str>>,
 ) -> Result<ColumnarValue> {
     let is_scalar = args.iter().all(|a| matches!(a, ColumnarValue::Scalar(_)));
     let arrays = ColumnarValue::values_to_arrays(args)?;
@@ -272,7 +331,7 @@ fn invoke_parse_url(
 
 fn dispatch_parse_url(
     args: &[ArrayRef],
-    handle: impl Fn(Result<Option<String>>) -> Result<Option<String>>,
+    handle: impl for<'s> Fn(Result<Option<&'s str>>) -> Result<Option<&'s str>>,
 ) -> Result<ArrayRef> {
     if args.len() < 2 || args.len() > 3 {
         return exec_err!("parse_url expects 2 or 3 arguments, but got {}", args.len());
@@ -353,14 +412,16 @@ fn process_parse_url<'a, A, B, C, T>(
     url_array: &'a A,
     part_array: &'a B,
     key_array: &'a C,
-    handle: impl Fn(Result<Option<String>>) -> Result<Option<String>>,
+    handle: impl for<'s> Fn(Result<Option<&'s str>>) -> Result<Option<&'s str>>,
 ) -> Result<ArrayRef>
 where
     &'a A: StringArrayType<'a>,
     &'a B: StringArrayType<'a>,
     &'a C: StringArrayType<'a>,
-    T: Array + FromIterator<Option<String>> + 'static,
+    T: Array + FromIterator<Option<&'a str>> + 'static,
 {
+    // Arrow copies these slices into independently owned output buffers, including
+    // StringViewArray, so small components do not retain the input URL buffers.
     url_array
         .iter()
         .zip(part_array.iter())
@@ -389,10 +450,99 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn http_decomposition_matches_generic_parser() {
+        for scheme in ["http", "https"] {
+            for authority in [
+                "example.com",
+                "u:p@host:80",
+                "",
+                "[::1]:80",
+                "[::1",
+                "host:",
+                "例子.com",
+            ] {
+                for tail in [
+                    "",
+                    "/",
+                    "//a/b",
+                    "?",
+                    "#",
+                    "?#",
+                    "?x=1#f?y",
+                    "#f?x=1",
+                    "/é?k=值#片",
+                    "/p?a=?b#f#x",
+                ] {
+                    let url = format!("{scheme}://{authority}{tail}");
+                    assert_eq!(decompose_http(&url), decompose_generic(&url), "{url}");
+                }
+            }
+        }
+        for url in ["HTTP://host/p", "https:/p", "ftp://host/p", "mailto:a@b"] {
+            assert!(decompose_http(url).is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn file_and_query_components() -> Result<()> {
+        for (url, part, key, expected) in [
+            ("http://h?x=1#f?y", "FILE", None, "?x=1"),
+            ("http://h?#", "FILE", None, "?"),
+            ("HTTP://h/p?#f", "FILE", None, "/p?"),
+            ("ftp://h/p?x=1#f", "FILE", None, "/p?x=1"),
+            ("https://h/é?k=值#片", "PATH", None, "/é"),
+            // The key may introduce capture groups; both Spark and the existing
+            // matcher return group 2 of the full pattern, not its last group.
+            ("https://h/?abc=1&v=2", "QUERY", Some("(abc)"), "abc"),
+            ("https://h/?abc=1&v=2", "QUERY", Some("v"), "2"),
+            ("https://h/?abc=1&v=2", "QUERY", Some("(abc)"), "abc"),
+        ] {
+            let result = parse_url_component(url, part, key)?.unwrap();
+            assert_eq!(result, expected);
+        }
+        // Extraction must still reject an invalid component after the requested host.
+        assert!(parse_url_component("https://host/p#invalid fragment", "HOST", None).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sliced_string_layouts_produce_owned_output() -> Result<()> {
+        for data_type in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
+            let output = {
+                let long_url = format!("https://long.example.com/{}", "x".repeat(128 * 1024));
+                let source = StringArray::from(vec![
+                    Some("not read"),
+                    Some(long_url.as_str()),
+                    None,
+                    Some("ftp://other.example.com/path"),
+                    Some("not read"),
+                ]);
+                let urls = arrow::compute::cast(&source, &data_type)?.slice(1, 3);
+                let parts = arrow::compute::cast(&StringArray::from(vec!["HOST"; 3]), &data_type)?;
+                dispatch_parse_url(&[urls, parts], |x| x)?
+            };
+            // The output remains valid after dropping all inputs, and extracting a
+            // short host must not retain a large URL's backing buffer, including views.
+            assert_eq!(output.data_type(), &data_type);
+            assert!(output.get_buffer_memory_size() < 128 * 1024);
+            let actual = arrow::compute::cast(&output, &DataType::Utf8)?;
+            assert_eq!(
+                as_string_array(&actual)?,
+                &StringArray::from(vec![
+                    Some("long.example.com"),
+                    None,
+                    Some("other.example.com"),
+                ])
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_host() -> Result<()> {
         assert_eq!(
             parse_url_component("https://example.com/a?x=1", "HOST", None)?,
-            Some("example.com".into())
+            Some("example.com")
         );
         Ok(())
     }
@@ -401,15 +551,15 @@ mod tests {
     fn test_path_normal() -> Result<()> {
         assert_eq!(
             parse_url_component("https://example.com/a/b", "PATH", None)?,
-            Some("/a/b".into())
+            Some("/a/b")
         );
         Ok(())
     }
 
     #[test]
     fn test_fix1_empty_string_path() -> Result<()> {
-        assert_eq!(parse_url_component("", "PATH", None)?, Some("".into()));
-        assert_eq!(parse_url_component("", "FILE", None)?, Some("".into()));
+        assert_eq!(parse_url_component("", "PATH", None)?, Some(""));
+        assert_eq!(parse_url_component("", "FILE", None)?, Some(""));
         assert_eq!(parse_url_component("", "HOST", None)?, None);
         assert_eq!(parse_url_component("", "QUERY", None)?, None);
         assert_eq!(parse_url_component("", "PROTOCOL", None)?, None);
@@ -423,7 +573,7 @@ mod tests {
     fn test_fix2_file_without_path() -> Result<()> {
         assert_eq!(
             parse_url_component("http://host?foo=bar", "FILE", None)?,
-            Some("?foo=bar".into())
+            Some("?foo=bar")
         );
         Ok(())
     }
@@ -432,7 +582,7 @@ mod tests {
     fn test_fix3_path_trailing_slash() -> Result<()> {
         assert_eq!(
             parse_url_component("https://example.com/", "PATH", None)?,
-            Some("/".into())
+            Some("/")
         );
         Ok(())
     }
@@ -445,7 +595,7 @@ mod tests {
                 "QUERY",
                 Some("key")
             )?,
-            Some("value%20encoded".into())
+            Some("value%20encoded")
         );
         Ok(())
     }
@@ -454,7 +604,7 @@ mod tests {
     fn test_query_no_key() -> Result<()> {
         assert_eq!(
             parse_url_component("https://ex.com/p?a=1&b=2", "QUERY", None)?,
-            Some("a=1&b=2".into())
+            Some("a=1&b=2")
         );
         Ok(())
     }
@@ -463,7 +613,7 @@ mod tests {
     fn test_query_with_key() -> Result<()> {
         assert_eq!(
             parse_url_component("https://ex.com/p?a=1&b=2", "QUERY", Some("a"))?,
-            Some("1".into())
+            Some("1")
         );
         assert_eq!(
             parse_url_component("https://ex.com/p?a=1&b=2", "QUERY", Some("c"))?,
@@ -475,23 +625,17 @@ mod tests {
     #[test]
     fn test_ref_protocol_userinfo_file_authority() -> Result<()> {
         let url = "ftp://user:pwd@ftp.example.com:21/files?x=1#frag";
-        assert_eq!(parse_url_component(url, "REF", None)?, Some("frag".into()));
-        assert_eq!(
-            parse_url_component(url, "PROTOCOL", None)?,
-            Some("ftp".into())
-        );
+        assert_eq!(parse_url_component(url, "REF", None)?, Some("frag"));
+        assert_eq!(parse_url_component(url, "PROTOCOL", None)?, Some("ftp"));
         assert_eq!(
             parse_url_component(url, "USERINFO", None)?,
-            Some("user:pwd".into())
+            Some("user:pwd")
         );
-        assert_eq!(
-            parse_url_component(url, "FILE", None)?,
-            Some("/files?x=1".into())
-        );
+        assert_eq!(parse_url_component(url, "FILE", None)?, Some("/files?x=1"));
         // Authority includes port (matches java.net.URI)
         assert_eq!(
             parse_url_component(url, "AUTHORITY", None)?,
-            Some("user:pwd@ftp.example.com:21".into())
+            Some("user:pwd@ftp.example.com:21")
         );
         Ok(())
     }
@@ -518,7 +662,7 @@ mod tests {
     fn test_ipv6_host() -> Result<()> {
         assert_eq!(
             parse_url_component("http://[::1]:8080/path", "HOST", None)?,
-            Some("[::1]".into())
+            Some("[::1]")
         );
         Ok(())
     }
@@ -551,10 +695,12 @@ mod tests {
 
     #[test]
     fn test_try_parse_url_tolerates_errors() -> Result<()> {
-        let handler = |x: Result<Option<String>>| match x {
-            Err(_) => Ok(None),
-            ok => ok,
-        };
+        fn handler(x: Result<Option<&str>>) -> Result<Option<&str>> {
+            match x {
+                Err(_) => Ok(None),
+                ok => ok,
+            }
+        }
         let urls = sa(&[Some("://bad"), Some("http://ok.com/p")]);
         let parts = sa(&[Some("HOST"), Some("HOST")]);
         let out = dispatch_parse_url(&[urls, parts], handler)?;
@@ -574,7 +720,7 @@ mod tests {
     fn test_double_slashes_in_path() -> Result<()> {
         assert_eq!(
             parse_url_component("http://example.com//double//slashes", "PATH", None)?,
-            Some("//double//slashes".into())
+            Some("//double//slashes")
         );
         Ok(())
     }
@@ -583,7 +729,7 @@ mod tests {
     fn test_empty_query() -> Result<()> {
         assert_eq!(
             parse_url_component("http://example.com/path?", "QUERY", None)?,
-            Some("".into())
+            Some("")
         );
         Ok(())
     }
@@ -592,7 +738,7 @@ mod tests {
     fn test_file_with_no_fragment() -> Result<()> {
         assert_eq!(
             parse_url_component("http://example.com#frag", "FILE", None)?,
-            Some("".into())
+            Some("")
         );
         Ok(())
     }
@@ -601,7 +747,7 @@ mod tests {
     fn test_duplicate_query_keys() -> Result<()> {
         assert_eq!(
             parse_url_component("http://example.com/path?a=1&a=2", "QUERY", Some("a"))?,
-            Some("1".into())
+            Some("1")
         );
         Ok(())
     }
@@ -610,11 +756,11 @@ mod tests {
     fn test_query_value_contains_equals() -> Result<()> {
         assert_eq!(
             parse_url_component("http://host/p?a=b=c", "QUERY", Some("a"))?,
-            Some("b=c".into())
+            Some("b=c")
         );
         assert_eq!(
             parse_url_component("http://host/p?tok=abc=def=&x=1", "QUERY", Some("tok"))?,
-            Some("abc=def=".into())
+            Some("abc=def=")
         );
         Ok(())
     }
@@ -636,7 +782,7 @@ mod tests {
     fn test_host_empty_port() -> Result<()> {
         assert_eq!(
             parse_url_component("http://host:/path", "HOST", None)?,
-            Some("host".into())
+            Some("host")
         );
         Ok(())
     }
@@ -655,11 +801,11 @@ mod tests {
         // Spark treats key as regex: ".bc" matches "abc"
         assert_eq!(
             parse_url_component("http://h/p?abc=1", "QUERY", Some(".bc"))?,
-            Some("1".into())
+            Some("1")
         );
         assert_eq!(
             parse_url_component("http://h/p?abc=1", "QUERY", Some("a.c"))?,
-            Some("1".into())
+            Some("1")
         );
         // Literal key that doesn't match as regex
         assert_eq!(
@@ -675,11 +821,11 @@ mod tests {
         // Other parts still work
         assert_eq!(
             parse_url_component("http://host:abc/", "PATH", None)?,
-            Some("/".into())
+            Some("/")
         );
         assert_eq!(
             parse_url_component("http://host:abc/", "AUTHORITY", None)?,
-            Some("host:abc".into())
+            Some("host:abc")
         );
         Ok(())
     }
