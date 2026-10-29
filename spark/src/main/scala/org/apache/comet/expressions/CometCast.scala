@@ -625,6 +625,8 @@ object CometCast
       case (_: ArrayType, _: ArrayType) | (_: StructType, _: StructType) => true
       case (DataTypes.BooleanType, to: DecimalType) => to.precision - to.scale >= 1
       case (DataTypes.BooleanType, _: NumericType) => true
+      case (_: NumericType, DataTypes.BooleanType) => true
+      case (DataTypes.TimestampType, DataTypes.LongType | DataTypes.BooleanType) => true
       case (
             DataTypes.StringType | DataTypes.ByteType | DataTypes.ShortType |
             DataTypes.IntegerType | DataTypes.LongType,

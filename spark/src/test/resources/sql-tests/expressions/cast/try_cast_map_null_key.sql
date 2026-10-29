@@ -55,18 +55,26 @@ SELECT id, try_cast(m AS map<bigint, bigint>) FROM test_try_cast_map_key_widen O
 -- These key casts cannot fail either, so they stay native
 statement
 CREATE TABLE test_try_cast_map_key_safe(
-  id int, b map<boolean, int>, s map<string, int>, a map<array<bigint>, int>) USING parquet
+  id int, b map<boolean, int>, s map<string, int>, a map<array<bigint>, int>, n map<int, int>,
+  t map<timestamp, int>) USING parquet
 
 statement
 INSERT INTO test_try_cast_map_key_safe VALUES
-  (1, map(false, 10, true, 20), map('x', 10), map(array(1, 9999999999), 10)),
-  (2, NULL, NULL, NULL)
+  (1, map(false, 10, true, 20), map('x', 10), map(array(1, 9999999999), 10), map(0, 10, 5, 20),
+    map(timestamp'2024-01-01 00:00:00', 10)),
+  (2, NULL, NULL, NULL, NULL, NULL)
 
 query expect_native(try_cast)
 SELECT id, try_cast(b AS map<int, int>) FROM test_try_cast_map_key_safe ORDER BY id
 
 query expect_native(try_cast)
 SELECT id, try_cast(s AS map<binary, int>) FROM test_try_cast_map_key_safe ORDER BY id
+
+query expect_native(try_cast)
+SELECT id, try_cast(n AS map<boolean, int>) FROM test_try_cast_map_key_safe ORDER BY id
+
+query expect_native(try_cast)
+SELECT id, try_cast(t AS map<bigint, int>) FROM test_try_cast_map_key_safe ORDER BY id
 
 -- A failing element of an array key becomes a null element, so the key itself is never null
 query expect_native(try_cast)

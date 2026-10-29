@@ -2606,6 +2606,8 @@ class CometNativeCastSuite
         .isInstanceOf[Compatible])
     Seq(
       BooleanType -> IntegerType,
+      IntegerType -> BooleanType,
+      TimestampType -> LongType,
       StringType -> BinaryType,
       ArrayType(LongType) -> ArrayType(IntegerType)).foreach { case (from, to) =>
       assert(
@@ -2619,9 +2621,10 @@ class CometNativeCastSuite
       level(MapType(structKey._1, IntegerType), MapType(structKey._2, IntegerType))
         .isInstanceOf[Compatible])
     // These have no native path, but are no longer refused for a null key.
-    Seq(BooleanType -> DecimalType(2, 0), IntegerType -> BinaryType).foreach { case (from, to) =>
-      assert(level(MapType(from, IntegerType), MapType(to, IntegerType)) != expected, s"$from")
-    }
+    Seq(BooleanType -> DecimalType(2, 0), IntegerType -> BinaryType, TimestampType -> BooleanType)
+      .foreach { case (from, to) =>
+        assert(level(MapType(from, IntegerType), MapType(to, IntegerType)) != expected, s"$from")
+      }
     // A map inside an array key can still get a null key.
     assert(
       level(
