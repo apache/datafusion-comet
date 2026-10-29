@@ -1056,6 +1056,24 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
     }
 }
 
+/// The most value bytes a string or binary scalar may take once expanded to a batch's length.
+/// Arrow's `Utf8` and `Binary` offsets are 32-bit, so 2 GiB is the hard limit; half of it leaves
+/// room for kernels that append to the expanded value, such as `concat`, and matches what an
+/// Arrow Java vector can hold before its reallocation fails.
+const SCALAR_EXPANSION_BYTES: usize = 1 << 30;
+
+/// The rows per batch under which the plan's string and binary scalars, `scalar_bytes` in all,
+/// expanded to the batch's length by an aggregate, a partitioner or a string kernel, stay within
+/// `SCALAR_EXPANSION_BYTES`. Spark evaluates such scalars row by row and never materializes
+/// the column, so this is what keeps a query with a large literal or scalar subquery result
+/// running natively.
+fn scalar_batch_rows(scalar_bytes: usize, batch_size: usize) -> usize {
+    if scalar_bytes == 0 {
+        return batch_size;
+    }
+    batch_size.min((SCALAR_EXPANSION_BYTES / scalar_bytes).max(1))
+}
+
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
     batch_size: usize,
@@ -1554,6 +1572,17 @@ fn execute_plan(
         exec_context.plan_creation_time += physical_plan_time;
         exec_context.scans = scans;
         exec_context.shuffle_scans = shuffle_scans;
+
+        // The task context created below copies the session config, so every source and the
+        // JVM-fed leaves see the smaller batch size.
+        let batch_size = exec_context.session_ctx.copied_config().batch_size();
+        let rows = scalar_batch_rows(planner.scalar_bytes(), batch_size);
+        if rows < batch_size {
+            let state = exec_context.session_ctx.state_ref();
+            let mut state = state.write();
+            let config = state.config_mut();
+            *config = std::mem::take(config).with_batch_size(rows);
+        }
 
         if exec_context.explain_native {
             let formatted_plan_str =
@@ -2538,6 +2567,17 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowClose(
 mod tests {
     use super::*;
     use crate::execution::operators::InputBatch;
+
+    #[test]
+    fn scalar_batch_rows_keeps_the_batch_size_unless_a_scalar_would_overflow_it() {
+        // No string or binary scalar, or a small one: the batch size stands.
+        assert_eq!(scalar_batch_rows(0, 8192), 8192);
+        assert_eq!(scalar_batch_rows(1024, 8192), 8192);
+        // A 256 KiB scalar expanded to 8192 rows needs 2 GiB; 4096 rows keep it at 1 GiB.
+        assert_eq!(scalar_batch_rows(256 * 1024, 8192), 4096);
+        // A scalar past 1 GiB still gets one row per batch.
+        assert_eq!(scalar_batch_rows(2 * 1024 * 1024 * 1024, 8192), 1);
+    }
     use crate::execution::planner::TEST_EXEC_CONTEXT_ID;
     use arrow::array::{ArrayRef, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};

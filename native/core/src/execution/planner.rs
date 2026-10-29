@@ -99,6 +99,7 @@ use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::LexOrdering;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
+use arrow::array::RecordBatch;
 use arrow::array::{
     Array, ArrayRef, BinaryBuilder, BooleanArray, Date32Array, Decimal128Array, Float32Array,
     Float64Array, Int16Array, Int32Array, Int64Array, Int8Array, IntervalYearMonthArray, ListArray,
@@ -106,6 +107,7 @@ use arrow::array::{
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
+use datafusion::logical_expr::ColumnarValue;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
@@ -127,7 +129,13 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
 
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
@@ -207,6 +215,11 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    /// The bytes of every string or binary scalar planned so far, literals and scalar subquery
+    /// results, added up so that a scalar used twice in one expression counts twice. Bounds the
+    /// rows per batch; see `scalar_batch_rows` in `jni_api`. Shared by the planner's clones,
+    /// which plan parts of the same plan.
+    scalar_bytes: Arc<AtomicUsize>,
 }
 
 impl Default for PhysicalPlanner {
@@ -229,7 +242,22 @@ impl PhysicalPlanner {
             output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            scalar_bytes: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// The bytes of the string and binary scalars in the plans created so far, added up.
+    pub fn scalar_bytes(&self) -> usize {
+        self.scalar_bytes.load(Ordering::Relaxed)
+    }
+
+    fn note_scalar_bytes(&self, value: &ScalarValue) {
+        let len = match value {
+            ScalarValue::Utf8(Some(s)) => s.len(),
+            ScalarValue::Binary(Some(b)) => b.len(),
+            _ => 0,
+        };
+        self.scalar_bytes.fetch_add(len, Ordering::Relaxed);
     }
 
     /// Load the SQL text pool from the root operator of the plan about to be planned. Must be
@@ -777,6 +805,7 @@ impl PhysicalPlanner {
                         }
                     }
                 };
+                self.note_scalar_bytes(&scalar_value);
                 Ok(Arc::new(DataFusionLiteral::new(scalar_value)))
             }
             ExprStruct::Cast(expr) => {
@@ -965,7 +994,18 @@ impl PhysicalPlanner {
             ExprStruct::Subquery(expr) => {
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
-                Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
+                let subquery = Subquery::new(self.exec_context_id, id, data_type);
+                // The JVM registers the result before the plan is built, so its size is known
+                // here and can bound the rows per batch.
+                if matches!(subquery.data_type, DataType::Utf8 | DataType::Binary)
+                    && self.exec_context_id != TEST_EXEC_CONTEXT_ID
+                {
+                    let no_rows = RecordBatch::new_empty(Arc::new(Schema::empty()));
+                    if let ColumnarValue::Scalar(value) = subquery.evaluate(&no_rows)? {
+                        self.note_scalar_bytes(&value);
+                    }
+                }
+                Ok(Arc::new(subquery))
             }
             ExprStruct::BloomFilterMightContain(expr) => {
                 let bloom_filter_expr = self.create_expr(
@@ -1758,7 +1798,7 @@ impl PhysicalPlanner {
                     range.num_elements,
                     range.num_slices,
                     self.partition,
-                    self.session_ctx.copied_config().batch_size(),
+                    self.session_ctx.state_weak_ref(),
                 )?);
                 // The range's order is real, and Spark's `RangeExec` reports it, so declare it
                 // for the operators above, a hash join in particular: see `SortedInputExec`.
