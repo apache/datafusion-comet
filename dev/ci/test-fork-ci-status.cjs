@@ -52,7 +52,10 @@ const pr = {
   number: 10, state: 'open', updated_at: new Date(now).toISOString(),
   head: {
     sha, ref: 'feature',
-    repo: { owner: { login: 'contributor' }, name: 'datafusion-comet', full_name: 'contributor/datafusion-comet' },
+    repo: {
+      owner: { login: 'contributor' }, name: 'datafusion-comet',
+      full_name: 'contributor/datafusion-comet', default_branch: 'main',
+    },
   },
   base: { ref: 'main' },
 };
@@ -289,8 +292,9 @@ test('no open PRs means no fork API calls', async () => {
   assert.deepEqual(result.writes, []);
 });
 
-test('a PR from the fork main branch is told to use a branch, and no run is read', async () => {
-  const mainPr = { ...pr, head: { ...pr.head, ref: 'main' } };
+for (const defaultBranch of ['main', 'develop']) {
+test('a PR from the fork default branch ' + defaultBranch + ' is told to use a branch, and no run is read', async () => {
+  const mainPr = { ...pr, head: { ...pr.head, ref: defaultBranch, repo: { ...pr.head.repo, default_branch: defaultBranch } } };
   const writes = [];
   const github = { rest: { checks: {}, actions: {}, pulls: {} } };
   github.rest.checks.listForRef = async () => {};
@@ -307,6 +311,7 @@ test('a PR from the fork main branch is told to use a branch, and no run is read
   assert.equal(writes[0].conclusion, 'neutral');
   assert.equal(writes[0].output.title, 'Open the pull request from a branch');
 });
+}
 
 function group(github) {
   return ciConcurrency[1].replace(/\$\{\{\s*(.*?)\s*\}\}/g,

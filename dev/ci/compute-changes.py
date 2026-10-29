@@ -635,11 +635,21 @@ UPSTREAM = "apache/datafusion-comet"
 
 
 def is_fork_pull_request(event):
-    """Is this a pull request from a fork of UPSTREAM into the default branch?"""
+    """Does the pull request's PR tier run on a fork, not here?
+
+    That is a pull request from a fork of UPSTREAM into the default branch. It
+    is also any pull request opened inside a fork, whose own branch push has
+    already run the tier through ci_fork.yml: running it again on the
+    `pull_request` event would test the same commit twice.
+    """
+    if event.get("name") != "pull_request":
+        return False
+    repository = event.get("repository", "")
+    if repository and repository != UPSTREAM:
+        return True
     head = event.get("head_repository", "")
     return (
-        event.get("name") == "pull_request"
-        and event.get("repository") == UPSTREAM
+        repository == UPSTREAM
         and bool(head)
         and head != UPSTREAM
         and event.get("base") == "main"
@@ -650,19 +660,6 @@ def is_fork_push(event):
     """Is this a push to a contributor's fork, rather than to UPSTREAM?"""
     repository = event.get("repository", "")
     return event.get("name") == "push" and bool(repository) and repository != UPSTREAM
-
-
-def is_fork_default_branch_push(event):
-    """Is this a push to the default branch of a contributor's fork?
-
-    That is almost always a sync from upstream: commits the merge queue has
-    already tested. A pull request is opened from a branch, and a fork's branch
-    pushes go through ci_fork.yml, so nothing needs testing here. Without a
-    default branch in the event, treat the push as a branch's, which is the
-    conservative reading.
-    """
-    default = event.get("default_branch", "")
-    return is_fork_push(event) and bool(default) and event.get("ref") == f"refs/heads/{default}"
 
 
 # Release branches are named `branch-<major>.<minor>`, as in branch-0.17 and
@@ -680,11 +677,10 @@ def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
     `event` is {"name", "action", "label", "labels", "base", "repository",
-    "head_repository", "ref", "default_branch"}: the workflow event name, the
-    pull_request action, the label just added on a `labeled` event, the labels
-    currently on the pull request, the branch it targets, the repository the
-    workflow runs in, the repository the pull request's branch lives in, and
-    for a push the ref and the repository's default branch.
+    "head_repository"}: the workflow event name, the pull_request action, the
+    label just added on a `labeled` event, the labels currently on the pull
+    request, the branch it targets, the repository the workflow runs in, and
+    the repository the pull request's branch lives in.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -694,12 +690,10 @@ def event_allows(job, event):
     if name == "push":
         # A push to a fork's branch is the contributor's own pull request tier.
         # The "push" tier is main's cache refresh and site deploy, and a fork
-        # has no site to deploy. A sync of the fork's default branch runs
-        # nothing at all: it brings in commits the queue already tested, and
-        # the caches it would warm save a branch run only about nine of its
-        # fifty minutes (measured 2026-10-28: 59 minutes cold, 50 warm).
-        if is_fork_default_branch_push(event):
-            return False
+        # has no site to deploy. A push to a fork's default branch never gets
+        # here: Preflight skips it. It is a sync of commits the queue already
+        # tested, and the caches it would warm save a branch run only about nine
+        # of its fifty minutes (measured 2026-10-28: 59 minutes cold, 50 warm).
         if is_fork_push(event):
             return "pr" in tiers
         return "push" in tiers
@@ -760,8 +754,6 @@ def event_from_env():
         "base": os.environ.get("PR_BASE_REF", ""),
         "repository": os.environ.get("REPOSITORY", ""),
         "head_repository": os.environ.get("PR_HEAD_REPO", ""),
-        "ref": os.environ.get("PUSH_REF", ""),
-        "default_branch": os.environ.get("DEFAULT_BRANCH", ""),
     }
 
 

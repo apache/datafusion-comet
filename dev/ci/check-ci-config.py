@@ -562,7 +562,7 @@ POLICY_CASES = [
     # The exceptions keep the PR tier upstream: a pull request from a branch of
     # this repository (a committer's, or dependabot's), one that targets a
     # release branch, which has no queue or nightly to catch what a fork run
-    # misses, and one opened inside a fork, whose own CI is the only CI.
+    # misses.
     (
         {
             "name": "pull_request",
@@ -585,6 +585,15 @@ POLICY_CASES = [
         },
         QUEUE_TIER | NIGHTLY_TIER,
     ),
+    # A push to a fork's branch is the contributor's pull request tier and
+    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
+    # asf-site), and not the queue's or the nightly's suites. A push to the
+    # fork's default branch, a sync, never reaches this table: Preflight skips it
+    # (see check_fork_runs).
+    ({"name": "push", "repository": "contributor/datafusion-comet"}, PR_TIER),
+    # A pull request opened inside a fork leaves the PR tier to the branch push
+    # that already ran it, so the same commit is not tested twice, but a label
+    # still runs its suite there.
     (
         {
             "name": "pull_request",
@@ -594,37 +603,19 @@ POLICY_CASES = [
             "repository": "contributor/datafusion-comet",
             "head_repository": "contributor/datafusion-comet",
         },
-        PR_TIER,
-    ),
-    # A push to a fork's branch is the contributor's pull request tier and
-    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
-    # asf-site), and not the queue's or the nightly's suites.
-    (
-        {
-            "name": "push",
-            "repository": "contributor/datafusion-comet",
-            "ref": "refs/heads/my-fix",
-            "default_branch": "main",
-        },
-        PR_TIER,
-    ),
-    # A push to the fork's default branch is a sync of commits the queue already
-    # tested, and runs nothing.
-    (
-        {
-            "name": "push",
-            "repository": "contributor/datafusion-comet",
-            "ref": "refs/heads/main",
-            "default_branch": "main",
-        },
         set(),
     ),
-    # Without the default branch in the event, a fork push is read as a
-    # branch's, the conservative reading.
-    ({"name": "push", "repository": "contributor/datafusion-comet"}, PR_TIER),
-    # The nightly runs against the upstream repository only; a job-level guard in
-    # ci.yml keeps it out of forks, so the policy here is the upstream's.
-    ({"name": "schedule", "repository": UPSTREAM}, NIGHTLY_TIER),
+    (
+        {
+            "name": "pull_request",
+            "action": "synchronize",
+            "labels": ["run-iceberg-tests"],
+            "base": "main",
+            "repository": "contributor/datafusion-comet",
+            "head_repository": "contributor/datafusion-comet",
+        },
+        ICEBERG_OPT_IN,
+    ),
     # Upstream, push stays the cache refresh and the site deploy.
     ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
 ]
@@ -953,8 +944,6 @@ EVENT_ENV_SOURCES = {
     "PR_BASE_REF": "github.event.pull_request.base.ref",
     "PR_HEAD_REPO": "github.event.pull_request.head.repo.full_name",
     "REPOSITORY": "github.repository",
-    "PUSH_REF": "github.ref",
-    "DEFAULT_BRANCH": "github.event.repository.default_branch",
 }
 ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
 ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
@@ -1726,6 +1715,16 @@ def check_fork_runs():
             "ci.yml must trigger on `push` to `branches: [main]` only; "
             "fork branches go through ci_fork.yml"
         )
+    # Preflight is where a push to a fork's default branch, a sync of commits the
+    # queue already tested, is dropped: ci.yml triggers on push to main, so it
+    # fires there too, and every other job needs Preflight through `changes`.
+    preflight = re.search(r"^  preflight:\n(?:    (?!runs-on)[^\n]*\n|\n)*", ci, re.M)
+    if not preflight or "github.event.repository.default_branch" not in preflight.group(0):
+        failures.append(
+            "ci.yml's Preflight must skip a push to a fork's default branch "
+            "(`github.ref_name != github.event.repository.default_branch`); "
+            "otherwise every sync of a fork runs CI"
+        )
     if FORK_TEST.name not in ci:
         failures.append(f"ci.yml's Preflight does not run {FORK_TEST}, so the bridge goes untested")
 
@@ -1748,12 +1747,17 @@ def check_fork_runs():
         for needed in ("main", "asf-site", "'gh-readonly-queue/**'"):
             if needed not in entries:
                 failures.append(f"{FORK_WORKFLOW} must list {needed} under `push: branches-ignore`")
-        if not re.search(
-            r"^    if:\s*github\.repository\s*!=\s*'apache/datafusion-comet'\s*$", body, re.M
-        ):
+        conditions = " ".join(job_conditions(body))
+        if "github.repository != 'apache/datafusion-comet'" not in conditions:
             failures.append(
                 f"{FORK_WORKFLOW} has no `if: github.repository != 'apache/datafusion-comet'` "
                 f"guard, so every upstream branch push would run the PR tier a second time"
+            )
+        if "github.event.repository.default_branch" not in conditions:
+            failures.append(
+                f"{FORK_WORKFLOW} does not skip the fork's default branch, so a sync of a fork "
+                f"whose default branch is not `main` would start a run; `branches-ignore` "
+                f"can only name `main`"
             )
         if re.search(r"^concurrency:", body, re.M):
             failures.append(
@@ -1796,16 +1800,23 @@ def check_fork_runs():
 # a fork's Miri run costs twenty minutes a day. Every workflow with a `schedule`
 # trigger therefore needs a job-level guard on the repository.
 SCHEDULE_TRIGGER = re.compile(r"^  schedule:\s*$", re.M)
-UPSTREAM_GUARD = re.compile(
-    r"^    if:.*github\.repository\s*==\s*'apache/datafusion-comet'", re.M
-)
+UPSTREAM_GUARD = re.compile(r"github\.repository\s*==\s*'apache/datafusion-comet'")
+# A job-level `if:` at four spaces of indent, with its continuation lines when it
+# is a folded block (`if: >-`).
+JOB_CONDITION = re.compile(r"^    if:[^\n]*\n(?:      [^\n]*\n)*", re.M)
+
+
+def job_conditions(body):
+    return JOB_CONDITION.findall(body)
 
 
 def check_scheduled_workflows_stay_upstream():
     failures = []
     for path in sorted(WORKFLOWS.glob("*.y*ml")):
         body = path.read_text(encoding="utf-8")
-        if SCHEDULE_TRIGGER.search(body) and not UPSTREAM_GUARD.search(body):
+        if SCHEDULE_TRIGGER.search(body) and not any(
+            UPSTREAM_GUARD.search(c) for c in job_conditions(body)
+        ):
             failures.append(
                 f"{path} has a `schedule` trigger but no job-level "
                 f"`if: ... github.repository == 'apache/datafusion-comet'`, so it "

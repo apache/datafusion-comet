@@ -223,13 +223,21 @@ Things that follow from that, and are easy to break:
   green fork run that never ran the tests costs one queue slot, not a bad merge.
 - **A push to a fork's `main` runs nothing.** It is a sync of commits the queue
   already tested, and `ci.yml` triggers on it because it triggers on push to
-  `main`, so `is_fork_default_branch_push` drops every job. The cost is that a
+  `main`, so its `Preflight` skips the run, and with it every job. The same
+  skip covers a fork whose default branch is not `main`. The cost is that a
   fork never has warm caches, so each branch run rebuilds the native library:
   59 minutes of wall time and 240 runner-minutes cold against 50 and 213 warm,
   measured 2026-10-28 on one fork. A sync that did warm them would cost about
   as much as it saved on its first run. The bridge answers a pull request from
-  a fork's `main` with a neutral "open the pull request from a branch", because
-  nothing tests it.
+  a fork's default branch with a neutral "open the pull request from a branch",
+  because nothing tests it.
+- **A pull request opened inside a fork skips the PR tier,** because the branch
+  push already ran it, and `is_fork_pull_request` covers both that and a fork
+  pull request into `main` here. A `run-*` label still runs its suite.
+- **A fork push that diffs to nothing runs everything.** `Detect changes` diffs
+  against the fork's default branch, and a branch whose commits are already
+  there, such as `git push fork main:my-fix`, would otherwise skip every suite and
+  report a green run for a change nobody built.
 - **Scheduled workflows stay upstream.** A fork that enables scheduled
   workflows would run them on its owner's minutes, and with no earlier scheduled
   run to diff against, a fork's nightly runs the whole nightly tier.

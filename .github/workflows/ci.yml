@@ -129,7 +129,8 @@ jobs:
   # pr_title_check stays a standalone workflow because it needs to fire on PR
   # `edited` events.
   #
-  # This job deliberately carries no `if:`. A job held back by `if:` still
+  # This job deliberately carries no `if:` that reads the pull request or its
+  # labels. A job held back by `if:` still
   # publishes a check run under its own name with conclusion `skipped`, and the
   # newest check run for a name is the one the merge box, `gh pr checks` and
   # required-status-check evaluation read. Guarding this job on the label name
@@ -140,16 +141,20 @@ jobs:
   # job; POLICY in dev/ci/compute-changes.py drops every job a `labeled` event
   # does not gate.
   #
-  # The one `if:` it does carry cannot hide a verdict: a scheduled run belongs
-  # to no pull request, so skipping it only changes what the Actions tab shows.
-  # It keeps the nightly upstream. A fork with scheduled workflows enabled would
-  # otherwise run it, and with no earlier scheduled run to diff against in the
-  # fork, `Detect changes` runs the whole nightly tier. Everything else here
-  # needs `changes`, which needs this, so the whole run is skipped.
+  # The two events it does skip belong to no pull request, so skipping them only
+  # changes what a fork's Actions tab shows. A scheduled run outside this
+  # repository: a fork with scheduled workflows enabled would otherwise run the
+  # nightly, and with no earlier scheduled run to diff against in the fork,
+  # `Detect changes` runs the whole nightly tier. And a push to a fork's default
+  # branch, which is a sync of commits the queue already tested. Everything else
+  # here needs `changes`, which needs this, so either run is skipped whole.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
-    if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet'
+    if: >-
+      (github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet')
+      && (github.event_name != 'push' || github.repository == 'apache/datafusion-comet'
+          || github.ref_name != github.event.repository.default_branch)
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
@@ -307,7 +312,6 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY:   ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PUSH_REF:     ${{ github.ref }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -355,22 +359,26 @@ jobs:
             # merge_group runs; the queue's ALLGREEN strategy is what makes
             # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
-          elif [[ "$REPOSITORY" != "apache/datafusion-comet" && "$PUSH_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
-            # A push to a feature branch of a contributor's fork (ci_fork.yml).
-            # There is no pull request to diff against, and the fork cannot know
-            # what upstream main is, so diff against the fork's own default
-            # branch. A fork that has not synced yet diffs against an older
-            # main, which can only select more suites than the pull request
-            # needs, never fewer. Without a default branch to diff against, or
-            # without a merge base, run everything the tier selects.
+          elif [[ "$REPOSITORY" != "apache/datafusion-comet" ]]; then
+            # A push to a branch of a contributor's fork (ci_fork.yml). There is
+            # no pull request to diff against, and the fork cannot know what
+            # upstream main is, so diff against the fork's own default branch.
+            # A fork that has not synced yet diffs against an older main, which
+            # selects more suites than the pull request needs, not fewer.
+            #
+            # Run everything the tier selects when there is nothing to go on: no
+            # default branch or merge base, or an empty diff. A branch whose
+            # commits are already on the fork's default branch, such as
+            # `git push fork main:my-fix`, diffs to nothing, and skipping every
+            # suite would report a green run for a change nobody built.
             if git merge-base "origin/$DEFAULT_BRANCH" HEAD >/dev/null 2>&1; then
               git diff --name-only "origin/$DEFAULT_BRANCH"..."$PUSH_AFTER" > changed_files.txt
-            else
+            fi
+            if [[ ! -s changed_files.txt ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             fi
           else
-            # push to main, upstream or a fork's own; the first push to a
-            # branch has an all-zero before sha
+            # push to main; the first push to a branch has an all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             else

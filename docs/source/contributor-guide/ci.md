@@ -128,12 +128,13 @@ To get it working:
 1. **Enable GitHub Actions on your fork.** GitHub disables workflows on a new fork. Open the
    fork's **Actions** tab and choose **I understand my workflows, go ahead and enable them**.
 2. **Sync your fork and rebase your branch onto `main`.** The workflows that run on your fork are
-   the ones in your branch, so a branch cut before this arrangement existed runs nothing. Keep your
-   fork's own `main` in sync as well, for the reason under "The first run is slow" below.
+   the ones in your branch, so a branch cut before this arrangement existed runs nothing.
 3. **Push your branch.** Each push to a branch other than `main` starts a `Comet CI (fork run)` in
    your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
    the PR tier for the files your branch changes relative to your fork's `main`: the Linux build,
-   lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites against Spark 4.1.
+   lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites against Spark 4.1. If that
+   comparison finds nothing, because the commits are already on your fork's `main`, it runs the
+   whole tier.
 
 On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is updated when
 the upstream run finishes and every 15 minutes after, so it can lag the fork. Read the details in
@@ -164,7 +165,8 @@ Some things to know:
 - **Not everything moves.** A pull request from a branch of this repository, such as a
   committer's or dependabot's, and a pull request that targets a release branch, keep the PR tier here.
   A release branch has no queue to catch what a fork run misses.
-- **Opening a pull request inside your own fork** runs the full PR tier there, as it did before.
+- **Opening a pull request inside your own fork** leaves the PR tier to your branch push, so the
+  same commit is not tested twice. A `run-*` label applied there still runs its suite.
 
 If you cannot enable Actions on your fork, say so on the pull request. Nothing else will run the PR
 tier for you before the queue does, so a maintainer may ask you to reproduce a failure with
