@@ -21,7 +21,7 @@
 # fork pull request into main (see `is_fork_pull_request` in
 # dev/ci/compute-changes.py), keeping only the preflight checks and the opt-in
 # `run-*` suites, and fork_ci_status.yml mirrors this run onto the pull request
-# as the informational `CI (fork)` check. The merge queue runs every suite on
+# as the informational `CI (fork)` check. The merge queue runs the queue tier on
 # the merge result, so a fork run is feedback and never a gate.
 #
 # This is a separate workflow, and not a wider `push` trigger on ci.yml, for the

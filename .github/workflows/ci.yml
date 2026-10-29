@@ -40,8 +40,8 @@
 # A pull request from a fork into main does not run the PR tier here. The
 # contributor's fork runs it (ci_fork.yml), and fork_ci_status.yml mirrors that
 # run onto the pull request as the informational `CI (fork)` check, which
-# `Required Checks` does not depend on. The merge queue still runs everything on
-# the merge result. Opt-in `run-*` suites, pull requests from a branch of this
+# `Required Checks` does not depend on. The merge queue still runs the queue tier
+# on the merge result. Opt-in `run-*` suites, pull requests from a branch of this
 # repository and pull requests to a release branch are unaffected.
 #
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
@@ -218,6 +218,9 @@ jobs:
       - name: Check fork CI status bridge
         run: node --test dev/ci/test-fork-ci-status.cjs
 
+      - name: Check the changed files of a fork push
+        run: python3 dev/ci/test-fork-push-changed-files.py
+
       - name: Check Iceberg shard inventory validation
         run: python3 dev/ci/test-iceberg-shards.py
 
@@ -308,7 +311,6 @@ jobs:
           PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPOSITORY:   ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -357,14 +359,9 @@ jobs:
             # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
           elif [[ "$REPOSITORY" != "apache/datafusion-comet" ]]; then
-            # A push to a branch of a contributor's fork (ci_fork.yml). The
-            # fork cannot know what upstream main is, so diff against its own
-            # default branch; a fork that has not synced selects more suites,
-            # not fewer. With nothing to go on, run everything the tier selects:
-            # a branch already on the default branch (`git push fork main:fix`)
-            # diffs to nothing, and that would report green for an unbuilt change.
-            git diff --name-only "origin/$DEFAULT_BRANCH"..."$PUSH_AFTER" > changed_files.txt 2>/dev/null || true
-            [[ -s changed_files.txt ]] || git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
+            # A push to a branch of a contributor's fork (ci_fork.yml): diff it
+            # against upstream main, as its pull request will be.
+            bash dev/ci/fork-push-changed-files.sh "$PUSH_AFTER" > changed_files.txt
           else
             # push to main; the first push to a branch has an all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then

@@ -627,7 +627,7 @@ POLICY = {
 # The contributor's fork runs it instead, on a push to the PR branch (see
 # ci_fork.yml), and a bridge workflow (fork_ci_status.yml) mirrors that run onto
 # the pull request as the informational `CI (fork)` check. The merge queue still
-# runs everything on the merge result, so the fork's verdict is feedback and
+# runs the queue tier on the merge result, so the fork's verdict is feedback and
 # never a gate: a contributor controls their own workflows. A fork PR keeps
 # every opt-in label job, and a PR from a branch of this repository, or one that
 # targets a release branch, keeps the PR tier upstream.

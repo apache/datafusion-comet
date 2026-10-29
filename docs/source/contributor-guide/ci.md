@@ -120,8 +120,10 @@ Nearly every pull request comes from a fork, and the PR tier is the largest shar
 the project spends on CI. So for a pull request from a fork into `main`, the PR tier runs on **your
 fork's** GitHub runners, not on the Apache Software Foundation's shared ones. What stays here is the
 preflight checks, `Required Checks`, and any `run-*` suite a maintainer opts the pull request
-into. The merge queue, which also stays here, runs every suite on the merge result before anything
-lands. This is the arrangement `apache/datafusion` and `apache/arrow-rs` use.
+into. The merge queue, which also stays here, runs the queue tier on the merge result before anything
+lands: the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and the other queue-tier suites in the
+table above. The nightly-only suites and the opt-in `run-*` suites are not part of it, and path
+filters still apply. This is the arrangement `apache/datafusion` and `apache/arrow-rs` use.
 
 To get it working:
 
@@ -131,10 +133,9 @@ To get it working:
    the ones in your branch, so a branch cut before this arrangement existed runs nothing.
 3. **Push your branch.** Each push to a branch other than `main` starts a `Comet CI (fork run)` in
    your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
-   the PR tier for the files your branch changes relative to your fork's `main`: the Linux build,
-   lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites against Spark 4.1. If that
-   comparison finds nothing, because the commits are already on your fork's `main`, it runs the
-   whole tier.
+   the PR tier for the files your branch changes relative to upstream `main`, which is what the pull
+   request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
+   against Spark 4.1. If that comparison cannot be made, or finds nothing, it runs the whole tier.
 
 On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is updated when
 the upstream run finishes and every 15 minutes after, so it can lag the fork. Read the details in

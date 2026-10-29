@@ -19,7 +19,7 @@
 # after upstream PR CI completes and through scheduled polling for late runs and
 # reruns. The check is feedback only: `Required Checks` does not depend on it,
 # because a contributor controls the workflow that produced it, and the merge
-# queue runs every suite on the merge result.
+# queue runs the queue tier on the merge result.
 #
 # Reads fork runs and writes upstream checks using reviewed default-branch code.
 # No checkout, artifacts, or code from the pull request are used here.

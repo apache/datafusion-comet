@@ -206,8 +206,10 @@ Nearly every pull request comes from a fork, and the PR tier is the
 largest share of the runner-hours CI spends (about 60% in the week to
 2026-10-28, label runs included). A fork pull request therefore does not run
 the PR tier on ASF's runners. The contributor's fork runs it, and the merge
-queue, which stays on ASF, runs everything on the merge result before anything
-lands. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
+queue, which stays on ASF, runs the queue tier on the merge result before
+anything lands. That is the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and
+the other queue-tier jobs, with path filters still applied; the nightly-only and
+label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
 (#11788). Three files carry it:
 
 | File                 | Role                                                                                                                                                       |
@@ -234,13 +236,18 @@ Things that follow from that, and are easy to break:
 - **A pull request opened inside a fork skips the PR tier,** because the branch
   push already ran it, and `is_fork_pull_request` covers both that and a fork
   pull request into `main` here. A `run-*` label still runs its suite.
-- **A fork push diffs against the fork's default branch.** There is no pull
-  request to diff against, and a fork does not know what upstream `main` is, so
-  `Detect changes` uses `git diff origin/<default branch>...<head>`. A fork that
-  has not synced selects more suites, not fewer. With nothing to go on, or a diff
-  that is empty, it runs everything: a branch whose commits are already on the
-  default branch, such as `git push fork main:my-fix`, would otherwise skip every
-  suite and report a green run for a change nobody built.
+- **A fork push is diffed against upstream main, as its pull request will be.**
+  There is no pull request to diff against on a push, and the fork's own default
+  branch is the wrong base: a fork that has not synced is behind upstream, so a
+  branch cut from newer upstream code that reverts one of its files matches the
+  fork's old copy and a diff against it omits the file.
+  `dev/ci/fork-push-changed-files.sh` fetches upstream `main` and diffs against
+  that. It lists every file when it has nothing to go on (the fetch fails, there
+  is no merge base, or the diff is empty), because a branch already on the fork's
+  default branch, such as `git push fork main:my-fix` before upstream has the
+  commits, would otherwise skip every suite and report a green run for a change
+  nobody built. `dev/ci/test-fork-push-changed-files.py` runs it against real
+  repositories, including the stale-baseline revert.
 - **Scheduled workflows stay upstream.** A fork that enables scheduled
   workflows would run them on its owner's minutes, and with no earlier scheduled
   run to diff against, a fork's nightly runs the whole nightly tier.

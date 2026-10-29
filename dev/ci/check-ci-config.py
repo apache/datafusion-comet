@@ -1661,6 +1661,8 @@ def check_cache_save_scope():
 FORK_WORKFLOW = WORKFLOWS / "ci_fork.yml"
 BRIDGE_WORKFLOW = WORKFLOWS / "fork_ci_status.yml"
 FORK_TEST = Path("dev/ci/test-fork-ci-status.cjs")
+FORK_PUSH_SCRIPT = Path("dev/ci/fork-push-changed-files.sh")
+FORK_PUSH_TEST = Path("dev/ci/test-fork-push-changed-files.py")
 
 
 def workflow_name(path):
@@ -1690,8 +1692,9 @@ def check_fork_runs():
             "(`github.ref_name != github.event.repository.default_branch`); "
             "otherwise every sync of a fork runs CI"
         )
-    if FORK_TEST.name not in ci:
-        failures.append(f"ci.yml's Preflight does not run {FORK_TEST}, so the bridge goes untested")
+    for needed in (FORK_TEST.name, FORK_PUSH_SCRIPT.name, FORK_PUSH_TEST.name):
+        if needed not in ci:
+            failures.append(f"ci.yml does not use or run {needed}, so a fork push goes untested")
 
     if not FORK_WORKFLOW.exists():
         failures.append(f"{FORK_WORKFLOW} is missing; a fork pull request would run no PR tier anywhere")
