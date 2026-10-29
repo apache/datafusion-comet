@@ -130,9 +130,17 @@ jobs:
   # reported verdict truthful. Skipping the redundant work is the heavy jobs'
   # job; POLICY in dev/ci/compute-changes.py drops every job a `labeled` event
   # does not gate.
+  #
+  # The one `if:` it does carry cannot hide a verdict: a scheduled run belongs
+  # to no pull request, so skipping it only changes what the Actions tab shows.
+  # It keeps the nightly upstream. A fork with scheduled workflows enabled would
+  # otherwise run it, and with no earlier scheduled run to diff against in the
+  # fork, `Detect changes` runs the whole nightly tier. Everything else here
+  # needs `changes`, which needs this, so the whole run is skipped.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
+    if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet'
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7

@@ -32,10 +32,12 @@
 # that can be skipped is named after this workflow's own run, and upstream it is
 # always skipped.
 #
-# `main` is excluded because ci.yml already runs on push to main, in a fork as
-# upstream. There it refreshes the fork's cache entries and runs the PR tier
-# for what the push changed, which is what makes a fork's branch runs fast: a
-# branch can restore caches saved on its own ref or on the default branch only.
+# `main` is excluded because a push to a fork's main is a sync of upstream, which
+# the merge queue already tested. ci.yml still triggers on it there, since it
+# triggers on push to main, but POLICY runs no job for it (see
+# `is_fork_default_branch_push` in dev/ci/compute-changes.py). That means a
+# fork's caches are never warmed, and a branch run is cold: about nine minutes
+# slower than a warm one, measured on 2026-10-28.
 name: Comet CI (fork run)
 
 # No `concurrency` here. ci.yml declares its own group, which for a push to a

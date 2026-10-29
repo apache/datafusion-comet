@@ -289,27 +289,23 @@ test('no open PRs means no fork API calls', async () => {
   assert.deepEqual(result.writes, []);
 });
 
-test('a PR from the fork main branch reads ci.yml, the workflow that builds main', async () => {
+test('a PR from the fork main branch is told to use a branch, and no run is read', async () => {
   const mainPr = { ...pr, head: { ...pr.head, ref: 'main' } };
-  const asked = [];
+  const writes = [];
   const github = { rest: { checks: {}, actions: {}, pulls: {} } };
   github.rest.checks.listForRef = async () => {};
-  github.rest.checks.create = async () => {};
+  github.rest.checks.create = async (payload) => writes.push(payload);
   github.rest.pulls.list = async () => ({ data: [mainPr], headers: {} });
-  github.rest.actions.listWorkflowRuns = async (params) => {
-    asked.push(params.workflow_id);
-    return { data: { workflow_runs: [] } };
-  };
-  github.rest.actions.getWorkflow = async (params) => {
-    asked.push(params.workflow_id);
-    return { data: { state: 'active' } };
-  };
+  github.rest.actions.listWorkflowRuns = async () => assert.fail('a fork main has no run to read');
+  github.rest.actions.getWorkflow = async () => assert.fail('a fork main has no workflow to read');
   github.paginate = async (fn) => (fn === github.rest.checks.listForRef ? [] : [mainPr]);
   github.paginate.iterator = async function* () { yield { data: [mainPr] }; };
   await bridge(github, {
     repo: { owner: 'apache', repo: 'datafusion-comet' }, eventName: 'schedule', payload: {},
   }, { info: () => {}, setFailed: (message) => assert.fail(message) }, Clock);
-  assert.deepEqual(asked, ['ci.yml', 'ci.yml']);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].conclusion, 'neutral');
+  assert.equal(writes[0].output.title, 'Open the pull request from a branch');
 });
 
 function group(github) {

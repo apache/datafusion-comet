@@ -221,14 +221,23 @@ Things that follow from that, and are easy to break:
 - **The fork result is advisory.** `Required Checks` does not depend on
   `CI (fork)`, because a contributor controls the workflow that produced it. A
   green fork run that never ran the tests costs one queue slot, not a bad merge.
-- **The fork's push to `main` uses `ci.yml` directly,** since `ci.yml` already
-  triggers on push to `main`, and `ci_fork.yml` ignores `main` so the two never
-  both fire. That run is the PR tier for whatever the push changed, which also
-  writes the fork's cache entries. A branch restores caches saved on its own
-  ref or on the fork's default branch only, so a fork whose `main` has never
-  run starts every branch cold (about 27 minutes for the native build alone).
-  The bridge reads `ci.yml` for a pull request opened from a fork's `main`, and
-  `ci_fork.yml` for every other branch.
+- **A push to a fork's `main` runs nothing.** It is a sync of commits the queue
+  already tested, and `ci.yml` triggers on it because it triggers on push to
+  `main`, so `is_fork_default_branch_push` drops every job. The cost is that a
+  fork never has warm caches, so each branch run rebuilds the native library:
+  59 minutes of wall time and 240 runner-minutes cold against 50 and 213 warm,
+  measured 2026-10-28 on one fork. A sync that did warm them would cost about
+  as much as it saved on its first run. The bridge answers a pull request from
+  a fork's `main` with a neutral "open the pull request from a branch", because
+  nothing tests it.
+- **Scheduled workflows stay upstream.** A fork that enables scheduled
+  workflows would run them on its owner's minutes, and with no earlier scheduled
+  run to diff against, a fork's nightly runs the whole nightly tier.
+  `ci.yml`'s `Preflight`, `miri.yml`, `stale.yml` and `codeql.yml` carry a
+  `github.repository == 'apache/datafusion-comet'` guard on a scheduled
+  event, and `check-ci-config.py` fails any workflow with a `schedule` trigger
+  that lacks one. A guard on `Preflight` skips the whole nightly, since every
+  other job needs `changes`, which needs it.
 - **`ci.yml` must not trigger on every push.** A skipped job still publishes a
   check run under its own name, so a push to a branch of this repository that
   lands on a pull request's commit would put a skipped `Required Checks` next to

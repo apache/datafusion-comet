@@ -596,11 +596,35 @@ POLICY_CASES = [
         },
         PR_TIER,
     ),
-    # A push to a fork is the contributor's pull request tier and nothing more:
-    # not main's cache refresh or site deploy (`docs` publishes to asf-site),
-    # and not the queue's or the nightly's suites. The same holds on the fork's
-    # own main, which is why a sync of the fork refreshes its caches.
+    # A push to a fork's branch is the contributor's pull request tier and
+    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
+    # asf-site), and not the queue's or the nightly's suites.
+    (
+        {
+            "name": "push",
+            "repository": "contributor/datafusion-comet",
+            "ref": "refs/heads/my-fix",
+            "default_branch": "main",
+        },
+        PR_TIER,
+    ),
+    # A push to the fork's default branch is a sync of commits the queue already
+    # tested, and runs nothing.
+    (
+        {
+            "name": "push",
+            "repository": "contributor/datafusion-comet",
+            "ref": "refs/heads/main",
+            "default_branch": "main",
+        },
+        set(),
+    ),
+    # Without the default branch in the event, a fork push is read as a
+    # branch's, the conservative reading.
     ({"name": "push", "repository": "contributor/datafusion-comet"}, PR_TIER),
+    # The nightly runs against the upstream repository only; a job-level guard in
+    # ci.yml keeps it out of forks, so the policy here is the upstream's.
+    ({"name": "schedule", "repository": UPSTREAM}, NIGHTLY_TIER),
     # Upstream, push stays the cache refresh and the site deploy.
     ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
 ]
@@ -929,6 +953,8 @@ EVENT_ENV_SOURCES = {
     "PR_BASE_REF": "github.event.pull_request.base.ref",
     "PR_HEAD_REPO": "github.event.pull_request.head.repo.full_name",
     "REPOSITORY": "github.repository",
+    "PUSH_REF": "github.ref",
+    "DEFAULT_BRANCH": "github.event.repository.default_branch",
 }
 ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
 ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
@@ -1764,6 +1790,32 @@ def check_fork_runs():
     return not failures
 
 
+# Scheduled workflows. GitHub runs `schedule` in any fork that has scheduled
+# workflows enabled, on the fork owner's minutes. With no earlier scheduled run
+# of its own to diff against, a fork's nightly runs the whole nightly tier, and
+# a fork's Miri run costs twenty minutes a day. Every workflow with a `schedule`
+# trigger therefore needs a job-level guard on the repository.
+SCHEDULE_TRIGGER = re.compile(r"^  schedule:\s*$", re.M)
+UPSTREAM_GUARD = re.compile(
+    r"^    if:.*github\.repository\s*==\s*'apache/datafusion-comet'", re.M
+)
+
+
+def check_scheduled_workflows_stay_upstream():
+    failures = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        body = path.read_text(encoding="utf-8")
+        if SCHEDULE_TRIGGER.search(body) and not UPSTREAM_GUARD.search(body):
+            failures.append(
+                f"{path} has a `schedule` trigger but no job-level "
+                f"`if: ... github.repository == 'apache/datafusion-comet'`, so it "
+                f"runs in every fork that enables scheduled workflows"
+            )
+    for failure in failures:
+        print(f"scheduled workflows: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1776,6 +1828,7 @@ if __name__ == "__main__":
     ok = check_required_checks() and ok
     ok = check_label_runs_separate() and ok
     ok = check_fork_runs() and ok
+    ok = check_scheduled_workflows_stay_upstream() and ok
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok

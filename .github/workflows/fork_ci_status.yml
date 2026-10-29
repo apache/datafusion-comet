@@ -15,8 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Mirror a contributor's fork run (ci_fork.yml, or ci.yml for a PR from the
-# fork's main) onto its pull request as the informational `CI (fork)` check,
+# Mirror a contributor's fork run (ci_fork.yml) onto its pull request as the informational `CI (fork)` check,
 # after upstream PR CI completes and through scheduled polling for late runs and
 # reruns. The check is feedback only: `Required Checks` does not depend on it,
 # because a contributor controls the workflow that produced it, and the merge
@@ -65,9 +64,7 @@ jobs:
             // Adapted from apache/datafusion#25591. Fork results are informational:
             // contributors control their workflows; only upstream merge-queue CI gates merging.
             const CHECK = 'CI (fork)';
-            // A branch is built by ci_fork.yml; a fork's main, which that workflow
-            // skips, by ci.yml itself.
-            const workflowFor = (pr) => (pr.head.ref === 'main' ? 'ci.yml' : 'ci_fork.yml');
+            const WORKFLOW = 'ci_fork.yml';
             const upstream = { owner: context.repo.owner, repo: context.repo.repo };
             const repository = upstream.owner + '/' + upstream.repo;
             const GUIDE = 'https://github.com/apache/datafusion-comet/blob/main/docs/source/contributor-guide/ci.md#pull-requests-from-forks';
@@ -110,8 +107,12 @@ jobs:
               // A missing run must keep being polled, even though its check is completed.
               if (!includeCompleted && check?.status === 'completed' && previous.run_id) return;
 
-              const data = await optional(() => github.rest.actions.listWorkflowRuns({
-                ...fork, workflow_id: workflowFor(pr), head_sha: sha, branch: pr.head.ref, per_page: 100,
+              // A fork's main is never tested: ci_fork.yml skips it, and a push there
+              // is a sync, which runs nothing. Looking for a run would find none, or
+              // worse, a sync run that tested nothing and passed.
+              const fromMain = pr.head.ref === 'main';
+              const data = fromMain ? null : await optional(() => github.rest.actions.listWorkflowRuns({
+                ...fork, workflow_id: WORKFLOW, head_sha: sha, branch: pr.head.ref, per_page: 100,
               }));
               // Ignore PR merge-ref runs. The fork workflow on push/manual events
               // tests the branch head; contributors still control its code.
@@ -139,9 +140,26 @@ jobs:
                     text: JSON.stringify({ head_sha: sha, run_id: run.id, run_attempt: run.run_attempt }),
                   },
                 };
+              } else if (fromMain) {
+                payload = {
+                  status: 'completed',
+                  conclusion: 'neutral',
+                  details_url: GUIDE,
+                  output: {
+                    title: 'Open the pull request from a branch',
+                    summary: [
+                      'This pull request comes from the main branch of ' + pr.head.repo.full_name +
+                      ', and CI does not run on a fork’s main: a push there is a sync of upstream, ' +
+                      'so nothing tests this change before the merge queue does.',
+                      'Push the change to a branch of your fork and open the pull request from it.',
+                      '[Fork CI setup](' + GUIDE + ')',
+                    ].join('\n\n'),
+                    text: JSON.stringify({ head_sha: sha, run_id: null }),
+                  },
+                };
               } else {
                 const workflow = await optional(() => github.rest.actions.getWorkflow({
-                  ...fork, workflow_id: workflowFor(pr),
+                  ...fork, workflow_id: WORKFLOW,
                 }));
                 const disabled = !workflow || workflow.state.startsWith('disabled');
                 payload = {
