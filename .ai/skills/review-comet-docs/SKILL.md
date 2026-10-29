@@ -38,20 +38,26 @@ existing comments, and the diff) and its CI check. This skill only covers docume
 This skill gives advice to a human. Never edit files, commit, push, or post comments.
 
 **Shell notes.** Run every command from the repository root. Each tool call may start a new shell,
-so save the variables you set in a state file named for this run, and load it in later calls:
+so save the variables you set in a state file named for this run. Use a different name for each run
+and mode, and keep it the same in every call of that run:
 
 ```bash
 STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" | tr / -).env"
 { printf 'R=%q\n' "$R"; printf 'HEAD_SHA=%q\n' "$HEAD_SHA"; printf 'BASE=%q\n' "$BASE";
   printf 'TARGET=%q\n' "$TARGET"; printf 'ADDED=%q\n' "$ADDED"; } > "$STATE"
-. "$STATE"
+```
+
+Start every later call by loading it:
+
+```bash
+STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" | tr / -).env"; . "$STATE"
 ```
 
 In zsh, `$HEAD_SHA:spark/...` is read as a history modifier, so always write `"${HEAD_SHA}:<path>"`.
-Use the same `<pr-or-name>` in every call, and save the state again after step 4 sets `ADDED`. Stop
-and report the review as incomplete if a command in steps 1 to 4 reports an error. A search that
-finds nothing, which makes `git grep` exit with status 1, is not an error, and where a step gives a
-fallback, use it.
+Save the state again after step 4 sets `ADDED`. Stop and report the review as incomplete if a command
+in steps 1 to 4 reports an error. A search that finds nothing, which makes `git grep` exit with status
+1, is not an error. Where a step gives a fallback, such as the docs build in step 4, use it and keep
+going.
 
 ## 1. Select the Revisions
 
@@ -105,7 +111,9 @@ git ls-files --cached --others --exclude-standard -- <path>
 
 Read `docs/source/contributor-guide/style_guide.md` in full on every run, from the revision under
 review: `git show "${HEAD_SHA}:docs/source/contributor-guide/style_guide.md"` in PR and branch mode,
-or the working tree in audit mode. If it does not exist there, stop and say so.
+or the working tree in audit mode. If it does not exist there, as for a change made before the guide
+was added, read it from `$TARGET`. If it does not exist there either, stop and ask the user for a
+revision that has it.
 
 The guide is the rulebook, and its first section says what it covers. Cite its rule IDs (`T3`, `N1`,
 `P16`, and so on), and do not restate or reinterpret its rules here. If the guide and this skill
@@ -124,7 +132,9 @@ From that list, `<paths>` below means:
 - `.md` and `.rst` files under `docs/source`, and `README.md`;
 - files that change `.doc(...)` strings in `CometConf.scala` or in contrib config classes;
 - files that change doc comments (Scaladoc, Javadoc, and Rust `///` comments);
-- `AGENTS.md` and `.ai/skills/**/SKILL.md`.
+- `AGENTS.md` and `.ai/skills/**/SKILL.md`;
+- `.svg` files under `docs/source`, whose `<title>`, `<desc>`, and `<text>` elements are text readers
+  see.
 
 For doc comments, `AGENTS.md`, and skills, check the vocabulary and accuracy rules the guide names
 for them, not the page conventions. Check the changed lines and the paragraphs around them, not the
@@ -138,7 +148,7 @@ In every mode:
   Review the hand-written text around the generated markers. On `main` the text between the markers
   is empty, because the docs build fills it in, so any text a change adds between them is a hand
   edit, and a finding (`P5`).
-- Do the judgment checks in step 5 for at most 10 pages per run. List any pages you skipped so the
+- Do the judgment checks in step 5 for at most 10 pages per run, counting every file in `<paths>`. List any pages you skipped so the
   user can run the skill again on them.
 
 ## 4. Mechanical Checks
@@ -166,6 +176,13 @@ git -c core.quotePath=false diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -
          h && /^\+\+\+ b\//{f=substr($0,7); sub(/\t$/,"",f); h=0; next}
          /^@@/{h=0; split($3,a,/[+,]/); n=a[2]; next}
          /^\+/{print f":"n": "substr($0,2); n++}' > "$ADDED"
+```
+
+In a code file, only doc comments and `.doc(...)` strings are text to check. Before the wording checks,
+leave out its other added lines:
+
+```bash
+perl -i -ne 'print if !/\.(scala|java|rs):\d+: / || /:\d+: \s*(\/\*\*|\*|\/\/[\/!]|\.doc\(|")/' "$ADDED"
 ```
 
 **"Native" and "vectorized".** Check each hit against `N1`-`N6` and `T10`. Which page the hit is on
@@ -227,7 +244,9 @@ nothing, it is broken: stop and report that. A class's `nodeName` is its name wi
 it overrides `nodeName`. Compare each name in the text with these, as `O1` describes, not with a rule
 about suffixes. When the page is an operator reference, also report concrete operators that it
 leaves out. Leave out planning markers such as `CometScanExec`, which never appear in a final plan,
-and contrib operators, which belong on their contrib page.
+and contrib operators, which belong on their contrib page. A name the text calls a protobuf message,
+such as `ToJson`, is not an operator: check it in `native/proto` instead. When you search the code
+for a class name, `git grep -E` has no `\b`, so end the pattern with `([^A-Za-z0-9_]|$)`.
 
 **Docs build.** Links, anchors, images, toctrees, and page structure, in Markdown and
 reStructuredText, are checked by building the docs the way the published site is built. This
@@ -237,8 +256,12 @@ virtual environment that later calls find at the same path:
 
 ```bash
 VENV="$(git rev-parse --git-dir)/review-comet-docs-venv"
-[ -x "$VENV/bin/sphinx-build" ] ||
-  { python3 -m venv "$VENV" && "$VENV/bin/pip" install -q -r docs/requirements.txt; }
+PY=$(for p in python3.13 python3.12 python3.11 python3.10 python3; do
+  command -v $p >/dev/null && $p -c 'import sys; sys.exit(sys.version_info < (3, 10))' && { echo $p; break; }
+done)
+[ -x "$VENV/bin/sphinx-build" ] || { [ -n "$PY" ] && "$PY" -m venv --clear "$VENV" &&
+  "$VENV/bin/pip" install -q --disable-pip-version-check -r docs/requirements.txt; } ||
+  { rm -rf "$VENV"; echo "docs build not checked: needs Python 3.10 or later" >&2; }
 ```
 
 Then build the base and the head and compare their warnings. The function copies the expression
@@ -265,7 +288,7 @@ build() {  # $1 = revision, or worktree in audit mode; $2 = output directory
     "$2/html" > "$2/log.txt" 2>&1 || { echo "sphinx-build failed: $2/log.txt" >&2; return 1; }
   sed -e "s#$2/src/##" -e 's/:[0-9]*: /: /' "$2/log.txt" | sort > "$2/warnings.txt"
 }
-WORK=$(mktemp -d)
+WORK=$(cd "$(mktemp -d)" && pwd -P)
 build "$BASE" "$WORK/base" && build "$HEAD_SHA" "$WORK/head" &&
   comm -13 "$WORK/base/warnings.txt" "$WORK/head/warnings.txt"
 build worktree "$WORK/head" && cat "$WORK/head/warnings.txt"  # audit
@@ -281,14 +304,16 @@ the docs build uses, which knows where code blocks start and end. It needs the s
 environment; without it, count the H1s by reading the page and say so:
 
 ```bash
-git show "${HEAD_SHA}:<file>" | "$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c 'import sys; from markdown_it import MarkdownIt
-for t in MarkdownIt("commonmark").parse(sys.stdin.read()):
-    print(t.map[0] + 1, t.tag) if t.type == "heading_open" else None'
+H1='import sys; from markdown_it import MarkdownIt
+print(sum(t.type == "heading_open" and t.tag == "h1" for t in MarkdownIt("commonmark").parse(sys.stdin.read())))'
+git show "${HEAD_SHA}:<file>" | "$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c "$H1"
+"$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c "$H1" < <file>  # audit
 ```
 
 **Other structure checks.** A new file has the ASF header (`P1`). A link to Comet's published docs by
 URL breaks `P4` on pages under `docs/source`, but not in `README.md`. List the pages the change
-renames or deletes; each one needs an entry in `redirects` in `docs/source/conf.py` (`P17`):
+renames or deletes; each one needs an entry in `redirects` in `docs/source/conf.py` (`P17`). This
+check needs a base, so audit mode skips it:
 
 ```bash
 git diff --name-status --diff-filter=DR "$BASE" "$HEAD_SHA" -- docs/source
@@ -314,9 +339,9 @@ failed on them.
 ## 5. Judgment Checks
 
 - **Is it true?** For every sentence that names a class, rule, config, default, or file, read the
-  code it describes at `HEAD_SHA`. A sentence can follow every wording rule and
-  still be wrong: a scan that no longer exists, a config default that has changed, or an operator
-  described as Rust-implemented that runs on the JVM. Check numbers, versions, and names first, and
+  code it describes at `HEAD_SHA`, or in the working tree in audit mode. A sentence can follow
+  every wording rule and still be wrong: a scan that no longer exists, a config default that has
+  changed, or an operator described as Rust-implemented that runs on the JVM. Check numbers, versions, and names first, and
   check that a condition in the text is the whole condition in the code. Pages that describe
   architecture or test infrastructure go stale most often. A false or outdated claim breaks `P16`.
   This is the most valuable check in this skill.
@@ -369,10 +394,12 @@ If there are no findings, say so.
 
 After changing this skill or the style guide, run it on these cases and compare the results. The
 expected results were checked on `main` in October 2026, so a later fix to a page can change them.
+Each row lists results the run must report and false positives it must not. A run can also report
+other real findings.
 
 | Run                                                                               | Expected                                                                                                                     |
 | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| PR mode on #6786, reading the guide from `main` because the PR predates it        | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
+| PR mode on #6786, which predates the guide, so step 2 reads it from `$TARGET`     | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
 | Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
 | Audit `docs/source/contributor-guide/timezones.md`                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
 | Audit `docs/source/user-guide/latest/compatibility/expressions`                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
