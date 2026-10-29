@@ -49,10 +49,14 @@ default. The right sort must read the key column directly from a Comet shuffle. 
 Spark consumer in the task and skips reduction if it finds any, logging the reason at
 debug level. This best-effort check does not cover consumers that allocate memory later.
 
-The reducer forwards short inputs and batches with too few repeated keys. After an
-unprofitable batch, it only tries again on a larger batch in the same partition. If all
-remaining batches are the same size, they go straight to the sort. The join reports rows
-entering, leaving, and bypassing reduction, plus time spent on all attempts.
+The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+
+Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.
 
 ### Broadcast Joins
 

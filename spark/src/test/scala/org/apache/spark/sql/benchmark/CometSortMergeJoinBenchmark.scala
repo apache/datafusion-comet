@@ -22,6 +22,8 @@ package org.apache.spark.sql.benchmark
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.comet.{CometSortExec, CometSortMergeJoinExec}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
@@ -32,6 +34,7 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometSortMergeJoinBenchmark
  * }}}
+ * Pass `--many-map-only` to run only the small shuffle-block control.
  */
 object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
 
@@ -67,6 +70,11 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
     SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1")
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    runManyMapBenchmark()
+    if (mainArgs.contains("--many-map-only")) {
+      return
+    }
+
     val probeRows = 1024 * 1024
     val buildRows = 100000
 
@@ -171,6 +179,90 @@ object CometSortMergeJoinBenchmark extends CometBenchmarkBase {
             probeRows.toLong,
             "SELECT /*+ MERGE(p) */ count(*) FROM probe p RIGHT JOIN build b ON p.k = b.k",
             cometConfigs)
+        }
+      }
+    }
+  }
+
+  private def runManyMapBenchmark(): Unit = {
+    val rightRows = 4L * 1024 * 1024
+    val keys = 8192
+    val reducers = 200
+    val flag = CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key
+    withTempPath { dir =>
+      withTempTable("many_map_probe", "many_map_build") {
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          CometConf.COMET_EXEC_ENABLED.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          // Keep each small Parquet file in its own scan partition.
+          "spark.sql.files.maxPartitionBytes" -> "134217728",
+          "spark.sql.files.openCostInBytes" -> "134217728") {
+          val probePath = s"${dir.getAbsolutePath}/probe"
+          spark.range(keys.toLong).selectExpr("id AS k").write.parquet(probePath)
+          spark.read.parquet(probePath).createOrReplaceTempView("many_map_probe")
+          for (maps <- Seq(4, 200)) {
+            val buildPath = s"${dir.getAbsolutePath}/build-$maps"
+            spark
+              .range(0, rightRows, 1, maps)
+              .selectExpr(s"id % $keys AS k")
+              .write
+              .parquet(buildPath)
+            spark.read.parquet(buildPath).createOrReplaceTempView("many_map_build")
+            val settings = cometConfigs ++ Map(
+              SQLConf.SHUFFLE_PARTITIONS.key -> reducers.toString,
+              CometConf.COMET_ENABLED.key -> "true",
+              CometConf.COMET_EXEC_ENABLED.key -> "true",
+              CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+              CometConf.COMET_SHUFFLE_MODE.key -> "native",
+              CometConf.COMET_SHUFFLE_DIRECT_READ_ENABLED.key -> "true",
+              CometConf.COMET_BATCH_SIZE.key -> "8192")
+            withSQLConf(settings.toSeq: _*) {
+              val query = """SELECT /*+ MERGE(b) */ count(*)
+                            |FROM many_map_probe p LEFT SEMI JOIN many_map_build b
+                            |ON p.k = b.k""".stripMargin
+              val benchmark = new Benchmark(
+                s"right key reduction, $maps maps, $reducers reducers",
+                rightRows,
+                output = output)
+              for (enabled <- Seq(false, true)) {
+                withSQLConf(flag -> enabled.toString) {
+                  val df = spark.sql(query)
+                  require(df.collect().head.getLong(0) == keys)
+                  val plan = df.queryExecution.executedPlan
+                  val join = plan.collectFirst { case j: CometSortMergeJoinExec => j }.get
+                  require(join.nativeOp.getSortMergeJoin.getRightKeyReductionEnabled == enabled)
+                  val shuffle = join.right.collectFirst { case s: CometShuffleExchangeExec =>
+                    s
+                  }.get
+                  require(shuffle.numMappers == maps && shuffle.numPartitions == reducers)
+                  val sortRows = join.right.collectFirst { case s: CometSortExec =>
+                    s.longMetric("output_rows").value
+                  }.get
+                  if (enabled) {
+                    val input = join.longMetric("right_key_reduction_input_rows").value
+                    val reduced = join.longMetric("right_key_reduction_output_rows").value
+                    val bypassed = join.longMetric("right_key_reduction_bypass_rows").value
+                    require(input == rightRows && reduced == sortRows)
+                    if (maps == 200) {
+                      require(reduced == rightRows && bypassed == rightRows)
+                    } else {
+                      require(reduced < rightRows)
+                    }
+                    println(
+                      s"maps=$maps reducers=$reducers input=$input " +
+                        s"output=$reduced bypassed=$bypassed")
+                  } else {
+                    require(sortRows == rightRows)
+                  }
+                }
+                benchmark.addCase(s"right key reduction=$enabled") { _ =>
+                  withSQLConf(flag -> enabled.toString) { spark.sql(query).collect() }
+                }
+              }
+              benchmark.run()
+            }
+          }
         }
       }
     }
