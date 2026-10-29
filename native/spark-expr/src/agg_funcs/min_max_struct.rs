@@ -15,8 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use arrow::array::{new_null_array, Array, ArrayRef, BooleanArray};
-use arrow::compute::{not, nullif, prep_null_mask_filter, SortOptions};
+use arrow::array::{
+    make_comparator, new_null_array, Array, ArrayRef, BooleanArray, DynComparator, UInt32Array,
+};
+use arrow::compute::{not, nullif, prep_null_mask_filter, take, SortOptions};
 use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::row::{OwnedRow, RowConverter, Rows, SortField};
 use datafusion::common::{internal_err, Result, ScalarValue};
@@ -25,17 +27,20 @@ use datafusion::logical_expr::{
     Accumulator, AggregateUDFImpl, EmitTo, GroupsAccumulator, Signature, Volatility,
 };
 use datafusion::physical_expr::expressions::format_state_name;
+use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 /// Spark's `max` or `min` over a struct.
 ///
-/// Spark orders structs field by field, with a null field below every value. Each input batch is
-/// encoded once with Arrow's row format, ascending with nulls first, whose bytes sort in exactly
-/// that order. Each group keeps the bytes of its current winner, and memory is accounted by the
-/// size of those buffers. Float and double fields are not supported: the row format orders `-0.0`
-/// below `0.0`, while Spark treats them as equal.
+/// Spark orders structs field by field, with a null field below every value. Within a batch, each
+/// group's best row is found with Arrow's struct comparator, which stops at the first field that
+/// differs, so a wide trailing field that never decides costs nothing. Only those candidates are
+/// encoded with Arrow's row format (ascending, nulls first, the same order), and each group keeps
+/// the bytes of its current winner. Memory is accounted by the size of those buffers. Float and
+/// double fields are not supported: both orders put `-0.0` below `0.0`, while Spark treats them
+/// as equal.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub struct SparkStructMinMax {
     signature: Signature,
@@ -98,6 +103,12 @@ impl AggregateUDFImpl for SparkStructMinMax {
     }
 }
 
+/// Spark's struct order: ascending, with nulls (of the struct or of any field) first.
+const SPARK_ORDER: SortOptions = SortOptions {
+    descending: false,
+    nulls_first: true,
+};
+
 /// Encodes struct values to Spark-ordered row bytes and decodes them back.
 #[derive(Debug)]
 struct StructRows {
@@ -112,13 +123,9 @@ impl StructRows {
         if !matches!(data_type, DataType::Struct(_)) {
             return internal_err!("Spark struct min/max expects a struct, got {data_type}");
         }
-        let options = SortOptions {
-            descending: false,
-            nulls_first: true,
-        };
         let converter = RowConverter::new(vec![SortField::new_with_options(
             data_type.clone(),
-            options,
+            SPARK_ORDER,
         )])?;
         let null_row = converter
             .convert_columns(&[new_null_array(data_type, 1)])?
@@ -135,32 +142,42 @@ impl StructRows {
         Ok(self.converter.convert_columns(&[Arc::clone(values)])?)
     }
 
-    /// Whether `candidate` replaces `current`. Only a strictly better value does.
+    /// Compares rows of `values` with each other in Spark's struct order.
+    fn comparator(&self, values: &ArrayRef) -> Result<DynComparator> {
+        Ok(make_comparator(
+            values.as_ref(),
+            values.as_ref(),
+            SPARK_ORDER,
+        )?)
+    }
+
+    /// Whether a value that compares to the current one as `ordering` replaces it. Only a strictly
+    /// better value does, so of equal values the first one seen is kept.
     #[inline]
-    fn replaces(&self, candidate: &[u8], current: &[u8]) -> bool {
+    fn beats(&self, ordering: Ordering) -> bool {
         if self.is_max {
-            candidate > current
+            ordering == Ordering::Greater
         } else {
-            candidate < current
+            ordering == Ordering::Less
         }
     }
 
-    /// Keeps the better of `value` and `slot`, reusing the slot's buffer. Returns the change in
-    /// the slot's allocated bytes.
+    /// Keeps the better of `value` and `slot`, reusing the slot's buffer. Returns the bytes the
+    /// slot's buffer grew by, which is never negative since `clear` keeps the capacity.
     #[inline]
-    fn update(&self, slot: &mut Option<Vec<u8>>, value: &[u8]) -> isize {
+    fn update(&self, slot: &mut Option<Vec<u8>>, value: &[u8]) -> usize {
         match slot {
             None => {
                 let bytes = value.to_vec();
-                let added = bytes.capacity() as isize;
+                let added = bytes.capacity();
                 *slot = Some(bytes);
                 added
             }
-            Some(current) if self.replaces(value, current) => {
-                let before = current.capacity() as isize;
+            Some(current) if self.beats(value.cmp(current.as_slice())) => {
+                let before = current.capacity();
                 current.clear();
                 current.extend_from_slice(value);
-                current.capacity() as isize - before
+                current.capacity() - before
             }
             Some(_) => 0,
         }
@@ -207,11 +224,19 @@ impl StructMinMaxAccumulator {
 impl Accumulator for StructMinMaxAccumulator {
     fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
         let values = &values[0];
-        let encoded = self.rows.encode(values)?;
+        let cmp = self.rows.comparator(values)?;
+        let mut best: Option<usize> = None;
         for i in 0..values.len() {
-            if !is_skipped(values, None, i) {
-                self.rows.update(&mut self.value, encoded.row(i).as_ref());
+            if is_skipped(values, None, i) {
+                continue;
             }
+            if best.is_none_or(|b| self.rows.beats(cmp(i, b))) {
+                best = Some(i);
+            }
+        }
+        if let Some(best) = best {
+            let encoded = self.rows.encode(&values.slice(best, 1))?;
+            self.rows.update(&mut self.value, encoded.row(0).as_ref());
         }
         Ok(())
     }
@@ -243,7 +268,13 @@ struct StructMinMaxGroupsAccumulator {
     values: Vec<Option<Vec<u8>>>,
     /// The bytes allocated by the buffers in `values`.
     value_bytes: usize,
+    /// Scratch space for `update_batch`: each group's best row in the current batch, or
+    /// `NO_ROW`, and the groups that have one. Reset after every batch.
+    batch_best: Vec<u32>,
+    touched: Vec<usize>,
 }
+
+const NO_ROW: u32 = u32::MAX;
 
 impl StructMinMaxGroupsAccumulator {
     fn try_new(data_type: &DataType, is_max: bool) -> Result<Self> {
@@ -251,6 +282,8 @@ impl StructMinMaxGroupsAccumulator {
             rows: StructRows::try_new(data_type, is_max)?,
             values: vec![],
             value_bytes: 0,
+            batch_best: vec![],
+            touched: vec![],
         })
     }
 }
@@ -265,16 +298,40 @@ impl GroupsAccumulator for StructMinMaxGroupsAccumulator {
     ) -> Result<()> {
         let values = &values[0];
         self.values.resize(total_num_groups, None);
-        let encoded = self.rows.encode(values)?;
-        let mut delta = 0isize;
+        self.batch_best.resize(total_num_groups, NO_ROW);
+
+        // Find each group's best row in this batch without encoding anything.
+        let cmp = self.rows.comparator(values)?;
         for (i, &group) in group_indices.iter().enumerate() {
-            if !is_skipped(values, opt_filter, i) {
-                delta += self
-                    .rows
-                    .update(&mut self.values[group], encoded.row(i).as_ref());
+            if is_skipped(values, opt_filter, i) {
+                continue;
+            }
+            let best = &mut self.batch_best[group];
+            if *best == NO_ROW {
+                *best = i as u32;
+                self.touched.push(group);
+            } else if self.rows.beats(cmp(i, *best as usize)) {
+                *best = i as u32;
             }
         }
-        self.value_bytes = self.value_bytes.wrapping_add_signed(delta);
+        if self.touched.is_empty() {
+            return Ok(());
+        }
+
+        // Encode only those rows, and keep each one that beats its group's stored winner.
+        let indices: UInt32Array = self
+            .touched
+            .iter()
+            .map(|&group| self.batch_best[group])
+            .collect();
+        let encoded = self.rows.encode(&take(values.as_ref(), &indices, None)?)?;
+        for (k, &group) in self.touched.iter().enumerate() {
+            self.value_bytes += self
+                .rows
+                .update(&mut self.values[group], encoded.row(k).as_ref());
+            self.batch_best[group] = NO_ROW;
+        }
+        self.touched.clear();
         Ok(())
     }
 
@@ -318,6 +375,8 @@ impl GroupsAccumulator for StructMinMaxGroupsAccumulator {
             + self.rows.size()
             + self.values.capacity() * size_of::<Option<Vec<u8>>>()
             + self.value_bytes
+            + self.batch_best.capacity() * size_of::<u32>()
+            + self.touched.capacity() * size_of::<usize>()
     }
 }
 
@@ -484,6 +543,95 @@ mod tests {
         acc.update_batch(&[input], &[0, 0], None, 1)?;
         let result = acc.evaluate(EmitTo::All)?;
         assert_eq!(result.data_type(), &data_type);
+        Ok(())
+    }
+
+    /// Nested structs with nulls at every level, used to check the two orders agree.
+    fn nested_structs(n: usize) -> ArrayRef {
+        // Small value ranges so that ties on the leading fields are common.
+        let k: Int64Array = (0..n)
+            .map(|i| (i % 7 != 0).then_some((i * 7919 % 5) as i64 - 2))
+            .collect();
+        let s: StringArray = (0..n)
+            .map(|i| (i % 5 != 0).then(|| ["", "a", "ab", "日本", "\u{7f}"][i * 31 % 5]))
+            .collect();
+        let inner_v: Int64Array = (0..n)
+            .map(|i| (i % 3 != 0).then_some((i * 104729 % 3) as i64))
+            .collect();
+        let inner_fields = Fields::from(vec![Field::new("v", DataType::Int64, true)]);
+        let inner_validity: Vec<bool> = (0..n).map(|i| i % 11 != 0).collect();
+        let inner = StructArray::new(
+            inner_fields.clone(),
+            vec![Arc::new(inner_v)],
+            Some(inner_validity.into()),
+        );
+        let outer_fields = Fields::from(vec![
+            Field::new("k", DataType::Int64, true),
+            Field::new("s", DataType::Utf8, true),
+            Field::new("inner", DataType::Struct(inner_fields), true),
+        ]);
+        let outer_validity: Vec<bool> = (0..n).map(|i| i % 13 != 0).collect();
+        Arc::new(StructArray::new(
+            outer_fields,
+            vec![Arc::new(k), Arc::new(s), Arc::new(inner)],
+            Some(outer_validity.into()),
+        ))
+    }
+
+    /// Each batch picks candidates with Arrow's comparator, and winners are kept as row bytes.
+    /// The two must order every pair of values the same way.
+    #[test]
+    fn comparator_and_row_bytes_agree() -> Result<()> {
+        let values = nested_structs(200);
+        let rows = StructRows::try_new(values.data_type(), true)?;
+        let cmp = rows.comparator(&values)?;
+        let encoded = rows.encode(&values)?;
+        for i in 0..values.len() {
+            for j in 0..values.len() {
+                assert_eq!(
+                    cmp(i, j),
+                    encoded.row(i).cmp(&encoded.row(j)),
+                    "rows {i} and {j}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Many rows per group in each batch, across several batches, against a brute-force answer.
+    #[test]
+    fn matches_brute_force_over_batches() -> Result<()> {
+        let values = nested_structs(600);
+        let data_type = values.data_type().clone();
+        let groups: Vec<usize> = (0..values.len()).map(|i| i * 17 % 9).collect();
+        let reference = StructRows::try_new(&data_type, true)?;
+        let encoded = reference.encode(&values)?;
+        for is_max in [true, false] {
+            let mut acc = StructMinMaxGroupsAccumulator::try_new(&data_type, is_max)?;
+            for start in (0..values.len()).step_by(100) {
+                acc.update_batch(
+                    &[values.slice(start, 100)],
+                    &groups[start..start + 100],
+                    None,
+                    9,
+                )?;
+            }
+            let result = acc.evaluate(EmitTo::All)?;
+            let result_rows = reference.encode(&result)?;
+            for group in 0..9 {
+                let members =
+                    (0..values.len()).filter(|&i| groups[i] == group && values.is_valid(i));
+                let expected = if is_max {
+                    members.max_by(|&a, &b| encoded.row(a).cmp(&encoded.row(b)))
+                } else {
+                    members.min_by(|&a, &b| encoded.row(a).cmp(&encoded.row(b)))
+                };
+                match expected {
+                    Some(i) => assert_eq!(result_rows.row(group), encoded.row(i), "group {group}"),
+                    None => assert!(result.is_null(group), "group {group}"),
+                }
+            }
+        }
         Ok(())
     }
 
