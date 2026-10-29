@@ -25,8 +25,8 @@
 //! (apache/datafusion#24384, in DataFusion 55.1.0), so it is no longer the reason to keep
 //! the fork. What is left are performance improvements that have not been upstreamed:
 //!
-//! * `list_output_lens`, which computes the per-row output lengths of a single `List` column
-//!   in one pass over the offsets instead of chaining six arrow kernels;
+//! * `list_output_lens`, which computes per-row output lengths in one pass for `List` columns
+//!   sharing offsets and validity, instead of chaining arrow kernels;
 //! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
 //!   values instead of gathering them, and the buffer fills in `create_take_indices`.
 //! * splitting individual List rows before repeating carried values, including a repetition
@@ -636,8 +636,20 @@ impl ExplodeStream {
         // This is exactly the per-row length that `list_unnest_at_level` derives when it
         // actually unnests, so the chunk boundaries are exact rather than estimated, and each
         // chunk's slice of it is handed back to `build_batch` instead of recomputed there.
-        if let [single] = list_arrays.as_slice() {
-            if let Some(list) = single.as_any().downcast_ref::<ListArray>() {
+        if let Some(list) = list_arrays[0].as_any().downcast_ref::<ListArray>() {
+            // Shared offset and validity views guarantee identical per-row lengths.
+            // Check validity's bit offset too; bitmap bytes alone do not suffice.
+            if list_arrays.iter().skip(1).all(|other| {
+                let Some(other) = other.as_any().downcast_ref::<ListArray>() else {
+                    return false;
+                };
+                list.offsets().ptr_eq(other.offsets())
+                    && match (list.nulls(), other.nulls()) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.inner().ptr_eq(b.inner()),
+                        _ => false,
+                    }
+            }) {
                 return Ok(Some(list_output_lens(list, &self.options)));
             }
         }
@@ -653,8 +665,8 @@ impl ExplodeStream {
 /// rather than the kernels it chains to stay generic over list types — `length` (which returns
 /// `Int32` for `List`), `cast` to widen it, `is_not_null` and `zip` to substitute the NULL
 /// length, and a second `eq`/`zip` pair to bump the empty rows. Comet only ever plans `List`,
-/// and `explode` plans exactly one of them, so this is the path every non-positional explode
-/// takes; `posexplode` unnests two arrays in parallel and uses the general version.
+/// and parallel lists sharing offsets and validity have the same per-row length, so one
+/// pass also covers `posexplode` when its position and value lists share those views.
 fn list_output_lens(list: &ListArray, options: &UnnestOptions) -> PrimitiveArray<Int64Type> {
     // The floor every row's length is raised to. Under `PreserveAndExpandEmpty` an empty row
     // expands to one NULL just like a NULL row, including in an array with no validity buffer,
@@ -1388,6 +1400,7 @@ fn create_take_indices(
 
 /// Arrow take estimates list child capacity from its full length, even for a sliced parent.
 /// Restrict that estimate to the referenced children before repeating carried columns.
+/// See https://github.com/apache/arrow-rs/pull/11360.
 fn trim_list_children(array: &ArrayRef) -> Result<Option<ArrayRef>> {
     fn trim_list<O: OffsetSizeTrait>(list: &GenericListArray<O>) -> Result<Option<ArrayRef>> {
         let start = list.value_offsets()[0].as_usize();
@@ -2580,6 +2593,128 @@ mod tests {
             let longest = longest.as_primitive::<Int64Type>();
             assert_eq!(&longest.values()[..], &expected, "{null_handling:?}");
             assert_eq!(longest.null_count(), 0, "lengths must never be NULL");
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_lists_match_upstream_with_shared_and_distinct_views() {
+        use datafusion::physical_plan::{common::collect, unnest::UnnestExec};
+
+        let offsets = OffsetBuffer::new(vec![0, 2, 2, 5, 10, 11].into());
+        let values = Arc::new(Int32Array::from_iter_values(0..11)) as ArrayRef;
+        let other_values = Arc::new(Int32Array::from_iter_values(100..111)) as ArrayRef;
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let validity = NullBuffer::from(vec![true, false, true, false, true]);
+        let nulls = validity.slice(0, 4);
+        // These views share the same bitmap bytes and null count, but different valid rows.
+        let shifted_nulls = validity.slice(1, 4);
+        let validity_pairs = [
+            (None, None),
+            (Some(nulls.clone()), Some(nulls.clone())),
+            (Some(nulls.clone()), Some(shifted_nulls)),
+            (
+                Some(nulls.clone()),
+                Some(NullBuffer::from(vec![true, false, true, false])),
+            ),
+            (Some(nulls.clone()), None),
+            (None, Some(nulls)),
+        ];
+
+        for (left_nulls, right_nulls) in validity_pairs {
+            for offset in [0, 1] {
+                let left = ListArray::new(
+                    Arc::clone(&field),
+                    offsets.slice(0, 4),
+                    Arc::clone(&values),
+                    left_nulls.clone(),
+                );
+                let right = ListArray::new(
+                    Arc::clone(&field),
+                    offsets.slice(offset, 4),
+                    Arc::clone(&other_values),
+                    right_nulls.clone(),
+                );
+                let large_right = LargeListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(
+                        right
+                            .value_offsets()
+                            .iter()
+                            .map(|&o| i64::from(o))
+                            .collect(),
+                    ),
+                    Arc::clone(&other_values),
+                    right_nulls.clone(),
+                );
+                for right in [Arc::new(right) as ArrayRef, Arc::new(large_right)] {
+                    let batch = RecordBatch::try_from_iter(vec![
+                        ("left", Arc::new(left.clone()) as ArrayRef),
+                        ("right", right),
+                        ("id", Arc::new(Int32Array::from_iter_values(0..4))),
+                    ])
+                    .unwrap();
+                    for batch in [batch.clone(), batch.slice(1, 3)] {
+                        let source: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+                            &[vec![batch.clone()]],
+                            batch.schema(),
+                            None,
+                        )
+                        .unwrap();
+                        let schema = Arc::new(Schema::new(vec![
+                            Field::new("left", DataType::Int32, true),
+                            Field::new("right", DataType::Int32, true),
+                            batch.schema().field(2).clone(),
+                        ]));
+                        let specs: Vec<_> = (0..2)
+                            .map(|index_in_input_schema| ListUnnest {
+                                index_in_input_schema,
+                                depth: 1,
+                            })
+                            .collect();
+                        for mode in [
+                            NullHandling::Drop,
+                            NullHandling::Preserve,
+                            NullHandling::PreserveAndExpandEmpty,
+                        ] {
+                            let options = UnnestOptions::new().with_null_handling(mode);
+                            let comet = ExplodeExec::new(
+                                Arc::clone(&source),
+                                specs.clone(),
+                                vec![],
+                                Arc::clone(&schema),
+                                options.clone(),
+                            )
+                            .unwrap();
+                            let upstream = UnnestExec::new(
+                                Arc::clone(&source),
+                                specs.clone(),
+                                vec![],
+                                Arc::clone(&schema),
+                                options,
+                            )
+                            .unwrap();
+                            for size in [1, 3, 8] {
+                                let context = Arc::new(TaskContext::default().with_session_config(
+                                    SessionConfig::new().with_batch_size(size),
+                                ));
+                                let actual =
+                                    collect(comet.execute(0, Arc::clone(&context)).unwrap())
+                                        .await
+                                        .unwrap();
+                                let expected = collect(upstream.execute(0, context).unwrap())
+                                    .await
+                                    .unwrap();
+                                assert!(actual.iter().all(|b| b.num_rows() <= size));
+                                assert_eq!(
+                                    arrow::compute::concat_batches(&schema, &actual).unwrap(),
+                                    arrow::compute::concat_batches(&schema, &expected).unwrap(),
+                                    "offset={offset}, {mode:?}, batch_size={size}, {batch:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
