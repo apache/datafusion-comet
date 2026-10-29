@@ -84,19 +84,22 @@ Notes on these terms:
 is meant. Name the meaning instead.
 
 - **N1.** Do not use _runs natively_, _natively in Comet_, _the native path_, _the native
-  pipeline_, _native execution_, _native operator_, or _native Comet operator_. Write _in the Comet
+  pipeline_, _native execution_, _native operator_, or _native Comet operator_, in any tense or
+  form, such as _ran natively_, _go native_, _a native path_, or _Comet-native_. Write _in the Comet
   pipeline_ (T1) or _Rust-implemented_ (T3).
 - **N2.** These compounds are allowed everywhere, because the second part fixes the meaning:
-  _native Rust_; _native shuffle_ (paired with _JVM shuffle_); "native", optionally followed by a
-  format, followed by _scan_, _reader_, _write_, or _writer_, for Comet's Rust scans and writers
-  (_native scan_, _native Parquet reader_, _native Iceberg write_); _native memory_ and _native
-  library_ (the terms Comet's own log lines use); _Native_ as the expression kind (T6); and
-  _native implementation_ of an expression, meaning its Rust implementation.
+  _native Rust_; _native shuffle_ and _the native shuffle path_ (the counterpart of _JVM shuffle_,
+  which need not appear beside it); "native", optionally followed by a format, followed by _scan_,
+  _reader_, _write_, or _writer_, for Comet's Rust scans and writers (_native scan_, _native Parquet
+  reader_, _native Iceberg write_); _native memory_ and _native library_ (the terms Comet's own log
+  lines use); _Native_ as the expression kind (T6); and _native implementation_ of an expression,
+  meaning its Rust implementation.
 - **N3.** In the contributor guide, "native" before a code noun is also allowed when it means the
-  crates under `native/` or the JNI boundary: _native code_, _native side_, _native plan_, _native
-  kernel_, _JVM/native boundary_, and similar. Pages outside the contributor guide, including
-  `about/`, `index.md`, `README.md`, and `.doc(...)` strings, write _Rust_ instead. N1 applies
-  everywhere.
+  crates under `native/` or the JNI boundary: _native code_, _native side_ (and _native-side logs_),
+  _native plan_, _native kernel_, and _JVM/native boundary_. The noun must name something under
+  `native/`, such as a crate, file, type, function, or plan, or the JNI boundary. Pages outside the
+  contributor guide, including `user-guide/`, `about/`, `index.md`, `README.md`, and `.doc(...)`
+  strings, allow only the N2 compounds and write _Rust_ instead. N1 applies everywhere.
 - **N4.** Do not use "native" as a noun. Write _the Rust side_ or name the component: "hands each
   block to the Rust side", not "hands each block to native".
 - **N5.** Do not call Spark's own behavior native. Write _Spark's built-in shuffle_, not _Spark's
