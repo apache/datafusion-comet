@@ -41,10 +41,8 @@ use std::sync::Arc;
 ///   [`PartitionWriter::finish_all`].
 /// * Multi-partition shuffles finalize one partition at a time in
 ///   [`PartitionWriter::finish_partition`], each with its own short-lived
-///   passthrough `BufBatchWriter`: the batches for a partition arrive as maximal
-///   `batch_size` chunks plus one tail, so there is nothing to coalesce and each
-///   chunk is serialized verbatim as one block. They hold the raw output writer
-///   and block writer directly.
+///   passthrough `BufBatchWriter` (see `BufBatchWriter::new_for_partition`). They
+///   hold the raw output writer and block writer directly.
 #[allow(clippy::large_enum_variant)]
 enum DataOutput {
     /// Single-partition output: one long-lived writer streams all batches.
@@ -304,9 +302,7 @@ impl PartitionWriter for LocalPartitionWriter {
 
                 // Write in memory batches to output data file. Each partition uses its
                 // own short-lived writer, but the scratch buffer is shared so its capacity
-                // carries over to the next one. The batches arrive as maximal chunks plus
-                // one tail, so they pass through as their own blocks rather than being
-                // copied through a coalescer. `drain` rather than `flush` hands the bytes
+                // carries over to the next one. `drain` rather than `flush` hands the bytes
                 // to `output_writer` without flushing it; the output is flushed once in
                 // `finish_all`.
                 let mut buf_batch_writer = BufBatchWriter::new_for_partition(

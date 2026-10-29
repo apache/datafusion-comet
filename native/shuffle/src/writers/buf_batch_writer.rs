@@ -42,13 +42,7 @@ use std::io::{Cursor, Seek, SeekFrom, Write};
 ///   copying them, so an oversized input batch is written as a single oversized block. This is
 ///   the mode for the long-lived single-partition writer, whose inputs can genuinely be small.
 /// * [`Self::new_for_partition`]: every batch is serialized as its own block, verbatim. This is
-///   the mode for the per-partition writers of a multi-partition shuffle, whose input is a
-///   `PartitionedBatchIterator` that already emits maximal `batch_size` chunks plus one tail:
-///   there is never a second batch for the tail to coalesce with, so coalescing there would
-///   only copy the tail's rows into builders and re-emit the same block. Passthrough does not
-///   compact view arrays (`Utf8View`, `BinaryView`), which the IPC writer serializes with every
-///   data buffer they reference; the coalescer would only have compacted the tail, since full
-///   chunks bypass it, and Comet does not shuffle view types today.
+///   the mode for the per-partition writers of a multi-partition shuffle.
 ///
 /// Encoding methods borrow a [`ShuffleCodecContext`] rather than owning one: these writers
 /// are created per output partition, and codec contexts must stay task-scoped.
@@ -86,8 +80,16 @@ impl<S: Borrow<ShuffleBlockWriter>, W: Write> BufBatchWriter<S, W> {
         )
     }
 
-    /// A passthrough writer for one output partition of a multi-partition shuffle; see the
-    /// type-level docs.
+    /// A passthrough writer for one output partition of a multi-partition shuffle.
+    ///
+    /// The input is a `PartitionedBatchIterator`, which already emits maximal `batch_size`
+    /// chunks plus one tail, so there is never a second batch for the tail to coalesce with.
+    /// Coalescing would only copy the tail's rows into builders and re-emit the same block.
+    ///
+    /// Passthrough does not compact view arrays (`Utf8View`, `BinaryView`), which the IPC
+    /// writer serializes with every data buffer they reference. The coalescer would only have
+    /// compacted the tail, since full chunks bypass it, and Comet does not shuffle view types
+    /// today.
     pub(crate) fn new_for_partition(
         shuffle_block_writer: S,
         writer: W,

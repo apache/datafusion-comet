@@ -61,9 +61,6 @@ pub(crate) trait PartitionWriter: Send {
     ///
     /// Must be called exactly once per partition, in ascending id order, so the
     /// writer can lay partitions out contiguously and record their offsets.
-    ///
-    /// `iter` should yield maximal `batch_size` chunks plus at most one smaller tail, as
-    /// `PartitionedBatchIterator` does.
     fn finish_partition<I>(
         &mut self,
         pid: usize,

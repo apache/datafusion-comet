@@ -65,11 +65,8 @@ impl PartitionedSpill {
         }
     }
 
-    /// Appends partition `pid`'s batches to the spill file. `recycled_buffer` is left drained,
-    /// including on error.
-    ///
-    /// `iter` comes from a `PartitionedBatchIterator`, which already emits maximal `batch_size`
-    /// chunks plus one tail, so the batches are written through verbatim rather than coalesced.
+    /// Appends partition `pid`'s batches to the spill file, each as its own block.
+    /// `recycled_buffer` is left drained, including on error.
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         pid: usize,
