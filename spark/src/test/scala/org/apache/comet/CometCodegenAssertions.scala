@@ -42,16 +42,6 @@ trait CometCodegenAssertions {
       s"expected codegen dispatcher activity, got $after")
   }
 
-  /** Asserts the dispatcher did not run during `f`, guarding against a silent fallback to it. */
-  protected def assertNoCodegen(f: => Unit): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    f
-    val after = CometScalaUDFCodegen.stats()
-    assert(
-      after.compileCount + after.cacheHitCount == 0,
-      s"expected no codegen dispatcher activity, got $after")
-  }
-
   /**
    * Asserts the composed subtree fused into one kernel signature, not N (one per sub-expression).
    * Uses the JVM-wide signature set rather than `compileCount` because per-task `boundExpr`

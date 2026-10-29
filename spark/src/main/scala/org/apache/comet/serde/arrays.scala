@@ -23,7 +23,7 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, ElementAt, EmptyRow, EndsWith, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, NamedLambdaVariable, Not, Or, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Upper, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EvalMode, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
@@ -32,6 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
+import org.apache.comet.expressions.CometEvalMode
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -1027,7 +1028,10 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
   }
 }
 
-object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometTypeShim {
+object CometArrayFilter
+    extends CometExpressionSerde[ArrayFilter]
+    with CometTypeShim
+    with CometExprShim {
 
   override def getSupportLevel(expr: ArrayFilter): SupportLevel = Compatible()
 
@@ -1071,6 +1075,7 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
     CometConf.COMET_NATIVE_LAMBDA_ENABLED.get() &&
       body.deterministic &&
       !body.exists(_.isInstanceOf[HigherOrderFunction]) &&
+      capturesOnlyFixedWidthColumns(body) &&
       shortCircuitSafe(body) &&
       (expr.argument.dataType match {
         case ArrayType(elementType, _) => isLambdaElementType(elementType)
@@ -1078,35 +1083,64 @@ object CometArrayFilter extends CometExpressionSerde[ArrayFilter] with CometType
       })
 
   /**
+   * DataFusion copies each column the body captures once per element of its row's array before it
+   * evaluates the body, so a captured string, binary or nested value is copied as many times as
+   * the array has elements, and those copies are not reserved with the memory pool.
+   */
+  private def capturesOnlyFixedWidthColumns(body: Expression): Boolean =
+    body
+      .collect {
+        case a: AttributeReference => a.dataType
+        case b: BoundReference => b.dataType
+      }
+      .forall(isFixedWidth)
+
+  /**
    * Spark evaluates `a AND b`, `a OR b` and `x IN (a, b)` lazily, so `x != 0 AND 100 / x > 1`
-   * never divides by zero. The native side evaluates every operand over the whole batch, so under
-   * ANSI mode the same lambda raises on the element Spark skips. `CASE WHEN`, `IF` and `COALESCE`
-   * are not affected. When ANSI mode is on, a body that short-circuits stays on the dispatcher
-   * unless every expression in it is one that cannot raise. `infallible` in `case_when.rs` is the
-   * native counterpart of `neverRaises`.
+   * never divides by zero. The native side evaluates every operand over the whole batch, so the
+   * same lambda raises on the element Spark skips. `CASE WHEN`, `IF` and `COALESCE` are not
+   * affected. A body that short-circuits stays on the dispatcher unless none of its expressions
+   * can raise.
    */
   private def shortCircuitSafe(body: Expression): Boolean =
-    !SQLConf.get.ansiEnabled ||
-      !body.exists {
-        case _: And | _: Or | _: In | _: InSet => true
-        case _ => false
-      } || !body.exists(!neverRaises(_))
+    !body.exists {
+      case _: And | _: Or | _: In | _: InSet => true
+      case _ => false
+    } || !body.exists(mayRaise)
 
-  private def neverRaises(e: Expression): Boolean = e match {
+  /**
+   * Whether `e` can raise on an input value. This fails closed: an expression is assumed to raise
+   * unless it is listed here, since some raise in any mode (`element_at` with the index 0), and
+   * arithmetic and casts raise only in the ANSI eval mode they carry. `infallible` in
+   * `case_when.rs` is the native counterpart.
+   */
+  private def mayRaise(e: Expression): Boolean = e match {
     case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
         _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
         _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen | _: Length | _: Upper |
-        _: Lower | _: StartsWith | _: EndsWith | _: Contains =>
+        _: Lower | _: Substring | _: StartsWith | _: EndsWith | _: Contains =>
+      false
+    case c: Cast => evalMode(c) == CometEvalMode.ANSI
+    case a: Add => a.evalMode == EvalMode.ANSI
+    case a: Subtract => a.evalMode == EvalMode.ANSI
+    case a: Multiply => a.evalMode == EvalMode.ANSI
+    case a: Divide => a.evalMode == EvalMode.ANSI
+    case a: IntegralDivide => a.evalMode == EvalMode.ANSI
+    case a: Remainder => a.evalMode == EvalMode.ANSI
+    case _ => true
+  }
+
+  private def isFixedWidth(dt: DataType): Boolean = dt match {
+    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
+        DateType | TimestampType | TimestampNTZType | _: DecimalType =>
       true
     case _ => false
   }
 
   private def isLambdaElementType(dt: DataType): Boolean = dt match {
-    case BooleanType | ByteType | ShortType | IntegerType | LongType | FloatType | DoubleType |
-        DateType | TimestampType | TimestampNTZType | BinaryType | _: DecimalType =>
-      true
+    case BinaryType => true
     case _: StringType => !hasNonDefaultStringCollation(dt)
-    case _ => false
+    case _ => isFixedWidth(dt)
   }
 
   private def convertLambda(

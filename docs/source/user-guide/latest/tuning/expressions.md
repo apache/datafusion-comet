@@ -48,11 +48,15 @@ To get the most out of Comet when a query uses lambdas:
   UDF or another lambda cannot be split from the dispatcher, so the whole lambda runs there. Use
   [`spark.comet.explain.codegen.enabled`](../understanding-comet-plans.md#sparkcometexplaincodegenenabled) to see which
   expressions of a query went through the dispatcher.
-- **Under ANSI mode, keep `AND`, `OR` and `IN` away from operations that can raise.** Spark evaluates them lazily, so
+- **Keep `AND`, `OR` and `IN` away from operations that can raise.** Spark evaluates them lazily, so
   `x != 0 AND 100 / x > 1` never divides by zero, but the native lambda evaluates every operand for every element. A
-  body that combines them with an operation that can raise, such as a division, an addition that can overflow or a
-  cast, stays on the dispatcher. `CASE WHEN`, `IF` and `COALESCE` are lazy natively too, so
+  body that combines them with an operation that can raise stays on the dispatcher. That covers a division, an
+  addition or a cast under ANSI mode, which raise only in that mode, and `element_at`, which raises for the index 0 in
+  any mode. `CASE WHEN`, `IF` and `COALESCE` are lazy natively too, so
   `CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END` runs natively.
+- **Capture only numeric, boolean, date or timestamp columns.** DataFusion copies each column the lambda reads once per
+  element of the array before it evaluates the lambda, so a captured string, binary, array, struct or map column is
+  copied as many times as the array has elements. A lambda that reads one stays on the dispatcher.
 - **Use a lambda of one parameter.** `filter(arr, (x, i) -> i > 0)`, which also receives the element's index, runs
   through the dispatcher.
 

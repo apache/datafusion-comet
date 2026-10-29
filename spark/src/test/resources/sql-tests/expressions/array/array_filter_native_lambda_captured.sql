@@ -15,9 +15,11 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A lambda body that reads a captured column or struct, or calls an array function on a captured
--- array with the lambda parameter as an argument. The native side re-indexes the columns that
--- the body reads and evaluates the later arguments of those functions on a projection of them.
+-- A lambda body that reads a captured column, or calls an array function with the lambda
+-- parameter as an argument. The native side re-indexes the columns that the body reads and
+-- evaluates the later arguments of those functions on a projection of them. A captured string,
+-- binary or nested column is copied once per element by DataFusion, so a body that reads one
+-- stays on the dispatcher.
 
 -- ConfigMatrix: spark.sql.ansi.enabled=true,false
 
@@ -30,44 +32,59 @@ INSERT INTO sc2 VALUES (1, array(1, 2, 3, NULL), array(2, 3), map(1, 10, 2, 20),
   (3, NULL, array(1), NULL, NULL, 3),
   (4, array(1, 2), NULL, map(2, 5), named_struct('a', 1, 'b', NULL), 4)
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> array_contains(other, x)) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x < size(other) + 2) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> try_element_at(other, 1) = x) FROM sc2
 
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> element_at(map(1, 1, 2, 2), 2) = x) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> s.a = x) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> coalesce(try_element_at(other, 1), 0) = x) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x = c AND s.b IS NOT NULL) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> m[x] > 5) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> array_position(other, x) > 0) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> array_contains(other, x + 1)) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> array_contains(other, cast(x as bigint))) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> try_element_at(other, x) IS NOT NULL) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> CASE WHEN x > c THEN x < size(other) ELSE array_contains(other, x) END) FROM sc2
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> arrays_overlap(other, array(x, c))) FROM sc2
+
+query expect_native(filter)
+SELECT id, filter(ints, x -> array_contains(array(c, 2, 3), x)) FROM sc2
+
+query expect_native(filter)
+SELECT id, filter(ints, x -> array_contains(array(c, 2, 3), x + 1)) FROM sc2
+
+query expect_native(filter)
+SELECT id, filter(ints, x -> array_position(array(c, 2), x) > 0) FROM sc2
+
+query expect_native(filter)
+SELECT id, filter(ints, x -> try_element_at(array(c, 5), x) > 1) FROM sc2
+
+query expect_native(filter)
+SELECT id, filter(ints, x -> arrays_overlap(array(c, 2), array(x, c))) FROM sc2

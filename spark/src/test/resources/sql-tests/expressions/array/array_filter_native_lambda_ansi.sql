@@ -21,7 +21,6 @@
 -- nothing in it can raise. None of these queries may raise.
 
 -- Config: spark.sql.ansi.enabled=true
--- ConfigMatrix: spark.comet.exec.nativeLambda.enabled=true,false
 
 statement
 CREATE TABLE test_filter_lambda_ansi(id int, ints array<int>, c int) USING parquet
@@ -34,34 +33,34 @@ INSERT INTO test_filter_lambda_ansi VALUES
   (4, array(0, 0), 3),
   (5, array(2147483647, 0, -7), 4)
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x != 0 AND 100 / x > 1) FROM test_filter_lambda_ansi
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x = 0 OR 100 / x > 1) FROM test_filter_lambda_ansi
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> NOT (x = 0) AND 100 / x > 1) FROM test_filter_lambda_ansi
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x IN (0, 100 / x)) FROM test_filter_lambda_ansi
 
-query
+query expect_dispatch(filter)
 SELECT id, filter(ints, x -> x IS NOT NULL AND x > 0 AND x < 1000 AND x + 1 > 0 AND 100 / x > 1) FROM test_filter_lambda_ansi
 
 -- CASE, IF and COALESCE are lazy on the native side too.
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END) FROM test_filter_lambda_ansi
 
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> if(x = 0, false, 100 / x > 1)) FROM test_filter_lambda_ansi
 
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> coalesce(x, 100 / x) > 1) FROM test_filter_lambda_ansi
 
 -- Nothing here can raise, so these stay native.
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> x IS NOT NULL AND x > c) FROM test_filter_lambda_ansi
 
-query
+query expect_native(filter)
 SELECT id, filter(ints, x -> x IS NULL OR x != 0) FROM test_filter_lambda_ansi
