@@ -245,6 +245,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_TEXT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.text.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Spark (non-native) Text v1 and v2 scans will be converted to " +
+          "Arrow format. Arrow strings must be valid UTF-8, so Comet replaces bytes that are " +
+          "not valid UTF-8, for example in a Latin-1 file, with U+FFFD, and results that " +
+          "depend on the original bytes can differ from Spark. Enable this only for Text " +
+          "sources that are UTF-8. See the compatibility guide.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CONVERT_FROM_RANGE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.range.enabled")
       .category(CATEGORY_EXEC)
@@ -416,9 +428,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. On Spark 3.4, AQE cannot coalesce the shuffle " +
-          "partitions of a union that Comet runs with a cached relation in one branch. At " +
-          "startup, this setting also decides " +
+          "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
+          "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
+          "Comet writes the rows straight into Arrow batches for the cache instead of " +
+          "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
+          "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
+          "At startup, this setting also decides " +
           "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
           "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
@@ -1353,10 +1368,11 @@ object CometConf extends ShimCometConf {
           s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` is true, each named by its Spark class name " +
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
-          "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
-          "deprecated and will stop working in a future major release. Use their " +
-          "`spark.comet.convert` configs instead.")
+          "`FileSourceScan` for file formats other than Parquet, JSON, CSV and Text. Naming " +
+          "`Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan`, " +
+          "or naming `FileSourceScan` or `BatchScan` to convert a Text scan, is deprecated " +
+          "and will stop working in a future major release. Use their `spark.comet.convert` " +
+          "configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
@@ -1365,13 +1381,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.broadcastBuildSide.enabled")
       .category(CATEGORY_EXEC)
       .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
-        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "example an ORC source) to Arrow when that scan feeds a broadcast join's build side and " +
         "every scan on the probe side is already native, so the broadcast join runs natively " +
         "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
         "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
         "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
         "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Set this to false to keep such build sides on Spark.")
+        "subquery. Parquet, JSON, CSV and Text scans are converted only by their own " +
+        "`spark.comet.convert` configs. Set this to false to keep such build sides on Spark.")
       .booleanConf
       .createWithDefault(true)
 

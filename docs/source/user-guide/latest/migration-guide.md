@@ -86,6 +86,9 @@ it. `spark.comet.convert.oneRowRelation.enabled` is on by default, so such a que
 without either setting, and logs no warning. The list remains the way to convert other leaf
 operators, such as the scan of a Data Source V2 connector.
 
+Converting a Text scan with `FileSourceScan` or `BatchScan` in the list is deprecated in the same
+way, and logs the same warning. Use `spark.comet.convert.text.enabled` instead.
+
 ### Iceberg Writes
 
 Comet's Iceberg write path is now switched by one setting, `spark.comet.write.iceberg.enabled`,
@@ -142,6 +145,42 @@ Each file in flight holds its own buffers, so a task can use more off-heap memor
 without an `ORDER BY` can return rows in a different order than before, because batches from the two
 files interleave. Spark does not guarantee the order of such a result. To read one file at a time in
 the order Spark assigned them, as before, set the setting to `1`. See [Iceberg tuning](iceberg.md#tuning).
+
+### Known Differences From Spark That Are New in 1.2.0
+
+The three differences below were not in Comet `1.1.0`. They come from operators and expressions that
+now run natively where `1.1.0` fell back to Spark, so they are listed here although they are not
+behavior changes that a legacy key restores. Each one has an issue, and each has a setting that
+makes Comet use Spark's implementation instead.
+
+- **`collect_set` over `FLOAT` or `DOUBLE` next to `count(DISTINCT ...)`
+  ([#7203](https://github.com/apache/datafusion-comet/issues/7203)).** On Spark before 4.2, a query
+  that mixes `count(DISTINCT ...)` with other aggregates, such as
+  `SELECT x, count(DISTINCT y), collect_set(z) FROM t GROUP BY x`, now runs `collect_set` natively.
+  Comet `1.1.0` ran that query in Spark. Native `collect_set` keeps `-0.0` and `0.0` as two entries
+  and merges every `NaN` into one, where Spark collapses the zeros and keeps each `NaN`. The
+  [compatibility guide](compatibility/floating-point.md) already lists this difference for
+  `collect_set` on its own. Spark 4.2 is not affected. Set `spark.comet.exec.strictFloatingPoint=true`
+  to make `collect_set` over floating-point values fall back to Spark.
+- **`RANGE` window frames over a `DATE` column with a very large offset
+  ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).** A `RANGE` frame with an
+  explicit `PRECEDING` or `FOLLOWING` offset over a `DATE` `ORDER BY` column now runs natively,
+  where `1.1.0` fell back for every such frame. When the offset is roughly 92 million days (about
+  250,000 years) or more, the frame bound overflows the date range, and Comet can put rows with a
+  `NULL` date in the frame where Spark does not. Comet falls back above 2,144,550,751 days. Offsets
+  of a realistic size are not affected. To avoid it for larger offsets, set
+  `spark.comet.exec.window.enabled=false`, which runs every window operator in Spark.
+- **Native `min` and `max` over `STRING` or `BINARY` under-report their memory
+  ([#6936](https://github.com/apache/datafusion-comet/issues/6936)).** Comet `1.2.0` runs these
+  natively, where `1.1.0` fell back. In a hash aggregate, DataFusion's accumulator counts the
+  length of each group's current value rather than the memory it holds, so a group whose extreme
+  value gets shorter, such as the `min` of URLs where a prefix arrives after a longer value, holds
+  more memory than Comet's memory pool sees. The aggregate then spills later than it should, and a
+  task can run out of memory. Results are not affected. Spark plans a hash aggregate for this when
+  the query also has an aggregate such as `collect_set`, as in
+  `SELECT k, min(s), collect_set(tag) FROM t GROUP BY k`. A plain `min` or `max` over a string is
+  not affected. Set `spark.sql.execution.useObjectHashAggregateExec=false` to make Spark plan a
+  sort aggregate for these queries, which is not affected.
 
 ## Upgrading to Comet 1.1.0
 

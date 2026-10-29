@@ -1161,6 +1161,74 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
+  Seq(None, Some("true"), Some("false")).foreach { legacy =>
+    test(s"issue #7030: missing nested fields - legacy ${legacy.getOrElse("default")}") {
+      val fileSchema = StructType.fromDDL(
+        "id int, arrs array<struct<x:int>>, s struct<c:struct<x:int>>, " +
+          "mixed struct<mm:map<string,struct<x:int>>, sa:array<struct<x:int>>>, " +
+          "present struct<x:int>")
+      val readSchema = StructType.fromDDL(
+        "id int, arrs array<struct<missing:int>>, s struct<c:struct<missing:int>>, " +
+          "mixed struct<mm:map<string,struct<missing:int>>, " +
+          "sa:array<struct<missing:int>>>, present struct<x:int>")
+      val rows = java.util.Arrays.asList(
+        Row(1, Seq(Row(1)), Row(Row(1)), Row(Map("k" -> Row(1)), Seq(Row(1))), Row(null)),
+        Row(2, Seq.empty, Row(Row(null)), Row(Map.empty, Seq.empty), Row(null)),
+        Row(3, null, null, null, null),
+        Row(4, Seq(null), Row(null), Row(Map("k" -> null), Seq(null)), Row(null)))
+
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          // Keep a file without null parents so its statistics cannot hide incorrect pruning.
+          spark
+            .createDataFrame(rows.subList(0, 1), fileSchema)
+            .coalesce(1)
+            .write
+            .parquet(path.toString)
+          spark
+            .createDataFrame(rows.subList(1, rows.size()), fileSchema)
+            .coalesce(1)
+            .write
+            .mode("append")
+            .parquet(path.toString)
+        }
+        val legacyConf =
+          legacy.toSeq.map("spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing" -> _)
+        for (pruning <- Seq("true", "false")) {
+          withSQLConf(
+            (legacyConf ++ Seq(
+              "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
+              "spark.sql.optimizer.nestedSchemaPruning.enabled" -> pruning,
+              CometConf.COMET_BATCH_SIZE.key -> "1")): _*) {
+            def read(): DataFrame = spark.read.schema(readSchema).parquet(path.toString)
+            val nativeScan = Seq(classOf[CometNativeScanExec])
+            checkSparkAnswerAndOperator(read(), nativeScan)
+            for (predicate <- Seq("arrs IS NULL", "s IS NULL", "mixed.sa IS NULL")) {
+              checkSparkAnswerAndOperator(read().where(predicate), nativeScan)
+            }
+            checkSparkAnswerAndOperator(
+              read().selectExpr(
+                "id",
+                "arrs IS NULL",
+                "s IS NULL",
+                "mixed IS NULL",
+                "mixed.sa IS NULL",
+                "present IS NULL"),
+              nativeScan)
+            checkSparkAnswerAndOperator(
+              read().selectExpr(
+                "count(arrs)",
+                "count(s)",
+                "count(mixed)",
+                "count(mixed.sa)",
+                "count(present)"),
+              nativeScan)
+          }
+        }
+      }
+    }
+  }
+
   test("issue #4136: struct with all requested fields missing in file") {
     // SPARK-53535 (Spark 4.1) added LEGACY_PARQUET_RETURN_NULL_STRUCT_IF_ALL_FIELDS_MISSING.
     // With the new default (false), Spark's vectorized reader appends a "marker" leaf field to

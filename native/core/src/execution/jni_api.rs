@@ -25,9 +25,11 @@
 //! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
 //! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
 //! subqueries). Their core functions (`create_execution_context`,
-//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects
-//! as JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that
-//! need an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects as
+//! JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that need
+//! an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `setOutputStream` registers a native write's output stream through the same
+//! `register_before_execution` check as the pusher.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -39,7 +41,10 @@ use crate::{
         serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
     },
-    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
+    jvm_bridge::{
+        JVMClasses, JavaOutputStreamSink, JavaShufflePartitionPusher, OutputStreamSink,
+        ShufflePartitionPusher,
+    },
 };
 use std::collections::HashSet;
 
@@ -95,7 +100,6 @@ use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
-    errors::Result as JNIResult,
     objects::{
         Global, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
@@ -589,6 +593,10 @@ pub(crate) struct ExecutionContext {
     /// Task-owned remote shuffle callback, registered before native planning starts.
     /// The callback owns a JNI global reference and can safely run on Tokio workers.
     pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file this plan's Parquet writer writes, registered before native
+    /// planning starts when the JVM created that file through Hadoop's FileSystem API. Like the
+    /// shuffle callback, it owns a JNI global reference and can run on any native thread.
+    pub output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
@@ -723,6 +731,7 @@ impl ExecutionContext {
             .with_task_context(self.task_context.clone())
             .with_class_loader(self.class_loader.clone())
             .with_shuffle_partition_pusher(self.shuffle_partition_pusher.clone())
+            .with_output_stream(self.output_stream.clone())
     }
 }
 
@@ -915,6 +924,7 @@ pub(crate) fn create_execution_context(
         task_context: jvm.task_context,
         class_loader: jvm.class_loader,
         shuffle_partition_pusher: None,
+        output_stream: None,
         memory_pool_registration,
     }))
 }
@@ -937,7 +947,7 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
             ));
         }
 
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
         register_shuffle_partition_pusher(exec_context, || {
             Ok(Arc::new(JavaShufflePartitionPusher::try_new(
                 env, &callback,
@@ -953,21 +963,70 @@ fn register_shuffle_partition_pusher(
     exec_context: &mut ExecutionContext,
     make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback cannot be registered after native execution starts"
-                .to_string(),
-        ));
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.shuffle_partition_pusher,
+        "Remote shuffle callback",
+        make_pusher,
+    )
+}
+
+/// Registers one of a plan's task-owned JVM callbacks in `slot`, built by `make` only once the
+/// plan is known to accept it: before execution has `started`, and once. `what` names the callback
+/// in the errors.
+fn register_before_execution<T: ?Sized>(
+    started: bool,
+    slot: &mut Option<Arc<T>>,
+    what: &str,
+    make: impl FnOnce() -> CometResult<Arc<T>>,
+) -> CometResult<()> {
+    if started {
+        return Err(CometError::Internal(format!(
+            "{what} cannot be registered after native execution starts"
+        )));
     }
 
-    if exec_context.shuffle_partition_pusher.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback has already been registered for this task".to_string(),
-        ));
+    if slot.is_some() {
+        return Err(CometError::Internal(format!(
+            "{what} has already been registered for this task"
+        )));
     }
 
-    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    *slot = Some(make()?);
     Ok(())
+}
+
+/// Binds the output stream of the file the plan's Parquet writer writes, for a file the JVM
+/// created itself, before native execution is initialized.
+///
+/// Separate from `createPlan` for the same reason as `setShufflePartitionPusher`: only native
+/// writes the JVM creates the file for need it, so every other caller keeps the existing ABI.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    output: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "A native write's output stream requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context)?;
+        register_before_execution(
+            exec_context.root_op.is_some(),
+            &mut exec_context.output_stream,
+            "A native write's output stream",
+            || {
+                let sink: Arc<dyn OutputStreamSink> =
+                    Arc::new(JavaOutputStreamSink::try_new(env, &output)?);
+                Ok(sink)
+            },
+        )
+    })
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -1424,7 +1483,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
 
         let tracing_enabled = exec_context.tracing_enabled;
         // Clone the label only when tracing is enabled. The clone is needed
@@ -1693,7 +1752,7 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 fn convert_datatype_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> CometResult<Vec<ArrowDataType>> {
     let array_len = serialized_datatypes.len(env)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
@@ -1701,20 +1760,32 @@ fn convert_datatype_arrays(
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
-        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(deserialize_arrow_datatype(bytes.as_slice(), i)?);
     }
 
     Ok(res)
 }
 
-fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
-    unsafe {
-        (id as *mut ExecutionContext)
-            .as_mut()
-            .expect("Comet execution context shouldn't be null!")
-    }
+/// Decodes the serialized Spark data type of column `index` into its Arrow data type.
+fn deserialize_arrow_datatype(bytes: &[u8], index: usize) -> CometResult<ArrowDataType> {
+    let data_type = serde::deserialize_data_type(bytes).map_err(|e| {
+        CometError::Internal(format!(
+            "Cannot deserialize the data type of column {index}: {e}"
+        ))
+    })?;
+    Ok(to_arrow_datatype(&data_type))
+}
+
+/// Reads the string argument `arg` of the JNI export `export`.
+fn string_arg(env: &Env, value: &JString, export: &str, arg: &str) -> CometResult<String> {
+    value
+        .try_to_string(env)
+        .map_err(|e| CometError::Internal(format!("Cannot read argument '{arg}' of {export}: {e}")))
+}
+
+fn get_execution_context<'a>(id: i64) -> CometResult<&'a mut ExecutionContext> {
+    unsafe { (id as *mut ExecutionContext).as_mut() }
+        .ok_or_else(|| CometError::Internal("Native execution context handle is null".to_string()))
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.
@@ -1728,7 +1799,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
     exec_context: jlong,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
-        let context = get_execution_context(exec_context);
+        let context = get_execution_context(exec_context)?;
         let root_plan = context.root_op.as_ref().map(|op| op.native_plan.as_ref());
         let offsets = shuffle_partition_offsets(root_plan)?;
 
@@ -1809,8 +1880,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
-                let output_path: String = file_path.try_to_string(env).unwrap();
-                let compression_codec: String = compression_codec.try_to_string(env).unwrap();
+                let output_path =
+                    string_arg(env, &file_path, "writeSortedFileNative", "file_path")?;
+                let compression_codec = string_arg(
+                    env,
+                    &compression_codec,
+                    "writeSortedFileNative",
+                    "compression_codec",
+                )?;
 
                 let results = write_sorted_file(
                     &row_addresses,
@@ -2232,7 +2309,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceBegin", "event")?;
         trace_begin(&name);
         Ok(())
     })
@@ -2247,7 +2324,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceEnd", "event")?;
         trace_end(&name);
         Ok(())
     })
@@ -2263,7 +2340,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = name.try_to_string(env).unwrap();
+        let name = string_arg(env, &name, "logMemoryUsage", "name")?;
         log_memory_usage(&name, value as u64);
         Ok(())
     })
@@ -3409,6 +3486,46 @@ mod tests {
         assert!(producer.next_batch().unwrap().is_some());
         assert!(producer.next_batch().unwrap().is_none());
         producer.stop().unwrap();
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_decodes_a_serialized_type() {
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+
+        let bytes = spark_expression::DataType {
+            type_id: DataTypeId::Int64 as i32,
+            type_info: None,
+        }
+        .encode_to_vec();
+        assert_eq!(
+            deserialize_arrow_datatype(&bytes, 0).unwrap(),
+            DataType::Int64
+        );
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_rejects_malformed_bytes() {
+        // Field 31 with the unused wire type 7, which protobuf cannot decode.
+        let error = deserialize_arrow_datatype(&[0xff], 2).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot deserialize the data type of column 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn get_execution_context_rejects_a_null_handle() {
+        let error = get_execution_context(0).map(|_| ()).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Native execution context handle is null"),
+            "{error}"
+        );
     }
 
     #[test]
