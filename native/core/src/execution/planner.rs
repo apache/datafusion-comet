@@ -333,7 +333,8 @@ impl PhysicalPlanner {
 
     /// Feeds the block's input leaves from `inputs` instead of the JVM, one per leaf in the order
     /// the planner meets them. Each input's output is cast to the types Spark declared for its
-    /// leaf. Expressions that call into the JVM fail to plan, since there is no JVM.
+    /// leaf. Expressions that call into the JVM fail to plan, since there is no JVM, and so do
+    /// native UDFs, which load a library from a path in the plan.
     pub fn with_native_inputs(mut self, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Self {
         self.native_inputs = Some(Arc::new(NativeInputs::Plans(Mutex::new(inputs.into()))));
         self
@@ -412,6 +413,20 @@ impl PhysicalPlanner {
         if self.native_inputs.is_some() {
             return Err(GeneralError(format!(
                 "{what} calls into the JVM, so it cannot run on Comet Native Executors"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails to plan `what`, which loads code from a path the plan names, when the plan runs on a
+    /// Comet Native Executor. Those processes are shared by every client, and the policy that
+    /// would restrict the path comes from the client's own configuration, so a plan could load any
+    /// library the process can read.
+    fn refuse_on_native_executor(&self, what: &str) -> Result<(), ExecutionError> {
+        if self.native_inputs.is_some() {
+            return Err(GeneralError(format!(
+                "{what} loads code from a path in the plan, so it cannot run on Comet Native \
+                 Executors"
             )));
         }
         Ok(())
@@ -1263,6 +1278,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::NativeScalarUdf(call) => {
+                self.refuse_on_native_executor(&format!("The native UDF {}", call.name))?;
                 let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
                     .args
                     .iter()
@@ -7170,6 +7186,35 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
         let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
         assert_eq!(out.data_type(), &promised);
+    }
+
+    /// A Comet Native Executor is shared by every client, so it doesn't load a library a plan names.
+    #[test]
+    fn native_scalar_udf_is_refused_on_native_executors() {
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "add_one_c".to_string(),
+                library_path: "/no/such/library.so".to_string(),
+                args: vec![],
+                return_type: Some(spark_expression::DataType {
+                    type_id: 4, // INT64
+                    type_info: None,
+                }),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        for planner in [
+            PhysicalPlanner::default().without_data(),
+            PhysicalPlanner::default().with_native_inputs(vec![]),
+        ] {
+            let err = planner.create_expr(&call, Arc::clone(&schema)).unwrap_err();
+            assert!(
+                err.to_string().contains("Comet Native Executors"),
+                "unexpected: {err}"
+            );
+        }
     }
 
     /// The executor applies the native UDF policy to the library path in the plan, whatever the
