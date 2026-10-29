@@ -17,18 +17,25 @@
 
 use super::case_when::cannot_fail;
 use super::null_short_circuit::{evaluate_projected, project};
-use crate::{spark_comparison, FloatOperands};
+use crate::{
+    spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands, IfExpr,
+    NormalizeNaNAndZero, SparkComparison, WideDecimalBinaryExpr,
+};
 use arrow::array::{Array, BooleanArray};
 use arrow::compute::{and_kleene, or_kleene};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
 use datafusion::common::cast::as_boolean_array;
 use datafusion::common::{internal_datafusion_err, Result};
+use datafusion::logical_expr::Volatility;
 use datafusion::logical_expr::{ColumnarValue, Operator};
-use datafusion::physical_expr::expressions::{BinaryExpr, NotExpr};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::expressions::{
+    BinaryExpr, Column, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
+};
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Spark's `AND` and `OR`, which evaluate the right operand only for the rows that the left one
@@ -48,6 +55,11 @@ pub struct LazyLogical {
     /// other column. It is evaluated in place of `right` for every batch, since rebuilding it gave
     /// it its own copy of any state kept across batches
     projected: Arc<dyn PhysicalExpr>,
+    /// Whether to try `right` over the whole batch first when most rows need it, which costs less
+    /// than selecting rows. That is wrong for an expression whose result depends on the rows it
+    /// has seen, so it requires a deterministic `right`. If that fails on a row that Spark skips,
+    /// the rows are selected instead, here and for the batches after it.
+    speculate: AtomicBool,
 }
 
 impl LazyLogical {
@@ -74,23 +86,26 @@ impl LazyLogical {
         right: Arc<dyn PhysicalExpr>,
     ) -> Result<Self> {
         let (projection, projected) = project(&right)?;
+        let speculate = AtomicBool::new(is_deterministic(&right));
         Ok(Self {
             left,
             op,
             right,
             projection,
             projected,
+            speculate,
         })
     }
 }
 
 /// Creates `value IN (candidates)` as the chain of equalities that Spark evaluates it as, each
-/// candidate only for the rows that no earlier one has matched, or `None` if it has no such form.
+/// candidate that can fail only for the rows that no earlier one has matched, or `None` if it has
+/// no such form. A run of candidates that cannot fail is one `IN`, so that it keeps a hash set.
 ///
 /// Spark's `In` returns true at the first candidate that equals the value, and NULL if none does
 /// and one is NULL, which is that of `value = c1 OR value = c2 OR ...`. A candidate that can fail
 /// is then evaluated only for the rows that the ones before it have not matched. The value is
-/// evaluated once per candidate, so this requires it to be a cheap expression that cannot fail.
+/// evaluated once per link of the chain, so this requires it to be a cheap expression that cannot fail.
 /// This returns `None` when no candidate after the first can fail, when the value cannot be
 /// evaluated again, and when a candidate has another type than the value.
 pub fn lazy_in_list(
@@ -109,24 +124,61 @@ pub fn lazy_in_list(
     {
         return Ok(None);
     }
-    let equal = |candidate: &Arc<dyn PhysicalExpr>| {
-        spark_comparison(
-            Arc::clone(value),
-            Operator::Eq,
-            Arc::clone(candidate),
-            schema,
-            FloatOperands::Normalize,
-        )
-    };
-    let mut chain = equal(&candidates[0])?;
-    for candidate in &candidates[1..] {
-        chain = LazyLogical::wrap(chain, Operator::Or, equal(candidate)?, schema)?;
+    // A run of candidates that cannot fail is matched at once, as the IN it would be alone. The
+    // chain evaluates a candidate that can fail only for the rows that the ones before it did not
+    // match.
+    let mut chain: Option<Arc<dyn PhysicalExpr>> = None;
+    let mut rest = candidates;
+    while !rest.is_empty() {
+        let run = rest.iter().take_while(|c| cannot_fail(c, schema)).count();
+        let term = if run > 0 {
+            let (run, remaining) = rest.split_at(run);
+            rest = remaining;
+            spark_in_list(Arc::clone(value), run.to_vec(), false, schema)?
+        } else {
+            let candidate = &rest[0];
+            rest = &rest[1..];
+            spark_comparison(
+                Arc::clone(value),
+                Operator::Eq,
+                Arc::clone(candidate),
+                schema,
+                FloatOperands::Normalize,
+            )?
+        };
+        chain = Some(match chain {
+            Some(matched) => LazyLogical::wrap(matched, Operator::Or, term, schema)?,
+            None => term,
+        });
     }
+    let chain = chain.expect("candidates is not empty");
     Ok(Some(if negated {
         Arc::new(NotExpr::new(chain))
     } else {
         chain
     }))
+}
+
+/// Whether `expr` returns the same for a row whichever rows it has been evaluated for. That holds
+/// for the expressions that Comet plans from deterministic ones, and is not assumed of any other.
+fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    let node_is_deterministic = expr.is::<Column>()
+        || expr.is::<Literal>()
+        || expr.is::<Cast>()
+        || expr.is::<BinaryExpr>()
+        || expr.is::<SparkComparison>()
+        || expr.is::<CheckedBinaryExpr>()
+        || expr.is::<WideDecimalBinaryExpr>()
+        || expr.is::<NormalizeNaNAndZero>()
+        || expr.is::<NotExpr>()
+        || expr.is::<IsNullExpr>()
+        || expr.is::<IsNotNullExpr>()
+        || expr.is::<CaseWhenExpr>()
+        || expr.is::<IfExpr>()
+        || expr
+            .downcast_ref::<ScalarFunctionExpr>()
+            .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable);
+    node_is_deterministic && expr.children().into_iter().all(is_deterministic)
 }
 
 impl Hash for LazyLogical {
@@ -171,13 +223,28 @@ impl PhysicalExpr for LazyLogical {
             (_, None) => !left.values(),
             (_, Some(nulls)) => !&(left.values() & nulls.inner()),
         };
-        if pending.count_set_bits() == 0 {
+        let pending_rows = pending.count_set_bits();
+        if pending_rows == 0 {
             // No row needs the right operand, and the left one is the result on every row
             return Ok(ColumnarValue::Array(Arc::new(left.clone())));
         }
-        let pending = BooleanArray::new(pending, None);
-        let right = evaluate_projected(&self.projection, &self.projected, batch, Some(&pending))?
-            .into_array(num_rows)?;
+        let mut right = None;
+        if pending_rows * 2 > num_rows && self.speculate.load(Ordering::Relaxed) {
+            // Whatever the right operand returns for a row that the left one decides is ignored
+            // below, so it only matters if it fails there
+            right = evaluate_projected(&self.projection, &self.projected, batch, None).ok();
+            if right.is_none() {
+                self.speculate.store(false, Ordering::Relaxed);
+            }
+        }
+        let right = match right {
+            Some(right) => right,
+            None => {
+                let pending = BooleanArray::new(pending, None);
+                evaluate_projected(&self.projection, &self.projected, batch, Some(&pending))?
+            }
+        }
+        .into_array(num_rows)?;
         let right = as_boolean_array(&right)?;
         // The right operand is NULL on the rows it was skipped for, which the left one decides
         let result: BooleanArray = match self.op {
@@ -423,6 +490,58 @@ mod tests {
         assert_eq!(
             evaluate(&expr, &batch)?,
             vec![Some(true), Some(true), Some(false), None]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn speculative_evaluation_falls_back_to_selected_rows() -> Result<()> {
+        // Most rows are pending, so the right operand is tried over the whole batch first, and
+        // fails on the row that the left operand decides
+        let failing = batch(vec![Some(1); 4], vec!["5", "5", "bad", "5"]);
+        let mut values = vec![Some(1); 9];
+        values.push(Some(0));
+        let mut strings = vec!["5"; 9];
+        strings.push("bad");
+        let batch = batch(values, strings);
+        let schema = batch.schema();
+        let and = guarded(&schema, Operator::NotEq, 0, Operator::And);
+        let mut expected = vec![Some(true); 9];
+        expected.push(Some(false));
+        assert_eq!(evaluate(&and, &batch)?, expected);
+        // Later batches select rows from the start
+        assert_eq!(evaluate(&and, &batch)?, expected);
+        // A row that is pending still fails
+        assert!(evaluate(&and, &failing).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn in_list_matches_runs_of_candidates_at_once() -> Result<()> {
+        // v IN (0, 1, CAST(s AS INT), 5, 6)
+        let batch = batch(
+            vec![Some(0), Some(1), Some(2), Some(5), Some(9), None],
+            vec!["bad", "bad", "2", "8", "8", "1"],
+        );
+        let schema = batch.schema();
+        let candidates = vec![
+            lit(0),
+            lit(1),
+            ansi_cast(col("s", &schema)?, DataType::Int32),
+            lit(5),
+            lit(6),
+        ];
+        let expr = crate::spark_in_list(col("v", &schema)?, candidates, false, &schema)?;
+        assert_eq!(
+            evaluate(&expr, &batch)?,
+            vec![
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(true),
+                Some(false),
+                None
+            ]
         );
         Ok(())
     }
