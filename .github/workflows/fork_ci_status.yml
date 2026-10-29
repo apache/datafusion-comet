@@ -116,13 +116,7 @@ jobs:
               // A missing run must keep being polled, even though its check is completed.
               if (!includeCompleted && check?.status === 'completed' && previous.run_id) return;
 
-              // A fork's default branch is never tested: ci_fork.yml skips it, and a
-              // push there is a sync, which runs nothing. Looking for a run would
-              // find none, or worse, one that tested nothing and passed.
-              // Actions compares branch names without regard to case, so `Main` is
-              // the default branch `main` to ci_fork.yml's job guard. Compare the same way.
-              const fromMain = pr.head.ref.toLowerCase() === String(pr.head.repo.default_branch).toLowerCase();
-              const data = fromMain ? null : await optional(() => github.rest.actions.listWorkflowRuns({
+              const data = await optional(() => github.rest.actions.listWorkflowRuns({
                 ...fork, workflow_id: WORKFLOW, head_sha: sha, branch: pr.head.ref, per_page: 100,
               }));
               // Ignore PR merge-ref runs. ci_fork.yml runs on push only, and tests
@@ -149,23 +143,6 @@ jobs:
                       UPDATE_NOTE,
                     ].join('\n\n'),
                     text: JSON.stringify({ head_sha: sha, run_id: run.id, run_attempt: run.run_attempt }),
-                  },
-                };
-              } else if (fromMain) {
-                payload = {
-                  status: 'completed',
-                  conclusion: 'neutral',
-                  details_url: GUIDE,
-                  output: {
-                    title: 'Open the pull request from a branch',
-                    summary: [
-                      'This pull request comes from the ' + pr.head.ref + ' branch of ' + pr.head.repo.full_name +
-                      ', and CI does not run on a fork’s default branch: a push there is a sync of upstream, ' +
-                      'so nothing tests this change before the merge queue does.',
-                      'Push the change to a branch of your fork and open the pull request from it.',
-                      '[Fork CI setup](' + GUIDE + ')',
-                    ].join('\n\n'),
-                    text: JSON.stringify({ head_sha: sha, run_id: null }),
                   },
                 };
               } else {

@@ -54,7 +54,7 @@ const pr = {
     sha, ref: 'feature',
     repo: {
       owner: { login: 'contributor' }, name: 'datafusion-comet',
-      full_name: 'contributor/datafusion-comet', default_branch: 'main',
+      full_name: 'contributor/datafusion-comet',
     },
   },
   base: { ref: 'main' },
@@ -281,34 +281,9 @@ test('no open PRs means no fork API calls', async () => {
   assert.deepEqual(result.writes, []);
 });
 
-for (const defaultBranch of ['main', 'develop']) {
-  test('a PR from the fork default branch ' + defaultBranch + ' is told to use a branch', async () => {
-    const head = {
-      ...pr.head, ref: defaultBranch, repo: { ...pr.head.repo, default_branch: defaultBranch },
-    };
-    const mainPr = { ...pr, head };
-    const { writes, calls } = await execute({ recent: [mainPr], slice: [mainPr] });
-    assert.equal(calls.filter(([kind]) => kind === 'runs').length, 0, 'a default branch has no run to read');
-    assert.equal(writes.length, 1);
-    assert.equal(writes[0].conclusion, 'neutral');
-    assert.equal(writes[0].output.title, 'Open the pull request from a branch');
-  });
-}
-
-test('a PR from a case variant of the default branch is told to use a branch', async () => {
-  // Actions compares branch names without regard to case, so ci_fork.yml skips Main
-  // in a fork whose default branch is main, and there is no run to find.
-  const head = { ...pr.head, ref: 'Main' };
-  const variantPr = { ...pr, head };
-  const { writes, calls } = await execute({ recent: [variantPr], slice: [variantPr] });
-  assert.equal(calls.filter(([kind]) => kind === 'runs').length, 0);
-  assert.equal(writes[0].output.title, 'Open the pull request from a branch');
-});
-test('a branch called main in a fork whose default branch is not main is mirrored', async () => {
-  // ci.yml triggers on push to a branch called main as well, but it skips that run
-  // unless ci_fork.yml called it, so ci_fork.yml is the one workflow to look up.
-  const head = { ...pr.head, ref: 'main', repo: { ...pr.head.repo, default_branch: 'develop' } };
-  const mainPr = { ...pr, head };
+test('a PR from a branch called main, the default branch included, is mirrored', async () => {
+  // ci_fork.yml runs every branch of a fork, so there is always one workflow to look up.
+  const mainPr = { ...pr, head: { ...pr.head, ref: 'main' } };
   const { writes } = await execute({
     branch: 'main', recent: [mainPr], slice: [mainPr], candidates: [mainPr],
   });

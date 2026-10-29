@@ -212,40 +212,36 @@ the other queue-tier jobs, with path filters still applied; the nightly-only and
 label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
 (#11788). Three files carry it:
 
-| File                 | Role                                                                                                                                                                                   |
-| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`, after cancelling the branch's older runs. Its jobs are skipped upstream and for a fork's default branch. |
-| `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run.                             |
-| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                                                         |
+| File                 | Role                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`, after cancelling the branch's older runs. Its jobs are skipped upstream.     |
+| `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run. |
+| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                             |
 
 Things that follow from that, and are easy to break:
 
 - **The fork result is advisory.** `Required Checks` does not depend on
   `CI (fork)`, because a contributor controls the workflow that produced it. A
   green fork run that never ran the tests costs one queue slot, not a bad merge.
-- **A push to a fork's default branch runs nothing.** It is a sync of commits
-  the queue already tested. `ci_fork.yml`'s job skips it, whatever the branch is
-  called. `ci.yml` also triggers on push to `main`, in a fork as upstream, so
-  its `Preflight` skips any fork push that did not come through `ci_fork.yml`,
-  which it tells apart by the caller's `github.workflow`, and `required_checks`
-  skips itself when `Preflight` does. That starts no runner for a sync, for a
-  fork's schedule, or for a second copy of a push. A branch called `main` in a
-  fork whose default is another branch is an ordinary branch and runs through
-  `ci_fork.yml`, so the bridge has one workflow to look up. The cost is that a
-  fork never has warm caches, so each branch run rebuilds the native library:
-  59 minutes of wall time and 240 runner-minutes cold against 50 and 213 warm,
-  measured 2026-10-28 on one fork. A sync that did warm them would cost about
-  as much as it saved on its first run. The bridge answers a pull request from
-  a fork's default branch with a neutral "open the pull request from a branch",
-  because nothing tests it.
+- **Every branch of a fork runs through `ci_fork.yml`, `main` included.**
+  `ci.yml` also triggers on push to `main`, in a fork as upstream, so its
+  `Preflight` skips any fork push that did not come through `ci_fork.yml`, which
+  it tells apart by the caller's `github.workflow`, and `required_checks` skips
+  itself when `Preflight` does. That starts no runner for a fork's schedule or
+  for a second copy of a push, and leaves the bridge one workflow to look up. A
+  push that adds nothing to upstream `main`, such as a sync of the fork, selects
+  no suite, so it starts only `Preflight` and `Detect changes` and warms no
+  cache. A fork's caches are therefore cold unless a run on its `main` builds,
+  and each branch run rebuilds the native library: 59 minutes of wall time and
+  240 runner-minutes cold against 50 and 213 warm, measured 2026-10-28 on one
+  fork.
 - **Branch names compare without regard to case in Actions,** in `==`, `!=` and
   concurrency group names alike, and a fork can hold both `feature` and
   `Feature`. So a fork push has no shared concurrency group: it is keyed on its
   commit, and `ci_fork.yml`'s `supersede` job cancels the older runs of exactly
-  that branch, which it can compare with case. `Main` in a fork whose default
-  branch is `main` is skipped like `main`, and the bridge treats it the same way.
-  `check-ci-config.py` evaluates conditions with the same case-insensitive
-  comparison, and checks that the push trigger admits `main`.
+  that branch, which it can compare with case. `check-ci-config.py` evaluates
+  conditions with the same case-insensitive comparison, and checks that the push
+  trigger admits `main`.
 - **A pull request opened inside a fork skips the PR tier,** because the branch
   push already ran it, and `is_fork_pull_request` covers both that and a fork
   pull request into `main` here. A `run-*` label still runs its suite.

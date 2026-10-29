@@ -149,11 +149,9 @@ jobs:
   #   - A scheduled run in a fork, which would otherwise run the whole nightly
   #     tier for want of an earlier run to diff against.
   #   - A push to a fork that did not come through ci_fork.yml. ci.yml triggers
-  #     on push to main, so it fires in a fork for a branch called `main` and for
-  #     a sync of the fork's default branch. Neither is the contributor's pull
-  #     request tier: ci_fork.yml runs every other branch, `main` included,
-  #     except the fork's default branch, which is a sync of commits the queue
-  #     already tested. The workflow name is what tells the two entry points
+  #     on push to main, so it fires in a fork for its `main` as well, while
+  #     ci_fork.yml runs every branch of a fork, `main` included. Running both
+  #     would test the push twice. The workflow name tells the two entry points
   #     apart, since a called workflow sees its caller's `github.workflow`.
   # ---------------------------------------------------------------------------
   preflight:

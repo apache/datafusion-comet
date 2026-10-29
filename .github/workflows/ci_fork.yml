@@ -32,14 +32,12 @@
 # that can be skipped is named after this workflow's own run, and upstream it is
 # always skipped.
 #
-# A fork's default branch is skipped by the job below, whatever it is called,
-# because a push to it is a sync of upstream, which the merge queue already
-# tested. A branch called `main` that is not the default is run like any other.
-# ci.yml also triggers on a push to `main`, in a fork as upstream, but its
-# Preflight job skips that run unless it came through this workflow, so a fork
-# push is tested once and the bridge has one workflow to look up. A fork's caches
-# are never warm; see "Pull requests from forks" in
-# docs/source/contributor-guide/ci.md for what that costs.
+# Every branch of a fork is run the same way, the default branch included. ci.yml
+# also triggers on a push to `main`, in a fork as upstream, but its Preflight job
+# skips that run unless it came through this workflow, so a fork push is tested
+# once and the bridge has one workflow to look up. A push that adds nothing to
+# upstream main, such as a sync of the fork, selects no suite; see
+# dev/ci/fork-push-changed-files.sh.
 name: Comet CI (fork run)
 
 # No `concurrency` here, and none for a fork push in ci.yml either: see the
@@ -65,9 +63,8 @@ jobs:
     name: Cancel superseded runs
     # Upstream, a push to any branch other than main is a pull request's own
     # business: the pull request run tests it, and a second run here would
-    # test it twice. In a fork the default branch is skipped, whatever it is
-    # called; `branches-ignore` above can only name a fixed branch.
-    if: github.repository != 'apache/datafusion-comet' && github.ref_name != github.event.repository.default_branch
+    # test it twice.
+    if: github.repository != 'apache/datafusion-comet'
     runs-on: ubuntu-slim
     # Failing to cancel only leaves an older run to finish, so it never blocks the run.
     continue-on-error: true
@@ -100,7 +97,7 @@ jobs:
   ci:
     name: Fork run
     needs: supersede
-    if: github.repository != 'apache/datafusion-comet' && github.ref_name != github.event.repository.default_branch
+    if: github.repository != 'apache/datafusion-comet'
     # The union of what ci.yml's jobs request, for the same reason as in
     # ci_label.yml: GitHub checks a called workflow's permissions against
     # this ceiling for every job when the run starts, including the ones this

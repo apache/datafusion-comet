@@ -131,7 +131,7 @@ To get it working:
    fork's **Actions** tab and choose **I understand my workflows, go ahead and enable them**.
 2. **Sync your fork and rebase your branch onto `main`.** The workflows that run on your fork are
    the ones in your branch, so a branch cut before this arrangement existed runs nothing.
-3. **Push your branch.** Each push to a branch other than your fork's default branch starts a `Comet CI (fork run)` in
+3. **Push your branch.** Each push to a branch of your fork starts a `Comet CI (fork run)` in
    your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
    the PR tier for the files your branch changes relative to upstream `main`, which is what the pull
    request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
@@ -153,16 +153,12 @@ Some things to know:
   controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
   queue is the gate, and it tests your change merged with `main` and everything queued ahead of it,
   where the fork run tests your branch head alone.
-- **Runs are cold.** Caches are scoped to a branch or to the repository's default branch, and a
-  push to your fork's default branch, usually `main`, does not run the Comet PR tier, because it is a
-  sync of commits the merge queue already tested. So the Cargo and Maven caches are never warm on a fork, and a run rebuilds the native
-  library: a run of the PR tier on a fork took about an hour of wall time and 240 runner-minutes, of
-  which the native build alone was 23 minutes. The same run with warm caches took 50 minutes and 213
-  runner-minutes.
-- **Open the pull request from a branch.** The Comet PR tier does not run on your fork's default
-  branch, usually `main`, so a pull request from it gets no CI before the merge queue. `CI (fork)`
-  says so. A branch that differs from the default only in capitalization, such as `Main`, counts as
-  the default branch, because GitHub Actions compares branch names without regard to case.
+- **Caches are cold unless `main` builds.** A branch restores caches saved on its own ref or on your
+  fork's default branch, and a run on your fork's `main` saves them only when it builds. A push to
+  `main` that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
+  nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
+  caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
+  23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes.
 - **Scheduled runs stay upstream.** The nightly run, Miri, the stale-PR closer and the weekly
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
   start no job. Miri can still be run on your fork by dispatching it.

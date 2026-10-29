@@ -567,9 +567,9 @@ POLICY_CASES = [
     (fork_pr(base="branch-1.1"), QUEUE_TIER | NIGHTLY_TIER),
     # A push to a fork's branch is the contributor's pull request tier and
     # nothing more: not main's cache refresh or site deploy (`docs` publishes to
-    # asf-site), and not the queue's or the nightly's suites. A push to the
-    # fork's default branch, a sync, never reaches this table: Preflight skips it
-    # (see check_fork_runs).
+    # asf-site), and not the queue's or the nightly's suites. That holds for the
+    # fork's default branch too; a push that adds nothing to upstream selects no
+    # file (see dev/ci/fork-push-changed-files.sh).
     ({"name": "push", "repository": FORK}, PR_TIER),
     # A pull request opened inside a fork leaves the PR tier to the branch push
     # that already ran it, so the same commit is not tested twice, but a label
@@ -1688,9 +1688,9 @@ def check_fork_runs():
         )
     # Preflight is where a fork run that is not a pull request's tier is dropped,
     # and with it the whole run, since every other job needs Preflight through
-    # `changes`. ci.yml triggers on push to main, so it fires in a fork for a
-    # branch called `main` and for a sync of the default branch; only a push that
-    # came through ci_fork.yml, whose `github.workflow` is its own name, is tested.
+    # `changes`. ci.yml triggers on push to main, so it fires in a fork for its
+    # `main` as well as ci_fork.yml does; only a push that came through
+    # ci_fork.yml, whose `github.workflow` is its own name, is tested, once.
     ci_name = workflow_name(WORKFLOWS / "ci.yml")
     fork_name = workflow_name(FORK_WORKFLOW)
     failures.extend(
@@ -1741,24 +1741,20 @@ def check_fork_runs():
                 failures.append(
                     f"{FORK_WORKFLOW}'s `push: branches-ignore` {patterns} "
                     f"{'admits' if actual else 'ignores'} a push to `{branch}`, and it should "
-                    f"{'ignore' if actual else 'admit'} it; a fork's `main` is an ordinary branch "
-                    f"unless it is the default, which the jobs' `if:` decides"
+                    f"{'ignore' if actual else 'admit'} it; a fork's `main` is an ordinary branch"
                 )
         cases = [
             (actions_context("push", UPSTREAM, fork_name, "feature"), False, "an upstream branch push"),
             (actions_context("push", UPSTREAM, fork_name, "main"), False, "an upstream push to main"),
             (actions_context("push", FORK, fork_name, "feature"), True, "a fork branch"),
-            (actions_context("push", FORK, fork_name, "main", "develop"), True, "a branch called main in a fork whose default is develop"),
-            (actions_context("push", FORK, fork_name, "main", "main"), False, "a sync of a fork's main"),
-            (actions_context("push", FORK, fork_name, "develop", "develop"), False, "a sync of a fork whose default is develop"),
-            (actions_context("push", FORK, fork_name, "Main", "main"), False, "a case variant of the default branch, which Actions compares as equal"),
+            (actions_context("push", FORK, fork_name, "main"), True, "a push to a fork's main"),
         ]
         for job in ("supersede", "ci"):
             failures.extend(condition_failures(FORK_WORKFLOW, job, cases))
         if re.search(r"^concurrency:", body, re.M):
             failures.append(
-                f"{FORK_WORKFLOW} declares `concurrency`; ci.yml's own group is keyed on the "
-                f"branch for a fork push, and a second group on the caller deadlocks the pair"
+                f"{FORK_WORKFLOW} declares `concurrency`; ci.yml has its own group, and a "
+                f"second group on the caller deadlocks the pair"
             )
         if re.search(r"^  (pull_request|pull_request_target|workflow_dispatch|schedule):", body, re.M):
             failures.append(f"{FORK_WORKFLOW} must trigger on `push` and nothing else")
@@ -1878,13 +1874,12 @@ def evaluate_condition(text, context):
     return bool(eval(compile(tree, "<if>", "eval"), {"__builtins__": {}}, values))  # noqa: S307
 
 
-def actions_context(event_name, repository, workflow="", ref_name="feature", default_branch="main"):
+def actions_context(event_name, repository, workflow="", ref_name="feature"):
     return {
         "github.event_name": event_name,
         "github.repository": repository,
         "github.workflow": workflow,
         "github.ref_name": ref_name,
-        "github.event.repository.default_branch": default_branch,
     }
 
 
