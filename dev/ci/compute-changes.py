@@ -680,11 +680,11 @@ def event_allows(job, event):
     """Does `event` permit `job` to run, ignoring which files changed?
 
     `event` is {"name", "action", "label", "labels", "base", "repository",
-    "head_repository", "ref", "default_branch"}: the workflow event name, the pull_request action, the
-    label just added on a `labeled` event, the labels currently on the pull
-    request, the branch it targets, the repository the workflow runs in, the
-    repository the pull request's branch lives in, and for a push the ref and
-    the repository's default branch.
+    "head_repository", "ref", "default_branch"}: the workflow event name, the
+    pull_request action, the label just added on a `labeled` event, the labels
+    currently on the pull request, the branch it targets, the repository the
+    workflow runs in, the repository the pull request's branch lives in, and
+    for a push the ref and the repository's default branch.
     """
     tiers = POLICY[job]
     name = event.get("name")
@@ -696,7 +696,7 @@ def event_allows(job, event):
         # The "push" tier is main's cache refresh and site deploy, and a fork
         # has no site to deploy. A sync of the fork's default branch runs
         # nothing at all: it brings in commits the queue already tested, and
-        # the caches it would warm save a branch run only about ten of its
+        # the caches it would warm save a branch run only about nine of its
         # fifty minutes (measured 2026-10-28: 59 minutes cold, 50 warm).
         if is_fork_default_branch_push(event):
             return False

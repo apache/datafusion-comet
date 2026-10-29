@@ -37,6 +37,13 @@
 #                 green nightly. A failure opens (or comments on) an issue
 #                 labelled `ci-nightly-failure`.
 #
+# A pull request from a fork into main does not run the PR tier here. The
+# contributor's fork runs it (ci_fork.yml), and fork_ci_status.yml mirrors that
+# run onto the pull request as the informational `CI (fork)` check, which
+# `Required Checks` does not depend on. The merge queue still runs everything on
+# the merge result. Opt-in `run-*` suites, pull requests from a branch of this
+# repository and pull requests to a release branch are unaffected.
+#
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
 # a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
