@@ -90,8 +90,9 @@ is meant. Name the meaning instead.
 - **N2.** These compounds are allowed everywhere, because the second part fixes the meaning:
   _native Rust_; _native shuffle_ and _the native shuffle path_ (the counterpart of _JVM shuffle_,
   which need not appear beside it); "native", optionally followed by a format, followed by _scan_,
-  _reader_, _write_, or _writer_, for Comet's Rust scans and writers (_native scan_, _native Parquet
-  reader_, _native Iceberg write_); _native memory_ and _native library_ (the terms Comet's own log
+  _reader_, _write_, or _writer_, only for Comet's Rust-implemented scans and writers (_native scan_,
+  _native Parquet reader_, _native Iceberg write_), not for a JVM-side scan such as
+  `CometInMemoryTableScanExec`; _native memory_ and _native library_ (the terms Comet's own log
   lines use); _Arrow-native_ (T7); _Native_ as the expression kind (T6); and _native implementation_
   of an expression, meaning its Rust implementation.
 - **N3.** In the contributor guide, "native" before a code noun is also allowed when it means the
