@@ -102,6 +102,33 @@ async fn partition_plans_must_match_the_partitions() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn file_stage_cannot_read_a_hash_exchange() {
+    // A bucketed scan joined with a side Spark shuffled by Murmur3 would meet DataFusion's hash.
+    let mut stage = reading_stage(0, hash_on_first_column(3), 3);
+    let block = stage.plan.as_ref().unwrap().encode_to_vec();
+    stage.partition_plans = vec![block.clone(), block.clone(), block];
+    let error = assemble(query(vec![range_stage(100, 4), stage]))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("can't also read a hash exchange"),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn file_stage_can_read_a_single_partition_exchange() {
+    let mut stage = reading_stage(0, single_partition(), 1);
+    stage.partition_plans = vec![stage.plan.as_ref().unwrap().encode_to_vec()];
+    let plan = assemble(query(vec![range_stage(100, 4), stage]))
+        .await
+        .unwrap();
+    assert_eq!(plan.output_partitioning().partition_count(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn reading_stage_has_as_many_partitions_as_its_exchange() {
     // The partition count a driver gives a stage that reads an exchange doesn't matter.
     let request = query(vec![
