@@ -467,7 +467,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
         s"FROM (SELECT k, region, platform, explode(entries) AS entry FROM ($outer))"
 
-    single :+ (s"map at depth 8, then its inner array (Spark generators)" ->
+    single :+ ("map at depth 8, then its inner array (Spark generators)" ->
       Case(chained, Seq(entries, entries, entries * 3, entries), nativeGenerators = 0))
   }
 }
