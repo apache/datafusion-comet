@@ -102,10 +102,13 @@ BASE=$(git merge-base "$TARGET" "$HEAD_SHA") ||
 If `git rev-list --count "$BASE..$TARGET"` is not zero, the target branch has moved since the change
 branched. Check the claims against `$TARGET` too, and report what has changed there.
 
-**Audit mode.** There is no base. List the files, including new files that are not committed yet:
+**Audit mode.** There is no base. List the files, including new files that are not committed yet, and
+save the list as `PATHS`, as step 3 does in the other modes. The mechanical checks run on every file
+in it; only the judgment checks in step 5 are capped:
 
 ```bash
-git ls-files --cached --others --exclude-standard -- <path>
+PATHS="${STATE%.env}.paths"
+git ls-files --cached --others --exclude-standard -- <path> > "$PATHS"
 ```
 
 ## 2. Read the Style Guide
@@ -204,7 +207,7 @@ matters, because `N3` allows more in the contributor guide:
 ```bash
 P='(?:(?<![A-Za-z0-9])native(?:ly)?(?![A-Za-z0-9])|vectori[sz]ed)'
 perl -ne "print if /^.+?:\d+: .*$P/i" "$ADDED"
-git grep -n -i --untracked -E 'native|vectori[sz]ed' -- <files> | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
+git grep -n -i --untracked -E 'native|vectori[sz]ed' -- $(cat "$PATHS") | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
 ```
 
 **Config keys.** Every `spark.comet.*` key a page names must exist (`P13`). List the keys the text
@@ -215,7 +218,7 @@ rejects. The second command reads definitions that span two lines, expands
 
 ```bash
 perl -ne 'print "$1\n" while /(spark\.comet\.[\w.<>]*[\w>])/g' "$ADDED" | sort -u
-git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- <files> | sort -u  # audit
+git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- $(cat "$PATHS") | sort -u  # audit
 git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
   | perl -0777 -ne '
       while (/\b(?:conf|ConfigBuilder)\(\s*s?"([^"]+)"/g) {
@@ -344,7 +347,7 @@ markers, which break `P7`:
 ```bash
 V='(?:(?:Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(?:TODO|XXX)\b)'
 perl -ne "print if /^.+?:\d+: .*$V/" "$ADDED"
-git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- <files> | perl -ne "print if /$V/"  # audit
+git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- $(cat "$PATHS") | perl -ne "print if /$V/"  # audit
 ```
 
 CI runs prettier and the Apache RAT license check on PRs, so do not repeat them. If CI has not run
