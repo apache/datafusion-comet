@@ -44,7 +44,8 @@ and mode, and keep it the same in every call of that run:
 ```bash
 STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" | tr / -).env"
 { printf 'R=%q\n' "$R"; printf 'HEAD_SHA=%q\n' "$HEAD_SHA"; printf 'BASE=%q\n' "$BASE";
-  printf 'TARGET=%q\n' "$TARGET"; printf 'ADDED=%q\n' "$ADDED"; } > "$STATE"
+  printf 'TARGET=%q\n' "$TARGET"; printf 'PATHS=%q\n' "$PATHS"; printf 'ADDED=%q\n' "$ADDED"; } \
+  > "$STATE"
 ```
 
 Start every later call by loading it:
@@ -54,7 +55,7 @@ STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" |
 ```
 
 In zsh, `$HEAD_SHA:spark/...` is read as a history modifier, so always write `"${HEAD_SHA}:<path>"`.
-Save the state again after step 4 sets `ADDED`. Stop and report the review as incomplete if a command
+Save the state again after step 3 sets `PATHS` and step 4 sets `ADDED`. Stop and report the review as incomplete if a command
 in steps 1 to 4 reports an error. A search that finds nothing, which makes `git grep` exit with status
 1, is not an error. Where a step gives a fallback, such as the docs build in step 4, use it and keep
 going.
@@ -112,8 +113,9 @@ git ls-files --cached --others --exclude-standard -- <path>
 Read `docs/source/contributor-guide/style_guide.md` in full on every run, from the revision under
 review: `git show "${HEAD_SHA}:docs/source/contributor-guide/style_guide.md"` in PR and branch mode,
 or the working tree in audit mode. If it does not exist there, as for a change made before the guide
-was added, read it from `$TARGET`. If it does not exist there either, stop and ask the user for a
-revision that has it.
+was added, read it from `$TARGET`. If it does not exist there either, read the working tree's copy and say in
+the report which copy you used. Stop and ask the user for a revision only when there is no copy at
+all.
 
 The guide is the rulebook, and its first section says what it covers. Cite its rule IDs (`T3`, `N1`,
 `P16`, and so on), and do not restate or reinterpret its rules here. If the guide and this skill
@@ -136,6 +138,16 @@ From that list, `<paths>` below means:
 - `.svg` files under `docs/source`, whose `<title>`, `<desc>`, and `<text>` elements are text readers
   see.
 
+Save that list to a file, one path per line, and pass it to Git as `-- $(cat "$PATHS")` wherever a
+command says `-- <paths>`. Code files are all kept here; step 4 keeps only their doc comments:
+
+```bash
+PATHS="${STATE%.env}.paths"
+git -c core.quotePath=false diff --name-only "$BASE" "$HEAD_SHA" \
+  | grep -E '^(docs/source/.*\.(md|rst|svg)|README\.md|AGENTS\.md|\.ai/skills/.*/SKILL\.md|.*\.(scala|java|rs))$' \
+  > "$PATHS"
+```
+
 For doc comments, `AGENTS.md`, and skills, check the vocabulary and accuracy rules the guide names
 for them, not the page conventions. Check the changed lines and the paragraphs around them, not the
 whole page. Report a problem in unchanged text only when the change makes it wrong, or list it
@@ -148,7 +160,8 @@ In every mode:
   Review the hand-written text around the generated markers. On `main` the text between the markers
   is empty, because the docs build fills it in, so any text a change adds between them is a hand
   edit, and a finding (`P5`).
-- Do the judgment checks in step 5 for at most 10 pages per run, counting every file in `<paths>`. List any pages you skipped so the
+- Do the judgment checks in step 5 for at most 10 files per run, counting each file that has lines
+  in `$ADDED` after the code-file filter in step 4. List any pages you skipped so the
   user can run the skill again on them.
 
 ## 4. Mechanical Checks
@@ -195,8 +208,9 @@ git grep -n -i --untracked -E 'native|vectori[sz]ed' -- <files> | perl -ne "prin
 ```
 
 **Config keys.** Every `spark.comet.*` key a page names must exist (`P13`). List the keys the text
-names, then the keys the code defines at the revision under review. `<rev>` is `$HEAD_SHA`, or
-nothing in audit mode. The second command reads definitions that span two lines, expands
+names, then the keys the code defines at the revision under review. `<rev>` is `"$HEAD_SHA"`. In
+audit mode, leave `<rev>` out entirely: an empty `"$HEAD_SHA"` is an empty revision, which Git
+rejects. The second command reads definitions that span two lines, expands
 `createExecEnabledConfig`, and leaves out deprecated alternative names and unexpanded templates:
 
 ```bash
@@ -397,10 +411,10 @@ expected results were checked on `main` in October 2026, so a later fix to a pag
 Each row lists results the run must report and false positives it must not. A run can also report
 other real findings.
 
-| Run                                                                               | Expected                                                                                                                     |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| PR mode on #6786, which predates the guide, so step 2 reads it from `$TARGET`     | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
-| Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
-| Audit `docs/source/contributor-guide/timezones.md`                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
-| Audit `docs/source/user-guide/latest/compatibility/expressions`                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
-| Audit a scratch page containing `_native execution_` and "Spark's native shuffle" | `N1` and `N5` findings                                                                                                       |
+| Run                                                                                               | Expected                                                                                                                     |
+| ------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| PR mode on #6786, which predates the guide, so step 2 reads it from `$TARGET` or the working tree | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
+| Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
+| Audit `docs/source/contributor-guide/timezones.md`                                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
+| Audit `docs/source/user-guide/latest/compatibility/expressions`                                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
+| Audit a scratch page containing `_native execution_` and "Spark's native shuffle"                 | `N1` and `N5` findings                                                                                                       |
