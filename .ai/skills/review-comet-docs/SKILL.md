@@ -48,7 +48,10 @@ STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" |
 ```
 
 In zsh, `$HEAD_SHA:spark/...` is read as a history modifier, so always write `"${HEAD_SHA}:<path>"`.
-Stop and report the review as incomplete if any command in steps 1 to 4 fails.
+Use the same `<pr-or-name>` in every call, and save the state again after step 4 sets `ADDED`. Stop
+and report the review as incomplete if a command in steps 1 to 4 reports an error. A search that
+finds nothing, which makes `git grep` exit with status 1, is not an error, and where a step gives a
+fallback, use it.
 
 ## 1. Select the Revisions
 
@@ -132,8 +135,9 @@ describe, because docs are usually only as accurate as the code change beside th
 In every mode:
 
 - Skip the content the guide's **Generated Content** section lists as generated or as records.
-  Review the hand-written text around the generated markers. Text between the markers that differs
-  from what `GenerateDocs` produces is a hand edit, and a finding (`P5`).
+  Review the hand-written text around the generated markers. On `main` the text between the markers
+  is empty, because the docs build fills it in, so any text a change adds between them is a hand
+  edit, and a finding (`P5`).
 - Do the judgment checks in step 5 for at most 10 pages per run. List any pages you skipped so the
   user can run the skill again on them.
 
@@ -180,6 +184,7 @@ nothing in audit mode. The second command reads definitions that span two lines,
 
 ```bash
 perl -ne 'print "$1\n" while /(spark\.comet\.[\w.<>]*[\w>])/g' "$ADDED" | sort -u
+git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- <files> | sort -u  # audit
 git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
   | perl -0777 -ne '
       while (/\b(?:conf|ConfigBuilder)\(\s*s?"([^"]+)"/g) {
@@ -228,37 +233,55 @@ and contrib operators, which belong on their contrib page.
 reStructuredText, are checked by building the docs the way the published site is built. This
 catches what a reading of the changed lines cannot, such as a link on an unchanged page that a
 renamed heading breaks, or a page that no toctree includes. Install the docs requirements once, in a
-virtual environment, with `pip install -r docs/requirements.txt`. Then build the base and the head
-and compare their warnings. The function copies the expression templates into the per-version pages,
-as `docs/build.sh` does, so links to those pages resolve:
+virtual environment that later calls find at the same path:
 
 ```bash
-build() {  # $1 = revision, $2 = output directory
-  mkdir -p "$2/src" && git archive "$1" docs/source | tar -x -C "$2/src"
+VENV="$(git rev-parse --git-dir)/review-comet-docs-venv"
+[ -x "$VENV/bin/sphinx-build" ] ||
+  { python3 -m venv "$VENV" && "$VENV/bin/pip" install -q -r docs/requirements.txt; }
+```
+
+Then build the base and the head and compare their warnings. The function copies the expression
+templates into the per-version pages, as `docs/build.sh` does, so links to those pages resolve. It
+returns an error if any step fails, including Sphinx itself, so a failed build is never read as a
+clean one:
+
+```bash
+build() {  # $1 = revision, or worktree in audit mode; $2 = output directory
+  VENV="$(git rev-parse --git-dir)/review-comet-docs-venv"
+  mkdir -p "$2/src/docs" || return 1
+  if [ "$1" = worktree ]; then
+    cp -R docs/source "$2/src/docs/" && profiles=$(cat docs/build.sh) || return 1
+  else
+    git archive "$1" docs/source | tar -x -C "$2/src" && profiles=$(git show "$1:docs/build.sh") ||
+      return 1
+  fi
   T="$2/src/docs/source/user-guide/latest/compatibility/expressions"
-  for p in $(git show "$1:docs/build.sh" | sed -n 's/^SPARK_PROFILES=(\(.*\))/\1/p'); do
-    mkdir -p "$T/$p" && cp "$T/_category_template"/*.md "$T/$p/"
+  for p in $(printf '%s\n' "$profiles" | sed -n 's/^SPARK_PROFILES=(\(.*\))/\1/p'); do
+    mkdir -p "$T/$p" && cp "$T/_category_template"/*.md "$T/$p/" || return 1
   done
   rm -rf "$T/_category_template"
-  sphinx-build -q -b html -n -D mermaid_output_format=raw "$2/src/docs/source" "$2/html" 2>&1 \
-    | sed -e "s#$2/src/##" -e 's/:[0-9]*: /: /' | sort > "$2/warnings.txt"
+  "$VENV/bin/sphinx-build" -q -b html -n -D mermaid_output_format=raw "$2/src/docs/source" \
+    "$2/html" > "$2/log.txt" 2>&1 || { echo "sphinx-build failed: $2/log.txt" >&2; return 1; }
+  sed -e "s#$2/src/##" -e 's/:[0-9]*: /: /' "$2/log.txt" | sort > "$2/warnings.txt"
 }
 WORK=$(mktemp -d)
-build "$BASE" "$WORK/base" && build "$HEAD_SHA" "$WORK/head"
-comm -13 "$WORK/base/warnings.txt" "$WORK/head/warnings.txt"
+build "$BASE" "$WORK/base" && build "$HEAD_SHA" "$WORK/head" &&
+  comm -13 "$WORK/base/warnings.txt" "$WORK/head/warnings.txt"
+build worktree "$WORK/head" && cat "$WORK/head/warnings.txt"  # audit
 ```
 
 Every warning that only the head build has is a finding: a broken link, anchor, or image, a page
-missing from a toctree (`P6`), or a heading problem (`P2`). In audit mode, build the working tree's
-`docs/source` the same way and report the warnings for the audited pages. If the docs requirements
-cannot be installed, say that the build was not checked, and check that each changed link's target
-file exists.
+missing from a toctree (`P6`), or a heading problem (`P2`). In audit mode, report the warnings for
+the audited pages. If the docs requirements cannot be installed or a build fails, say that the build
+was not checked, and check that each changed link's target file exists.
 
 Sphinx does not count H1s. Check that each new or changed Markdown page has one H1 with the parser
-the docs build uses, which knows where code blocks start and end:
+the docs build uses, which knows where code blocks start and end. It needs the same virtual
+environment; without it, count the H1s by reading the page and say so:
 
 ```bash
-git show "${HEAD_SHA}:<file>" | python -c 'import sys; from markdown_it import MarkdownIt
+git show "${HEAD_SHA}:<file>" | "$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c 'import sys; from markdown_it import MarkdownIt
 for t in MarkdownIt("commonmark").parse(sys.stdin.read()):
     print(t.map[0] + 1, t.tag) if t.type == "heading_open" else None'
 ```
@@ -349,7 +372,7 @@ expected results were checked on `main` in October 2026, so a later fix to a pag
 
 | Run                                                                               | Expected                                                                                                                     |
 | --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| PR mode on #6786                                                                  | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
+| PR mode on #6786, reading the guide from `main` because the PR predates it        | Must-fix: `datasources.md` and the new `.doc` string claim more than `shouldBridgeUnsupportedScan` does                      |
 | Audit `docs/source/user-guide/latest/understanding-comet-plans.md`                | No finding for Comet's _native shuffle_, `CometNativeScan`, `CometWindowExec`, or config keys                                |
 | Audit `docs/source/contributor-guide/timezones.md`                                | No finding for _native code_ or _native plan_, or for `ToJson` and `ToCsv`, which are protobuf message names                 |
 | Audit `docs/source/user-guide/latest/compatibility/expressions`                   | Lists all 16 files, reviews 10 of the templates and index pages, names the skipped ones, and skips only text between markers |
