@@ -135,7 +135,7 @@ To get it working:
    your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
    the PR tier for the files your branch changes relative to upstream `main`, which is what the pull
    request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
-   against Spark 4.1. If that comparison cannot be made, or finds nothing, it runs the whole tier.
+   against Spark 4.1. If that comparison cannot be made, it runs the whole tier.
 
 On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is first
 written when the upstream run finishes. After that, a pull request updated in the last six hours
@@ -167,7 +167,9 @@ Some things to know:
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
   start no job. Miri can still be run on your fork by dispatching it.
 - **Opt-in suites still run here.** A fork cannot see the `run-*` labels on your pull request, so
-  those suites, and the `labeled` runs that start when a maintainer applies one, are unchanged. See
+  those suites, and the `labeled` runs that start when a maintainer applies one, run here. For
+  `run-all-spark-profiles` that is the other four Spark profiles, while your fork runs the default
+  profile and the lints, so together they cover every profile. See
   [Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips).
 - **Not everything moves.** A pull request from a branch of this repository, such as a
   committer's or dependabot's, and a pull request that targets a release branch, keep the PR tier here.

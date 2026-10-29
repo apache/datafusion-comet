@@ -550,8 +550,11 @@ POLICY_CASES = [
         fork_pr(labels=["run-spark-4.1-tests", "run-delta-tests"]),
         {"spark_4_1", "spark_4_1_hive"} | DELTA_OPT_IN,
     ),
-    # The label run adds the non-default Spark profiles to the fork's default
-    # profile run, exactly as it does for any other pull request.
+    # The label brings the non-default Spark profiles forward here, while the
+    # fork's run covers the default profile and the lints, so between them every
+    # profile runs. Only the profiles are on, which ci.yml turns into
+    # `profiles: nightly`; the PR tier's default-profile row is the fork's.
+    (fork_pr(labels=["run-all-spark-profiles"]), {"build_linux_all_profiles"}),
     (
         fork_pr(action="labeled", label="run-all-spark-profiles", labels=["run-all-spark-profiles"]),
         {"build_linux_all_profiles"},
@@ -1784,8 +1787,18 @@ def check_fork_runs():
                 f"{BRIDGE_WORKFLOW} checks out code. It runs with `checks: write` on data from a "
                 f"fork and must never check out or run anything from the pull request"
             )
-        if re.search(r"^\s+(contents|pull-requests|issues):\s*write\s*$", body, re.M):
-            failures.append(f"{BRIDGE_WORKFLOW} asks for more than `checks: write` and read access")
+        # It writes check runs from a trigger a fork can reach, so it starts with no
+        # scopes and the one job asks for exactly what it uses. `checks: write`
+        # creates the check; `pull-requests: read` lists the open pull requests.
+        # Everything it reads from the fork is public.
+        if not re.search(r"^permissions:\s*\{\}\s*$", body, re.M):
+            failures.append(f"{BRIDGE_WORKFLOW} must set `permissions: {{}}` at the top level")
+        scopes = permission_blocks(job_blocks(BRIDGE_WORKFLOW).get("bridge", "").splitlines())
+        if scopes != [{"checks": "write", "pull-requests": "read"}]:
+            failures.append(
+                f"{BRIDGE_WORKFLOW}'s bridge job must ask for exactly `checks: write` and "
+                f"`pull-requests: read`, not {scopes}"
+            )
 
     for failure in failures:
         print(f"fork runs: {failure}")

@@ -255,12 +255,13 @@ Things that follow from that, and are easy to break:
   branch cut from newer upstream code that reverts one of its files matches the
   fork's old copy and a diff against it omits the file.
   `dev/ci/fork-push-changed-files.sh` fetches upstream `main` and diffs against
-  that. It lists every file when it has nothing to go on (the fetch fails, there
-  is no merge base, or the diff is empty), because a branch already on the fork's
-  default branch, such as `git push fork main:my-fix` before upstream has the
-  commits, would otherwise skip every suite and report a green run for a change
-  nobody built. `dev/ci/test-fork-push-changed-files.py` runs it against real
-  repositories, including the stale-baseline revert.
+  that. It lists every file when it has nothing to go on (the fetch fails or
+  there is no merge base), because selecting no suites then would report a green
+  run for a change nobody could see. An empty diff with a merge base is a branch
+  that adds nothing to upstream, which selects nothing.
+  `dev/ci/test-fork-push-changed-files.py` runs it against real repositories,
+  including the stale-baseline revert and a branch whose commits only the fork's
+  `main` has.
 - **Scheduled workflows stay upstream.** A fork that enables scheduled
   workflows would run them on its owner's minutes, and with no earlier scheduled
   run to diff against, a fork's nightly runs the whole nightly tier. `ci.yml`'s

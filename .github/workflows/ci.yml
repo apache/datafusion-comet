@@ -409,6 +409,10 @@ jobs:
     #   pull request          linux, full            -> profiles: pr
     #   ... with the label    linux, full, all       -> profiles: all
     #   ... to branch-N.M     linux, full, all       -> profiles: all
+    #   ... from a fork       (nothing)              -> no call: the fork runs the tier
+    #   ... from a fork, with the label
+    #                         all                    -> profiles: nightly, the ones the
+    #                                                   fork's default-profile run skips
     #   `labeled` run         all                    -> profiles: nightly
     #   merge queue           linux, full            -> profiles: pr
     #   nightly               all                    -> profiles: nightly

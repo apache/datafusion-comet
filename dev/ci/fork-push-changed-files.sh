@@ -28,11 +28,11 @@
 # actions/checkout leaves in the git config: they belong to the fork, and the
 # upstream repository is public.
 #
-# Prints every tracked file when there is nothing to go on: the fetch fails, there
-# is no merge base, or the diff is empty. An empty diff means the branch adds
-# nothing to upstream main, such as `git push fork main:my-fix` before upstream
-# has the commits, and selecting no suites would report a green run for a change
-# nobody built.
+# Prints every tracked file when there is nothing to go on: the fetch fails or
+# there is no merge base. Selecting no suites then would report a green run for a
+# change nobody could see. An empty diff is not that case. With a merge base it
+# means the branch adds nothing to upstream main, such as a branch pushed before
+# its first commit, and the pull request will show nothing either.
 #
 # Usage: fork-push-changed-files.sh <head sha>
 # UPSTREAM_URL overrides the repository to diff against, for the tests.
@@ -43,14 +43,9 @@ head="${1:?usage: fork-push-changed-files.sh <head sha>}"
 upstream="${UPSTREAM_URL:-https://github.com/apache/datafusion-comet.git}"
 ref="refs/remotes/upstream/main"
 
-changed=""
 if git -c "http.https://github.com/.extraheader=" fetch --quiet --no-tags "$upstream" "+main:$ref" \
     && git merge-base "$ref" "$head" >/dev/null 2>&1; then
-  changed=$(git diff --name-only "$ref"..."$head")
-fi
-
-if [[ -n "$changed" ]]; then
-  printf '%s\n' "$changed"
+  git diff --name-only "$ref"..."$head"
 else
   git ls-tree -r --name-only "$head"
 fi

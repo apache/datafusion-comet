@@ -39,10 +39,10 @@ on:
     - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
 
-permissions:
-  actions: read
-  checks: write
-  pull-requests: read
+# No scopes by default: the job below asks for the two it needs. Every call to the
+# fork's runs and workflows reads public data of another repository, which a token
+# does not need a scope for.
+permissions: {}
 
 # Like DataFusion, group notifications separately from scheduled/manual sweeps.
 # workflow_run identifies the fork and branch rather than the PR number.
@@ -60,6 +60,9 @@ jobs:
           || (github.event.workflow_run.event == 'pull_request'
               && github.event.workflow_run.head_repository.full_name != github.repository))
     name: Mirror the fork run
+    permissions:
+      checks: write
+      pull-requests: read
     runs-on: ubuntu-slim
     timeout-minutes: 10
     steps:
@@ -122,11 +125,11 @@ jobs:
               const data = fromMain ? null : await optional(() => github.rest.actions.listWorkflowRuns({
                 ...fork, workflow_id: WORKFLOW, head_sha: sha, branch: pr.head.ref, per_page: 100,
               }));
-              // Ignore PR merge-ref runs. The fork workflow on push/manual events
-              // tests the branch head; contributors still control its code.
+              // Ignore PR merge-ref runs. ci_fork.yml runs on push only, and tests
+              // the branch head; contributors still control its code.
               const run = (data?.workflow_runs || []).filter((item) =>
                 item.head_sha === sha && item.head_branch === pr.head.ref &&
-                ['push', 'workflow_dispatch'].includes(item.event)
+                item.event === 'push'
               ).sort((a, b) => b.id - a.id)[0];
               let payload;
               if (run) {

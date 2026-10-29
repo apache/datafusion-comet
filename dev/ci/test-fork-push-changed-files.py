@@ -93,8 +93,8 @@ class ForkPushChangedFiles(unittest.TestCase):
         self.assertEqual(self.changed(), {"native/lib.rs", "README.md"})
 
     def test_commits_made_on_the_fork_main_are_kept_when_pushed_to_a_branch(self):
-        # `git push fork main:my-fix`: the fork's main already holds the commits,
-        # so a diff against it is empty. Upstream does not have them.
+        # `git push fork main:my-fix`: the fork's main holds commits upstream does
+        # not have, and the pull request from the branch will show them.
         commit(self.fork, "native", {"native/lib.rs": "2\n"})
         git(self.fork, "checkout", "-q", "main")
         git(self.fork, "merge", "-q", "--ff-only", "work")
@@ -111,8 +111,10 @@ class ForkPushChangedFiles(unittest.TestCase):
             self.changed(url=str(Path(self.tmp.name, "missing"))),
             {"README.md", "native/lib.rs", "spark/Plan.scala"})
 
-    def test_a_branch_that_adds_nothing_runs_everything(self):
-        self.assertEqual(self.changed(), {"README.md", "native/lib.rs", "spark/Plan.scala"})
+    def test_a_branch_that_adds_nothing_to_upstream_selects_nothing(self):
+        # A branch pushed before its first commit: the pull request will show no
+        # change, so there is nothing to test.
+        self.assertEqual(self.changed(), set())
 
 
 if __name__ == "__main__":

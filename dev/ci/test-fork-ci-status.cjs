@@ -154,7 +154,7 @@ test('upstream pushes and merge-queue completions cannot create fork checks', as
     assert.deepEqual((await execute({ event: 'workflow_run', notification: { event } })).writes, []);
   }
 });
-test('only runs for the exact branch head on push/manual events are mirrored', async () => {
+test('only a push run for the exact branch head is mirrored', async () => {
   const result = await execute({ runs: [
     run(8, { head_sha: 'b'.repeat(40) }),
     run(7, { head_branch: 'other' }),
@@ -162,7 +162,7 @@ test('only runs for the exact branch head on push/manual events are mirrored', a
     run(5, { event: 'workflow_dispatch' }),
     run(1),
   ] });
-  assert.equal(result.writes[0].details_url, run(5).html_url);
+  assert.equal(result.writes[0].details_url, run(1).html_url);
 });
 for (const [state, expected] of [
   ['active', 'neutral'], ['disabled_fork', 'action_required'], [null, 'action_required'],
@@ -225,13 +225,6 @@ test('a rerun of the same workflow run updates the existing check', async () => 
   assert.equal(writes[0].check_run_id, 100);
   assert.equal(writes[0].conclusion, 'success');
   assert.equal(JSON.parse(writes[0].output.text).run_attempt, 2);
-});
-test('a manual run can replace a failed push run', async () => {
-  const check = await existing(run(1, { conclusion: 'failure' }));
-  const { writes } = await execute({
-    checks: [check], runs: [run(2, { event: 'workflow_dispatch' }), run(1)],
-  });
-  assert.equal(writes[0].details_url, run(2).html_url);
 });
 test('a deleted run clears its stale success result', async () => {
   const { writes } = await execute({ checks: [await existing()], runs: [] });
