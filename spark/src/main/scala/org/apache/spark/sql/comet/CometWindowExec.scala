@@ -36,7 +36,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, CometSortOrder, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, exprToProtoWithFallbackReasons, hasNonDefaultStringCollation, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -103,7 +103,24 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 "natively")
             return None
           }
-          orders.flatten
+          // The keys the child reports past the required ones hold too, and this window reports
+          // them, so a window above in the same native plan may rely on them. Send them up to the
+          // first one that cannot be expressed, in a scope of their own, so that a key left out
+          // records no fallback reason.
+          val rest = op.child.outputOrdering
+            .drop(requiredOrdering.length)
+            .iterator
+            .map { order =>
+              if (hasNonDefaultStringCollation(order.dataType) ||
+                !order.references.subsetOf(op.child.outputSet)) {
+                None
+              } else {
+                exprToProtoWithFallbackReasons(order, op.child.output)._1
+              }
+            }
+            .takeWhile(_.isDefined)
+            .flatten
+          orders.flatten ++ rest
         } else {
           Nil
         }

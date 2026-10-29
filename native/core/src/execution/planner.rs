@@ -4270,6 +4270,30 @@ mod tests {
         assert!(!PhysicalPlanner::keeps_source_order(&scan(2)));
     }
 
+    #[test]
+    fn declared_order_reaches_an_empty_bucket() {
+        // A bucket with no file is planned as an `EmptyExec`. A window over it checks its input's
+        // order before polling it, so the order Spark reports has to be declared there as well.
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col_0",
+            DataType::Int32,
+            true,
+        )]));
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
+        let input = PhysicalPlanner::default()
+            .with_declared_order(empty, &[create_sort_order(0, 3, false, true)])
+            .unwrap();
+        assert_eq!("SortedInputExec", input.name());
+        let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
+        assert_eq!(
+            1,
+            get_ordered_partition_by_indices(&partition_by, &input)
+                .unwrap()
+                .len()
+        );
+    }
+
     #[tokio::test]
     async fn spark_plan_dynamic_filter_preserves_metrics() {
         use crate::execution::metrics::utils::to_native_metric_node;
@@ -4461,7 +4485,6 @@ mod tests {
     fn window_declares_input_order_on_a_scan() {
         // Both window operators need their partition keys' order declared, and over a `ScanExec`
         // only the order Spark sent declares it. `percent_rank` does not run with bounded memory.
-        use datafusion::physical_plan::windows::get_ordered_partition_by_indices;
         let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
         for (func, operator) in [
             ("row_number", "BoundedWindowAggExec"),

@@ -35,6 +35,7 @@ use datafusion::{
         LexOrdering, PhysicalExpr,
     },
     physical_plan::{
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{
             utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
@@ -440,11 +441,12 @@ impl PhysicalPlanner {
     /// keep their input's order, so that the order Spark reports for them still holds. A source is
     /// an input from the JVM, or a scan of files, which reads the files of its one file group one
     /// after the other: Spark reports an order for a file scan only when every partition reads one
-    /// sorted file, as for a sorted bucketed table with one file per bucket. Any other operator may
+    /// sorted file, as for a sorted bucketed table with one file per bucket. A bucket with no file
+    /// is planned as an `EmptyExec`, which has no rows to be out of order. Any other operator may
     /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
     /// declaring Spark's order over it would be wrong.
     pub(super) fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
-        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
+        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() || plan.is::<EmptyExec>() {
             return true;
         }
         if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {

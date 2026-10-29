@@ -27,8 +27,8 @@ import org.scalatest.Tag
 import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
-import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometNativeScanExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
+import org.apache.spark.sql.execution.{InputAdapter, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, expr, lead, sum}
@@ -2070,6 +2070,42 @@ class CometWindowExecSuite extends CometTestBase {
           FROM date_edge
         """)
         checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("window over a sorted bucketed table with empty buckets runs natively") {
+    // With spark.sql.legacy.bucketedTableScan.outputOrdering on, Spark reports a bucketed table's
+    // sort columns as the scan's order and plans no sort below the window. Two keys fill at most
+    // two of the eight buckets, and the native scan plans each of the others as an empty input,
+    // which has to declare the order as well, or the window rejects it before reading (#7223).
+    withTable("sorted_bucketed") {
+      // A single writer task writes one file per bucket.
+      (0 until 40)
+        .map(i => (i % 2, i))
+        .toDF("k", "v")
+        .coalesce(1)
+        .write
+        .format("parquet")
+        .bucketBy(8, "k")
+        .sortBy("k", "v")
+        .saveAsTable("sorted_bucketed")
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.BUCKETING_ENABLED.key -> "true",
+        SQLConf.AUTO_BUCKETED_SCAN_ENABLED.key -> "false",
+        SQLConf.LEGACY_BUCKETED_TABLE_SCAN_OUTPUT_ORDERING.key -> "true") {
+        val df = sql(
+          "SELECT k, v, dense_rank() OVER (PARTITION BY k ORDER BY v) AS r " +
+            "FROM sorted_bucketed")
+        val (_, plan) = checkSparkAnswerAndOperator(df)
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(windows.size == 1, plan)
+        assert(windows.head.child.isInstanceOf[CometNativeScanExec], plan)
+        assert(windows.head.child.asInstanceOf[CometNativeScanExec].bucketedScan, plan)
+        assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 2, plan)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
+        assert(df.collect().length == 40)
       }
     }
   }
