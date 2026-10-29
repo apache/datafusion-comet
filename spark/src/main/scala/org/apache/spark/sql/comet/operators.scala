@@ -510,7 +510,7 @@ private[comet] object PlanDataInjector extends Logging {
       // Stage boundaries - stop searching (partition indices won't align after these)
       case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
           _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
-          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
+          _: CometCollectMetricsExec | _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
         (Map.empty, Map.empty)
 
       // Continue searching through other operators, combining results from all children
@@ -1242,8 +1242,9 @@ abstract class CometNativeExec extends CometExec {
         func(plan)
       case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
           _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
-          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: CometNativeArrowSource | _: CometInMemoryTableScanExec =>
+          _: CometCoalesceExec | _: CometCollectMetricsExec | _: ReusedExchangeExec |
+          _: CometBroadcastExchangeExec | _: CometNativeArrowSource |
+          _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.

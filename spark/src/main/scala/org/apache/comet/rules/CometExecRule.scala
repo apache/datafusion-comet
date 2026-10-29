@@ -52,7 +52,7 @@ import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -141,6 +141,7 @@ object CometExecRule {
     Map(
       classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
+      classOf[CollectMetricsExec] -> CometCollectMetricsExec,
       classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
       classOf[UnionExec] -> CometUnionExec)
 
@@ -535,6 +536,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
+
+      // AQE may revisit an observation between native blocks. Keep its Spark accumulator and
+      // expose the columnar output as a fresh native input rather than skipping its counters.
+      case c: CometCollectMetricsExec =>
+        if (c.getTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION).contains(true)) {
+          c.toSpark
+        } else {
+          convertToComet(c, CometScanWrapper).getOrElse(c)
+        }
 
       // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
       // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
@@ -1032,6 +1042,46 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
+  /** A batch observer must not count rows that a short-circuiting consumer would never read. */
+  private def preserveCollectMetricsRowConsumption(plan: SparkPlan): Unit = {
+    def visit(node: SparkPlan, requiresRowConsumption: Boolean): Unit = {
+      val original = node match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val childRequiresRowConsumption = original match {
+        // A join can finish when one input is exhausted without draining the other input.
+        case _: BaseJoinExec => true
+        // User functions can consume only part of the partition iterator.
+        case _: MapPartitionsExec => true
+        // Nonpositive Poisson sampling may return an empty iterator without reading its input.
+        case sample: SampleExec
+            if sample.withReplacement && sample.upperBound - sample.lowerBound <= 0.0 =>
+          true
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec |
+            _: TakeOrderedAndProjectExec =>
+          true
+        case windowLimit
+            if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
+              _.isInstance(windowLimit)) =>
+          true
+        case _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec =>
+          false
+        // Even a sort or aggregate may never be polled by an external iterator consumer.
+        case _ => requiresRowConsumption
+      }
+      node match {
+        case observation: CollectMetricsExec if requiresRowConsumption =>
+          observation.setTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION, true)
+        case _ =>
+      }
+      node.children.foreach(visit(_, childRequiresRowConsumption))
+    }
+    // External actions such as foreachPartition or RDD.take can stop reading without adding a
+    // physical-plan node. Require a materializing exchange before enabling batch observation.
+    visit(plan, requiresRowConsumption = true)
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1053,6 +1103,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
     } else {
       val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
+      preserveCollectMetricsRowConsumption(planWithDateEvaluation)
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
