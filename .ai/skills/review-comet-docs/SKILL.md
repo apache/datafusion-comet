@@ -55,10 +55,10 @@ STATE="$(git rev-parse --git-dir)/review-comet-docs-$(printf %s "<pr-or-name>" |
 ```
 
 In zsh, `$HEAD_SHA:spark/...` is read as a history modifier, so always write `"${HEAD_SHA}:<path>"`.
-Save the state again after step 3 sets `PATHS` and step 4 sets `ADDED`. Stop and report the review as incomplete if a command
-in steps 1 to 4 reports an error. A search that finds nothing, which makes `git grep` exit with status
-1, is not an error. Where a step gives a fallback, such as the docs build in step 4, use it and keep
-going.
+Save the state again after step 3 sets `PATHS` and step 4 sets `ADDED`. Stop and report the review as
+incomplete if a command in steps 1 to 4 reports an error. A search that finds nothing, which makes
+`git grep` exit with status 1, is not an error. Where a step gives a fallback, such as the guide
+lookup in step 2 or the docs build in step 4, use it and keep going.
 
 ## 1. Select the Revisions
 
@@ -145,7 +145,7 @@ command says `-- <paths>`. Code files are all kept here; step 4 keeps only their
 PATHS="${STATE%.env}.paths"
 git -c core.quotePath=false diff --name-only "$BASE" "$HEAD_SHA" \
   | grep -E '^(docs/source/.*\.(md|rst|svg)|README\.md|AGENTS\.md|\.ai/skills/.*/SKILL\.md|.*\.(scala|java|rs))$' \
-  > "$PATHS"
+  | grep -v '/src/test/' > "$PATHS"
 ```
 
 For doc comments, `AGENTS.md`, and skills, check the vocabulary and accuracy rules the guide names
@@ -161,8 +161,8 @@ In every mode:
   is empty, because the docs build fills it in, so any text a change adds between them is a hand
   edit, and a finding (`P5`).
 - Do the judgment checks in step 5 for at most 10 files per run, counting each file that has lines
-  in `$ADDED` after the code-file filter in step 4. List any pages you skipped so the
-  user can run the skill again on them.
+  in `$ADDED` after the code-file filter in step 4. In audit mode, count the files step 1 lists, in
+  that order. List any pages you skipped so the user can run the skill again on them.
 
 ## 4. Mechanical Checks
 
@@ -230,7 +230,8 @@ git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spa
 If the second command prints nothing, it is broken: stop and report that, rather than flagging every
 key. Some keys are built from a name at run time:
 
-- `spark.comet.expression.<Name>.enabled` and `.allowIncompatible`: `<Name>` is the Spark expression
+- `spark.comet.expression.<Name>.enabled` and `.allowIncompatible`, also written with an uppercase
+  placeholder such as `EXPRNAME`: `<Name>` is the Spark expression
   class name, as in the `QueryPlanSerde` serde maps, not a Comet or protobuf name. Some expressions
   use their own opt-in key instead, set by `nativeOptInConfigKeyOverride`, such as
   `spark.comet.caseConversion.enabled`.
