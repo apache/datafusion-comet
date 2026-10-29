@@ -131,15 +131,19 @@ To get it working:
    fork's **Actions** tab and choose **I understand my workflows, go ahead and enable them**.
 2. **Sync your fork and rebase your branch onto `main`.** The workflows that run on your fork are
    the ones in your branch, so a branch cut before this arrangement existed runs nothing.
-3. **Push your branch.** Each push to a branch other than `main` starts a `Comet CI (fork run)` in
+3. **Push your branch.** Each push to a branch other than your fork's default branch starts a `Comet CI (fork run)` in
    your fork's **Actions** tab, and a newer push to the same branch cancels the run in flight. It runs
    the PR tier for the files your branch changes relative to upstream `main`, which is what the pull
    request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
    against Spark 4.1. If that comparison cannot be made, or finds nothing, it runs the whole tier.
 
-On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is updated when
-the upstream run finishes and every 15 minutes after, so it can lag the fork. Read the details in
-your fork and re-run failed jobs there. If the check says **Enable CI on your fork** or **No fork CI
+On the pull request, a `CI (fork)` check links to that run and mirrors its result. It is first
+written when the upstream run finishes. After that, a pull request updated in the last six hours
+whose check is still running or has no run yet is rechecked every 15 minutes. A check that already
+shows a result is rechecked only by a sweep that takes 25 open pull requests every 15 minutes, which
+is about two hours to go round 200 of them. So after you re-run a failed job in your fork, the pull
+request can keep showing the old result for hours. Your fork's **Actions** tab is the source of truth:
+read the details and re-run failed jobs there. If the check says **Enable CI on your fork** or **No fork CI
 run for this commit**, no run was found for the pull request's head commit: Actions is disabled, the
 branch does not include the fork workflows, or the run has not appeared yet.
 
@@ -159,7 +163,7 @@ Some things to know:
   from it gets no CI before the merge queue. `CI (fork)` says so.
 - **Scheduled runs stay upstream.** The nightly run, Miri, the stale-PR closer and the weekly
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
-  skip. Miri can still be run on your fork by dispatching it.
+  start no job. Miri can still be run on your fork by dispatching it.
 - **Opt-in suites still run here.** A fork cannot see the `run-*` labels on your pull request, so
   those suites, and the `labeled` runs that start when a maintainer applies one, are unchanged. See
   [Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips).

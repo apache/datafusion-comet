@@ -140,18 +140,26 @@ jobs:
   # redundant work is the heavy jobs' job; POLICY in dev/ci/compute-changes.py
   # drops every job a `labeled` event does not gate.
   #
-  # The `if:` it does carry skips two runs that belong to no pull request, and
-  # with it the whole run, since every other job needs `changes`, which needs
-  # this: a scheduled run in a fork, which would otherwise run the whole nightly
-  # tier for want of an earlier run to diff against, and a push to a fork's
-  # default branch, which is a sync of commits the queue already tested.
+  # The `if:` it does carry skips runs that belong to no pull request, and with
+  # them the whole run, since every other job needs `changes`, which needs this
+  # (`required_checks` skips itself when this is skipped, below):
+  #
+  #   - A scheduled run in a fork, which would otherwise run the whole nightly
+  #     tier for want of an earlier run to diff against.
+  #   - A push to a fork that did not come through ci_fork.yml. ci.yml triggers
+  #     on push to main, so it fires in a fork for a branch called `main` and for
+  #     a sync of the fork's default branch. Neither is the contributor's pull
+  #     request tier: ci_fork.yml runs every other branch, `main` included,
+  #     except the fork's default branch, which is a sync of commits the queue
+  #     already tested. The workflow name is what tells the two entry points
+  #     apart, since a called workflow sees its caller's `github.workflow`.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
     if: >-
       (github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet')
       && (github.event_name != 'push' || github.repository == 'apache/datafusion-comet'
-          || github.ref_name != github.event.repository.default_branch)
+          || github.workflow == 'Comet CI (fork run)')
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
@@ -658,7 +666,9 @@ jobs:
   # nested name would block every docs-only change. Both hang rather than fail,
   # and a required context that never reports also locks `.asf.yaml` itself,
   # which then needs an INFRA ticket to unwedge. Aggregating into one flat job,
-  # whose name is published on every event, avoids the whole class of problem.
+  # whose name is published on every event that can reach the merge box, avoids
+  # the whole class of problem. The exception is a fork run that is no pull
+  # request's tier, which Preflight skips and this job follows.
   #
   # `if: always()` is what makes this work: without it the job inherits the
   # default `success()` and is itself skipped the moment any dependency fails.
@@ -676,7 +686,10 @@ jobs:
   # ---------------------------------------------------------------------------
   required_checks:
     name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}
-    if: always()
+    # `always()` so a failed or cancelled dependency still reaches it. It skips
+    # itself only when Preflight did, which is a fork run that is not a pull
+    # request's tier (see Preflight), so those start no runner at all.
+    if: always() && needs.preflight.result != 'skipped'
     # Reads only the `needs` context, so it needs no token access at all.
     permissions: {}
     needs:
@@ -732,7 +745,11 @@ jobs:
   nightly_report:
     name: Nightly failure report
     needs: required_checks
-    if: always() && github.event_name == 'schedule' && needs.required_checks.result != 'success'
+    # `skipped` is not a failure here: the aggregator skips itself on a fork's
+    # scheduled run, and that run has nothing to report.
+    if: >-
+      always() && github.event_name == 'schedule'
+      && (needs.required_checks.result == 'failure' || needs.required_checks.result == 'cancelled')
     permissions:
       actions: read
       issues: write

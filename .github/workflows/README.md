@@ -214,7 +214,7 @@ label-only suites are not part of it. The design follows `apache/datafusion` (#2
 
 | File                 | Role                                                                                                                                                       |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ci_fork.yml`        | Fires on a push to any branch of a fork except `main` and calls `ci.yml`. Upstream its only job is skipped.                                                |
+| `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`. Its job is skipped upstream and for a fork's default branch.                 |
 | `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run. |
 | `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                             |
 
@@ -223,10 +223,15 @@ Things that follow from that, and are easy to break:
 - **The fork result is advisory.** `Required Checks` does not depend on
   `CI (fork)`, because a contributor controls the workflow that produced it. A
   green fork run that never ran the tests costs one queue slot, not a bad merge.
-- **A push to a fork's `main` runs nothing.** It is a sync of commits the queue
-  already tested, and `ci.yml` triggers on it because it triggers on push to
-  `main`, so its `Preflight` skips the run, and with it every job. The same
-  skip covers a fork whose default branch is not `main`. The cost is that a
+- **A push to a fork's default branch runs nothing.** It is a sync of commits
+  the queue already tested. `ci_fork.yml`'s job skips it, whatever the branch is
+  called. `ci.yml` also triggers on push to `main`, in a fork as upstream, so
+  its `Preflight` skips any fork push that did not come through `ci_fork.yml`,
+  which it tells apart by the caller's `github.workflow`, and `required_checks`
+  skips itself when `Preflight` does. That starts no runner for a sync, for a
+  fork's schedule, or for a second copy of a push. A branch called `main` in a
+  fork whose default is another branch is an ordinary branch and runs through
+  `ci_fork.yml`, so the bridge has one workflow to look up. The cost is that a
   fork never has warm caches, so each branch run rebuilds the native library:
   59 minutes of wall time and 240 runner-minutes cold against 50 and 213 warm,
   measured 2026-10-28 on one fork. A sync that did warm them would cost about
@@ -250,12 +255,14 @@ Things that follow from that, and are easy to break:
   repositories, including the stale-baseline revert.
 - **Scheduled workflows stay upstream.** A fork that enables scheduled
   workflows would run them on its owner's minutes, and with no earlier scheduled
-  run to diff against, a fork's nightly runs the whole nightly tier.
-  `ci.yml`'s `Preflight`, `miri.yml`, `stale.yml` and `codeql.yml` carry a
-  `github.repository == 'apache/datafusion-comet'` guard on a scheduled
-  event, and `check-ci-config.py` fails any workflow with a `schedule` trigger
-  that lacks one. A guard on `Preflight` skips the whole nightly, since every
-  other job needs `changes`, which needs it.
+  run to diff against, a fork's nightly runs the whole nightly tier. `ci.yml`'s
+  `Preflight`, `miri.yml`, `stale.yml`, `codeql.yml` and the bridge skip a
+  scheduled run outside this repository. Skipping `Preflight` skips the whole
+  nightly, since every other job needs `changes`, which needs it, and
+  `nightly_report` treats a skipped aggregator as nothing to report.
+  `check-ci-config.py` does not match text for this. It evaluates each root job's
+  `if:` for a scheduled run in a fork, and for the pushes and events above, and
+  fails when a job would run that should not or the other way round.
 - **`ci.yml` must not trigger on every push.** A skipped job still publishes a
   check run under its own name, so a push to a branch of this repository that
   lands on a pull request's commit would put a skipped `Required Checks` next to

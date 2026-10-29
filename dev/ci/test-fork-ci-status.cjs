@@ -67,7 +67,8 @@ const run = (id = 1, extra = {}) => ({
 });
 
 async function execute({
-  event = 'schedule', checks = [], runs = [run()], workflowState = 'active',
+  event = 'schedule', checks = [], branch = 'feature', runs = [run(1, { head_branch: branch })],
+  workflowState = 'active',
   recent = [pr], slice = [pr], candidates = [pr], repo = 'datafusion-comet',
   owner = 'apache', runError, count = 1, notification = {}, checkErrors = {},
 } = {}) {
@@ -90,7 +91,7 @@ async function execute({
     assert.equal(params.owner, 'contributor');
     assert.equal(params.workflow_id, 'ci_fork.yml');
     assert.equal(params.head_sha, sha);
-    assert.equal(params.branch, 'feature');
+    assert.equal(params.branch, branch);
     if (runError) throw Object.assign(new Error('API failure'), { status: runError });
     return { data: { workflow_runs: runs } };
   };
@@ -107,7 +108,7 @@ async function execute({
       return checks;
     }
     assert.equal(fn, github.rest.pulls.list);
-    assert.equal(params.head, 'contributor:feature');
+    assert.equal(params.head, 'contributor:' + branch);
     return candidates;
   };
   github.paginate.iterator = async function* () {
@@ -116,7 +117,7 @@ async function execute({
   await bridge(github, {
     repo: { owner, repo }, eventName: event,
     payload: { workflow_run: {
-      event: 'pull_request', head_sha: sha, head_branch: 'feature',
+      event: 'pull_request', head_sha: sha, head_branch: branch,
       head_repository: pr.head.repo, pull_requests: [], ...notification,
     } },
   }, { info: () => {}, setFailed: (message) => failures.push(message) }, Clock);
@@ -300,6 +301,19 @@ for (const defaultBranch of ['main', 'develop']) {
     assert.equal(writes[0].output.title, 'Open the pull request from a branch');
   });
 }
+
+test('a branch called main in a fork whose default branch is not main is mirrored', async () => {
+  // ci.yml triggers on push to a branch called main as well, but it skips that run
+  // unless ci_fork.yml called it, so ci_fork.yml is the one workflow to look up.
+  const head = { ...pr.head, ref: 'main', repo: { ...pr.head.repo, default_branch: 'develop' } };
+  const mainPr = { ...pr, head };
+  const { writes } = await execute({
+    branch: 'main', recent: [mainPr], slice: [mainPr], candidates: [mainPr],
+  });
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].conclusion, 'success');
+  assert.equal(writes[0].details_url, run().html_url);
+});
 
 function group(github) {
   return ciConcurrency[1].replace(/\$\{\{\s*(.*?)\s*\}\}/g,
