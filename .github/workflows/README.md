@@ -234,10 +234,13 @@ Things that follow from that, and are easy to break:
 - **A pull request opened inside a fork skips the PR tier,** because the branch
   push already ran it, and `is_fork_pull_request` covers both that and a fork
   pull request into `main` here. A `run-*` label still runs its suite.
-- **A fork push that diffs to nothing runs everything.** `Detect changes` diffs
-  against the fork's default branch, and a branch whose commits are already
-  there, such as `git push fork main:my-fix`, would otherwise skip every suite and
-  report a green run for a change nobody built.
+- **A fork push diffs against the fork's default branch.** There is no pull
+  request to diff against, and a fork does not know what upstream `main` is, so
+  `Detect changes` uses `git diff origin/<default branch>...<head>`. A fork that
+  has not synced selects more suites, not fewer. With nothing to go on, or a diff
+  that is empty, it runs everything: a branch whose commits are already on the
+  default branch, such as `git push fork main:my-fix`, would otherwise skip every
+  suite and report a green run for a change nobody built.
 - **Scheduled workflows stay upstream.** A fork that enables scheduled
   workflows would run them on its owner's minutes, and with no earlier scheduled
   run to diff against, a fork's nightly runs the whole nightly tier.
@@ -252,11 +255,6 @@ Things that follow from that, and are easy to break:
   the real one. `ci_fork.yml` is a separate workflow so the only name that can
   be skipped is its own, and `check-ci-config.py` pins its trigger and the
   `github.repository != 'apache/datafusion-comet'` guard.
-- **A fork push diffs against the fork's default branch.** There is no pull
-  request to diff against, and a fork does not know what upstream `main` is, so
-  `Detect changes` uses `git diff origin/<default branch>...<head>`. A fork that
-  has not synced diffs against an older `main`, which selects more suites, never
-  fewer.
 - **Exceptions stay upstream:** a pull request from a branch of this
   repository (a committer's, dependabot's), one that targets a release branch,
   and the opt-in `run-*` suites. A fork cannot see the labels on its pull

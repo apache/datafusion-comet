@@ -34,9 +34,9 @@
 #
 # A fork's default branch is excluded because a push to it is a sync of upstream,
 # which the merge queue already tested. ci.yml still triggers on a push to `main`
-# there, but its Preflight job skips that run. That means a fork's caches are
-# never warmed, and a branch run is cold: about nine minutes slower than a warm
-# one, measured on 2026-10-28.
+# there, but its Preflight job skips that run. A fork's caches are therefore never
+# warm; see "Pull requests from forks" in docs/source/contributor-guide/ci.md for
+# what that costs.
 name: Comet CI (fork run)
 
 # No `concurrency` here. ci.yml declares its own group, which for a push to a
@@ -47,9 +47,6 @@ on:
     branches-ignore:
       - main
       - asf-site
-      # Merge queue branches exist only in this repository; the guard below
-      # would skip them anyway.
-      - 'gh-readonly-queue/**'
 
 permissions:
   contents: read

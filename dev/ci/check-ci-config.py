@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards eight CI invariants that are silent when broken:
+# Guards nine CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -77,6 +77,9 @@
 #      contributor's fork does (ci_fork.yml), and fork_ci_status.yml mirrors it
 #      as an informational check. The caller, the bridge and ci.yml's own push
 #      trigger have to agree, or the PR tier runs twice, or nowhere.
+#
+#   9. Scheduled workflows. A fork that enables scheduled workflows runs them on
+#      its owner's minutes, so each one needs a guard on the repository.
 #
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
@@ -248,8 +251,26 @@ DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
-# The repository whose queue gates main; see UPSTREAM in compute-changes.py.
+# The repository whose queue gates main; check_event_policy asserts this matches
+# UPSTREAM in compute-changes.py.
 UPSTREAM = "apache/datafusion-comet"
+FORK = "contributor/datafusion-comet"
+
+
+def fork_pr(action="synchronize", label=None, labels=(), base="main", repository=UPSTREAM, head=FORK):
+    """A pull_request event for POLICY_CASES, from a fork of UPSTREAM by default."""
+    event = {
+        "name": "pull_request",
+        "action": action,
+        "labels": list(labels),
+        "base": base,
+        "repository": repository,
+        "head_repository": head,
+    }
+    if label:
+        event["label"] = label
+    return event
+
 
 POLICY_CASES = [
     # A manual run may exercise anything.
@@ -523,99 +544,34 @@ POLICY_CASES = [
     # contributor's fork runs it (ci_fork.yml) and fork_ci_status.yml mirrors it
     # as the informational `CI (fork)` check. Every opt-in label still works,
     # because a fork cannot see the labels on the pull request.
+    (fork_pr(), set()),
     (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": [],
-            "base": "main",
-            "repository": UPSTREAM,
-            "head_repository": "contributor/datafusion-comet",
-        },
-        set(),
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": ["run-spark-4.1-tests", "run-delta-tests"],
-            "base": "main",
-            "repository": UPSTREAM,
-            "head_repository": "contributor/datafusion-comet",
-        },
+        fork_pr(labels=["run-spark-4.1-tests", "run-delta-tests"]),
         {"spark_4_1", "spark_4_1_hive"} | DELTA_OPT_IN,
     ),
     # The label run adds the non-default Spark profiles to the fork's default
     # profile run, exactly as it does for any other pull request.
     (
-        {
-            "name": "pull_request",
-            "action": "labeled",
-            "label": "run-all-spark-profiles",
-            "labels": ["run-all-spark-profiles"],
-            "base": "main",
-            "repository": UPSTREAM,
-            "head_repository": "contributor/datafusion-comet",
-        },
+        fork_pr(action="labeled", label="run-all-spark-profiles", labels=["run-all-spark-profiles"]),
         {"build_linux_all_profiles"},
     ),
     # The exceptions keep the PR tier upstream: a pull request from a branch of
-    # this repository (a committer's, or dependabot's), one that targets a
+    # this repository (a committer's, or dependabot's), and one that targets a
     # release branch, which has no queue or nightly to catch what a fork run
     # misses.
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": [],
-            "base": "main",
-            "repository": UPSTREAM,
-            "head_repository": UPSTREAM,
-        },
-        PR_TIER,
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": [],
-            "base": "branch-1.1",
-            "repository": UPSTREAM,
-            "head_repository": "contributor/datafusion-comet",
-        },
-        QUEUE_TIER | NIGHTLY_TIER,
-    ),
+    (fork_pr(head=UPSTREAM), PR_TIER),
+    (fork_pr(base="branch-1.1"), QUEUE_TIER | NIGHTLY_TIER),
     # A push to a fork's branch is the contributor's pull request tier and
     # nothing more: not main's cache refresh or site deploy (`docs` publishes to
     # asf-site), and not the queue's or the nightly's suites. A push to the
     # fork's default branch, a sync, never reaches this table: Preflight skips it
     # (see check_fork_runs).
-    ({"name": "push", "repository": "contributor/datafusion-comet"}, PR_TIER),
+    ({"name": "push", "repository": FORK}, PR_TIER),
     # A pull request opened inside a fork leaves the PR tier to the branch push
     # that already ran it, so the same commit is not tested twice, but a label
     # still runs its suite there.
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": [],
-            "base": "main",
-            "repository": "contributor/datafusion-comet",
-            "head_repository": "contributor/datafusion-comet",
-        },
-        set(),
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "synchronize",
-            "labels": ["run-iceberg-tests"],
-            "base": "main",
-            "repository": "contributor/datafusion-comet",
-            "head_repository": "contributor/datafusion-comet",
-        },
-        ICEBERG_OPT_IN,
-    ),
+    (fork_pr(repository=FORK, head=FORK), set()),
+    (fork_pr(repository=FORK, head=FORK, labels=["run-iceberg-tests"]), ICEBERG_OPT_IN),
     # Upstream, push stays the cache refresh and the site deploy.
     ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
 ]
@@ -884,6 +840,11 @@ def check_change_filters():
 def check_event_policy():
     module = load_filters()
     failures = []
+    if module.UPSTREAM != UPSTREAM:
+        failures.append(
+            f"UPSTREAM is {module.UPSTREAM!r} in compute-changes.py but {UPSTREAM!r} here; "
+            f"the fork cases below would test the wrong repository"
+        )
     for event, expected in POLICY_CASES:
         actual = {job for job in module.POLICY if module.event_allows(job, event)}
         if actual != expected:
@@ -1311,6 +1272,10 @@ def ci_triggers():
     return triggers
 
 
+# A job that calls ci.yml as a reusable workflow.
+CALLS_CI = re.compile(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", re.M)
+
+
 def permission_ceiling_failures(caller):
     """Failures for each ci.yml permission that `caller` does not grant.
 
@@ -1368,7 +1333,7 @@ def check_label_runs_separate():
         failures.append(f"{label_workflow} is missing; nothing runs on `labeled`")
     else:
         body = label_workflow.read_text(encoding="utf-8")
-        if not re.search(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", body, re.M):
+        if not CALLS_CI.search(body):
             failures.append(f"{label_workflow} does not call ./.github/workflows/ci.yml")
         if not re.search(r"^\s+types:\s*\[\s*labeled\s*\]\s*$", body, re.M):
             failures.append(
@@ -1732,20 +1697,11 @@ def check_fork_runs():
         failures.append(f"{FORK_WORKFLOW} is missing; a fork pull request would run no PR tier anywhere")
     else:
         body = FORK_WORKFLOW.read_text(encoding="utf-8")
-        if not re.search(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", body, re.M):
+        if not CALLS_CI.search(body):
             failures.append(f"{FORK_WORKFLOW} does not call ./.github/workflows/ci.yml")
         ignored = re.search(r"^    branches-ignore:\n((?:      .*\n)+)", body, re.M)
-        entries = (
-            [
-                line.strip()[2:].strip()
-                for line in ignored.group(1).splitlines()
-                if line.strip().startswith("- ")
-            ]
-            if ignored
-            else []
-        )
-        for needed in ("main", "asf-site", "'gh-readonly-queue/**'"):
-            if needed not in entries:
+        for needed in ("main", "asf-site"):
+            if not ignored or f"- {needed}\n" not in ignored.group(1):
                 failures.append(f"{FORK_WORKFLOW} must list {needed} under `push: branches-ignore`")
         conditions = " ".join(job_conditions(body))
         if "github.repository != 'apache/datafusion-comet'" not in conditions:
@@ -1781,6 +1737,11 @@ def check_fork_runs():
             )
         if "github.repository == 'apache/datafusion-comet'" not in body:
             failures.append(f"{BRIDGE_WORKFLOW} has no repository guard, so it would run in every fork")
+        if f"const WORKFLOW = '{FORK_WORKFLOW.name}';" not in body:
+            failures.append(
+                f"{BRIDGE_WORKFLOW} must read runs of {FORK_WORKFLOW.name}; any other name "
+                f"reports \"no fork CI\" on every pull request"
+            )
         if re.search(r"uses:\s*actions/checkout@", body):
             failures.append(
                 f"{BRIDGE_WORKFLOW} checks out code. It runs with `checks: write` on data from a "

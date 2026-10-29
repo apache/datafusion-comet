@@ -153,11 +153,6 @@ test('upstream pushes and merge-queue completions cannot create fork checks', as
     assert.deepEqual((await execute({ event: 'workflow_run', notification: { event } })).writes, []);
   }
 });
-test('the bridge does nothing when copied into a fork', async () => {
-  const result = await execute({ owner: 'contributor' });
-  assert.deepEqual(result.calls, []);
-  assert.deepEqual(result.writes, []);
-});
 test('only runs for the exact branch head on push/manual events are mirrored', async () => {
   const result = await execute({ runs: [
     run(8, { head_sha: 'b'.repeat(40) }),
@@ -293,24 +288,17 @@ test('no open PRs means no fork API calls', async () => {
 });
 
 for (const defaultBranch of ['main', 'develop']) {
-test('a PR from the fork default branch ' + defaultBranch + ' is told to use a branch, and no run is read', async () => {
-  const mainPr = { ...pr, head: { ...pr.head, ref: defaultBranch, repo: { ...pr.head.repo, default_branch: defaultBranch } } };
-  const writes = [];
-  const github = { rest: { checks: {}, actions: {}, pulls: {} } };
-  github.rest.checks.listForRef = async () => {};
-  github.rest.checks.create = async (payload) => writes.push(payload);
-  github.rest.pulls.list = async () => ({ data: [mainPr], headers: {} });
-  github.rest.actions.listWorkflowRuns = async () => assert.fail('a fork main has no run to read');
-  github.rest.actions.getWorkflow = async () => assert.fail('a fork main has no workflow to read');
-  github.paginate = async (fn) => (fn === github.rest.checks.listForRef ? [] : [mainPr]);
-  github.paginate.iterator = async function* () { yield { data: [mainPr] }; };
-  await bridge(github, {
-    repo: { owner: 'apache', repo: 'datafusion-comet' }, eventName: 'schedule', payload: {},
-  }, { info: () => {}, setFailed: (message) => assert.fail(message) }, Clock);
-  assert.equal(writes.length, 1);
-  assert.equal(writes[0].conclusion, 'neutral');
-  assert.equal(writes[0].output.title, 'Open the pull request from a branch');
-});
+  test('a PR from the fork default branch ' + defaultBranch + ' is told to use a branch', async () => {
+    const head = {
+      ...pr.head, ref: defaultBranch, repo: { ...pr.head.repo, default_branch: defaultBranch },
+    };
+    const mainPr = { ...pr, head };
+    const { writes, calls } = await execute({ recent: [mainPr], slice: [mainPr] });
+    assert.equal(calls.filter(([kind]) => kind === 'runs').length, 0, 'a default branch has no run to read');
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].conclusion, 'neutral');
+    assert.equal(writes[0].output.title, 'Open the pull request from a branch');
+  });
 }
 
 function group(github) {

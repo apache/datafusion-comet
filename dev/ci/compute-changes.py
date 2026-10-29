@@ -691,9 +691,7 @@ def event_allows(job, event):
         # A push to a fork's branch is the contributor's own pull request tier.
         # The "push" tier is main's cache refresh and site deploy, and a fork
         # has no site to deploy. A push to a fork's default branch never gets
-        # here: Preflight skips it. It is a sync of commits the queue already
-        # tested, and the caches it would warm save a branch run only about nine
-        # of its fifty minutes (measured 2026-10-28: 59 minutes cold, 50 warm).
+        # here: Preflight skips it, as a sync of commits the queue already tested.
         if is_fork_push(event):
             return "pr" in tiers
         return "push" in tiers

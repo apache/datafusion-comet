@@ -52,7 +52,13 @@ concurrency:
 
 jobs:
   bridge:
-    if: github.repository == 'apache/datafusion-comet' && (github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request')
+    # A workflow_run for a pull request from a branch of this repository has no
+    # fork run to mirror, so it never starts a job.
+    if: >-
+      github.repository == 'apache/datafusion-comet'
+      && (github.event_name != 'workflow_run'
+          || (github.event.workflow_run.event == 'pull_request'
+              && github.event.workflow_run.head_repository.full_name != github.repository))
     name: Mirror the fork run
     runs-on: ubuntu-slim
     timeout-minutes: 10
@@ -250,7 +256,5 @@ jobs:
               if (errors.length) core.setFailed(errors.join('\n'));
             }
 
-            if (repository === 'apache/datafusion-comet') {
-              if (context.eventName === 'workflow_run') await notify();
-              else await update();
-            }
+            if (context.eventName === 'workflow_run') await notify();
+            else await update();
