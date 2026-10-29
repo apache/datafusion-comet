@@ -342,16 +342,16 @@ through a single-partition Comet shuffle.
 These do their own work on the JVM and participate in the Comet pipeline. Some of them also run
 Rust plans, as their rows say.
 
-| Node                     | Notes                                                                                                                                   |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                     |
-| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                            |
-| `CometCollectLimit`      | Collect limit (`CollectLimitExec`). On the JVM when Spark collects it at the plan root; otherwise it runs Rust limit plans.             |
-| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                     |
-| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                         |
-| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
-| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).            |
-| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                       |
+| Node                     | Notes                                                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                      |
+| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                             |
+| `CometCollectLimit`      | Collect limit (`CollectLimitExec`). `collect`, `show`, and `take` take rows from its child on the JVM; other reads run Rust limit plans. |
+| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                      |
+| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                          |
+| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md).  |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).             |
+| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                        |
 
 ### Shuffle Operators
 
