@@ -187,9 +187,12 @@ class CometExecRuleSuite extends CometTestBase {
         assert(countOperators(native, classOf[CometProjectExec]) == 1, native.treeString)
         for ((boundary, consume) <- consumers; reused <- Seq(false, true)) {
           val child = if (reused) applyCometExecRule(project) else project
-          val converted = applyCometExecRule(consume(child))
+          val consumer = consume(child)
+          val converted = applyCometExecRule(consumer)
           for (result <- Seq(converted, applyCometExecRule(converted))) {
-            val fallback = ansi || !boundedYear
+            // A reused local-table sink has no native child operator for a new cap.
+            val capped = consumer.isInstanceOf[CollectLimitExec] && !reused
+            val fallback = (ansi || !boundedYear) && !capped
             withClue(
               s"ansi=$ansi boundedYear=$boundedYear reused=$reused $boundary\n${result.treeString}") {
               assert(countOperators(result, classOf[ProjectExec]) == (if (fallback) 1 else 0))
@@ -225,34 +228,47 @@ class CometExecRuleSuite extends CometTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
       val rows = Seq((2024.toShort, Some(1), 1), (2024.toShort, Some(13), 0))
-      withParquetTable(rows, "make_date_non_ansi") {
-        // A literal or widened small-integer year cannot overflow the Date32 representation.
-        // The invalid month is harmless with ANSI off, including below a lazy row consumer.
-        for (year <- Seq("2024", "_1")) {
-          val df = sql(s"SELECT make_date($year, _2, 1) FROM make_date_non_ansi LIMIT 10")
-          checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.createDataFrame(rows).coalesce(1).write.parquet(path.getCanonicalPath)
         }
+        withParquetTable(path.getCanonicalPath, "make_date_non_ansi") {
+          // A literal or widened small-integer year cannot overflow the Date32 representation.
+          // The invalid month is harmless with ANSI off, including below a lazy row consumer.
+          for (year <- Seq("2024", "_1")) {
+            val df = sql(s"SELECT make_date($year, _2, 1) FROM make_date_non_ansi LIMIT 10")
+            checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+          }
 
-        val deferred = sql("""
+          val deferred = sql("""
           |SELECT r, IF(r < 0, dt, DATE '2024-01-01'), r + 1 FROM (
           |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt FROM make_date_non_ansi
           |)
           |""".stripMargin)
-        checkSparkAnswer(deferred)
-        assert(
-          countOperators(deferred.queryExecution.executedPlan, classOf[CometProjectExec]) == 2)
+          checkSparkAnswerAndOperator(deferred, includeClasses = Seq(classOf[CometProjectExec]))
+          assert(
+            countOperators(deferred.queryExecution.executedPlan, classOf[CometProjectExec]) == 2)
 
-        // Index zero throws even with ANSI off. A limit can skip a throwing date argument,
-        // and a NULL date can skip an unrelated right operand in Spark's arithmetic.
-        val guarded = Seq(
-          "SELECT make_date(2024, 1, element_at(array(1), _3)) FROM make_date_non_ansi LIMIT 1",
-          "SELECT unix_date(make_date(2024, _2, 1)) + element_at(array(1), _3) FROM make_date_non_ansi")
-        guarded.foreach { query =>
-          val df = sql(query)
-          checkSparkAnswer(df)
-          assert(countOperators(df.queryExecution.executedPlan, classOf[ProjectExec]) == 1)
-          assert(countOperators(df.queryExecution.executedPlan, classOf[CometProjectExec]) == 0)
+          // Index zero throws even with ANSI off. A limit can skip a throwing date argument,
+          // and a NULL date can skip an unrelated right operand in Spark's arithmetic.
+          val guarded = Seq(
+            "SELECT make_date(2024, 1, element_at(array(1), _3)) FROM make_date_non_ansi LIMIT 1",
+            "SELECT unix_date(make_date(2024, _2, 1)) + element_at(array(1), _3) FROM make_date_non_ansi")
+          guarded.foreach { query =>
+            val df = sql(query)
+            val capped = query.endsWith("LIMIT 1")
+            if (capped) {
+              checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+            } else {
+              checkSparkAnswer(df)
+            }
+            val plan = df.queryExecution.executedPlan
+            assert(countOperators(plan, classOf[ProjectExec]) == (if (capped) 0 else 1))
+            assert(countOperators(plan, classOf[CometProjectExec]) == (if (capped) 1 else 0))
+            if (capped) assert(countOperators(plan, classOf[CometLocalLimitExec]) == 1)
+          }
         }
+
       }
 
       // The date's day attribute looks harmless locally, but its lower producer can throw.
@@ -267,6 +283,68 @@ class CometExecRuleSuite extends CometTestBase {
         val plan = df.queryExecution.executedPlan
         assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
         assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date collect limit reuses the native projection input cap") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .createDataFrame(Seq((2024, 1, "1"), (2024, 13, "bad")))
+            .coalesce(1)
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        withParquetTable(path.getCanonicalPath, "make_date_limit_cap") {
+          for (capEnabled <- Seq(false, true)) {
+            withSQLConf(CometConf.COMET_EXEC_LOCAL_LIMIT_ENABLED.key -> capEnabled.toString) {
+              val df = sql("SELECT make_date(_1, _2, 1) FROM make_date_limit_cap LIMIT 1")
+              if (capEnabled) {
+                checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+              } else {
+                checkSparkAnswer(df)
+              }
+              val converted = stripAQEPlan(df.queryExecution.executedPlan)
+              for (plan <- Seq(converted, applyCometExecRule(converted))) {
+                assert(countOperators(plan, classOf[ProjectExec]) == (if (capEnabled) 0 else 1))
+                assert(
+                  countOperators(plan, classOf[CometProjectExec]) == (if (capEnabled) 1 else 0))
+                assert(
+                  countOperators(plan, classOf[CometLocalLimitExec]) == (if (capEnabled) 1
+                                                                         else 0))
+                assert(new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(
+                    _.contains("make_date requires Spark evaluation below LIMIT")) != capEnabled)
+              }
+
+              // The cap must still evaluate a bad date when it belongs to the consumed prefix.
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+                sql("SELECT make_date(_1, _2, 1) FROM make_date_limit_cap LIMIT 2"))
+              Seq(sparkError, cometError).foreach { error =>
+                assert(
+                  error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+              }
+            }
+          }
+
+          // A cap immediately below the date does not protect this lower producing projection.
+          // Repeated r keeps both projections, and LIMIT skips the second row's invalid cast.
+          val producer = sql("""
+          |SELECT r, make_date(y, m, 1), r + 1 FROM (
+          |  SELECT rand(7L) AS r, _1 AS y, CAST(_3 AS INT) AS m FROM make_date_limit_cap
+          |) LIMIT 1
+          |""".stripMargin)
+          checkSparkAnswer(producer)
+          val plan = producer.queryExecution.executedPlan
+          assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
+          assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+        }
       }
     }
   }

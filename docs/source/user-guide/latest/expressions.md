@@ -747,6 +747,10 @@ because Spark checks that argument on every input row. Filtered counts and count
 multiple arguments retain the safeguard when they can skip date evaluation.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
+An adjacent collect limit and date projection can also stay native: Comet caps the projection's
+input before evaluating dates, so unread rows cannot raise errors. This requires a supported
+native local limit; otherwise the Spark safeguard remains. The cap does not bypass safeguards
+for a lower argument-producing projection or intervening filters and joins.
 Exchanges materialize their inputs and partition keys independently, so an outer limit does
 not force an eager date partition key to Spark. Local sorts and aggregates can also separate
 date evaluation from an outer limit.

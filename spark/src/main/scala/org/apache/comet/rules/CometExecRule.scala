@@ -754,6 +754,25 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
     case limit: CollectLimitExec if limit.limit >= 0 =>
+      def capProjection(project: SparkPlan, original: SparkPlan): Option[SparkPlan] = {
+        val input = project.children.head
+        val cap = input match {
+          case bounded: CometLocalLimitExec if bounded.limit <= limit.limit => Some(bounded)
+          case _ => convertToComet(LocalLimitExec(limit.limit, input), CometLocalLimitExec)
+        }
+        for {
+          bounded <- cap
+          rebuilt <- convertToComet(original.withNewChildren(Seq(bounded)), CometProjectExec)
+        } yield {
+          // AQE can link the current projection to a materialized logical query stage.
+          // Its originalPlan may have an older link; preserve the current direct/inherited tags.
+          Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
+            project.getTagValue(tag).foreach(rebuilt.setTagValue(tag, _))
+          }
+          rebuilt
+        }
+      }
+
       limit.child match {
         case project: CometProjectExec =>
           // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
@@ -769,29 +788,18 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           if (onlyColumns || alreadyCapped) {
             op
           } else {
-            // Use normal config and serde gating for the synthetic limit. If conversion fails,
-            // its fallback tags are discarded with it and the original plan is retained.
-            val bounded = for {
-              cap <- convertToComet(
-                LocalLimitExec(limit.limit, project.child),
-                CometLocalLimitExec)
-              rebuilt <- convertToComet(
-                project.originalPlan.withNewChildren(Seq(cap)),
-                CometProjectExec)
-            } yield {
-              // AQE can link the current projection to a materialized logical query stage.
-              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
-              // (which only copies into an empty tag map) would not preserve the current link.
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
-              }
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
-              }
-              limit.withNewChildren(Seq(rebuilt))
-            }
-            bounded.getOrElse(op)
+            capProjection(project, project.originalPlan)
+              .map(rebuilt => limit.withNewChildren(Seq(rebuilt)))
+              .getOrElse(op)
           }
+        case project: ProjectExec =>
+          // The date guard stays in place until both the cap and projection convert. This
+          // candidate excludes other lazy consumers and guarded producers below the projection.
+          MakeDateEvaluation
+            .collectLimitProjection(project, limit.limit)
+            .flatMap(candidate => capProjection(candidate, candidate))
+            .map(rebuilt => MakeDateEvaluation.withCappedProjection(limit, rebuilt))
+            .getOrElse(op)
         case _ => op
       }
     case _ => op

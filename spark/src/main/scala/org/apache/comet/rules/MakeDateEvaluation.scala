@@ -34,13 +34,43 @@ import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
 import org.apache.spark.sql.types.{ByteType, IntegerType, ShortType}
 
-import org.apache.comet.CometConf
+import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.serde.CometMakeDate
 import org.apache.comet.shims.ShimCometWindowGroupLimit
 
 /** Keeps make_date on Spark's row path where native batching can change whether it throws. */
 private[rules] object MakeDateEvaluation {
   private val sparkEvaluation = TreeNodeTag[String]("comet.makeDateSparkEvaluation")
+  private val collectProjectionLimit = TreeNodeTag[Int]("comet.makeDateCollectProjectionLimit")
+  private val collectLimitReason = "make_date requires Spark evaluation below LIMIT"
+
+  // Return a copy: failed cap conversion must leave the original guarded pipeline untouched.
+  def collectLimitProjection(project: ProjectExec, limit: Int): Option[ProjectExec] =
+    if (enabled(project) && project.getTagValue(collectProjectionLimit).contains(limit)) {
+      val candidate = project.copy()
+      candidate.copyTagsFrom(project)
+      clearCollectLimitReason(candidate)
+      Some(candidate)
+    } else None
+
+  def withCappedProjection(limit: CollectLimitExec, project: SparkPlan): CollectLimitExec = {
+    val capped = limit.copy(child = project)
+    capped.copyTagsFrom(limit)
+    clearCollectLimitReason(capped)
+    capped
+  }
+
+  private def clearCollectLimitReason(plan: SparkPlan): Unit = {
+    if (plan.getTagValue(sparkEvaluation).contains(collectLimitReason)) {
+      plan.unsetTagValue(sparkEvaluation)
+    }
+    plan.unsetTagValue(collectProjectionLimit)
+    plan.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach { reasons =>
+      val remaining = reasons - collectLimitReason
+      if (remaining.isEmpty) plan.unsetTagValue(CometExplainInfo.FALLBACK_REASONS)
+      else plan.setTagValue(CometExplainInfo.FALLBACK_REASONS, remaining)
+    }
+  }
 
   private def enabled(plan: SparkPlan): Boolean =
     CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.get(plan.conf)
@@ -178,18 +208,22 @@ private[rules] object MakeDateEvaluation {
     def visit(
         node: SparkPlan,
         rowDemand: Option[String],
-        projectionDemand: Option[ProjectionDemand]): (SparkPlan, Option[String], AttributeSet) = {
+        projectionDemand: Option[ProjectionDemand],
+        directCollectLimit: Option[Int] = None): (SparkPlan, Option[String], AttributeSet) = {
+      // Candidate tags describe this walk's parent context, not a previous AQE plan.
+      node.unsetTagValue(collectProjectionLimit)
       node match {
         // Materialized stages are independent producers. Their plans have already been guarded.
         case _: QueryStageExec | _: ReusedExchangeExec => return (node, None, AttributeSet.empty)
         // These wrappers do not have the child shape of their original Spark operator.
         case wrapper: CometScanWrapper =>
           val (child, childReason, dateOutputs) =
-            visit(wrapper.originalPlan, rowDemand, projectionDemand)
+            visit(wrapper.originalPlan, rowDemand, projectionDemand, directCollectLimit)
           return if (childReason.isDefined) (child, childReason, dateOutputs)
           else (wrapper.copy(originalPlan = child), None, dateOutputs)
         case sink: CometSinkPlaceHolder =>
-          val (child, childReason, dateOutputs) = visit(sink.child, rowDemand, projectionDemand)
+          val (child, childReason, dateOutputs) =
+            visit(sink.child, rowDemand, projectionDemand, directCollectLimit)
           return if (childReason.isDefined) (child, childReason, dateOutputs)
           else (sink.withNewChildren(Seq(child)), None, dateOutputs)
         case _ =>
@@ -302,6 +336,12 @@ private[rules] object MakeDateEvaluation {
         case _ if exchange || localMaterialization => None
         case _ => projectionDemand
       }
+      val childCollectLimit = original match {
+        case limit: CollectLimitExec
+            if limit.limit >= 0 && rowDemand.isEmpty && projectionDemand.isEmpty =>
+          Some(limit.limit)
+        case _ => None
+      }
       val visited = node.children.zipWithIndex.map { case (child, index) =>
         val demand = if (!join) {
           childProjectionDemand
@@ -322,7 +362,7 @@ private[rules] object MakeDateEvaluation {
         } else {
           None
         }
-        visit(child, childDemand, demand)
+        visit(child, childDemand, demand, childCollectLimit)
       }
       val childReason = visited.flatMap(_._2).headOption
       val childDateOutputs = AttributeSet(visited.zipWithIndex.flatMap {
@@ -347,45 +387,43 @@ private[rules] object MakeDateEvaluation {
           case _ => childDateOutputs.intersect(original.outputSet)
         }
       }
-      val ownReason = reason(node).orElse {
-        // An exchange evaluates its partition keys for every input before a consumer reads rows.
-        val safeProjection = original match {
-          case project: ProjectExec => project.projectList.forall(canEvaluateProjectionEagerly)
-          case _ => false
-        }
-        val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
-          rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
-        } else None
-        rowReason.orElse(original match {
-          case project: ProjectExec =>
-            projectionDemand
-              .filter(demand =>
-                project.projectList.exists { output =>
-                  val computation = output match {
-                    case alias: Alias => alias.child
-                    case other => other
-                  }
-                  val deferredDate = output.deterministic &&
-                    demand.deferred.contains(output.toAttribute) && containsMakeDate(
-                      Seq(output)) &&
-                    !canEvaluateProjectionEagerly(output)
-                  val deferredComputation = (output.deterministic || rowDemand.isDefined) &&
-                    (demand.guardedInputs.contains(output.toAttribute) ||
-                      (dateDerivedOutputs.nonEmpty && demand.deferred.contains(
-                        output.toAttribute))) &&
-                    !canEvaluateProjectionEagerly(computation)
-                  deferredDate || deferredComputation
-                })
-              .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
-          case aggregate: BaseAggregateExec
-              if aggregate.expressions.exists(containsDeferredAggregateDate) =>
-            Some(s"make_date requires Spark evaluation in ${original.nodeName}")
-          // Join keys/conditions and top-k outputs can be skipped inside the operator.
-          case _: BaseJoinExec | _: TakeOrderedAndProjectExec if evaluatesDate =>
-            Some(s"make_date requires Spark evaluation in ${original.nodeName}")
-          case _ => None
-        })
+      // An exchange evaluates its partition keys for every input before a consumer reads rows.
+      val safeProjection = original match {
+        case project: ProjectExec => project.projectList.forall(canEvaluateProjectionEagerly)
+        case _ => false
       }
+      val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
+        rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
+      } else None
+      val operatorReason = original match {
+        case project: ProjectExec =>
+          projectionDemand
+            .filter(demand =>
+              project.projectList.exists { output =>
+                val computation = output match {
+                  case alias: Alias => alias.child
+                  case other => other
+                }
+                val deferredDate = output.deterministic &&
+                  demand.deferred.contains(output.toAttribute) && containsMakeDate(Seq(output)) &&
+                  !canEvaluateProjectionEagerly(output)
+                val deferredComputation = (output.deterministic || rowDemand.isDefined) &&
+                  (demand.guardedInputs.contains(output.toAttribute) ||
+                    (dateDerivedOutputs.nonEmpty && demand.deferred.contains(
+                      output.toAttribute))) &&
+                  !canEvaluateProjectionEagerly(computation)
+                deferredDate || deferredComputation
+              })
+            .map(demand => s"make_date requires Spark evaluation below ${demand.boundary}")
+        case aggregate: BaseAggregateExec
+            if aggregate.expressions.exists(containsDeferredAggregateDate) =>
+          Some(s"make_date requires Spark evaluation in ${original.nodeName}")
+        // Join keys/conditions and top-k outputs can be skipped inside the operator.
+        case _: BaseJoinExec | _: TakeOrderedAndProjectExec if evaluatesDate =>
+          Some(s"make_date requires Spark evaluation in ${original.nodeName}")
+        case _ => None
+      }
+      val ownReason = reason(node).orElse(rowReason).orElse(operatorReason)
       val fallbackReason = ownReason.orElse(if (exchange) None else childReason)
       val children = visited.map { case (child, _, _) =>
         if (join && fallbackReason.isDefined) restoreBroadcast(child, fallbackReason.get)
@@ -404,6 +442,12 @@ private[rules] object MakeDateEvaluation {
         case _ => node.withNewChildren(children)
       }
       copyLogicalLinks(node, rebuilt)
+      rebuilt.unsetTagValue(collectProjectionLimit)
+      if (original.isInstanceOf[ProjectExec] && rowReason.contains(collectLimitReason) &&
+        operatorReason.isEmpty && childReason.isEmpty &&
+        reason(node).forall(_ == collectLimitReason)) {
+        directCollectLimit.foreach(rebuilt.setTagValue(collectProjectionLimit, _))
+      }
       fallbackReason.foreach(rebuilt.setTagValue(sparkEvaluation, _))
       (rebuilt, fallbackReason, dateDerivedOutputs)
     }

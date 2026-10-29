@@ -26,7 +26,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
-import org.apache.spark.sql.comet.CometProjectExec
+import org.apache.spark.sql.comet.{CometLocalLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
@@ -91,10 +91,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
               assert(expected == Seq(Row(19723)))
               val df = sql(query)
               val plan = stripAQEPlan(df.queryExecution.executedPlan)
-              assert(plan.collect { case p: ProjectExec => p }.nonEmpty, plan.treeString)
-              assert(plan.collect { case p: CometProjectExec => p }.isEmpty, plan.treeString)
+              assert(plan.collect { case p: ProjectExec => p }.isEmpty, plan.treeString)
+              assert(plan.collect { case p: CometProjectExec => p }.size == 1, plan.treeString)
+              assert(plan.collect { case p: CometLocalLimitExec => p }.size == 1, plan.treeString)
               assert(
-                new ExtendedExplainInfo()
+                !new ExtendedExplainInfo()
                   .getFallbackReasons(plan)
                   .exists(_.contains("make_date")),
                 plan.treeString)
