@@ -122,7 +122,10 @@ fn execute_might_contain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::BooleanArray;
+    use crate::GetStructField;
+    use arrow::array::{BinaryArray, BooleanArray, StructArray};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::Field;
     use datafusion::physical_expr::expressions::Literal;
 
     fn assert_result_eq<T: Into<Option<bool>>>(result: ColumnarValue, expected: Vec<T>) {
@@ -194,6 +197,38 @@ mod tests {
         let bloom_filter_expr: Arc<dyn PhysicalExpr> = Arc::new(Literal::new(ScalarValue::Null));
         let expr = BloomFilterMightContain::try_new(bloom_filter_expr).unwrap();
         assert!(expr.bloom_filter.is_none());
+    }
+
+    #[test]
+    fn merged_struct_bloom_filter_initializes_on_an_empty_planning_batch() {
+        let mut filter = SparkBloomFilter::from((4, 64));
+        filter.put_long(123);
+        let bytes = filter.spark_serialization();
+        for value in [Some(bytes.as_slice()), None] {
+            for parent_null in [false, true] {
+                let array = StructArray::new(
+                    vec![Field::new("bloom", DataType::Binary, true)].into(),
+                    vec![Arc::new(BinaryArray::from(vec![value]))],
+                    Some(NullBuffer::from(vec![!parent_null])),
+                );
+                let field = Arc::new(GetStructField::new(
+                    Arc::new(Literal::new(ScalarValue::Struct(Arc::new(array)))),
+                    0,
+                ));
+                let expr = BloomFilterMightContain::try_new(field).unwrap();
+                let expected = if value.is_some() && !parent_null {
+                    Some(true)
+                } else {
+                    None
+                };
+                let result = execute_might_contain(
+                    &expr.bloom_filter,
+                    &[ColumnarValue::Scalar(ScalarValue::Int64(Some(123)))],
+                )
+                .unwrap();
+                assert_result_eq(result, vec![expected]);
+            }
+        }
     }
 
     #[test]
