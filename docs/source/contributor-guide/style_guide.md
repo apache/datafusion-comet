@@ -92,14 +92,15 @@ is meant. Name the meaning instead.
   which need not appear beside it); "native", optionally followed by a format, followed by _scan_,
   _reader_, _write_, or _writer_, for Comet's Rust scans and writers (_native scan_, _native Parquet
   reader_, _native Iceberg write_); _native memory_ and _native library_ (the terms Comet's own log
-  lines use); _Native_ as the expression kind (T6); and _native implementation_ of an expression,
-  meaning its Rust implementation.
+  lines use); _Arrow-native_ (T7); _Native_ as the expression kind (T6); and _native implementation_
+  of an expression, meaning its Rust implementation.
 - **N3.** In the contributor guide, "native" before a code noun is also allowed when it means the
   crates under `native/` or the JNI boundary: _native code_, _native side_ (and _native-side logs_),
   _native plan_, _native kernel_, and _JVM/native boundary_. The noun must name something under
   `native/`, such as a crate, file, type, function, or plan, or the JNI boundary. Pages outside the
   contributor guide, including `user-guide/`, `about/`, `index.md`, `README.md`, and `.doc(...)`
-  strings, allow only the N2 compounds and write _Rust_ instead. N1 applies everywhere.
+  strings, allow only the N2 compounds and write _Rust_ instead. N1 applies everywhere. Any other use
+  of "native" is a finding: name the meaning with a term from the vocabulary above.
 - **N4.** Do not use "native" as a noun. Write _the Rust side_ or name the component: "hands each
   block to the Rust side", not "hands each block to native".
 - **N5.** Do not call Spark's own behavior native. Write _Spark's built-in shuffle_, not _Spark's
