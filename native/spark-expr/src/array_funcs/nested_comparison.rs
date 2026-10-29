@@ -24,6 +24,7 @@ use crate::float_semantics::{
     normalize_floats, normalize_nested_floats, spark_comparator_ignoring_nulls,
     spark_equality_ignoring_nulls, NormalizeNestedFloats,
 };
+use crate::lazy_in_list;
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray};
 use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 use arrow::compute::{not, or_kleene};
@@ -652,6 +653,10 @@ pub fn spark_in_list(
     negated: bool,
     schema: &Schema,
 ) -> Result<Arc<dyn PhysicalExpr>> {
+    // A candidate that can fail is evaluated only for the rows that no earlier one has matched
+    if let Some(lazy) = lazy_in_list(&value, &candidates, negated, schema)? {
+        return Ok(lazy);
+    }
     if !is_nested_with_float_leaf(&value.data_type(schema)?) || candidates.is_empty() {
         // DataFusion takes a candidate as a constant when it returns a scalar for an empty
         // batch, so an expression that reads a column must return an array there

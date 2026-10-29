@@ -281,7 +281,7 @@ impl Arg {
 }
 
 /// The input columns that `expr` reads, and `expr` reading them from a batch of just those columns.
-fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
+pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
     let mut projection = collect_columns(expr)
         .iter()
         .map(Column::index)
