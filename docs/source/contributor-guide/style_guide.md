@@ -86,7 +86,9 @@ is meant. Name the meaning instead.
 - **N1.** Do not use _runs natively_, _natively in Comet_, _the native path_, _the native
   pipeline_, _native execution_, _native operator_, or _native Comet operator_, in any tense or
   form, such as _ran natively_, _go native_, _a native path_, or _Comet-native_. Write _in the Comet
-  pipeline_ (T1) or _Rust-implemented_ (T3).
+  pipeline_ (T1) or _Rust-implemented_ (T3). When "native" means "did not fall back to Spark", write
+  T1, because codegen dispatch (T5) is not a fallback. When the sentence is about Spark's own
+  behavior, N5 applies.
 - **N2.** These compounds are allowed everywhere, because the second part fixes the meaning:
   _native Rust_; _native shuffle_ and _the native shuffle path_ (the counterpart of _JVM shuffle_,
   which need not appear beside it); "native", optionally followed by a format, followed by _scan_,
