@@ -19,8 +19,6 @@
 
 package org.apache.comet
 
-import org.apache.spark.internal.Logging
-
 /**
  * Makes an optional, out-of-tree contrib's config entries visible to [[GenerateDocs]].
  *
@@ -64,7 +62,7 @@ trait CometConfigProvider {
   def docCategory: String
 }
 
-object CometConfigProvider extends Logging {
+object CometConfigProvider {
 
   /**
    * Discovered contrib config providers. Mirrors the other contrib registries: a misbuilt contrib

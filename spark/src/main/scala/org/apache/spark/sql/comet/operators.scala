@@ -28,7 +28,6 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.spark.{Partition, TaskContext}
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
@@ -120,7 +119,7 @@ private[comet] trait PlanDataInjector {
 /**
  * Registry and utilities for injecting per-partition planning data into operator trees.
  */
-private[comet] object PlanDataInjector extends Logging {
+private[comet] object PlanDataInjector {
   import java.util.{LinkedHashMap, Map => JMap}
   import java.util.concurrent.ConcurrentHashMap
 
