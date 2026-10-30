@@ -94,7 +94,11 @@ case class CometNativeWriteExec(
 
   override def nodeName: String = "CometNativeWrite"
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
+  // Fed its input from the JVM, so its plan runs on the Spark task thread, where
+  // `executorCpuTime` already counts it. This also keeps `metrics` from serializing the plan.
+  override protected def reportsNativeCpuTime: Boolean = false
+
+  override protected def operatorMetrics: Map[String, SQLMetric] = Map(
     "files_written" -> SQLMetrics.createMetric(sparkContext, "number of written data files"),
     "bytes_written" -> SQLMetrics.createSizeMetric(sparkContext, "written data"),
     "rows_written" -> SQLMetrics.createMetric(sparkContext, "number of written rows"))

@@ -169,7 +169,8 @@ class CometNativeShuffleWriter[K, V](
       "input_batches",
       "spill_count",
       "spilled_bytes",
-      "memory_spilled_bytes")
+      "memory_spilled_bytes",
+      "native_cpu_time")
     val metricsOutputRows = new SQLMetric("outputRows")
     val metricsWriteTime = new SQLMetric("writeTime")
     val shuffleWriterSQLMetrics = Map(

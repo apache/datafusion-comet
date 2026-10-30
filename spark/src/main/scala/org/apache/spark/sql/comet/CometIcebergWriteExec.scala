@@ -124,11 +124,15 @@ case class CometIcebergWriteExec(
     Iterator(output, s"${common.getDataLocation}, ${common.getWriterMode}")
   }
 
+  // Fed its input from the JVM, so its plan runs on the Spark task thread, where
+  // `executorCpuTime` already counts it. This also keeps `metrics` from serializing the plan.
+  override protected def reportsNativeCpuTime: Boolean = false
+
   // Names mirror Spark's stock `BatchWriteHelper` metrics (`numFiles` / `numOutputRows` /
   // `numOutputBytes`) so the Spark SQL UI shows the same row as it would for a non-Comet
   // Iceberg write. `write_time` and `files_closed_early` are pushed from the native operator by
   // name (see `iceberg_write.rs`).
-  override lazy val metrics: Map[String, SQLMetric] = Map(
+  override protected def operatorMetrics: Map[String, SQLMetric] = Map(
     "numFiles" -> SQLMetrics.createMetric(sparkContext, "number of files written"),
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "numOutputBytes" -> SQLMetrics.createSizeMetric(sparkContext, "written output"),

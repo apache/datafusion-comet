@@ -35,7 +35,7 @@ use super::{serde, utils::SparkArrowConvert};
 use crate::{
     errors::{try_unwrap_or_throw, CometError, CometResult},
     execution::{
-        metrics::utils::update_comet_metric,
+        metrics::utils::{thread_cpu_time, update_comet_metric},
         planner::PhysicalPlanner,
         row_partition_sort::sort_row_partitions,
         serde::to_arrow_datatype,
@@ -55,6 +55,7 @@ use datafusion::config::SpillCompression;
 use datafusion::execution::memory_pool::MemoryPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::logical_expr::ScalarUDF;
+use datafusion::physical_plan::metrics::Time;
 use datafusion::{
     physical_plan::{display::DisplayableExecutionPlan, SendableRecordBatchStream},
     prelude::{SessionConfig, SessionContext},
@@ -549,6 +550,10 @@ struct ExecutionContext {
     pub stream: Option<SendableRecordBatchStream>,
     /// Runs the plan when it has no JVM input (async I/O path)
     batch_producer: Option<BatchProducer>,
+    /// The CPU time `batch_producer`'s task has spent polling the plan's stream, which outlives
+    /// the producer so that `releasePlan` can publish it. `None` for a plan with a JVM input,
+    /// whose stream is polled on the Spark task thread, where `executorCpuTime` counts it.
+    native_cpu_time: Option<Time>,
     /// The pool every reservation the plan makes goes through
     plan_memory: Arc<PlanMemoryPool>,
     /// The JVM `CometMetricNode` the plan's metrics are published to. `None` only without a
@@ -891,6 +896,7 @@ fn create_execution_context(
         input_sources: jvm.input_sources,
         stream: None,
         batch_producer: None,
+        native_cpu_time: None,
         plan_memory,
         metrics: jvm.metrics,
         metrics_update_interval,
@@ -1353,6 +1359,10 @@ struct BatchProducer {
     /// The plan's stream, and with it every reservation the stream holds. The task locks it only
     /// while polling it, so `stop` can take it whenever the task is waiting.
     stream: Arc<Mutex<Option<SendableRecordBatchStream>>>,
+    /// The CPU time the task has spent polling the stream. A poll runs on one thread from start to
+    /// finish, so the thread's CPU clock read before and after it gives the CPU it used, whichever
+    /// worker ran it. Work the stream hands to other Tokio tasks is not included.
+    cpu_time: Time,
     task: JoinHandle<()>,
 }
 
@@ -1368,12 +1378,21 @@ impl BatchProducer {
         let ended = Arc::clone(&stream_ended);
         let stream = Arc::new(Mutex::new(Some(stream)));
         let polled = Arc::clone(&stream);
+        let cpu_time = Time::new();
+        let poll_cpu_time = cpu_time.clone();
         let task = runtime.spawn(async move {
             let result = std::panic::AssertUnwindSafe(async {
                 // Ends once `stop` has taken the stream.
                 let next = || {
                     poll_fn(|cx| match polled.lock().as_mut() {
-                        Some(stream) => stream.poll_next_unpin(cx),
+                        Some(stream) => {
+                            let start = thread_cpu_time();
+                            let poll = stream.poll_next_unpin(cx);
+                            if let (Some(start), Some(end)) = (start, thread_cpu_time()) {
+                                poll_cpu_time.add_duration(end.saturating_sub(start));
+                            }
+                            poll
+                        }
                         None => Poll::Ready(None),
                     })
                 };
@@ -1406,6 +1425,7 @@ impl BatchProducer {
             batches,
             stream_ended,
             stream,
+            cpu_time,
             task,
         }
     }
@@ -1569,7 +1589,9 @@ fn execute_plan(
         if exec_context.scans.is_empty() && exec_context.shuffle_scans.is_empty() {
             // No JVM data sources — spawn onto tokio so the executor
             // thread parks in blocking_recv instead of busy-polling.
-            exec_context.batch_producer = Some(BatchProducer::spawn(&get_runtime(), stream));
+            let producer = BatchProducer::spawn(&get_runtime(), stream);
+            exec_context.native_cpu_time = Some(producer.cpu_time.clone());
+            exec_context.batch_producer = Some(producer);
         } else {
             exec_context.stream = Some(stream);
         }
@@ -1719,9 +1741,12 @@ fn update_metrics_on_interval(
 /// Publishes the plan's metrics to its JVM `CometMetricNode`, once the plan has been created.
 fn update_metrics(env: &mut Env, exec_context: &ExecutionContext) -> CometResult<()> {
     match (&exec_context.root_op, &exec_context.metrics) {
-        (Some(native_query), Some(metrics)) => {
-            update_comet_metric(env, metrics.as_obj(), native_query)
-        }
+        (Some(native_query), Some(metrics)) => update_comet_metric(
+            env,
+            metrics.as_obj(),
+            native_query,
+            exec_context.native_cpu_time.as_ref().map(Time::value),
+        ),
         _ => Ok(()),
     }
 }
@@ -3478,6 +3503,51 @@ mod tests {
         assert!(producer.next_batch().unwrap().is_some());
         assert!(producer.next_batch().unwrap().is_none());
         producer.stop().unwrap();
+    }
+
+    /// Spark's `executorCpuTime` leaves out the worker threads that run the plan (#6935), so the
+    /// producer counts the CPU its polls use, and not the time the stream waits between them.
+    #[cfg(unix)]
+    #[test]
+    fn a_batch_producer_counts_the_cpu_its_polls_use() {
+        let runtime = single_worker_runtime();
+        let mut polls = 0;
+        // Uses 50 ms of CPU time, then waits 200 ms for input, then ends.
+        let stream = futures::stream::poll_fn(move |cx| {
+            polls += 1;
+            match polls {
+                1 => {
+                    let start = thread_cpu_time().unwrap();
+                    while thread_cpu_time().unwrap() - start < Duration::from_millis(50) {}
+                    Poll::Ready(Some(Ok(empty_batch())))
+                }
+                2 => {
+                    let waker = cx.waker().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(200));
+                        waker.wake();
+                    });
+                    Poll::Pending
+                }
+                _ => Poll::Ready(None),
+            }
+        });
+
+        let mut producer = BatchProducer::spawn(runtime.handle(), plan_stream(stream));
+        let cpu_time = producer.cpu_time.clone();
+        assert!(producer.next_batch().unwrap().is_some());
+        assert!(producer.next_batch().unwrap().is_none());
+        producer.stop().unwrap();
+
+        let cpu_time = Duration::from_nanos(cpu_time.value() as u64);
+        assert!(
+            cpu_time >= Duration::from_millis(50),
+            "50 ms of CPU time counted as {cpu_time:?}"
+        );
+        assert!(
+            cpu_time < Duration::from_millis(150),
+            "the 200 ms wait counted towards {cpu_time:?}"
+        );
     }
 
     #[test]

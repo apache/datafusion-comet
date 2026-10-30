@@ -305,6 +305,18 @@ object CometMetricNode {
     else 0L
 
   /**
+   * The CPU time that a native block with no JVM input uses on Comet's Tokio worker threads. Such
+   * a block runs on a Tokio task while the Spark task thread waits for its batches, and Spark's
+   * `executorCpuTime` counts only the task thread, so it leaves this out. Native code reports it
+   * on the block's root, which declares it: a [[CometNativeExec]] that holds the block's
+   * serialized plan or is a native scan (see `CometNativeExec.reportsNativeCpuTime`), or a native
+   * shuffle writer through [[shuffleMetrics]]. A block with a JVM input runs on the task thread,
+   * where `executorCpuTime` already counts it, and reports nothing here.
+   */
+  def nativeCpuTimeMetrics(sc: SparkContext): Map[String, SQLMetric] =
+    Map("native_cpu_time" -> SQLMetrics.createNanoTimingMetric(sc, "native CPU time"))
+
+  /**
    * The baseline SQL metrics for DataFusion `BaselineMetrics`.
    */
   def baselineMetrics(sc: SparkContext): Map[String, SQLMetric] = {
@@ -586,7 +598,8 @@ object CometMetricNode {
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
       "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
-      "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
+      "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches")) ++
+      nativeCpuTimeMetrics(sc)
   }
 
   /**

@@ -382,7 +382,7 @@ class CleanupFailingNativeWriteExec(writer: CometNativeWriteExec)
       writer.serializableHadoopConf,
       writer.outputWriterFactory,
       writer.jobTrackerID) {
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val failingMetric = new CleanupFailingWriteMetric
     sparkContext.register(failingMetric)
     writer.metrics.updated("rows_written", failingMetric)
