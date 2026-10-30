@@ -37,6 +37,13 @@
 #                 green nightly. A failure opens (or comments on) an issue
 #                 labelled `ci-nightly-failure`.
 #
+# A pull request from a fork into main does not run the PR tier here. The
+# contributor's fork runs it (ci_fork.yml), and fork_ci_status.yml mirrors that
+# run onto the pull request as the informational `CI (fork)` check, which
+# `Required Checks` does not depend on. The merge queue still runs the queue tier
+# on the merge result. Opt-in `run-*` suites, pull requests from a branch of this
+# repository and pull requests to a release branch are unaffected.
+#
 # Spark 3.4 is deprecated and sits outside all three tiers: it runs only when
 # a pull request carries `run-spark-3.4-tests`, or from a manual dispatch.
 #
@@ -73,9 +80,17 @@ name: Comet CI
 # each other. Every other run is keyed on its event name: opened, synchronize
 # and reopened all map to `pull_request`, so a new push still supersedes its
 # predecessor, while a scheduled run at the tip of main never cancels that
-# commit's push run.
+# commit's push run. A pull request is keyed on its number, and not on its
+# branch name: nearly every pull request comes from a fork, and two forks'
+# branches can share a name, which would have one cancel the other's run. A push
+# to a fork (ci_fork.yml) is keyed on its run, so no other push shares its group:
+# a backup branch created at the commit a pull request is building would
+# otherwise cancel that build. A newer push to the same branch cancels the run in
+# flight through ci_fork.yml's `supersede` job instead, because group names
+# compare without regard to case and a fork can hold both `feature` and
+# `Feature`.
 concurrency:
-  group: ${{ github.repository }}-${{ github.head_ref || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
+  group: ${{ github.repository }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.repository != 'apache/datafusion-comet' && github.run_id) || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
 # No `labeled` here: ci_label.yml handles that event and calls this file
@@ -118,19 +133,35 @@ jobs:
   # pr_title_check stays a standalone workflow because it needs to fire on PR
   # `edited` events.
   #
-  # This job deliberately carries no `if:`. A job held back by `if:` still
-  # publishes a check run under its own name with conclusion `skipped`, and the
-  # newest check run for a name is the one the merge box, `gh pr checks` and
-  # required-status-check evaluation read. Guarding this job on the label name
-  # therefore let any non-gating label overwrite the commit run's real
-  # `Preflight` verdict with `skipped` (issue #5007). Running it unconditionally
-  # costs about a minute of ubuntu-slim time per label event and keeps the
-  # reported verdict truthful. Skipping the redundant work is the heavy jobs'
-  # job; POLICY in dev/ci/compute-changes.py drops every job a `labeled` event
-  # does not gate.
+  # This job deliberately carries no `if:` that reads the pull request or its
+  # labels. A job held back by `if:` still publishes a check run under its own
+  # name with conclusion `skipped`, and the newest check run for a name is the
+  # one the merge box, `gh pr checks` and required-status-check evaluation read.
+  # Guarding this job on the label name therefore let any non-gating label
+  # overwrite the commit run's real `Preflight` verdict with `skipped` (issue
+  # #5007). Running it unconditionally costs about a minute of ubuntu-slim time
+  # per label event and keeps the reported verdict truthful. Skipping the
+  # redundant work is the heavy jobs' job; POLICY in dev/ci/compute-changes.py
+  # drops every job a `labeled` event does not gate.
+  #
+  # The `if:` it does carry skips runs that belong to no pull request, and with
+  # them the whole run, since every other job needs `changes`, which needs this
+  # (`required_checks` skips itself when this is skipped, below):
+  #
+  #   - A scheduled run in a fork, which would otherwise run the whole nightly
+  #     tier for want of an earlier run to diff against.
+  #   - A push to a fork that did not come through ci_fork.yml. ci.yml triggers
+  #     on push to main, so it fires in a fork for its `main` as well, while
+  #     ci_fork.yml runs every branch of a fork, `main` included. Running both
+  #     would test the push twice. The workflow name tells the two entry points
+  #     apart, since a called workflow sees its caller's `github.workflow`.
   # ---------------------------------------------------------------------------
   preflight:
     name: Preflight
+    if: >-
+      (github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet')
+      && (github.event_name != 'push' || github.repository == 'apache/datafusion-comet'
+          || github.workflow == 'Comet CI (fork run)')
     runs-on: ubuntu-slim
     steps:
       - uses: actions/checkout@v7
@@ -193,6 +224,12 @@ jobs:
 
       - name: Check pull request type labeling
         run: node --test dev/ci/pr-type-label.test.mjs
+
+      - name: Check fork CI status bridge
+        run: node --test dev/ci/test-fork-ci-status.cjs
+
+      - name: Check the changed files of a fork push
+        run: python3 dev/ci/test-fork-push-changed-files.py
 
       - name: Check Iceberg shard inventory validation
         run: python3 dev/ci/test-iceberg-shards.py
@@ -282,6 +319,8 @@ jobs:
           LABEL_NAME:   ${{ github.event.label.name }}
           PR_LABELS:    ${{ toJSON(github.event.pull_request.labels.*.name) }}
           PR_BASE_REF:  ${{ github.event.pull_request.base.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY:   ${{ github.repository }}
           PR_BASE_SHA:  ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA:  ${{ github.event.pull_request.head.sha }}
           MQ_BASE_SHA:  ${{ github.event.merge_group.base_sha }}
@@ -329,8 +368,12 @@ jobs:
             # merge_group runs; the queue's ALLGREEN strategy is what makes
             # that enough (see the Merge Queue ruleset in .asf.yaml).
             git diff --name-only "$MQ_BASE_SHA"..."$MQ_HEAD_SHA" > changed_files.txt
+          elif [[ "$REPOSITORY" != "apache/datafusion-comet" ]]; then
+            # A push to a branch of a contributor's fork (ci_fork.yml): diff it
+            # against upstream main, as its pull request will be.
+            bash dev/ci/fork-push-changed-files.sh "$PUSH_AFTER" > changed_files.txt
           else
-            # push to main; first push to a branch has all-zero before sha
+            # push to main; the first push to a branch has an all-zero before sha
             if [[ "$PUSH_BEFORE" =~ ^0+$ ]]; then
               git ls-tree -r --name-only "$PUSH_AFTER" > changed_files.txt
             else
@@ -366,6 +409,10 @@ jobs:
     #   pull request          linux, full            -> profiles: pr
     #   ... with the label    linux, full, all       -> profiles: all
     #   ... to branch-N.M     linux, full, all       -> profiles: all
+    #   ... from a fork       (nothing)              -> no call: the fork runs the tier
+    #   ... from a fork, with the label
+    #                         all                    -> profiles: nightly, the ones the
+    #                                                   fork's default-profile run skips
     #   `labeled` run         all                    -> profiles: nightly
     #   merge queue           linux, full            -> profiles: pr
     #   nightly               all                    -> profiles: nightly
@@ -625,7 +672,9 @@ jobs:
   # nested name would block every docs-only change. Both hang rather than fail,
   # and a required context that never reports also locks `.asf.yaml` itself,
   # which then needs an INFRA ticket to unwedge. Aggregating into one flat job,
-  # whose name is published on every event, avoids the whole class of problem.
+  # whose name is published on every event that can reach the merge box, avoids
+  # the whole class of problem. The exception is a fork run that is no pull
+  # request's tier, which Preflight skips and this job follows.
   #
   # `if: always()` is what makes this work: without it the job inherits the
   # default `success()` and is itself skipped the moment any dependency fails.
@@ -643,7 +692,10 @@ jobs:
   # ---------------------------------------------------------------------------
   required_checks:
     name: ${{ github.event.action == 'labeled' && 'Required Checks (label run)' || 'Required Checks' }}
-    if: always()
+    # `always()` so a failed or cancelled dependency still reaches it. It skips
+    # itself only when Preflight did, which is a fork run that is not a pull
+    # request's tier (see Preflight), so those start no runner at all.
+    if: always() && needs.preflight.result != 'skipped'
     # Reads only the `needs` context, so it needs no token access at all.
     permissions: {}
     needs:
@@ -699,7 +751,11 @@ jobs:
   nightly_report:
     name: Nightly failure report
     needs: required_checks
-    if: always() && github.event_name == 'schedule' && needs.required_checks.result != 'success'
+    # `skipped` is not a failure here: the aggregator skips itself on a fork's
+    # scheduled run, and that run has nothing to report.
+    if: >-
+      always() && github.event_name == 'schedule'
+      && (needs.required_checks.result == 'failure' || needs.required_checks.result == 'cancelled')
     permissions:
       actions: read
       issues: write

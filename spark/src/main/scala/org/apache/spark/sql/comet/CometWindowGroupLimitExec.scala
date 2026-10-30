@@ -162,7 +162,8 @@ case class CometWindowGroupLimitExec(
     mode: String,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
+    extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def nodeName: String = "CometWindowGroupLimitExec"
 
