@@ -25,7 +25,7 @@
 
 - Performance (tuned 2026-07-11, PR [#4893](https://github.com/apache/datafusion-comet/pull/4893)): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row `Regex::new()` recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: `benches/parse_url.rs`.
 
-- Performance (tuned 2026-10-30, PR [#7329](https://github.com/apache/datafusion-comet/pull/7329)): borrow raw URL components and use delimiter decomposition for HTTP/HTTPS. Non-null HTTP(S) component microbenchmarks are 5.5–9.4x faster and query-key extraction is 3.1x faster. The PR records the alternate-lockfile measurement environment and generic-parser controls. Benchmark: `benches/parse_url.rs`.
+- Performance (tuned 2026-10-30, PR [#7329](https://github.com/apache/datafusion-comet/pull/7329)): split raw URI components at delimiters and borrow them until Arrow constructs the output. Non-null HTTP(S) component microbenchmarks are 5.3–10.4x faster, FTP host extraction is 5.8–6.4x faster, and query-key extraction is 3.4x faster. Benchmark: `benches/parse_url.rs`.
 
 ## try_url_decode
 
