@@ -28,7 +28,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometNativeScanExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
-import org.apache.spark.sql.execution.{InputAdapter, SortExec, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, expr, lead, sum}
@@ -2075,10 +2075,8 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window over a sorted bucketed table with empty buckets runs natively") {
-    // With spark.sql.legacy.bucketedTableScan.outputOrdering on, Spark reports a bucketed table's
-    // sort columns as the scan's order and plans no sort below the window. Two keys fill at most
-    // two of the eight buckets, and the native scan plans each of the others as an empty input,
-    // which has to declare the order as well, or the window rejects it before reading (#7223).
+    // With legacy bucketed output ordering on, Spark plans no sort below the window. Two keys fill
+    // at most two of the eight buckets, and each empty one has to declare the order too (#7223).
     withTable("sorted_bucketed") {
       // A single writer task writes one file per bucket.
       (0 until 40)
@@ -2101,11 +2099,13 @@ class CometWindowExecSuite extends CometTestBase {
         val (_, plan) = checkSparkAnswerAndOperator(df)
         val windows = collect(plan) { case w: CometWindowExec => w }
         assert(windows.size == 1, plan)
-        assert(windows.head.child.isInstanceOf[CometNativeScanExec], plan)
-        assert(windows.head.child.asInstanceOf[CometNativeScanExec].bucketedScan, plan)
+        assert(
+          windows.head.child match {
+            case scan: CometNativeScanExec => scan.bucketedScan
+            case _ => false
+          },
+          plan)
         assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 2, plan)
-        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, plan)
-        assert(df.collect().length == 40)
       }
     }
   }

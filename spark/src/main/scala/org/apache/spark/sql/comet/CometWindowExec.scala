@@ -36,7 +36,7 @@ import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{AggSerde, CometOperatorSerde, CometSortOrder, LiteralOuterClass, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.Operator
-import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, exprToProtoWithFallbackReasons, hasNonDefaultStringCollation, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, liftFallbackReasons, scalarFunctionExprToProto, serializeDataType}
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
@@ -81,12 +81,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
-      // Spark plans no sort below the window when its input reports the order the window needs,
-      // a sorted cache for instance, but rows from the JVM arrive through a ScanExec that
-      // declares none, and the native window rejects them. Send the order for the planner to
-      // declare (see SortedInputExec), unless a native sort below declares it or the reported
-      // order may be false. A key Comet cannot express or a collated string key, which the
-      // native side would order by raw bytes, sends the window back to Spark.
+      // Spark plans no sort below the window when its input already reports the order the window
+      // needs, but rows from the JVM arrive through a ScanExec that declares none. Send that order
+      // for the planner to declare (see SortedInputExec), unless a native sort below declares it
+      // or it may be false. A key Comet cannot express, or a collated string key, sends the window
+      // back to Spark.
       val requiredOrdering = op.requiredChildOrdering.head
       val inputSortOrders =
         if (requiredOrdering.nonEmpty && !op.child.isInstanceOf[CometSortExec] &&
@@ -103,25 +102,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
                 "natively")
             return None
           }
-          // The keys the child reports past the required ones hold too, and this window reports
-          // them, so a window above in the same native plan may rely on them. Send them up to the
-          // first one that cannot be expressed, in a scope of their own, so that a key left out
-          // records no fallback reason. Only a key's child is sent, and its same-order
-          // expressions may name columns the child no longer outputs.
-          val rest = op.child.outputOrdering
-            .drop(requiredOrdering.length)
-            .iterator
-            .map { order =>
-              if (hasNonDefaultStringCollation(order.dataType) ||
-                !order.child.references.subsetOf(op.child.outputSet)) {
-                None
-              } else {
-                exprToProtoWithFallbackReasons(order, op.child.output)._1
-              }
-            }
-            .takeWhile(_.isDefined)
-            .flatten
-          orders.flatten ++ rest
+          orders.flatten
         } else {
           Nil
         }
