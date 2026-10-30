@@ -368,12 +368,11 @@ class UtilsSuite extends CometTestBase {
   }
 
   test("serializeBatches writes empty large-offset vectors with 32-bit offsets") {
-    // A vector that holds no values need not have an offset buffer, so none is read.
+    // A vector that holds no values need not have an offset buffer, so none is read. Arrow 19's
+    // setValueCount(0) allocates one, so the test leaves the vectors unallocated.
     val strings = new LargeVarCharVector("s", CometArrowAllocator)
     val binaries = new LargeVarBinaryVector("b", CometArrowAllocator)
     try {
-      strings.setValueCount(0)
-      binaries.setValueCount(0)
       assert(strings.getOffsetBuffer.capacity == 0)
       val batch = new ColumnarBatch(Array(cometVector(strings), cometVector(binaries)), 0)
       assert(
@@ -554,7 +553,8 @@ class UtilsSuite extends CometTestBase {
     val width = BaseLargeVariableWidthVector.OFFSET_WIDTH.toLong
 
     val validity =
-      CometArrowAllocator.buffer(BitVectorHelper.getValidityBufferSize(values.length).toLong)
+      CometArrowAllocator.buffer(
+        BitVectorHelper.getValidityBufferSizeFromCount(values.length).toLong)
     val offsetBuffer = CometArrowAllocator.buffer(offsets.length * width)
     val data = CometArrowAllocator.buffer(offsets.last)
     val buffers = Seq(validity, offsetBuffer, data)
