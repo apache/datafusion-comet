@@ -112,6 +112,8 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
 
     val extraConfs = new ju.HashMap[String, String]()
 
+    // Before the cache serializer, which is installed only with one of Comet's shuffle managers.
+    CometDriverPlugin.maybeSetShuffleManager(sc.conf)
     CometDriverPlugin.maybeSetCacheSerializer(sc.conf, extraConfs)
     CometDriverPlugin.warnIfKryoRegistrationsMissing(sc.conf)
 
@@ -173,6 +175,26 @@ object CometDriverPlugin extends Logging {
 
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
+
+  // Choose Comet's shuffle manager for an application that did not choose one, so that Comet
+  // does not disable itself. From Spark 4.0 (SPARK-45762) SparkContext creates the shuffle manager
+  // right after it initializes the plugins, from the same SparkConf, and executors take their conf
+  // from the driver's when they register, which happens after this. Before 4.0 the SparkEnv holds
+  // the manager already, so setting the conf here would change nothing but the conf, and an
+  // application there has to set spark.shuffle.manager itself.
+  // An application that set spark.shuffle.manager keeps its choice, even Spark's own: it may
+  // depend on that manager, as Celeborn does, and Comet then disables itself as before.
+  private[apache] def maybeSetShuffleManager(conf: SparkConf): Unit = {
+    val key = "spark.shuffle.manager"
+    if (CometSparkSessionExtensions.isSpark40Plus &&
+      getBooleanConf(conf, CometConf.COMET_ENABLED) &&
+      getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED) &&
+      !conf.contains(key)) {
+      val value = classOf[CometShuffleManager].getName
+      conf.set(key, value)
+      logInfo(s"Auto-set $key=$value")
+    }
+  }
 
   // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
   // Comet and its native execution as well as the cache config. spark.sql.cache.serializer is

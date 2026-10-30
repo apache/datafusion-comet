@@ -29,11 +29,11 @@ import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext,
 import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEvent, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
-import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
-import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
+import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -325,6 +325,73 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
     assert(execMemOverhead2 == "1G")
     assert(execMemOverhead3 == "1G")
     assert(execMemOverhead4 == "1G")
+  }
+}
+
+// The application names no shuffle manager. From Spark 4.0 the plugin chooses Comet's, because
+// SparkContext creates the manager after it initializes the plugins. Before 4.0 the manager exists
+// by then, so the plugin cannot, and Comet disables itself.
+class CometPluginsDefaultShuffleManagerSuite extends CometTestBase {
+  override protected def sparkConf: SparkConf = {
+    val conf = new SparkConf()
+    conf.set("spark.plugins", "org.apache.spark.CometPlugin")
+    conf.set("spark.memory.offHeap.enabled", "true")
+    conf.set("spark.memory.offHeap.size", "2g")
+    conf.set("spark.comet.enabled", "true")
+    conf.set("spark.comet.exec.enabled", "true")
+    conf
+  }
+
+  private val query = "SELECT _2, count(*) FROM tbl GROUP BY _2"
+
+  test("the plugin sets Comet's shuffle manager from Spark 4.0 and Comet runs") {
+    val cometManager = classOf[CometShuffleManager].getName
+    val expected = CometSparkSessionExtensions.isSpark40Plus
+    assert(spark.sparkContext.conf.contains("spark.shuffle.manager") == expected)
+    assert(SparkEnv.get.shuffleManager.isInstanceOf[CometShuffleManager] == expected)
+    if (expected) {
+      assert(spark.sparkContext.conf.get("spark.shuffle.manager") == cometManager)
+    }
+    withParquetTable((0 until 100).map(i => (i, (i % 7).toString)), "tbl") {
+      val (_, plan) = checkSparkAnswer(query)
+      assert(collect(plan) { case op: CometPlan => op }.nonEmpty == expected, plan)
+      assert(collect(plan) { case op: CometShuffleExchangeExec => op }.nonEmpty == expected, plan)
+    }
+  }
+}
+
+class CometDriverPluginShuffleManagerSuite extends SparkFunSuite {
+  private val key = "spark.shuffle.manager"
+
+  private def chosen(conf: SparkConf): Option[String] = {
+    CometDriverPlugin.maybeSetShuffleManager(conf)
+    conf.getOption(key)
+  }
+
+  private val cometManager = classOf[CometShuffleManager].getName
+
+  test("sets Comet's shuffle manager only on Spark 4.0 and later") {
+    val expected = if (CometSparkSessionExtensions.isSpark40Plus) Some(cometManager) else None
+    assert(chosen(new SparkConf(false)) == expected)
+  }
+
+  test("keeps the shuffle manager the application set") {
+    Seq("sort", "tungsten-sort", classOf[CometCelebornShuffleManager].getName, "com.example.Mgr")
+      .foreach { manager =>
+        assert(chosen(new SparkConf(false).set(key, manager)).contains(manager))
+      }
+  }
+
+  test("leaves the shuffle manager unset when Comet or Comet shuffle is disabled") {
+    Seq(CometConf.COMET_ENABLED, CometConf.COMET_SHUFFLE_ENABLED).foreach { entry =>
+      assert(chosen(new SparkConf(false).set(entry.key, "false")).isEmpty)
+    }
+  }
+
+  test("leaves the shuffle manager unset when a deprecated alternative disables Comet shuffle") {
+    val conf = new SparkConf(false)
+    conf.set("spark.comet.exec.shuffle.enabled", "false")
+    assert(chosen(conf).isEmpty)
   }
 }
 

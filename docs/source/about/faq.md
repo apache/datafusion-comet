@@ -127,9 +127,9 @@ Common causes of a small speedup are:
 - **Fallbacks inside a stage.** Each switch between Comet and Spark converts data between columnar
   and row formats, which can cost more than Comet saves. See
   [Reducing Row/Columnar Conversion Overhead](../user-guide/latest/tuning/transitions.md).
-- **Comet's shuffle manager is not set.** If `spark.shuffle.manager` does not name Comet's shuffle
-  manager, Comet disables itself and logs a warning, unless `spark.comet.shuffle.enabled=false`, in
-  which case Comet runs but every shuffle runs in Spark. See
+- **Comet's shuffle manager is not set.** On Spark 3.4 and 3.5, or when the application sets
+  `spark.shuffle.manager` to another manager, Comet disables itself and logs a warning, unless
+  `spark.comet.shuffle.enabled=false`, in which case Comet runs but every shuffle runs in Spark. See
   [Shuffle Tuning](../user-guide/latest/tuning/shuffle.md).
 - **Too little memory.** Native operators spill to disk when the off-heap pool is too small. See
   [Memory Tuning](../user-guide/latest/tuning/memory.md).
