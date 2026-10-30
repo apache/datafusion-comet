@@ -102,6 +102,27 @@ room, but nothing in the container's size accounts for the memory that no pool t
 JVM's own non-heap memory, such as metaspace, code cache, thread stacks and GC structures, is
 already drawing on.
 
+On Kubernetes and YARN, with `spark.memory.offHeap.enabled=true`, Spark requests the following
+memory for each executor using the default resource profile:
+
+```text
+executor container memory = spark.executor.memory
+                          + spark.executor.memoryOverhead
+                          + spark.memory.offHeap.size
+                          + spark.executor.pyspark.memory (when applicable)
+```
+
+The overhead term is the configured value or the derived value described below. The PySpark term
+is included only when configured for a Python application: on YARN, and on Kubernetes in cluster
+mode. Without a separate PySpark allowance, Python workers share the overhead. A non-default
+resource profile can override the memory amounts, and YARN may round up the requested allocation.
+
+`spark.memory.offHeap.size` is therefore part of the container budget, not headroom outside it.
+Increasing it increases both the requested container memory and the shared reservation budget.
+Increasing `spark.executor.memoryOverhead` increases the container memory without enlarging that
+budget. Overhead is an allowance for memory outside the JVM heap and the off-heap pool, not a pool
+consumers can reserve from or a separately enforced limit.
+
 Work out what the executor already gets before choosing a value. When
 `spark.executor.memoryOverhead` is unset, Spark derives the overhead as
 `max(spark.executor.memoryOverheadFactor * spark.executor.memory, 384 MiB)`. The factor defaults to
@@ -128,8 +149,9 @@ size:
 spark.executor.memoryOverheadFactor=0.2
 ```
 
-Raise the value further if executors are killed by the cluster manager (on Kubernetes,
-`ExecutorLostFailure` with exit code 137) rather than failing with a task-level out-of-memory error.
+Raise the value further if cluster-manager diagnostics confirm that executors exceeded their
+container memory limit. First distinguish that from heap exhaustion or a refused pool reservation;
+see [Diagnosing Memory Failures](#diagnosing-memory-failures).
 To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
@@ -138,6 +160,25 @@ executors without a memory limit and count only `spark.executor.memory` against 
 offer.
 
 [Sizing the Overhead from the Memory Usage Log]: #sizing-the-overhead-from-the-memory-usage-log
+
+## Diagnosing Memory Failures
+
+Check the executor log and the cluster manager's diagnostics together. An executor loss or an
+exception class alone does not identify which memory limit was reached.
+
+| Limit               | Typical symptoms                                                                                                                                                                                                                                                                                                                                     | What to check or tune                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Container memory    | Kubernetes reports `OOMKilled`, often with `ExecutorLostFailure` and exit code 137; YARN reports that the container exceeded its memory limit. All tasks on that executor are lost.                                                                                                                                                                  | Confirm the termination reason: exit 137 alone means the process was killed, not necessarily because of memory. Follow [Sizing the Overhead from the Memory Usage Log] to size `spark.executor.memoryOverhead`. A pool can stay within its budget while the container exceeds its limit.                                                                                                                                                                     |
+| JVM heap            | `java.lang.OutOfMemoryError` with a heap-specific message such as `Java heap space` or `GC overhead limit exceeded`. Spark's uncaught-error handler exits with code 52, but a JVM OOM handler can terminate the process first.                                                                                                                       | Investigate heap usage and `spark.executor.memory`. Increasing overhead does not enlarge the JVM heap. Other `OutOfMemoryError` messages, such as `Metaspace`, concern different memory limits; exit 52 alone does not establish heap exhaustion.                                                                                                                                                                                                            |
+| Managed memory pool | Operators spill, or a task fails when memory cannot be reserved. Spark consumers can report `SparkOutOfMemoryError`; Comet operators can report a `CometNativeException` with a message such as `Additional allocation failed for` or `Not enough memory to continue external sort`. These reservation failures normally leave the executor running. | Identify the consumer and its pool. For Comet's shared off-heap pool, consider increasing `spark.memory.offHeap.size`, running fewer tasks per executor, or reducing `spark.comet.batchSize`; see [Configuring Comet Memory]. Increasing overhead does not enlarge this pool. `SparkOutOfMemoryError` can also come from Spark's on-heap consumers, and `CometNativeException` can report unrelated errors, so check the message and failing operator first. |
+
+For example, on non-Windows YARN executors Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
+an OOM handler is already configured. The JVM can therefore terminate on a heap OOM with SIGTERM
+(exit 143) rather than reaching Spark's exit-52 handler. Use the heap-specific log message to
+diagnose this case.
+
+For the full accounting model and allocation paths, see the contributor guide's
+[Memory Management](../../../contributor-guide/memory_management.md) page.
 
 ## Sizing the Overhead from the Memory Usage Log
 
