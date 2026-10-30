@@ -29,6 +29,7 @@ import org.apache.parquet.hadoop.api.WriteSupport
 import org.apache.parquet.hadoop.api.WriteSupport.WriteContext
 import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1564,6 +1565,60 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         assert(
           pruned + matched > 0,
           "Expected row-level pushdown to fire once rowFilterPushdown.enabled is set")
+      }
+    }
+  }
+
+  test("make_date predicates preserve evaluation order and errors with row-level pushdown") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(1024)
+            .coalesce(1)
+            .selectExpr(
+              "CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y",
+              "IF(id = 1023, '', sha2(CAST(id AS STRING), 512)) AS mask")
+            .write
+            .parquet(path.toString)
+        }
+        withTempView("make_date_filters") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("make_date_filters")
+          val datePredicate = "unix_date(make_date(y, 1, 1)) > 0"
+          val masked = sql(
+            s"SELECT count(*) FROM make_date_filters WHERE length(mask) > 0 AND $datePredicate")
+          assert(
+            find(masked.queryExecution.executedPlan)(
+              _.isInstanceOf[CometNativeScanExec]).isDefined)
+          checkSparkAnswer(masked)
+          assert(masked.collect().toSeq == Seq(Row(1023L)))
+
+          // A later mask must not hide an overflow that Spark evaluates first. The unmasked
+          // predicate must also preserve Spark's structured error outside Parquet's RowFilter.
+          Seq(datePredicate, s"$datePredicate AND length(mask) > 0").foreach { predicate =>
+            val df = sql(s"SELECT count(*) FROM make_date_filters WHERE $predicate")
+            assert(
+              find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            val failures = Seq(sparkError, cometError).map { error =>
+              val failure = error.getOrElse(fail(s"Expected overflow for $predicate"))
+              val chain = causeChain(failure)
+              assert(!chain.exists(_.isInstanceOf[CometNativeException]), failure.toString)
+              chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
+                fail(s"Expected a SparkThrowable for $predicate: $failure")
+              }
+            }
+            val expected = failures.head
+            val actual = failures(1)
+            assert(expected.getErrorClass == "ARITHMETIC_OVERFLOW")
+            assert(actual.getClass == expected.getClass)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+          }
+        }
       }
     }
   }

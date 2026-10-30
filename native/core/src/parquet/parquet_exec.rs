@@ -39,7 +39,7 @@ use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{EvalMode, MakeDateExpr};
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
 use std::collections::HashMap;
@@ -111,7 +111,20 @@ pub(crate) fn init_datasource_exec(
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
     // state()` would clone the whole `SessionState`, including the function registries (~250+
     // UDFs) and optimizer rules, on every scan init.
-    let session_config = session_ctx.copied_config();
+    let mut session_config = session_ctx.copied_config();
+    if data_filters
+        .as_ref()
+        .is_some_and(|filters| filters.iter().any(contains_make_date))
+    {
+        // RowFilter can reorder predicates and flatten their Spark errors. Even pushing only
+        // a later sibling could hide a make_date error that Spark evaluates first. Keep all
+        // row filtering above this scan, while retaining metadata pruning for other predicates.
+        session_config
+            .options_mut()
+            .execution
+            .parquet
+            .pushdown_filters = false;
+    }
     let (table_parquet_options, mut spark_parquet_options) = get_options(
         session_timezone,
         case_sensitive,
@@ -291,11 +304,12 @@ pub(crate) fn init_datasource_exec(
     // `propagation.parent_pushdown_result` because Spark's Filter above the
     // scan re-evaluates every dataFilter, so No-classified filters stay
     // correct without us inserting a FilterExec here. That also makes it safe
-    // to drop the filters that call into the JVM first; see `calls_jvm`.
+    // to drop the filters that call into the JVM first; see `calls_jvm`. A make_date predicate
+    // also stays above the scan so its evaluation and structured errors remain with the Filter.
     let data_filters = data_filters.map(|filters| {
         filters
             .into_iter()
-            .filter(|filter| !calls_jvm(filter))
+            .filter(|filter| !calls_jvm(filter) && !contains_make_date(filter))
             .collect::<Vec<_>>()
     });
     let file_source: Arc<dyn FileSource> = match data_filters {
@@ -348,6 +362,11 @@ pub(crate) fn init_datasource_exec(
 /// a JVM call is opaque to row-group, page-index, and bloom-filter pruning, so nothing is lost.
 fn calls_jvm(expr: &Arc<dyn PhysicalExpr>) -> bool {
     expr.exists(|e| Ok(e.downcast_ref::<JvmScalarUdfExpr>().is_some()))
+        .unwrap_or(true)
+}
+
+fn contains_make_date(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.exists(|e| Ok(e.downcast_ref::<MakeDateExpr>().is_some()))
         .unwrap_or(true)
 }
 
