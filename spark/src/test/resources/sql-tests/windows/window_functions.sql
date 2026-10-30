@@ -248,10 +248,10 @@ ORDER BY cate, val_date
 -- Ported from Spark's typeCoercion/native/windowFrameCoercion.sql:
 --   SELECT COUNT(*) OVER (PARTITION BY 1 ORDER BY cast(1 as decimal(10, 0)) DESC
 --     RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t
--- Runs natively: Spark's WindowFrameTypeCoercion casts the frame offset to
--- the same Decimal type as the ORDER BY column, so the boundary arithmetic
--- keeps the current row's precision and DataFusion's comparator has matching
--- operands. The DATE case in 1.11 keeps an IntegerType offset instead, which
+-- Runs natively: Spark casts the frame offset to the ORDER BY decimal type.
+-- Boundary arithmetic still widens precision (e.g. DECIMAL(11,0)), but
+-- DataFusion compares Decimal128 values with matching scales regardless of
+-- precision. The DATE case in 1.11 keeps an IntegerType offset instead, which
 -- the native planner coerces to IntervalDayTime.
 -- ============================================================
 

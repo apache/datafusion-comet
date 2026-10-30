@@ -2400,8 +2400,8 @@ class CometWindowExecSuite extends CometTestBase {
 
   // With a non-zero scale the limit is the same 2^127 - 1 minus the largest unscaled value,
   // 70141183460469231731687303715884105728 unscaled, that is
-  // 7014118346046923173168730371.5884105728 at scale 10. A FOLLOWING offset is not negated, so
-  // it reaches Spark's frame exactly.
+  // 7014118346046923173168730371.5884105728 at scale 10. A FOLLOWING offset under an ascending
+  // ORDER BY is not negated, so it reaches Spark's frame exactly.
   private val maxDecimal38s10 = "9" * 28 + "." + "9" * 10
   private val decimal38s10Limit = "7014118346046923173168730371.5884105728"
 
@@ -2438,9 +2438,10 @@ class CometWindowExecSuite extends CometTestBase {
   }
 
   test("window: RANGE offset on DECIMAL(38, 10) ORDER BY at the Decimal128 limit runs natively") {
-    // At the limit itself the bound of the largest value is exactly 2^127 - 1. A PRECEDING
-    // offset is negated with 34 significant digits, so the two-sided frame uses the largest
-    // 34-digit offset under the limit.
+    // At the limit itself the bound of the largest value is exactly 2^127 - 1. Spark negates a
+    // PRECEDING offset, and any offset under a descending ORDER BY, with 34 significant digits,
+    // which rounds the limit up past it, so those frames use the largest 34-digit offset under
+    // the limit.
     withTempDir { dir =>
       writeDecimalOverflowFixture(
         dir,
@@ -2452,7 +2453,11 @@ class CometWindowExecSuite extends CometTestBase {
         ansi <- Seq("true", "false")
         order <- Seq("ASC NULLS LAST", "ASC NULLS FIRST", "DESC NULLS LAST", "DESC NULLS FIRST")
         frame <- Seq(
-          s"RANGE BETWEEN CURRENT ROW AND $decimal38s10Limit FOLLOWING",
+          if (order.startsWith("ASC")) {
+            s"RANGE BETWEEN CURRENT ROW AND $decimal38s10Limit FOLLOWING"
+          } else {
+            s"RANGE BETWEEN CURRENT ROW AND $under FOLLOWING"
+          },
           s"RANGE BETWEEN $under PRECEDING AND $under FOLLOWING")
       } {
         withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
@@ -2461,6 +2466,51 @@ class CometWindowExecSuite extends CometTestBase {
             FROM dec_s10_edge
           """)
           checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("window: RANGE offset on DECIMAL ORDER BY uses the offset Spark evaluates") {
+    // For a descending ORDER BY Spark negates the offset before adding it, and on Scala 2.13
+    // that rounds a decimal to 34 significant digits, so a 35-digit offset of 1e34 + 1 becomes
+    // 1e34 and the bound of the row 1e34 + 1 stops at 1, short of 0. On Scala 2.12 the
+    // negation is exact. A negative literal such as -N FOLLOWING is parsed exactly, and an
+    // ascending ORDER BY adds it unchanged. Either way the native frame must use the offset
+    // Spark uses.
+    for {
+      (decimalType, n, values) <- Seq(
+        (
+          "DECIMAL(35, 0)",
+          "10000000000000000000000000000000001",
+          Seq("10000000000000000000000000000000001", "1", "0")),
+        (
+          "DECIMAL(35, 34)",
+          "1.0000000000000000000000000000000001",
+          Seq(
+            "1.0000000000000000000000000000000001",
+            "0.0000000000000000000000000000000001",
+            "0")))
+    } {
+      withTempDir { dir =>
+        writeDecimalOverflowFixture(dir, values, decimalType)
+        spark.read.parquet(dir.toString).createOrReplaceTempView("dec_negated")
+        for {
+          ansi <- Seq("true", "false")
+          order <- Seq("ASC NULLS LAST", "DESC NULLS LAST", "DESC NULLS FIRST")
+          frame <- Seq(
+            s"RANGE BETWEEN CURRENT ROW AND $n FOLLOWING",
+            s"RANGE BETWEEN $n PRECEDING AND CURRENT ROW",
+            s"RANGE BETWEEN -$n FOLLOWING AND CURRENT ROW",
+            s"RANGE BETWEEN CURRENT ROW AND -$n PRECEDING")
+        } {
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+            val df = sql(s"""
+              SELECT d, COUNT(*) OVER (ORDER BY d $order $frame) AS cnt
+              FROM dec_negated
+            """)
+            checkSparkAnswerAndOperator(df)
+          }
         }
       }
     }
