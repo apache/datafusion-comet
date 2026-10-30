@@ -450,6 +450,56 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // iceberg-java reads these settings strictly, so a value it rejects must decline the native
+  // write and let iceberg-java fail it, rather than succeed natively. The JVM path fails such a
+  // write, so allow the write failure and pin only the fall-back reason.
+  test("fall-back: compression codec iceberg-java rejects") {
+    withDetectionCatalog { _ =>
+      Seq("none", " gzip").zipWithIndex.foreach { case (codec, i) =>
+        val table = s"bad_codec_$i"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.compression-codec'='$codec'"))
+        assertUnsupportedContainsAllowingWriteFailure(
+          table,
+          "write.parquet.compression-codec",
+          codec)
+      }
+      createTable(
+        "good_codec",
+        partitionSpec = "",
+        properties = Some("'write.parquet.compression-codec'='GZIP'"))
+      assertSupportLevelIs[Compatible]("good_codec")
+    }
+  }
+
+  test("fall-back: row-group-check-min-record-count with whitespace") {
+    withDetectionCatalog { _ =>
+      createTable(
+        "rg_min_space",
+        partitionSpec = "",
+        properties = Some("'write.parquet.row-group-check-min-record-count'=' 100'"))
+      assertUnsupportedContainsAllowingWriteFailure(
+        "rg_min_space",
+        "write.parquet.row-group-check-min-record-count",
+        "not an int")
+    }
+  }
+
+  test("fall-back: write.parquet.page-version=V1 is not iceberg-java's spelling") {
+    withDetectionCatalog { _ =>
+      createTable(
+        "page_v1_upper",
+        partitionSpec = "",
+        properties = Some("'write.parquet.page-version'='V1'"))
+      assertUnsupportedContainsAllowingWriteFailure(
+        "page_v1_upper",
+        "write.parquet.page-version",
+        "V1")
+    }
+  }
+
   test("fall-back: parquet.enable.dictionary set") {
     withDetectionCatalog { _ =>
       createTable(
