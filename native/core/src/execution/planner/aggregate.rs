@@ -248,6 +248,34 @@ impl OperatorBuilder for HashAggBuilder {
             })
             .collect();
 
+        // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
+        // GroupedHashAggregateStream, whose spill can fail against the fair limit (#6880). Final
+        // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
+        // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
+        // Final as under Single.
+        // Only partially sorted input switches: with fully sorted input Final has no spill path
+        // and would halve the limit of a sort below it. Final also reads states from the columns
+        // after the keys, so the input must be the keys followed by native states (Spark's binary
+        // collect buffers keep Single, and arrive unordered anyway).
+        // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
+        // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
+        let mode = if proto_mode == ProtoAggregateMode::PartialMerge
+            && input_is_keys_then_states(agg, &aggr_expr, &schema)?
+            && {
+                let keys = group_by.input_exprs();
+                let sorted_on = child
+                    .native_plan
+                    .equivalence_properties()
+                    .find_longest_permutation(&keys)?
+                    .1;
+                // DataFusion's InputOrderMode is PartiallySorted when some, not all, keys match.
+                !sorted_on.is_empty() && sorted_on.len() < keys.len()
+            } {
+            DFAggregateMode::Final
+        } else {
+            mode
+        };
+
         let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
             datafusion::physical_plan::aggregates::AggregateExec::try_new(
                 mode,
@@ -308,6 +336,37 @@ impl OperatorBuilder for HashAggBuilder {
             )),
         ))
     }
+}
+
+/// Whether a PartialMerge's input is its grouping keys, in order, followed by the states of
+/// its MergeAsPartial aggregates in their native types, which DataFusion's Final assumes. A
+/// Spark partial aggregate's collect buffers, for example, arrive as binary.
+fn input_is_keys_then_states(
+    agg: &datafusion_comet_proto::spark_operator::HashAggregate,
+    aggr_expr: &[Arc<AggregateFunctionExpr>],
+    input_schema: &SchemaRef,
+) -> Result<bool, ExecutionError> {
+    let num_keys = agg.grouping_exprs.len();
+    let keys_lead = agg.initial_input_buffer_offset as usize == num_keys
+        && agg.grouping_exprs.iter().enumerate().all(|(idx, expr)| {
+            matches!(&expr.expr_struct, Some(ExprStruct::Bound(bound)) if bound.index as usize == idx)
+        });
+    if !keys_lead {
+        return Ok(false);
+    }
+    let mut input_types = input_schema
+        .fields()
+        .iter()
+        .skip(num_keys)
+        .map(|f| f.data_type());
+    for expr in aggr_expr {
+        for field in expr.state_fields()? {
+            if input_types.next() != Some(field.data_type()) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(input_types.next().is_none())
 }
 
 impl PhysicalPlanner {

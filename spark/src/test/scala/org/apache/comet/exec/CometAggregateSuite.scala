@@ -31,9 +31,9 @@ import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.LocalTableScanExec
+import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
@@ -297,6 +297,100 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           spark.read.parquet(path).groupBy("g").agg(expr("max(v)"), count_distinct(col("k")))
         checkCometAnswer(df, Seq(Row(0L, 124999L, 62500L)))
         spilledAggregates(df, PartialMerge)
+      }
+    }
+  }
+
+  // Writes 125,000 rows over four values of g, with 62,500 distinct k that each fall in one g,
+  // then runs `f` in each of the pools. The PartialMerge keyed by (g, k) has to spill several runs
+  // of its 62,500 groups, and its input is sorted on g, a prefix of its keys, so DataFusion runs
+  // it as an ordered final aggregate (issue #6880). Each g has 15,625 distinct k and the largest v
+  // with id % 4 = g, so a key emitted twice across a change of g shows up in the answer.
+  private def withPartialMergeOverSortedPrefix(poolsMiB: Seq[Int])(f: String => Unit): Unit = {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark
+        .range(0, 125000, 1, 1)
+        .selectExpr("id % 4 AS g", "lpad(cast(id % 62500 AS STRING), 128, 'k') AS k", "id AS v")
+        .write
+        .parquet(path + "/data")
+      spark.range(0, 4).selectExpr("id AS g").write.parquet(path + "/keys")
+      for (poolMiB <- poolsMiB) {
+        withSQLConf(
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          CometConf.COMET_BATCH_SIZE.key -> "1024",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536",
+          CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> (poolMiB / 2048.0).toString) {
+          withClue(s"With a $poolMiB MiB pool: ") {
+            f(path)
+          }
+        }
+      }
+    }
+  }
+
+  private val partialMergeOverSortedPrefixAnswer =
+    (0 until 4).map(g => Row(g.toLong, 124996L + g, 15625L))
+
+  test("PartialMerge over input sorted on a prefix of its keys spills (issue #6880)") {
+    withPartialMergeOverSortedPrefix(Seq(2, 8)) { path =>
+      // The repartition on g satisfies the PartialMerge keyed by (g, k), so the sort, the partial
+      // aggregate and the PartialMerge run in one native plan with no exchange between them. The
+      // optimizer drops the sort under the aggregate unless EliminateSorts is excluded.
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> EliminateSorts.ruleName) {
+        val df = spark.read
+          .parquet(path + "/data")
+          .repartition(1, col("g"))
+          .sortWithinPartitions("g")
+          .groupBy("g")
+          .agg(expr("max(v)"), count_distinct(col("k")))
+          .orderBy("g")
+        checkCometAnswer(df, partialMergeOverSortedPrefixAnswer)
+
+        assert(
+          spilledAggregates(df, PartialMerge).exists(_.child match {
+            case partial: CometHashAggregateExec => partial.child.isInstanceOf[CometSortExec]
+            case _ => false
+          }),
+          "Expected a native PartialMerge over a partial aggregate over a sort:\n" +
+            df.queryExecution.executedPlan)
+      }
+    }
+  }
+
+  test("PartialMerge over a sort-merge join on a prefix of its keys spills (issue #6880)") {
+    // The sorts under the join need more than a 2 or 8 MiB pool's fair share, so this uses 16 MiB.
+    withPartialMergeOverSortedPrefix(Seq(16)) { path =>
+      // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
+      // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
+      // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
+      // runtime, which would turn the join into a broadcast hash join, because the keys are tiny.
+      withSQLConf(
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+        val df = spark.read
+          .parquet(path + "/data")
+          .join(spark.read.parquet(path + "/keys"), "g")
+          .groupBy("g")
+          .agg(expr("max(v)"), count_distinct(col("k")))
+          .orderBy("g")
+        checkCometAnswer(df, partialMergeOverSortedPrefixAnswer)
+
+        // An exchange between the join and the partial aggregate would leave the PartialMerge
+        // over unsorted input, where it would still spill.
+        def reachesJoinWithoutExchange(plan: SparkPlan): Boolean = plan match {
+          case _: CometSortMergeJoinExec => true
+          case _: CometShuffleExchangeExec => false
+          case other => other.children.exists(reachesJoinWithoutExchange)
+        }
+        assert(
+          spilledAggregates(df, PartialMerge).exists(_.child match {
+            case partial: CometHashAggregateExec => reachesJoinWithoutExchange(partial.child)
+            case _ => false
+          }),
+          "Expected a native PartialMerge over a partial aggregate over a sort-merge join:\n" +
+            df.queryExecution.executedPlan)
       }
     }
   }
