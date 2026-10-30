@@ -40,7 +40,9 @@ use zstd::zstd_safe::{CCtx, CParameter, ResetDirective};
 /// |  8    |  8,119,825        |
 /// |  9    | 15,459,857 (over) |
 /// | 19    | 93,848,207 (over) |
-const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
+///
+/// The shuffle reader applies the same cap to the decompression context it retains per thread.
+pub(crate) const MAX_RETAINED_ZSTD_CONTEXT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Reusable compression state for encoding shuffle blocks.
 ///

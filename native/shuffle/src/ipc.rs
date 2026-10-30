@@ -15,6 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::codec_context::MAX_RETAINED_ZSTD_CONTEXT_BYTES;
 use crate::offsets_as_lengths::{
     buffer_ranges, buffer_roles, lengths_to_offsets, LENGTHS_TAG_FLAG,
 };
@@ -27,10 +28,15 @@ use arrow::ipc::{root_as_message, Message, MessageHeader};
 use arrow_data::UnsafeFlag;
 use datafusion::common::DataFusionError;
 use datafusion::error::Result;
+use lz4_flex::frame::FrameDecoder as Lz4FrameDecoder;
+use snap::read::FrameDecoder as SnappyFrameDecoder;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read};
+use std::marker::PhantomData;
+use std::ptr;
 use std::sync::Arc;
+use zstd::zstd_safe::{DCtx, ResetDirective};
 
 /// Decode trusted local Comet output without revalidating every Arrow array value or offset.
 pub fn read_ipc_compressed(bytes: &[u8]) -> Result<RecordBatch> {
@@ -67,21 +73,36 @@ struct CachedSchema {
     retained_size: usize,
 }
 
-/// Per-thread memoization of immutable schema metadata, not operator state. Moving execution to
-/// another thread only loses cache hits. Dictionaries and batch data remain local to each call.
-///
+/// Per-thread decoder state: memoized schema metadata and retained decompressors, not operator
+/// state. Moving execution to another thread only loses cache hits and decoder reuse.
+/// Dictionaries and batch data remain local to each call.
+#[derive(Default)]
+struct DecoderState {
+    cache: SchemaCache,
+    codecs: Codecs,
+}
+
 /// Every block is a complete IPC stream that opens with a schema message. `ShuffleBlockWriter`
 /// encodes that message once and writes it verbatim into every block, so consecutive blocks carry
 /// byte-identical schema messages. The cache is keyed on those bytes: a hit is one memcmp, and
 /// the schema message is neither verified nor parsed.
 #[derive(Default)]
-struct DecoderState {
+struct SchemaCache {
     /// Parsed schemas keyed on the raw schema message, most recently used first.
     schemas: Vec<CachedSchema>,
     /// Message metadata read from a decompressor lands here, so it is not reallocated per block.
     scratch: Vec<u8>,
     #[cfg(test)]
     stats: SchemaCacheStats,
+}
+
+impl SchemaCache {
+    /// A corrupt length can grow the scratch arbitrarily; do not pin that for the thread's life.
+    fn release_oversized_scratch(&mut self) {
+        if self.scratch.capacity() > SCRATCH_RETAIN_LIMIT {
+            self.scratch = Vec::new();
+        }
+    }
 }
 
 thread_local! {
@@ -93,12 +114,18 @@ thread_local! {
 #[doc(hidden)]
 pub fn reset_schema_cache() {
     STATE.with_borrow_mut(|state| {
-        state.schemas.clear();
+        state.cache.schemas.clear();
         #[cfg(test)]
         {
-            state.stats = SchemaCacheStats::default();
+            state.cache.stats = SchemaCacheStats::default();
         }
     });
+}
+
+/// Drops this thread's retained decompressors, so the next block of each codec builds a new one.
+#[cfg(test)]
+fn reset_codecs() {
+    STATE.with_borrow_mut(|state| state.codecs = Codecs::default());
 }
 
 /// Schema cache hits and misses on this thread since the last [`reset_schema_cache`].
@@ -111,12 +138,26 @@ struct SchemaCacheStats {
 
 #[cfg(test)]
 fn schema_cache_stats() -> SchemaCacheStats {
-    STATE.with_borrow(|state| state.stats)
+    STATE.with_borrow(|state| state.cache.stats)
 }
 
 #[cfg(test)]
 fn scratch_capacity() -> usize {
-    STATE.with_borrow(|state| state.scratch.capacity())
+    STATE.with_borrow(|state| state.cache.scratch.capacity())
+}
+
+/// Decompressors this thread has built since the last [`reset_codecs`], per codec.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CodecCreations {
+    lz4: usize,
+    snappy: usize,
+    zstd: usize,
+}
+
+#[cfg(test)]
+fn codec_creations() -> CodecCreations {
+    STATE.with_borrow(|state| state.codecs.creations)
 }
 
 fn cached_schema(schemas: &mut [CachedSchema], schema_message: &[u8]) -> Option<SchemaRef> {
@@ -203,53 +244,307 @@ fn read_ipc_compressed_impl(bytes: &[u8], validate: bool) -> Result<RecordBatch>
     // the flag rides on the first tag byte; the rest of the tag names the codec as before
     let lengths = tag[0] & LENGTHS_TAG_FLAG != 0;
     let codec = [tag[0] & !LENGTHS_TAG_FLAG, tag[1], tag[2], tag[3]];
-    let mut encoded = &bytes[4..];
-    let batch = match &codec {
-        b"SNAP" => decode(
-            Streamed(snap::read::FrameDecoder::new(&mut encoded)),
-            validate,
-            lengths,
-        )?,
-        b"LZ4_" => decode(
-            Streamed(lz4_flex::frame::FrameDecoder::new(RequireLz4EndMark(
-                &mut encoded,
-            ))),
-            validate,
-            lengths,
-        )?,
-        // The slice already implements BufRead. Adding another BufReader would let read-ahead
-        // conceal compressed bytes left over after the decoder reaches its end marker.
-        b"ZSTD" => decode(
-            Streamed(zstd::Decoder::with_buffer(&mut encoded)?),
-            validate,
-            lengths,
-        )?,
-        // Uncompressed messages are located in place, so only bodies are copied.
-        b"NONE" => {
-            let batch = decode(Sliced::new(encoded), validate, lengths)?;
-            encoded = &[];
-            batch
+    let encoded = &bytes[4..];
+    STATE.with_borrow_mut(|state| {
+        let DecoderState { cache, codecs } = state;
+        // the batch, and how many compressed bytes the decompressor left unread
+        let (batch, unread) = match &codec {
+            b"SNAP" => {
+                // snap checks for the stream identifier only on a decoder's first chunk, so a
+                // retained decoder would accept a later block that lacks it. A fresh one does
+                // not, and neither does this.
+                if encoded
+                    .first()
+                    .is_some_and(|&chunk_type| chunk_type != SNAPPY_STREAM_IDENTIFIER_CHUNK)
+                {
+                    return Err(decode_error("invalid snappy stream header"));
+                }
+                let mut loan = codecs.lend_snappy(encoded);
+                let batch = read_single_batch(cache, Streamed(loan.decoder()), validate, lengths);
+                let unread = loan.settle(batch.is_ok());
+                (batch, unread)
+            }
+            b"LZ4_" => {
+                let mut loan = codecs.lend_lz4(encoded);
+                let batch = read_single_batch(cache, Streamed(loan.decoder()), validate, lengths);
+                let unread = loan.settle(batch.is_ok());
+                (batch, unread)
+            }
+            b"ZSTD" => {
+                // The slice already implements BufRead. Adding another BufReader would let
+                // read-ahead conceal compressed bytes left over after the decoder reaches its
+                // end marker.
+                let mut encoded = encoded;
+                let batch = match codecs.zstd_dctx() {
+                    Ok(dctx) => read_single_batch(
+                        cache,
+                        Streamed(zstd::Decoder::with_context(&mut encoded, dctx)),
+                        validate,
+                        lengths,
+                    ),
+                    Err(error) => Err(error),
+                };
+                codecs.release_zstd_if_oversized();
+                (batch, encoded.len())
+            }
+            // Uncompressed messages are located in place, so only bodies are copied.
+            b"NONE" => (
+                read_single_batch(cache, Sliced::new(encoded), validate, lengths),
+                0,
+            ),
+            _ => return Err(decode_error(&format!("invalid compression codec: {tag:?}"))),
+        };
+        cache.release_oversized_scratch();
+        let batch = batch?;
+        // LZ4 returns EOF at the end of one compressed frame without consuming the next one.
+        // Check the encoded source as well as the decoded IPC tail so an oversized outer frame
+        // cannot silently swallow another native frame's bytes.
+        if unread != 0 {
+            return Err(decode_error("trailing data after compressed stream"));
         }
-        _ => return Err(decode_error(&format!("invalid compression codec: {tag:?}"))),
-    };
-    // LZ4 returns EOF at the end of one compressed frame without consuming the next one. Check
-    // the encoded source as well as the decoded IPC tail so an oversized outer frame cannot
-    // silently swallow another native frame's bytes.
-    if !encoded.is_empty() {
-        return Err(decode_error("trailing data after compressed stream"));
-    }
-    Ok(batch)
+        Ok(batch)
+    })
 }
 
-fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool, lengths: bool) -> Result<RecordBatch> {
-    STATE.with_borrow_mut(|state| {
-        let batch = read_single_batch(state, source, validate, lengths);
-        // a corrupt length can grow the scratch arbitrarily; do not pin that for the thread's life
-        if state.scratch.capacity() > SCRATCH_RETAIN_LIMIT {
-            state.scratch = Vec::new();
+/// Decompressors kept from one block to the next.
+///
+/// Building a decoder per block was most of the fixed cost of decoding a small block. zstd
+/// allocates a decompression context with its window buffers, lz4_flex allocates block-sized
+/// input and output buffers as it reads the frame, and snap allocates and zero-fills about
+/// 140 KiB of them up front. Kept on the thread, the lz4_flex and snap decoders reuse those
+/// buffers for every following frame, and the zstd context keeps its workspace across the
+/// session reset that readies it for the next frame.
+///
+/// Retention per thread is bounded. An lz4 decoder's buffers are sized to its frame's block
+/// size, and lz4_flex expects them to stay that size, so one decoder is kept per block size the
+/// thread has seen, 64 KiB to 4 MiB, at most about 11 MiB in all; Comet's writer picks the size
+/// from the batch, so a shuffle normally uses one or two. A frame of any other layout (linked
+/// blocks, or the legacy format) gets a decoder for that block only. snap's buffers are fixed at
+/// about 140 KiB. A zstd context is dropped once it outgrows
+/// [`MAX_RETAINED_ZSTD_CONTEXT_BYTES`], as the writer drops its compression context.
+#[derive(Default)]
+struct Codecs {
+    /// One per block size code, see [`lz4_retention_slot`].
+    lz4: [Option<Lz4Decoder>; LZ4_BLOCK_SIZES],
+    /// For lz4 frames of any other layout; never kept past the block.
+    lz4_other: Option<Lz4Decoder>,
+    snappy: Option<SnappyDecoder>,
+    zstd: Option<DCtx<'static>>,
+    #[cfg(test)]
+    creations: CodecCreations,
+}
+
+/// The LZ4 frame block maximum sizes lz4_flex decodes: codes 4 to 7, 64 KiB to 4 MiB.
+const LZ4_BLOCK_SIZES: usize = 4;
+
+type Lz4Decoder = Lz4FrameDecoder<RequireLz4EndMark<BlockInput>>;
+type SnappyDecoder = SnappyFrameDecoder<BlockInput>;
+
+impl Codecs {
+    fn lend_lz4<'a, 'b>(&'a mut self, block: &'b [u8]) -> Loan<'a, 'b, Lz4Decoder> {
+        let (slot, keep) = match lz4_retention_slot(block) {
+            Some(index) => (&mut self.lz4[index], true),
+            None => (&mut self.lz4_other, false),
+        };
+        #[cfg(test)]
+        if slot.is_none() {
+            self.creations.lz4 += 1;
         }
-        batch
-    })
+        Loan::new(slot, block, keep)
+    }
+
+    fn lend_snappy<'a, 'b>(&'a mut self, block: &'b [u8]) -> Loan<'a, 'b, SnappyDecoder> {
+        #[cfg(test)]
+        if self.snappy.is_none() {
+            self.creations.snappy += 1;
+        }
+        Loan::new(&mut self.snappy, block, true)
+    }
+
+    /// The shared zstd context, reset for one frame. The reset also clears whatever a failed
+    /// decode left behind, so the context survives errors.
+    fn zstd_dctx(&mut self) -> Result<&mut DCtx<'static>> {
+        if self.zstd.is_none() {
+            #[cfg(test)]
+            {
+                self.creations.zstd += 1;
+            }
+            let dctx = DCtx::try_create()
+                .ok_or_else(|| decode_error("failed to allocate zstd decompression context"))?;
+            self.zstd = Some(dctx);
+        }
+        let dctx = self.zstd.as_mut().expect("created above");
+        dctx.reset(ResetDirective::SessionOnly)
+            .map_err(|code| decode_error(zstd::zstd_safe::get_error_name(code)))?;
+        Ok(dctx)
+    }
+
+    /// Drops the zstd context when its workspace, sized by the frames it has decoded, outgrew
+    /// [`MAX_RETAINED_ZSTD_CONTEXT_BYTES`]; the next zstd block creates a new one.
+    fn release_zstd_if_oversized(&mut self) {
+        if self
+            .zstd
+            .as_ref()
+            .is_some_and(|dctx| dctx.sizeof() > MAX_RETAINED_ZSTD_CONTEXT_BYTES)
+        {
+            self.zstd = None;
+        }
+    }
+}
+
+/// The chunk type that opens a snappy frame stream: the stream identifier.
+const SNAPPY_STREAM_IDENTIFIER_CHUNK: u8 = 0xff;
+
+/// Which retained decoder an LZ4 frame goes to: one per block maximum size, for a standard frame
+/// with independent blocks, the layout Comet's writer produces. `None` for any other frame.
+///
+/// lz4_flex sizes a decoder's buffers to its frame's block size and asserts, in debug builds,
+/// that they keep that size, so frames of different sizes cannot share a decoder. The header
+/// is the 4-byte magic number, then `FLG`, whose bit 5 marks independent blocks, then `BD`,
+/// whose bits 6 to 4 code the block size: 4 for 64 KiB through 7 for 4 MiB.
+fn lz4_retention_slot(frame: &[u8]) -> Option<usize> {
+    const MAGIC: [u8; 4] = 0x184D2204_u32.to_le_bytes();
+    const INDEPENDENT_BLOCKS: u8 = 1 << 5;
+    const BLOCK_SIZE_MASK: u8 = 0b0111_0000;
+    const SMALLEST_CODE: u8 = 4;
+    let (magic, header) = frame.split_at_checked(MAGIC.len())?;
+    let &[flg, bd, ..] = header else {
+        return None;
+    };
+    if magic != MAGIC || flg & INDEPENDENT_BLOCKS == 0 {
+        return None;
+    }
+    let code = (bd & BLOCK_SIZE_MASK) >> 4;
+    (SMALLEST_CODE..SMALLEST_CODE + LZ4_BLOCK_SIZES as u8)
+        .contains(&code)
+        .then(|| usize::from(code - SMALLEST_CODE))
+}
+
+/// A decoder kept in [`Codecs`], reading the block it is lent through a [`BlockInput`].
+trait RetainedDecoder {
+    fn new() -> Self;
+    fn input(&mut self) -> &mut BlockInput;
+}
+
+impl RetainedDecoder for Lz4Decoder {
+    fn new() -> Self {
+        Lz4FrameDecoder::new(RequireLz4EndMark(BlockInput::default()))
+    }
+
+    fn input(&mut self) -> &mut BlockInput {
+        &mut self.get_mut().0
+    }
+}
+
+impl RetainedDecoder for SnappyDecoder {
+    fn new() -> Self {
+        SnappyFrameDecoder::new(BlockInput::default())
+    }
+
+    fn input(&mut self) -> &mut BlockInput {
+        self.get_mut()
+    }
+}
+
+/// The compressed bytes of the block being decoded, read by a decoder that outlives the block.
+///
+/// The lz4_flex and snap frame decoders own their reader. A reader that borrowed the block would
+/// put the block's lifetime into the decoder's type, and a decoder kept in a thread-local has to
+/// be `'static`. So the block is lent as a raw pointer instead, for the duration of one decode,
+/// by a [`Loan`]: lending points the input at the block, and the loan ends by clearing it,
+/// before the borrow it was made from can end. Outside a loan the input is empty, and a read
+/// returns nothing without touching the pointer.
+struct BlockInput {
+    /// The unread rest of the lent block; dangling and empty outside a loan.
+    unread: *const u8,
+    len: usize,
+}
+
+impl Default for BlockInput {
+    fn default() -> Self {
+        Self {
+            unread: ptr::null(),
+            len: 0,
+        }
+    }
+}
+
+impl BlockInput {
+    fn lend(&mut self, block: &[u8]) {
+        self.unread = block.as_ptr();
+        self.len = block.len();
+    }
+
+    /// Ends the loan, returning how many bytes of the block were left unread.
+    fn revoke(&mut self) -> usize {
+        self.unread = ptr::null();
+        std::mem::take(&mut self.len)
+    }
+}
+
+impl Read for BlockInput {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = buffer.len().min(self.len);
+        if count == 0 {
+            return Ok(0);
+        }
+        // SAFETY: `len` is nonzero only during a loan, when `unread..unread + len` is the unread
+        // tail of the slice `lend` was given, and the `Loan` holding that slice's lifetime ends
+        // the loan before the slice can go away.
+        let bytes = unsafe { std::slice::from_raw_parts(self.unread, count) };
+        buffer[..count].copy_from_slice(bytes);
+        // SAFETY: `count <= len`, so the result stays within the same slice.
+        self.unread = unsafe { self.unread.add(count) };
+        self.len -= count;
+        Ok(count)
+    }
+}
+
+/// A block lent to a retained decoder for one decode, see [`BlockInput`].
+///
+/// The decoder is built on the first loan. [`Loan::settle`] ends the loan and says whether the
+/// decode finished cleanly. A decoder that did not, because of an error, or of a panic that
+/// unwinds through this guard's drop, is discarded, since it would carry the broken frame's
+/// state into the next block. A decoder lent with `keep` false is discarded either way.
+struct Loan<'a, 'b, D: RetainedDecoder> {
+    slot: &'a mut Option<D>,
+    keep: bool,
+    settled: bool,
+    block: PhantomData<&'b [u8]>,
+}
+
+impl<'a, 'b, D: RetainedDecoder> Loan<'a, 'b, D> {
+    fn new(slot: &'a mut Option<D>, block: &'b [u8], keep: bool) -> Self {
+        slot.get_or_insert_with(D::new).input().lend(block);
+        Self {
+            slot,
+            keep,
+            settled: false,
+            block: PhantomData,
+        }
+    }
+
+    fn decoder(&mut self) -> &mut D {
+        self.slot.as_mut().expect("lent on construction")
+    }
+
+    /// Ends the loan, returning how many bytes of the block the decoder left unread.
+    fn settle(mut self, finished: bool) -> usize {
+        self.settled = true;
+        let unread = self.decoder().input().revoke();
+        if !finished || !self.keep {
+            *self.slot = None;
+        }
+        unread
+    }
+}
+
+impl<D: RetainedDecoder> Drop for Loan<'_, '_, D> {
+    fn drop(&mut self) {
+        if !self.settled {
+            *self.slot = None;
+        }
+    }
 }
 
 /// Reads one complete IPC stream holding exactly one record batch. Mirrors what
@@ -257,14 +552,14 @@ fn decode<'b, S: BlockSource<'b>>(source: S, validate: bool, lengths: bool) -> R
 /// served from the cache when its bytes match one already parsed, and that with `lengths` the
 /// record batch's offsets buffers are rebuilt from the lengths the writer stored.
 fn read_single_batch<'b, S: BlockSource<'b>>(
-    state: &mut DecoderState,
+    cache: &mut SchemaCache,
     mut source: S,
     validate: bool,
     lengths: bool,
 ) -> Result<RecordBatch> {
-    let DecoderState {
+    let SchemaCache {
         schemas, scratch, ..
-    } = state;
+    } = cache;
 
     let mut skip_validation = UnsafeFlag::new();
     if !validate {
@@ -281,14 +576,14 @@ fn read_single_batch<'b, S: BlockSource<'b>>(
         Some(schema) => {
             #[cfg(test)]
             {
-                state.stats.hits += 1;
+                cache.stats.hits += 1;
             }
             schema
         }
         None => {
             #[cfg(test)]
             {
-                state.stats.misses += 1;
+                cache.stats.misses += 1;
             }
             let message = parse_message(metadata)?;
             if message.header_type() != MessageHeader::Schema {
@@ -566,9 +861,10 @@ impl<R: Read> Read for RequireLz4EndMark<R> {
 #[cfg(test)]
 mod tests {
     use super::{
-        read_ipc_compressed, read_ipc_compressed_validated, reset_schema_cache, schema_cache_stats,
-        scratch_capacity, RequireLz4EndMark, SchemaCacheStats, LENGTHS_TAG_FLAG,
-        SCHEMA_CACHE_CAPACITY, SCHEMA_CACHE_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
+        codec_creations, read_ipc_compressed, read_ipc_compressed_validated, reset_codecs,
+        reset_schema_cache, schema_cache_stats, scratch_capacity, CodecCreations,
+        RequireLz4EndMark, SchemaCacheStats, LENGTHS_TAG_FLAG, SCHEMA_CACHE_CAPACITY,
+        SCHEMA_CACHE_RETAIN_LIMIT, SCRATCH_RETAIN_LIMIT,
     };
     use crate::writers::rss::tests::allocations;
     use arrow::array::{
@@ -1418,6 +1714,149 @@ mod tests {
                 "{codec:?}: warm"
             );
             assert_eq!(schema_cache_stats(), stats(2, 1), "{codec:?}");
+        }
+    }
+
+    const COMPRESSED_CODECS: [&[u8; 4]; 3] = [b"LZ4_", b"ZSTD", b"SNAP"];
+
+    /// One decompressor per codec serves every block the thread decodes, across changes of
+    /// codec, of schema, and of validation. lz4 keeps one per block size: the writer gives the
+    /// 3-row batch 64 KiB blocks and the 8192-row one 256 KiB blocks.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn decompressors_are_built_once_per_thread() {
+        reset_codecs();
+        for _ in 0..3 {
+            for batch in [mixed_batch(), wide_batch(8192)] {
+                for codec in CODECS {
+                    let block = block_for(&batch, codec);
+                    assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+                    assert_eq!(read_ipc_compressed_validated(&block).unwrap(), batch);
+                }
+            }
+        }
+        assert_eq!(
+            codec_creations(),
+            CodecCreations {
+                lz4: 2,
+                snappy: 1,
+                zstd: 1,
+            }
+        );
+    }
+
+    /// A decode that fails inside the compressed stream leaves no state behind: the next block
+    /// of that codec decodes correctly. The lz4 and snappy decoders are replaced, since they
+    /// would otherwise resume the broken frame; the zstd context is reset in place.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn failed_decode_does_not_poison_the_next_block() {
+        let batch = wide_batch(2048);
+        reset_codecs();
+        for codec in COMPRESSED_CODECS {
+            let block = block_for(&batch, codec);
+            assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+            let before = codec_creations();
+            // cut inside the compressed data, early and late in the frame
+            for cut in [24, block.len() * 2 / 3] {
+                assert!(
+                    read_ipc_compressed(&block[..cut]).is_err(),
+                    "{codec:?}: truncated at {cut}"
+                );
+                assert_eq!(read_ipc_compressed(&block).unwrap(), batch, "{codec:?}");
+            }
+            let after = codec_creations();
+            let replaced = match codec {
+                b"LZ4_" => after.lz4 - before.lz4,
+                b"SNAP" => after.snappy - before.snappy,
+                b"ZSTD" => after.zstd - before.zstd,
+                _ => unreachable!(),
+            };
+            assert_eq!(replaced, if codec == b"ZSTD" { 0 } else { 2 }, "{codec:?}");
+        }
+    }
+
+    /// A kept snappy decoder must not relax what a fresh one requires: every block opens with
+    /// the stream identifier.
+    #[test]
+    fn snappy_block_without_stream_identifier_is_rejected_warm() {
+        let batch = mixed_batch();
+        let block = block_for(&batch, b"SNAP");
+        assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+
+        // the 10-byte stream identifier chunk follows the codec tag
+        assert_eq!(&block[4..14], b"\xff\x06\x00\x00sNaPpY");
+        let mut headless = block[..4].to_vec();
+        headless.extend_from_slice(&block[14..]);
+        let error = read_ipc_compressed(&headless).unwrap_err().to_string();
+        assert!(error.contains("snappy stream header"), "{error}");
+        assert_eq!(read_ipc_compressed(&block).unwrap(), batch);
+    }
+
+    /// lz4 decoders are kept per block size, so frames of two sizes each keep their own, and a
+    /// frame of another layout (linked blocks) decodes with a decoder that is not kept.
+    #[test]
+    fn lz4_decoders_are_kept_per_block_size_and_not_for_other_layouts() {
+        use lz4_flex::frame::{BlockMode, BlockSize, FrameEncoder, FrameInfo};
+        let batch = mixed_batch();
+        let payload = ipc_bytes(&batch);
+        let encode_with = |frame_info: FrameInfo| {
+            let mut block = b"LZ4_".to_vec();
+            let mut writer = FrameEncoder::with_frame_info(frame_info, &mut block);
+            writer.write_all(&payload).unwrap();
+            writer.finish().unwrap();
+            block
+        };
+        let small = encode(b"LZ4_", &payload);
+        let large = encode_with(FrameInfo::new().block_size(BlockSize::Max4MB));
+        let linked = encode_with(FrameInfo::new().block_mode(BlockMode::Linked));
+        assert_eq!(super::lz4_retention_slot(&small[4..]), Some(0));
+        assert_eq!(super::lz4_retention_slot(&large[4..]), Some(3));
+        assert_eq!(super::lz4_retention_slot(&linked[4..]), None);
+        assert_eq!(super::lz4_retention_slot(&small[4..8]), None, "no header");
+
+        reset_codecs();
+        for (block, expected_creations, case) in [
+            (&small, 1, "first 64 KiB frame"),
+            (&large, 2, "first 4 MiB frame"),
+            (&small, 2, "64 KiB decoder kept"),
+            (&large, 2, "4 MiB decoder kept"),
+            (&linked, 3, "linked frame gets its own"),
+            (&linked, 4, "which is not kept"),
+            (&small, 4, "64 KiB decoder still kept"),
+        ] {
+            assert_eq!(read_ipc_compressed(block).unwrap(), batch, "{case}");
+            assert_eq!(codec_creations().lz4, expected_creations, "{case}");
+        }
+    }
+
+    /// Warm, a compressed block allocates no more than the same block uncompressed: the batch
+    /// itself. The decompressor's buffers and context come from the thread.
+    #[test]
+    #[cfg_attr(miri, ignore)] // Miri cannot call Zstd's C FFI.
+    fn warm_compressed_decode_allocates_no_more_than_an_uncompressed_one() {
+        /// (allocations, bytes requested) of one warm decode
+        fn probe(block: &[u8], expected: &RecordBatch) -> (usize, usize) {
+            assert_eq!(&read_ipc_compressed(block).unwrap(), expected);
+            let ((batch, totals), _) = allocations::measure(|| {
+                let batch = read_ipc_compressed(block).unwrap();
+                (batch, allocations::totals())
+            });
+            assert_eq!(&batch, expected);
+            totals
+        }
+
+        for (shape, batch) in [("3 rows", mixed_batch()), ("8192 rows", wide_batch(8192))] {
+            let plain = probe(&block_for(&batch, b"NONE"), &batch);
+            for codec in COMPRESSED_CODECS {
+                let compressed = probe(&block_for(&batch, codec), &batch);
+                let codec = std::str::from_utf8(codec).unwrap();
+                println!("{shape} {codec}: uncompressed {plain:?}, compressed {compressed:?}");
+                assert!(
+                    compressed.0 <= plain.0 && compressed.1 <= plain.1,
+                    "{shape} {codec}: {plain:?} -> {compressed:?}"
+                );
+            }
         }
     }
 
