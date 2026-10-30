@@ -500,9 +500,10 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.inMemoryCache.chunkSize")
       .category(CATEGORY_TESTING)
       .doc(
-        "The size of the heap chunks a cached batch payload is written into. Chunking is what " +
-          "lets a single cached batch exceed the 2 GiB limit of one JVM array. This is an " +
-          "internal config for testing purposes.")
+        "The largest heap chunk a cached batch payload is written into. A smaller payload is " +
+          "written into one chunk of its own size. Chunking is what lets a single cached batch " +
+          "exceed the 2 GiB limit of one JVM array. This is an internal config for testing " +
+          "purposes.")
       .internal()
       .bytesConf(ByteUnit.BYTE)
       .checkValue(v => v > 0 && v <= Int.MaxValue, "Must be positive and fit in an Int.")
