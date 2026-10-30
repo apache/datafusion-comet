@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::agg_funcs::hll_sketch::SparkHllSketch;
+use crate::agg_funcs::hll_sketch::{SparkHllSketch, SparkHllUnion};
 use arrow::array::Array;
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
@@ -78,63 +78,33 @@ impl AggregateUDFImpl for HllSketchAgg {
     }
 }
 
+/// Input rows are hashed into a sketch. The first `merge_batch` turns that sketch into a union,
+/// which merges every partial sketch from then on, as `HllUnionAccumulator` does. Spark's
+/// `HllSketchAgg.merge` builds a new union for each merged row instead. With `datasketches` 0.3.0
+/// that copies a dense accumulator's register array into the new union and rescans all
+/// `2^lgConfigK` registers, so every merged row would cost as much as the whole array.
 #[derive(Debug)]
-pub struct HllSketchAccumulator {
-    sketch: SparkHllSketch,
+pub enum HllSketchAccumulator {
+    Sketch(SparkHllSketch),
+    Union(SparkHllUnion),
 }
 
 impl HllSketchAccumulator {
     pub fn new(lg_config_k: u8) -> Self {
-        Self {
-            sketch: SparkHllSketch::new(lg_config_k),
-        }
+        Self::Sketch(SparkHllSketch::new(lg_config_k))
     }
 
-    /// Spark widens every accepted integral to `long` before hashing, so all four widths
-    /// funnel through the same `i64` update. Nulls are ignored, matching `HllSketchAgg`.
-    fn update_ints<T>(&mut self, arr: &PrimitiveArray<T>)
-    where
-        T: ArrowPrimitiveType,
-        T::Native: Into<i64>,
-    {
-        for i in 0..arr.len() {
-            if !arr.is_null(i) {
-                self.sketch.update_i64(arr.value(i).into());
-            }
-        }
-    }
-
-    /// StringType hashes its UTF-8 bytes and BinaryType its bytes directly, so both share
-    /// this loop.
-    fn update_byte_slices<T>(&mut self, arr: &GenericByteArray<T>)
-    where
-        T: ByteArrayType,
-        for<'a> &'a T::Native: AsRef<[u8]>,
-    {
-        for i in 0..arr.len() {
-            if !arr.is_null(i) {
-                self.sketch.update_bytes(arr.value(i).as_ref());
-            }
-        }
-    }
-}
-
-impl Accumulator for HllSketchAccumulator {
-    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
-        if values.is_empty() {
-            return Ok(());
-        }
-        let arr = &values[0];
+    fn update_sketch(sketch: &mut SparkHllSketch, arr: &ArrayRef) -> Result<()> {
         // Downcast once per batch rather than going through `ScalarValue::try_from_array` per
         // row: for the string and binary cases that copies every value onto the heap only to
         // hash it and drop it again.
         match arr.data_type() {
-            DataType::Int8 => self.update_ints(as_primitive_array::<Int8Type>(arr)),
-            DataType::Int16 => self.update_ints(as_primitive_array::<Int16Type>(arr)),
-            DataType::Int32 => self.update_ints(as_primitive_array::<Int32Type>(arr)),
-            DataType::Int64 => self.update_ints(as_primitive_array::<Int64Type>(arr)),
-            DataType::Utf8 => self.update_byte_slices(downcast_value!(arr, StringArray)),
-            DataType::Binary => self.update_byte_slices(downcast_value!(arr, BinaryArray)),
+            DataType::Int8 => Self::update_ints(sketch, as_primitive_array::<Int8Type>(arr)),
+            DataType::Int16 => Self::update_ints(sketch, as_primitive_array::<Int16Type>(arr)),
+            DataType::Int32 => Self::update_ints(sketch, as_primitive_array::<Int32Type>(arr)),
+            DataType::Int64 => Self::update_ints(sketch, as_primitive_array::<Int64Type>(arr)),
+            DataType::Utf8 => Self::update_byte_slices(sketch, downcast_value!(arr, StringArray)),
+            DataType::Binary => Self::update_byte_slices(sketch, downcast_value!(arr, BinaryArray)),
             other => {
                 return Err(DataFusionError::Internal(format!(
                     "hll_sketch_agg received an unsupported input type: {other:?}"
@@ -144,33 +114,95 @@ impl Accumulator for HllSketchAccumulator {
         Ok(())
     }
 
+    /// Spark widens every accepted integral to `long` before hashing, so all four widths
+    /// funnel through the same `i64` update. Nulls are ignored, matching `HllSketchAgg`.
+    fn update_ints<T>(sketch: &mut SparkHllSketch, arr: &PrimitiveArray<T>)
+    where
+        T: ArrowPrimitiveType,
+        T::Native: Into<i64>,
+    {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                sketch.update_i64(arr.value(i).into());
+            }
+        }
+    }
+
+    /// StringType hashes its UTF-8 bytes and BinaryType its bytes directly, so both share
+    /// this loop.
+    fn update_byte_slices<T>(sketch: &mut SparkHllSketch, arr: &GenericByteArray<T>)
+    where
+        T: ByteArrayType,
+        for<'a> &'a T::Native: AsRef<[u8]>,
+    {
+        for i in 0..arr.len() {
+            if !arr.is_null(i) {
+                sketch.update_bytes(arr.value(i).as_ref());
+            }
+        }
+    }
+
+    fn to_sketch_bytes(&self) -> Vec<u8> {
+        match self {
+            Self::Sketch(sketch) => sketch.to_sketch_bytes(),
+            Self::Union(union) => union.to_sketch_bytes(),
+        }
+    }
+}
+
+impl Accumulator for HllSketchAccumulator {
+    fn update_batch(&mut self, values: &[ArrayRef]) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        match self {
+            Self::Sketch(sketch) => Self::update_sketch(sketch, &values[0]),
+            // DataFusion gives an accumulator either rows or partial sketches. Rows that follow
+            // a merge anyway reach the union through a sketch of their own.
+            Self::Union(union) => {
+                let mut sketch = SparkHllSketch::new(union.lg_max_k());
+                Self::update_sketch(&mut sketch, &values[0])?;
+                union.merge(&sketch);
+                Ok(())
+            }
+        }
+    }
+
     fn evaluate(&mut self) -> Result<ScalarValue> {
         // Spark's HllSketchAgg is declared non-nullable: an empty/all-null group
         // still returns a serialized empty sketch (which estimates to 0), never NULL.
-        Ok(ScalarValue::Binary(Some(self.sketch.to_sketch_bytes())))
+        Ok(ScalarValue::Binary(Some(self.to_sketch_bytes())))
     }
 
     fn size(&self) -> usize {
-        // What the sketch holds now, not the 1 << lgConfigK dense maximum: a group stays in a
-        // few-dozen-byte coupon list until it has seen enough distinct values.
-        std::mem::size_of_val(self) + self.sketch.heap_size()
+        // What the sketch or union holds now, not the 1 << lgConfigK dense maximum: a group stays
+        // in a few-dozen-byte coupon list until it has seen enough distinct values.
+        let heap = match self {
+            Self::Sketch(sketch) => sketch.heap_size(),
+            Self::Union(union) => union.heap_size(),
+        };
+        std::mem::size_of_val(self) + heap
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        Ok(vec![ScalarValue::Binary(Some(
-            self.sketch.to_sketch_bytes(),
-        ))])
+        Ok(vec![ScalarValue::Binary(Some(self.to_sketch_bytes()))])
     }
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         let arr = downcast_value!(states[0], BinaryArray);
+        if let Self::Sketch(sketch) = self {
+            // Rows hashed before the first merge carry over into the union.
+            let mut union = SparkHllUnion::new(sketch.lg_config_k());
+            union.merge(sketch);
+            *self = Self::Union(union);
+        }
+        let Self::Union(union) = self else {
+            unreachable!("the sketch was replaced by a union above")
+        };
         for i in 0..arr.len() {
-            if arr.is_null(i) {
-                continue;
+            if !arr.is_null(i) {
+                union.merge(&SparkHllSketch::from_bytes(arr.value(i))?);
             }
-            let peer = SparkHllSketch::from_bytes(arr.value(i))?;
-            // Merge peer into self by unioning; reuse SparkHllUnion via sketch merge.
-            self.sketch.merge_sketch(&peer);
         }
         Ok(())
     }
@@ -286,6 +318,60 @@ mod tests {
             "size() should account for the sketch heap allocation, got {}",
             acc.size()
         );
+    }
+
+    /// A Final aggregation hands a group its partial sketches over many `merge_batch` calls, and
+    /// they all have to go into one union. After every call the accumulator holds exactly what a
+    /// single `SparkHllUnion` fed the same sketches holds, in SET mode and once dense.
+    #[test]
+    fn merge_batch_keeps_one_union_across_calls() {
+        let partials: Vec<Vec<u8>> = (0..40i64)
+            .map(|p| {
+                let mut sketch = SparkHllSketch::new(12);
+                for v in p * 50..(p + 1) * 50 {
+                    sketch.update_i64(v);
+                }
+                sketch.to_sketch_bytes()
+            })
+            .collect();
+        let mut acc = HllSketchAccumulator::new(12);
+        let mut union = SparkHllUnion::new(12);
+        for chunk in partials.chunks(7) {
+            acc.merge_batch(&[Arc::new(BinaryArray::from_iter_values(chunk))])
+                .unwrap();
+            for bytes in chunk {
+                union.merge(&SparkHllSketch::from_bytes(bytes).unwrap());
+            }
+            assert_eq!(acc.to_sketch_bytes(), union.to_sketch_bytes());
+        }
+        // 2,000 distinct values are well past the 384 coupons a lgConfigK 12 sketch holds before
+        // it moves to the register array.
+        assert!(acc.size() >= 1 << 12, "size {}", acc.size());
+        let est = crate::agg_funcs::estimate_from_bytes(&sketch_bytes(&mut acc)).unwrap();
+        assert!((est - 2000).abs() <= 60, "estimate {est}");
+    }
+
+    /// DataFusion gives an accumulator either rows or partial sketches, but one that gets both
+    /// still has to count all of them: the rows before its first merge, the merged sketch, and
+    /// the rows after.
+    #[test]
+    fn rows_before_and_after_a_merge_all_count() {
+        let ints = |values: std::ops::Range<i64>| -> ArrayRef {
+            Arc::new(Int64Array::from_iter_values(values))
+        };
+        let mut peer = SparkHllSketch::new(12);
+        for v in 1000..2000 {
+            peer.update_i64(v);
+        }
+        let mut acc = HllSketchAccumulator::new(12);
+        acc.update_batch(&[ints(0..1000)]).unwrap();
+        acc.merge_batch(&[Arc::new(BinaryArray::from_iter_values([
+            peer.to_sketch_bytes()
+        ]))])
+        .unwrap();
+        acc.update_batch(&[ints(2000..3000)]).unwrap();
+        let est = crate::agg_funcs::estimate_from_bytes(&sketch_bytes(&mut acc)).unwrap();
+        assert!((est - 3000).abs() <= 90, "estimate {est}");
     }
 
     /// 64 singleton groups at lgConfigK=21, grouped through a real Partial/Final plan in a 16 MiB
