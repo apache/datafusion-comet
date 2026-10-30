@@ -26,6 +26,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.columnar.{CachedBatch, CachedBatchSerializer}
+import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.shims.ShimCometInMemoryTableScanExec
 import org.apache.spark.sql.execution.{CollectMetricsExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -122,9 +123,13 @@ case class CometInMemoryTableScanExec(
       .asInstanceOf[CometInMemoryTableScanExec]
       .copy(originalPlan = originalPlan.canonicalized.asInstanceOf[InMemoryTableScanExec])
 
-  // Use the serializer's vector types because the cached batch layout is owned by the serializer.
-  override def vectorTypes: Option[Seq[String]] =
-    serializer.vectorTypes(scanOutput, conf)
+  // The serializer chooses its cache format from the full relation schema, not the projection.
+  // Pass both so an unsupported unselected column cannot be mistaken for a Comet cache.
+  override def vectorTypes: Option[Seq[String]] = serializer match {
+    case arrow: ArrowCachedBatchSerializer =>
+      arrow.vectorTypesForScan(relationOutput, scanOutput, conf)
+    case other => other.vectorTypes(scanOutput, conf)
+  }
 
   // Apply Spark's cache batch filter before decoding. Spark's InMemoryTableScanExec does this in
   // filteredCachedBatches(), but that method is private. Reusing the serializer's buildFilter here

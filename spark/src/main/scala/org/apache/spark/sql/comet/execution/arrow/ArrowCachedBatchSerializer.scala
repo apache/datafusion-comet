@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
+import org.apache.comet.vector.{CometDecodedVector, CometListVector, CometMapVector, CometPlainVector, CometStructVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -540,6 +540,29 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     input.mapPartitions { batches =>
       encodeBatches(batches, schema, settings)
+    }
+  }
+
+  /**
+   * Report vector types for a cache scan whose full stored schema is known. Spark's serializer
+   * `vectorTypes` hook receives only the projected attributes, which is insufficient here: an
+   * unsupported unselected column makes the entire cached relation use Spark's fallback format.
+   */
+  def vectorTypesForScan(
+      cacheAttributes: Seq[Attribute],
+      selectedAttributes: Seq[Attribute],
+      conf: SQLConf): Option[Seq[String]] = {
+    if (!supportsSchema(cacheAttributes)) {
+      fallback.vectorTypes(selectedAttributes, conf)
+    } else {
+      Some(selectedAttributes.map { attr =>
+        attr.dataType match {
+          case _: StructType => classOf[CometStructVector].getName
+          case _: MapType => classOf[CometMapVector].getName
+          case _: ArrayType => classOf[CometListVector].getName
+          case _ => classOf[CometPlainVector].getName
+        }
+      })
     }
   }
 
