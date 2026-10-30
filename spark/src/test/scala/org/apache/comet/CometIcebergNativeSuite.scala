@@ -250,22 +250,22 @@ class CometIcebergNativeSuite
         spark.sql("""
           CREATE TABLE filter_cat.db.comparison_test (
             id INT,
-            value DOUBLE
+            value BIGINT
           ) USING iceberg
         """)
 
         spark.sql("""
           INSERT INTO filter_cat.db.comparison_test VALUES
-          (1, 10.5), (2, 20.3), (3, 30.7), (4, 15.2), (5, 25.8)
+          (1, 10), (2, 20), (3, 30), (4, 15), (5, 25)
         """)
 
-        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value > 20.0")
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value > 20")
 
-        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value >= 20.3")
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value >= 20")
 
-        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value < 20.0")
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value < 20")
 
-        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value <= 20.3")
+        checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE value <= 20")
 
         checkIcebergNativeScan("SELECT * FROM filter_cat.db.comparison_test WHERE id != 3")
 
@@ -290,24 +290,24 @@ class CometIcebergNativeSuite
           CREATE TABLE filter_cat.db.logical_test (
             id INT,
             category STRING,
-            value DOUBLE
+            value BIGINT
           ) USING iceberg
         """)
 
         spark.sql("""
           INSERT INTO filter_cat.db.logical_test VALUES
-          (1, 'A', 10.5), (2, 'B', 20.3), (3, 'A', 30.7),
-          (4, 'B', 15.2), (5, 'A', 25.8), (6, 'C', 35.0)
+          (1, 'A', 10), (2, 'B', 20), (3, 'A', 30),
+          (4, 'B', 15), (5, 'A', 25), (6, 'C', 35)
         """)
 
         checkIcebergNativeScan(
-          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'A' AND value > 20.0")
+          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'A' AND value > 20")
 
         checkIcebergNativeScan(
-          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'B' OR value > 30.0")
+          "SELECT * FROM filter_cat.db.logical_test WHERE category = 'B' OR value > 30")
 
         checkIcebergNativeScan("""SELECT * FROM filter_cat.db.logical_test
-             WHERE (category = 'A' AND value > 20.0) OR category = 'C'""")
+             WHERE (category = 'A' AND value > 20) OR category = 'C'""")
 
         spark.sql("DROP TABLE filter_cat.db.logical_test")
       }
@@ -4438,6 +4438,307 @@ class CometIcebergNativeSuite
     }
   }
 
+  /**
+   * Compares `SELECT id FROM table WHERE predicate` with Spark for each predicate, alone and
+   * after `l IS NOT NULL AND`. That array null check is a conjunct the serde never pushes, as in
+   * the queries that found these bugs, so each predicate is also checked in a residual left
+   * unpushed.
+   */
+  private def checkResidualPredicates(table: String, predicates: Seq[String]): Unit =
+    for (predicate <- predicates; prefix <- Seq("", "l IS NOT NULL AND ")) {
+      checkIcebergNativeScan(s"SELECT id FROM $table WHERE $prefix($predicate)")
+    }
+
+  test("floating-point residuals preserve signed zeros in native scans") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.floating_residual_test"
+        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, d DOUBLE, l ARRAY<INT>) USING iceberg")
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // One file containing both zeros keeps file pruning from deciding the comparison.
+            // Distinct ids make a missing signed-zero row observable without comparing floats.
+            spark
+              .sql("""
+                SELECT id, CAST(v AS FLOAT) AS f, CAST(v AS DOUBLE) AS d, l
+                FROM VALUES
+                  (1, '-0.0', array(1)),
+                  (2, '0.0', array(1)),
+                  (3, '1.0', CAST(NULL AS ARRAY<INT>)),
+                  (4, '-1.0', array(1)),
+                  (5, NULL, array(1)),
+                  (6, 'NaN', array(1))
+                AS input(id, v, l)
+              """)
+              .coalesce(1)
+              .write
+              .format("iceberg")
+              .mode("append")
+              .saveAsTable(table)
+            assert(spark.sql(s"SELECT file_path FROM $table.files").collect().length == 1)
+            val rows = spark.sql(s"SELECT id, f, d FROM $table").collect().sortBy(_.getInt(0))
+            assert(java.lang.Float.floatToRawIntBits(rows(0).getFloat(1)) == Int.MinValue)
+            assert(java.lang.Double.doubleToRawLongBits(rows(0).getDouble(2)) == Long.MinValue)
+            assert(java.lang.Float.floatToRawIntBits(rows(1).getFloat(1)) == 0)
+            assert(java.lang.Double.doubleToRawLongBits(rows(1).getDouble(2)) == 0L)
+          }
+
+          for ((column, dataType) <- Seq("f" -> "FLOAT", "d" -> "DOUBLE")) {
+            val zero = s"CAST(0 AS $dataType)"
+            val negativeZero = s"CAST('-0.0' AS $dataType)"
+            val one = s"CAST(1 AS $dataType)"
+            val minusOne = s"CAST(-1 AS $dataType)"
+            val predicates = Seq(
+              s"$column = $zero",
+              s"$column = $negativeZero",
+              s"$column >= $zero",
+              s"$column <= $negativeZero",
+              s"$column IN ($zero, $one)",
+              s"NOT ($column < $zero)",
+              // Nonzero literals push equality and IN; range comparisons stay out.
+              s"$column = $one",
+              s"$column IN ($one, $minusOne)",
+              s"NOT ($column IN ($one, $minusOne) AND id > 1)",
+              s"$column < $one",
+              s"$column > $minusOne",
+              s"NOT ($column = $one)",
+              s"$column = $zero OR id = 3",
+              s"NOT ($column = $zero AND id > 1)",
+              s"$column IS NULL",
+              s"$column IS NOT NULL")
+            checkResidualPredicates(table, predicates)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
+  test("negated null-safe equality keeps NULL rows in native scans") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.null_safe_residual_test"
+        spark.sql(s"CREATE TABLE $table (id INT, b BOOLEAN, l ARRAY<INT>) USING iceberg")
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // One file keeps file pruning from deciding the comparison.
+            spark
+              .sql("""
+                SELECT * FROM VALUES
+                  (NULL, NULL, array(1)), (1, true, array(1)), (2, false, array(1))
+                AS t(id, b, l)
+              """)
+              .coalesce(1)
+              .write
+              .format("iceberg")
+              .mode("append")
+              .saveAsTable(table)
+            assert(spark.sql(s"SELECT file_path FROM $table.files").collect().length == 1)
+          }
+          // Iceberg converts `id <=> 1` to an equality, which is false for a NULL id in Spark but
+          // NULL in the native reader, so only its negation can drop the NULL row. Spark also
+          // writes that negation as IS DISTINCT FROM and, for booleans, IS NOT TRUE. A null
+          // check ANDed with it rejects the NULL row either way.
+          val predicates = Seq(
+            "NOT (id <=> 1)",
+            "NOT (id <=> 1 AND id < 5)",
+            "NOT (id <=> 1) OR id = 2",
+            "id IS DISTINCT FROM 1",
+            "b IS NOT TRUE",
+            "NOT b",
+            "b = false",
+            "id IS NOT NULL AND NOT (id <=> 1)",
+            "NOT (id = 1)",
+            "id != 1")
+          checkResidualPredicates(table, predicates)
+          // `id != 1` reaches Iceberg as a not-equal, and `b = false` as `b IS NOT NULL AND NOT b`,
+          // whose null check covers the negated equality, so both are still pushed. A negated
+          // `<=>` has no such check and stays out.
+          // Planning commonData leaks manifest streams on Iceberg versions before 1.8.0.
+          if (icebergVersionAtLeast(1, 8)) {
+            for ((predicate, pushed) <- Seq(
+                "b = false" -> true,
+                "id != 1" -> true,
+                "id IS NOT NULL AND NOT (id <=> 1)" -> true,
+                "NOT (id <=> 1)" -> false,
+                "b IS NOT TRUE" -> false)) {
+              val (_, cometPlan) = checkSparkAnswer(s"SELECT id FROM $table WHERE $predicate")
+              val scans = collectIcebergNativeScans(cometPlan)
+              assert(scans.length == 1, s"$cometPlan")
+              val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+              assert(common.getResidualPoolCount == (if (pushed) 1 else 0), s"$predicate")
+            }
+          }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
+  test("residuals on tables with a name mapping keep rows from imported files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.imported_residual_test"
+        spark.sql(s"CREATE TABLE $table (id BIGINT, t INT, d DOUBLE) USING iceberg")
+        try {
+          withTempDir { dir =>
+            // The file stores id as INT, t as TINYINT and d as FLOAT. Appending it the way
+            // add_files does adds a name mapping but records no schema change.
+            val source = new File(dir, "source").getAbsolutePath
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .sql("SELECT CAST(id AS INT) AS id, CAST(id AS TINYINT) AS t, " +
+                  "CAST(id AS FLOAT) AS d FROM range(1, 4)")
+                .coalesce(1)
+                .write
+                .parquet(source)
+            }
+            val icebergTable = loadIcebergTable(spark, "test_cat", "db", "imported_residual_test")
+              .asInstanceOf[org.apache.iceberg.Table]
+            icebergTable
+              .updateProperties()
+              .set(
+                org.apache.iceberg.TableProperties.DEFAULT_NAME_MAPPING,
+                org.apache.iceberg.mapping.NameMappingParser
+                  .toJson(org.apache.iceberg.mapping.MappingUtil.create(icebergTable.schema())))
+              .commit()
+            val file = new File(source).listFiles().find(_.getName.endsWith(".parquet")).get
+            icebergTable
+              .newAppend()
+              .appendFile(
+                org.apache.iceberg.DataFiles
+                  .builder(icebergTable.spec())
+                  .withPath(file.getAbsolutePath)
+                  .withFileSizeInBytes(file.length())
+                  .withRecordCount(3L)
+                  .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+                  .build())
+              .commit()
+            spark.sql(s"REFRESH TABLE $table")
+
+            // iceberg-rust skips the imported file's pages for these, or casts 200 and
+            // 3000000000 to a NULL TINYINT and INT.
+            val predicates = Seq(
+              "id > 0",
+              "id < 3000000000",
+              "id IN (1, 2)",
+              "t < 200",
+              "t IN (1, 200)",
+              "d > 0.5D",
+              "d IN (1.0D, 2.0D)",
+              "id = 2",
+              "t = 2",
+              "d = 2.0D")
+            for (predicate <- predicates) {
+              checkIcebergNativeScan(s"SELECT id FROM $table WHERE $predicate")
+            }
+
+            // Equality stays pushed: it is correct for the imported file.
+            val df = spark.sql(s"SELECT id FROM $table WHERE id = 2 AND t = 2")
+            df.collect()
+            val scans = collectIcebergNativeScans(df.queryExecution.executedPlan)
+            assert(scans.length == 1)
+            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scans.head.commonData)
+            assert(common.getResidualPoolCount == 1)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
+  test("literal residuals on promoted columns keep rows from older files") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.promoted_residual_test"
+        spark.sql(s"CREATE TABLE $table (id INT, f FLOAT, l ARRAY<INT>) USING iceberg")
+        try {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            // One file, so that its FLOAT bounds keep it for f = 0.1D below.
+            spark.sql(s"""INSERT INTO $table SELECT /*+ COALESCE(1) */ * FROM VALUES
+              (1, 0.5, array(1)), (2, 2.5, array(1)), (3, 0.1, array(1)), (6, 0.05, array(1))
+              AS v(id, f, l)""")
+            spark.sql(s"ALTER TABLE $table ALTER COLUMN id TYPE BIGINT")
+            spark.sql(s"ALTER TABLE $table ALTER COLUMN f TYPE DOUBLE")
+            spark.sql(s"INSERT INTO $table VALUES (4, 0.5D, array(1)), (5, 4.5D, array(1))")
+          }
+          // The first file still stores INT and FLOAT. iceberg-rust skips its pages for range and
+          // IN predicates on the promoted types, and casts 3000000000 to a NULL INT.
+          val predicates = Seq(
+            "id > 0",
+            "id < 3",
+            "id IN (1, 2)",
+            "id < 3000000000",
+            "id = 2",
+            "id = 2 OR id = 3000000000",
+            "f IN (0.5D, 4.5D)",
+            "f = 0.5D",
+            "f = 0.1D")
+          checkResidualPredicates(table, predicates)
+
+          // The native reader narrows 0.1D to the FLOAT 0.1, which Spark does not consider equal
+          // to it. The first file's bounds, 0.05 to 2.5, keep it in the scan for that.
+          val narrowed = s"SELECT id FROM $table WHERE f = 0.1D"
+          val df = spark.sql(narrowed)
+          df.collect()
+          val scanned =
+            collectIcebergNativeScans(df.queryExecution.executedPlan).head
+              .metrics("resultDataFiles")
+              .value
+          assert(scanned == 1, s"Expected the first file to be scanned, scanned $scanned files")
+
+          // Expiring the first snapshot with cleanExpiredMetadata (Iceberg 1.9+) drops the original
+          // schema, while the file that snapshot wrote stays in the table.
+          if (icebergVersionAtLeast(1, 9)) {
+            val icebergTable =
+              loadIcebergTable(spark, "test_cat", "db", "promoted_residual_test")
+                .asInstanceOf[org.apache.iceberg.Table]
+            val expire = icebergTable
+              .expireSnapshots()
+              .expireOlderThan(System.currentTimeMillis())
+              .retainLast(1)
+            classOf[org.apache.iceberg.ExpireSnapshots]
+              .getMethod("cleanExpiredMetadata", classOf[Boolean])
+              .invoke(expire, java.lang.Boolean.TRUE)
+            expire.commit()
+            spark.sql(s"REFRESH TABLE $table")
+            val schemas = loadIcebergTable(spark, "test_cat", "db", "promoted_residual_test")
+              .asInstanceOf[org.apache.iceberg.Table]
+              .schemas()
+            assert(schemas.size == 1 && !schemas.containsKey(0))
+            assert(spark.sql(s"SELECT * FROM $table").count() == 6)
+            checkResidualPredicates(table, predicates)
+          }
+        } finally {
+          spark.sql(s"DROP TABLE $table")
+        }
+      }
+    }
+  }
+
   // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
   // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
   // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200
@@ -7446,10 +7747,8 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Mirrors TestSelect.simpleTypesInFilter. A predicate literal on a FLOAT column is carried as a
-  // double, and iceberg-rust's Datum::to() has no double-to-float arm, so binding the residual to
-  // the schema fails. The residual only drives row-group pruning, so the native scan skips the
-  // failed pushdown and the post-scan CometFilter still enforces correctness.
+  // Mirrors TestSelect.simpleTypesInFilter. Float comparisons stay in the post-scan filter,
+  // including when the predicate literal is a double rather than the column's float type.
   test("float column compared to a double predicate literal") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     withTempIcebergDir { warehouseDir =>

@@ -215,10 +215,11 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         .collect()
         .headOption
         .map(_.get(0))
-        // Skip NaN, whose equality semantics differ, so the sampled literal is well-behaved.
+        // Skip NaN and zero, whose equality semantics differ. The serde leaves floating-point
+        // comparisons with them to the filter above the scan.
         .filterNot {
-          case d: Double => d.isNaN
-          case f: Float => f.isNaN
+          case d: Double => d.isNaN || d == 0.0
+          case f: Float => f.isNaN || f == 0.0f
           case _ => false
         }
 
