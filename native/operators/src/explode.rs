@@ -360,17 +360,32 @@ impl PendingInput {
         let mut chunk = self.batch.slice(self.row_offset, rows);
         let mut lengths = self.chunk_lengths(rows);
         if let Some(safe_repetitions) = self.safe_repetitions {
-            // Check the selected rows, not buffers retained from the rest of the input.
-            // A chunk's largest repetition times its offset span bounds every copied offset.
-            // The input-wide bound only skips checks; it never shrinks a chunk.
+            // The input-wide bound only skips checks. A candidate's maximum repetition times
+            // its span is sufficient, but skewed byte columns can use their actual repeats.
             let limit = if safe_repetitions >= batch_size {
                 batch_size
             } else {
                 loop {
                     let limit = batch_size.min(repetition_limit(&chunk, list_columns));
-                    let max_repeat = *lengths.as_ref().unwrap().values().iter().max().unwrap();
-                    if rows == 1 || max_repeat as usize <= limit {
+                    let repeats = lengths.as_ref().unwrap();
+                    let max_repeat = *repeats.values().iter().max().unwrap() as usize;
+                    if rows == 1 || max_repeat <= limit {
                         break limit;
+                    }
+                    if chunk
+                        .columns()
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| {
+                            !list_columns
+                                .iter()
+                                .any(|list| list.index_in_input_schema == *index)
+                        })
+                        .all(|(_, column)| {
+                            repeated_offsets_fit(column.as_ref(), repeats, max_repeat)
+                        })
+                    {
+                        break batch_size;
                     }
                     rows = rows.div_ceil(2);
                     chunk = self.batch.slice(self.row_offset, rows);
@@ -419,54 +434,56 @@ impl PendingInput {
     }
 }
 
-/// Bound repetition by the visible spans addressed by 32-bit offsets. Fixed-width
-/// buffers do not constrain these offsets; a sliced list still needs its selected child count
-/// even when that child has no buffers, as with List<Null>.
-fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
-    fn max_offset_span(array: &dyn Array) -> usize {
-        match array.data_type() {
-            DataType::Utf8 => {
-                let offsets = array.as_string::<i32>().value_offsets();
-                (offsets[array.len()] - offsets[0]) as usize
-            }
-            DataType::Binary => {
-                let offsets = array.as_binary::<i32>().value_offsets();
-                (offsets[array.len()] - offsets[0]) as usize
-            }
-            DataType::List(_) => {
-                let list = array.as_list::<i32>();
-                let offsets = list.value_offsets();
-                let start = offsets[0] as usize;
-                let length = offsets[list.len()] as usize - start;
-                length.max(max_offset_span(list.values().slice(start, length).as_ref()))
-            }
-            DataType::Map(_, _) => {
-                let map = array.as_map();
-                let offsets = map.value_offsets();
-                let start = offsets[0] as usize;
-                let length = offsets[map.len()] as usize - start;
-                length.max(max_offset_span(&map.entries().slice(start, length)))
-            }
-            DataType::Struct(_) => array
-                .as_struct()
-                .columns()
-                .iter()
-                .map(|column| max_offset_span(column.as_ref()))
-                .max()
-                .unwrap_or(0),
-            DataType::LargeList(_) => {
-                let list = array.as_list::<i64>();
-                let offsets = list.value_offsets();
-                let start = offsets[0] as usize;
-                let length = offsets[list.len()] as usize - start;
-                max_offset_span(list.values().slice(start, length).as_ref())
-            }
-            DataType::FixedSizeList(_, _) => {
-                max_offset_span(array.as_fixed_size_list().values().as_ref())
-            }
-            _ => 0,
+/// The largest visible span addressed by 32-bit offsets. Fixed-width buffers do not constrain
+/// these offsets; a sliced list still needs its selected child count even when that child has
+/// no buffers, as with List<Null>.
+fn max_offset_span(array: &dyn Array) -> usize {
+    match array.data_type() {
+        DataType::Utf8 => {
+            let offsets = array.as_string::<i32>().value_offsets();
+            (offsets[array.len()] - offsets[0]) as usize
         }
+        DataType::Binary => {
+            let offsets = array.as_binary::<i32>().value_offsets();
+            (offsets[array.len()] - offsets[0]) as usize
+        }
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            let offsets = list.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[list.len()] as usize - start;
+            length.max(max_offset_span(list.values().slice(start, length).as_ref()))
+        }
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            let offsets = map.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[map.len()] as usize - start;
+            length.max(max_offset_span(&map.entries().slice(start, length)))
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .map(|column| max_offset_span(column.as_ref()))
+            .max()
+            .unwrap_or(0),
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            let offsets = list.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[list.len()] as usize - start;
+            max_offset_span(list.values().slice(start, length).as_ref())
+        }
+        DataType::FixedSizeList(_, _) => {
+            max_offset_span(array.as_fixed_size_list().values().as_ref())
+        }
+        _ => 0,
     }
+}
+
+/// A conservative bound safe for every subset of these rows and repetitions up to the limit.
+fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
     let span = batch
         .columns()
         .iter()
@@ -480,6 +497,42 @@ fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
         .max()
         .unwrap_or(0);
     (i32::MAX as usize / span.max(1)).max(1)
+}
+
+/// Tighten the byte budget for skewed chunks while retaining collection allocation bounds.
+fn repeated_offsets_fit(array: &dyn Array, repeats: &Int64Array, max_repeat: usize) -> bool {
+    fn bytes_fit(array: &dyn Array, offsets: &[i32], repeats: &Int64Array) -> bool {
+        offsets
+            .windows(2)
+            .zip(repeats.values())
+            .enumerate()
+            .try_fold(i32::MAX as usize, |remaining, (row, (w, &repeat))| {
+                if array.is_null(row) {
+                    Some(remaining)
+                } else {
+                    let bytes = (w[1] - w[0]) as usize;
+                    remaining.checked_sub(bytes.saturating_mul(repeat as usize))
+                }
+            })
+            .is_some()
+    }
+
+    if max_repeat <= i32::MAX as usize / max_offset_span(array).max(1) {
+        return true;
+    }
+    match array.data_type() {
+        DataType::Utf8 => bytes_fit(array, array.as_string::<i32>().value_offsets(), repeats),
+        DataType::Binary => bytes_fit(array, array.as_binary::<i32>().value_offsets(), repeats),
+        // Arrow Struct take copies children even when the parent struct is NULL.
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .all(|column| repeated_offsets_fit(column.as_ref(), repeats, max_repeat)),
+        // List/map take also estimates child capacity from the unweighted input average.
+        // Keep their conservative bound even when the logical weighted output would fit.
+        _ => false,
+    }
 }
 
 /// A stream that unnests its input, bounding output batches to `batch_size` rows.
@@ -1597,7 +1650,14 @@ mod tests {
         batch_size: usize,
         null_handling: NullHandling,
     ) -> Result<Vec<RecordBatch>> {
-        let output_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)]));
+        let mut fields: Vec<Field> = child
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields[0] = Field::new("l", DataType::Int32, true);
+        let output_schema = Arc::new(Schema::new(fields));
         let explode = ExplodeExec::new(
             child,
             vec![ListUnnest {
@@ -1723,6 +1783,138 @@ mod tests {
             first.column(1).as_string::<i32>().value_data().len(),
             8100 * 1024
         );
+    }
+
+    #[tokio::test]
+    async fn skewed_carried_bytes_use_each_rows_repetition() {
+        use arrow::array::BinaryArray;
+
+        let wide = "w".repeat(16 * 1024 * 1024);
+        for wide_row in [0, 16, 32] {
+            let mut lens = vec![Some(300); 33];
+            lens[wide_row] = Some(1);
+            let lists = list_batch(&lens);
+            let strings = StringArray::from_iter_values((0..33).map(|row| {
+                if row == wide_row {
+                    wide.as_str()
+                } else {
+                    "x"
+                }
+            }));
+            let binary = Arc::new(BinaryArray::new(
+                strings.offsets().clone(),
+                strings.values().clone(),
+                None,
+            )) as ArrayRef;
+            let strings = Arc::new(strings) as ArrayRef;
+            let structure = Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("s", DataType::Utf8, false)),
+                    Arc::clone(&strings),
+                ),
+                (
+                    Arc::new(Field::new("b", DataType::Binary, false)),
+                    Arc::clone(&binary),
+                ),
+            ])) as ArrayRef;
+            let indices = Int64Array::from_iter_values(
+                lens.iter()
+                    .enumerate()
+                    .flat_map(|(row, len)| std::iter::repeat_n(row as i64, len.unwrap())),
+            );
+            for carried in [strings, binary, structure] {
+                let input = RecordBatch::try_from_iter(vec![
+                    ("l", Arc::clone(lists.column(0))),
+                    ("payload", Arc::clone(&carried)),
+                ])
+                .unwrap();
+                let batches = explode(vec![input], 8192, NullHandling::Drop)
+                    .await
+                    .unwrap();
+                assert_eq!(batches.len(), 2, "wide row at {wide_row}");
+                let schema = batches[0].schema();
+                let expected = RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::clone(lists.column(0).as_list::<i32>().values()),
+                        kernels::take::take(carried.as_ref(), &indices, None).unwrap(),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(expected.num_rows(), 9601);
+                assert_eq!(
+                    arrow::compute::concat_batches(&schema, &batches).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sliced_carried_bytes_ignore_unused_backing() {
+        let padding = "p".repeat(64 * 1024 * 1024);
+        let carried = StringArray::from(vec![padding.as_str(), "x"]).slice(1, 1);
+        let lists = list_batch(&[Some(1024)]);
+        let input = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("payload", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let batches = explode(vec![input], 8192, NullHandling::Drop)
+            .await
+            .unwrap();
+        assert_eq!(sizes(&batches), vec![1024]);
+        assert_eq!(values(&batches), seq(1024));
+        assert!(batches[0]
+            .column(1)
+            .as_string::<i32>()
+            .iter()
+            .all(|s| s == Some("x")));
+    }
+
+    #[tokio::test]
+    async fn null_carried_bytes_do_not_spend_the_offset_budget() {
+        let wide = "w".repeat(2 * 1024 * 1024);
+        let strings = StringArray::from(vec![wide.as_str(), "x"]);
+        let carried = StringArray::new(
+            strings.offsets().clone(),
+            strings.values().clone(),
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        let lists = list_batch(&[Some(1024), Some(300)]);
+        let input = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("payload", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let batches = explode(vec![input], 8192, NullHandling::Drop)
+            .await
+            .unwrap();
+        assert_eq!(sizes(&batches), vec![1324]);
+        assert_eq!(values(&batches), seq(1324));
+        let carried = batches[0].column(1).as_string::<i32>();
+        assert_eq!(carried.null_count(), 1024);
+        assert_eq!(carried.value_data().len(), 300);
+    }
+
+    #[test]
+    fn null_struct_children_still_constrain_copied_offsets() {
+        let wide = "w".repeat(2 * 1024 * 1024);
+        let strings = StringArray::from(vec![wide.as_str(), "x"]);
+        let repeats = Int64Array::from(vec![1024, 300]);
+        assert!(!repeated_offsets_fit(&strings, &repeats, 1024));
+        let nullable_strings = StringArray::new(
+            strings.offsets().clone(),
+            strings.values().clone(),
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        assert!(repeated_offsets_fit(&nullable_strings, &repeats, 1024));
+        let structure = StructArray::new(
+            vec![Arc::new(Field::new("s", DataType::Utf8, false))].into(),
+            vec![Arc::new(strings)],
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        assert!(!repeated_offsets_fit(&structure, &repeats, 1024));
     }
 
     #[test]
