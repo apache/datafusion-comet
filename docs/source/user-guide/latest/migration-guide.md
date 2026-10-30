@@ -57,6 +57,15 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.3.0
+
+### Shuffle Manager Set by the Plugin on Spark 4.0 and Later
+
+On Spark 4.0 and later, `CometPlugin` sets `spark.shuffle.manager` to `CometShuffleManager` when
+the application leaves it unset. Previously, an application that registered the plugin without a
+shuffle manager ran without Comet, with a warning. It now runs with Comet. To keep the previous
+behavior, set `spark.comet.enabled=false`, or set `spark.shuffle.manager` to the manager you want.
+
 ## Upgrading to Comet 1.2.0
 
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

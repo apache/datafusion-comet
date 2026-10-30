@@ -28,7 +28,7 @@ import scala.util.Try
 
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
 import org.apache.spark.internal.Logging
-import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR}
+import org.apache.spark.internal.config.{EVENT_LOG_ENABLED, EXECUTOR_MEMORY_OVERHEAD, EXECUTOR_MEMORY_OVERHEAD_FACTOR, SHUFFLE_MANAGER}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.serializer.KryoSerializer
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
@@ -176,23 +176,18 @@ object CometDriverPlugin extends Logging {
   /** Spark config key under which the loaded Comet version is exposed at runtime. */
   val COMET_VERSION_CONFIG = "spark.comet.version"
 
-  // Choose Comet's shuffle manager for an application that did not choose one, so that Comet
-  // does not disable itself. From Spark 4.0 (SPARK-45762) SparkContext creates the shuffle manager
-  // right after it initializes the plugins, from the same SparkConf, and executors take their conf
-  // from the driver's when they register, which happens after this. Before 4.0 the SparkEnv holds
-  // the manager already, so setting the conf here would change nothing but the conf, and an
-  // application there has to set spark.shuffle.manager itself.
-  // An application that set spark.shuffle.manager keeps its choice, even Spark's own: it may
-  // depend on that manager, as Celeborn does, and Comet then disables itself as before.
+  // Choose Comet's shuffle manager for an application that did not, so that Comet does not
+  // disable itself. Only from Spark 4.0 (SPARK-45762) does SparkContext create the manager after
+  // it initializes the plugins, from the same conf that executors then fetch. An application's own
+  // choice, even Spark's, is kept: it may depend on that manager, as Celeborn does.
   private[apache] def maybeSetShuffleManager(conf: SparkConf): Unit = {
-    val key = "spark.shuffle.manager"
     if (CometSparkSessionExtensions.isSpark40Plus &&
       getBooleanConf(conf, CometConf.COMET_ENABLED) &&
       getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED) &&
-      !conf.contains(key)) {
+      !conf.contains(SHUFFLE_MANAGER)) {
       val value = classOf[CometShuffleManager].getName
-      conf.set(key, value)
-      logInfo(s"Auto-set $key=$value")
+      conf.set(SHUFFLE_MANAGER.key, value)
+      logInfo(s"Auto-set ${SHUFFLE_MANAGER.key}=$value")
     }
   }
 
@@ -286,7 +281,7 @@ object CometDriverPlugin extends Logging {
   // class name.
   private def isCometShuffleManager(conf: SparkConf): Boolean =
     Set(classOf[CometShuffleManager].getName, classOf[CometCelebornShuffleManager].getName)
-      .contains(conf.get("spark.shuffle.manager", ""))
+      .contains(conf.get(SHUFFLE_MANAGER.key, ""))
 
   // Comet's native allocations are made by the Rust global allocator and live in the native heap.
   // In off-heap mode the share that operators reserve is charged against a memory pool, but

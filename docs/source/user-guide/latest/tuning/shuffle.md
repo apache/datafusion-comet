@@ -29,11 +29,9 @@ spark.comet.shuffle.enabled=true
 ```
 
 `spark.shuffle.manager` is a Spark static configuration which cannot be changed at runtime.
-It must be set before the Spark context is created. On Spark 4.0 and later, `CometPlugin` sets it to
-`CometShuffleManager` if the application leaves it unset, so the line above can be omitted there. An
-application that sets `spark.shuffle.manager` itself keeps that value. On Spark 3.4 and 3.5, Spark creates
-the shuffle manager before it initializes plugins, so the application has to set it. You can enable or disable Comet shuffle
-at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
+It must be set before the Spark context is created, except that on Spark 4.0 and later `CometPlugin`
+sets it to `CometShuffleManager` if the application leaves it unset. You can enable or disable
+Comet shuffle at runtime by setting `spark.comet.shuffle.enabled` to `true` or `false`.
 Once it is disabled, the configured shuffle manager handles ordinary Spark shuffle dependencies
 without Comet's shuffle implementation.
 

@@ -170,7 +170,6 @@ object CometSparkSessionExtensions extends Logging {
         "Comet extension is disabled because spark.shuffle.manager is not set to " +
           s"${classOf[CometShuffleManager].getName} or " +
           s"${classOf[CometCelebornShuffleManager].getName}. " +
-          "CometPlugin sets it on Spark 4.0 and later when it is unset. " +
           "Comet provides limited benefit without its shuffle manager. " +
           s"Set ${COMET_SHUFFLE_ENABLED.key}=false to keep Comet enabled with " +
           "Spark's default shuffle manager.")
