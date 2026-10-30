@@ -131,6 +131,8 @@ spark.executor.memoryOverheadFactor=0.2
 Raise the value further if executors are killed by the cluster manager (on Kubernetes,
 `ExecutorLostFailure` with exit code 137) rather than failing with a task-level out-of-memory error.
 To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
+If executors are killed while the memory usage log stays well inside the limits, raising the
+overhead may only delay it; see [Returning Freed Native Memory to the Operating System].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
 how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
@@ -216,6 +218,7 @@ The executor logs one more line after its last native plan finishes, and an `all
 it when the application is submitted. Set it to `0` to turn the log off.
 
 [Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
+[Returning Freed Native Memory to the Operating System]: #returning-freed-native-memory-to-the-operating-system
 
 ### Reading the Memory Usage Log from the Event Log
 
@@ -272,6 +275,60 @@ decompress the files first, for example with `zstd -dc`. The Spark history serve
 these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
 `spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
 event log.
+
+## Returning Freed Native Memory to the Operating System
+
+An executor can be killed by the cluster manager for exceeding its container while every figure in
+the memory usage log stays well inside its limits. A common cause is native memory that Comet has
+already freed but the allocator has not returned to the operating system. Comet's release builds use
+the system allocator, which on Linux is usually glibc's `malloc`. glibc keeps freed memory in
+per-thread arenas so that it can reuse it, and a lot of what Comet's operators free stays there:
+each spill drops the batches the operator buffered, and the next stage's native plans often run on
+different threads, which do not reuse the memory the previous stage's threads left behind. The
+`allocated` figure in the log drops when the memory is freed, but the executor's resident memory
+does not, so it grows from one stage and query to the next until the container's limit is reached.
+See [#7108](https://github.com/apache/datafusion-comet/issues/7108) for measurements.
+
+The signs are executors that the cluster manager kills for exceeding their container (on
+Kubernetes, `OOMKilled`, exit code 137) in a long application, often late in it, while the memory
+usage log shows them well below peaks they survived earlier, and the query that was running when
+they were killed passes on fresh executors.
+
+The JVM can return this memory periodically. `-XX:TrimNativeHeapInterval`, available from JDK
+17.0.12 and 21.0.3, calls glibc's `malloc_trim` at the given interval in milliseconds, which hands
+the free memory in the arenas back to the operating system. It trims the whole process, so it also
+covers memory freed by the JVM itself and by native libraries other than Comet. Adding
+`-Xlog:trimnative` logs each trim, with the process's resident memory before and after and how long
+the trim took, which shows whether the flag is in effect and how much it returns:
+
+```
+spark.executor.extraJavaOptions=-XX:TrimNativeHeapInterval=5000 -Xlog:trimnative
+```
+
+```
+[58.198s][info][trimnative] Periodic Trim (11): 3918M->2823M (-1095M) 443.469ms
+```
+
+Add these options to any `spark.executor.extraJavaOptions` the application already sets, since
+setting the property again replaces its value. An older JDK does not recognize the flag and the
+executor fails to start, unless the JVM is also given `-XX:+IgnoreUnrecognizedVMOptions`, which
+makes it ignore the flag silently. To check whether this is the problem before changing the
+configuration, `jcmd <pid> System.trim_native_heap` trims a running executor once and prints how
+much memory it returned.
+
+A trim is not free: while it runs it takes each arena's lock in turn, so native allocations on that
+arena wait for it. On one workload, the nested TPC-H benchmark at scale factor 1000 with 64 GiB of
+off-heap memory per executor, an interval of 5 seconds kept the executors' resident memory at 61 to
+70 GiB in 106 GiB containers, where without it a query got 11 executors killed. A single trim
+returned up to 31.8 GiB, trims took 424 ms at the median, and the queries that had not needed it
+ran about 4% slower. A longer interval trims less often for less cost, but lets more memory build
+up between trims.
+
+Trimming only applies to glibc. In builds that use the `jemalloc` or `mimalloc` feature, Comet's
+native memory does not come from glibc, and those allocators manage freed memory themselves.
+Limiting the number of glibc arenas with the `MALLOC_ARENA_MAX` environment variable also keeps
+resident memory down, but it was markedly slower in the measurements in
+[#7108](https://github.com/apache/datafusion-comet/issues/7108).
 
 ## Batch Size
 
