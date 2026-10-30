@@ -111,6 +111,14 @@ reads that fail where Spark succeeds are listed in
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
   behavior.
 
+### Missing Nested Fields
+
+When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.4
+through 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
+follows this behavior. On Spark 4.1+, the default (`false`) preserves the file's parent nullness.
+Set `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true` for legacy behavior.
+A field that exists in the file but contains only NULL values is not a missing field.
+
 ### Schema Mismatch Handling
 
 The issues in this subsection apply only when the requested read schema differs from the schema written
@@ -267,17 +275,14 @@ for production, so do not turn it off to avoid an entry on this page.
   read back wrong inside lists written in a legacy layout, as Hive and
   `spark.sql.parquet.writeLegacyFormat=true` write them
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
-- **A struct or array with none of its requested fields in the file.** Spark returns NULL for the
-  column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
-  and 4.0, and to Spark 4.1 and later with
-  `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true`
-  ([#7030](https://github.com/apache/datafusion-comet/issues/7030)).
-- **Nested BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY
-  column without the UTF8 annotation that is read as `string`, through the read schema or
-  `spark.sql.parquet.binaryAsString=true`. Spark returns the bytes. Comet returns NULL for each
-  such nested value. Top-level values match Spark in a release build, because the invalid bytes
-  reach an Arrow string array unchecked. A debug build panics on them
-  ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
+- **BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY column
+  without the UTF8 annotation that is read as `string`, through the read schema or
+  `spark.sql.parquet.binaryAsString=true`. Spark keeps the bytes. In a struct field, list element
+  or map value, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
+  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Top-level
+  values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
+  differ only in such bytes distinct: they match Spark in a release build, and a debug build
+  panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
@@ -348,6 +353,15 @@ With `spark.comet.write.parquet.enabled=true`:
   ([#7035](https://github.com/apache/datafusion-comet/issues/7035)).
 - **A `DATE` column read as `INTERVAL YEAR TO MONTH`.** Spark reads it, and Comet fails the read
   ([#5188](https://github.com/apache/datafusion-comet/issues/5188)).
+- **A nested dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
+  2 GiB.** In a struct field, list element, map key or map value, Comet expands the dictionary
+  into one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
+  `spark.comet.batchSize` rows (8192 by default) fails the scan when the values its rows reference
+  add up to more, counting each reference of a shared entry, even for a query that never reads the
+  strings. Values that are not valid UTF-8 decode to up to three times their size, since each
+  ill-formed sequence becomes `U+FFFD`. Spark keeps the dictionary and reads it row by row. Lower
+  `spark.comet.batchSize` so that a batch holds fewer rows
+  ([#7254](https://github.com/apache/datafusion-comet/issues/7254)).
 
 ### Writes that fail where Spark succeeds
 
