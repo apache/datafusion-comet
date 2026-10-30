@@ -864,6 +864,23 @@ shuffle size of the build side. By default the limit is Spark’s own rule for c
 set, else <code class="docutils literal notranslate"><span class="pre">spark.sql.shuffle.partitions</span></code>). When broadcasts are disabled with a non-positive threshold, Spark’s default
 threshold of 10 MB is used instead. Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.forceShuffledHashJoin.maxBuildSize</span></code> to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.</p>
+<section id="left-semi-sort-merge-joins">
+<h3>Left-semi sort-merge joins<a class="headerlink" href="#left-semi-sort-merge-joins" title="Link to this heading">#</a></h3>
+<p>A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (<code class="docutils literal notranslate"><span class="pre">=</span></code>), set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true</span></code>
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle. With the
+<code class="docutils literal notranslate"><span class="pre">fair_unified</span></code> memory pool, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.</p>
+<p>The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.</p>
+<p>Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.</p>
+</section>
 <section id="broadcast-joins">
 <h3>Broadcast Joins<a class="headerlink" href="#broadcast-joins" title="Link to this heading">#</a></h3>
 <p>Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
@@ -1097,6 +1114,7 @@ array with a non-default string collation continues through the JVM codegen disp
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#left-semi-sort-merge-joins">Left-semi sort-merge joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcast-joins">Broadcast Joins</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#early-filtering-in-join-chains">Early filtering in join chains</a></li>
