@@ -763,7 +763,8 @@ case class CometWindowExec(
     orderSpec: Seq[SortOrder],
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
+    extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def nodeName: String = "CometWindowExec"
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(windowExpression)

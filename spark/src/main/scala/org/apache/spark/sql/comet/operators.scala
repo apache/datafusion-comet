@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.util.Locale
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -48,7 +49,7 @@ import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
@@ -736,6 +737,17 @@ abstract class CometExec extends CometPlan {
   }
 }
 
+/**
+ * Declares the distribution of the Spark operator that a Comet operator replaces. Without it
+ * AQE's OptimizeSkewInRebalancePartitions can split a skewed partition under an operator that
+ * needs its input clustered, because ValidateRequirements has nothing to reject, and one key then
+ * yields several rows. Mix it into operators that replace a clustering aggregate, window or join.
+ */
+trait CometDelegatesRequiredChildDistribution extends CometExec {
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
+}
+
 object CometExec {
   final class InvalidSparkFallbackException(message: String)
       extends IllegalArgumentException(message)
@@ -798,6 +810,7 @@ object CometExec {
   /**
    * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
    * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   * `sqlConf` is captured on the driver; see [[CapturedSQLConf]].
    */
   def getCometIterator(
       inputObjects: Array[Object],
@@ -805,7 +818,8 @@ object CometExec {
       serializedPlan: Array[Byte],
       numParts: Int,
       partitionIdx: Int,
-      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
+      sqlConf: CapturedSQLConf,
+      outputTypes: Seq[DataType]): CometExecIterator = sqlConf.withConf {
     new CometExecIterator(
       newIterId,
       inputObjects,
@@ -2716,6 +2730,7 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
  */
 abstract class CometBaseAggregateExec
     extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution
     with PartitioningPreservingUnaryExecNode {
 
   def groupingExpressions: Seq[NamedExpression]
@@ -3354,7 +3369,8 @@ case class CometHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3576,6 +3592,26 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED)
 
+  // Scope reduction to Comet shuffle inputs covered by the performance and memory controls.
+  @tailrec
+  private def readsCometShuffle(plan: SparkPlan): Boolean = plan match {
+    case _: CometShuffleExchangeExec => true
+    case stage: ShuffleQueryStageExec => stage.shuffle.isInstanceOf[CometShuffleExchangeExec]
+    case read: AQEShuffleReadExec => readsCometShuffle(read.child)
+    case ReusedExchangeExec(_, child) => readsCometShuffle(child)
+    case sink: CometSinkPlaceHolder => readsCometShuffle(sink.child)
+    case _ => false
+  }
+
+  // A sort on one integer column uses DataFusion's primitive merge cursor.
+  private def canReduceRightKey(join: SortMergeJoinExec): Boolean =
+    (join.right, join.rightKeys) match {
+      case (sort: CometSortExec, Seq(key: Attribute)) =>
+        key.dataType.isInstanceOf[IntegralType] && sort.output.size == 1 &&
+        key.semanticEquals(sort.output.head) && readsCometShuffle(sort.child)
+      case _ => false
+    }
+
   override def convert(
       join: SortMergeJoinExec,
       builder: Operator.Builder,
@@ -3668,6 +3704,9 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       val joinBuilder = OperatorOuterClass.SortMergeJoin
         .newBuilder()
         .setJoinType(joinType)
+        .setRightKeyReductionEnabled(
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.get(join.conf) &&
+            join.joinType == LeftSemi && join.condition.isEmpty && canReduceRightKey(join))
         .addAllSortOptions(sortOptions.map(_.get).asJava)
         .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
@@ -3720,7 +3759,8 @@ case class CometSortMergeJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3758,8 +3798,14 @@ case class CometSortMergeJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.sortMergeJoinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.sortMergeJoinMetrics(sparkContext)
+    if (nativeOp.getSortMergeJoin.getRightKeyReductionEnabled) {
+      joinMetrics ++ CometMetricNode.rightKeyReductionMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometScanWrapper extends CometSink[SparkPlan] {

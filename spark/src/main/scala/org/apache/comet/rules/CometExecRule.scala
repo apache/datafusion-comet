@@ -445,6 +445,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if MakeDateEvaluation.reason(op).isDefined =>
+        withFallbackReason(op, MakeDateEvaluation.reason(op).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -751,6 +754,25 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
     case limit: CollectLimitExec if limit.limit >= 0 =>
+      def capProjection(project: SparkPlan, original: SparkPlan): Option[SparkPlan] = {
+        val input = project.children.head
+        val cap = input match {
+          case bounded: CometLocalLimitExec if bounded.limit <= limit.limit => Some(bounded)
+          case _ => convertToComet(LocalLimitExec(limit.limit, input), CometLocalLimitExec)
+        }
+        for {
+          bounded <- cap
+          rebuilt <- convertToComet(original.withNewChildren(Seq(bounded)), CometProjectExec)
+        } yield {
+          // AQE can link the current projection to a materialized logical query stage.
+          // Its originalPlan may have an older link; preserve the current direct/inherited tags.
+          Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
+            project.getTagValue(tag).foreach(rebuilt.setTagValue(tag, _))
+          }
+          rebuilt
+        }
+      }
+
       limit.child match {
         case project: CometProjectExec =>
           // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
@@ -766,29 +788,18 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           if (onlyColumns || alreadyCapped) {
             op
           } else {
-            // Use normal config and serde gating for the synthetic limit. If conversion fails,
-            // its fallback tags are discarded with it and the original plan is retained.
-            val bounded = for {
-              cap <- convertToComet(
-                LocalLimitExec(limit.limit, project.child),
-                CometLocalLimitExec)
-              rebuilt <- convertToComet(
-                project.originalPlan.withNewChildren(Seq(cap)),
-                CometProjectExec)
-            } yield {
-              // AQE can link the current projection to a materialized logical query stage.
-              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
-              // (which only copies into an empty tag map) would not preserve the current link.
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
-              }
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
-              }
-              limit.withNewChildren(Seq(rebuilt))
-            }
-            bounded.getOrElse(op)
+            capProjection(project, project.originalPlan)
+              .map(rebuilt => limit.withNewChildren(Seq(rebuilt)))
+              .getOrElse(op)
           }
+        case project: ProjectExec =>
+          // The date guard stays in place until both the cap and projection convert. This
+          // candidate excludes other lazy consumers and guarded producers below the projection.
+          MakeDateEvaluation
+            .collectLimitProjection(project, limit.limit)
+            .flatMap(candidate => capProjection(candidate, candidate))
+            .map(rebuilt => MakeDateEvaluation.withCappedProjection(limit, rebuilt))
+            .getOrElse(op)
         case _ => op
       }
     case _ => op
@@ -1041,23 +1052,25 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
+      val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
+
       // Tag Partial aggregates that must not be converted to Comet because a
       // corresponding Final or PartialMerge cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      tagUnsafePartialAggregates(plan)
+      tagUnsafePartialAggregates(planWithDateEvaluation)
 
       // Tag leaves on broadcast join build sides so shouldApplySparkToColumnar can bridge an
       // unsupported build-side scan (e.g. ORC) to Arrow and let the join run natively (#6008).
-      tagBroadcastBuildSideLeaves(plan)
+      tagBroadcastBuildSideLeaves(planWithDateEvaluation)
 
-      var transformed = transform(plan)
+      var transformed = transform(planWithDateEvaluation)
       // A build-side bridge is only worth keeping when its broadcast join went native. Where the
       // join stayed on Spark, clearWastedBuildSideBridges clears the tag from those scans and we
       // transform once more so the build side rebuilds exactly as it would without the feature.
       // See issue #6008.
       if (clearWastedBuildSideBridges(transformed)) {
-        transformed = transform(plan)
+        transformed = transform(planWithDateEvaluation)
       }
       var newPlan = revertUnsafePartialAggregates(transformed)
 
