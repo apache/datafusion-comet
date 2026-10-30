@@ -25,8 +25,6 @@ import java.io.FilenameFilter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.time.zone.ZoneRulesProvider;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -136,38 +134,14 @@ public abstract class NativeBase {
               + ". Please try building from source.");
     }
 
-    File tempLib = null;
-    File tempLibLock = null;
-    try {
-      // Create the .lck file first to avoid a race condition
-      // with other concurrently running Java processes using Comet.
-      tempLibLock = File.createTempFile(searchPattern, "." + os().libExtension + ".lck");
-      tempLib = new File(tempLibLock.getAbsolutePath().replaceFirst(".lck$", ""));
-      // copy to tempLib
-      Files.copy(is, tempLib.toPath(), StandardCopyOption.REPLACE_EXISTING);
-      System.load(tempLib.getAbsolutePath());
+    try (InputStream resource = is;
+        NativeLibrary library = NativeLibrary.extract(resource, "libcomet." + os().libExtension)) {
+      System.load(library.path().toString());
+      library.deleteOnExit();
+      bundledLibrary = library.path().toFile();
       loaded = true;
-      bundledLibrary = tempLib;
     } catch (IOException e) {
-      throw new IllegalStateException("Cannot unpack libcomet: " + e);
-    } finally {
-      if (!loaded) {
-        if (tempLib != null && tempLib.exists()) {
-          if (!tempLib.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary native library " + tempLib);
-          }
-        }
-        if (tempLibLock != null && tempLibLock.exists()) {
-          if (!tempLibLock.delete()) {
-            LOG.error(
-                "Cannot unpack libcomet / cannot delete a temporary lock file " + tempLibLock);
-          }
-        }
-      } else {
-        tempLib.deleteOnExit();
-        tempLibLock.deleteOnExit();
-      }
+      throw new IllegalStateException("Cannot unpack libcomet", e);
     }
   }
 
@@ -341,6 +315,37 @@ public abstract class NativeBase {
    */
   static native void init(String logConfPath, String logLevel);
 
+  private static native boolean nativeSupportsPythonUdf();
+
+  /** Whether this native library was built with the in-process Python UDF feature. */
+  public static boolean supportsPythonUdf() {
+    if (!loaded) {
+      return false;
+    }
+    try {
+      return nativeSupportsPythonUdf();
+    } catch (UnsatisfiedLinkError ignored) {
+      return false;
+    }
+  }
+
+  private static native String nativePythonUdfVersion();
+
+  /**
+   * The {@code major.minor} version of the embedded Python interpreter that runs native Arrow UDFs,
+   * or an empty string when this native library lacks the in-process Python UDF feature.
+   */
+  public static String pythonUdfVersion() {
+    if (!supportsPythonUdf()) {
+      return "";
+    }
+    try {
+      return nativePythonUdfVersion();
+    } catch (UnsatisfiedLinkError ignored) {
+      return "";
+    }
+  }
+
   /** Release native resources through JNI */
   static native void release();
 
@@ -384,4 +389,29 @@ public abstract class NativeBase {
    * @return the version compiled into libcomet
    */
   public static native String getTzdataVersion();
+
+  /**
+   * The comma-joined URL schemes the native Iceberg storage factory can open, for reads ({@code
+   * forWrite} false) or writes ({@code forWrite} true). This is the authoritative list the JVM
+   * Iceberg scan and write gates load, so the planner never hardcodes (and drifts from) the set the
+   * native factory actually builds. Opt-in S3-compliant alias schemes are not included; the JVM
+   * adds them from {@code fs.comet.s3Compliant.schemes}.
+   *
+   * @param forWrite true for the write path's schemes, false for the scan path's
+   * @return the supported schemes joined by commas, e.g. "file,memory,gs,s3,s3a"
+   */
+  public static native String icebergStorageSchemes(boolean forWrite);
+
+  /**
+   * Why the native scan cannot build its ABFS object store for {@code url} from the given object
+   * store options, or null when it can. This runs the store construction the scan itself runs, so
+   * the planner falls back on exactly the configurations native rejects rather than a copy of its
+   * rules. Building the store makes no request, and the message names option keys, never values.
+   *
+   * @param url an {@code abfs} or {@code abfss} URL naming the container and account
+   * @param keys the option keys, as produced by {@code AbfsAuthResolver.toOptions}
+   * @param values the option values, in the order of {@code keys}
+   * @return the reason the store cannot be built, or null
+   */
+  public static native String abfsStoreError(String url, String[] keys, String[] values);
 }

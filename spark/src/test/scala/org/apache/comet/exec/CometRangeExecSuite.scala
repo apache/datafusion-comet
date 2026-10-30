@@ -32,10 +32,10 @@ import org.apache.comet.CometConf
 
 class CometRangeExecSuite extends CometTestBase {
 
-  // CometTestBase enables the Spark-to-Arrow conversion, which also applies to Range. Use its
-  // production default so these tests see CometRangeExec on its own.
+  // CometTestBase enables the Spark-to-Arrow conversions, including the one for Range. Use their
+  // production defaults so these tests see CometRangeExec on its own.
   override protected def sparkConf: SparkConf =
-    super.sparkConf.remove(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key)
+    super.sparkConf.setAll(sparkToArrowConversionConfs(enabled = false))
 
   /** Defines a test that runs with `CometRangeExec` enabled. */
   private def rangeTest(name: String)(f: => Unit): Unit =
@@ -138,7 +138,7 @@ class CometRangeExecSuite extends CometTestBase {
       spark.range(Long.MinValue, Long.MaxValue, 1, 4).selectExpr("id + 1"),
       reason)
     // A range CometRangeExec declines can still use the Spark-to-Arrow conversion.
-    withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
       val (_, plan) = checkSparkAnswer(overflowing)
       assert(collect(plan) { case c: CometSparkToColumnarExec => c }.nonEmpty, plan)
     }
@@ -217,7 +217,7 @@ class CometRangeExecSuite extends CometTestBase {
   }
 
   rangeTest("takes precedence over the Spark-to-Arrow conversion") {
-    withSQLConf(CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "true") {
+    withSQLConf(CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
       val plan = checkCometRange(spark.range(0, 100, 1, 2).selectExpr("id + 1"))
       assert(collect(plan) { case c: CometSparkToColumnarExec => c }.isEmpty, plan)
     }

@@ -102,8 +102,8 @@ object CometWindowGroupLimitExec extends CometOperatorSerde[SparkPlan] {
     // The same byte equality decides RANK and DENSE_RANK ties, but it runs on keys that the native
     // planner has normalized: a `FLOAT` or `DOUBLE` order key, scalar or nested in an array or
     // struct, has its NaNs folded together and its signed zeros tied first, as Spark does, so no
-    // float key needs a guard here. Strict floating-point mode declines the nested keys that can
-    // hold a null element or field, through `CometSortOrder`.
+    // float key needs a guard here. `CometSortOrder` separates root null placement from nested
+    // comparison for `ASC NULLS LAST` and `DESC NULLS FIRST` on nullable nested keys.
 
     val childOutput = op.children.head.output
     val partitionProtos = fields.partitionSpec.map(e => e -> exprToProto(e, childOutput))
@@ -162,7 +162,8 @@ case class CometWindowGroupLimitExec(
     mode: String,
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
+    extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def nodeName: String = "CometWindowGroupLimitExec"
 

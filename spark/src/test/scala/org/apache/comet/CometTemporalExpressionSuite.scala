@@ -26,7 +26,10 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.comet.{CometLocalLimitExec, CometProjectExec}
+import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
@@ -41,12 +44,136 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   private val crossTimezones =
     Seq("UTC", "America/Los_Angeles", "Europe/London", "Asia/Tokyo")
 
+  /**
+   * Dates around 2024 stay inside DataFusion `date_trunc`'s TimestampNanosecond range
+   * (approximately 1678 through 2262). The fuzz generator's default `baseDate` is year 3333,
+   * which only exercises Comet's wide-range fallback.
+   */
+  private val dataFusionRangeBaseDate: Long =
+    new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
+
   private def deepestSparkThrowable(error: Throwable): SparkThrowable with Throwable =
     causeChain(error)
       .collect { case e: SparkThrowable with Throwable => e }
       .lastOption
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
+
+  test("make_date does not evaluate an invalid row beyond a partial consumer") {
+    import testImplicits._
+
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.PushProjectionThroughLimit",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(2)
+            .coalesce(1)
+            .selectExpr(
+              "CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m",
+              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text")
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        withTempView("make_date_limit") {
+          spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("make_date_limit")
+          for (codegen <- Seq(false, true)) {
+            withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> codegen.toString) {
+              val query = "SELECT unix_date(make_date(2024, m, 1)) FROM make_date_limit LIMIT 1"
+              var expected = Seq.empty[Row]
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(query).collect().toSeq
+              }
+              assert(expected == Seq(Row(19723)))
+              val df = sql(query)
+              val plan = stripAQEPlan(df.queryExecution.executedPlan)
+              assert(plan.collect { case p: ProjectExec => p }.isEmpty, plan.treeString)
+              assert(plan.collect { case p: CometProjectExec => p }.size == 1, plan.treeString)
+              assert(plan.collect { case p: CometLocalLimitExec => p }.size == 1, plan.treeString)
+              assert(
+                !new ExtendedExplainInfo()
+                  .getFallbackReasons(plan)
+                  .exists(_.contains("make_date")),
+                plan.treeString)
+              assert(df.collect().toSeq == expected)
+
+              val unlimited = query.stripSuffix(" LIMIT 1")
+              val partialConsumers: Seq[(String, DataFrame => Seq[Row])] = Seq(
+                ("RDD.take", df => df.rdd.take(1).toSeq),
+                (
+                  "mapPartitions",
+                  df => df.as[Int].mapPartitions(_.take(1)).collect().toSeq.map(Row(_))))
+              partialConsumers.foreach { case (name, consume) =>
+                withClue(s"$name codegen=$codegen: ") {
+                  withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                    expected = consume(sql(unlimited))
+                  }
+                  assert(expected == Seq(Row(19723)))
+                  assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // LIMIT can also skip an eager date argument produced by an earlier projection.
+              val yearQuery = """
+                |SELECT r, unix_date(make_date(y, 1, 1)), r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(yearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val yearDf = sql(yearQuery)
+              assert(yearDf.collect().toSeq == expected)
+              val yearPlan = stripAQEPlan(yearDf.queryExecution.executedPlan)
+              assert(yearPlan.collect { case p: ProjectExec => p }.size == 2, yearPlan.treeString)
+              assert(
+                yearPlan.collect { case p: CometProjectExec => p }.isEmpty,
+                yearPlan.treeString)
+
+              // A join key needs the cast on visited rows, but LIMIT still skips later rows.
+              val joinedYearQuery = """
+                |SELECT /*+ BROADCAST(b) */ p.r, unix_date(make_date(p.y, 1, 1)), p.r + 1 FROM (
+                |  SELECT rand(7L) AS r, CAST(year_text AS INT) AS y FROM make_date_limit
+                |) p JOIN (SELECT 2024 AS k UNION ALL SELECT 2025 AS k) b ON p.y = b.k
+                |LIMIT 1
+                |""".stripMargin
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                expected = sql(joinedYearQuery).collect().toSeq
+              }
+              assert(expected.size == 1 && expected.head.getInt(1) == 19723)
+              val joinedYearDf = sql(joinedYearQuery)
+              assert(joinedYearDf.collect().toSeq == expected)
+              val joinedYearPlan = stripAQEPlan(joinedYearDf.queryExecution.executedPlan)
+              assert(
+                joinedYearPlan.collect {
+                  case p: ProjectExec if p.output.exists(_.name == "r") => p
+                }.size == 2,
+                joinedYearPlan.treeString)
+              assert(
+                joinedYearPlan.collect { case join: BroadcastHashJoinExec => join }.size == 1,
+                joinedYearPlan.treeString)
+
+              // A full collection must still evaluate the second row in the native expression.
+              val full = sql(unlimited)
+              checkCometOperators(stripAQEPlan(full.queryExecution.executedPlan))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(full)
+              Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+                withClue(s"$engine codegen=$codegen: ") {
+                  assert(
+                    error.exists(e => causeChain(e).exists(_.toString.contains("MonthOfYear"))))
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
 
   test("next_day and make_date ANSI errors match Spark exceptions") {
     withSQLConf(
@@ -80,6 +207,14 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
   }
 
   test("trunc (TruncDate)") {
+    checkTruncDate(dataFusionRangeBaseDate)
+  }
+
+  test("trunc (TruncDate) - dates outside DataFusion nanosecond range") {
+    checkTruncDate(FuzzDataGenerator.defaultBaseDate)
+  }
+
+  private def checkTruncDate(baseDate: Long): Unit = {
     val supportedFormats = CometTruncDate.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
@@ -88,7 +223,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         StructField("c0", DataTypes.DateType, true),
         StructField("c1", DataTypes.StringType, true)))
-    val df = FuzzDataGenerator.generateDataFrame(r, spark, schema, 1000, DataGenOptions())
+    val df = FuzzDataGenerator.generateDataFrame(
+      r,
+      spark,
+      schema,
+      1000,
+      DataGenOptions(baseDate = baseDate))
 
     df.createOrReplaceTempView("tbl")
 
@@ -146,7 +286,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val supportedFormats = CometTruncTimestamp.supportedFormats
     val unsupportedFormats = Seq("invalid")
 
-    createTimestampTestData().createOrReplaceTempView("tbl")
+    createTimestampTestData(dataFusionRangeBaseDate).createOrReplaceTempView("tbl")
 
     // TODO test fails with non-UTC timezone
     // https://github.com/apache/datafusion-comet/issues/2649
@@ -172,7 +312,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     val unsupportedFormats = Seq("invalid")
 
     withTempDir { path =>
-      createTimestampTestData().write.mode(SaveMode.Overwrite).parquet(path.toString)
+      createTimestampTestData(dataFusionRangeBaseDate).write
+        .mode(SaveMode.Overwrite)
+        .parquet(path.toString)
       spark.read.parquet(path.toString).createOrReplaceTempView("tbl")
 
       // TODO test fails with non-UTC timezone
@@ -193,6 +335,15 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
         // Non-literal format strings are Incompatible on the native path, so Comet routes them
         // through the codegen dispatcher and still executes natively.
         checkSparkAnswerAndOperator("SELECT c0, date_trunc(fmt, c0) from tbl order by c0, fmt")
+      }
+    }
+  }
+
+  test("date_trunc (TruncTimestamp) - timestamps outside DataFusion nanosecond range") {
+    createTimestampTestData(FuzzDataGenerator.defaultBaseDate).createOrReplaceTempView("tbl")
+    withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "UTC") {
+      for (format <- Seq("year", "week", "hour")) {
+        checkSparkAnswerAndOperator(s"SELECT c0, date_trunc('$format', c0) from tbl order by c0")
       }
     }
   }
@@ -241,9 +392,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // for any non-UTC timezone whose DST transitions are 1-hour and whose dates fall within
     // chrono-tz's precomputed DST horizon (currently ~year 2100). A base date in 2024 keeps the
     // generator well inside that window.
-    val baseDate2024 =
-      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
-    createTimestampTestData(baseDate2024).createOrReplaceTempView("tbl")
+    createTimestampTestData(dataFusionRangeBaseDate).createOrReplaceTempView("tbl")
 
     val nonUtcTimezones = Seq("America/New_York", "Europe/London", "Asia/Tokyo")
     for (tz <- nonUtcTimezones) {
@@ -327,14 +476,12 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
     // Use a reasonable date range (around year 2024) to avoid chrono-tz DST calculation
     // issues with far-future dates. The default baseDate is year 3333 which is beyond
     // the range where chrono-tz can reliably calculate DST transitions.
-    val reasonableBaseDate =
-      new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").parse("2024-06-15 12:00:00").getTime
     val ntzDF = FuzzDataGenerator.generateDataFrame(
       r,
       spark,
       ntzSchema,
       100,
-      DataGenOptions(baseDate = reasonableBaseDate))
+      DataGenOptions(baseDate = dataFusionRangeBaseDate))
     ntzDF.createOrReplaceTempView("ntz_tbl")
     for (tz <- crossTimezones) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
@@ -811,7 +958,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> timezone) {
         checkDays(
           tsDF.select(col("ts"), getColumnFromExpression(Days(UnresolvedAttribute("ts")))),
-          tsDF.selectExpr("ts", "unix_date(cast(ts as date))"))
+          tsDF.selectExpr("ts", "cast(floor(unix_micros(ts) / 86400000000D) as int)"))
       }
     }
   }
@@ -857,8 +1004,16 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                 java.sql.Timestamp.valueOf("2024-06-15 10:30:00"),
                 DataTypes.TimestampType)))),
         dummyDF.selectExpr(
-          "unix_date(cast(TIMESTAMP('1970-01-01 00:00:00') as date))",
-          "unix_date(cast(TIMESTAMP('2024-06-15 10:30:00') as date))"))
+          "cast(floor(unix_micros(TIMESTAMP('1970-01-01 00:00:00')) / 86400000000D) as int)",
+          "cast(floor(unix_micros(TIMESTAMP('2024-06-15 10:30:00')) / 86400000000D) as int)"))
+
+      // One microsecond before the epoch. Days are counted in UTC and floored, so this is day -1
+      // even though it is already 1970-01-01 in Asia/Tokyo.
+      withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "Asia/Tokyo") {
+        checkDays(
+          dummyDF.select(getColumnFromExpression(Days(Literal(-1L, DataTypes.TimestampType)))),
+          dummyDF.selectExpr("-1"))
+      }
 
       // Null handling
       checkDays(

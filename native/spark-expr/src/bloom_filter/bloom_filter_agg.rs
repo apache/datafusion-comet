@@ -24,6 +24,7 @@ use crate::bloom_filter::spark_bloom_filter::{SparkBloomFilter, SparkBloomFilter
 
 use arrow::array::ArrayRef;
 use arrow::array::BinaryArray;
+use arrow::array::StringArray;
 use datafusion::common::{downcast_value, ScalarValue};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::function::{AccumulatorArgs, StateFieldsArgs};
@@ -118,6 +119,13 @@ impl Accumulator for SparkBloomFilter {
             return Ok(());
         }
         let arr = &values[0];
+        // Hash strings in place rather than materializing a `ScalarValue::Utf8` per row.
+        if let Some(strings) = arr.as_any().downcast_ref::<StringArray>() {
+            for value in strings.iter().flatten() {
+                self.put_binary(value.as_bytes());
+            }
+            return Ok(());
+        }
         (0..arr.len()).try_for_each(|index| {
             let v = ScalarValue::try_from_array(arr, index)?;
 
@@ -165,7 +173,7 @@ impl Accumulator for SparkBloomFilter {
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of_val(self)
+        std::mem::size_of_val(self) + self.heap_size()
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
@@ -213,5 +221,14 @@ mod tests {
             acc.evaluate().unwrap(),
             ScalarValue::Binary(Some(_))
         ));
+    }
+
+    /// `size()` has to include the bit array the filter allocates up front, not only the struct.
+    #[test]
+    fn size_counts_bit_array() {
+        let num_bits = 1 << 20;
+        let num_hash = spark_bloom_filter::optimal_num_hash_functions(100, num_bits);
+        let acc = SparkBloomFilter::new(SparkBloomFilterVersion::V1, num_hash, num_bits, 0);
+        assert!(acc.size() >= num_bits as usize / 8);
     }
 }
