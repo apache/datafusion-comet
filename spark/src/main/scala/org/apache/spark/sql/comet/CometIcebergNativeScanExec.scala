@@ -235,7 +235,8 @@ case class CometIcebergNativeScanExec(
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
 
-    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
+    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric) ++
+      CometMetricNode.nativeCpuTimeMetrics(sparkContext)
   }
 
   // Execution id this scan last posted its driver metrics under. Guards against a second post:

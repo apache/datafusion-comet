@@ -182,6 +182,35 @@ Spark's remote-read counters do not identify the storage destination: local shuf
 fetched from another executor also count as remote reads. See
 [Verifying the Shuffle Path](celeborn.md#verifying-the-shuffle-path) for plan and storage checks.
 
+## CPU Time
+
+Spark measures a task's CPU time as the CPU time of the task's thread. It reports it as
+`executorCpuTime` in the task metrics and the REST API, and as `Executor CPU Time` in the event
+log. A native block with no JVM input runs on Comet's Tokio worker threads while the task thread
+waits for its batches, so `executorCpuTime` leaves out the block's work. That covers the usual scan
+stage: a native Parquet or Iceberg scan, through filters, projections and a partial aggregate, into
+the native shuffle writer. Such a stage can report a small fraction of the CPU time it used, so
+comparisons with Spark that are built from `executorCpuTime` overstate how much less CPU Comet
+uses.
+
+Comet reports the CPU time that these blocks use as `native CPU time` (`native_cpu_time`) on the
+block's root operator. That is the exchange for a native shuffle write, or the topmost native
+operator of a block whose output goes to the JVM. Comet reads each worker thread's CPU clock before
+and after each time the worker runs the block, so time spent waiting on I/O is not counted. Like
+other SQL metrics, its value is in each task's end event in the event log, in the task's
+`Accumulables`. Add it to `Executor CPU Time` to get the task's CPU time.
+
+A block with a JVM input, such as one that reads a shuffle or a broadcast, runs on the task thread,
+where `executorCpuTime` already counts it, and does not report `native CPU time`.
+
+Neither `executorCpuTime` nor `native CPU time` counts work that a block hands to other Tokio
+tasks or threads, such as
+iceberg-rust's delete-file loading and delete filters, object store connection tasks (including
+TLS), the readers of a native sort's spilled runs, and blocking file operations. To measure all of
+an executor's CPU time, use the CPU time of its container or pod, or the `jvmCpuTime` gauge of
+Spark's `JVMCPUSource`, which counts every thread in the executor process and is published through
+Spark's metrics sinks.
+
 ## Native Metrics
 
 Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are

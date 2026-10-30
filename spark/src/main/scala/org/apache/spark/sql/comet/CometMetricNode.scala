@@ -305,14 +305,26 @@ object CometMetricNode {
     else 0L
 
   /**
-   * The baseline SQL metrics for DataFusion `BaselineMetrics`.
+   * The CPU time that a native block with no JVM input uses on Comet's Tokio worker threads. Such
+   * a block runs on a Tokio task while the Spark task thread waits for its batches, and Spark's
+   * `executorCpuTime` counts only the task thread, so it leaves this out. Only the root of the
+   * block reports it, so every operator that can be a block's root declares it: through
+   * [[baselineMetrics]], [[joinMetrics]], [[sortMergeJoinMetrics]], [[nativeScanMetrics]] and
+   * [[shuffleMetrics]], or directly. A block with a JVM input runs on the task thread, where
+   * `executorCpuTime` already counts it, and reports nothing here.
+   */
+  def nativeCpuTimeMetrics(sc: SparkContext): Map[String, SQLMetric] =
+    Map("native_cpu_time" -> SQLMetrics.createNanoTimingMetric(sc, "native CPU time"))
+
+  /**
+   * The baseline SQL metrics for DataFusion `BaselineMetrics`, plus [[nativeCpuTimeMetrics]].
    */
   def baselineMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       "output_rows" -> SQLMetrics.createMetric(sc, "number of output rows"),
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(
         sc,
-        "total time (in ms) spent in this operator"))
+        "total time (in ms) spent in this operator")) ++ nativeCpuTimeMetrics(sc)
   }
 
   def aggregateMetrics(sc: SparkContext): Map[String, SQLMetric] = {
@@ -494,7 +506,7 @@ object CometMetricNode {
         SQLMetrics.createSizeMetric(
           sc,
           "Total file size, denominator of scan_efficiency_ratio = bytes_scanned " +
-            "/ total_file_size"))
+            "/ total_file_size")) ++ nativeCpuTimeMetrics(sc)
   }
 
   /**
@@ -517,7 +529,8 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Number of rows consumed by probe-side"),
       "output_batches" -> SQLMetrics.createMetric(sc, "Number of batches produced"),
       "output_rows" -> SQLMetrics.createMetric(sc, "Number of rows produced"),
-      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"))
+      "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining")) ++
+      nativeCpuTimeMetrics(sc)
   }
 
   /** Join runtime filtering and reader attachment. These never replace join or scan metrics. */
@@ -561,7 +574,8 @@ object CometMetricNode {
       "join_time" -> SQLMetrics.createNanoTimingMetric(sc, "Total time for joining"),
       "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
-      "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
+      "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows")) ++
+      nativeCpuTimeMetrics(sc)
   }
 
   def rightKeyReductionMetrics(sc: SparkContext): Map[String, SQLMetric] = {
@@ -586,7 +600,8 @@ object CometMetricNode {
       "spill_count" -> SQLMetrics.createMetric(sc, "number of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
       "memory_spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "memory spilled bytes"),
-      "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches"))
+      "input_batches" -> SQLMetrics.createMetric(sc, "number of input batches")) ++
+      nativeCpuTimeMetrics(sc)
   }
 
   /**

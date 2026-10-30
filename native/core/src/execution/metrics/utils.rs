@@ -23,21 +23,55 @@ use jni::{objects::JObject, Env};
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// The name of the metric, reported on the root of a native plan that runs on a Tokio task, that
+/// holds the CPU time the plan's stream used on Comet's Tokio worker threads. Spark's
+/// `executorCpuTime` counts only the Spark task thread, which waits for such a plan's batches.
+pub(crate) const NATIVE_CPU_TIME: &str = "native_cpu_time";
+
+/// The CPU time the calling thread has used so far, read from its CPU-time clock. `None` where
+/// there is no such clock.
+pub(crate) fn thread_cpu_time() -> Option<Duration> {
+    #[cfg(unix)]
+    {
+        let mut time = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        // SAFETY: `time` is a valid `timespec` for the call to write to.
+        let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+        (rc == 0).then(|| Duration::new(time.tv_sec as u64, time.tv_nsec as u32))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
+}
 
 /// Updates the metrics of a CometMetricNode. This function is called recursively to
 /// update the metrics of all the children nodes. The metrics are pulled from the
 /// native execution plan and pushed to the Java side through JNI.
+///
+/// `native_cpu_time`, when given, is reported on the root node as [`NATIVE_CPU_TIME`], in
+/// nanoseconds.
 pub(crate) fn update_comet_metric(
     env: &mut Env,
     metric_node: &JObject,
     spark_plan: &Arc<SparkPlan>,
+    native_cpu_time: Option<usize>,
 ) -> Result<(), CometError> {
     if metric_node.is_null() {
         return Ok(());
     }
 
-    let native_metric = to_native_metric_node(spark_plan);
-    let jbytes = env.byte_array_from_slice(&native_metric?.encode_to_vec())?;
+    let mut native_metric = to_native_metric_node(spark_plan)?;
+    if let Some(nanos) = native_cpu_time {
+        native_metric
+            .metrics
+            .insert(NATIVE_CPU_TIME.to_string(), nanos as i64);
+    }
+    let jbytes = env.byte_array_from_slice(&native_metric.encode_to_vec())?;
 
     unsafe { jni_call!(env, comet_metric_node(metric_node).set_all_from_bytes(&jbytes) -> ()) }
 }
@@ -140,6 +174,30 @@ mod tests {
             .iter()
             .for_each(|metric| insert_metric_value(&mut values, metric.value()));
         values
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn thread_cpu_time_counts_only_the_calling_threads_cpu() {
+        let start = thread_cpu_time().unwrap();
+        let mut x = 0u64;
+        let busy = std::time::Instant::now();
+        while busy.elapsed() < Duration::from_millis(50) {
+            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
+        }
+        let busy_cpu = thread_cpu_time().unwrap() - start;
+        assert!(
+            busy_cpu >= Duration::from_millis(25),
+            "50 ms of spinning used {busy_cpu:?} of CPU"
+        );
+
+        let start = thread_cpu_time().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        let sleeping_cpu = thread_cpu_time().unwrap() - start;
+        assert!(
+            sleeping_cpu < Duration::from_millis(25),
+            "50 ms of sleeping used {sleeping_cpu:?} of CPU"
+        );
     }
 
     #[test]

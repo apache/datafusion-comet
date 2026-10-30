@@ -1698,7 +1698,8 @@ case class CometLocalLimitExec(
 
   override def stringArgs: Iterator[Any] = Iterator(limit, child)
 
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.nativeCpuTimeMetrics(sparkContext)
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1842,7 +1843,8 @@ case class CometExpandExec(
   override def hashCode(): Int = Objects.hashCode(output, projections, child)
 
   // TODO: support native Expand metrics
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.nativeCpuTimeMetrics(sparkContext)
 }
 
 /**
