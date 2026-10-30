@@ -4294,6 +4294,48 @@ mod tests {
         );
     }
 
+    #[test]
+    fn declared_order_extends_an_order_the_input_declares() {
+        // Two aliases of one column share an order, so a window over the window for one alias can
+        // need the other's order while its input declares only the first. That order is declared
+        // next to the input's, unless an operator in between may have moved rows.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_0", DataType::Int32, true),
+            Field::new("col_1", DataType::Int32, true),
+        ]));
+        let planner = PhysicalPlanner::default();
+        let declare = |plan: &Arc<dyn ExecutionPlan>, index: i32| {
+            planner
+                .with_declared_order(
+                    Arc::clone(plan),
+                    &[create_sort_order(index, 3, false, true)],
+                )
+                .unwrap()
+        };
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
+        let by_col_0 = declare(&empty, 0);
+        assert!(Arc::ptr_eq(&declare(&by_col_0, 0), &by_col_0));
+
+        let both = declare(&by_col_0, 1);
+        assert!(Arc::ptr_eq(both.children()[0], &by_col_0));
+        for index in 0..2 {
+            let partition_by: Vec<Arc<dyn PhysicalExpr>> =
+                vec![Arc::new(Column::new(&format!("col_{index}"), index))];
+            let ordered = get_ordered_partition_by_indices(&partition_by, &both).unwrap();
+            assert_eq!(1, ordered.len(), "col_{index}");
+        }
+
+        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
+                "col_0", 0,
+            )))])
+            .unwrap(),
+            empty,
+        ));
+        assert!(Arc::ptr_eq(&declare(&sort, 1), &sort));
+    }
+
     #[tokio::test]
     async fn spark_plan_dynamic_filter_preserves_metrics() {
         use crate::execution::metrics::utils::to_native_metric_node;

@@ -3798,6 +3798,76 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("stacked native windows over a sorted cache with aliases of a sort key") {
+    // Spark knows that two aliases of one sorted column share its order, so a window over the
+    // window for one alias needs no sort for the other. The upper window's input declares the
+    // order the lower one needed, so the planner declares the rest next to it (#7223). In the
+    // second query the scan drops alias a, which only the order's same-order expressions name.
+    // One partition, so no exchange comes between the windows.
+    val ids = 0L until 24L
+    val key = (id: Long) => if (id % 4 == 0) None else Some(id % 3)
+    val nullable = (k: Option[Long]) => k.map(Long.box).orNull
+    val keySums = ids.groupBy(key).map { case (k, group) => k -> group.sum }
+    val keyCounts = ids.groupBy(key).map { case (k, group) => k -> group.size }
+    val pairCounts =
+      ids.groupBy(id => (key(id), id % 2)).map { case (p, group) => p -> group.size }
+    val source = () =>
+      spark
+        .range(0, 24, 1, 1)
+        .selectExpr(
+          "CASE WHEN id % 4 = 0 THEN NULL ELSE id % 3 END AS k",
+          "id % 2 AS x",
+          "id AS v")
+    Seq(true, false).foreach { nativeCache =>
+      withConversions(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
+        val check = (df: DataFrame, rows: Seq[Row], orders: Seq[Seq[String]]) => {
+          QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
+          val plan = df.queryExecution.executedPlan
+          withClue(s"nativeCache=$nativeCache\n$plan\n") {
+            val windows = collect(plan) { case w: CometWindowExec => w }
+            assert(windows.map(windowInputOrder) == orders)
+            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+          }
+        }
+        try {
+          val byKey =
+            source().sortWithinPartitions("k").selectExpr("k AS a", "k AS b", "v").cache()
+          byKey.count()
+          check(
+            byKey
+              .selectExpr("a", "b", "v", "sum(v) OVER (PARTITION BY a) AS s")
+              .selectExpr("a", "b", "v", "sum(s) OVER (PARTITION BY b) AS t"),
+            ids.map { id =>
+              val k = key(id)
+              Row(nullable(k), nullable(k), id, keySums(k) * keyCounts(k))
+            },
+            Seq(Seq("1 Ascending NullsFirst"), Seq("0 Ascending NullsFirst")))
+
+          val byPair = source()
+            .sortWithinPartitions("k", "x")
+            .selectExpr("k", "x AS a", "x AS b", "v")
+            .cache()
+          byPair.count()
+          val both = Seq("0 Ascending NullsFirst", "1 Ascending NullsFirst")
+          check(
+            byPair
+              .selectExpr("k", "b", "v", "sum(v) OVER (PARTITION BY k) AS s")
+              .selectExpr("k", "b", "v", "sum(s) OVER (PARTITION BY k, b) AS t"),
+            ids.map { id =>
+              val k = key(id)
+              Row(nullable(k), id % 2, id, keySums(k) * pairCounts((k, id % 2)))
+            },
+            Seq(both, both))
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
+  }
+
   test("a window over a cache sorted by a collated string key stays in Spark") {
     assume(isSpark40Plus, "collated string types require Spark 4.0+")
     // The native side would declare the order of a collated key in raw byte order, which is not

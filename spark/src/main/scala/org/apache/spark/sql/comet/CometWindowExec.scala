@@ -106,13 +106,14 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           // The keys the child reports past the required ones hold too, and this window reports
           // them, so a window above in the same native plan may rely on them. Send them up to the
           // first one that cannot be expressed, in a scope of their own, so that a key left out
-          // records no fallback reason.
+          // records no fallback reason. Only a key's child is sent, and its same-order
+          // expressions may name columns the child no longer outputs.
           val rest = op.child.outputOrdering
             .drop(requiredOrdering.length)
             .iterator
             .map { order =>
               if (hasNonDefaultStringCollation(order.dataType) ||
-                !order.references.subsetOf(op.child.outputSet)) {
+                !order.child.references.subsetOf(op.child.outputSet)) {
                 None
               } else {
                 exprToProtoWithFallbackReasons(order, op.child.output)._1

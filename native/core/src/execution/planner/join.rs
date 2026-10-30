@@ -403,11 +403,16 @@ impl PhysicalPlanner {
         Ok(Arc::new(prepared))
     }
 
-    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
-    /// declares one. Spark's plan knows the order of an input that enters the native plan from
-    /// the JVM, and of a scan of sorted files, but the `ScanExec` or the file scan the rows
-    /// arrive through declares none. Only that order is declared: when an operator in between may
-    /// have moved rows, `plan` is left as it is.
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless the order it
+    /// declares already satisfies them. Spark's plan knows the order of an input that enters the
+    /// native plan from the JVM, and of a scan of sorted files, but the `ScanExec` or the file
+    /// scan the rows arrive through declares none. Only that order is declared: when an operator
+    /// in between may have moved rows, `plan` is left as it is.
+    ///
+    /// An input can declare part of the order already, as a window does over an input declared
+    /// for the window below it. Spark may know more than that declaration: two aliases of one
+    /// column share an order, so the window above may need the other alias's order. The rest is
+    /// declared next to what `plan` declares.
     ///
     /// The serde sends an order only when the Comet operators of a join's streamed side or of a
     /// window's input report it, and it checks that nothing under them moves rows
@@ -424,7 +429,7 @@ impl PhysicalPlanner {
         plan: Arc<dyn ExecutionPlan>,
         sort_orders: &[Expr],
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-        if plan.output_ordering().is_some() || !Self::keeps_source_order(&plan) {
+        if !Self::keeps_source_order(&plan) {
             return Ok(plan);
         }
         let exprs = sort_orders
@@ -432,8 +437,14 @@ impl PhysicalPlanner {
             .map(|expr| self.create_sort_expr(expr, plan.schema()))
             .collect::<Result<Vec<_>, _>>()?;
         match LexOrdering::new(exprs) {
-            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
-            None => Ok(plan),
+            Some(ordering)
+                if !plan
+                    .equivalence_properties()
+                    .ordering_satisfy(ordering.iter().cloned())? =>
+            {
+                Ok(Arc::new(SortedInputExec::new(plan, ordering)))
+            }
+            _ => Ok(plan),
         }
     }
 
