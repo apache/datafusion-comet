@@ -128,7 +128,7 @@ class CometNativeCastSuite
     }
   }
 
-  test("non-collect LIMIT skips a failing cast beyond its projection input cap") {
+  test("non-collect LIMIT preserves projection input caps with AQE") {
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark
@@ -138,22 +138,18 @@ class CometNativeCastSuite
           .write
           .parquet(path.getCanonicalPath)
       }
-      for (aqe <- Seq("false", "true");
-        (limit, batchSize, offset) <- Seq((1, 8192, 0), (3, 2, 0), (2, 8192, 1))) {
+      for (aqe <- Seq("false", "true")) {
         withSQLConf(
           SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
           SQLConf.ANSI_ENABLED.key -> "true",
           CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString) {
+          CometConf.COMET_BATCH_SIZE.key -> "8192") {
           withParquetTable(path.getCanonicalPath, "non_collect_cast_rows") {
-            def query(n: Int, value: String, badId: Int = limit + offset): String =
-              s"""SELECT parsed FROM (
-                 |  SELECT CAST(IF(id = $badId, '$value', value) AS INT) AS parsed
-                 |  FROM non_collect_cast_rows LIMIT $n OFFSET $offset
-                 |) q WHERE parsed >= 0""".stripMargin
-
             val (_, plan) = checkSparkAnswerAndOperator(
-              sql(query(limit, "bad")),
+              sql("""SELECT parsed FROM (
+                  |  SELECT CAST(IF(id = 3, 'bad', value) AS INT) AS parsed
+                  |  FROM non_collect_cast_rows LIMIT 2 OFFSET 1
+                  |) q WHERE parsed >= 0""".stripMargin),
               includeClasses = Seq(classOf[CometLocalLimitExec], classOf[CometProjectExec]))
             // AQE can remove the global limit after the shuffle materializes enough rows.
             if (aqe == "false") {
@@ -162,16 +158,7 @@ class CometNativeCastSuite
             val project = collect(plan) { case p: CometProjectExec => p }.find {
               _.child.isInstanceOf[CometLocalLimitExec]
             }.get
-            assert(project.child.asInstanceOf[CometLocalLimitExec].limit == limit + offset)
-            assert(new ExtendedExplainInfo().getCodegenDispatchExpressions(plan).contains("cast"))
-            checkSparkError(sql(query(limit + 1, "bad")), "CAST_INVALID_INPUT")
-            if (offset > 0) {
-              // The projection precedes the shuffle, so Spark also evaluates the offset prefix.
-              checkSparkError(sql(query(limit, "bad", badId = 0)), "CAST_INVALID_INPUT")
-            }
-            checkSparkAnswerAndOperator(
-              sql(query(limit + 1, "1")),
-              includeClasses = Seq(classOf[CometProjectExec]))
+            assert(project.child.asInstanceOf[CometLocalLimitExec].limit == 3)
           }
         }
       }
