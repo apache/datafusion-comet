@@ -2248,6 +2248,125 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache combines small columnar batches in order") {
+    // At a batch size of 1000, an Arrow batch under 500 rows is combined with its neighbours, a
+    // larger one is stored as it stands after the rows combined ahead of it, and a batch of
+    // Spark's own vectors, which has to be copied into Arrow anyway, is combined at any size.
+    // Combined batches are cut at 1000 rows. The input releases each batch when it is asked for
+    // the next one, as a native producer does, so a batch held rather than copied would be read
+    // after it was released (#6950).
+    val input = Seq(
+      300 -> true,
+      0 -> true,
+      300 -> true,
+      9000 -> true,
+      700 -> true,
+      400 -> true,
+      2000 -> false,
+      400 -> true,
+      300 -> true)
+    val attrs = Seq(AttributeReference("id", LongType)(), AttributeReference("s", StringType)())
+    val serializer = new ArrowCachedBatchSerializer
+    withSQLConf(SQLConf.COLUMN_BATCH_SIZE.key -> "1000") {
+      val cached = serializer.convertColumnarBatchToCachedBatch(
+        spark.sparkContext.parallelize(Seq(0), 1).mapPartitions(_ => new ReleasingBatches(input)),
+        attrs,
+        StorageLevel.MEMORY_ONLY,
+        SQLConf.get)
+      assert(cached.map(_.numRows).collect().toSeq == Seq(600, 9000, 700, 1000, 1000, 1000, 100))
+
+      val rows = serializer
+        .convertCachedBatchToColumnarBatch(cached, attrs, attrs, SQLConf.get)
+        .mapPartitions(_.flatMap { batch =>
+          (0 until batch.numRows()).map(i =>
+            (batch.column(0).getLong(i), batch.column(1).getUTF8String(i).toString))
+        })
+        .collect()
+      assert(rows.toSeq == (0L until input.map(_._1).sum.toLong).map(i => (i, s"v$i")))
+    }
+  }
+
+  test("Comet in-memory cache combines the small batches of a shuffle read") {
+    // A shuffle read returns at least one batch per map output block, so a relation cached
+    // straight from a shuffle over 20 map tasks into 2 partitions arrives in 40 batches of about
+    // 500 rows. They are combined up to the default batch size of 10000 rows (#6950).
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(0, 20000, 1, 20)
+          .selectExpr(
+            "id",
+            "cast(id % 1000 as int) AS k",
+            "if(id % 11 = 0, NULL, concat('s', id)) AS s",
+            "named_struct('a', id, 'b', cast(id AS string)) AS st",
+            "if(id % 13 = 0, NULL, array(id, id + 1)) AS arr",
+            "map(cast(id % 7 AS string), id) AS mp")
+          .write
+          .parquet(path.toString)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        // One map task per file.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1024") {
+        val query = s"SELECT /*+ REPARTITION(2, k) */ * FROM parquet.`${path.toString}`"
+        val expected = uncachedSparkAnswer(query)
+        val df = spark.sql(query)
+        assert(df.rdd.getNumPartitions == 2)
+        df.cache()
+        try {
+          assert(df.count() == 20000)
+          val relation = spark.sharedState.cacheManager.lookupCachedData(df).get
+          val cached = relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+          assert(
+            cached.map(_.getClass.getName).distinct().collect().toSeq ==
+              Seq("org.apache.spark.sql.comet.execution.arrow.CometCachedBatch"))
+          val sizes = cached.map(_.numRows).collect()
+          assert(sizes.length <= 4 && sizes.forall(_ <= 10000), sizes.mkString(", "))
+          assert(QueryTest.sameRows(expected.toSeq, df.collect().toSeq).isEmpty)
+        } finally {
+          df.unpersist(blocking = true)
+        }
+      }
+    }
+  }
+
+  test("Comet in-memory cache keeps a sorted cache sorted when it combines its batches") {
+    // A cache reports the order of the plan it was built from, so the rows of the batches it
+    // combines have to keep their order. The native sort emits batches of 100 rows here.
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark.range(0, 20000, 1, 4).selectExpr("id", "id % 97 AS k").write.parquet(path.toString)
+      }
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "100") {
+        val df = spark.read
+          .parquet(path.toString)
+          .repartition(2, $"k")
+          .sortWithinPartitions($"id".desc)
+        df.cache()
+        try {
+          assert(df.count() == 20000)
+          val relation = spark.sharedState.cacheManager.lookupCachedData(df).get
+          val sizes =
+            relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
+              .map(_.numRows)
+              .collect()
+          assert(sizes.length <= 4, sizes.mkString(", "))
+          val sorted = df.rdd
+            .mapPartitions { rows =>
+              val ids = rows.map(_.getLong(0)).toArray
+              Iterator(ids.toSeq == ids.sorted.reverse.toSeq)
+            }
+            .collect()
+          assert(sorted.toSeq == Seq(true, true))
+        } finally {
+          df.unpersist(blocking = true)
+        }
+      }
+    }
+  }
+
   // Enough rows that every column's buffers are big enough for Arrow to actually compress them.
   // Arrow stores a buffer verbatim when compressing it would not make it smaller, and a boolean
   // column of a few hundred rows is a few dozen bytes, which takes that fallback -- leaving the
