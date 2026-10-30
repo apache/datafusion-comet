@@ -34,7 +34,7 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvid
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter}
 import org.apache.arrow.vector.types._
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, FieldType, Schema}
-import org.apache.arrow.vector.util.VectorSchemaRootAppender
+import org.apache.arrow.vector.util.{OversizedAllocationException, VectorSchemaRootAppender}
 import org.apache.spark.{SparkEnv, SparkException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.io.CompressionCodec
@@ -244,6 +244,12 @@ object Utils extends CometTypeShim with Logging {
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   /**
+   * Bridges Spark's package-private check for unchanged types with widened nested nullability.
+   */
+  def equalsIgnoreCompatibleNullability(from: DataType, to: DataType): Boolean =
+    DataType.equalsIgnoreCompatibleNullability(from, to)
+
+  /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
    * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
    * classes, it must be in `common` module.
@@ -271,20 +277,13 @@ object Utils extends CometTypeShim with Logging {
         val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
         // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
-        // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
-        // rebases the offsets to zero and leaves those bytes out.
-        val written =
-          if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
-        try {
+        // at zero.
+        withRebasedOffsets(root) { written =>
           val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
           writer.start()
           writer.writeBatch()
           root.clear()
           writer.close()
-        } finally {
-          // The slice holds its own references on the batch's buffers, so it is closed even when
-          // the write fails, as it does when a cancelled broadcast interrupts the task.
-          if (written ne root) written.close()
         }
       } catch {
         case NonFatal(e) =>
@@ -303,20 +302,44 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Whether every offset buffer in `vector`, its children included, starts at zero.
+   * Runs `write` on `root` itself when none of its vectors is a slice of a larger one, and
+   * otherwise on a slice of it that rebases the offsets to zero and leaves out the bytes or
+   * elements outside them, which Arrow Java would write. The slice shares the other buffers and
+   * holds its own references on them, so it is closed whether `write` returns or fails, as it
+   * does when a cancelled broadcast interrupts the task.
+   */
+  private[sql] def withRebasedOffsets[T](root: VectorSchemaRoot)(
+      write: VectorSchemaRoot => T): T = {
+    val written =
+      if (root.getFieldVectors.asScala.forall(holdsOnlyItsOwnValues)) root
+      else root.slice(0, root.getRowCount)
+    try write(written)
+    finally if (written ne root) written.close()
+  }
+
+  /**
+   * Whether every vector in `vector`, its children included, holds only the bytes or elements its
+   * own offsets cover.
    *
    * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
    * the C Data import keeps them, so a vector imported from a sliced native array has offsets
    * that start past zero. The rows before the slice stay at the front of its data buffer, or of
-   * its child vector for a list or map.
+   * its child vector for a list or map. The first slice of an array starts at zero instead, and a
+   * list or map still has the elements of the later slices in its child, which is longer than the
+   * last offset. A string or binary vector stops writing its data at the last offset, so only its
+   * first offset can show a slice.
    */
-  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
-    val firstOffset = vector match {
-      case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case _ => 0
+  private def holdsOnlyItsOwnValues(vector: FieldVector): Boolean = {
+    val ownsItsValues = vector match {
+      case v: BaseVariableWidthVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0
+      case v: BaseRepeatedValueVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0 &&
+        v.getOffsetBuffer.getInt(v.getValueCount.toLong * BaseRepeatedValueVector.OFFSET_WIDTH) ==
+          v.getDataVector.getValueCount
+      case _ => true
     }
-    firstOffset == 0 && vector.getChildrenFromFields.asScala.forall(offsetsStartAtZero)
+    ownsItsValues && vector.getChildrenFromFields.asScala.forall(holdsOnlyItsOwnValues)
   }
 
   /**
@@ -360,7 +383,15 @@ object Utils extends CometTypeShim with Logging {
   }
 
   /**
-   * Coalesces many small Arrow IPC batches into a single batch for broadcasting.
+   * The most bytes of values a string or binary vector of a coalesced broadcast batch holds.
+   * `VectorAppender` grows a data buffer by doubling it, and Arrow refuses a buffer of 2^31
+   * bytes, so 2^30 is as far as an appended vector can grow (#7192).
+   */
+  private val MaxCoalescedValueBytes = 1L << 30
+
+  /**
+   * Coalesces many small Arrow IPC batches into as few batches as Arrow can hold for
+   * broadcasting, usually one.
    *
    * Why this is necessary: The broadcast exchange collects shuffle output by calling
    * getByteArrayRdd, which serializes each ColumnarBatch independently into its own
@@ -375,9 +406,16 @@ object Utils extends CometTypeShim with Logging {
    * allocation) for each one. With coalescing, we decode and append all batches into one
    * VectorSchemaRoot on the driver, then re-serialize once. Each consumer task then deserializes
    * a single Arrow IPC stream.
+   *
+   * A broadcast whose string or binary values do not fit one vector is written as several
+   * batches: a batch that would take a vector past `maxValueBytes` starts the next one.
+   *
+   * @param maxValueBytes
+   *   the most bytes of values a string or binary vector of one coalesced batch may hold
    */
   def coalesceBroadcastBatches(
-      input: Iterator[ChunkedByteBuffer]): (Array[ChunkedByteBuffer], Long, Long) = {
+      input: Iterator[ChunkedByteBuffer],
+      maxValueBytes: Long = MaxCoalescedValueBytes): (Array[ChunkedByteBuffer], Long, Long) = {
     val buffers = input.filterNot(_.size == 0).toArray
     if (buffers.isEmpty) {
       return (Array.empty, 0L, 0L)
@@ -386,11 +424,45 @@ object Utils extends CometTypeShim with Logging {
     val allocator = org.apache.comet.CometArrowAllocator
       .newChildAllocator("broadcast-coalesce", 0, Long.MaxValue)
     try {
+      var schema: Schema = null
       var targetRoot: VectorSchemaRoot = null
+      // The rows appended to targetRoot, which VSRAppender does not count without columns.
+      var targetRows = 0L
       var totalRows = 0L
       var batchCount = 0
+      val coalesced = scala.collection.mutable.ArrayBuffer.empty[ChunkedByteBuffer]
 
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
+
+      // Writes targetRoot as one Arrow IPC stream, and releases it.
+      def writeTarget(): Unit = {
+        if (targetRoot.getSchema.getFields.isEmpty) {
+          // VSRAppender does not update rowCount with no columns
+          targetRoot.setRowCount(targetRows.toInt)
+        }
+
+        assert(
+          targetRoot.getRowCount.toLong == targetRows,
+          s"Row count mismatch after coalesce: ${targetRoot.getRowCount} != $targetRows")
+
+        val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
+        val compressedOutputStream =
+          new DataOutputStream(codec.compressedOutputStream(outputStream))
+        val writer =
+          new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
+        try {
+          writer.start()
+          writer.writeBatch()
+        } finally {
+          writer.close()
+        }
+
+        coalesced += outputStream.toChunkedByteBuffer
+        targetRoot.close()
+        targetRoot = null
+        targetRows = 0L
+      }
+
       try {
         for (bytes <- buffers) {
           val compressedInputStream =
@@ -415,15 +487,23 @@ object Utils extends CometTypeShim with Logging {
             }
             while (reader.loadNextBatch()) {
               val sourceRoot = reader.getVectorSchemaRoot
+              if (targetRows > 0 && exceedsValueBytes(targetRoot, sourceRoot, maxValueBytes)) {
+                writeTarget()
+              }
               if (targetRoot == null) {
-                targetRoot = VectorSchemaRoot.create(sourceRoot.getSchema, allocator)
+                // Every coalesced batch takes the first one's schema, so a batch that does not
+                // match it still leaves the broadcast uncoalesced.
+                if (schema == null) schema = sourceRoot.getSchema
+                targetRoot = VectorSchemaRoot.create(schema, allocator)
                 targetRoot.allocateNew()
               }
               try {
                 // Appending needs offsets that start at zero, which serializeBatches writes.
                 VectorSchemaRootAppender.append(targetRoot, sourceRoot)
               } catch {
-                case e: IllegalArgumentException =>
+                // Arrow throws OversizedAllocationException for a batch that is too large to
+                // append even after the split above.
+                case e @ (_: IllegalArgumentException | _: OversizedAllocationException) =>
                   logWarning(
                     "Arrow batches cannot be appended during BroadcastExchange coalescing; " +
                       "skipping coalesce",
@@ -432,6 +512,7 @@ object Utils extends CometTypeShim with Logging {
                   targetRoot = null
                   return (buffers, 0L, 0L)
               }
+              targetRows += sourceRoot.getRowCount
               totalRows += sourceRoot.getRowCount
               batchCount += 1
             }
@@ -443,31 +524,12 @@ object Utils extends CometTypeShim with Logging {
         if (targetRoot == null) {
           return (Array.empty, 0L, 0L)
         }
+        writeTarget()
 
-        if (targetRoot.getSchema.getFields.isEmpty) {
-          // VSRAppender does not update rowCount with no columns
-          targetRoot.setRowCount(totalRows.toInt)
-        }
+        logInfo(
+          s"Coalesced $batchCount broadcast batches into ${coalesced.length} ($totalRows rows)")
 
-        assert(
-          targetRoot.getRowCount.toLong == totalRows,
-          s"Row count mismatch after coalesce: ${targetRoot.getRowCount} != $totalRows")
-
-        logInfo(s"Coalesced $batchCount broadcast batches into 1 ($totalRows rows)")
-
-        val outputStream = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-        val compressedOutputStream =
-          new DataOutputStream(codec.compressedOutputStream(outputStream))
-        val writer =
-          new ArrowStreamWriter(targetRoot, null, Channels.newChannel(compressedOutputStream))
-        try {
-          writer.start()
-          writer.writeBatch()
-        } finally {
-          writer.close()
-        }
-
-        (Array(outputStream.toChunkedByteBuffer), batchCount.toLong, totalRows)
+        (coalesced.toArray, batchCount.toLong, totalRows)
       } finally {
         if (targetRoot != null) {
           targetRoot.close()
@@ -475,6 +537,30 @@ object Utils extends CometTypeShim with Logging {
       }
     } finally {
       allocator.close()
+    }
+  }
+
+  /**
+   * Whether appending `source` to `target` would take a string or binary vector of `target`, at
+   * any depth, past `maxValueBytes` of values.
+   */
+  private def exceedsValueBytes(
+      target: VectorSchemaRoot,
+      source: VectorSchemaRoot,
+      maxValueBytes: Long): Boolean = {
+    def exceeds(t: FieldVector, s: FieldVector): Boolean = {
+      val valueBytes = (t, s) match {
+        case (tv: BaseVariableWidthVector, sv: BaseVariableWidthVector) =>
+          tv.sizeOfValueBuffer.toLong + sv.sizeOfValueBuffer
+        case _ => 0L
+      }
+      valueBytes > maxValueBytes ||
+      t.getChildrenFromFields.asScala.zip(s.getChildrenFromFields.asScala).exists {
+        case (tc, sc) => exceeds(tc, sc)
+      }
+    }
+    target.getFieldVectors.asScala.zip(source.getFieldVectors.asScala).exists { case (t, s) =>
+      exceeds(t, s)
     }
   }
 
