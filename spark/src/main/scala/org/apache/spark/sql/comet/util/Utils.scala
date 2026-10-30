@@ -260,15 +260,25 @@ object Utils extends CometTypeShim with Logging {
    *   the output stream
    */
   def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    lazy val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
     batches.map { batch =>
       val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
       try {
+        // Tiny shuffle batches otherwise allocate and zero a full 1 MiB heap chunk each. Keep
+        // larger chunks for large inputs, where a small fixed chunk would fragment the output.
+        val dictionaryBytes = batchProviderOpt
+          .map { provider =>
+            provider.getDictionaryIds.asScala.foldLeft(0L) { (bytes, id) =>
+              bytes + provider.lookup(id).getVector.getBufferSize
+            }
+          }
+          .getOrElse(0L)
+        val batchBytes = fieldVectors.foldLeft(dictionaryBytes)(_ + _.getBufferSize)
+        val chunkSize = math.max(4096L, math.min(1024 * 1024L, batchBytes)).toInt
+        val cbbos = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+        val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
         val root = new VectorSchemaRoot(fieldVectors.asJava)
         if (fieldVectors.isEmpty) {
           // VSR cannot infer rowCount without field vectors
@@ -285,18 +295,18 @@ object Utils extends CometTypeShim with Logging {
           root.clear()
           writer.close()
         }
+
+        if (out.size() > 0) {
+          (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
+        } else {
+          (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
+        }
       } catch {
         case NonFatal(e) =>
           // The batch's own vectors stay with their owner. The ones made for this write are held
           // by nothing else, and a narrowed copy can be close to 2 GiB.
           closeAfterFailure(allocatedFor(batch, fieldVectors), e)
           throw e
-      }
-
-      if (out.size() > 0) {
-        (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
-      } else {
-        (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
       }
     }
   }
