@@ -121,7 +121,7 @@ case class CometLocalTopKExec(
   override def hashCode(): Int =
     Objects.hashCode(output, Int.box(limit), sortOrder, Boolean.box(dynamicFilterEnabled), child)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++ Map(
       "dynamic_filter_topk_filters_attached" ->
         SQLMetrics.createMetric(sparkContext, "TopK reader filters attached"),

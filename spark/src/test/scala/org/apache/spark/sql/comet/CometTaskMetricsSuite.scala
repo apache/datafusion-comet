@@ -1001,12 +1001,23 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       assert(exchange.metrics("native_cpu_time").value == aggregateCpu("ShuffleMapTask"))
       assert(aggregateCpu("ResultTask") == 0L, aggregateCpu)
 
-      // A block whose output goes to the JVM reports on its root.
-      val (projectCpu, projectPlan) = run("SELECT _1 + 1, upper(_3) FROM tbl WHERE _2 > 10")
-      val root = collectFirst(projectPlan) { case native: CometNativeExec => native }
-        .getOrElse(fail(s"Expected a native block:\n${projectPlan.treeString}"))
-      assert(projectCpu("ResultTask") > 0L, projectCpu)
-      assert(root.metrics("native_cpu_time").value == projectCpu("ResultTask"))
+      // A block whose output goes to the JVM reports on its root, including a scan on its own,
+      // which serializes its plan when it executes. The other operators in the block report
+      // nothing, and only scans, which can't tell whether they are the root, declare it.
+      Seq("SELECT _1 + 1, upper(_3) FROM tbl WHERE _2 > 10", "SELECT * FROM tbl").foreach {
+        query =>
+          val (cpu, plan) = run(query)
+          val blocks = collect(plan) { case native: CometNativeExec => native }
+          assert(blocks.nonEmpty, s"Expected a native block:\n${plan.treeString}")
+          assert(cpu("ResultTask") > 0L, cpu)
+          assert(blocks.head.metrics("native_cpu_time").value == cpu("ResultTask"))
+          blocks.tail.foreach { native =>
+            native.metrics.get("native_cpu_time").foreach { metric =>
+              assert(native.isInstanceOf[CometNativeScanExec], plan.treeString)
+              assert(metric.value <= 0L, plan.treeString)
+            }
+          }
+      }
     }
   }
 

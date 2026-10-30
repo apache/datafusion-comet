@@ -96,6 +96,10 @@ case class CometWriteFilesExec(
 
   override def nodeName: String = "CometWriteFiles"
 
+  // Fed its input from the JVM, so its plan runs on the Spark task thread, where
+  // `executorCpuTime` already counts it. This also keeps `metrics` from serializing the plan.
+  override protected def reportsNativeCpuTime: Boolean = false
+
   /**
    * No metrics of its own. On this path `BasicWriteJobStatsTracker` is authoritative for the file
    * count, byte count and row count, and reports them on the enclosing `Execute
@@ -103,7 +107,7 @@ case class CometWriteFilesExec(
    * would only add a second, less trustworthy copy: its `bytes_written` comes from
    * `std::fs::metadata`, which returns 0 for a file on HDFS.
    */
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override protected def operatorMetrics: Map[String, SQLMetric] = Map.empty
 
   override def serializedPlanOpt: SerializedPlan =
     SerializedPlan(Some(CometExec.serializeNativePlan(nativeOp)))

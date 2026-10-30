@@ -769,7 +769,7 @@ case class CometWindowExec(
   override def nodeName: String = "CometWindowExec"
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(windowExpression)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext)
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering

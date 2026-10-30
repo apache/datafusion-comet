@@ -224,7 +224,7 @@ case class CometIcebergNativeScanExec(
     }
   }
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val baseMetrics = Map(
       "output_rows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
       "bytes_scanned" -> SQLMetrics.createSizeMetric(sparkContext, "number of bytes scanned"),
@@ -235,8 +235,7 @@ case class CometIcebergNativeScanExec(
     // Add num_splits as a runtime metric (incremented on the native side during execution)
     val numSplitsMetric = SQLMetrics.createMetric(sparkContext, "number of file splits processed")
 
-    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric) ++
-      CometMetricNode.nativeCpuTimeMetrics(sparkContext)
+    baseMetrics ++ icebergPlanningMetrics + ("num_splits" -> numSplitsMetric)
   }
 
   // Execution id this scan last posted its driver metrics under. Guards against a second post:
@@ -281,6 +280,10 @@ case class CometIcebergNativeScanExec(
       icebergPlanningMetrics.values.toSeq)
     postedExecutionId = executionId
   }
+
+  // Executes itself when it is a native block on its own, serializing its plan then rather than
+  // through `serializedPlanOpt`, so it can be a block's root without a serialized plan.
+  override protected def reportsNativeCpuTime: Boolean = true
 
   /** Executes using CometExecRDD - planning data is computed lazily on first access. */
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
