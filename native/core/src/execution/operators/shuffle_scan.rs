@@ -46,7 +46,6 @@ use std::{
     task::{Context, Poll},
 };
 
-use super::batch_slicer::BatchSlicer;
 use super::scan::InputBatch;
 
 /// ShuffleScanExec reads compressed shuffle blocks from JVM via JNI and decodes them natively.
@@ -307,13 +306,12 @@ impl ExecutionPlan for ShuffleScanExec {
     fn execute(
         &self,
         partition: usize,
-        context: Arc<TaskContext>,
+        _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         Ok(Box::pin(ShuffleScanStream::new(
             self.clone(),
             partition,
             self.baseline_metrics.clone(),
-            context.session_config().batch_size(),
         )))
     }
 
@@ -354,8 +352,6 @@ struct ShuffleScanStream {
     shuffle_scan: ShuffleScanExec,
     /// Metrics.
     baseline_metrics: BaselineMetrics,
-    /// Splits input batches wider than the session batch size.
-    slicer: BatchSlicer,
 }
 
 impl ShuffleScanStream {
@@ -363,12 +359,10 @@ impl ShuffleScanStream {
         shuffle_scan: ShuffleScanExec,
         _partition: usize,
         baseline_metrics: BaselineMetrics,
-        batch_size: usize,
     ) -> Self {
         Self {
             shuffle_scan,
             baseline_metrics,
-            slicer: BatchSlicer::new(batch_size),
         }
     }
 }
@@ -377,34 +371,30 @@ impl Stream for ShuffleScanStream {
     type Item = DataFusionResult<arrow::array::RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Some(batch) = this.slicer.pending() {
-            return Poll::Ready(Some(Ok(batch)));
-        }
-        let mut timer = this.baseline_metrics.elapsed_compute().timer();
-        let mut scan_batch = this.shuffle_scan.batch.try_lock().unwrap();
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let mut scan_batch = self.shuffle_scan.batch.try_lock().unwrap();
 
         let result = match &*scan_batch {
             None => {
-                this.shuffle_scan.waker.register(cx.waker());
+                self.shuffle_scan.waker.register(cx.waker());
                 Poll::Pending
             }
             // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
             // nothing to pull.
             Some(InputBatch::EOF) => Poll::Ready(None),
             Some(InputBatch::Batch(columns, num_rows)) => {
-                this.baseline_metrics.record_output(*num_rows);
+                self.baseline_metrics.record_output(*num_rows);
                 // Reconcile the decoded block with the catalyst-declared schema rather than
                 // stamping it on, so that nested field nullability drift is absorbed here the way
                 // `ScanExec` absorbs it at the FFI boundary.
                 // See https://github.com/apache/datafusion-comet/issues/5137.
                 let maybe_batch = cast_and_stamp_schema(
-                    this.shuffle_scan.name(),
-                    &this.shuffle_scan.schema,
+                    self.shuffle_scan.name(),
+                    &self.shuffle_scan.schema,
                     columns.clone(),
                     *num_rows,
                 );
-                Poll::Ready(Some(maybe_batch.map(|batch| this.slicer.slice(batch))))
+                Poll::Ready(Some(maybe_batch))
             }
         };
         if matches!(result, Poll::Ready(Some(_))) {

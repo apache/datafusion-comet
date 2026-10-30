@@ -19,21 +19,17 @@ use arrow::array::{Int64Array, RecordBatch};
 use arrow::compute::SortOptions;
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::common::Result;
-use datafusion::execution::session_state::SessionState;
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::PhysicalSortExpr;
 use datafusion::physical_plan::memory::{LazyBatchGenerator, LazyMemoryExec};
 use datafusion::physical_plan::Partitioning;
-use datafusion::prelude::SessionConfig;
 use parking_lot::RwLock;
 use std::any::Any;
 use std::fmt;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 /// Builds the plan for one Spark partition of `spark.range` or SQL `range()`: a single non-null
-/// `BIGINT` column, produced at most a session batch size of rows at a time. The size is read
-/// from `session` as each batch is made, because a plan holding a large string scalar lowers it
-/// after planning (see `scalar_batch_rows` in comet's `jni_api`).
+/// `BIGINT` column, produced `batch_size` rows at a time.
 ///
 /// Partition bounds follow Spark's `RangeExec`. The JVM side sends only ranges whose arithmetic
 /// cannot overflow in Spark, where both Spark's generated code and its interpreted path produce
@@ -47,7 +43,7 @@ pub fn range_exec(
     num_elements: i64,
     num_slices: i32,
     partition: i32,
-    session: Weak<RwLock<SessionState>>,
+    batch_size: usize,
 ) -> Result<LazyMemoryExec> {
     let (partition_start, partition_elements) =
         partition_bounds(start, step, num_elements, num_slices, partition);
@@ -57,7 +53,7 @@ pub fn range_exec(
         step,
         partition_start,
         partition_elements,
-        session,
+        batch_size,
         produced: 0,
     };
     let mut exec = LazyMemoryExec::try_new(schema, vec![Arc::new(RwLock::new(generator))])?;
@@ -126,19 +122,9 @@ struct RangeGenerator {
     step: i64,
     partition_start: i64,
     partition_elements: i64,
-    /// The session whose batch size bounds each batch, read when the batch is made.
-    session: Weak<RwLock<SessionState>>,
+    batch_size: usize,
     /// The number of values produced so far.
     produced: i64,
-}
-
-impl RangeGenerator {
-    fn batch_size(&self) -> usize {
-        self.session
-            .upgrade()
-            .map(|state| state.read().config().batch_size())
-            .unwrap_or_else(|| SessionConfig::new().batch_size())
-    }
 }
 
 impl fmt::Display for RangeGenerator {
@@ -158,7 +144,7 @@ impl LazyBatchGenerator for RangeGenerator {
 
     fn generate_next_batch(&mut self) -> Result<Option<RecordBatch>> {
         let first = self.produced;
-        let count = (self.partition_elements - first).min(self.batch_size() as i64);
+        let count = (self.partition_elements - first).min(self.batch_size as i64);
         if count <= 0 {
             return Ok(None);
         }
@@ -176,11 +162,8 @@ impl LazyBatchGenerator for RangeGenerator {
     fn reset_state(&self) -> Arc<RwLock<dyn LazyBatchGenerator>> {
         Arc::new(RwLock::new(RangeGenerator {
             schema: Arc::clone(&self.schema),
-            step: self.step,
-            partition_start: self.partition_start,
-            partition_elements: self.partition_elements,
-            session: Weak::clone(&self.session),
             produced: 0,
+            ..*self
         }))
     }
 }
@@ -189,7 +172,7 @@ impl LazyBatchGenerator for RangeGenerator {
 mod tests {
     use super::*;
     use datafusion::physical_plan::ExecutionPlan;
-    use datafusion::prelude::{SessionConfig, SessionContext};
+    use datafusion::prelude::SessionContext;
     use futures::StreamExt;
 
     async fn collect(
@@ -199,18 +182,11 @@ mod tests {
         num_slices: i32,
         batch_size: usize,
     ) -> Vec<i64> {
-        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(batch_size));
+        let ctx = SessionContext::new();
         let mut values = Vec::new();
         for partition in 0..num_slices {
-            let range = range_exec(
-                start,
-                step,
-                num_elements,
-                num_slices,
-                partition,
-                ctx.state_weak_ref(),
-            )
-            .unwrap();
+            let range =
+                range_exec(start, step, num_elements, num_slices, partition, batch_size).unwrap();
             let mut stream = range.execute(0, ctx.task_ctx()).unwrap();
             while let Some(batch) = stream.next().await {
                 let batch = batch.unwrap();
@@ -261,25 +237,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    /// `executePlan` lowers the session's batch size after planning when the plan holds a large
-    /// string scalar, so the batch size must be read as each batch is made.
-    #[tokio::test]
-    async fn reads_the_batch_size_the_session_has_when_a_batch_is_made() {
-        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(8192));
-        let range = range_exec(0, 1, 10, 1, 0, ctx.state_weak_ref()).unwrap();
-        {
-            let state = ctx.state_ref();
-            let mut state = state.write();
-            *state.config_mut() = std::mem::take(state.config_mut()).with_batch_size(4);
-        }
-        let mut stream = range.execute(0, ctx.task_ctx()).unwrap();
-        let mut rows = Vec::new();
-        while let Some(batch) = stream.next().await {
-            rows.push(batch.unwrap().num_rows());
-        }
-        assert_eq!(rows, vec![4, 4, 2]);
     }
 
     /// The cases from Spark's `DataFrameRangeSuite` whose bounds are at the edges of the `Long`

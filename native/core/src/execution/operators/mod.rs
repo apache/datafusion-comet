@@ -24,7 +24,6 @@ pub use scan::*;
 
 #[cfg(feature = "python-udf")]
 mod arrow_python_udf;
-mod batch_slicer;
 #[cfg(feature = "python-udf")]
 pub use arrow_python_udf::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 mod dynamic_filter;

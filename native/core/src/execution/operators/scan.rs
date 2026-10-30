@@ -15,10 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{
-    errors::CometError,
-    execution::{operators::batch_slicer::BatchSlicer, planner::TEST_EXEC_CONTEXT_ID},
-};
+use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -235,14 +232,13 @@ impl ExecutionPlan for ScanExec {
     fn execute(
         &self,
         partition: usize,
-        context: Arc<TaskContext>,
+        _: Arc<TaskContext>,
     ) -> datafusion::common::Result<SendableRecordBatchStream> {
         Ok(Box::pin(ScanStream::new(
             self.clone(),
             self.schema(),
             partition,
             self.baseline_metrics.clone(),
-            context.session_config().batch_size(),
         )))
     }
 
@@ -290,8 +286,6 @@ struct ScanStream<'a> {
     cast_options: CastOptions<'a>,
     /// elapsed time for casting columns to different data types during scan
     cast_time: Time,
-    /// Splits input batches wider than the session batch size
-    slicer: BatchSlicer,
 }
 
 impl ScanStream<'_> {
@@ -300,7 +294,6 @@ impl ScanStream<'_> {
         schema: SchemaRef,
         partition: usize,
         baseline_metrics: BaselineMetrics,
-        batch_size: usize,
     ) -> Self {
         let cast_time = MetricBuilder::new(&scan.metrics).subset_time("cast_time", partition);
         Self {
@@ -309,7 +302,6 @@ impl ScanStream<'_> {
             baseline_metrics,
             cast_options: CastOptions::default(),
             cast_time,
-            slicer: BatchSlicer::new(batch_size),
         }
     }
 
@@ -373,25 +365,21 @@ impl Stream for ScanStream<'_> {
     type Item = DataFusionResult<RecordBatch>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if let Some(batch) = this.slicer.pending() {
-            return Poll::Ready(Some(Ok(batch)));
-        }
-        let mut timer = this.baseline_metrics.elapsed_compute().timer();
-        let mut scan_batch = this.scan.batch.try_lock().unwrap();
+        let mut timer = self.baseline_metrics.elapsed_compute().timer();
+        let mut scan_batch = self.scan.batch.try_lock().unwrap();
 
         let result = match &*scan_batch {
             None => {
-                this.scan.waker.register(cx.waker());
+                self.scan.waker.register(cx.waker());
                 Poll::Pending
             }
             // EOF stays buffered: a re-poll ends the stream again and `get_next_batch` has
             // nothing to pull.
             Some(InputBatch::EOF) => Poll::Ready(None),
             Some(InputBatch::Batch(columns, num_rows)) => {
-                this.baseline_metrics.record_output(*num_rows);
-                let maybe_batch = this.build_record_batch(columns, *num_rows);
-                Poll::Ready(Some(maybe_batch.map(|batch| this.slicer.slice(batch))))
+                self.baseline_metrics.record_output(*num_rows);
+                let maybe_batch = self.build_record_batch(columns, *num_rows);
+                Poll::Ready(Some(maybe_batch))
             }
         };
         if matches!(result, Poll::Ready(Some(_))) {

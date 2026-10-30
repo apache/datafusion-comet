@@ -37,11 +37,11 @@ CREATE TABLE test_large_scalar_ids(k int) USING parquet
 statement
 INSERT INTO test_large_scalar_ids SELECT /*+ COALESCE(1) */ CAST(id % 2 AS INT) FROM range(8192)
 
--- count of the scalar in a grouped aggregate. The plan runs natively and panicked before the
--- fix; the answer-only mode is because the harness's missingInput check trips on a grouped
--- count of a scalar subquery whatever the string's size, which is a separate plan issue.
-query spark_answer_only
-SELECT k, count((SELECT max(s) FROM test_large_scalar_wide)) FROM test_large_scalar_ids GROUP BY k ORDER BY k
+-- count of the scalar in a grouped aggregate, which expands it to the batch length. A literal
+-- rather than the subquery: the harness's missingInput check trips on a grouped count of a
+-- scalar subquery whatever the string's size, which is a separate plan issue.
+query
+SELECT k, count(repeat('x', 262144)) FROM test_large_scalar_ids GROUP BY k ORDER BY k
 
 -- the scalar as a hash partitioning key
 query
@@ -58,3 +58,15 @@ SELECT sum(length(c)) FROM (SELECT concat(repeat('x', 262144), CAST(k AS STRING)
 -- the literal over the native range source, which sizes its own batches, in one slice
 query
 SELECT sum(length(concat(repeat('x', 262144), CAST(id AS STRING)))) FROM range(0, 8192, 1, 1)
+
+-- a filter under the projection coalesces its output to its own batch size
+query
+SELECT sum(length(c)) FROM (SELECT concat((SELECT max(s) FROM test_large_scalar_wide), CAST(k AS STRING)) AS c FROM test_large_scalar_ids WHERE k >= 0)
+
+-- a window under the aggregate emits its whole partition
+query
+SELECT sum(length(concat(repeat('x', 262144), CAST(tile AS STRING)))) FROM (SELECT ntile(2) OVER (ORDER BY id) AS tile FROM range(0, 8192, 1, 1))
+
+-- a scalar built from the subquery result is wider than the result itself
+query
+SELECT sum(length(c)) FROM (SELECT concat(repeat((SELECT max(s) FROM test_large_scalar_wide), 2), CAST(k AS STRING)) AS c FROM test_large_scalar_ids)
