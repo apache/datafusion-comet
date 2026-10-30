@@ -76,9 +76,9 @@ use datafusion::{
 };
 use datafusion_comet_operators::{range_exec, range_sort_expr, ExpandExec, SampleExec};
 use datafusion_comet_spark_expr::{
-    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode, BinaryOutputStyle,
-    BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode, SparkArraysZipFunc,
-    Subquery, ToCsv,
+    create_comet_hof_func, create_comet_physical_fun, create_comet_physical_fun_with_eval_mode,
+    BinaryOutputStyle, BloomFilterMightContain, CheckedBinaryExpr, CsvWriteOptions, EvalMode,
+    SparkArraysZipFunc, Subquery, ToCsv,
 };
 use datafusion_datasource::TableSchema;
 use iceberg::expr::Bind;
@@ -111,8 +111,8 @@ use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
 use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
-use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion::physical_plan::unnest::ListUnnest;
+use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_expression::{HigherOrderFunc, LambdaFunction, ListLiteral};
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{

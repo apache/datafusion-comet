@@ -314,12 +314,9 @@ impl PhysicalExpr for ShortCircuitBinaryExpr {
                 ShortCircuitBinaryOp::And | ShortCircuitBinaryOp::Or => {
                     Ok(ColumnarValue::Array(Arc::new(lhs_arr)))
                 }
-                _ => {
-                    // Все строки LHS - NULL -> все результаты сравнения - NULL
-                    Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
-                        num_rows,
-                    ))))
-                }
+                _ => Ok(ColumnarValue::Array(Arc::new(BooleanArray::new_null(
+                    num_rows,
+                )))),
             };
         }
 
