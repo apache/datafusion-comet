@@ -696,6 +696,8 @@ run it starts is advisory. Label the pull request and then push, and Spark 3.4 j
 verdict like any other suite. See
 <a class="reference internal" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a>
 for the mechanics.</p>
+<p>For a pull request from a fork, the pull request column’s “yes” rows run on your fork rather than
+here; see <a class="reference internal" href="#pull-requests-from-forks">Pull requests from forks</a>.</p>
 <p>Every job’s result feeds one flat job named <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, and that is the only status check
 <code class="docutils literal notranslate"><span class="pre">main</span></code> requires. A job that is skipped because the change did not touch its inputs counts as a
 pass. A job that fails or is cancelled turns <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> red.</p>
@@ -704,6 +706,67 @@ filters are the <code class="docutils literal notranslate"><span class="pre">FIL
 cases that pin both down.</p>
 <p>A pull request against a release branch runs all three tiers at once; see
 <a class="reference internal" href="#release-branches">Release branches</a>.</p>
+</section>
+<section id="pull-requests-from-forks">
+<h2>Pull requests from forks<a class="headerlink" href="#pull-requests-from-forks" title="Link to this heading">#</a></h2>
+<p>Nearly every pull request comes from a fork, and the PR tier is the largest share of the runner time
+the project spends on CI. So for a pull request from a fork into <code class="docutils literal notranslate"><span class="pre">main</span></code>, the PR tier runs on <strong>your
+fork’s</strong> GitHub runners, not on the Apache Software Foundation’s shared ones. What stays here is the
+preflight checks, <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, and any <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suite a maintainer opts the pull request
+into. The merge queue, which also stays here, runs the queue tier on the merge result before anything
+lands: the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and the other queue-tier suites in the
+table above. The nightly-only suites and the opt-in <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suites are not part of it, and path
+filters still apply. This is the arrangement <code class="docutils literal notranslate"><span class="pre">apache/datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">apache/arrow-rs</span></code> use.</p>
+<p>To get it working:</p>
+<ol class="arabic simple">
+<li><p><strong>Enable GitHub Actions on your fork.</strong> GitHub disables workflows on a new fork. Open the
+fork’s <strong>Actions</strong> tab and choose <strong>I understand my workflows, go ahead and enable them</strong>.</p></li>
+<li><p><strong>Sync your fork and rebase your branch onto <code class="docutils literal notranslate"><span class="pre">main</span></code>.</strong> The workflows that run on your fork are
+the ones in your branch, so a branch cut before this arrangement existed runs nothing.</p></li>
+<li><p><strong>Push your branch.</strong> Each push to a branch of your fork starts a <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">CI</span> <span class="pre">(fork</span> <span class="pre">run)</span></code> in
+your fork’s <strong>Actions</strong> tab, and a newer push to the same branch cancels the run in flight. It runs
+the PR tier for the files your branch changes relative to upstream <code class="docutils literal notranslate"><span class="pre">main</span></code>, which is what the pull
+request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
+against Spark 4.1. If that comparison cannot be made, it runs the whole tier.</p></li>
+</ol>
+<p>On the pull request, a <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> check links to that run and mirrors its result. It is first
+written when the upstream run finishes. After that, a pull request updated in the last six hours
+whose check is still running or has no run yet is rechecked every 15 minutes. A check that already
+shows a result is rechecked only by a sweep that takes 25 open pull requests every 15 minutes, which
+is about two hours to go round 200 of them. So after you re-run a failed job in your fork, the pull
+request can keep showing the old result for hours. Your fork’s <strong>Actions</strong> tab is the source of truth:
+read the details and re-run failed jobs there. If the check says <strong>Enable CI on your fork</strong> or <strong>No fork CI
+run for this commit</strong>, no run was found for the pull request’s head commit: Actions is disabled, the
+branch does not include the fork workflows, or the run has not appeared yet.</p>
+<p>Some things to know:</p>
+<ul class="simple">
+<li><p><strong><code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> is informational.</strong> <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> does not depend on it, because a contributor
+controls the workflow that produced it. A green fork run is a good sign, not a merge gate. The
+queue is the gate, and it tests your change merged with <code class="docutils literal notranslate"><span class="pre">main</span></code> and everything queued ahead of it,
+where the fork run tests your branch head alone.</p></li>
+<li><p><strong>Caches are cold unless <code class="docutils literal notranslate"><span class="pre">main</span></code> builds.</strong> A branch restores caches saved on its own ref or on your
+fork’s default branch, and a run on your fork’s <code class="docutils literal notranslate"><span class="pre">main</span></code> saves them only when it builds. A push to
+<code class="docutils literal notranslate"><span class="pre">main</span></code> that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
+nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
+caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
+23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes.</p></li>
+<li><p><strong>Scheduled runs stay upstream.</strong> The nightly run, Miri, the stale-PR closer and the weekly
+CodeQL scan run in <code class="docutils literal notranslate"><span class="pre">apache/datafusion-comet</span></code> only. If your fork has scheduled workflows enabled they
+start no job. Miri can still be run on your fork by dispatching it.</p></li>
+<li><p><strong>Opt-in suites still run here.</strong> A fork cannot see the <code class="docutils literal notranslate"><span class="pre">run-*</span></code> labels on your pull request, so
+those suites, and the <code class="docutils literal notranslate"><span class="pre">labeled</span></code> runs that start when a maintainer applies one, run here. For
+<code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code> that is the other four Spark profiles, while your fork runs the default
+profile and the lints, so together they cover every profile. See
+<a class="reference internal" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a>.</p></li>
+<li><p><strong>Not everything moves.</strong> A pull request from a branch of this repository, such as a
+committer’s or dependabot’s, and a pull request that targets a release branch, keep the PR tier here.
+A release branch has no queue to catch what a fork run misses.</p></li>
+<li><p><strong>Opening a pull request inside your own fork</strong> leaves the PR tier to your branch push, so the
+same commit is not tested twice. A <code class="docutils literal notranslate"><span class="pre">run-*</span></code> label applied there still runs its suite.</p></li>
+</ul>
+<p>If you cannot enable Actions on your fork, say so on the pull request. Nothing else will run the PR
+tier for you before the queue does, so a maintainer may ask you to reproduce a failure with
+<a class="reference internal" href="#reproducing-a-suite-failure-locally"><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code></a> first.</p>
 </section>
 <section id="opting-a-pull-request-into-a-suite-the-pr-tier-skips">
 <h2>Opting a pull request into a suite the PR tier skips<a class="headerlink" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips" title="Link to this heading">#</a></h2>
@@ -1059,7 +1122,8 @@ the workflow does. The macOS job differs from Linux only in the platform.</p>
 <code class="docutils literal notranslate"><span class="pre">dev/ci/check-ci-config.py</span></code>, which runs in preflight. It enforces that every job feeds
 <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, that the required check name in <code class="docutils literal notranslate"><span class="pre">.asf.yaml</span></code> matches the job that publishes it,
 that artifact names are unique per producer, that the routing policy matches its test cases, and
-that every job in <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code> is either a cache writer or skipped on push. Run it locally
+that every job in <code class="docutils literal notranslate"><span class="pre">pr_build_linux.yml</span></code> is either a cache writer or skipped on push, and that the fork
+workflows (<code class="docutils literal notranslate"><span class="pre">ci_fork.yml</span></code>, <code class="docutils literal notranslate"><span class="pre">fork_ci_status.yml</span></code>) and <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>’s push trigger agree. Run it locally
 before pushing a CI change:</p>
 <div class="highlight-sh notranslate"><div class="highlight"><pre><span></span>python3<span class="w"> </span>dev/ci/check-ci-config.py
 actionlint<span class="w"> </span>--shellcheck<span class="o">=</span>off
@@ -1124,6 +1188,7 @@ list first.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#three-tiers">Three tiers</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#pull-requests-from-forks">Pull requests from forks</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#opting-a-pull-request-into-a-suite-the-pr-tier-skips">Opting a pull request into a suite the PR tier skips</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#merging-through-the-queue">Merging through the queue</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#when-a-queue-run-fails">When a queue run fails</a></li>

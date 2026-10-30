@@ -937,7 +937,9 @@ size:</p>
 </div>
 <p>Raise the value further if executors are killed by the cluster manager (on Kubernetes,
 <code class="docutils literal notranslate"><span class="pre">ExecutorLostFailure</span></code> with exit code 137) rather than failing with a task-level out-of-memory error.
-To measure how much Comet needs rather than guessing, see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.</p>
+To measure how much Comet needs rather than guessing, see <a class="reference internal" href="#sizing-the-overhead-from-the-memory-usage-log">Sizing the Overhead from the Memory Usage Log</a>.
+If executors are killed while the memory usage log stays well inside the limits, raising the
+overhead may only delay it; see <a class="reference internal" href="#returning-freed-native-memory-to-the-operating-system">Returning Freed Native Memory to the Operating System</a>.</p>
 <p>Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
 how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
 executors without a memory limit and count only <code class="docutils literal notranslate"><span class="pre">spark.executor.memory</span></code> against the memory they
@@ -1064,6 +1066,55 @@ these events, and one without Comet on its classpath logs once that it dropped t
 event log.</p>
 </section>
 </section>
+<section id="returning-freed-native-memory-to-the-operating-system">
+<h2>Returning Freed Native Memory to the Operating System<a class="headerlink" href="#returning-freed-native-memory-to-the-operating-system" title="Link to this heading">#</a></h2>
+<p>An executor can be killed by the cluster manager for exceeding its container while every figure in
+the memory usage log stays well inside its limits. A common cause is native memory that Comet has
+already freed but the allocator has not returned to the operating system. Comet’s release builds use
+the system allocator, which on Linux is usually glibc’s <code class="docutils literal notranslate"><span class="pre">malloc</span></code>. glibc keeps freed memory in
+arenas so that it can reuse it, and a thread allocates from the arena it is attached to. A lot of
+what Comet’s operators free stays there: each spill drops the batches the operator buffered, and the
+next stage’s native plans often run on different threads, attached to other arenas, so they reuse
+only part of what the previous stage left behind. The
+<code class="docutils literal notranslate"><span class="pre">allocated</span></code> figure in the log drops when the memory is freed, but the executor’s resident memory
+does not, so it grows from one stage and query to the next until the container’s limit is reached.
+See <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7108">#7108</a> for measurements.</p>
+<p>The signs are executors that the cluster manager kills for exceeding their container (on
+Kubernetes, <code class="docutils literal notranslate"><span class="pre">OOMKilled</span></code>, exit code 137) in a long application, often late in it, while the memory
+usage log shows them well below peaks they survived earlier, and the query that was running when
+they were killed passes on fresh executors.</p>
+<p>The JVM can return this memory periodically. <code class="docutils literal notranslate"><span class="pre">-XX:TrimNativeHeapInterval</span></code>, available from JDK
+17.0.12 and 21.0.3, calls glibc’s <code class="docutils literal notranslate"><span class="pre">malloc_trim</span></code> at the given interval in milliseconds, which hands
+the physical pages of the free memory in the arenas back to the operating system. glibc can still
+reuse that memory afterwards; the pages are mapped in again when they are next written. It trims the whole process, so it also
+covers memory freed by the JVM itself and by native libraries other than Comet. Adding
+<code class="docutils literal notranslate"><span class="pre">-Xlog:trimnative</span></code> logs each trim, with the process’s resident memory before and after and how long
+the trim took, which shows whether the flag is in effect and how much it returns:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="n">spark</span><span class="o">.</span><span class="n">executor</span><span class="o">.</span><span class="n">extraJavaOptions</span><span class="o">=-</span><span class="n">XX</span><span class="p">:</span><span class="n">TrimNativeHeapInterval</span><span class="o">=</span><span class="mi">5000</span> <span class="o">-</span><span class="n">Xlog</span><span class="p">:</span><span class="n">trimnative</span>
+</pre></div>
+</div>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="p">[</span><span class="mf">58.198</span><span class="n">s</span><span class="p">][</span><span class="n">info</span><span class="p">][</span><span class="n">trimnative</span><span class="p">]</span> <span class="n">Periodic</span> <span class="n">Trim</span> <span class="p">(</span><span class="mi">11</span><span class="p">):</span> <span class="mi">3918</span><span class="n">M</span><span class="o">-&gt;</span><span class="mi">2823</span><span class="n">M</span> <span class="p">(</span><span class="o">-</span><span class="mi">1095</span><span class="n">M</span><span class="p">)</span> <span class="mf">443.469</span><span class="n">ms</span>
+</pre></div>
+</div>
+<p>Add these options to any <code class="docutils literal notranslate"><span class="pre">spark.executor.extraJavaOptions</span></code> the application already sets, since
+setting the property again replaces its value. An older JDK does not recognize the flag and the
+executor fails to start, unless the JVM is also given <code class="docutils literal notranslate"><span class="pre">-XX:+IgnoreUnrecognizedVMOptions</span></code>, which
+makes it ignore the flag silently. To check whether this is the problem before changing the
+configuration, <code class="docutils literal notranslate"><span class="pre">jcmd</span> <span class="pre">&lt;pid&gt;</span> <span class="pre">System.trim_native_heap</span></code> trims a running executor once and prints how
+much memory it returned.</p>
+<p>A trim is not free: while it runs it takes each arena’s lock in turn, so native allocations on that
+arena wait for it. On one workload, the nested TPC-H benchmark at scale factor 1000 with 64 GiB of
+off-heap memory per executor, an interval of 5 seconds kept the executors’ resident memory at 61 to
+70 GiB in 106 GiB containers, where without it a query got 11 executors killed. A single trim
+returned up to 31.8 GiB, trims took 424 ms at the median, and the queries that had not needed it
+ran about 4% slower. A longer interval trims less often for less cost, but lets more memory build
+up between trims.</p>
+<p>Trimming only applies to glibc. In builds that use the <code class="docutils literal notranslate"><span class="pre">jemalloc</span></code> or <code class="docutils literal notranslate"><span class="pre">mimalloc</span></code> feature, Comet’s
+native memory does not come from glibc, and those allocators manage freed memory themselves.
+Limiting the number of glibc arenas with the <code class="docutils literal notranslate"><span class="pre">MALLOC_ARENA_MAX</span></code> environment variable also keeps
+resident memory down, but it was markedly slower in the measurements in
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7108">#7108</a>.</p>
+</section>
 <section id="batch-size">
 <h2>Batch Size<a class="headerlink" href="#batch-size" title="Link to this heading">#</a></h2>
 <p>Comet processes data in columnar batches. The batch size is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.batchSize</span></code> (default
@@ -1150,6 +1201,7 @@ compress and decompress them. <code class="docutils literal notranslate"><span c
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#reading-the-memory-usage-log-from-the-event-log">Reading the Memory Usage Log from the Event Log</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#returning-freed-native-memory-to-the-operating-system">Returning Freed Native Memory to the Operating System</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#batch-size">Batch Size</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#limiting-spill-disk-usage">Limiting Spill Disk Usage</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#compressing-spill-files">Compressing Spill Files</a></li>

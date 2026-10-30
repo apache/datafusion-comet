@@ -1182,6 +1182,9 @@ or amend, use <code class="docutils literal notranslate"><span class="pre">git</
 the risk of accidentally overwriting another maintainer’s commits when multiple people push
 to the same PR branch. If the lease check rejects the push, inspect and integrate the remote
 changes before retrying; do not switch to <code class="docutils literal notranslate"><span class="pre">--force</span></code> to bypass the check.</p>
+<p>For a pull request from a fork, the pull request tier of CI runs on your fork’s GitHub runners
+rather than the project’s. Enable GitHub Actions on your fork and keep its <code class="docutils literal notranslate"><span class="pre">main</span></code> in sync before you
+push; see <a class="reference internal" href="ci.html#pull-requests-from-forks"><span class="std std-ref">Pull requests from forks</span></a>.</p>
 <p>Before submitting a pull request, follow this checklist to ensure your changes are ready:</p>
 <section id="format-your-code">
 <h3>1. Format Your Code<a class="headerlink" href="#format-your-code" title="Link to this heading">#</a></h3>
