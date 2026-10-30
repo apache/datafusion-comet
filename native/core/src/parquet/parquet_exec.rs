@@ -25,6 +25,7 @@ use crate::parquet::parquet_support::{
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
 use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
+use datafusion::common::parquet_config::DFTimeUnit;
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
@@ -422,12 +423,13 @@ fn get_options(
     table_parquet_options.global.pruning = session_parquet_options.pruning;
 
     // Hardcoded for Spark compatibility, not session-overridable.
-    table_parquet_options.global.coerce_int96 = Some("us".to_string());
+    table_parquet_options.global.coerce_int96 = Some(DFTimeUnit::Microsecond);
     // INT96 columns encode UTC-adjusted instants; attaching the UTC timezone
     // preserves that signal at the Arrow level so the schema adapter can
     // distinguish INT96-derived TimestampLTZ from a true TimestampNTZ source
     // and apply the pre-Spark-4 SPARK-36182 rejection (#4219).
-    table_parquet_options.global.coerce_int96_tz = Some("UTC".to_string());
+    table_parquet_options.global.coerce_int96_tz =
+        Some("UTC".parse().expect("UTC is a valid time zone"));
     let mut spark_parquet_options = SparkParquetOptions::new(EvalMode::Legacy, session_timezone);
     spark_parquet_options.allow_cast_unsigned_ints = true;
     spark_parquet_options.case_sensitive = case_sensitive;
@@ -1348,8 +1350,8 @@ mod tests {
         assert!(!global.pruning);
 
         // Spark-compat fields stay hardcoded regardless of the session.
-        assert_eq!(global.coerce_int96, Some("us".to_string()));
-        assert_eq!(global.coerce_int96_tz, Some("UTC".to_string()));
+        assert_eq!(global.coerce_int96, Some(DFTimeUnit::Microsecond));
+        assert_eq!(global.coerce_int96_tz, Some("UTC".parse().unwrap()));
     }
 
     // Regression test for #3978: DataFusion's opener requests `PageIndexPolicy::Skip` on the
@@ -1437,7 +1439,9 @@ mod tests {
             .expect("cached entry should hold Parquet metadata")
             .parquet_metadata();
         assert!(
-            parquet_meta.column_index().is_some() && parquet_meta.offset_index().is_some(),
+            parquet_meta
+                .page_index()
+                .is_some_and(|page_index| page_index.is_complete()),
             "cached metadata must include the page index"
         );
     }
@@ -1540,8 +1544,7 @@ mod tests {
             .fetch_metadata()
             .await
             .unwrap();
-        assert!(footer_metadata.column_index().is_none());
-        assert!(footer_metadata.offset_index().is_none());
+        assert!(footer_metadata.page_index().is_none());
         metadata_cache.put(
             &partitioned_file.object_meta.location,
             CachedFileMetadataEntry::new(
@@ -1558,8 +1561,9 @@ mod tests {
             .unwrap();
         let metadata = reader.get_metadata(None).await.unwrap();
 
-        assert!(metadata.column_index().is_some());
-        assert!(metadata.offset_index().is_some());
+        assert!(metadata
+            .page_index()
+            .is_some_and(|page_index| page_index.is_complete()));
         let metadata_bytes = reader_metric(&metrics, "scan_io_metadata_bytes");
         assert!(metadata_bytes > 0);
         assert_eq!(reader_metric(&metrics, "scan_io_data_bytes"), 0);

@@ -2050,7 +2050,12 @@ class CometIcebergWriteActionSuite
   // value is NaN. The native path must reproduce those decisions via the JVM-side metrics
   // rebuild, so write identical data through both paths and pin the aggregated per-column
   // manifest metrics against each other.
-  test("native acceleration: NaN float/double manifest metrics match the JVM writer") {
+  //
+  // Ignored while Comet is on Parquet 60: it writes NaN statistics for an all-NaN column chunk,
+  // and iceberg-rust copies them into the manifest bounds, where iceberg-java records none.
+  // Re-enable once iceberg-rust skips NaN bounds.
+  // https://github.com/apache/datafusion-comet/issues/7242
+  ignore("native acceleration: NaN float/double manifest metrics match the JVM writer") {
     assumeNativeAcceleration()
     withIcebergCatalog { _ =>
       Seq("nan_native", "nan_jvm").foreach { t =>

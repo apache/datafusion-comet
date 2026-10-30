@@ -106,6 +106,9 @@ impl TopKReaderFilterExec {
         )?;
         let reader_filter_attached = reader.is_some();
         let input = reader.unwrap_or_else(|| Arc::clone(self.template.input()));
+        // DataFusion 56 deprecates this setter without a replacement; `SortExec` only restores its
+        // dynamic filter from a serialized plan, which this runtime wiring does not go through.
+        #[allow(deprecated)]
         let sort = Self::fresh_sort(&self.template, input).with_dynamic_filter_expr(predicate)?;
         Ok(RuntimeTopK {
             sort,

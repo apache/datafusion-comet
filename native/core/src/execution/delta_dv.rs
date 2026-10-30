@@ -463,9 +463,12 @@ fn reader_peak_bytes(selectors: usize, num_row_groups: usize) -> Result<usize, E
 ///
 /// Uses checked arithmetic throughout for the same reason as [`admission_bound_bytes`].
 fn page_selection_bound_selectors(metadata: &ParquetMetaData) -> Result<usize, ExecutionError> {
-    let Some(offset_index) = metadata.offset_index() else {
+    if !metadata
+        .page_index()
+        .is_some_and(|page_index| page_index.has_offset_indexes())
+    {
         return Ok(0);
-    };
+    }
     let overflow = || {
         GeneralError(
             "Deletion vector page-selection bound overflowed while summing offset-index page \
@@ -474,11 +477,14 @@ fn page_selection_bound_selectors(metadata: &ParquetMetaData) -> Result<usize, E
         )
     };
     let mut total_page_locations = 0usize;
-    for row_group in offset_index {
-        for column in row_group {
-            total_page_locations = total_page_locations
-                .checked_add(column.page_locations().len())
-                .ok_or_else(overflow)?;
+    for (row_group_idx, row_group) in metadata.row_groups().iter().enumerate() {
+        let page_index = metadata.page_index_for_row_group(row_group_idx);
+        for column_idx in 0..row_group.num_columns() {
+            if let Some(column) = page_index.offset_index(column_idx) {
+                total_page_locations = total_page_locations
+                    .checked_add(column.page_locations().len())
+                    .ok_or_else(overflow)?;
+            }
         }
     }
     total_page_locations.checked_mul(2).ok_or_else(overflow)
@@ -2154,6 +2160,9 @@ mod tests {
         // `out[0]`'s extensions) and the clone are live at once, exactly like the real reader.
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
+        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
+        // the reader's file-level selection peak.
+        #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
             .unwrap()
@@ -2223,6 +2232,9 @@ mod tests {
         let retained_selectors = total_selectors(&attached_plan);
         let cloned_plan = attached_plan.clone();
         let metadata = read_metadata_with_page_index(&path);
+        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
+        // the reader's file-level selection peak.
+        #[allow(deprecated)]
         let combined = cloned_plan
             .into_overall_row_selection(metadata.row_groups())
             .unwrap()
@@ -2320,6 +2332,9 @@ mod tests {
         let mut clone_for_combining = attached_plan.clone();
         clone_for_combining.scan_selection(0, all_select);
         let metadata = read_metadata_with_page_index(&path);
+        // Deprecated in DataFusion 56 in favor of row-group-local entries; these tests still model
+        // the reader's file-level selection peak.
+        #[allow(deprecated)]
         let combined = clone_for_combining
             .into_overall_row_selection(metadata.row_groups())
             .unwrap()
@@ -2391,7 +2406,9 @@ mod tests {
         );
         let metadata_without_index = read_metadata_with_page_index(&no_index_path);
         assert!(
-            metadata_without_index.offset_index().is_none(),
+            !metadata_without_index
+                .page_index()
+                .is_some_and(|page_index| page_index.has_offset_indexes()),
             "test setup invariant: this file must have no offset index"
         );
         assert_eq!(
@@ -2405,7 +2422,9 @@ mod tests {
         write_parquet(&indexed_path, 1024);
         let metadata_with_index = read_metadata_with_page_index(&indexed_path);
         assert!(
-            metadata_with_index.offset_index().is_some(),
+            metadata_with_index
+                .page_index()
+                .is_some_and(|page_index| page_index.has_offset_indexes()),
             "a default-written file should carry an offset index -- if this fails, the \
              Optional page-index fetch policy stopped populating it, and \
              page_selection_bound_selectors would be silently under-bounding"

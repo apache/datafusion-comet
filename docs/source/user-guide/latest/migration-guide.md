@@ -57,6 +57,25 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.3.0
+
+Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The known issue
+below needs none either, but check whether it applies to your deployment.
+
+### Native Iceberg Writer Bounds for All-NaN Columns
+
+This applies only if you enable the native Iceberg writer with `spark.comet.write.iceberg.enabled`,
+which is off by default. Comet `1.3.0` moves to Parquet 60, which writes NaN min and max statistics
+for a `float` or `double` column chunk that holds only NaN values. Earlier versions wrote none.
+The native writer copies those statistics into the data file's lower and upper bounds, so the
+manifest records NaN as a bound where iceberg-java records none, and the Iceberg spec does not
+allow NaN as a bound. Comet `1.2.0` and earlier do not write these bounds.
+
+The data and the NaN counts are unaffected, and no setting restores the previous bounds. Disable
+`spark.comet.write.iceberg.enabled` to have iceberg-java write the files. The fix belongs in
+iceberg-rust and is tracked in
+[#7242](https://github.com/apache/datafusion-comet/issues/7242).
+
 ## Upgrading to Comet 1.2.0
 
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

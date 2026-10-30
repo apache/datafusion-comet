@@ -256,8 +256,8 @@ mod tests {
 
         let sliced = full.slice(1, 1);
         assert_eq!(
-            sliced.offsets().first().copied(),
-            Some(2),
+            sliced.offsets().first(),
+            2,
             "slice must keep original offsets"
         );
 
