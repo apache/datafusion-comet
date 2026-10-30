@@ -1650,7 +1650,7 @@ class CometIcebergNativeSuite
           s"SELECT id, s FROM $t ORDER BY id",
           s"SELECT id, s.X FROM $t ORDER BY id",
           s"SELECT id FROM $t WHERE s.X = 20").foreach { query =>
-          checkNestedFieldEvolutionFallback(query, "s.X (renamed from x)")
+          checkIcebergNativeScan(query)
         }
         spark.sql(s"DROP TABLE $t")
       }
@@ -1676,19 +1676,50 @@ class CometIcebergNativeSuite
           s"INSERT INTO $t VALUES " +
             "(named_struct('x', 5, 'z', 6), named_struct('x', 30, 'z', 300))")
       }
-      // A case-insensitive lookup of `A` finds `a` first and would skip the check on `A.z`.
+      // iceberg-rust matches the nested fields of `A` by field id, so `A.z` reads natively.
       withCaseCatalog(warehouseDir, caseSensitive = false) {
         val query = s"SELECT * FROM $t"
         if (isSpark41Plus) {
           val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
           assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
         } else {
-          checkNestedFieldEvolutionFallback(query, "A.z (renamed from y)")
+          checkIcebergNativeScan(query)
         }
       }
       withCaseCatalog(warehouseDir, caseSensitive = true) {
         checkIcebergNativeScan(s"SELECT a FROM $t")
-        checkNestedFieldEvolutionFallback(s"SELECT A FROM $t", "A.z (renamed from y)")
+        checkIcebergNativeScan(s"SELECT A FROM $t")
+        spark.sql(s"DROP TABLE $t")
+      }
+    }
+  }
+
+  test("issue 5540: struct under A with no fields in common beside a") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withTempIcebergDir { warehouseDir =>
+      val t = "case_cat.db.case_pair_disjoint"
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        // `a` has the shape `A` ends up with, since case-insensitive schema pruning requests `A`
+        // with the type of `a`. The file written first has none of the current fields of `A`.
+        spark.sql(s"CREATE TABLE $t (a STRUCT<z: INT>, A STRUCT<y: INT>) USING iceberg")
+        spark.sql(s"INSERT INTO $t VALUES (named_struct('z', 1), named_struct('y', 10))")
+        spark.sql(s"ALTER TABLE $t ADD COLUMN A.z INT")
+        spark.sql(s"ALTER TABLE $t DROP COLUMN A.y")
+      }
+      // The field id of `A`, not of `a`, has to reach the check for structs with no fields in
+      // common.
+      withCaseCatalog(warehouseDir, caseSensitive = false) {
+        val query = s"SELECT * FROM $t"
+        if (isSpark41Plus) {
+          val e = intercept[org.apache.spark.sql.AnalysisException](spark.sql(query).collect())
+          assert(e.getMessage.contains("COLUMN_ALREADY_EXISTS"), e.getMessage)
+        } else {
+          checkNestedFieldEvolutionFallback(query, "A")
+        }
+      }
+      withCaseCatalog(warehouseDir, caseSensitive = true) {
+        checkIcebergNativeScan(s"SELECT a FROM $t")
+        checkNestedFieldEvolutionFallback(s"SELECT A FROM $t", "A")
         spark.sql(s"DROP TABLE $t")
       }
     }
