@@ -772,17 +772,41 @@ case class CometScanRule(session: SparkSession)
             false
         }
 
+        // Projected roots are matched by field ID so historical snapshots still identify renamed
+        // columns. Both schema checks below use them.
+        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
+        val resolver = session.sessionState.conf.resolver
+        val projectedFieldIds = projectedDataColumns.map { attr =>
+          metadata.globalFieldIdMapping.collectFirst {
+            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
+          }
+        }
+        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
+        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
+
         // Column default values are a V3 feature, so V1/V2 tables cannot have them and need no
         // check. Only inspect V3 tables. iceberg-rust does not synthesize a V3 initial-default for
-        // a column absent from a data file, so a scan projecting such a column must fall back. A V3
-        // table implies an Iceberg version new enough to expose initialDefault(), so a reflection
-        // failure here is unexpected and also falls back rather than risk a crash.
+        // a column absent from a data file (it fails a nested one), so a scan reading such a
+        // column must fall back. That is the query's schema and, while nested schema pruning is
+        // off, the whole of each projected column in the task schema, which holds nested fields
+        // the query's does not. A V3 table implies an Iceberg version new enough to expose
+        // initialDefault(), so a reflection failure here is unexpected and also falls back rather
+        // than risk a crash.
         val defaultValuesSupported =
           if (!formatVersion.exists(_ >= 3)) {
             true
           } else {
             try {
-              val defaulted = IcebergReflection.columnsWithInitialDefault(metadata.scanSchema)
+              val readDefaults = metadata.taskSchema.toSeq.flatMap { schema =>
+                if (hasUnresolvedProjectedFieldIds) {
+                  IcebergReflection.columnsWithInitialDefault(schema)
+                } else {
+                  IcebergReflection.columnsWithInitialDefault(schema, resolvedProjectedFieldIds)
+                }
+              }
+              val defaulted =
+                (IcebergReflection.columnsWithInitialDefault(
+                  metadata.scanSchema) ++ readDefaults).distinct
               if (defaulted.nonEmpty) {
                 fallbackReasons += "Iceberg column(s) with V3 default values are not yet " +
                   s"supported by Comet's native reader: ${defaulted.mkString(", ")}"
@@ -797,18 +821,6 @@ case class CometScanRule(session: SparkSession)
                 false
             }
           }
-
-        // Projected roots are matched by field ID so historical snapshots still identify renamed
-        // columns. Both schema checks below use them.
-        val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
-        val resolver = session.sessionState.conf.resolver
-        val projectedFieldIds = projectedDataColumns.map { attr =>
-          metadata.globalFieldIdMapping.collectFirst {
-            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-          }
-        }
-        val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
-        val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
         // iceberg-rust applies name mappings only at the root (#6790). Nested columns can
         // disappear during projection, or reach the adapter with physical field names that
@@ -860,16 +872,17 @@ case class CometScanRule(session: SparkSession)
               false
           }
 
-        // Neither iceberg-rust nor the batch adaptation after it matches a data file's nested
-        // fields to the table's by field id (apache/iceberg-rust#2617). A file written before a
-        // nested field was added (to a struct, or to a struct inside a list or map) fails the
-        // native scan with "Incorrect number of arrays for StructArray fields", and a nested field
-        // renamed since the file was written can read back as NULL. This check walks the schema
-        // the scan reads (see CometIcebergNativeScanMetadata.taskSchema), which for VERSION AS OF
-        // can be older than the table's, and also the table and scan schemas, so it can fall back
-        // when the changed field is pruned away. A FileScanTask does not record which schema wrote
-        // its file, so fall back when any schema in the table's history lacks a nested field of a
-        // projected column or names it differently.
+        // iceberg-rust matches a data file's nested fields to the table's by field id, filling in
+        // a field the file lacks with NULLs and applying renames, so schema evolution that adds,
+        // renames, drops or reorders nested fields reads correctly. One shape still differs from
+        // Spark: a struct (at any depth) whose fields in the schema the scan reads were all added
+        // after a file was written. The native read returns a struct of NULLs or NULL there,
+        // depending on what else the scan reads, where Spark returns NULL for a top-level struct
+        // and a struct of NULLs for a nested one. The schema the scan reads is the task schema (see
+        // CometIcebergNativeScanMetadata.taskSchema), which holds only the nested fields Spark
+        // keeps while nested schema pruning is on, and which for VERSION AS OF can be older than
+        // the table's. A FileScanTask does not record which schema wrote its file, so fall back
+        // when any schema in the table's history has such a struct in a projected column.
         val nestedFieldsSupported =
           try {
             val schemas = Seq(metadata.tableSchema, metadata.scanSchema) ++ metadata.taskSchema
@@ -879,18 +892,17 @@ case class CometScanRule(session: SparkSession)
               } else {
                 resolvedProjectedFieldIds
               }
-            val changed = schemas
-              .flatMap { schema =>
-                IcebergReflection.nestedFieldsAddedOrRenamed(metadata.table, schema, fieldIds)
-              }
+            val disjoint = metadata.taskSchema.toSeq
+              .flatMap(IcebergReflection.structsWithNoFieldsInCommon(metadata.table, _, fieldIds))
               .distinct
               .sorted
-            if (changed.nonEmpty) {
-              fallbackReasons += "Nested fields added or renamed by Iceberg schema evolution are " +
-                "not yet supported by Comet's native reader, which cannot match them to data " +
-                s"files written before the change: ${changed.mkString(", ")}"
+            if (disjoint.nonEmpty) {
+              fallbackReasons += "Structs whose fields were all added by Iceberg schema " +
+                "evolution are not yet supported by Comet's native reader, which reads data " +
+                "files written before the change differently from Spark: " +
+                disjoint.mkString(", ")
             }
-            changed.isEmpty
+            disjoint.isEmpty
           } catch {
             case e: Exception =>
               fallbackReasons += "Iceberg reflection failure: could not compare nested fields " +
@@ -1505,7 +1517,6 @@ object CometScanRule extends Logging {
    * the bucket from the first path segment (`s3_blob_fs_support.rs`), so a hostless
    * `blob:///bucket/key.parquet` IS openable when it carries a promotable bucket segment.
    */
-  /** Whether `dataType` is, or anywhere contains, an array or a map. */
   private[rules] def hasOpenableAuthority(uri: URI, s3CompliantSchemes: Set[String]): Boolean = {
     val scheme = NativeConfig.lowerScheme(uri)
     scheme.isEmpty || scheme.contains("file") || uri.getRawAuthority != null ||

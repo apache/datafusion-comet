@@ -98,7 +98,7 @@ under the License.
          release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
     <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <guava.version>33.2.1-jre</guava.version>
+    <guava.version>33.7.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
@@ -541,6 +541,39 @@ under the License.
             <artifactId>commons-logging</artifactId>
           </exclusion>
 
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+
+      <!-- PathOutputCommitProtocol and BindingParquetOutputCommitter, for writes committed by
+           S3A's committers. Its dependencies are those of the tests jar above, so the exclusions
+           are the same. Spark 4.1+ turns on the S3A magic committer for every session once these
+           classes load, so the test JVMs opt out, see the scalatest systemProperties below. -->
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
+        <version>${spark.version}</version>
+        <scope>test</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.hadoop.thirdparty</groupId>
+            <artifactId>hadoop-shaded-guava</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-annotations</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>javax.xml.bind</groupId>
+            <artifactId>jaxb-api</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
           <exclusion>
             <groupId>org.apache.arrow</groupId>
             <artifactId>*</artifactId>
@@ -1147,6 +1180,11 @@ under the License.
               <!-- Set to a directory to make AbfsAuthParitySuite record its expectation file for
                    the hadoop-azure on the classpath instead of asserting against it. -->
               <comet.abfs.parity.record>${comet.abfs.parity.record}</comet.abfs.parity.record>
+              <!-- spark-hadoop-cloud is on the test classpath, so Spark 4.1+ would make the S3A
+                   magic committer, PathOutputCommitProtocol and BindingParquetOutputCommitter the
+                   defaults of every session (SPARK-47618). Suites that test the magic committer
+                   turn it back on in their own configuration. -->
+              <spark.hadoop.fs.s3a.committer.magic.enabled>false</spark.hadoop.fs.s3a.committer.magic.enabled>
             </systemProperties>
           </configuration>
           <executions>

@@ -244,6 +244,12 @@ object Utils extends CometTypeShim with Logging {
     StructType(attributes.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
 
   /**
+   * Bridges Spark's package-private check for unchanged types with widened nested nullability.
+   */
+  def equalsIgnoreCompatibleNullability(from: DataType, to: DataType): Boolean =
+    DataType.equalsIgnoreCompatibleNullability(from, to)
+
+  /**
    * Serializes a list of `ColumnarBatch` into an output stream. This method must be in `spark`
    * package because `ChunkedByteBufferOutputStream` is spark private class. As it uses Arrow
    * classes, it must be in `common` module.
@@ -254,15 +260,25 @@ object Utils extends CometTypeShim with Logging {
    *   the output stream
    */
   def serializeBatches(batches: Iterator[ColumnarBatch]): Iterator[(Long, ChunkedByteBuffer)] = {
+    lazy val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
     batches.map { batch =>
       val dictionaryProvider: CDataDictionaryProvider = new CDataDictionaryProvider
 
-      val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
-      val cbbos = new ChunkedByteBufferOutputStream(1024 * 1024, ByteBuffer.allocate)
-      val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
-
       val (fieldVectors, batchProviderOpt) = getBatchFieldVectors(batch)
       try {
+        // Tiny shuffle batches otherwise allocate and zero a full 1 MiB heap chunk each. Keep
+        // larger chunks for large inputs, where a small fixed chunk would fragment the output.
+        val dictionaryBytes = batchProviderOpt
+          .map { provider =>
+            provider.getDictionaryIds.asScala.foldLeft(0L) { (bytes, id) =>
+              bytes + provider.lookup(id).getVector.getBufferSize
+            }
+          }
+          .getOrElse(0L)
+        val batchBytes = fieldVectors.foldLeft(dictionaryBytes)(_ + _.getBufferSize)
+        val chunkSize = math.max(4096L, math.min(1024 * 1024L, batchBytes)).toInt
+        val cbbos = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+        val out = new DataOutputStream(codec.compressedOutputStream(cbbos))
         val root = new VectorSchemaRoot(fieldVectors.asJava)
         if (fieldVectors.isEmpty) {
           // VSR cannot infer rowCount without field vectors
@@ -271,20 +287,19 @@ object Utils extends CometTypeShim with Logging {
         val provider = batchProviderOpt.getOrElse(dictionaryProvider)
 
         // VectorSchemaRootAppender, which coalesces broadcast batches, assumes offsets that start
-        // at zero, and Arrow Java writes the bytes before the first offset too. A slice of the root
-        // rebases the offsets to zero and leaves those bytes out.
-        val written =
-          if (fieldVectors.forall(offsetsStartAtZero)) root else root.slice(0, root.getRowCount)
-        try {
+        // at zero.
+        withRebasedOffsets(root) { written =>
           val writer = new ArrowStreamWriter(written, provider, Channels.newChannel(out))
           writer.start()
           writer.writeBatch()
           root.clear()
           writer.close()
-        } finally {
-          // The slice holds its own references on the batch's buffers, so it is closed even when
-          // the write fails, as it does when a cancelled broadcast interrupts the task.
-          if (written ne root) written.close()
+        }
+
+        if (out.size() > 0) {
+          (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
+        } else {
+          (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
         }
       } catch {
         case NonFatal(e) =>
@@ -293,30 +308,48 @@ object Utils extends CometTypeShim with Logging {
           closeAfterFailure(allocatedFor(batch, fieldVectors), e)
           throw e
       }
-
-      if (out.size() > 0) {
-        (batch.numRows().toLong, cbbos.toChunkedByteBuffer)
-      } else {
-        (batch.numRows().toLong, new ChunkedByteBuffer(Array.empty[ByteBuffer]))
-      }
     }
   }
 
   /**
-   * Whether every offset buffer in `vector`, its children included, starts at zero.
+   * Runs `write` on `root` itself when none of its vectors is a slice of a larger one, and
+   * otherwise on a slice of it that rebases the offsets to zero and leaves out the bytes or
+   * elements outside them, which Arrow Java would write. The slice shares the other buffers and
+   * holds its own references on them, so it is closed whether `write` returns or fails, as it
+   * does when a cancelled broadcast interrupts the task.
+   */
+  private[sql] def withRebasedOffsets[T](root: VectorSchemaRoot)(
+      write: VectorSchemaRoot => T): T = {
+    val written =
+      if (root.getFieldVectors.asScala.forall(holdsOnlyItsOwnValues)) root
+      else root.slice(0, root.getRowCount)
+    try write(written)
+    finally if (written ne root) written.close()
+  }
+
+  /**
+   * Whether every vector in `vector`, its children included, holds only the bytes or elements its
+   * own offsets cover.
    *
    * arrow-rs slices a string, binary, list or map array by moving the start of its offsets, and
    * the C Data import keeps them, so a vector imported from a sliced native array has offsets
    * that start past zero. The rows before the slice stay at the front of its data buffer, or of
-   * its child vector for a list or map.
+   * its child vector for a list or map. The first slice of an array starts at zero instead, and a
+   * list or map still has the elements of the later slices in its child, which is longer than the
+   * last offset. A string or binary vector stops writing its data at the last offset, so only its
+   * first offset can show a slice.
    */
-  private def offsetsStartAtZero(vector: FieldVector): Boolean = {
-    val firstOffset = vector match {
-      case v: BaseVariableWidthVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case v: BaseRepeatedValueVector if v.getValueCount > 0 => v.getOffsetBuffer.getInt(0)
-      case _ => 0
+  private def holdsOnlyItsOwnValues(vector: FieldVector): Boolean = {
+    val ownsItsValues = vector match {
+      case v: BaseVariableWidthVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0
+      case v: BaseRepeatedValueVector if v.getValueCount > 0 =>
+        v.getOffsetBuffer.getInt(0) == 0 &&
+        v.getOffsetBuffer.getInt(v.getValueCount.toLong * BaseRepeatedValueVector.OFFSET_WIDTH) ==
+          v.getDataVector.getValueCount
+      case _ => true
     }
-    firstOffset == 0 && vector.getChildrenFromFields.asScala.forall(offsetsStartAtZero)
+    ownsItsValues && vector.getChildrenFromFields.asScala.forall(holdsOnlyItsOwnValues)
   }
 
   /**

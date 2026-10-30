@@ -564,6 +564,18 @@ object CometMetricNode {
       "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
   }
 
+  def rightKeyReductionMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "right_key_reduction_input_rows" ->
+        SQLMetrics.createMetric(sc, "Rows entering right-side key reduction"),
+      "right_key_reduction_output_rows" ->
+        SQLMetrics.createMetric(sc, "Rows leaving right-side key reduction"),
+      "right_key_reduction_bypass_rows" ->
+        SQLMetrics.createMetric(sc, "Rows bypassing right-side key reduction"),
+      "right_key_reduction_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time reducing right-side keys"))
+  }
+
   def shuffleMetrics(sc: SparkContext): Map[String, SQLMetric] = {
     Map(
       "elapsed_compute" -> SQLMetrics.createNanoTimingMetric(sc, "native shuffle writer time"),

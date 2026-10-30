@@ -248,10 +248,10 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Scans that read a struct, array, or map column with a nested field that schema evolution added
-  or renamed. The native reader cannot yet match such a field to data files written before the
-  change. The check uses the table's schema history, so the fallback stays after those files are
-  rewritten
+- Scans that read a struct column, or a struct inside an array or map, whose fields were all added
+  by schema evolution after some data file was written. For such a file the native reader returns a
+  struct of NULLs or NULL, depending on what else the scan reads, where Spark does not. The check
+  uses the table's schema history, so the fallback stays after those files are rewritten
 - Scans that read a struct, array, or map column from a table with
   `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
   `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
