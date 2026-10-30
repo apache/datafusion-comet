@@ -19,7 +19,10 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.EOFException
+import java.io.{ByteArrayInputStream, EOFException}
+import java.nio.ByteBuffer
+
+import scala.collection.mutable.ArrayBuffer
 
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.metric.SQLMetrics
@@ -71,6 +74,46 @@ class NativeBatchDecoderIteratorSuite extends CometTestBase {
         decoder.close()
         nativeUtil.close()
       }
+    }
+  }
+
+  test("coalescing releases oversized read buffers between fetched blocks") {
+    val largeRows = 40 * 1024
+    val firstBlock = intFrame(0 until largeRows) ++ intFrame(Seq(41))
+    val secondBlock = intFrame(Seq(42))
+    val input = CometBlockStoreShuffleReader.concatenate(
+      Iterator(new ByteArrayInputStream(firstBlock), new ByteArrayInputStream(secondBlock)),
+      resetDecoderBuffer = true)
+    val capacities = ArrayBuffer.empty[Int]
+    val native = new Native {
+      override def appendShuffleBatch(
+          handle: Long,
+          shuffleBlock: ByteBuffer,
+          length: Int,
+          numColumns: Int,
+          tracingEnabled: Boolean): Int = {
+        capacities += shuffleBlock.capacity()
+        super.appendShuffleBatch(handle, shuffleBlock, length, numColumns, tracingEnabled)
+      }
+    }
+    val nativeUtil = new NativeUtil()
+    val decoder = NativeBatchDecoderIterator(
+      input,
+      SQLMetrics.createNanoTimingMetric(spark.sparkContext, "decode time"),
+      native,
+      nativeUtil,
+      tracingEnabled = false,
+      coalescing = Some(16))
+    try {
+      assert(decoder.next().numRows() == largeRows)
+      val grouped = decoder.next()
+      assert((0 until grouped.numRows()).map(grouped.column(0).getInt) == Seq(41, 42))
+      assert(!decoder.hasNext)
+      assert(capacities(0) > 128 * 1024)
+      assert(capacities.toSeq == Seq(capacities(0), capacities(0), 128 * 1024))
+    } finally {
+      decoder.close()
+      nativeUtil.close()
     }
   }
 

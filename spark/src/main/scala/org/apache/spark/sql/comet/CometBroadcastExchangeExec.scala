@@ -117,7 +117,7 @@ case class CometBroadcastExchangeExec(
     val input = plan.executeColumnar()
     // Skip known unsupported schemas without paying for coalescer JNI calls. Native checks
     // still handle physical representations such as dictionary-encoded strings.
-    val supported = plan.output.nonEmpty && plan.output.forall { attribute =>
+    def supported: Boolean = plan.output.nonEmpty && plan.output.forall { attribute =>
       attribute.dataType match {
         case IntegerType | LongType | BooleanType | StringType | BinaryType => true
         case _ => false
