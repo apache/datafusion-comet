@@ -118,6 +118,7 @@ BUILD_JOBS = {
     "build_linux",
     "build_linux_full",
     "build_linux_all_profiles",
+    "build_linux_jemalloc",
     "build_macos",
     "build_macos_full",
     "spark_3_4",
@@ -165,6 +166,7 @@ ROUTING_CASES = [
             "build_linux",
             "build_linux_full",
             "build_linux_all_profiles",
+            "build_linux_jemalloc",
             "build_macos",
             "build_macos_full",
         },
@@ -184,6 +186,7 @@ ROUTING_CASES = [
             "build_linux",
             "build_linux_full",
             "build_linux_all_profiles",
+            "build_linux_jemalloc",
             "delta_3_5",
             "delta_4_0",
             "delta_4_1",
@@ -196,6 +199,7 @@ ROUTING_CASES = [
             "build_linux",
             "build_linux_full",
             "build_linux_all_profiles",
+            "build_linux_jemalloc",
             "build_macos",
             "build_macos_full",
             "pyarrow_udf",
@@ -244,12 +248,15 @@ NIGHTLY_TIER = {
 # `schedule` cases below assert its absence rather than quietly accept it
 # coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
+# The jemalloc native library runs only with its label, like Spark 3.4: every
+# tier tests the system allocator library, which is the default.
+LINUX_JEMALLOC = {"build_linux_jemalloc"}
 # One label opts a pull request into every Iceberg version, whichever tier
 # each sits in.
 ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
 # Likewise one label for every Delta profile.
 DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
-ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
+ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | LINUX_JEMALLOC | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 
 # The repository whose queue gates main; check_event_policy asserts this matches
@@ -371,6 +378,23 @@ POLICY_CASES = [
             "labels": ["run-all-spark-profiles"],
         },
         {"build_linux_all_profiles"},
+    ),
+    # The jemalloc label runs the Linux build call with the jemalloc native
+    # library. On a pushed commit it rides on the PR tier's call. On the
+    # `labeled` event alone it is the only output set, and ci.yml still makes
+    # that a full `profiles: pr` run.
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["jemalloc_test"]},
+        PR_TIER | LINUX_JEMALLOC,
+    ),
+    (
+        {
+            "name": "pull_request",
+            "action": "labeled",
+            "label": "jemalloc_test",
+            "labels": ["jemalloc_test"],
+        },
+        LINUX_JEMALLOC,
     ),
     # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
     # label selects every module, the hive label only the sql_hive shards.
@@ -559,6 +583,9 @@ POLICY_CASES = [
         fork_pr(action="labeled", label="run-all-spark-profiles", labels=["run-all-spark-profiles"]),
         {"build_linux_all_profiles"},
     ),
+    # Likewise the jemalloc label runs here, while the fork's own run tests the
+    # system allocator library.
+    (fork_pr(labels=["jemalloc_test"]), LINUX_JEMALLOC),
     # The exceptions keep the PR tier upstream: a pull request from a branch of
     # this repository (a committer's, or dependabot's), and one that targets a
     # release branch, which has no queue or nightly to catch what a fork run

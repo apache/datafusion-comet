@@ -952,6 +952,17 @@ under the License.
         </includes>
         <targetPath>org/apache/comet/${platform}/${arch}</targetPath>
       </resource>
+      <!-- The jemalloc build of the native library, which NativeBase loads when
+           spark.comet.memory.jemalloc.enabled is set. The release builds put it in jemalloc/ next to
+           the default library, and Maven skips the directory where it does not exist. -->
+      <resource>
+        <directory>${jni.dir}/jemalloc</directory>
+        <includes>
+          <include>libcomet.dylib</include>
+          <include>libcomet.so</include>
+        </includes>
+        <targetPath>org/apache/comet/${platform}/${arch}/jemalloc</targetPath>
+      </resource>
     </resources>
   </build>
 
