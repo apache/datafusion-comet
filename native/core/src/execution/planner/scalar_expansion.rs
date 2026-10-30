@@ -32,13 +32,16 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::ScalarValue;
-use datafusion::logical_expr::ColumnarValue;
+use datafusion::logical_expr::{ColumnarValue, Volatility};
 use datafusion::physical_expr::expressions::{Column, InListExpr};
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_operators::BatchSplitExec;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
-use datafusion_comet_spark_expr::Subquery;
+use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
+use datafusion_comet_spark_expr::{
+    RandExpr, RandStrExpr, RandnExpr, ShuffleExpr, Subquery, UuidExpr,
+};
 
 use super::{PhysicalPlanner, TEST_EXEC_CONTEXT_ID};
 
@@ -83,10 +86,11 @@ impl PhysicalPlanner {
     /// The bytes of the string and binary scalars that evaluating `expr` expands to the batch's
     /// length, added up, so that a scalar used twice counts twice.
     ///
-    /// A scalar is any subtree without a column reference, evaluated here on a one-row batch:
-    /// `repeat(<subquery>, 8)` is wider than the subquery result it is built from. A subtree
-    /// that fails to evaluate counts nothing, so that its error surfaces where Spark's would,
-    /// at execution. The members of an `IN` list are compared and never expanded.
+    /// A scalar is any subtree without a column reference or a volatile function, evaluated
+    /// here on a one-row batch: `repeat(<subquery>, 8)` is wider than the subquery result it is
+    /// built from. A subtree that fails to evaluate counts nothing, so that its error surfaces
+    /// where Spark's would, at execution. The members of an `IN` list are compared and never
+    /// expanded.
     fn expanded_scalar_bytes(&self, expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> usize {
         if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
             return self.expanded_scalar_bytes(in_list.expr(), schema);
@@ -104,9 +108,10 @@ impl PhysicalPlanner {
         ) {
             return 0;
         }
-        // A JVM UDF is the user's code, which may have side effects or be slow, and a planner
-        // unit test has no JVM to read a subquery result from.
-        if contains(expr, &|e| e.is::<JvmScalarUdfExpr>())
+        // A volatile function yields a value per row and advances a seeded generator when
+        // evaluated. A JVM UDF is the user's code, which may have side effects or be slow, and a
+        // planner unit test has no JVM to read a subquery result from.
+        if contains(expr, &|e| is_volatile(e) || e.is::<JvmScalarUdfExpr>())
             || (self.exec_context_id == TEST_EXEC_CONTEXT_ID
                 && contains(expr, &|e| e.is::<Subquery>()))
         {
@@ -140,6 +145,18 @@ impl PhysicalPlanner {
 
 fn is_column_free(expr: &Arc<dyn PhysicalExpr>) -> bool {
     !expr.is::<Column>() && expr.children().iter().all(|child| is_column_free(child))
+}
+
+fn is_volatile(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.is::<UuidExpr>()
+        || expr.is::<RandStrExpr>()
+        || expr.is::<RandExpr>()
+        || expr.is::<RandnExpr>()
+        || expr.is::<ShuffleExpr>()
+        || expr.is::<MonotonicallyIncreasingId>()
+        || expr
+            .downcast_ref::<ScalarFunctionExpr>()
+            .is_some_and(|f| f.fun().signature().volatility == Volatility::Volatile)
 }
 
 fn contains(expr: &Arc<dyn PhysicalExpr>, is: &dyn Fn(&Arc<dyn PhysicalExpr>) -> bool) -> bool {
@@ -197,6 +214,23 @@ mod tests {
         assert_eq!(bytes(Arc::clone(&over_column)), 8);
         let twice = binary(over_column, Operator::StringConcat, built, &schema).unwrap();
         assert_eq!(bytes(twice), 16);
+    }
+
+    #[test]
+    fn measuring_a_seeded_generator_does_not_advance_it() {
+        use datafusion_comet_spark_expr::UuidExpr;
+        let one_row = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(1)),
+        )
+        .unwrap();
+        let first_draw =
+            |expr: &Arc<dyn PhysicalExpr>| expr.evaluate(&one_row).unwrap().into_array(1).unwrap();
+        let measured: Arc<dyn PhysicalExpr> = Arc::new(UuidExpr::new(0));
+        assert_eq!(bytes(Arc::clone(&measured)), 0);
+        let fresh: Arc<dyn PhysicalExpr> = Arc::new(UuidExpr::new(0));
+        assert_eq!(*first_draw(&measured), *first_draw(&fresh));
     }
 
     #[test]
