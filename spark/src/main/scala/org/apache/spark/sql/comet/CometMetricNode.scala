@@ -451,6 +451,10 @@ object CometMetricNode {
         SQLMetrics.createMetric(sc, "Metadata loads served without storage I/O"),
       "scan_io_metadata_cache_misses" ->
         SQLMetrics.createMetric(sc, "Metadata loads requiring storage I/O"),
+      "scan_io_metadata_prefetches" ->
+        SQLMetrics.createMetric(
+          sc,
+          "Metadata loads read from storage ahead of the file's open and used by it"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->
@@ -558,6 +562,18 @@ object CometMetricNode {
       "spill_count" -> SQLMetrics.createMetric(sc, "Count of spills"),
       "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "Total spilled bytes"),
       "spilled_rows" -> SQLMetrics.createMetric(sc, "Total spilled rows"))
+  }
+
+  def rightKeyReductionMetrics(sc: SparkContext): Map[String, SQLMetric] = {
+    Map(
+      "right_key_reduction_input_rows" ->
+        SQLMetrics.createMetric(sc, "Rows entering right-side key reduction"),
+      "right_key_reduction_output_rows" ->
+        SQLMetrics.createMetric(sc, "Rows leaving right-side key reduction"),
+      "right_key_reduction_bypass_rows" ->
+        SQLMetrics.createMetric(sc, "Rows bypassing right-side key reduction"),
+      "right_key_reduction_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time reducing right-side keys"))
   }
 
   def shuffleMetrics(sc: SparkContext): Map[String, SQLMetric] = {

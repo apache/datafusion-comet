@@ -21,11 +21,11 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, FrameType, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
-import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.window.WindowExec
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, DataType, DateType, Decimal, DecimalType, DoubleType, LongType, MapType, NumericType, StructType}
@@ -196,9 +196,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
   /**
    * Whether a decimal AVG keeps its running sum at DecimalType.MAX_PRECISION, which Spark does
    * for input precision 28 and up. Spark's window buffer keeps that sum unbounded, while the
-   * native AVG skips the row that takes it out of the precision, so DECIMAL(38,38) inputs 0.6,
-   * 0.6, -0.6 average to 0 over the whole partition rather than Spark's 0.2, and to 0.6 rather
-   * than 0.2 in a running frame, where ANSI mode raises instead.
+   * native AVG latches once the sum leaves the precision. DECIMAL(38,38) inputs 0.6, 0.6,
+   * -0.6 therefore return NULL, or raise under ANSI, where Spark returns 0.2 over the whole
+   * partition and for the last running frame.
    * https://github.com/apache/datafusion-comet/issues/5418
    */
   private def hasMaxPrecisionDecimalSum(avg: Average): Boolean = avg.sumDataType match {
@@ -511,44 +511,26 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ =>
-                withFallbackReason(
-                  windowExpr,
-                  s"Unsupported ROWS frame lower offset: $e (${e.dataType})")
+          case e =>
+            val preceding = boundOffset(e, frameType, isLower = true, output) match {
+              case Right(RowOffset(offset)) =>
+                OperatorOuterClass.Preceding
+                  .newBuilder()
+                  .setOffset(offset)
+                  .build()
+              case Right(RangeOffset(lit)) =>
+                OperatorOuterClass.Preceding
+                  .newBuilder()
+                  .setRangeOffset(lit)
+                  .build()
+              case Left(reason) =>
+                withFallbackReason(windowExpr, reason)
                 return None
             }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
-              .setPreceding(
-                OperatorOuterClass.Preceding
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
+              .setPreceding(preceding)
               .build()
-          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
-            rangeBoundLiteral(e, isLower = true, output) match {
-              case Some(lit) =>
-                OperatorOuterClass.LowerWindowFrameBound
-                  .newBuilder()
-                  .setPreceding(
-                    OperatorOuterClass.Preceding
-                      .newBuilder()
-                      .setRangeOffset(lit)
-                      .build())
-                  .build()
-              case None =>
-                withFallbackReason(windowExpr, s"Unsupported RANGE frame lower offset: $e")
-                return None
-            }
-          case e =>
-            withFallbackReason(
-              windowExpr,
-              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
-            return None
         }
 
         val uBoundProto = uBound match {
@@ -562,44 +544,26 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .newBuilder()
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
-          case e if frameType == RowFrame =>
-            val offset = e.eval() match {
-              case i: Integer => i.toLong
-              case l: Long => l
-              case _ =>
-                withFallbackReason(
-                  windowExpr,
-                  s"Unsupported ROWS frame upper offset: $e (${e.dataType})")
+          case e =>
+            val following = boundOffset(e, frameType, isLower = false, output) match {
+              case Right(RowOffset(offset)) =>
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setOffset(offset)
+                  .build()
+              case Right(RangeOffset(lit)) =>
+                OperatorOuterClass.Following
+                  .newBuilder()
+                  .setRangeOffset(lit)
+                  .build()
+              case Left(reason) =>
+                withFallbackReason(windowExpr, reason)
                 return None
             }
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
-              .setFollowing(
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build())
+              .setFollowing(following)
               .build()
-          case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
-            rangeBoundLiteral(e, isLower = false, output) match {
-              case Some(lit) =>
-                OperatorOuterClass.UpperWindowFrameBound
-                  .newBuilder()
-                  .setFollowing(
-                    OperatorOuterClass.Following
-                      .newBuilder()
-                      .setRangeOffset(lit)
-                      .build())
-                  .build()
-              case None =>
-                withFallbackReason(windowExpr, s"Unsupported RANGE frame upper offset: $e")
-                return None
-            }
-          case e =>
-            withFallbackReason(
-              windowExpr,
-              s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
-            return None
         }
 
         (frameProto, lBoundProto, uBoundProto)
@@ -729,6 +693,35 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         }
     }
 
+  private sealed trait BoundOffset
+  private case class RowOffset(offset: Long) extends BoundOffset
+  private case class RangeOffset(literal: LiteralOuterClass.Literal) extends BoundOffset
+
+  // Resolves the offset of a PRECEDING/FOLLOWING frame bound, shared by the
+  // lower and upper bound so both apply the same checks. Returns the fallback
+  // reason on Left when the offset cannot be serialized.
+  private def boundOffset(
+      bound: Expression,
+      frameType: FrameType,
+      isLower: Boolean,
+      output: Seq[Attribute]): Either[String, BoundOffset] = {
+    val side = if (isLower) "lower" else "upper"
+    bound match {
+      case e if frameType == RowFrame =>
+        e.eval() match {
+          case i: Integer => Right(RowOffset(i.toLong))
+          case l: Long => Right(RowOffset(l))
+          case _ => Left(s"Unsupported ROWS frame $side offset: $e (${e.dataType})")
+        }
+      case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
+        rangeBoundLiteral(e, isLower, output)
+          .map(RangeOffset)
+          .toRight(s"Unsupported RANGE frame $side offset: $e")
+      case e =>
+        Left(s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
+    }
+  }
+
   // Folds a RANGE frame bound expression to a constant and serializes its
   // magnitude as a typed Literal proto. Spark encodes PRECEDING/FOLLOWING via
   // the sign of the literal (negative => PRECEDING, positive => FOLLOWING),
@@ -799,14 +792,14 @@ case class CometWindowExec(
     orderSpec: Seq[SortOrder],
     child: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometUnaryExec {
+    extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def nodeName: String = "CometWindowExec"
   override def producedAttributes: AttributeSet = outputSet ++ AttributeSet(windowExpression)
 
-  override lazy val metrics: Map[String, SQLMetric] = Map(
-    "dataSize" -> SQLMetrics.createSizeMetric(sparkContext, "data size"),
-    "numPartitions" -> SQLMetrics.createMetric(sparkContext, "number of partitions"))
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.baselineMetrics(sparkContext)
 
   override def outputOrdering: Seq[SortOrder] = child.outputOrdering
 

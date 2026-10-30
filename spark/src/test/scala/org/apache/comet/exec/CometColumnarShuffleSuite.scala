@@ -142,6 +142,23 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     checkShuffleAnswer(shuffled, 1)
   }
 
+  // Regression test for https://github.com/apache/datafusion-comet/issues/7062: the native
+  // row-to-Arrow conversion panicked on a struct with a `NullType` field, at the top level and
+  // inside another struct.
+  test("columnar shuffle on struct with NullType field") {
+    withParquetTable((0 until 50).map(i => Tuple1(i)), "tbl") {
+      Seq(
+        "SELECT _1, named_struct('x', _1, 'n', null) AS st FROM tbl",
+        "SELECT _1, named_struct('s', named_struct('x', _1, 'n', null)) AS st FROM tbl").foreach {
+        query =>
+          val roundRobin = sql(query).repartition(4)
+          checkShuffleAnswer(roundRobin, 1)
+          val hash = sql(query).repartition(4, $"_1")
+          checkShuffleAnswer(hash, 1)
+      }
+    }
+  }
+
   test("columnar shuffle on nested struct including nulls") {
     Seq(10, 201).foreach { numPartitions =>
       Seq("1.0", "10.0").foreach { ratio =>
@@ -899,9 +916,7 @@ abstract class CometColumnarShuffleSuite extends CometTestBase with AdaptiveSpar
     // Spark's shuffle for no compatibility reason. Consulting a native-serde gate on a path that
     // never goes native is tracked separately in #5971; this test pins the floating-point half of
     // it, which #5506 fixed.
-    withSQLConf(
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true",
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false") {
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
       withParquetTable(
         (0 until 20).map(i => (if (i % 3 == 0) -0.0d else i.toDouble, i)),
         "range_fp_tbl") {

@@ -23,17 +23,14 @@
 
 ### Parquet
 
-Parquet scans run in Rust via DataFusion if all data types in the schema are supported. When the scan
-falls back to Spark, enabling `spark.comet.convert.parquet.enabled` will immediately convert the data into
-Arrow format, allowing the Comet pipeline to take over after that, but the process may not be efficient.
+Parquet scans run in Rust via DataFusion if all data types in the schema are supported. See the
+[Parquet](parquet.md) page for what falls back to Spark, differences from Spark, tuning, and known
+issues.
 
 ### Apache Iceberg
 
 Comet accelerates Iceberg scans of Parquet files and can write the data files of eligible Iceberg
-writes natively, an opt-in feature. See the [Iceberg Guide] and [Iceberg Writes](iceberg-writes.md)
-for more information.
-
-[iceberg guide]: iceberg.md
+writes natively, an opt-in feature. See the [Iceberg](iceberg.md) page for more information.
 
 ### CSV
 
@@ -51,6 +48,15 @@ converted into Arrow format, allowing the Comet pipeline to take over after that
 
 Comet does not provide a Rust-based JSON scan, but when `spark.comet.convert.json.enabled` is enabled, data is immediately
 converted into Arrow format, allowing the Comet pipeline to take over after that.
+
+### Text
+
+Comet does not provide a Rust-based Text scan, but when `spark.comet.convert.text.enabled` is enabled, data from Spark's
+Text reader is immediately converted into Arrow format, allowing the Comet pipeline to take over after that. Spark's Text
+reader keeps the bytes of each line as they are, so a file in an encoding other than UTF-8, such as Latin-1, holds strings
+that are not valid UTF-8. Arrow strings must be valid UTF-8, so the conversion replaces those bytes with `U+FFFD`, and
+results that depend on the original bytes can differ from Spark. Enable it only for Text files that are UTF-8. See
+[Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes).
 
 ### Other Spark inputs
 
@@ -70,12 +76,15 @@ because the row it converts has no columns.
   such as JDBC tables, which Spark scans with `RowDataSourceScanExec`.
 
 To convert any other leaf operator, such as the scan of a Data Source V2 connector or of a file
-format other than Parquet, JSON and CSV, set `spark.comet.sparkToColumnar.enabled=true` and name the
-operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
-`Exec` suffix, such as `BatchScan` or `FileSourceScan`.
+format other than Parquet, JSON, CSV and Text, set `spark.comet.sparkToColumnar.enabled=true` and name
+the operator in `spark.comet.sparkToColumnar.supportedOperatorList` by its Spark class name without the
+`Exec` suffix, such as `BatchScan` or `FileSourceScan`. Naming either to convert a Text scan still
+works but is deprecated, like naming `Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or
+`RowDataSourceScan`, and will stop working in a future major release. Use
+`spark.comet.convert.text.enabled` instead.
 
 One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
-or V2 scan Comet cannot read natively - for example a small Text lookup table - and every scan on
+or V2 scan Comet cannot read natively - for example a small ORC lookup table - and every scan on
 the probe side is already native, Comet converts that build-side scan to Arrow so the whole join
 runs natively over the large probe. This is controlled by
 `spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
@@ -83,6 +92,10 @@ above. The build side is usually small, but an explicit `BROADCAST` hint or a se
 the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read
 a second time for the pruning subquery. Set `spark.comet.convert.broadcastBuildSide.enabled=false` to
 keep such build sides on Spark.
+
+Parquet, JSON, CSV and Text build sides are converted only by their own switches above. A Text file
+can hold bytes that are not valid UTF-8 (see [Text](#text)), so a Text lookup table stays on Spark
+unless `spark.comet.convert.text.enabled` is set.
 
 ### Spark-to-Comet conversion types
 
@@ -109,7 +122,7 @@ them, and the conversion and the Comet operators above it would read ahead of th
 
 ### Apache Iceberg
 
-See the dedicated [Comet and Iceberg Guide](iceberg.md).
+See the dedicated [Iceberg](iceberg.md) page.
 
 ## Supported Storages
 
@@ -154,7 +167,7 @@ the HDFS read itself, typically while an unrelated query is running.
 ```
 
 Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-[Comet and Iceberg Guide](iceberg.md).
+[Iceberg](iceberg.md) page.
 
 ### Building Comet with HDFS support
 
@@ -383,7 +396,7 @@ Once translated, these values are applied at the same `fs.s3a.bucket.{bucket-nam
 described in [Additional S3 Configuration Options](#additional-s3-configuration-options), so the
 credential providers and options documented above also apply to alias-scheme URLs. The same
 translation feeds the native Iceberg scan; see
-[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) in the Iceberg guide.
+[Object store configuration (S3)](iceberg.md#object-store-configuration-s3) on the Iceberg page.
 
 A native Parquet or CSV scan whose alias-scheme paths span more than one bucket resolves the alias
 settings for each bucket. Alias schemes apply to native scans only: a native Iceberg write to an
@@ -419,13 +432,17 @@ $SPARK_HOME/bin/spark-shell \
 ...
 ```
 
-### Limitations
+### S3 Limitations
 
 Comet's S3 support has the following limitations:
 
 1. **Partial Hadoop S3A configuration support**: Not all Hadoop S3A configurations are currently supported. Only the configurations listed in the tables above are translated and applied to the underlying `object_store` crate.
 
 2. **Custom credential providers**: Custom credential provider classes named in `fs.s3a.aws.credentials.provider` are not supported; only the standard providers listed in the table above are. To route credential requests through your own Java code, implement Comet's `CometS3CredentialProvider` SPI; see [S3 Credential Providers](s3-credential-providers.md). Broader Hadoop S3A integration is tracked in [#1829](https://github.com/apache/datafusion-comet/issues/1829).
+
+3. **Settings that Hadoop's S3A client resolves differently**: The native scans resolve storage settings with their own client rather than with Hadoop's. Where the two disagree, a native read can use a different identity or route than Spark and fail where Spark succeeds. Examples are JCEKS-backed secrets and the precedence of per-bucket settings, which the native Parquet scan forwards without checking for a difference ([#5662](https://github.com/apache/datafusion-comet/issues/5662)).
+
+4. **AWS profile credential providers**: The native scans ignore `fs.s3a.auth.profile.name` and `fs.s3a.auth.profile.file` ([#4245](https://github.com/apache/datafusion-comet/issues/4245)), and resolve some profiles differently from Hadoop 3.4 and later, for example profiles that use `credential_process` or chains of assumed roles ([#6575](https://github.com/apache/datafusion-comet/issues/6575)).
 
 ## Azure
 
@@ -445,7 +462,7 @@ For each `abfs` or `abfss` path, the Spark driver asks the hadoop-azure library 
 
 The native scan receives the resolved values and builds the `object_store` client from them. It reads no `fs.azure.*` key of its own. A scan whose files span more than one ABFS container or account, or that mixes `abfs`/`abfss` paths with other schemes, falls back to Spark's own scan.
 
-hadoop-azure must be on the driver classpath. It already is whenever Spark can list the path. When it is missing, the scan fails with an error that says so.
+hadoop-azure must be on the driver classpath. It already is whenever Spark can list the path. When the driver cannot load it, or its `AbfsConfiguration` does not match the versions above (a vendor fork, for example), the scan falls back to Spark's own scan.
 
 #### Mechanisms
 
@@ -462,15 +479,15 @@ hadoop-azure must be on the driver classpath. It already is whenever Spark can l
 | `WorkloadIdentityTokenProvider` with a `fs.azure.account.oauth2.client.assertion.provider.type` (hadoop-azure 3.5.0 and later) | Not supported |                                                                                                                                                                                                                                                                              |
 | `UserboundSASWithOAuth` (hadoop-azure 3.5.0 and later)                                                                         | Not supported |                                                                                                                                                                                                                                                                              |
 
-Custom provider classes hand each token request to Java code the native scan cannot call, and the refresh token and user password flows have no `object_store` counterpart. When Hadoop selects one of these, the scan fails with an error naming the auth type and, where one is configured, the class. Configure a supported mechanism for that account, or keep the path on Spark's own scan. Values arrive as Hadoop resolved them, trimmed and defaulted where the ABFS driver trims and defaults them, so the store sees what the driver would have used.
+Custom provider classes hand each token request to Java code the native scan cannot call, and the refresh token and user password flows have no `object_store` counterpart. When Hadoop selects one of these, the scan falls back to Spark's own scan, which authenticates through hadoop-azure, and the fallback reason names the auth type and, for SAS, OAuth and Workload Identity, the provider class (`Custom` names only the auth type). Configure a supported mechanism for that account to read it natively. Values arrive as Hadoop resolved them, trimmed and defaulted where the ABFS driver trims and defaults them, so the store sees what the driver would have used.
 
-Client credentials and Workload Identity token requests go over HTTPS only. The managed identity request goes to the IMDS endpoint over HTTP, as Hadoop's does. For client credentials, Hadoop posts to `fs.azure.account.oauth2.client.endpoint` as given, while `object_store` posts to `<authority host>/<tenant>/oauth2/v2.0/token`. Comet takes the tenant from the path segment before the last `oauth2` and everything before that segment as the authority host, so a v1 `/oauth2/token` endpoint and a proxy with a path prefix both resolve. The token request path is always the v2.0 one. An `http://` endpoint fails.
+Client credentials and Workload Identity token requests go over HTTPS only. The managed identity request goes to the IMDS endpoint over HTTP, as Hadoop's does. For client credentials, Hadoop posts to `fs.azure.account.oauth2.client.endpoint` as given, while `object_store` posts to `<authority host>/<tenant>/oauth2/v2.0/token`. Comet takes the tenant from the path segment before the last `oauth2` and everything before that segment as the authority host, so a v1 `/oauth2/token` endpoint and a proxy with a path prefix both resolve. The token request path is always the v2.0 one. An `http://` endpoint, or one with no tenant segment, makes the scan fall back to Spark's own scan. So does an `http://` Workload Identity authority (`fs.azure.account.oauth2.msi.authority`). The driver decides this by asking the native store whether it can be built from the resolved values, so the scan falls back exactly when the native store would reject them. A native write to such an account fails with an error naming the key.
 
 ### Environment variables
 
 The `AZURE_*` variables (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_STORAGE_ACCOUNT_KEY`, `AZURE_USE_AZURE_CLI`, and the others `object_store` reads) and `IDENTITY_ENDPOINT` are read only when Hadoop configures no authentication for the account at all: none of `fs.azure.account.auth.type`, `fs.azure.account.key`, `fs.azure.account.keyprovider`, `fs.azure.shellkeyprovider.script`, `fs.azure.account.oauth.provider.type`, `fs.azure.sas.token.provider.type`, `fs.azure.sas.fixed.token` or any `fs.azure.account.oauth2.*` key resolves for it. That case is what lets AKS Workload Identity work with no Hadoop configuration for tables whose files Spark does not list through Hadoop, such as Iceberg tables. A plain Parquet path still needs Hadoop configured for Spark's own listing.
 
-Once Hadoop names anything, only the resolved values reach the store. A resolution error (a missing mandatory key, an invalid account key, an unknown provider class) fails the scan with Hadoop's exception. Messages that could quote a credential, such as the key provider's, are kept in the Spark driver log and the scan error names the exception class. The environment is never a fallback. One read happens inside `object_store` rather than Comet: under a resolved managed identity, its IMDS provider picks up `IDENTITY_HEADER` when it fetches a token.
+Once Hadoop names anything, only the resolved values reach the store. A resolution error (a missing mandatory key, an invalid account key, an unknown provider class) makes the scan fall back to Spark's own scan, which reports the error in hadoop-azure's own words if it cannot authenticate either. The fallback reason carries Hadoop's exception. Messages that could quote a credential, such as the key provider's, are kept in the Spark driver log and the reason names the exception class. The environment is never a fallback. One read happens inside `object_store` rather than Comet: under a resolved managed identity, its IMDS provider picks up `IDENTITY_HEADER` when it fetches a token.
 
 ### Credentials in transit
 
@@ -540,9 +557,9 @@ Comet 1.1 started from the environment and overlaid the Hadoop keys it found by 
 - Transport variables such as `AZURE_STORAGE_ENDPOINT` and `AZURE_ALLOW_HTTP` no longer apply beside a Hadoop mechanism. They are read only when Hadoop configures none.
 - The WASB key `fs.azure.sas.<container>.<account>`, which the ABFS driver never read, is no longer read by the native scan either. Use `fs.azure.sas.fixed.token`, which the native scan now reads.
 - A lower-case `oauth` auth type, or OAuth keys without `fs.azure.account.auth.type`, fail the way they fail for Spark. In the second case Hadoop defaults to `SharedKey` and the key provider fails. On hadoop-azure 3.4.1 and later the driver log names the missing key. 3.3.4 reports only `Failure to initialize configuration`.
-- A configured mechanism the native scan cannot build fails with an error instead of silently reading the environment.
+- A configured mechanism the native scan cannot build falls back to Spark's own scan instead of silently reading the environment. So does a driver whose hadoop-azure Comet cannot load.
 
-### Limitations
+### Azure Limitations
 
 1. **Authentication keys only**: Only the keys in the table above reach the native store. Other `fs.azure.*` settings (read-ahead, retries, HTTP tuning) do not apply to the native scan.
 
@@ -551,3 +568,5 @@ Comet 1.1 started from the environment and overlaid the Hadoop keys it found by 
 3. **URL shape**: URLs must include the account in the host, i.e. `abfss://<container>@<account>.dfs.core.windows.net/<path>`. Bare `abfs://<container>/<path>` (fsspec-style, no account in the URL) is not supported because Comet cannot resolve the storage account name.
 
 4. **Endpoint hosts**: `object_store` builds an Azure store only for hosts under `dfs.core.windows.net`, `blob.core.windows.net`, `dfs.fabric.microsoft.com` and `blob.fabric.microsoft.com`. Sovereign-cloud endpoints such as `dfs.core.chinacloudapi.cn` are not supported, whatever keys are configured for them.
+
+5. **Credentials that resolve differently from Hadoop's ABFS driver**: Container-scoped OAuth settings, Fabric hosts and a few other configurations resolve differently from Hadoop's ABFS driver, so a native read can fail where Spark succeeds ([#6605](https://github.com/apache/datafusion-comet/issues/6605)).

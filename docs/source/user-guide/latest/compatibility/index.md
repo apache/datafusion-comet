@@ -23,9 +23,9 @@ Comet aims to provide consistent results with the version of Apache Spark that i
 
 This guide documents areas where Comet's behavior is known to differ from Spark. Topics are grouped by subsystem:
 
-- **Parquet**: limitations when reading Parquet files.
-- **Parquet and Iceberg known issues**: open issues in which Parquet and Iceberg reads and writes
-  give different results from Spark, or fail where Spark succeeds, without falling back.
+- **Parquet and Iceberg**: limitations, differences from Spark, and known issues for reading and
+  writing Parquet files and Iceberg tables. These live with the data source, on the
+  [Parquet](../parquet.md) and [Iceberg](../iceberg.md) pages.
 - **Floating-point comparison**: NaN and signed-zero handling in comparisons.
 - **Regular expressions**: differences between the Rust regexp crate and Java's regex engine.
 - **Operators**: operator-level compatibility notes, including window functions and round-robin partitioning.
@@ -79,7 +79,8 @@ codegen dispatcher covers only scalar expressions; see the
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
 the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
-`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+`CAST(binary AS string)`, a columnar shuffle, or a nested Parquet BINARY value read as a string),
+it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
 character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
 materialized (collected, printed, or passed to most string functions), so the rendered result
@@ -97,14 +98,78 @@ underlying bytes rather than on the rendered text:
   bytes) but `true` in Comet. Equality, joins, grouping, ordering, and byte-based string functions
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
-Both differences require string data that is not valid UTF-8, which does not occur for text read from
-Parquet or produced by string expressions. Consistent handling of invalid UTF-8 across all native
-string paths is tracked by
+Both differences require string data that is not valid UTF-8. Comet's native Parquet scan never
+produces such strings from UTF8-annotated columns (it rejects them, see below), and neither do most
+string expressions. They can reach Comet in these ways, which are the ones to check before relying on
+a result:
+
+- **Parquet BINARY columns read as strings.** A BINARY column without the UTF8 annotation can hold
+  bytes that are not valid UTF-8 when it is read as `string`, through the read schema or
+  `spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
+  or map value. Top-level values and map keys are not checked; see
+  [Parquet](../parquet.md#reads-that-differ-from-spark).
+- **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
+  encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
+  them when it converts a Text scan to Arrow, which it does only when
+  `spark.comet.convert.text.enabled=true` (see [Data sources](../datasources.md#text)), or, as a
+  deprecated alternative, when `spark.comet.sparkToColumnar.enabled=true` and
+  `spark.comet.sparkToColumnar.supportedOperatorList` names the scan. For example, with a Text file
+  holding the bytes `1 caf\xE9`, `hex(value)` returns `3120636166EFBFBD` instead of Spark's
+  `3120636166E9`, and `length` of `2 na\xEFve` is 7 instead of 5. Spark decodes CSV files as it reads
+  them, so they never hold such strings, and its JSON reader treats a line with such bytes as
+  malformed, so only the corrupt record column keeps them. Spark's ORC and Avro readers keep stored
+  bytes without checking them, but those formats define strings as UTF-8, so only a malformed file is
+  affected.
+- **Comet columnar shuffle.** When Comet shuffles rows that come from a Spark operator, such as a
+  Text scan or a Spark partial aggregate, it converts them to Arrow and decodes their strings in the
+  same way. It does this with the default `spark.comet.shuffle.mode=auto`, so, for example,
+  repartitioning a Latin-1 Text table can return `U+FFFD` where Spark keeps the original bytes.
+  Setting `spark.comet.shuffle.mode=native` keeps such shuffles on Spark.
+- **`CAST(binary AS STRING)`.** Comet decodes the bytes where Spark keeps them. Because `min` and `max`
+  over strings run natively, a cast below them is decoded before the comparison, and the two can swap.
+  With `b` holding `X'80'` and `X'C3A9'`, Spark returns `min(CAST(b AS STRING))` = the `0x80` string
+  and `max` = `é`, whereas Comet returns `min` = `é` and `max` = `U+FFFD`. This is the ordering
+  difference above. If the cast input can hold bytes that are not valid UTF-8, disable Comet for the
+  query. When the cast is the direct argument of `min` or `max`, a narrower alternative is to set
+  `spark.comet.expression.Min.enabled=false`, `spark.comet.expression.Max.enabled=false` and
+  `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
+  runs in Spark, but Comet's columnar shuffle still decodes its partial results. These settings are
+  not enough when the cast is in a projection below the aggregate, for example
+  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because Comet runs that projection
+  natively and decodes the bytes before the aggregate sees them.
+
+Consistent handling of invalid UTF-8 across all native string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).
 
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## ANSI errors from rows skipped by LIMIT
+
+Native operators evaluate batches of rows. With `spark.sql.ansi.enabled=true`, some `LIMIT`
+plan shapes can therefore raise an expression error from a row that Spark stops before evaluating.
+For example, with a Parquet batch read in the order `(id, value) = (0, '0'), (1, '1')`:
+
+```sql
+SELECT value FROM t
+WHERE CAST(IF(id = 1, 'bad', value) AS INT) >= 0
+LIMIT 1
+```
+
+Spark returns `'0'` after the first row matches. Comet can evaluate the filter predicate on the
+second row in the same batch and raise `CAST_INVALID_INPUT`. SQL without `ORDER BY` does not
+guarantee this input order; the example describes a physical scan order that exposes the difference.
+
+Comet caps projection input when a collect limit directly consumes the projection. This protects
+that projection's expressions, but does not bound evaluation inside its child operators. Throwing
+filter predicates and projections beneath non-collect `LocalLimit` / `GlobalLimit` plans, such as
+a `LIMIT` inside a subquery, remain affected. These existing limitations and the investigation of
+already-ordered `TakeOrderedAndProject` inputs are tracked in
+[#7147](https://github.com/apache/datafusion-comet/issues/7147).
+
+An error on a row absent from the final result is not always a mismatch: Spark can also need to
+evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
 ## ANSI-mode error classes and messages
 
@@ -119,15 +184,21 @@ divergence:
 
 ## Known result-value divergences
 
-The following native paths silently return values that differ from Spark for edge-case inputs.
+The following native paths can return different values or raise errors that Spark does not raise
+for edge-case inputs.
 Most also have entries in the per-category expression pages linked above; they are collected here
 so users hunting an unexpected value have a single place to check. Parquet and Iceberg reads and
-writes have their own list, in
-[Known Issues in Parquet and Iceberg Reads and Writes](parquet-iceberg-known-issues.md#results-that-differ-from-spark):
+writes have their own lists, under Known Issues on the
+[Parquet](../parquet.md#known-issues) and [Iceberg](../iceberg.md#known-issues) pages:
 
 - Native `RANGE` window frames with an explicit `PRECEDING` / `FOLLOWING` offset diverge from
   Spark when the boundary arithmetic overflows for `DATE` or `DECIMAL` `ORDER BY` columns
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
+- Grouped ANSI decimal `AVG` can evaluate an overflowing group in a batch even when Spark would
+  stop before that group at `LIMIT`. It remains natively enabled with this error-timing difference;
+  disabling `spark.comet.exec.aggregate.enabled` restores Spark's aggregate evaluation.
+  On final result overflow, Comet's error message prints the average rounded to the result scale;
+  Spark 4.0 prints the quotient truncated to 39 fractional digits.
 - Ungrouped decimal `SUM` keeps an unbounded intermediate and checks the result precision only
   when a partial is written out or the sum is evaluated, which matches Spark's whole-stage codegen
   path. Without codegen Spark buffers the aggregate in an `UnsafeRow` and latches as soon as a
