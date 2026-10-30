@@ -2105,7 +2105,7 @@ class CometWindowExecSuite extends CometTestBase {
             case _ => false
           },
           plan)
-        assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 2, plan)
+        assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 1, plan)
       }
     }
   }
