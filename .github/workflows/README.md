@@ -50,8 +50,10 @@ merge. Three jobs are still on `push`: `docs`, because it deploys to
 `pr_build_macos`, because of `actions/cache` scoping. A pull request can only restore caches saved on its
 own branch or on `main`, and the queue runs on a throwaway
 `gh-readonly-queue/*` branch whose caches are deleted with it. Without a push
-run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci, Maven and
-TPC-H/TPC-DS caches on `main` stale until the next unrelated change.
+run, a `Cargo.lock` or `pom.xml` change would leave the cargo-ci and Maven
+caches on `main` stale until the next unrelated change. The TPC-H and TPC-DS
+datasets do not depend on those files; the push run re-warms them only after
+eviction.
 
 Warming those caches is the only thing the push run is for, so on `push` the
 Linux build runs in **cache-refresh-only** mode: `build-native` and the two
@@ -436,15 +438,18 @@ any of the paths above, and rejects a `save` that is missing the `github.ref`
 guard. `publish_snapshot.yml` is exempt in `CACHE_SAVE_SCOPE_EXEMPT`, because
 it runs from main on a schedule already.
 
-The TPC-H and TPC-DS dataset caches keep the read-write form and are out of
-scope entirely: `./tpch` and `./tpcds-sf-1` are a few hundred MB, they are not
-dependency trees, and they are keyed on this workflow file, so a pull request
-that edits it would regenerate the data on every run rather than once.
+The TPC-H and TPC-DS dataset caches also use separate restore and main-only
+save steps. Their keys include the generator (`GenTPCHData.scala` for TPC-H,
+the pinned `tpcds-kit` commit for TPC-DS), scale factor and partition count.
+The generation arguments, keys and dataset paths use the same job environment
+values, so changing an input invalidates the dataset without unrelated workflow
+edits rotating its key. `dev/ci/check-ci-config.py` guards this coupling.
 
 A job that only ever runs on a pull request or in the queue keeps the guard
 anyway, and so never writes. That is deliberate — it restores from main's
-entry through `restore-keys` and downloads whatever else it needs, which is
-what a cold pull request already did. See the push-tier discussion above for
+entry through `restore-keys` (the TPC dataset restores require an exact key
+instead) and downloads whatever else it needs, which is what a cold pull
+request already did. See the push-tier discussion above for
 which jobs do run on main and therefore do write.
 
 ## Retrying flaky network operations
