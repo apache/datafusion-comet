@@ -20,7 +20,12 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.catalyst.expressions.MakeDate
+import org.apache.spark.sql.catalyst.optimizer.BuildRight
 import org.apache.spark.sql.catalyst.util.DateTimeTestUtils.{withDefaultTimeZone, LA}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometProjectExec}
+import org.apache.spark.sql.execution.ProjectExec
+import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
@@ -30,10 +35,107 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 /**
  * Benchmark to measure Comet execution performance. To run this benchmark:
  * `SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometDatetimeExpressionBenchmark`
+ * Append `-- --make-date-only` to run only the make_date operator fallback cases.
  * Results will be written to "spark/benchmarks/CometDatetimeExpressionBenchmark-**results.txt".
  */
 // spotless:on
 object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
+
+  def makeDateOperatorFallbackBenchmark(values: Int): Unit = {
+    withTempPath { dir =>
+      withTempTable("make_date_probe", "make_date_build") {
+        val probePath = s"${dir.getCanonicalPath}/probe"
+        val buildPath = s"${dir.getCanonicalPath}/build"
+        spark
+          .range(values.toLong)
+          .selectExpr(
+            "CAST(id % 1024 AS INT) AS k",
+            "CAST(2000 + id % 25 AS INT) AS y",
+            "CAST(1 + id % 12 AS INT) AS m",
+            "CAST(1 + id % 28 AS INT) AS d")
+          .write
+          .parquet(probePath)
+        spark.range(1024).selectExpr("CAST(id AS INT) AS k").write.parquet(buildPath)
+        spark.read.parquet(probePath).createOrReplaceTempView("make_date_probe")
+        spark.read.parquet(buildPath).createOrReplaceTempView("make_date_build")
+
+        val queries = Seq(
+          (
+            "MakeDate - LIMIT 10",
+            "SELECT make_date(y, m, d) AS dt FROM make_date_probe LIMIT 10",
+            true),
+          (
+            "MakeDate - broadcast join probe projection",
+            """SELECT /*+ BROADCAST(b) */ p.dt, b.k
+              |FROM (SELECT k, make_date(y, m, d) AS dt FROM make_date_probe) p
+              |JOIN make_date_build b ON p.k = b.k""".stripMargin,
+            false))
+        val modes = Seq(
+          ("Spark", false, true),
+          ("Comet (default)", true, true),
+          ("Comet (operator fallback disabled)", true, false))
+        queries.foreach { case (name, query, limited) =>
+          val benchmark = new Benchmark(
+            name,
+            if (limited) 10L else values.toLong,
+            minNumIters = 5,
+            output = output)
+          benchmark.out.println(
+            s"Input: $values probe rows, 1024 build rows, ${spark.sparkContext.master}, AQE off")
+          benchmark.out.println(query)
+          modes.foreach { case (mode, comet, operatorFallback) =>
+            val configs = Seq(
+              SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+              SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+              CometConf.COMET_ENABLED.key -> comet.toString,
+              CometConf.COMET_EXEC_ENABLED.key -> comet.toString,
+              CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.key ->
+                operatorFallback.toString)
+            def consume(): Unit = {
+              val df = spark.sql(query)
+              // Collect only ten rows for LIMIT. The noop writer consumes the full join output,
+              // preserving the date projection that count(*) would prune from the query.
+              if (limited) {
+                val _ = df.collect()
+              } else {
+                df.noop()
+              }
+            }
+            withSQLConf(configs: _*) {
+              // Capture the executed action, including the noop writer's actual query plan.
+              val plans = capturePlans { consume() }
+              require(plans.nonEmpty, s"No executed plan captured for $name / $mode")
+              benchmark.out.println(s"$mode executed plans:")
+              plans.foreach(plan => benchmark.out.println(plan.treeString))
+              if (!limited) {
+                val probes = collectAcross(plans) {
+                  case join: BroadcastHashJoinExec =>
+                    if (join.buildSide == BuildRight) join.left else join.right
+                  case join: CometBroadcastHashJoinExec =>
+                    if (join.buildSide == BuildRight) join.left else join.right
+                }
+                require(
+                  probes.exists(_.exists {
+                    case p: ProjectExec =>
+                      p.projectList.exists(_.exists(_.isInstanceOf[MakeDate]))
+                    case p: CometProjectExec =>
+                      p.projectList.exists(_.exists(_.isInstanceOf[MakeDate]))
+                    case _ => false
+                  }),
+                  s"make_date must remain in a projection below the broadcast join for $mode")
+              }
+            }
+            benchmark.addCase(mode) { _ =>
+              withSQLConf(configs: _*) {
+                consume()
+              }
+            }
+          }
+          benchmark.run()
+        }
+      }
+    }
+  }
 
   def dateTruncExprBenchmark(values: Int): Unit = {
     withTempPath { dir =>
@@ -257,6 +359,11 @@ object CometDatetimeExpressionBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val values = 1024 * 1024;
+
+    runBenchmark("MakeDate operator fallback") {
+      makeDateOperatorFallbackBenchmark(values)
+    }
+    if (mainArgs.contains("--make-date-only")) return
 
     for (timeZone <- Seq("UTC", "America/Los_Angeles")) {
       withSQLConf("spark.sql.parquet.datetimeRebaseModeInWrite" -> "CORRECTED") {
