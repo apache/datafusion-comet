@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan}
+import org.apache.spark.sql.execution.{LocalTableScanExec, SortExec, SparkPlan}
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AdaptiveSparkPlanHelper, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec, SortAggregateExec}
@@ -44,7 +44,7 @@ import org.apache.spark.sql.types.{ArrayType, DataTypes, StructField, StructType
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
 import org.apache.comet.rules.CometExecRule
 import org.apache.comet.serde.{CometCorr, CometRegrR2, ExprOuterClass, RegrSparkVersions}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
@@ -597,6 +597,54 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             cometPlan.toString.contains(s"merge_$name"),
             s"Expected $name PartialMerge stage to run natively; plan:\n$cometPlan")
         }
+      }
+    }
+  }
+
+  test("float collect_set merges Spark partials natively on Spark 4.2 (issue #7203)") {
+    assume(isSpark42Plus, "Spark 4.2 normalizes floating-point collect_set buffers")
+    // SQL fixtures cover the answers and fallback matrix. This mixed plan needs operator exclusions
+    // and assertions on the consumed plan, which a plain SQL query directive cannot express.
+    for {
+      adaptive <- Seq(false, true)
+      objectHash <- Seq(false, true)
+    } {
+      withSQLConf(
+        COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.USE_OBJECT_HASH_AGG.key -> objectHash.toString,
+        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+        CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+        val data = Seq(
+          (1, 1, Some(Double.NaN)),
+          (1, 2, Some(Double.NaN)),
+          (1, 3, Some(-0.0d)),
+          (1, 4, Some(0.0d)),
+          (1, 5, Some(1.0d)),
+          (1, 6, None),
+          (2, 1, None))
+        val df = data
+          .toDF()
+          .groupBy("_1")
+          .agg(
+            count_distinct(col("_2")),
+            sort_array(collect_set(col("_3").cast("FLOAT"))),
+            sort_array(collect_set(col("_3"))))
+        val (_, plan) = checkSparkAnswerAndOperator(
+          df,
+          Seq(classOf[CometBaseAggregateExec]),
+          classOf[ObjectHashAggregateExec],
+          classOf[SortAggregateExec],
+          classOf[SortExec],
+          classOf[LocalTableScanExec])
+        assert(collect(plan) { case s: LocalTableScanExec => s }.nonEmpty, plan)
+        val nativeAggregates = collect(plan) { case a: CometBaseAggregateExec => a }
+        val sparkAggregates = collect(plan) { case a: BaseAggregateExec => a }
+        assert(nativeAggregates.exists(_.modes.contains(PartialMerge)), plan)
+        assert(nativeAggregates.exists(_.modes.contains(Final)), plan)
+        assert(!nativeAggregates.exists(_.modes == Seq(Partial)), plan)
+        assert(sparkAggregates.nonEmpty, plan)
+        assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
       }
     }
   }
