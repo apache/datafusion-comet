@@ -16,8 +16,7 @@
 // under the License.
 
 //! Shuffle read benchmarks: the per-block schema parse measured against a full block decode,
-//! across column counts, rows per block, the default codec and no codec, and a dictionary-encoded
-//! string column.
+//! across column counts, rows per block, every codec, and a dictionary-encoded string column.
 
 use arrow::array::{ArrayRef, DictionaryArray, Int64Array, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Int32Type, Schema, SchemaRef};
@@ -116,10 +115,13 @@ fn encode_block(batch: &RecordBatch, codec: CompressionCodec) -> Vec<u8> {
 fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("shuffle_reader");
 
-    // Lz4Frame is the default codec; None isolates the decode from decompression.
+    // Lz4Frame is the default codec; None isolates the decode from decompression. Zstd and
+    // Snappy pay the largest per-block decoder setup, so small blocks show it most.
     for (codec_name, codec) in [
         ("none", CompressionCodec::None),
         ("lz4", CompressionCodec::Lz4Frame),
+        ("zstd", CompressionCodec::Zstd(1)),
+        ("snappy", CompressionCodec::Snappy),
     ] {
         // rows per block shrink as partition count rises, so the small cases stand in for wide
         // shuffles
