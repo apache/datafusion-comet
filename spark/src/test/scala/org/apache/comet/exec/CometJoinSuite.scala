@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
