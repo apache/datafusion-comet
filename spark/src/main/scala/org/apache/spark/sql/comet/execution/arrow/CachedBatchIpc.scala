@@ -26,7 +26,7 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.arrow.compression.{CommonsCompressionFactory, ZstdCompressionCodec}
+import org.apache.arrow.compression.CommonsCompressionFactory
 import org.apache.arrow.flatbuf.{RecordBatch => FlatBufRecordBatch}
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{FieldVector, TypeLayout, ValueVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
@@ -70,9 +70,11 @@ private[comet] object CachedBatchIpc {
    */
   def compressionCodec(codecName: String, zstdLevel: Int): CompressionCodec = codecName match {
     case "none" => NoCompressionCodec.INSTANCE
-    // Constructed directly rather than through CompressionCodec.Factory, which ignores the level
-    // and always builds a codec at zstd's default.
-    case "zstd" => new ZstdCompressionCodec(zstdLevel)
+    // Comet's subclass of Arrow's codec, which corrects the capacity handed to zstd; see
+    // CometZstdCompressionCodec. Constructed directly rather than through
+    // CompressionCodec.Factory, which ignores the level and always builds a codec at zstd's
+    // default.
+    case "zstd" => new CometZstdCompressionCodec(zstdLevel)
     // Arrow's LZ4_FRAME format, written with lz4-java rather than Arrow's own pure-Java codec;
     // see Lz4FrameCompressionCodec.
     case "lz4" => Lz4FrameCompressionCodec
