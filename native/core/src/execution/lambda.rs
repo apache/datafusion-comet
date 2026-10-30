@@ -58,7 +58,7 @@ pub(crate) type LambdaScope = HashMap<i64, (usize, FieldRef)>;
 /// A stack of lambda variable scopes, innermost last.
 /// Planning is single-threaded per planner, so `RefCell` is sufficient to manage
 /// the stack of scopes during the recursive planning process.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub(crate) struct LambdaScopes {
     stack: RefCell<Vec<LambdaScope>>,
 }
