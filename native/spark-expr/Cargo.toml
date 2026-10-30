@@ -30,6 +30,7 @@ edition = { workspace = true }
 arrow = { workspace = true }
 chrono = { workspace = true }
 datafusion = { workspace = true }
+datafusion-functions = { workspace = true }
 datafusion-spark = { workspace = true }
 num = { workspace = true }
 regex = { workspace = true }
@@ -42,7 +43,7 @@ memchr = "2.8"
 smallvec = "1.16"
 datafusion-comet-common = { workspace = true }
 datafusion-comet-jni-bridge = { workspace = true }
-jni = "0.22.4"
+jni = { workspace = true }
 # jni-bridge's `jni_static_call!` expands to `paste::paste!`, so callers need `paste` directly
 paste = "1.0.14"
 futures = { workspace = true }
@@ -75,11 +76,19 @@ name = "hash"
 harness = false
 
 [[bench]]
+name = "decimal_hash"
+harness = false
+
+[[bench]]
 name = "hash_alloc"
 harness = false
 
 [[bench]]
 name = "cast_from_string"
+harness = false
+
+[[bench]]
+name = "cast_nested"
 harness = false
 
 [[bench]]
@@ -180,6 +189,10 @@ harness = false
 
 [[bench]]
 name = "bloom_filter_agg"
+harness = false
+
+[[bench]]
+name = "bloom_filter_might_contain"
 harness = false
 
 [[bench]]
@@ -455,6 +468,18 @@ name = "aggregate_stats"
 harness = false
 
 [[bench]]
+name = "hll_agg"
+harness = false
+
+[[bench]]
+name = "hll_scalar"
+harness = false
+
+[[bench]]
+name = "aggregate_misc"
+harness = false
+
+[[bench]]
 name = "nondeterministic"
 harness = false
 
@@ -471,5 +496,21 @@ name = "nested_comparison"
 harness = false
 
 [[bench]]
+name = "float_comparison"
+harness = false
+
+[[bench]]
 name = "float_arrays"
+harness = false
+
+[[bench]]
+name = "min_max"
+harness = false
+
+[[bench]]
+name = "greatest_least"
+harness = false
+
+[[bench]]
+name = "at_least_n_non_nulls"
 harness = false

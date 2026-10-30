@@ -19,7 +19,8 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.InputStream
+import java.io.{FilterInputStream, InputStream}
+import java.util.concurrent.atomic.AtomicBoolean
 
 import org.apache.spark.{InterruptibleIterator, MapOutputTracker, SparkEnv, TaskContext}
 import org.apache.spark.internal.{config, Logging}
@@ -91,6 +92,7 @@ class CometBlockStoreShuffleReader[K, C](
     val nativeLib = new Native()
     val nativeUtil = new NativeUtil()
     val tracingEnabled = CometConf.COMET_TRACING_ENABLED.get()
+    val readBufferSize = CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt
 
     // Closes last read iterator and shared resources after the task is finished.
     // We need to close read iterator during iterating input streams,
@@ -113,7 +115,8 @@ class CometBlockStoreShuffleReader[K, C](
           dep.decodeTime,
           nativeLib,
           nativeUtil,
-          tracingEnabled)
+          tracingEnabled,
+          readBufferSize = readBufferSize)
         currentReadIterator
       })
       .map(b => (0, b))
@@ -158,10 +161,19 @@ class CometBlockStoreShuffleReader[K, C](
    */
   override def readAsRawStream(): InputStream = {
     val streams = fetchIterator.map(_._2)
-    new java.io.SequenceInputStream(new java.util.Enumeration[InputStream] {
-      override def hasMoreElements: Boolean = streams.hasNext
-      override def nextElement(): InputStream = streams.next()
-    })
+    // Native code reads this stream on the task thread, outside any InterruptibleIterator, so
+    // every read checks whether the task was killed.
+    new FilterInputStream(CometBlockStoreShuffleReader.concatenate(streams)) {
+      override def read(): Int = {
+        context.killTaskIfInterrupted()
+        in.read()
+      }
+
+      override def read(buffer: Array[Byte], offset: Int, length: Int): Int = {
+        context.killTaskIfInterrupted()
+        in.read(buffer, offset, length)
+      }
+    }
   }
 
   private def fetchContinuousBlocksInBatch: Boolean = {
@@ -190,5 +202,28 @@ class CometBlockStoreShuffleReader[K, C](
           s"$useOldFetchProtocol, io encryption: $ioEncryption.")
     }
     doBatchFetch
+  }
+}
+
+private[shuffle] object CometBlockStoreShuffleReader {
+
+  /**
+   * Concatenates block streams without asking the iterator for remaining blocks when closed.
+   * SequenceInputStream normally drains its Enumeration during close, which would fetch every
+   * remaining shuffle block even when the native consumer stopped early.
+   */
+  def concatenate(streams: Iterator[InputStream]): InputStream = {
+    val closed = new AtomicBoolean(false)
+    val enumeration = new java.util.Enumeration[InputStream] {
+      override def hasMoreElements: Boolean = !closed.get() && streams.hasNext
+      override def nextElement(): InputStream = streams.next()
+    }
+    val sequence = new java.io.SequenceInputStream(enumeration)
+    new FilterInputStream(sequence) {
+      override def close(): Unit = {
+        closed.set(true)
+        super.close()
+      }
+    }
   }
 }

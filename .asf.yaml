@@ -116,6 +116,9 @@ github:
     branch-1.1:
       required_pull_request_reviews:
         required_approving_review_count: 1
+    branch-1.2:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
   # GitHub's merge queue. Classic `protected_branches` above has no way to
   # express this, but .asf.yaml rulesets accept a raw Rulesets API payload, so
   # no INFRA ticket is needed. Same approach as apache/iceberg-python and
@@ -179,6 +182,13 @@ github:
     # Lets a committer queue a PR before its checks have finished, which is
     # most of the point of having a queue.
     allow_auto_merge: true
+    # Limit open pull requests per user without write access.
+    #
+    # With coding agents, the number of open PRs now far exceeds our review capacity.
+    # Setting a limit helps reviewers focus on fewer PRs at a time.
+    creation_cap:
+      enabled: true
+      max_open_pull_requests: 3
 # publishes the content of the `asf-site` branch to
 # https://datafusion.apache.org/comet/
 publish:

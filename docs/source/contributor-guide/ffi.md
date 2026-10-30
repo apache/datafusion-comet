@@ -119,6 +119,16 @@ realigns under-aligned buffers on import ([apache/arrow-rs#10030](https://github
 the `realigns_under_aligned_decimal128` test in `scan.rs` guards against an arrow downgrade that would bring back the
 panic ([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028)).
 
+### Errors from the JVM Producer
+
+Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands native only its text, so
+native fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps every
+reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of the
+native error. The task then fails with the exception Spark would have thrown, such as a `SparkArithmeticException`
+from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch never takes this path: schema
+reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
+this path therefore has to fail a later batch.
+
 ### Schema Reconciliation
 
 `CometArrowStream.reconcileStreamSchema` advertises the stream's schema from the actual `CometVector` types in the
@@ -230,6 +240,19 @@ level and shares every other buffer. `move_to_spark` applies it to executed batc
 `JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
 or sliced booleans reach the JVM misaligned
 ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
+
+`zero_offsets` leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
+arrays by moving the start of their offsets, so the JVM imports them with offsets that start past zero and with the
+rows before the slice still at the front of the data buffer, or of the child vector for a list or map. The first slice
+of an array starts at zero, but a list or map still has the elements of the later slices in its child. Reading values
+through the offsets is correct, but Arrow Java 18.3's `VectorSchemaRootAppender` assumes offsets that start at zero and
+folds those rows into the first value it appends, and `VectorUnloader` writes them into an IPC stream. So
+`Utils.serializeBatches` rebases a broadcast batch's offsets with `VectorSchemaRoot.slice` before
+`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and
+`CachedBatchIpc.serialize` does the same before the in-memory cache writes a batch, so that a cached slice neither
+stores nor reports the rows before it ([#6995](https://github.com/apache/datafusion-comet/issues/6995)). The Arrow
+Python runner rebases the same way before it sends a batch to the worker. All three go through
+`Utils.withRebasedOffsets`, and code that appends or writes imported vectors has to use it too.
 
 ### Ownership and Lifecycle
 

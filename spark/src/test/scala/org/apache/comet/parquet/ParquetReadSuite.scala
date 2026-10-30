@@ -42,15 +42,18 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn}
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.comet.{CometNativeScanExec, CometScanExec}
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
+import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import com.google.common.primitives.UnsignedLong
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus}
 import org.apache.comet.vector.CometVector
 
 abstract class ParquetReadSuite extends CometTestBase {
@@ -139,6 +142,96 @@ abstract class ParquetReadSuite extends CometTestBase {
           assert(
             collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
             "Expected a CometNativeScanExec")
+        }
+      }
+    }
+  }
+
+  test("native scan decodes invalid UTF-8 in nested BINARY read as string") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "nested-binary.parquet")
+      val parquetSchema = MessageTypeParser.parseMessageType("""message root {
+          |  optional group arr (LIST) {
+          |    repeated group list {
+          |      optional binary element;
+          |    }
+          |  }
+          |  optional group st {
+          |    optional binary name;
+          |  }
+          |  optional group m (MAP) {
+          |    repeated group key_value {
+          |      required binary key;
+          |      optional binary value;
+          |    }
+          |  }
+          |  optional int32 id;
+          |}
+          |""".stripMargin)
+      val valid = Binary.fromString("one")
+      val invalid = Binary.fromConstantByteArray(Array[Byte](0x41, 0xff.toByte, 0x42))
+      // The same bytes with U+FFFD in place of FF: a second map key that decoding would
+      // collapse onto the invalid one.
+      val replaced = Binary.fromString("A\uFFFDB")
+      val writer = createParquetWriter(parquetSchema, path)
+      try {
+        // Valid values, then a null list element, struct field and map value, then invalid
+        // values, then null containers, so one batch mixes nulls, valid and invalid values.
+        Seq(Some(valid), None, Some(invalid)).zipWithIndex.foreach { case (value, id) =>
+          val row = new SimpleGroup(parquetSchema)
+          val arr = row.addGroup("arr")
+          arr.addGroup("list").append("element", valid)
+          val element = arr.addGroup("list")
+          val st = row.addGroup("st")
+          val m = row.addGroup("m")
+          val entry = m.addGroup("key_value").append("key", value.getOrElse(valid))
+          value.foreach { value =>
+            element.append("element", value)
+            st.append("name", value)
+            entry.append("value", value)
+          }
+          if (value.contains(invalid)) {
+            m.addGroup("key_value").append("key", replaced).append("value", valid)
+          }
+          row.add("id", id)
+          writer.write(row)
+        }
+        val nullContainers = new SimpleGroup(parquetSchema)
+        nullContainers.add("id", 3)
+        writer.write(nullContainers)
+      } finally {
+        writer.close()
+      }
+
+      val readSchema = "arr array<string>, st struct<name: string>, m map<string, string>, id int"
+      // Reads with binaryAsString, then with a read schema that declares the strings.
+      Seq(("true", None), ("false", Some(readSchema))).foreach { case (binaryAsString, schema) =>
+        withSQLConf(SQLConf.PARQUET_BINARY_AS_STRING.key -> binaryAsString) {
+          val reader = schema.map(spark.read.schema(_)).getOrElse(spark.read)
+          val df = reader.parquet(path.toString)
+          assert(
+            df.schema.catalogString ===
+              "struct<arr:array<string>,st:struct<name:string>,m:map<string,string>,id:int>")
+
+          // Collected values match Spark, and the scan runs natively.
+          val (_, cometPlan) = checkSparkAnswerAndOperator(df)
+          assert(
+            collect(cometPlan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+            s"Expected a CometNativeScanExec:\n${cometPlan.treeString}")
+
+          // Each invalid nested value holds U+FFFD (EF BF BD) in place of FF, except a map
+          // key, which keeps its bytes as Spark does: the two keys stay distinct, and looking
+          // up the replaced one returns its own value.
+          checkAnswer(
+            df.where("id = 2")
+              .selectExpr(
+                "hex(arr[1])",
+                "hex(st.name)",
+                "hex(map_keys(m)[0])",
+                "hex(map_values(m)[0])",
+                "size(map_from_entries(map_entries(m)))",
+                "m['A\uFFFDB']"),
+            Row("41EFBFBD42", "41EFBFBD42", "41FF42", "41EFBFBD42", 2, "one"))
         }
       }
     }
@@ -272,16 +365,14 @@ abstract class ParquetReadSuite extends CometTestBase {
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/main/java/org/apache/spark/sql/execution/datasources/parquet/ParquetVectorUpdaterFactory.java#L800-L833
     // Matches Spark's positive and negative overflow cases:
     // https://github.com/apache/spark/blob/v4.2.0/sql/core/src/test/resources/sql-tests/inputs/timestamp.sql#L74-L83
-    def isOverflow(error: Throwable): Boolean =
-      Iterator
-        .iterate(error)(_.getCause)
-        .takeWhile(_ != null)
-        .exists(cause => Option(cause.getMessage).exists(_.toLowerCase.contains("overflow")))
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
 
     Seq(false, true).foreach { dictionaryEnabled =>
       Seq(92233720368547758L, -92233720368547758L).foreach { millis =>
         withTempDir { dir =>
-          val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+          val path = new Path(dir.toURI.toString, "bad timestamp%.parquet")
+          val healthyPath = new Path(dir.toURI.toString, "healthy.parquet")
           val schema = MessageTypeParser.parseMessageType("""
             |message root {
             |  optional int64 ts(TIMESTAMP_MILLIS);
@@ -322,6 +413,18 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
           writer.close()
 
+          // Spark orders a task's files by size, largest first. Make the healthy file the larger
+          // one, so the task reads it before the failing file and the error cannot just name the
+          // task's first file.
+          val healthyWriter = createParquetWriter(schema, healthyPath, dictionaryEnabled)
+          (0 until 2000).foreach { i =>
+            val healthyRecord = new SimpleGroup(schema)
+            healthyRecord.add(0, i.toLong)
+            healthyRecord.add(1, i.toLong)
+            healthyWriter.write(healthyRecord)
+          }
+          healthyWriter.close()
+
           val footerReader = org.apache.parquet.hadoop.ParquetFileReader.open(
             org.apache.parquet.hadoop.util.HadoopInputFile
               .fromPath(path, spark.sessionState.newHadoopConf()))
@@ -339,20 +442,89 @@ abstract class ParquetReadSuite extends CometTestBase {
           }
 
           Seq(false, true).foreach { ansiEnabled =>
-            withSQLConf(SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString) {
-              readParquetFile(path.toString) { df =>
-                Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m").foreach { column =>
-                  val selected = df.select(column)
-                  assert(collect(selected.queryExecution.executedPlan) {
-                    case _: CometNativeScanExec => true
-                  }.nonEmpty)
+            withSQLConf(
+              SQLConf.ANSI_ENABLED.key -> ansiEnabled.toString,
+              SQLConf.FILES_MIN_PARTITION_NUM.key -> "1",
+              SQLConf.FILES_MAX_PARTITION_BYTES.key -> "134217728") {
+              readParquetFile(dir.toString) { df =>
+                val queries = Seq("ts", "ts_ntz", "s", "s.ts", "s.ts_ntz", "a", "m")
+                  .map(column => df.select(column)) :+ df.select("ts").repartition(1)
+                queries.foreach { selected =>
+                  val scans = collect(selected.queryExecution.executedPlan) {
+                    case scan: CometNativeScanExec => scan
+                  }
+                  assert(scans.nonEmpty)
+                  scans.foreach { scan =>
+                    assert(scan.perPartitionFilePaths.length == 1)
+                    assert(scan.perPartitionFilePaths.head.size == 2)
+                    assert(
+                      new java.net.URI(scan.perPartitionFilePaths.head.head) == healthyPath.toUri)
+                  }
 
-                  val (sparkError, cometError) = checkSparkAnswerMaybeThrows(selected)
-                  assert(Seq(sparkError, cometError).forall(_.exists(isOverflow)))
+                  val error = checkSparkError(selected, errorClass)
+                  assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+                  assert(error.getCause.getClass == classOf[ArithmeticException])
+                  assert(error.getCause.getMessage == "long overflow")
                 }
               }
             }
           }
+        }
+      }
+    }
+  }
+
+  test("TIMESTAMP_MILLIS overflow after the first batch of a file") {
+    // Spark 3.4 and 3.5 wrap a reader error in cannotReadFilesError only while FileScanRDD reads
+    // the first batch of a file split. A later batch throws from hasNext without the wrapper:
+    // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L126-L132
+    // https://github.com/apache/spark/blob/v3.5.9/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L285-L298
+    // Spark 4.x wraps every batch through attachFilePath, as Comet does on every version:
+    // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/datasources/FileScanRDD.scala#L133-L143
+    val errorClass =
+      if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
+
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "part-r-0.parquet")
+      val schema = MessageTypeParser.parseMessageType("""
+          |message root {
+          |  optional int64 ts(TIMESTAMP_MILLIS);
+          |}
+          |""".stripMargin)
+      val writer = createParquetWriter(schema, path)
+      (0 to 5000).foreach { i =>
+        val record = new SimpleGroup(schema)
+        record.add(0, if (i == 5000) 92233720368547758L else i.toLong)
+        writer.write(record)
+      }
+      writer.close()
+
+      // One row group read in 4096-row batches puts row 5000 in the second batch of both readers.
+      withSQLConf(
+        SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "4096",
+        CometConf.COMET_BATCH_SIZE.key -> "4096") {
+        readParquetFile(path.toString) { df =>
+          val error = if (isSpark40Plus) {
+            checkSparkError(df, errorClass)
+          } else {
+            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            // Spark's job failure is caused by the bare overflow. Comet's is caused by the
+            // file-read error, which adds one SparkException above the overflow.
+            val sparkCauses = causeChain(sparkError.getOrElse(fail("Spark did not fail")))
+            val cometCauses = causeChain(cometError.getOrElse(fail("Comet did not fail")))
+            assert(
+              sparkCauses.map(_.getClass) ==
+                Seq(classOf[SparkException], classOf[ArithmeticException]))
+            assert(sparkCauses.last.getMessage == "long overflow")
+            assert(cometCauses.map(_.getClass) ==
+              Seq(classOf[SparkException], classOf[SparkException], classOf[ArithmeticException]))
+            cometCauses(1).asInstanceOf[SparkException]
+          }
+          assert(error.getErrorClass == errorClass)
+          assert(new java.net.URI(error.getMessageParameters.get("path")) == path.toUri)
+          assert(error.getCause.getClass == classOf[ArithmeticException])
+          assert(error.getCause.getMessage == "long overflow")
         }
       }
     }
@@ -1822,6 +1994,86 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("native scan rejects TIMESTAMP(NANOS) read as timestamp like Spark") {
+    // Regression guard for https://github.com/apache/datafusion-comet/issues/7034. Spark's
+    // writer cannot produce TIMESTAMP(NANOS), so timestamp_nanos.parquet was written with
+    // PyArrow. Its leaves, in file order, are `id int`, then TIMESTAMP(NANOS) leaves that are
+    // UTC-adjusted (`t`, `s.t`, the elements of `a` and the values of `m`) or not (`u`, the
+    // elements of `b` and `v.element.n`), with non-NANOS leaves in between (`s.i`, `m.key`,
+    // `v.element.x`) and a trailing TIMESTAMP_MICROS `w`. `v` is a list_view in the file's
+    // ARROW:schema. In the row with id 1 every NANOS value is 2020-09-13 12:26:40.123456789 UTC
+    // and `w` is 2020-09-13 12:26:40.123456 UTC; the row with id 2 is null or empty. Spark has
+    // no updater that reads TIMESTAMP(NANOS) as timestamp or timestamp_ntz.
+    val path = getResourceParquetFilePath("test-data/timestamp_nanos.parquet")
+    val readTypes = Seq(
+      "t timestamp",
+      "u timestamp",
+      "s struct<t: timestamp>",
+      "a array<timestamp>",
+      "b array<timestamp>",
+      "m map<string, timestamp>",
+      "v array<struct<n: timestamp>>",
+      "t timestamp_ntz",
+      "u timestamp_ntz")
+    for (pushdown <- Seq(false, true)) {
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+        for (readType <- readTypes) {
+          val df = spark.read.schema(s"id int, $readType").parquet(path).where("id > 0")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
+            val chain = error.toSeq.flatMap(causeChain)
+            assert(
+              chain.exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+              s"$engine, $readType, row filter pushdown $pushdown: ${chain.mkString("\n")}")
+          }
+        }
+        // The TIMESTAMP(NANOS) leaves only fail the read when they are requested as timestamps.
+        // Spark reads them as bigint, which must still match with the footer check now running
+        // for this file. The other leaves must keep their own Parquet types: a miscount in the
+        // footer check's leaf marking would tag one of them as TIMESTAMP(NANOS) and fail them.
+        Seq(
+          "id int",
+          "id int, t bigint, s struct<t: bigint>, b array<bigint>, m map<string, bigint>",
+          "id int, w timestamp",
+          "id int, s struct<i: int>",
+          "id int, v array<struct<x: int>>").foreach { schema =>
+          checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(path).where("id > 0"))
+        }
+      }
+    }
+  }
+
+  test("native scan reads INT96 timestamps with row filter pushdown like Spark") {
+    // The row filter path checks conversions against the file's raw Arrow schema, where an
+    // INT96 leaf is still a nanosecond timestamp, so this guards against mistaking it for
+    // TIMESTAMP(NANOS) (#7034).
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      withSQLConf(SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+        spark
+          .sql("""
+            |SELECT 1 AS id, ts, named_struct('ts', ts) AS s, array(ts, NULL) AS a
+            |FROM VALUES (TIMESTAMP'2020-01-01 01:02:03.123456') AS v(ts)
+            |UNION ALL SELECT 2, NULL, NULL, NULL
+            |""".stripMargin)
+          .coalesce(1)
+          .write
+          .parquet(path)
+      }
+      for (pushdown <- Seq(false, true)) {
+        withSQLConf(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> pushdown.toString) {
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0"))
+          checkSparkAnswerAndOperator(spark.read.parquet(path).where("id > 0").select("ts"))
+        }
+      }
+    }
+  }
+
   test("nested schema evolution follows Spark's per-version widening rules") {
     // Companion to "schema evolution": `INT32 -> bigint` inside a struct is gated by the same
     // per-Spark-version constant as the top level (see ShimCometConf), and accepted nested
@@ -2253,6 +2505,102 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  Seq(false, true).foreach { arrayOfStruct =>
+    val shape = if (arrayOfStruct) "array of struct" else "struct"
+    test(s"pruned Parquet field ids follow the scan schema for a renamed root $shape") {
+      val inner = new StructType()
+        .add("a", IntegerType, true, withId(11))
+        .add("b", IntegerType, true, withId(12))
+      val dataType = if (arrayOfStruct) ArrayType(inner) else inner
+      val writeSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("original", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val readSchema = new StructType()
+        .add("id", IntegerType, true, withId(2))
+        .add("renamed", dataType, true, withId(1))
+        .add("part", IntegerType)
+      val nestedRows = if (arrayOfStruct) {
+        Seq(
+          Row(Seq(Row(1, 10), null, Row(null, 30))),
+          Row(Seq(Row(2, 20))),
+          Row(Seq.empty),
+          Row(null),
+          Row(Seq(Row(3, 40))))
+      } else {
+        Seq(Row(Row(1, 10)), Row(Row(2, 20)), Row(Row(null, 30)), Row(null), Row(Row(3, 40)))
+      }
+      val rows = nestedRows.zipWithIndex.map { case (row, id) => Row(id, row.get(0), id % 2) }
+      val projected = if (arrayOfStruct) {
+        Seq(Row(Seq(1, null, null)), Row(Seq(2)), Row(Seq.empty), Row(null), Row(Seq(3)))
+      } else {
+        Seq(Row(1), Row(2), Row(null), Row(null), Row(3))
+      }
+      val predicate = if (arrayOfStruct) "array_contains(renamed.a, 2)" else "renamed.a > 1"
+      val filtered = if (arrayOfStruct) Seq(Row(Seq(2))) else Seq(Row(2), Row(3))
+      val filteredIds = if (arrayOfStruct) Seq(Row(1, 1)) else Seq(Row(1, 1), Row(4, 0))
+      val nonNullCount = if (arrayOfStruct) 4L else 3L
+
+      withSQLConf(
+        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
+        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+        withTempPath { dir =>
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), writeSchema)
+            .write
+            .partitionBy("part")
+            .parquet(dir.getCanonicalPath)
+          Seq(false, true).foreach { pruning =>
+            withSQLConf(SQLConf.NESTED_SCHEMA_PRUNING_ENABLED.key -> pruning.toString) {
+              withClue(s"nested schema pruning $pruning: ") {
+                // Spark 3.4 keeps the root id in requiredSchema. From 3.5, pruning removes it
+                // while scan.output still carries it. With no id, the renamed root is absent
+                // from the file by name, so Spark reads null even though its output has an id.
+                val hasRootId = !pruning || !isSpark35Plus
+                def read(): DataFrame =
+                  spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+                def checkRead(query: => DataFrame, expected: Seq[Row]): Unit = {
+                  val (_, plan) = checkSparkAnswerAndOperator(query)
+                  val scans = collect(plan) { case scan: CometNativeScanExec => scan }
+                  assert(scans.size == 1, s"expected one CometNativeScanExec:\n$plan")
+                  val root = scans.head.requiredSchema("renamed")
+                  assert(root.metadata.contains(ParquetUtils.FIELD_ID_METADATA_KEY) == hasRootId)
+                  val requestedInner = root.dataType match {
+                    case ArrayType(elementType: StructType, _) => elementType
+                    case struct: StructType => struct
+                    case other => fail(s"unexpected root type: $other")
+                  }
+                  assert(
+                    requestedInner.fieldNames.toSeq == (if (pruning) Seq("a") else Seq("a", "b")))
+                  checkAnswer(query, expected)
+                }
+
+                checkRead(
+                  read().select("renamed.a"),
+                  if (hasRootId) projected else Seq.fill(rows.size)(Row(null)))
+                checkRead(
+                  read().where(predicate).select("renamed.a"),
+                  if (hasRootId) filtered else Seq.empty)
+                // A filter-only nested root must not shift the data or partition outputs.
+                checkRead(
+                  read().where(predicate).select("id", "part"),
+                  if (hasRootId) filteredIds else Seq.empty)
+                checkRead(
+                  read().selectExpr("count(renamed.a)"),
+                  Seq(Row(if (hasRootId) nonNullCount else 0L)))
+                if (pruning) {
+                  withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "false") {
+                    checkRead(read().select("renamed.a"), Seq.fill(rows.size)(Row(null)))
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   // The two shapes of #6192. A nested column dropped and added back under its old name gets a
   // fresh field id, so the file holds `struct<x (id 1), y (id 2)>` while the table reads
   // `struct<x (id 3), y (id 2)>`, and a swapped pair reads `struct<x (id 2), y (id 1)>`. The
@@ -2594,6 +2942,114 @@ abstract class ParquetReadSuite extends CometTestBase {
           .parquet(dir.getCanonicalPath)
 
         checkSparkAnswerAndOperator(spark.read.schema(schema).parquet(dir.getCanonicalPath))
+      }
+    }
+  }
+
+  // Spark writes timestamps as INT96 by default, and the native scan's INT96 coercion rebuilds
+  // struct, list and map fields, which must keep their metadata or an id on the container is
+  // lost and the column reads as nulls. The read renames the column so only its id matches it.
+  private val int96Ts = Timestamp.valueOf("2020-01-01 00:00:00")
+  private val int96Inner = new StructType().add("a", IntegerType).add("ts", TimestampType)
+
+  Seq[(String, DataType, Any)](
+    ("struct", int96Inner, Row(1, int96Ts)),
+    ("list", ArrayType(int96Inner), Seq(Row(1, int96Ts), Row(2, int96Ts))),
+    ("map", MapType(StringType, int96Inner), Map("k" -> Row(1, int96Ts)))).foreach {
+    case (label, dataType, value) =>
+      test(s"an id on a $label column holding an INT96 timestamp matches it natively") {
+        withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+          withTempPath { dir =>
+            val rows = Seq(Row(value), Row(null))
+            withSQLConf(
+              CometConf.COMET_ENABLED.key -> "false",
+              SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+              spark
+                .createDataFrame(
+                  spark.sparkContext.parallelize(rows),
+                  new StructType().add("c", dataType, true, withId(1)))
+                .write
+                .parquet(dir.getCanonicalPath)
+            }
+            val readSchema = new StructType().add("renamed", dataType, true, withId(1))
+            val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+            checkSparkAnswerAndOperator(df)
+            checkAnswer(df, rows)
+          }
+        }
+      }
+  }
+
+  // Ids on a struct below a struct or a list, and on its INT96 leaf, match renamed fields.
+  // Spark's vectorized reader before 4.0 rejects the renamed struct below the list, so the
+  // comparison with Spark runs from 4.0 on and the pinned rows hold everywhere.
+  test("an id on a struct nested in a struct or list with an INT96 leaf matches it natively") {
+    def schema(innerName: String, tsName: String): StructType = {
+      def inner(innerId: Int, tsId: Int): StructType = new StructType().add(
+        innerName,
+        new StructType().add("a", IntegerType).add(tsName, TimestampType, true, withId(tsId)),
+        true,
+        withId(innerId))
+      new StructType().add("s", inner(2, 3)).add("l", ArrayType(inner(4, 5)))
+    }
+    val rows = Seq(
+      Row(Row(Row(1, int96Ts)), Seq(Row(Row(2, int96Ts)), Row(Row(3, int96Ts)))),
+      Row(Row(null), Seq(Row(Row(4, null)), null)))
+
+    withSQLConf(SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .createDataFrame(spark.sparkContext.parallelize(rows), schema("inner", "ts"))
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val df = spark.read
+          .schema(schema("renamed_inner", "renamed_ts"))
+          .parquet(dir.getCanonicalPath)
+        if (isSpark40Plus) {
+          checkSparkAnswerAndOperator(df)
+        }
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty,
+          s"expected CometNativeScanExec in the plan:\n$plan")
+        checkAnswer(df, rows)
+      }
+    }
+  }
+
+  // A Variant column is a struct of value and metadata in the Arrow schema, so the same coercion
+  // rebuilds it when the file holds an INT96 column anywhere, and its id has to survive.
+  test("an id on a Variant column next to an INT96 timestamp matches it natively") {
+    assume(Utils.variantType.isDefined, "VariantType requires Spark 4.0+")
+    withSQLConf(
+      SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
+      "spark.sql.variant.allowReadingShredded" -> "true",
+      "spark.sql.variant.pushVariantIntoScan" -> "false") {
+      withTempPath { dir =>
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.PARQUET_OUTPUT_TIMESTAMP_TYPE.key -> "INT96") {
+          spark
+            .sql("""SELECT parse_json(j) AS v, t AS ts FROM VALUES
+              |  ('{"a":1}', TIMESTAMP'2020-01-01 00:00:00'), (NULL, NULL) AS input(j, t)
+              |""".stripMargin)
+            .select(col("v").as("v", withId(1)), col("ts"))
+            .coalesce(1)
+            .write
+            .parquet(dir.getCanonicalPath)
+        }
+        val readSchema = new StructType()
+          .add("renamed", Utils.variantType.get, true, withId(1))
+          .add("ts", TimestampType)
+        val df = spark.read.schema(readSchema).parquet(dir.getCanonicalPath)
+        checkSparkAnswerAndOperator(df)
+        checkAnswer(
+          df.selectExpr("to_json(renamed)", "ts"),
+          Row("""{"a":1}""", int96Ts) :: Row(null, null) :: Nil)
       }
     }
   }

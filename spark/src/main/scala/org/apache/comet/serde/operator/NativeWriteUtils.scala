@@ -21,7 +21,11 @@ package org.apache.comet.serde.operator
 
 import java.util.Locale
 
+import scala.util.Try
+
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.lib.output.PathOutputCommitterFactory
 import org.apache.parquet.hadoop.ParquetOutputFormat
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
@@ -141,12 +145,13 @@ object NativeWriteUtils {
    * byte for byte (see [[hdfsPathDivergence]] for why it may not):
    *
    *   - the destination directory, and
-   *   - `fileNamePrefix`, the basename every file name is built from. On Spark 4.0+ that is
-   *     `mapreduce.output.basename`, which `HadoopMapReduceCommitProtocol.getFilename`
-   *     interpolates into `<basename>-<split>-<jobId>`; on 3.x Comet names the files itself and
-   *     the basename is always the literal `part`. A basename holding `?` or `#` is the dangerous
-   *     one: the native URL parser truncates there, so *every* task writes a file with the same
-   *     truncated name and they overwrite each other during commit.
+   *   - `fileNamePrefix`, the basename every file name is built from. Spark 4.0+
+   *     `HadoopMapReduceCommitProtocol.getFilename` reads `mapreduce.output.basename` and
+   *     interpolates it into `<basename>-<split>-<jobId>`; Spark 3.x hardcodes `part` instead.
+   *     Both native writers take the exact file name from the commit protocol. A basename holding
+   *     `?` or `#` is dangerous on 4.0+: the native URL parser truncates there, so every task
+   *     writes a file with the same truncated name and they overwrite each other during commit.
+   *     Custom committer paths are checked by [[checkNativeWriteDestination]].
    *
    * The basename is checked by running [[hdfsPathDivergence]] over the path it produces rather
    * than over the name alone. Everything else `getFilename` interpolates -- the split number, the
@@ -185,6 +190,132 @@ object NativeWriteUtils {
           s"on HDFS is not the one the commit protocol chose ($shown). Set " +
           "spark.comet.write.parquet.enabled=false to write this table with Spark.")
     }
+
+  /**
+   * Whether the native writer creates the file at `filePath` itself, which it does for local and
+   * HDFS files. Any other file is created through Hadoop's FileSystem API and the native writer
+   * only writes its bytes, see [[org.apache.comet.parquet.HadoopFileOutput]]. That is always
+   * correct, whatever the file system and whatever the committer expects of it, which is why this
+   * is decided per task on the path the commit protocol actually returned rather than at
+   * planning.
+   */
+  def nativeWriterCreatesFile(filePath: String): Boolean =
+    filePath.startsWith("file:") || filePath.startsWith("hdfs:")
+
+  /**
+   * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
+   * `None` when it can. Local and HDFS files are created natively. The files of a write that
+   * S3A's magic committer commits are created through S3A and written natively (see
+   * [[org.apache.comet.parquet.HadoopFileOutput]]).
+   *
+   * That is a matter of scope, not of correctness: any file, including any other S3A file, could
+   * be written the same way. Other S3 writes stay on Spark until the cost of streaming a file
+   * through S3A has been measured against uploading it natively (#6944).
+   *
+   * @param hadoopConf
+   *   the write's Hadoop configuration, only built for a destination the native writer does not
+   *   create files in
+   */
+  def unsupportedFileSystem(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: => Configuration): Option[String] =
+    if (nativeWriterCreatesFile(outputPath) ||
+      usesS3AMagicCommitter(outputPath, commitProtocolClass, hadoopConf)) {
+      None
+    } else {
+      Some("Supported output filesystems: local, HDFS, and S3 with the S3A magic committer")
+    }
+
+  /** Spark's commit protocol for Hadoop's `PathOutputCommitter`s, in spark-hadoop-cloud. */
+  val PathOutputCommitProtocolClass: String =
+    "org.apache.spark.internal.io.cloud.PathOutputCommitProtocol"
+
+  /**
+   * Spark's Parquet output committer that delegates to a `PathOutputCommitter`, in
+   * spark-hadoop-cloud.
+   */
+  val BindingParquetOutputCommitterClass: String =
+    "org.apache.spark.internal.io.cloud.BindingParquetOutputCommitter"
+
+  /** S3A's committer factory that always creates the magic committer. */
+  private val MagicCommitterFactoryClass =
+    "org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory"
+
+  /** S3A's committer factory that creates the committer `fs.s3a.committer.name` names. */
+  private val S3ACommitterFactoryClass = "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+
+  /**
+   * Whether S3A's magic committer commits a write to `outputPath`.
+   *
+   * Spark reaches Hadoop's committer factories through one of two bindings in spark-hadoop-cloud.
+   * Spark 4.1 configures both whenever that module is on the classpath (SPARK-47618), and earlier
+   * versions for a bucket that sets `fs.s3a.bucket.<bucket>.committer.magic.enabled`:
+   *
+   *   - the commit protocol `PathOutputCommitProtocol`, or a subclass of it, or
+   *   - `BindingParquetOutputCommitter` as `spark.sql.parquet.output.committer.class`, under a
+   *     commit protocol that instantiates that class, as Spark's default one does.
+   *
+   * Either asks Hadoop's `PathOutputCommitterFactory` for the committer. Its factory is
+   * `mapreduce.outputcommitter.factory.class` when set, else
+   * `mapreduce.outputcommitter.factory.scheme.<scheme>`. The committer is the magic committer
+   * when that factory is `MagicS3GuardCommitterFactory`, or when it is `S3ACommitterFactory` and
+   * the committer it is asked for is `magic`: `fs.s3a.committer.name` in the job's configuration.
+   * `S3ACommitterFactory` reads the file system's configuration, where a bucket's own
+   * `fs.s3a.bucket.<bucket>.committer.name` applies, only for a job that sets no name. Hadoop's
+   * `core-default.xml` sets `file`, so a Spark job always has one and a bucket's name never wins.
+   *
+   * Only planning asks, to decide whether a write is in scope for the native writer. A wrong
+   * answer cannot misplace data, because each task writes the path the committer actually
+   * returns.
+   *
+   * @param commitProtocolClass
+   *   the write's `spark.sql.sources.commitProtocolClass`
+   * @param hadoopConf
+   *   the write's Hadoop configuration, which carries `spark.sql.parquet.output.committer.class`
+   *   as Spark's Parquet writer reads it
+   */
+  def usesS3AMagicCommitter(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: Configuration): Boolean = {
+    val outputCommitterClass =
+      hadoopConf.getTrimmed(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key, "")
+    val asksCommitterFactory = isPathOutputCommitProtocol(commitProtocolClass) ||
+      (commitProtocolClass == SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString &&
+        outputCommitterClass == BindingParquetOutputCommitterClass)
+    val uri = new Path(outputPath).toUri
+    if (!asksCommitterFactory || uri.getScheme == null) {
+      return false
+    }
+
+    val factory = Seq(
+      PathOutputCommitterFactory.COMMITTER_FACTORY_CLASS,
+      PathOutputCommitterFactory.COMMITTER_FACTORY_SCHEME_PATTERN.format(uri.getScheme))
+      .map(key => hadoopConf.getTrimmed(key, ""))
+      .find(_.nonEmpty)
+    factory match {
+      case Some(MagicCommitterFactoryClass) => true
+      case Some(S3ACommitterFactoryClass) =>
+        Option(hadoopConf.getTrimmed("fs.s3a.committer.name")).contains("magic")
+      case _ => false
+    }
+  }
+
+  /**
+   * Whether `commitProtocolClass` is `PathOutputCommitProtocol` or a subclass of it. A subclass
+   * asks the committer factory too unless it overrides how its committer is created, and even
+   * then each task writes the path its committer returns.
+   */
+  private def isPathOutputCommitProtocol(commitProtocolClass: String): Boolean =
+    commitProtocolClass == PathOutputCommitProtocolClass || Try {
+      val loader = Thread.currentThread().getContextClassLoader
+      // scalastyle:off classforname
+      Class
+        .forName(PathOutputCommitProtocolClass, false, loader)
+        .isAssignableFrom(Class.forName(commitProtocolClass, false, loader))
+      // scalastyle:on classforname
+    }.getOrElse(false)
 
   /** Compression codecs Comet's native Parquet writer can produce. */
   val supportedCompressionCodecs: Set[String] =

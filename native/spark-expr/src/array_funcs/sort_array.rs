@@ -21,6 +21,7 @@ use std::sync::Arc;
 use super::with_values;
 use crate::float_semantics::{
     compare_floats, compare_floats_java, float_gt, float_lt, spark_comparator,
+    spark_comparator_ignoring_nulls,
 };
 use arrow::array::{
     Array, ArrayRef, AsArray, BooleanBufferBuilder, ListArray, PrimitiveArray, UInt32Array,
@@ -106,6 +107,66 @@ fn constant(value: &ColumnarValue) -> Option<bool> {
     match value {
         ColumnarValue::Scalar(ScalarValue::Boolean(Some(value))) => Some(*value),
         _ => None,
+    }
+}
+
+/// Spark's default `array_sort` comparator. It puts null elements last, but compares nulls
+/// inside arrays and structs below non-null values.
+#[derive(Debug, Hash, Eq, PartialEq)]
+pub struct SparkArraySort {
+    signature: Signature,
+}
+
+impl Default for SparkArraySort {
+    fn default() -> Self {
+        Self {
+            signature: Signature::any(1, Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for SparkArraySort {
+    fn name(&self) -> &str {
+        "spark_array_sort"
+    }
+
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+
+    fn return_type(&self, arg_types: &[DataType]) -> Result<DataType> {
+        Ok(arg_types[0].clone())
+    }
+
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let [array] = take_function_args(self.name(), &args.args)?;
+        let is_scalar = matches!(array, ColumnarValue::Scalar(_));
+        let rows = if is_scalar { 1 } else { args.number_rows };
+        let array = array.to_array(rows)?;
+        let Some(list) = array.as_list_opt::<i32>() else {
+            return exec_err!("spark_array_sort takes a list, got {}", array.data_type());
+        };
+        let values = list.values();
+        let compare = spark_comparator_ignoring_nulls(values.as_ref(), values.as_ref())?;
+        let result = if let Some(nulls) = values.nulls().filter(|nulls| nulls.null_count() > 0) {
+            sort_by(list, true, |a, b| {
+                match (nulls.is_null(a), nulls.is_null(b)) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Greater,
+                    (false, true) => Ordering::Less,
+                    (false, false) => compare(a, b),
+                }
+            })?
+        } else {
+            sort_by(list, true, compare)?
+        };
+        if is_scalar {
+            Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                &result, 0,
+            )?))
+        } else {
+            Ok(ColumnarValue::Array(result))
+        }
     }
 }
 
@@ -298,9 +359,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::{bits, first_row_field_bits, list, EDGE_VALUES};
+    use super::super::test_util::{bits, first_row_field_bits, list};
     use super::*;
-    use crate::float_semantics::NEGATIVE_NAN;
+    use crate::float_semantics::{EDGE_VALUES, NEGATIVE_NAN};
     use arrow::array::{Float32Array, Float64Array, StructArray};
     use arrow::datatypes::{Field, Fields};
     use datafusion::config::ConfigOptions;
@@ -321,6 +382,37 @@ mod tests {
                 config_options: Arc::new(ConfigOptions::default()),
             })?
             .into_array(rows)
+    }
+
+    fn invoke_default(array: ArrayRef) -> Result<ArrayRef> {
+        let rows = array.len();
+        let return_field = Arc::new(Field::new("result", array.data_type().clone(), true));
+        SparkArraySort::default()
+            .invoke_with_args(ScalarFunctionArgs {
+                args: vec![ColumnarValue::Array(array)],
+                arg_fields: vec![],
+                number_rows: rows,
+                return_field,
+                config_options: Arc::new(ConfigOptions::default()),
+            })?
+            .into_array(rows)
+    }
+
+    #[test]
+    fn default_array_sort_puts_null_elements_last_and_keeps_null_rows() -> Result<()> {
+        let rows = [
+            Some(vec![Some(2.0), None, Some(1.0)]),
+            None,
+            Some(vec![None, Some(-0.0), Some(0.0)]),
+        ];
+        let sorted = invoke_default(list(&rows))?;
+        let expected = list(&[
+            Some(vec![Some(1.0), Some(2.0), None]),
+            None,
+            Some(vec![Some(-0.0), Some(0.0), None]),
+        ]);
+        assert_eq!(bits(&sorted), bits(&expected));
+        Ok(())
     }
 
     fn row_bits(row: &[Option<f64>]) -> Vec<Option<u64>> {

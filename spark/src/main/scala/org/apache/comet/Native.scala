@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param memoryLimit
+   *   the most that the task's native memory pool may reserve, see
+   *   `CometExecIterator.getMemoryConfig`.
+   * @param offHeapSize
+   *   `spark.memory.offHeap.size`, which the `fair_unified` pool shares among the tasks running
+   *   native plans.
    * @param taskContext
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
@@ -72,6 +78,7 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
@@ -91,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -139,7 +160,7 @@ class Native extends NativeBase {
   @native def releasePlan(plan: Long): Unit
 
   /**
-   * Used by Comet shuffle external sorter to write sorted records to disk.
+   * Used by the bypass merge sort shuffle writer to write one partition's records to disk.
    *
    * @param addresses
    *   the array of addresses of Spark unsafe rows.
@@ -167,6 +188,8 @@ class Native extends NativeBase {
    *   the compression codec
    * @param compressionLevel
    *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
@@ -183,18 +206,84 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
+      offsetsAsLengths: Boolean,
       tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 
   /**
-   * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
+   * Used by Comet shuffle external sorter to write one sorted spill to disk: the records of every
+   * partition, in partition order, in one call.
+   *
+   * @param recordPointersAddr
+   *   the address of the sorter's packed record pointers, sorted by partition id.
+   * @param numRecords
+   *   the number of record pointers.
+   * @param pageAddresses
+   *   the base address of each page holding records, indexed by the page number in the record
+   *   pointers. Pages the sorter does not hold are 0.
+   * @param uaoSize
+   *   the size of the record length stored before each record, `UnsafeAlignedOffset.getUaoSize`.
+   * @param datatypes
+   *   the datatypes of fields in Spark unsafe rows.
+   * @param file
+   *   the file path to append to.
+   * @param preferDictionaryRatio
+   *   as in `writeSortedFileNative`.
+   * @param batchSize
+   *   the maximum number of rows in each batch written.
+   * @param checksumAlgo
+   *   the checksum algorithm to use: 0 for CRC32, 1 for Adler32, 2 for CRC32C, or -1 for none.
+   * @param partitionChecksums
+   *   each partition's checksum, updated for every partition written. `Long.MIN_VALUE` is a
+   *   checksum not computed yet. Empty without a checksum.
+   * @param partitionLengths
+   *   set to the number of bytes written for each partition.
+   * @param compressionCodec
+   *   the compression codec
+   * @param compressionLevel
+   *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
+   * @return
+   *   the time spent encoding and compressing, in nanoseconds
+   */
+  // scalastyle:off
+  @native def writeSortedPartitionsNative(
+      recordPointersAddr: Long,
+      numRecords: Int,
+      pageAddresses: Array[Long],
+      uaoSize: Int,
+      datatypes: Array[Array[Byte]],
+      file: String,
+      preferDictionaryRatio: Double,
+      batchSize: Int,
+      checksumAlgo: Int,
+      partitionChecksums: Array[Long],
+      partitionLengths: Array[Long],
+      compressionCodec: String,
+      compressionLevel: Int,
+      offsetsAsLengths: Boolean,
+      tracingEnabled: Boolean): Long
+  // scalastyle:on
+
+  /**
+   * Sorts the packed record pointers of Spark unsafe rows in place by partition id, keeping the
+   * order of the pointers within a partition. Used by Comet shuffle external sorter.
    *
    * @param addr
-   *   the address of the array of compacted partition ids.
+   *   the address of the array of packed record pointers.
    * @param size
-   *   the size of the array.
+   *   the number of records, at the start of the array.
+   * @param capacity
+   *   the length of the array in longs. The sort uses the `size` longs after the records as
+   *   scratch space, so it must be at least `2 * size`, which `ShuffleInMemorySorter` keeps free
+   *   when it sorts with radix sort.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
+  @native def sortRowPartitionsNative(
+      addr: Long,
+      size: Long,
+      capacity: Long,
+      tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.

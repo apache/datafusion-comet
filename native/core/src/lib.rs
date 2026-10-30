@@ -30,7 +30,8 @@ extern crate core;
 extern crate datafusion_comet_jni_bridge;
 
 use jni::{
-    objects::{JClass, JString},
+    objects::{JClass, JObjectArray, JString},
+    sys::{jboolean, jstring, JNI_FALSE},
     EnvUnowned,
 };
 use log::info;
@@ -40,6 +41,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
     Config,
 };
+use std::collections::HashMap;
 
 // Re-export from jvm-bridge crate for internal use
 pub use datafusion_comet_jni_bridge::errors;
@@ -52,8 +54,12 @@ pub mod jvm_bridge {
 
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
+use crate::cloud::s3::credential_bridge::AccessMode;
+use crate::execution::operators::iceberg_common::builtin_storage_schemes;
+
 pub mod alloc_accounting;
 pub mod cloud;
+pub mod comet_native_udf_bridge;
 pub mod execution;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
@@ -128,26 +134,23 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
     log_conf_path: JString,
     log_level: JString,
 ) {
-    // Initialize the error handling to capture panic backtraces
+    // Install the panic hook, which logs each native panic with its backtrace
     errors::init();
 
     try_unwrap_or_throw(&e, |env| {
         let path: String = log_conf_path.try_to_string(env)?;
 
-        // empty path means there is no custom log4rs config file provided, so fallback to use
-        // the default configuration
-        let log_config = if path.is_empty() {
-            let log_level: String = match log_level.try_to_string(env) {
+        // The log level only applies without a custom log4rs config file.
+        let log_level: String = if path.is_empty() {
+            match log_level.try_to_string(env) {
                 Ok(level) => level,
-                Err(_) => "info".parse().unwrap(),
-            };
-            default_logger_config(&log_level)
+                Err(_) => "info".to_string(),
+            }
         } else {
-            load_config_file(path, Deserializers::default())
-                .map_err(|err| CometError::Config(err.to_string()))
+            String::new()
         };
 
-        let _ = log4rs::init_config(log_config?).map_err(|err| CometError::Config(err.to_string()));
+        init_logging(&path, &log_level)?;
 
         // Initialize the global Java VM
         let java_vm = env.get_java_vm()?;
@@ -157,6 +160,51 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_init(
         info!("Comet native library version {comet_version} initialized");
         Ok(())
     })
+}
+
+/// Initializes logging from the log4rs config file at `log_conf_path`, or, when it is empty, to the
+/// console at `log_level`. Logging can only be initialized once per process; later calls keep the
+/// first configuration. Core of `NativeBase.init`, except for capturing the `JavaVM`.
+pub fn init_logging(log_conf_path: &str, log_level: &str) -> CometResult<()> {
+    let _ = log4rs::init_config(logger_config(log_conf_path, log_level)?)
+        .map_err(|err| CometError::Config(err.to_string()));
+    Ok(())
+}
+
+/// The log4rs config [`init_logging`] installs.
+fn logger_config(log_conf_path: &str, log_level: &str) -> CometResult<Config> {
+    // empty path means there is no custom log4rs config file provided, so fallback to use
+    // the default configuration
+    if log_conf_path.is_empty() {
+        default_logger_config(log_level)
+    } else {
+        load_config_file(log_conf_path, Deserializers::default())
+            .map_err(|err| CometError::Config(err.to_string()))
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
+    _: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jboolean {
+    cfg!(feature = "python-udf")
+}
+
+/// JNI: the `major.minor` version of the embedded Python interpreter, or an empty string when
+/// libcomet was built without the `python-udf` feature. The interpreter is the `libpython` that
+/// libcomet was linked against, so its version is fixed when libcomet is built, while PySpark's
+/// workers may run another Python.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_nativePythonUdfVersion(
+    env: EnvUnowned,
+    _: JClass,
+) -> jni::sys::jstring {
+    #[cfg(feature = "python-udf")]
+    let version = execution::python_udf::embedded_python_version();
+    #[cfg(not(feature = "python-udf"))]
+    let version = String::new();
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(version)?.into_raw()))
 }
 
 #[no_mangle]
@@ -242,8 +290,60 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_getTzdataVersion(
     env: EnvUnowned,
     _: JClass,
 ) -> jni::sys::jstring {
+    try_unwrap_or_throw(&env, |env| Ok(env.new_string(tzdata_version())?.into_raw()))
+}
+
+/// The version of the IANA timezone database compiled into libcomet. Core of
+/// `NativeBase.getTzdataVersion`.
+pub fn tzdata_version() -> &'static str {
+    chrono_tz::IANA_TZDB_VERSION
+}
+
+/// JNI: the comma-joined built-in storage schemes the native Iceberg scan (`for_write` false) or
+/// write (`for_write` true) path admits. This is the source of truth the JVM read and write gates
+/// load. Opt-in S3-compliant alias schemes are not answered here; the JVM adds them from catalog
+/// properties.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
+    env: EnvUnowned,
+    _: JClass,
+    for_write: jboolean,
+) -> jstring {
     try_unwrap_or_throw(&env, |env| {
-        Ok(env.new_string(chrono_tz::IANA_TZDB_VERSION)?.into_raw())
+        let access_mode = if for_write != JNI_FALSE {
+            AccessMode::Write
+        } else {
+            AccessMode::Read
+        };
+        let joined = builtin_storage_schemes(access_mode).join(",");
+        Ok(env.new_string(joined)?.into_raw())
+    })
+}
+
+/// JNI: why the native scan cannot build its ABFS store for `url` from the object store options
+/// `keys`/`values`, or null when it can. The driver asks this when it plans a scan whose ABFS
+/// authentication resolved, so a store native would reject falls back to Spark instead of every
+/// task failing. See `azure::store_error`.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_abfsStoreError(
+    env: EnvUnowned,
+    _: JClass,
+    url: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) -> jstring {
+    try_unwrap_or_throw(&env, |env| {
+        let url: String = url.try_to_string(env)?;
+        let mut configs = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            configs.insert(key, value);
+        }
+        match parquet::objectstore::azure::store_error(&url, &configs) {
+            Some(message) => Ok(env.new_string(message)?.into_raw()),
+            None => Ok(std::ptr::null_mut()),
+        }
     })
 }
 
@@ -277,6 +377,24 @@ mod tests {
             cfg!(feature = "hdfs-opendal")
         );
         assert!(!is_feature_enabled("no-such-feature"));
+    }
+
+    #[test]
+    fn logger_config_from_level_or_file() {
+        assert!(logger_config("", "debug").is_ok());
+        assert!(matches!(
+            logger_config("", "not-a-level"),
+            Err(CometError::Config(_))
+        ));
+        assert!(matches!(
+            logger_config("/no/such/log4rs.yaml", "info"),
+            Err(CometError::Config(_))
+        ));
+    }
+
+    #[test]
+    fn tzdata_version_is_set() {
+        assert!(!tzdata_version().is_empty());
     }
 
     #[test]

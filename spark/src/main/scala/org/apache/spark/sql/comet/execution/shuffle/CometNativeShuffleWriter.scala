@@ -328,6 +328,8 @@ class CometNativeShuffleWriter[K, V](
       shuffleWriterBuilder.setCodec(CompressionCodec.None)
     }
     shuffleWriterBuilder.setCompressionLevel(CometConf.COMET_SHUFFLE_COMPRESSION_ZSTD_LEVEL.get())
+    shuffleWriterBuilder.setOffsetsAsLengths(
+      CometConf.COMET_SHUFFLE_COMPRESSION_OFFSETS_AS_LENGTHS.get())
     shuffleWriterBuilder.setWriteBufferSize(
       CometConf.COMET_SHUFFLE_NATIVE_WRITE_BUFFER_SIZE.get().min(Int.MaxValue).toInt)
     shuffleWriterBuilder.setMaxBufferBytes(CometConf.COMET_SHUFFLE_NATIVE_MAX_BUFFER_BYTES.get())
@@ -343,8 +345,13 @@ class CometNativeShuffleWriter[K, V](
         val partitioning = PartitioningOuterClass.HashPartition.newBuilder()
         partitioning.setNumPartitions(effectivePartitionCount)
 
-        val partitionExprs = hashPartitioning.expressions
-          .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+        // Spark evaluates the keys in one projection, whose subexpression elimination sees what
+        // they share (see QueryPlanSerde.canShortCircuitNulls)
+        val partitionExprs =
+          QueryPlanSerde.withSharedSubexpressions(hashPartitioning.expressions) {
+            hashPartitioning.expressions
+              .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          }
 
         if (partitionExprs.length != hashPartitioning.expressions.length) {
           throw new UnsupportedOperationException(
@@ -377,8 +384,12 @@ class CometNativeShuffleWriter[K, V](
         }
 
         {
-          val orderingExprs = rangePartitioning.ordering
-            .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+          // As for hash partitioning, Spark evaluates the keys in one projection
+          val orderingExprs =
+            QueryPlanSerde.withSharedSubexpressions(rangePartitioning.ordering.map(_.child)) {
+              rangePartitioning.ordering
+                .flatMap(e => QueryPlanSerde.exprToProto(e, outputAttributes))
+            }
           if (orderingExprs.length != rangePartitioning.ordering.length) {
             throw new UnsupportedOperationException(
               s"Partitioning $rangePartitioning is not supported.")

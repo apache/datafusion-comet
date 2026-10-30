@@ -150,6 +150,32 @@ source releases, or from the latest code in the GitHub repository.
 
 [Building from source]: source.md
 
+## Native library extraction directory
+
+Comet extracts its bundled native library into a private `0700` directory under the JVM's
+`java.io.tmpdir`, creates the library exclusively, and makes the completed file owner-readable
+only before loading it. This keeps extraction within Spark's configured temporary storage,
+including YARN container directories and Kubernetes `emptyDir` volumes.
+
+If that storage is mounted `noexec`, set the JVM system property `comet.native.workdir` to an
+existing writable directory on an executable filesystem. Configure it for both driver and executor
+JVMs, for example:
+
+```shell
+--conf 'spark.driver.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp' \
+--conf 'spark.executor.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp'
+```
+
+The chosen directory and its parents must be controlled by the application or trusted administrators.
+The loader relies on this deployment boundary rather than rejecting managed directories based on
+ancestor ownership or sticky-bit permissions. It does not silently switch to other temporary roots
+if the configured location cannot be used.
+
+Failed extractions are removed immediately, and successful extractions are removed when the JVM
+exits normally. Forced termination such as `SIGKILL` cannot run JVM cleanup. The container manager
+or deployment temporary-file cleanup policy must then remove leftover directories, including any
+custom work directory, after the owning JVMs have stopped.
+
 ## Deploying to Kubernetes
 
 See the [Comet Kubernetes Guide](kubernetes.md) guide.
@@ -269,8 +295,9 @@ If the application uses Kryo (`spark.serializer=org.apache.spark.serializer.Kryo
 
 Without it, any query that uses Comet's native broadcast exchange, which is enabled by default,
 fails with Kryo's "Class is not registered" error, for example on the first broadcast hash join.
-The [in-memory cache](in-memory-cache.md#kryo) needs the same registrator. Set it before the
-`SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so Comet cannot
-add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an application with
-its own registrator can list both. Comet logs a warning at startup when Kryo requires registration
-and this registrator is missing.
+Comet's [in-memory cache](in-memory-cache.md#kryo) format needs the same registrations, and while
+Kryo has not registered Comet's cached batch, Comet's plugin keeps caches in Spark's format. Set it
+before the `SparkContext` is created: `KryoSerializer` reads it before Comet's plugin runs, so
+Comet cannot add it for you. `spark.kryo.registrator` accepts a comma-separated list, so an
+application with its own registrator can list both. Comet logs a warning at startup when Kryo
+requires registration and has not registered the classes this registrator covers.

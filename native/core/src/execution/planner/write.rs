@@ -32,6 +32,7 @@ use crate::{
         spark_plan::SparkPlan,
     },
     extract_op,
+    jvm_bridge::OutputStreamSink,
 };
 
 /// Builder for native Iceberg writes.
@@ -104,19 +105,22 @@ impl OperatorBuilder for ParquetWriterBuilder {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
 
-        let parquet_writer = Arc::new(ParquetWriterExec::try_new(
-            Arc::clone(&child.native_plan),
-            writer.output_path.clone(),
-            writer.work_dir.clone(),
-            writer.job_id.clone(),
-            writer.task_attempt_id,
-            codec,
-            planner.partition(),
-            writer.column_names.clone(),
-            (!writer.output_schema.is_empty())
-                .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
-            object_store_options,
-        )?);
+        let parquet_writer = Arc::new(
+            ParquetWriterExec::try_new(
+                Arc::clone(&child.native_plan),
+                writer.output_path.clone(),
+                codec,
+                planner.partition(),
+                writer.column_names.clone(),
+                (!writer.output_schema.is_empty())
+                    .then(|| convert_spark_types_to_arrow_schema(&writer.output_schema)),
+                object_store_options,
+            )?
+            .with_output_stream(jvm_output_stream(
+                writer.jvm_output_stream,
+                planner.output_stream.as_ref(),
+            )?),
+        );
 
         Ok((
             scans,
@@ -127,5 +131,67 @@ impl OperatorBuilder for ParquetWriterBuilder {
                 vec![Arc::clone(&child)],
             )),
         ))
+    }
+}
+
+/// The output stream a Parquet writer writes to, when the JVM created its file.
+///
+/// A writer planned to write through the JVM requires the stream its own Spark task registered,
+/// since the file it would otherwise create itself is not the one the JVM opened. A writer
+/// planned to create its file must not be given one, which would mean the JVM opened a file that
+/// nothing writes.
+fn jvm_output_stream(
+    planned: bool,
+    registered: Option<&Arc<dyn OutputStreamSink>>,
+) -> Result<Option<Arc<dyn OutputStreamSink>>, ExecutionError> {
+    match (planned, registered) {
+        (true, Some(output_stream)) => Ok(Some(Arc::clone(output_stream))),
+        (true, None) => Err(ExecutionError::GeneralError(
+            "A Parquet writer planned to write through the JVM requires the output stream of \
+             the file the JVM created"
+                .to_string(),
+        )),
+        (false, Some(_)) => Err(ExecutionError::GeneralError(
+            "A Parquet writer that creates its own file cannot use an output stream the JVM \
+             created"
+                .to_string(),
+        )),
+        (false, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DiscardingSink;
+
+    impl OutputStreamSink for DiscardingSink {
+        fn max_write_size(&self) -> usize {
+            1
+        }
+
+        fn write(&self, _data: &[u8]) -> datafusion::common::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_writer_uses_the_output_stream_only_when_planned_to() {
+        let sink: Arc<dyn OutputStreamSink> = Arc::new(DiscardingSink);
+
+        let chosen = jvm_output_stream(true, Some(&sink)).unwrap();
+        assert!(Arc::ptr_eq(&chosen.unwrap(), &sink));
+        assert!(jvm_output_stream(false, None).unwrap().is_none());
+
+        let missing = jvm_output_stream(true, None).unwrap_err().to_string();
+        assert!(missing.contains("requires the output stream"), "{missing}");
+        let unexpected = jvm_output_stream(false, Some(&sink))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unexpected.contains("cannot use an output stream"),
+            "{unexpected}"
+        );
     }
 }

@@ -44,6 +44,8 @@ FILTERS = {
         "common/**",
         "spark/**",
         "spark-integration/**",
+        # The strict warnings job compiles the Delta contrib against Spark 3.5.
+        "contrib/delta-spark/**",
         "pom.xml",
         "**/pom.xml",
         ".mvn/**",
@@ -136,11 +138,16 @@ FILTERS = {
     ],
     # A real Python worker against each Spark 4.x Arrow runner. The list is
     # deliberately narrow: the suite builds Comet three times, once per Spark
-    # version, and only the map-in-batch wiring can change its verdict.
+    # version, and covers map-in-batch wiring and the native scalar Arrow UDF.
     "pyarrow_udf": [
         "pom.xml",
         "common/pom.xml",
         "native/shuffle/src/spark_unsafe/row.rs",
+        "native/core/src/execution/python_udf.rs",
+        "native/core/src/execution/operators/arrow_python_udf.rs",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/CometArrowEvalPythonExec.scala",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPythonExec.scala",
+        "spark/src/test/spark-4.1+/org/apache/spark/sql/comet/CometArrowPythonUdfSuite.scala",
         "spark/pom.xml",
         "spark/src/main/java/org/apache/comet/vector/**",
         "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
@@ -161,6 +168,8 @@ FILTERS = {
         "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
         "spark/src/test/resources/pyspark/conftest.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_native_arrow_udf_files.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py",
         "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
         "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
         "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
@@ -434,11 +443,38 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "delta_3_5": [
+        "contrib/delta-spark/**",
+        "!**.md",
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        # The contrib suites extend these through the spark test-jar.
+        "spark/src/test/scala/org/apache/spark/sql/CometTestBase.scala",
+        "spark/src/test/scala/org/apache/comet/CometS3TestBase.scala",
+        "spark/pom.xml",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_contrib_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
+    # Same inputs as delta_3_5: the Delta contrib workflow is called once per
+    # Spark profile, and the three calls share one path filter. Populated
+    # below, after the dict, so the lists cannot drift.
+    "delta_4_0": [],
+    "delta_4_1": [],
 }
 FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
+FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
+FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 
 # Which events may run each job, independent of the path filters above.
 #
@@ -576,6 +612,13 @@ POLICY = {
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
+    # The Delta contrib suites all run nightly. The PR tier's strict warnings
+    # job compiles the contrib against Spark 3.5, so a change that breaks its
+    # build on Spark 3.5 fails on its own pull request. One label opts a pull
+    # request into all three.
+    "delta_3_5": ["nightly", "label:run-delta-tests"],
+    "delta_4_0": ["nightly", "label:run-delta-tests"],
+    "delta_4_1": ["nightly", "label:run-delta-tests"],
 }
 
 
