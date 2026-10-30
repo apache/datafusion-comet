@@ -32,7 +32,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
-import org.apache.spark.sql.catalyst.plans.physical.Partitioning
+import org.apache.spark.sql.catalyst.plans.physical.{IdentityBroadcastMode, Partitioning}
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{CodegenSupport, ColumnarToRowTransition, SparkPlan, SQLExecution}
@@ -137,7 +137,13 @@ case class CometColumnarToRowExec(child: SparkPlan)
           numOutputRows)
 
         val mode = cometBroadcastExchange.get.mode
-        val relation = mode.transform(rows, Some(numOutputRows.value))
+        // Identity broadcasts retain rows, but both JVM conversion paths reuse the returned row.
+        // Hashed relations copy row bytes into their own storage while consuming the iterator.
+        val broadcastRows = mode match {
+          case IdentityBroadcastMode => rows.map(_.copy())
+          case _ => rows
+        }
+        val relation = mode.transform(broadcastRows, Some(numOutputRows.value))
         val broadcasted = sparkContext.broadcastInternal(relation, serializedOnly = true)
         val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
         SQLMetrics.postDriverMetricUpdates(sparkContext, executionId, metrics.values.toSeq)

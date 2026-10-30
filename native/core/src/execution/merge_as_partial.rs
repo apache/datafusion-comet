@@ -27,6 +27,9 @@
 //! evaluates to its state, packed into a struct. Under DataFusion's `Partial` mode, which
 //! outputs state, that gives merge semantics with state output. Under `Single` mode, which
 //! spills rather than emit a group twice, the planner unpacks the struct into the state columns.
+//! It does the same under `Final` mode, which DataFusion 55 runs with an ordered aggregate that
+//! spills when the input is sorted on some of the grouping keys. There, `Single` falls back to a
+//! stream whose spill can ask for more than its share of memory (#6880).
 
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
@@ -51,12 +54,12 @@ use datafusion_comet_spark_expr::GetStructField;
 
 use crate::execution::spark_aggregate_state::PartialMergeStateDecoder;
 
-/// An AggregateUDF wrapper that merges state and outputs state in Partial or Single mode.
+/// An AggregateUDF wrapper that merges state and outputs state in Partial, Single or Final mode.
 ///
 /// When DataFusion runs an AggregateExec in Partial mode, it calls `update_batch`
 /// on each accumulator and outputs `state()`. This wrapper intercepts `update_batch`
 /// and redirects it to `merge_batch` on the inner accumulator, effectively
-/// implementing PartialMerge: merge inputs, output state. In Single mode, DataFusion
+/// implementing PartialMerge: merge inputs, output state. In Single and Final modes, DataFusion
 /// outputs `evaluate()` instead, which returns the inner accumulator's state as a struct
 /// of the state fields.
 ///
@@ -165,7 +168,7 @@ impl AggregateUDFImpl for MergeAsPartialUDF {
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
         // In Partial mode, return_type isn't used for output schema (state_fields is).
-        // In Single mode, the wrapper evaluates to its state.
+        // In Single and Final modes, the wrapper evaluates to its state.
         Ok(DataType::Struct(self.cached_state_fields.clone()))
     }
 
@@ -278,9 +281,9 @@ impl InnerAccumulatorFactory {
     }
 }
 
-/// Projects the output of a Single-mode `aggregate` whose aggregates are all [`MergeAsPartialUDF`]s
-/// into the output of a Partial-mode one: its `num_grouping` grouping columns, then one column per
-/// state field, unpacked from the struct each aggregate evaluates to.
+/// Projects the output of a Single- or Final-mode `aggregate` whose aggregates are all
+/// [`MergeAsPartialUDF`]s into the output of a Partial-mode one: its `num_grouping` grouping
+/// columns, then one column per state field, unpacked from the struct each aggregate evaluates to.
 pub(crate) fn unpack_state_structs(
     aggregate: Arc<dyn ExecutionPlan>,
     num_grouping: usize,

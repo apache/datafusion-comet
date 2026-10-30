@@ -280,3 +280,25 @@ FROM VALUES (1, 1, X'ABCD'), (1, 2, X'ABCD') AS t(x, y, b) GROUP BY x
 query
 SELECT grp, sort_array(collect_set(i))
 FROM cs_src_int GROUP BY grp HAVING size(collect_set(i)) > 1 ORDER BY grp
+
+-- ============================================================
+-- Struct with required fields built after the Parquet scan, ungrouped so the
+-- boxed Accumulator builds the final state (issue #5239).
+-- ============================================================
+
+statement
+CREATE TABLE cs_src_struct_required(a bigint, b bigint, c string) USING parquet
+
+statement
+INSERT INTO cs_src_struct_required VALUES
+  (1, 10, 'a'), (2, 20, 'b'), (3, 30, 'c'), (4, NULL, 'd'), (5, NULL, NULL)
+
+query
+SELECT sort_array(collect_set(s)) FROM (
+  SELECT named_struct('flag', true, 'id', coalesce(b, 0), 'value', c) AS s
+  FROM cs_src_struct_required)
+
+query
+SELECT sort_array(collect_set(s)) FROM (
+  SELECT array(named_struct('flag', true, 'id', coalesce(b, 0), 'value', c)) AS s
+  FROM cs_src_struct_required)
