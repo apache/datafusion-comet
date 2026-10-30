@@ -3512,16 +3512,13 @@ mod tests {
     fn a_batch_producer_counts_the_cpu_its_polls_use() {
         let runtime = single_worker_runtime();
         let mut polls = 0;
-        // Spins for 50 ms, then waits 200 ms for input, then ends.
+        // Uses 50 ms of CPU time, then waits 200 ms for input, then ends.
         let stream = futures::stream::poll_fn(move |cx| {
             polls += 1;
             match polls {
                 1 => {
-                    let start = Instant::now();
-                    let mut x = 0u64;
-                    while start.elapsed() < Duration::from_millis(50) {
-                        x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
-                    }
+                    let start = thread_cpu_time().unwrap();
+                    while thread_cpu_time().unwrap() - start < Duration::from_millis(50) {}
                     Poll::Ready(Some(Ok(empty_batch())))
                 }
                 2 => {
@@ -3544,8 +3541,8 @@ mod tests {
 
         let cpu_time = Duration::from_nanos(cpu_time.value() as u64);
         assert!(
-            cpu_time >= Duration::from_millis(25),
-            "50 ms of spinning counted as {cpu_time:?}"
+            cpu_time >= Duration::from_millis(50),
+            "50 ms of CPU time counted as {cpu_time:?}"
         );
         assert!(
             cpu_time < Duration::from_millis(150),

@@ -179,24 +179,24 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn thread_cpu_time_counts_only_the_calling_threads_cpu() {
+        // A thread's CPU time can't run ahead of the wall clock.
+        let wall = std::time::Instant::now();
         let start = thread_cpu_time().unwrap();
-        let mut x = 0u64;
-        let busy = std::time::Instant::now();
-        while busy.elapsed() < Duration::from_millis(50) {
-            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
-        }
-        let busy_cpu = thread_cpu_time().unwrap() - start;
-        assert!(
-            busy_cpu >= Duration::from_millis(25),
-            "50 ms of spinning used {busy_cpu:?} of CPU"
-        );
+        while thread_cpu_time().unwrap() - start < Duration::from_millis(20) {}
+        assert!(wall.elapsed() >= Duration::from_millis(20));
 
+        // Another thread's work doesn't count, as it would with a clock for the whole process.
         let start = thread_cpu_time().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        let sleeping_cpu = thread_cpu_time().unwrap() - start;
+        std::thread::spawn(|| {
+            let start = thread_cpu_time().unwrap();
+            while thread_cpu_time().unwrap() - start < Duration::from_millis(100) {}
+        })
+        .join()
+        .unwrap();
+        let waiting_cpu = thread_cpu_time().unwrap() - start;
         assert!(
-            sleeping_cpu < Duration::from_millis(25),
-            "50 ms of sleeping used {sleeping_cpu:?} of CPU"
+            waiting_cpu < Duration::from_millis(50),
+            "waiting for 100 ms of another thread's work used {waiting_cpu:?} of CPU"
         );
     }
 
