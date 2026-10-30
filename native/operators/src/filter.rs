@@ -58,11 +58,6 @@ impl CometFilterExec {
     pub fn has_projection(&self) -> bool {
         self.inner().projection().is_some()
     }
-
-    /// The row count the wrapped filter merges its output up to.
-    pub fn batch_size(&self) -> usize {
-        self.inner().batch_size()
-    }
 }
 
 #[cfg(test)]
@@ -81,6 +76,7 @@ mod tests {
     use datafusion::physical_plan::execution_plan::{
         ChildrenPropertiesMode, ReplaceChildrenOptions,
     };
+    use datafusion::physical_plan::filter::FilterExecBuilder;
     use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 
     fn filter() -> Result<FilterExec> {
@@ -97,7 +93,9 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let input = MemorySourceConfig::try_new_exec(&partitions, Arc::clone(&schema), None)?;
         let predicate = binary(col("key", &schema)?, Operator::Gt, lit(5i32), &schema)?;
-        FilterExec::try_new(predicate, input)
+        FilterExecBuilder::new(predicate, input)
+            .with_batch_size(5)
+            .build()
     }
 
     #[test]
@@ -118,6 +116,7 @@ mod tests {
                 let rebuilt = rebuilt.downcast_ref::<CometFilterExec>().unwrap();
                 assert_eq!(rebuilt.allows_runtime_filter_pushdown(), allowed);
                 assert!(Arc::ptr_eq(rebuilt.predicate(), filter.predicate()));
+                assert_eq!(rebuilt.inner().batch_size(), 5);
             }
         }
         Ok(())
