@@ -16,7 +16,9 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
   The Linux build, with the Comet test suites run against the default Spark
-  profile (4.1) only, and nothing else.
+  profile (4.1) only, and nothing else. For a pull request from a fork this
+  tier runs on the contributor's fork instead of here; see
+  [Fork runs](#fork-runs).
 - **Queue tier** (`queue`): the authoritative gate. The PR tier plus the
   macOS build, the benchmark compile check, the Delta contrib build gate, the
   PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg 1.11, evaluated
@@ -198,6 +200,92 @@ still needs its label, so a `labeled` run there adds `spark_3_4` or nothing.
 `check-ci-config.py` pins that wiring, because a dropped variable reads as an
 empty string and would route the pull request as if it targeted `main`.
 
+## Fork runs
+
+Nearly every pull request comes from a fork, and the PR tier is the
+largest share of the runner-hours CI spends (about 60% in the week to
+2026-10-28, label runs included). A fork pull request therefore does not run
+the PR tier on ASF's runners. The contributor's fork runs it, and the merge
+queue, which stays on ASF, runs the queue tier on the merge result before
+anything lands. That is the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and
+the other queue-tier jobs, with path filters still applied; the nightly-only and
+label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
+(#11788). Three files carry it:
+
+| File                 | Role                                                                                                                                                       |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ci_fork.yml`        | Fires on a push to any branch of a fork except `asf-site` and calls `ci.yml`, after cancelling the branch's older runs. Its jobs are skipped upstream.     |
+| `compute-changes.py` | `is_fork_push` gives a fork the `pr` tier. `is_fork_pull_request` takes the `pr` tier away upstream, and leaves every `run-*` label and the `labeled` run. |
+| `fork_ci_status.yml` | Mirrors the fork's run onto the pull request as the `CI (fork)` check, on `workflow_run` and every 15 minutes.                                             |
+
+Things that follow from that, and are easy to break:
+
+- **The fork result is advisory.** `Required Checks` does not depend on
+  `CI (fork)`, because a contributor controls the workflow that produced it. A
+  green fork run that never ran the tests costs one queue slot, not a bad merge.
+- **Every branch of a fork runs through `ci_fork.yml`, `main` included.**
+  `ci.yml` also triggers on push to `main`, in a fork as upstream, so its
+  `Preflight` skips any fork push that did not come through `ci_fork.yml`, which
+  it tells apart by the caller's `github.workflow`, and `required_checks` skips
+  itself when `Preflight` does. That starts no runner for a fork's schedule or
+  for a second copy of a push, and leaves the bridge one workflow to look up. A
+  push that adds nothing to upstream `main`, such as a sync of the fork, selects
+  no build or test suite and writes to no build cache. A fork's caches are therefore cold unless a run on its `main` builds,
+  and each branch run rebuilds the native library: 59 minutes of wall time and
+  240 runner-minutes cold against 50 and 213 warm, measured 2026-10-28 on one
+  fork.
+- **Branch names compare without regard to case in Actions,** in `==`, `!=` and
+  concurrency group names alike, and a fork can hold both `feature` and
+  `Feature`. So a fork push has no concurrency group shared with another push: it
+  is keyed on its run, which also stops a backup branch created at the commit a
+  pull request is building from cancelling that build. `ci_fork.yml`'s `supersede`
+  job cancels the older runs of exactly the same branch instead, which it can
+  compare with case. `check-ci-config.py` evaluates
+  conditions with the same case-insensitive comparison, and checks that the push
+  trigger admits `main`.
+- **A pull request opened inside a fork skips the PR tier,** because the branch
+  push already ran it, and `is_fork_pull_request` covers both that and a fork
+  pull request into `main` here. A `run-*` label still runs its suite.
+- **A fork push is diffed against upstream main, as its pull request will be.**
+  There is no pull request to diff against on a push, and the fork's own default
+  branch is the wrong base: a fork that has not synced is behind upstream, so a
+  branch cut from newer upstream code that reverts one of its files matches the
+  fork's old copy and a diff against it omits the file.
+  `dev/ci/fork-push-changed-files.sh` fetches upstream `main` and diffs against
+  that. It lists every file when it has nothing to go on (the fetch fails or
+  there is no merge base), because selecting no suites then would report a green
+  run for a change nobody could see. An empty diff with a merge base is a branch
+  that adds nothing to upstream, which selects nothing.
+  `dev/ci/test-fork-push-changed-files.py` runs it against real repositories,
+  including the stale-baseline revert and a branch whose commits only the fork's
+  `main` has.
+- **Scheduled workflows stay upstream.** A fork that enables scheduled
+  workflows would run them on its owner's minutes, and with no earlier scheduled
+  run to diff against, a fork's nightly runs the whole nightly tier. `ci.yml`'s
+  `Preflight`, `miri.yml`, `stale.yml`, `codeql.yml` and the bridge skip a
+  scheduled run outside this repository. Skipping `Preflight` skips the whole
+  nightly, since every other job needs `changes`, which needs it, and
+  `nightly_report` treats a skipped aggregator as nothing to report.
+  `check-ci-config.py` does not match text for this. It evaluates each root job's
+  `if:` for a scheduled run in a fork, and for the pushes and events above, and
+  fails when a job would run that should not or the other way round.
+- **`ci.yml` must not trigger on every push.** A skipped job still publishes a
+  check run under its own name, so a push to a branch of this repository that
+  lands on a pull request's commit would put a skipped `Required Checks` next to
+  the real one. `ci_fork.yml` is a separate workflow so the only name that can
+  be skipped is its own, and `check-ci-config.py` pins its trigger and the
+  `github.repository != 'apache/datafusion-comet'` guard.
+- **Exceptions stay upstream:** a pull request from a branch of this
+  repository (a committer's, dependabot's), one that targets a release branch,
+  and the opt-in `run-*` suites. A fork cannot see the labels on its pull
+  request, and a release branch has no queue to catch what a fork run misses.
+- **The bridge never checks out or runs anything from the pull request.** It
+  runs with `checks: write` from the default branch and reads the fork's public
+  run list. Its logic is tested by `dev/ci/test-fork-ci-status.cjs`, which
+  Preflight runs, against mocked GitHub APIs. `workflow_run` and `schedule`
+  events use the copy on the default branch, so a change to the bridge cannot be
+  exercised by the pull request that makes it.
+
 ### Label events
 
 `ci_label.yml` fires on `pull_request.types: [labeled]` and calls `ci.yml`
@@ -300,6 +388,8 @@ umbrella doesn't watch, or operate independently of the rest of CI:
 | `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
 | `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |
 | `label_prs.yml`        | Runs on `pull_request_target` so it can label pull requests opened from forks.                       |
+| `ci_fork.yml`          | Runs `ci.yml` on a push to a fork's branch; skipped upstream. See [Fork runs](#fork-runs).           |
+| `fork_ci_status.yml`   | Mirrors a fork's run onto its pull request as `CI (fork)`. See [Fork runs](#fork-runs).              |
 
 ## Reusable workflows (called by `ci.yml`)
 
