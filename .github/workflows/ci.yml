@@ -83,12 +83,14 @@ name: Comet CI
 # commit's push run. A pull request is keyed on its number, and not on its
 # branch name: nearly every pull request comes from a fork, and two forks'
 # branches can share a name, which would have one cancel the other's run. A push
-# to a fork (ci_fork.yml) is keyed on its commit, like any push: a newer push to
-# the branch cancels the run in flight through ci_fork.yml's `supersede` job
-# instead, because group names compare without regard to case and a fork can
-# hold both `feature` and `Feature`.
+# to a fork (ci_fork.yml) is keyed on its run, so no other push shares its group:
+# a backup branch created at the commit a pull request is building would
+# otherwise cancel that build. A newer push to the same branch cancels the run in
+# flight through ci_fork.yml's `supersede` job instead, because group names
+# compare without regard to case and a fork can hold both `feature` and
+# `Feature`.
 concurrency:
-  group: ${{ github.repository }}-${{ github.event.pull_request.number || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
+  group: ${{ github.repository }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.repository != 'apache/datafusion-comet' && github.run_id) || github.sha }}-${{ github.workflow }}-${{ github.event.action == 'labeled' && github.event.label.name || github.event_name }}
   cancel-in-progress: true
 
 # No `labeled` here: ci_label.yml handles that event and calls this file

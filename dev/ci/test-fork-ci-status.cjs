@@ -299,20 +299,20 @@ function group(github) {
 const forkPush = {
   // GitHub expressions resolve absent properties to an empty string.
   repository: 'contributor/datafusion-comet', event_name: 'push', event: { pull_request: { number: '' } },
-  ref: 'refs/heads/feature', sha: 'first', workflow: 'Comet CI (fork run)',
+  ref: 'refs/heads/feature', sha: 'first', run_id: 1, workflow: 'Comet CI (fork run)',
 };
 const pullRequest = (number, extra = {}) => ({
   ...forkPush, repository: 'apache/datafusion-comet', event_name: 'pull_request',
   event: { pull_request: { number } }, ref: 'refs/pull/' + number + '/merge', ...extra,
 });
-test('fork pushes get a group each, so none is cancelled by a case variant of its branch', () => {
-  // Group names compare without regard to case, so a group keyed on the branch would
-  // let a push to `Feature` cancel `feature`. ci_fork.yml's supersede job cancels
-  // older runs of exactly one branch instead.
-  assert.notEqual(group(forkPush), group({ ...forkPush, sha: 'second' }));
-  assert.equal(
-    group({ ...forkPush, ref: 'refs/heads/feature' }).toLowerCase(),
-    group({ ...forkPush, ref: 'refs/heads/Feature' }).toLowerCase());
+test('every fork push has a group of its own, so none cancels another', () => {
+  // A backup branch created at the commit a pull request is building has the same
+  // sha, so a group keyed on the commit would let its run cancel the build.
+  // ci_fork.yml's supersede job cancels older runs of exactly one branch instead,
+  // which a group cannot: names compare without regard to case.
+  assert.notEqual(group(forkPush), group({ ...forkPush, run_id: 2 }));
+  assert.notEqual(group(forkPush), group({ ...forkPush, run_id: 2, ref: 'refs/heads/backup' }));
+  assert.notEqual(group(forkPush), group({ ...forkPush, sha: 'second', run_id: 2 }));
 });
 test('upstream pushes and queue runs stay separate per commit', () => {
   for (const event_name of ['push', 'merge_group']) {

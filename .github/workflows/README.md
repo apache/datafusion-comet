@@ -230,16 +230,17 @@ Things that follow from that, and are easy to break:
   itself when `Preflight` does. That starts no runner for a fork's schedule or
   for a second copy of a push, and leaves the bridge one workflow to look up. A
   push that adds nothing to upstream `main`, such as a sync of the fork, selects
-  no suite, so it starts only `Preflight` and `Detect changes` and warms no
-  cache. A fork's caches are therefore cold unless a run on its `main` builds,
+  no build or test suite and writes to no build cache. A fork's caches are therefore cold unless a run on its `main` builds,
   and each branch run rebuilds the native library: 59 minutes of wall time and
   240 runner-minutes cold against 50 and 213 warm, measured 2026-10-28 on one
   fork.
 - **Branch names compare without regard to case in Actions,** in `==`, `!=` and
   concurrency group names alike, and a fork can hold both `feature` and
-  `Feature`. So a fork push has no shared concurrency group: it is keyed on its
-  commit, and `ci_fork.yml`'s `supersede` job cancels the older runs of exactly
-  that branch, which it can compare with case. `check-ci-config.py` evaluates
+  `Feature`. So a fork push has no concurrency group shared with another push: it
+  is keyed on its run, which also stops a backup branch created at the commit a
+  pull request is building from cancelling that build. `ci_fork.yml`'s `supersede`
+  job cancels the older runs of exactly the same branch instead, which it can
+  compare with case. `check-ci-config.py` evaluates
   conditions with the same case-insensitive comparison, and checks that the push
   trigger admits `main`.
 - **A pull request opened inside a fork skips the PR tier,** because the branch
