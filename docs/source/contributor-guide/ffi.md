@@ -268,6 +268,16 @@ level and shares every other buffer. `move_to_spark` applies it to executed batc
 or sliced booleans reach the JVM misaligned
 ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 
+`zero_offsets` leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
+arrays by moving the start of their offsets, so the JVM imports them with offsets that start past zero and with the
+rows before the slice still at the front of the data buffer, or of the child vector for a list or map. Reading values
+through the offsets is correct, but Arrow Java 18.3's `VectorSchemaRootAppender` assumes offsets that start at zero and
+folds those rows into the first value it appends, and `VectorUnloader` writes them into an IPC stream. So
+`Utils.serializeBatches` rebases a broadcast batch's offsets with `VectorSchemaRoot.slice` before
+`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and code that
+appends imported vectors has to rebase them too. The in-memory cache serializer still writes the earlier rows
+([#6995](https://github.com/apache/datafusion-comet/issues/6995)).
+
 ### Wrapper Object Lifecycle (Native → JVM)
 
 ```

@@ -19,6 +19,8 @@
 
 package org.apache.comet.exec
 
+import java.nio.charset.StandardCharsets
+
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
@@ -1280,6 +1282,34 @@ class CometJoinSuite extends CometTestBase {
           assert(broadcast.metrics("numCoalescedBatches").value == 0L)
           assert(broadcast.metrics("numCoalescedRows").value == 0L)
         }
+      }
+    }
+  }
+
+  test("Broadcast coalescing keeps the values of sliced batches") {
+    // A grouped aggregate emits its groups as batch-size slices of one batch, so every slice after
+    // the first reaches the JVM with offsets that start past zero. Coalescing those slices used to
+    // prepend the bytes of the rows before each slice to its first value (#6779).
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "100",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
+      val rows = (0 until 1000).map { i =>
+        val s = if (i % 7 == 0) null else s"value-$i"
+        val bytes = if (s == null) null else s.getBytes(StandardCharsets.UTF_8)
+        val array = if (i % 11 == 0) null else Seq(s, s"element-$i")
+        (i, s, bytes, array, (s, i))
+      }
+      withParquetTable(rows, "t") {
+        val (_, cometPlan) = checkSparkAnswerAndOperator(
+          sql("""
+              |SELECT /*+ BROADCAST(d) */ t._1, d._2, d._3, d._4, d._5
+              |FROM t JOIN (SELECT DISTINCT * FROM t) d ON t._1 = d._1
+              |""".stripMargin),
+          Seq(classOf[CometBroadcastExchangeExec], classOf[CometBroadcastHashJoinExec]))
+
+        val broadcast = collect(cometPlan) { case b: CometBroadcastExchangeExec => b }.head
+        assert(broadcast.metrics("numCoalescedRows").value == rows.length)
       }
     }
   }
