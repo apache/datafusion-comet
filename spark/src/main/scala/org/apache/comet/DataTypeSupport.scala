@@ -89,6 +89,21 @@ object DataTypeSupport {
     case _ => false
   }
 
+  /**
+   * Shared reason for expressions whose native kernels cannot handle a negative-scale decimal.
+   */
+  val negativeScaleDecimalReason: String =
+    "Negative-scale decimals are not supported natively for this expression"
+
+  /**
+   * True only when `dt` is itself a `DecimalType` with a negative scale. Nested types are not
+   * inspected, and no SQL configuration is consulted.
+   */
+  def isNegativeScaleDecimal(dt: DataType): Boolean = dt match {
+    case d: DecimalType => d.scale < 0
+    case _ => false
+  }
+
   /** True when two of `fields` carry byte-identical names. */
   def hasDuplicateFieldNames(fields: Array[StructField]): Boolean =
     fields.map(_.name).distinct.length != fields.length

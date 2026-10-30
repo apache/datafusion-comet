@@ -24,7 +24,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Ceil, Divide, Floor, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
@@ -35,7 +35,7 @@ import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
-import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
+import org.apache.comet.serde.{CometAdd, CometCeil, CometDivide, CometFloor, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -1643,6 +1643,83 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("isNegativeScaleDecimal matches only a direct negative-scale decimal") {
+    // Negative-scale types can only be constructed with the legacy flag enabled. The predicate
+    // itself must not consult the flag, so inspect the same values with it disabled.
+    var negTypes: Seq[DecimalType] = Nil
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negTypes = Seq(DecimalType(10, -1), DecimalType(38, -5))
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      negTypes.foreach { t =>
+        assert(DataTypeSupport.isNegativeScaleDecimal(t), s"expected $t to match")
+        Seq(
+          ArrayType(t),
+          MapType(t, IntegerType),
+          MapType(IntegerType, t),
+          StructType(Seq(StructField("d", t)))).foreach { nested =>
+          assert(
+            !DataTypeSupport.isNegativeScaleDecimal(nested),
+            s"expected $nested not to match")
+        }
+      }
+      Seq(
+        DecimalType(10, 0),
+        DecimalType(10, 2),
+        IntegerType,
+        LongType,
+        DoubleType,
+        StringType,
+        BooleanType,
+        TimestampType).foreach { t =>
+        assert(!DataTypeSupport.isNegativeScaleDecimal(t), s"expected $t not to match")
+      }
+    }
+  }
+
+  test("ceil and floor on negative-scale decimal report unsupported and fall back") {
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        ("org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation," +
+          "org.apache.spark.sql.catalyst.optimizer.CollapseProject")) {
+      val expected = Unsupported(Some(DataTypeSupport.negativeScaleDecimalReason))
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
+        val negAttr = AttributeReference("n", negScale)()
+        assert(CometCeil.getSupportLevel(Ceil(negAttr)) == expected)
+        assert(CometFloor.getSupportLevel(Floor(negAttr)) == expected)
+      }
+      Seq(DecimalType(10, 0), DecimalType(10, 2)).foreach { t =>
+        val attr = AttributeReference("p", t)()
+        assert(CometCeil.getSupportLevel(Ceil(attr)) == Compatible())
+        assert(CometFloor.getSupportLevel(Floor(attr)) == Compatible())
+      }
+
+      // Build the column via string -> Decimal(neg), a known-native cast. `CometCeil` and
+      // `CometFloor` do not mix in `CodegenDispatchFallback`, so the projection falls back.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, -20 * unit, 0).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        checkSparkAnswerAndFallbackReason(
+          v.select(ceil(col("v"))),
+          DataTypeSupport.negativeScaleDecimalReason)
+        checkSparkAnswerAndFallbackReason(
+          v.select(floor(col("v"))),
+          DataTypeSupport.negativeScaleDecimalReason)
+      }
+
+      // Non-negative scale controls stay native.
+      val pos = Seq("1.5", "-2.5", "0")
+        .toDF("s")
+        .select(col("s").cast(DecimalType(10, 2)).as("v"))
+      checkSparkAnswerAndImpl(
+        pos.select(ceil(col("v")), floor(col("v"))),
+        native = Seq("ceil", "floor"))
+    }
+  }
+
   test("division on negative-scale decimal reports unsupported via getSupportLevel") {
     // Issue #5013: `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a
     // negative scale wraps to roughly 4.29e9 and the BigInt branch attempts an unbounded
@@ -1655,7 +1732,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         val posDec = DecimalType(10, 0)
         val negAttr = AttributeReference("n", negScale)()
         val posAttr = AttributeReference("p", posDec)()
-        val expected = Unsupported(Some(CometDivide.negScaleDecimalArithmeticReason))
+        val expected = Unsupported(Some(DataTypeSupport.negativeScaleDecimalReason))
 
         assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
         assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
@@ -1698,7 +1775,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         Seq("v / cast(3 as decimal(10, 0))", "v div cast(3 as decimal(10, 0))").foreach { e =>
           checkSparkAnswerAndFallbackReason(
             v.selectExpr(e),
-            CometDivide.negScaleDecimalArithmeticReason)
+            DataTypeSupport.negativeScaleDecimalReason)
         }
       }
     }
@@ -3935,12 +4012,17 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // the DataFrame API. There is no native round for them; CometRound reports the case as
     // Unsupported and CodegenDispatchFallback routes it through the JVM codegen dispatcher, so it
     // stays in the Comet pipeline and matches Spark exactly.
-    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
-      val data = Seq(12345.6789, -12345.6789, 0.0, 55555.0, -0.0).map(Tuple1.apply)
+    // Read strings from Parquet and keep the native cast in its own projection so the
+    // dispatcher consumes a materialized negative-scale decimal column.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.CollapseProject") {
+      val data = Seq("12345.6789", "-12345.6789", "0.0", "55555.0", "-0.0").map(Tuple1.apply)
       withParquetTable(data, "tbl") {
         val df = spark.table("tbl").select(col("_1").cast(DecimalType(10, -2)).as("d"))
         Seq(-3, -2, -1, 0, 2).foreach { scale =>
-          checkSparkAnswerAndOperator(df.select(round(col("d"), scale)))
+          checkSparkAnswerAndImpl(df.select(round(col("d"), scale)), dispatched = Seq("round"))
         }
       }
     }
