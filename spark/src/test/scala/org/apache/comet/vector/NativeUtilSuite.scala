@@ -34,7 +34,7 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvid
 import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.CometExec
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, MapType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
@@ -507,10 +507,12 @@ class NativeUtilSuite extends CometTestBase {
         .build()
         .toByteArray
 
+      val sqlConf = CapturedSQLConf.capture()
       val actual = spark.sparkContext
         .parallelize(Seq(0), 1)
         .mapPartitions { _ =>
-          val iterator = CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0)
+          val iterator =
+            CometExec.getCometIterator(Array.empty[Object], 1, plan, 1, 0, sqlConf, Seq.empty)
           try {
             assert(iterator.hasNext)
             val column = iterator.next().column(0)

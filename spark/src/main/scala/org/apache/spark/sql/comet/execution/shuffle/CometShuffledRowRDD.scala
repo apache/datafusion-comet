@@ -22,6 +22,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 import org.apache.spark._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.shuffle.sort.SortShuffleManager
+import org.apache.spark.sql.comet.CapturedSQLConf
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleReadMetricsReporter}
 import org.apache.spark.sql.internal.SQLConf
@@ -46,6 +47,8 @@ class CometShuffledBatchRDD(
       metrics,
       Array.tabulate(dependency.partitioner.numPartitions)(i => CoalescedPartitionSpec(i, i + 1)))
   }
+
+  private val sqlConf = CapturedSQLConf.capture()
 
   dependency.rdd.context.setLocalProperty(
     SortShuffleManager.FETCH_SHUFFLE_BLOCKS_IN_BATCH_ENABLED_KEY,
@@ -166,7 +169,7 @@ class CometShuffledBatchRDD(
    */
   def computeAsShuffleBlockIterator(
       split: Partition,
-      context: TaskContext): CometShuffleBlockIterator = {
+      context: TaskContext): CometShuffleBlockIterator = sqlConf.withConf {
     val readerAndMetrics: (CometShuffleReader[_, _], SQLShuffleReadMetricsReporter) =
       createReader(split, context)
     // Register before CometExecIterator so Spark's LIFO completion order closes the native stream
@@ -180,11 +183,12 @@ class CometShuffledBatchRDD(
       CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.get().toInt)
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
-    val reader: CometShuffleReader[_, _] = createReader(split, context)._1
-    // TODO: Reads IPC by native code
-    reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
-  }
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] =
+    sqlConf.withConf {
+      val reader: CometShuffleReader[_, _] = createReader(split, context)._1
+      // TODO: Reads IPC by native code
+      reader.read().asInstanceOf[Iterator[Product2[Int, ColumnarBatch]]].map(_._2)
+    }
 
   override def clearDependencies(): Unit = {
     super.clearDependencies()
