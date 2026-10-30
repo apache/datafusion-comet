@@ -37,6 +37,7 @@ menu to read more.
 
 Getting Started <contributing>
 Development Guide <development>
+AI-Assisted Contributions <ai_assisted_contributions>
 ```
 
 ```{toctree}
