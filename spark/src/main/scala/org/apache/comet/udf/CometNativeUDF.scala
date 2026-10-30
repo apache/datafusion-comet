@@ -116,8 +116,12 @@ object CometNativeUDF {
   }
 
   /**
-   * Load the library on the driver and confirm it exposes a UDF named `name`, translating the
-   * native failure into a typed exception.
+   * Load the library on the driver and confirm it exposes a UDF named `name`.
+   *
+   * The native side raises a refusal by the `spark.comet.nativeUdf.*` configs as
+   * [[CometNativeUdfNotAllowedException]], an ABI mismatch as [[CometNativeUdfAbiException]] and
+   * an unknown name as `java.util.NoSuchElementException`. Any other failure is reported as a
+   * [[CometNativeUdfLoadException]] caused by it.
    */
   private def validateLibrary(spark: SparkSession, libraryPath: String, name: String): Unit = {
     val conf = spark.sessionState.conf
@@ -128,35 +132,12 @@ object CometNativeUDF {
         CometConf.COMET_NATIVE_UDF_ENABLED.get(conf),
         CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.get(conf).mkString(","))
     } catch {
-      case t: Throwable => throw classifyNativeError(libraryPath, t)
-    }
-  }
-
-  /**
-   * Map a native loader failure onto a typed exception.
-   *
-   * The native side reports these as plain messages, so the mapping keys on the wording produced
-   * by `LoaderError`'s `Display` impl (`native/core/src/execution/c_udf/loader.rs`), by
-   * `PolicyError`'s (`policy.rs`, which names the config key it enforces) and by
-   * `comet_native_udf_bridge.rs`. Each phrase below is matched in full rather than by a fragment
-   * like "ABI", because every one of those messages interpolates the library path: a library
-   * under a directory named `ABI` would otherwise have its "failed to open" reported as an ABI
-   * mismatch. `CometNativeUdfSuite` pins each failure mode to the type it produces here, so a
-   * reworded message on the native side fails a test rather than silently changing the exception
-   * a caller sees.
-   */
-  private def classifyNativeError(libraryPath: String, t: Throwable): RuntimeException = {
-    val m = Option(t.getMessage).getOrElse("")
-    if (m.contains(CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key) ||
-      m.contains(s"${CometConf.COMET_NATIVE_UDF_ENABLED.key}=false")) {
-      new CometNativeUdfNotAllowedException(m)
-    } else if (m.contains("missing required symbol") || m.contains("reports ABI v") ||
-      m.contains("does not export")) {
-      new CometNativeUdfAbiException(m)
-    } else if (m.contains("' not found in ")) {
-      new java.util.NoSuchElementException(m)
-    } else {
-      new CometNativeUdfLoadException(s"failed to load $libraryPath: $m", t)
+      case e @ (_: CometNativeUdfNotAllowedException | _: CometNativeUdfAbiException |
+          _: java.util.NoSuchElementException) =>
+        throw e
+      case t: Throwable =>
+        val m = Option(t.getMessage).getOrElse("")
+        throw new CometNativeUdfLoadException(s"failed to load $libraryPath: $m", t)
     }
   }
 }

@@ -79,7 +79,8 @@ codegen dispatcher covers only scalar expressions; see the
 Spark's `StringType` can hold arbitrary bytes, including sequences that are not valid UTF-8 (for
 example `CAST(X'FF' AS STRING)`). Arrow's string type requires valid UTF-8, so Comet cannot store
 the raw bytes natively. When Comet produces a string from arbitrary bytes (such as
-`CAST(binary AS string)` or a columnar shuffle), it decodes them the same way the JVM does
+`CAST(binary AS string)`, a columnar shuffle, or a nested Parquet BINARY value read as a string),
+it decodes them the same way the JVM does
 (`new String(bytes, UTF_8)`), replacing each ill-formed sequence with the Unicode replacement
 character `U+FFFD`. Spark itself applies the identical replacement whenever such a string is
 materialized (collected, printed, or passed to most string functions), so the rendered result
@@ -98,9 +99,15 @@ underlying bytes rather than on the rendered text:
   such as `contains` can therefore disagree with Spark when non-UTF-8 bytes are involved.
 
 Both differences require string data that is not valid UTF-8. Comet's native Parquet scan never
-produces such strings (it rejects them, see below), and neither do most string expressions. They can
-reach Comet in these ways, which are the ones to check before relying on a result:
+produces such strings from UTF8-annotated columns (it rejects them, see below), and neither do most
+string expressions. They can reach Comet in these ways, which are the ones to check before relying on
+a result:
 
+- **Parquet BINARY columns read as strings.** A BINARY column without the UTF8 annotation can hold
+  bytes that are not valid UTF-8 when it is read as `string`, through the read schema or
+  `spark.sql.parquet.binaryAsString=true`. Comet decodes such a value in a struct field, list element
+  or map value. Top-level values and map keys are not checked; see
+  [Parquet](../parquet.md#reads-that-differ-from-spark).
 - **Text files.** Spark's Text reader keeps the bytes of each line as they are, so a Text file in an
   encoding other than UTF-8, such as Latin-1, holds strings that are not valid UTF-8. Comet decodes
   them when it converts a Text scan to Arrow, which it does only when
@@ -137,6 +144,32 @@ Consistent handling of invalid UTF-8 across all native string paths is tracked b
 Separately, Comet's native Parquet scan currently rejects string columns whose stored bytes are not
 valid UTF-8 rather than reading them like Spark
 ([#4121](https://github.com/apache/datafusion-comet/issues/4121)).
+
+## ANSI errors from rows skipped by LIMIT
+
+Native operators evaluate batches of rows. With `spark.sql.ansi.enabled=true`, some `LIMIT`
+plan shapes can therefore raise an expression error from a row that Spark stops before evaluating.
+For example, with a Parquet batch read in the order `(id, value) = (0, '0'), (1, '1')`:
+
+```sql
+SELECT value FROM t
+WHERE CAST(IF(id = 1, 'bad', value) AS INT) >= 0
+LIMIT 1
+```
+
+Spark returns `'0'` after the first row matches. Comet can evaluate the filter predicate on the
+second row in the same batch and raise `CAST_INVALID_INPUT`. SQL without `ORDER BY` does not
+guarantee this input order; the example describes a physical scan order that exposes the difference.
+
+Comet caps projection input when a collect limit directly consumes the projection. This protects
+that projection's expressions, but does not bound evaluation inside its child operators. Throwing
+filter predicates and projections beneath non-collect `LocalLimit` / `GlobalLimit` plans, such as
+a `LIMIT` inside a subquery, remain affected. These existing limitations and the investigation of
+already-ordered `TakeOrderedAndProject` inputs are tracked in
+[#7147](https://github.com/apache/datafusion-comet/issues/7147).
+
+An error on a row absent from the final result is not always a mismatch: Spark can also need to
+evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
 ## ANSI-mode error classes and messages
 

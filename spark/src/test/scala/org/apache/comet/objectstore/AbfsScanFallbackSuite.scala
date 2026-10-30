@@ -124,6 +124,41 @@ class AbfsScanFallbackSuite extends CometTestBase {
     }
   }
 
+  private def abfsKeys(pairs: (String, String)*): Seq[(String, String)] =
+    pairs.map { case (key, value) => s"$key.accta.dfs.core.windows.net" -> value }
+
+  test("native Parquet scan with a Custom ABFS auth type falls back to Spark") {
+    writeParquet("parquet-custom", 0)
+    withSQLConf(abfsKeys("fs.azure.account.auth.type" -> "Custom"): _*) {
+      val df = spark.read.parquet(abfss("data", "accta", "parquet-custom"))
+      checkSparkAnswerAndFallbackReason(df, "auth type Custom")
+    }
+  }
+
+  test("native Parquet scan with an unknown ABFS auth type falls back to Spark") {
+    writeParquet("parquet-unknown-auth", 0)
+    withSQLConf(abfsKeys("fs.azure.account.auth.type" -> "NotAnAuthType"): _*) {
+      val df = spark.read.parquet(abfss("data", "accta", "parquet-unknown-auth"))
+      checkSparkAnswerAndFallbackReason(df, "failed on the driver")
+    }
+  }
+
+  test("native CSV scan with a Custom ABFS auth type falls back to Spark") {
+    writeCsv("csv-custom", 0)
+    withSQLConf(csvConfs ++ abfsKeys("fs.azure.account.auth.type" -> "Custom"): _*) {
+      val df = readCsv(abfss("data", "accta", "csv-custom"))
+      checkSparkAnswerAndFallbackReason(df, "auth type Custom")
+    }
+  }
+
+  test("native CSV scan with an unknown ABFS auth type falls back to Spark") {
+    writeCsv("csv-unknown-auth", 0)
+    withSQLConf(csvConfs ++ abfsKeys("fs.azure.account.auth.type" -> "NotAnAuthType"): _*) {
+      val df = readCsv(abfss("data", "accta", "csv-unknown-auth"))
+      checkSparkAnswerAndFallbackReason(df, "failed on the driver")
+    }
+  }
+
   test("native Parquet scan over two directories of one container stays native") {
     writeParquet("parquet-e", 0)
     writeParquet("parquet-f", 100)
