@@ -472,6 +472,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[CSVScan] =>
         convertToComet(scan, CometCsvNativeScanExec).getOrElse(scan.wrapped)
 
+      // A declined native Text scan falls back to Spark's scan, which produces rows.
+      case scan: CometBatchScanExec if scan.wrapped.scan.isInstanceOf[TextScan] =>
+        convertToComet(scan, CometTextNativeScanExec).getOrElse(scan.wrapped)
+
       // Comet JVM + native scan for V1 and V2
       case op if isCometScan(op) =>
         convertToComet(op, CometScanWrapper).getOrElse(op)

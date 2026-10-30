@@ -1,0 +1,680 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+package org.apache.comet.text
+
+import java.io.File
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.GZIPOutputStream
+
+import org.scalatest.time.{Millis, Seconds, Span}
+
+import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.io.compress.GzipCodec
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
+import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.comet.CometTextNativeScanExec
+import org.apache.spark.sql.functions.input_file_name
+import org.apache.spark.sql.internal.SQLConf
+
+import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+
+/** A gzip codec whose file extension holds a space, to test codec lookup on decoded paths. */
+class SpacedGzipCodec extends GzipCodec {
+  override def getDefaultExtension: String = ".packed gz"
+}
+
+class CometTextNativeReadSuite extends CometTestBase {
+  private val TEST_TEXT_PATH = "src/test/resources/test-data/text-test-1.txt"
+
+  private def withTextConf(f: => Unit): Unit = {
+    withSQLConf(
+      CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+      // Route only `text` through the V2 path; keep every other format on V1 so a Parquet probe
+      // side (used by the broadcast-join test) is not pushed through the unsupported V2 scan.
+      SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet")(f)
+  }
+
+  test("native text read - lines to value column") {
+    withTextConf {
+      val df = spark.read.text(TEST_TEXT_PATH)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("native text read - count") {
+    withTextConf {
+      val df = spark.read.text(TEST_TEXT_PATH).selectExpr("count(*) as c")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("native text read - filter and projection") {
+    withTextConf {
+      val df = spark.read.text(TEST_TEXT_PATH).where("value like '%bar%'")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("native text read - preserves line order within a file") {
+    withTempDir { dir =>
+      val file = new File(dir, "ordered.txt")
+      val lines = (1 to 500).map(i => s"row-$i")
+      Files.write(file.toPath, lines.mkString("\n").getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        val df = spark.read.text(file.getAbsolutePath)
+        // Assert the scan actually ran natively (a Spark fallback would also preserve order).
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometTextNativeScanExec]))
+        // checkSparkAnswer sorts both sides, so assert order explicitly here.
+        val got = df.collect().map(_.getString(0)).toSeq
+        assert(got == lines, "native text scan must preserve within-file line order")
+      }
+    }
+  }
+
+  test("native text read - fallback for input_file_name") {
+    withTextConf {
+      val df = spark.read.text(TEST_TEXT_PATH).withColumn("f", input_file_name())
+      // The blanket V2 input_file_name gate (shared by all native V2 scans) emits this.
+      checkSparkAnswerAndFallbackReason(df, "is not compatible with input_file_name")
+    }
+  }
+
+  test("native text read - fallback when native exec is disabled") {
+    withSQLConf(
+      CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "false",
+      SQLConf.USE_V1_SOURCE_LIST.key -> "") {
+      checkSparkAnswerAndFallbackReason(
+        spark.read.text(TEST_TEXT_PATH),
+        s"Native Text scan requires ${CometConf.COMET_EXEC_ENABLED.key} to be enabled")
+    }
+  }
+
+  test("native text read - wholetext") {
+    withTextConf {
+      val df = spark.read.option("wholetext", "true").text(TEST_TEXT_PATH)
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("native text read - custom lineSep") {
+    withTempDir { dir =>
+      val file = new File(dir, "custom-linesep.txt")
+      Files.write(file.toPath, "a|b|café|日本".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        val df = spark.read.option("lineSep", "|").text(file.getAbsolutePath)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("native text read - custom lineSep with trailing separator") {
+    withTempDir { dir =>
+      val file = new File(dir, "trailing-linesep.txt")
+      // A trailing separator must not produce an extra empty row (matches Spark, SPARK-23577).
+      Files.write(file.toPath, "a|b|c|".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        val df = spark.read.option("lineSep", "|").text(file.getAbsolutePath)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("native text read - non-ASCII multibyte custom lineSep") {
+    withTempDir { dir =>
+      val file = new File(dir, "jp-linesep.txt")
+      // Japanese ideographic comma (U+3002, 3 UTF-8 bytes) as the record separator.
+      Files.write(file.toPath, "a。café。日本".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        val df = spark.read.option("lineSep", "。").text(file.getAbsolutePath)
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("native text read - CRLF and CR line endings") {
+    withTempDir { dir =>
+      val file = new File(dir, "crlf.txt")
+      // Mix of \r\n, \r, and \n; the default reader splits on all three.
+      Files.write(file.toPath, "a\r\nb\rc\nd".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - invalid UTF-8 bytes match Spark on collect") {
+    withTempDir { dir =>
+      val file = new File(dir, "invalid-utf8.txt")
+      // 0xFF is not valid UTF-8; both readers render it as the replacement char on collect.
+      Files.write(file.toPath, Array[Byte]('a', 0xff.toByte, 'b', '\n', 'c'))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - wholetext count") {
+    withTextConf {
+      val df = spark.read
+        .option("wholetext", "true")
+        .text(TEST_TEXT_PATH)
+        .selectExpr("count(*) as c")
+      checkSparkAnswerAndOperator(df)
+    }
+  }
+
+  test("native text read - falls back for files split into byte ranges") {
+    withTempDir { dir =>
+      val file = new File(dir, "many-lines.txt")
+      val content = (1 to 2000).map(i => s"line-$i-日本テスト").mkString("\n")
+      Files.write(file.toPath, content.getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        // Force the file to be split into several byte-range partitions.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "1024") {
+        val df = spark.read.text(file.getAbsolutePath)
+        assert(df.rdd.getNumPartitions > 1, "test requires the file to actually split")
+        checkSparkAnswerAndFallbackReason(
+          df,
+          "Comet native Text scan does not support files split into byte ranges")
+      }
+    }
+  }
+
+  test("native text read - empty file") {
+    withTempDir { dir =>
+      val file = new File(dir, "empty.txt")
+      Files.write(file.toPath, Array.emptyByteArray)
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - directory of multiple small files") {
+    withTempDir { dir =>
+      Files.write(new File(dir, "a.txt").toPath, "alpha\nbeta".getBytes(StandardCharsets.UTF_8))
+      Files.write(new File(dir, "b.txt").toPath, "日本\ngamma".getBytes(StandardCharsets.UTF_8))
+      Files.write(new File(dir, "c.txt").toPath, Array.emptyByteArray)
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.text(dir.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - wholetext over a directory of files") {
+    withTempDir { dir =>
+      Files.write(
+        new File(dir, "a.txt").toPath,
+        "line1\nline2\n".getBytes(StandardCharsets.UTF_8))
+      Files.write(new File(dir, "b.txt").toPath, "".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // One row per file, including one empty row for the empty file.
+        checkSparkAnswerAndOperator(
+          spark.read.option("wholetext", "true").text(dir.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - falls back for large wholetext files") {
+    withTempDir { dir =>
+      val file = new File(dir, "big-wholetext.txt")
+      Files.write(file.toPath, ("x" * 100).getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        // Tiny limit so the 100-byte wholetext file exceeds the size cap.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "16") {
+        val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
+        checkSparkAnswerAndFallbackReason(
+          df,
+          "Comet native Text scan does not support large wholetext files")
+      }
+    }
+  }
+
+  test("native text read - strips a leading UTF-8 BOM in line mode") {
+    withTempDir { dir =>
+      val file = new File(dir, "bom.txt")
+      val bom = Array[Byte](0xef.toByte, 0xbb.toByte, 0xbf.toByte)
+      Files.write(file.toPath, bom ++ "hello\nworld".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // Spark's line reader strips the BOM; native must match.
+        checkSparkAnswerAndOperator(spark.read.text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - fallback for ignoreCorruptFiles / ignoreMissingFiles") {
+    withTempDir { dir =>
+      val file = new File(dir, "a.txt")
+      Files.write(file.toPath, "a\nb".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.option("ignoreCorruptFiles", "true").text(file.getAbsolutePath),
+          "Comet native Text scan does not support ignoreCorruptFiles")
+        checkSparkAnswerAndFallbackReason(
+          spark.read.option("ignoreMissingFiles", "true").text(file.getAbsolutePath),
+          "Comet native Text scan does not support ignoreMissingFiles")
+      }
+    }
+  }
+
+  test("native text read - fallback for compressed (.gz) files") {
+    withTempDir { dir =>
+      val file = new File(dir, "data.txt.gz")
+      val out = new java.util.zip.GZIPOutputStream(new java.io.FileOutputStream(file))
+      out.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      withTextConf {
+        val df = spark.read.text(file.getAbsolutePath)
+        checkSparkAnswerAndFallbackReason(df, "Comet does not support compressed text files")
+      }
+    }
+  }
+
+  test("native text read - fallback for .gzip/.zstd compressed files on Spark 4.1+") {
+    // Spark 4.1+ decompresses the non-standard .gzip/.zstd extensions (via HadoopCodecStreams);
+    // CompressionCodecFactory alone misses them, so the version-aware shim must catch them.
+    assume(isSpark41Plus, "Spark 4.1+ treats .gzip/.zstd as compressed")
+    withTempDir { dir =>
+      val gzip = new File(dir, "data.txt.gzip")
+      val gzipOut = new java.util.zip.GZIPOutputStream(new java.io.FileOutputStream(gzip))
+      gzipOut.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      gzipOut.close()
+      val zstd = new File(dir, "data.txt.zstd")
+      val zstdOut = new com.github.luben.zstd.ZstdOutputStream(new java.io.FileOutputStream(zstd))
+      zstdOut.write("a\nb\nc".getBytes(StandardCharsets.UTF_8))
+      zstdOut.close()
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(gzip.getAbsolutePath),
+          "Comet does not support compressed text files")
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(zstd.getAbsolutePath),
+          "Comet does not support compressed text files")
+      }
+    }
+  }
+
+  test("native text read - custom lineSep equal to a BOM is not stripped") {
+    withTempDir { dir =>
+      val file = new File(dir, "bom-linesep.txt")
+      val bom = "\uFEFF"
+      // With lineSep=BOM, Spark leaves the BOM as the separator: `BOM a BOM b` -> ["", "a", "b"].
+      Files.write(file.toPath, s"${bom}a${bom}b".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", bom).text(file.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - fallback for a self-overlapping custom lineSep") {
+    withTempDir { dir =>
+      val file = new File(dir, "overlap.txt")
+      // "aab" overlaps itself (its "aa" prefix can restart a match). Hadoop's readCustomLine, which
+      // Spark uses, can split such input differently from the native reader's exact substring scan,
+      // so Comet must fall back. Spark's own result is the reference.
+      Files.write(file.toPath, "aaabz".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.option("lineSep", "aab").text(file.getAbsolutePath),
+          "self-overlapping line separator")
+      }
+    }
+  }
+
+  test("native text read - BOM-only file matches Spark for default and BOM separators") {
+    withTempDir { dir =>
+      val f = new File(dir, "bom-only.txt")
+      Files.write(f.toPath, "\uFEFF".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // Default separator: the BOM is stripped, leaving no rows.
+        checkSparkAnswerAndOperator(spark.read.text(f.getAbsolutePath))
+        // lineSep=BOM: the BOM is the (trailing) separator, leaving one empty row.
+        checkSparkAnswerAndOperator(
+          spark.read.option("lineSep", "\uFEFF").text(f.getAbsolutePath))
+      }
+    }
+  }
+
+  // Hadoop's LineRecordReader strips a leading BOM from the first record whatever the separator.
+  test("native text read - custom lineSep still strips a leading BOM from the first record") {
+    withTempDir { dir =>
+      val bom = "\uFEFF"
+      withTextConf {
+        // `BOM a|b` -> ["a", "b"]
+        val ab = new File(dir, "bom-a-b.txt")
+        Files.write(ab.toPath, s"${bom}a|b".getBytes(StandardCharsets.UTF_8))
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(ab.getAbsolutePath))
+        // `BOM|x` -> ["", "x"]
+        val bx = new File(dir, "bom-sep-x.txt")
+        Files.write(bx.toPath, s"$bom|x".getBytes(StandardCharsets.UTF_8))
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(bx.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - BOM-only file with a custom lineSep has no rows") {
+    withTempDir { dir =>
+      val f = new File(dir, "bom-only-pipe.txt")
+      Files.write(f.toPath, "\uFEFF".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndOperator(spark.read.option("lineSep", "|").text(f.getAbsolutePath))
+      }
+    }
+  }
+
+  test("native text read - fallback for line.maxlength") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines.txt")
+      Files.write(file.toPath, "ab\nabcdefghij\nxy".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // As a per-read option the key reaches the scan's Hadoop conf (stripped), so Spark's line
+        // reader skips lines >= this length; the native reader does not, so Comet must fall back.
+        checkSparkAnswerAndFallbackReason(
+          spark.read
+            .option("mapreduce.input.linerecordreader.line.maxlength", "5")
+            .text(file.getAbsolutePath),
+          "mapreduce.input.linerecordreader.line.maxlength")
+      }
+    }
+  }
+
+  test(
+    "native text read - line.maxlength from the Hadoop conf is not overridden by a differently " +
+      "cased read option") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines-case.txt")
+      Files.write(file.toPath, "ab\nabcdefghij\nxy".getBytes(StandardCharsets.UTF_8))
+      val key = "mapreduce.input.linerecordreader.line.maxlength"
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      hadoopConf.set(key, "5")
+      try {
+        withTextConf {
+          // Hadoop keys are case sensitive, so this option does not override the limit of 5 and
+          // Spark skips the long line. The gate must see the option with its case preserved, or it
+          // reads an unlimited length and the native scan returns the long line too.
+          checkSparkAnswerAndFallbackReason(
+            spark.read
+              .option("mapreduce.input.linerecordreader.line.maxLength", "2147483647")
+              .text(file.getAbsolutePath),
+            key)
+        }
+      } finally {
+        hadoopConf.unset(key)
+      }
+    }
+  }
+
+  test("native text read - fallback for files larger than the size ceiling") {
+    withTempDir { dir =>
+      val file = new File(dir, "big.txt")
+      Files.write(file.toPath, ("x\n" * 1000).getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet",
+        // Tiny ceiling so the ~2KB file exceeds it.
+        CometConf.COMET_SCAN_TEXT_MAX_FILE_SIZE.key -> "100") {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(file.getAbsolutePath),
+          "does not read files larger than")
+      }
+    }
+  }
+
+  test("native text read - partition column fallback: value stays native, select * falls back") {
+    withTempDir { dir =>
+      // Partitioned layout: <dir>/p=1/a.txt
+      val part = new File(dir, "p=1")
+      part.mkdirs()
+      Files.write(new File(part, "a.txt").toPath, "x\ny".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // Selecting only `value` has no partition column -> stays native.
+        checkSparkAnswerAndOperator(spark.read.text(dir.getAbsolutePath).select("value"))
+        // Selecting the partition column `p` -> falls back to Spark.
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(dir.getAbsolutePath).selectExpr("value", "p"),
+          "Comet does not support partition columns in native Text scans")
+      }
+    }
+  }
+
+  test("native text read - multiple unsplit files across separate partitions") {
+    withTempDir { dir =>
+      (1 to 6).foreach { i =>
+        Files.write(
+          new File(dir, s"f$i.txt").toPath,
+          s"a$i\nb$i".getBytes(StandardCharsets.UTF_8))
+      }
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet",
+        // A large open cost keeps each small file in its own partition, exercising
+        // file_partitions[self.partition] beyond index 0.
+        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "8",
+        SQLConf.FILES_OPEN_COST_IN_BYTES.key -> "1073741824") {
+        val df = spark.read.text(dir.getAbsolutePath)
+        assert(df.rdd.getNumPartitions > 1, "test requires files in separate partitions")
+        checkSparkAnswerAndOperator(df)
+      }
+    }
+  }
+
+  test("native text read - broadcast join with a text build side runs natively") {
+    withTempDir { dir =>
+      val lookup = new File(dir, "allow.txt")
+      Files.write(lookup.toPath, "k1\nk2\nk3".getBytes(StandardCharsets.UTF_8))
+      withSQLConf(
+        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet") {
+        withParquetTable((1 to 100).map(i => (i, s"k${i % 5}")), "facts") {
+          val lookupDf = spark.read.text(lookup.getAbsolutePath)
+          val facts = spark.table("facts")
+          // Small text build side broadcast-joined to a native Parquet probe side.
+          val joined = facts.join(lookupDf.hint("broadcast"), facts("_2") === lookupDf("value"))
+          checkSparkAnswerAndOperator(joined)
+        }
+      }
+    }
+  }
+
+  // Plan only: asserts the scan stays on Spark and records why, without running a query that
+  // Spark itself would fail.
+  private def assertFallsBack(df: DataFrame, reason: String): Unit = {
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val plan = df.queryExecution.executedPlan
+      assert(plan.collect { case s: CometTextNativeScanExec => s }.isEmpty, plan)
+      val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+      assert(reasons.exists(_.contains(reason)), reasons)
+    }
+  }
+
+  test("native text read - falls back for a local file with a Hadoop checksum file") {
+    withTempDir { dir =>
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      val path = new Path(new File(dir, "checked.txt").getAbsolutePath)
+      // Hadoop's local filesystem writes a `.checked.txt.crc` next to the data.
+      val out = FileSystem.getLocal(hadoopConf).create(path)
+      out.write("one\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      assert(new File(dir, ".checked.txt.crc").exists())
+      // Replace the data without updating the checksum: Spark raises a ChecksumException on read.
+      Files.write(new File(dir, "checked.txt").toPath, "two\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        assertFallsBack(spark.read.text(path.toString), "Hadoop checksum")
+      }
+    }
+  }
+
+  test("native text read - codec lookup uses the decoded file name") {
+    withTempDir { dir =>
+      val file = new File(dir, "small.packed gz")
+      val out = new GZIPOutputStream(Files.newOutputStream(file.toPath))
+      out.write("one\ntwo\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      val key = "io.compression.codecs"
+      val previous = hadoopConf.get(key)
+      hadoopConf.set(key, classOf[SpacedGzipCodec].getName)
+      try {
+        withTextConf {
+          // The URL-encoded name `small.packed%20gz` hides the registered `.packed gz` suffix.
+          checkSparkAnswerAndFallbackReason(
+            spark.read.text(file.getAbsolutePath),
+            "compressed text files")
+        }
+      } finally {
+        if (previous == null) hadoopConf.unset(key) else hadoopConf.set(key, previous)
+      }
+    }
+  }
+
+  test("native text read - a compressed file in a pruned partition does not block native") {
+    withTempDir { dir =>
+      val hot = new File(dir, "p=hot")
+      val cold = new File(dir, "p=cold")
+      hot.mkdirs()
+      cold.mkdirs()
+      Files.write(new File(hot, "a.txt").toPath, "alpha\n".getBytes(StandardCharsets.UTF_8))
+      val out = new GZIPOutputStream(Files.newOutputStream(new File(cold, "b.txt.gz").toPath))
+      out.write("beta\n".getBytes(StandardCharsets.UTF_8))
+      out.close()
+      withTextConf {
+        val df = spark.read.text(dir.getAbsolutePath).where("p = 'hot'").select("value")
+        checkSparkAnswerAndOperator(df, Seq(classOf[CometTextNativeScanExec]))
+      }
+    }
+  }
+
+  test("native text read - a listed file whose name object_store rejects falls back") {
+    withTempDir { dir =>
+      // Legal for Hadoop, rejected by object_store. The directory root alone looks fine.
+      Files.write(new File(dir, "a\tb.txt").toPath, "expected\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        checkSparkAnswerAndFallbackReason(
+          spark.read.text(dir.getAbsolutePath),
+          "cannot open path")
+      }
+    }
+  }
+
+  test("native text read - falls back for mandatory file-open options in line mode") {
+    withTempDir { dir =>
+      val file = new File(dir, "lines.txt")
+      Files.write(file.toPath, "alpha\nbeta\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        assertFallsBack(
+          spark.read
+            .option("mapreduce.job.input.file.must.fs.s3a.readahead.range", "64K")
+            .text(file.getAbsolutePath),
+          "mapreduce.job.input.file.must")
+      }
+    }
+  }
+
+  test("native text read - wholetext ignores line.maxlength") {
+    withTempDir { dir =>
+      val file = new File(dir, "whole.txt")
+      Files.write(file.toPath, "alpha\nbeta".getBytes(StandardCharsets.UTF_8))
+      val key = "mapreduce.input.linerecordreader.line.maxlength"
+      val hadoopConf = spark.sparkContext.hadoopConfiguration
+      try {
+        withTextConf {
+          // Spark's whole-file reader never reads this setting, so neither a finite limit nor a
+          // value that is not an integer may fail or fall back a wholetext query.
+          Seq("5", "64k").foreach { value =>
+            hadoopConf.set(key, value)
+            checkSparkAnswerAndOperator(
+              spark.read.option("wholetext", "true").text(file.getAbsolutePath))
+          }
+        }
+      } finally {
+        hadoopConf.unset(key)
+      }
+    }
+  }
+
+  test("native text read - scans of the same file compare equal") {
+    withTempDir { dir =>
+      val file = new File(dir, "lookup.txt")
+      Files.write(file.toPath, "a\nb\nc\n".getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          def scan: CometTextNativeScanExec =
+            spark.read
+              .text(file.getAbsolutePath)
+              .queryExecution
+              .executedPlan
+              .collect { case s: CometTextNativeScanExec => s }
+              .head
+          // Equal canonical forms let Spark reuse the exchanges and stages of a repeated lookup.
+          assert(scan.sameResult(scan))
+        }
+      }
+    }
+  }
+
+  test("native text read - reports input bytes and records to the task metrics") {
+    withTempDir { dir =>
+      (0 until 4).foreach { i =>
+        Files.write(
+          new File(dir, s"part-$i.txt").toPath,
+          "a\nb\nc\n".getBytes(StandardCharsets.UTF_8))
+      }
+      val bytes = new AtomicLong(0)
+      val records = new AtomicLong(0)
+      val listener = new SparkListener {
+        override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+          if (taskEnd.taskMetrics != null) {
+            bytes.addAndGet(taskEnd.taskMetrics.inputMetrics.bytesRead)
+            records.addAndGet(taskEnd.taskMetrics.inputMetrics.recordsRead)
+          }
+        }
+      }
+      spark.sparkContext.addSparkListener(listener)
+      try {
+        withTextConf {
+          withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val df = spark.read.text(dir.getAbsolutePath)
+            // Run only the native query: a Spark pass would add the same bytes and hide a
+            // missing metric.
+            assert(df.queryExecution.executedPlan.collect { case s: CometTextNativeScanExec =>
+              s
+            }.nonEmpty)
+            assert(df.collect().length == 12)
+          }
+        }
+        // The listener bus is asynchronous, so wait for the four tasks' totals.
+        eventually(timeout(Span(10, Seconds)), interval(Span(100, Millis))) {
+          assert(bytes.get() == 24L, s"bytesRead=${bytes.get()}")
+          assert(records.get() == 12L, s"recordsRead=${records.get()}")
+        }
+      } finally {
+        spark.sparkContext.removeSparkListener(listener)
+      }
+    }
+  }
+}
