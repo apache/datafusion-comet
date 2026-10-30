@@ -309,11 +309,12 @@ class CometDateTimeUtilsSuite extends CometTestBase {
 
   test("extreme-year session TZ uses historic zone offset") {
     // Session-TZ casts of years outside chrono's NaiveDate range: far-past uses the
-    // zone's historic / LMT offset; far-future uses modern/standard. Compare Comet
-    // to Spark via Long (seconds) so the 422s America/Los_Angeles LMT vs PST gap
-    // survives truncation and toJavaTimestamp range limits are avoided. Also covers
-    // years just outside chrono's [-262143, 262142] bounds that previously panicked.
-    for (tz <- Seq("America/Los_Angeles", "Asia/Tokyo")) {
+    // zone's historic / LMT offset; far-future uses permanent/final standard. Compare
+    // Comet to Spark via Long (seconds) so the 422s America/Los_Angeles LMT vs PST
+    // gap survives truncation and toJavaTimestamp range limits are avoided. Also
+    // covers years just outside chrono's [-262143, 262142] bounds that previously
+    // panicked, and Asia/Colombo 262400 where a 2000+rem probe hit temporary +06:00.
+    for (tz <- Seq("America/Los_Angeles", "Asia/Tokyo", "Asia/Colombo")) {
       withSQLConf(SQLConf.SESSION_LOCAL_TIMEZONE.key -> tz) {
         checkCastToTimestampAsLong(
           Seq(
@@ -323,8 +324,10 @@ class CometDateTimeUtilsSuite extends CometTestBase {
             // Residue that under a 1600+rem probe lands after LMT→standard (1900).
             "-262500-01-01 00:00:00",
             "262542-01-01 00:00:00",
-            // Far-future January must use modern standard offset, not LMT.
-            "262543-01-01 00:00:00"))
+            // Far-future January must use permanent/final standard offset, not LMT
+            // or a temporary historical standard (Colombo +06:00 in 1996–2006).
+            "262543-01-01 00:00:00",
+            "262400-01-01 00:00:00"))
       }
     }
   }

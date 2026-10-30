@@ -1475,14 +1475,16 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         // land after a zone's LMT→standard transition (e.g. LA 1883, Tokyo ~1888) for
         // some far-past residues, and still in the LMT era for far-future residues
         // (262543 → 1743), disagreeing with Spark/Java which use the first offset before
-        // any transition and the modern/standard offset for post-horizon dates.
-        //   far-past  → 400..=799  (before every IANA transition we care about → LMT)
-        //   far-future → 2000..=2399 (modern standard; January matches Spark; summer DST
-        //                after chrono-tz's last timespan remains a separate gap #6816)
+        // any transition and the permanent/final standard offset for post-horizon dates.
+        //   far-past  → 400..=799   (before every IANA transition we care about → LMT)
+        //   far-future → 2200..=2599 (past temporary historical standard-offset regimes
+        //                such as Asia/Colombo +06:00 in 1996–2006; a 2000+rem probe for
+        //                year 262400 landed on 2000 and was 1800s early vs Spark/Java
+        //                +05:30. Summer DST after chrono-tz's last timespan remains #6816)
         // Fixed offsets and UTC are unchanged either way.
         let rem = year.rem_euclid(400);
         let probe_year = if year > CHRONO_MAX_YEAR {
-            (2000 + rem) as i32
+            (2200 + rem) as i32
         } else {
             (400 + rem) as i32
         };
@@ -3133,13 +3135,16 @@ mod tests {
     #[test]
     fn extreme_year_session_tz_uses_historic_offset() {
         // Session-TZ (no zone suffix) extremes: far-past uses historic / LMT offset;
-        // far-future uses modern/standard offset (matching Spark/Java ZoneRules).
-        // Spark's America/Los_Angeles uses LMT -07:52:58 before 1883 and -08:00 in
-        // January after; Asia/Tokyo uses LMT +09:18:59 then +09:00. A single
-        // 1600+rem probe mixed those eras (issue #7210 / review on #7255).
-        // Spark-backed coverage lives in CometDateTimeUtilsSuite.
+        // far-future uses permanent/final standard offset (matching Spark/Java
+        // ZoneRules). Spark's America/Los_Angeles uses LMT -07:52:58 before 1883 and
+        // -08:00 in January after; Asia/Tokyo uses LMT +09:18:59 then +09:00. A
+        // single 1600+rem probe mixed those eras; a 2000+rem far-future probe still
+        // hit Asia/Colombo's temporary +06:00 (1996–2006) for year 262400
+        // (issue #7210 / review on #7255). Spark-backed coverage lives in
+        // CometDateTimeUtilsSuite.
         let la = &Tz::from_str("America/Los_Angeles").unwrap();
         let tokyo = &Tz::from_str("Asia/Tokyo").unwrap();
+        let colombo = &Tz::from_str("Asia/Colombo").unwrap();
         // Far-past Long.MinValue civil: LMT -07:52:58 → +28378s vs UTC parse.
         assert_eq!(
             timestamp_parser("-290308-12-21 19:59:05.224192", EvalMode::Legacy, la, true).unwrap(),
@@ -3159,7 +3164,7 @@ mod tests {
             timestamp_parser("-262544-01-01", EvalMode::Legacy, la, true).unwrap(),
             Some(-8347255603622000000),
         );
-        // Far-future January: modern standard (-08:00 / +09:00), not LMT.
+        // Far-future January: permanent/final standard (-08:00 / +09:00), not LMT.
         assert_eq!(
             timestamp_parser("262543-01-01", EvalMode::Legacy, la, true).unwrap(),
             Some(8222889686400000000),
@@ -3167,6 +3172,13 @@ mod tests {
         assert_eq!(
             timestamp_parser("262543-01-01", EvalMode::Legacy, tokyo, true).unwrap(),
             Some(8222889625200000000),
+        );
+        // Asia/Colombo: year 262400 ≡ 2000 (mod 400). A 2000+rem probe used the
+        // temporary +06:00 standard (1996–2006); Spark/Java use permanent +05:30.
+        // 2200+rem lands on 2200 → +05:30 (19800s), 1800s later than the +06:00 probe.
+        assert_eq!(
+            timestamp_parser("262400-01-01", EvalMode::Legacy, colombo, true).unwrap(),
+            Some(8218376965800000000),
         );
         let plus2 = &Tz::from_str("+02:00").unwrap();
         // Local = UTC+2, so the UTC instant is 2h earlier than the UTC-session parse.
