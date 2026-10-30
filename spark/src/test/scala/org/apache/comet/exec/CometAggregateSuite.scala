@@ -1510,6 +1510,43 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("struct min/max buffers cross engines in both directions") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      // JVM columnar shuffle can carry Spark's partial rows to a native final.
+      CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+      withTable("struct_min_max") {
+        sql("CREATE TABLE struct_min_max(g int, ts bigint, s string) USING parquet")
+        // Group 1 has a null deciding field, which sorts first on both engines.
+        sql(
+          "INSERT INTO struct_min_max VALUES (1, 5, 'b'), (1, 9, NULL), (1, NULL, 'z'), " +
+            "(2, 1, '日本語'), (2, 1, 'a'), (3, NULL, NULL)")
+        for {
+          (disabled, nativeMode) <- Seq(
+            CometConf.COMET_ENABLE_FINAL_HASH_AGGREGATE -> Partial,
+            CometConf.COMET_ENABLE_PARTIAL_HASH_AGGREGATE -> Final)
+        } {
+          withSQLConf(disabled.key -> "false") {
+            val df = sql(
+              "SELECT g, min(struct(ts, s)), max(struct(ts, s)) FROM struct_min_max GROUP BY g")
+            checkSparkAnswer(df)
+            val plan = df.queryExecution.executedPlan
+            assert(
+              collect(plan) { case a: CometBaseAggregateExec => a.modes }.flatten ==
+                Seq(nativeMode),
+              plan)
+            assert(
+              collect(plan) { case a: SortAggregateExec =>
+                a.aggregateExpressions.map(_.mode).distinct
+              }.flatten == Seq(if (nativeMode == Partial) Final else Partial),
+              plan)
+          }
+        }
+      }
+    }
+  }
+
   test("count, avg with null") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
