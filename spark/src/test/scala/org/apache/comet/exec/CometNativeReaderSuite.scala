@@ -1582,7 +1582,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             .coalesce(1)
             .selectExpr(
               "CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y",
-              "IF(id = 1023, '', sha2(CAST(id AS STRING), 512)) AS mask")
+              "IF(id = 1023, '', sha2(CAST(id AS STRING), 512)) AS mask",
+              "IF(id = 1023, 0, 1) AS keep")
             .write
             .parquet(path.toString)
         }
@@ -1599,7 +1600,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
 
           // A later mask must not hide an overflow that Spark evaluates first. The unmasked
           // predicate must also preserve Spark's structured error outside Parquet's RowFilter.
-          Seq(datePredicate, s"$datePredicate AND length(mask) > 0").foreach { predicate =>
+          Seq(
+            datePredicate,
+            s"$datePredicate AND length(mask) > 0",
+            // OR keeps the date predicate in Spark; its serializable sibling must not
+            // become a row filter that hides an error before Spark evaluates the OR.
+            s"(y = 0 OR $datePredicate) AND keep = 1").foreach { predicate =>
             val df = sql(s"SELECT count(*) FROM make_date_filters WHERE $predicate")
             assert(
               find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec]).isDefined)

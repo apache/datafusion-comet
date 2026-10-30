@@ -83,6 +83,9 @@ pub(crate) struct CometParquetScanOptions {
 ///   `data_filters`: Any predicate that must be applied to the data returned by the scan. An empty
 /// `Vec` means Spark supplied filters that Comet could not serialize. If specified, then
 /// `data_schema` must also be specified.
+///
+///   `disable_row_filter_pushdown`: Keep row filtering above the scan, including when the
+/// throwing Spark predicate is absent from `data_filters` because it could not be serialized.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn init_datasource_exec(
     required_schema: SchemaRef,
@@ -106,15 +109,17 @@ pub(crate) fn init_datasource_exec(
     rebase_from_file_metadata: bool,
     datetime_rebase_mode_in_read: &str,
     int96_rebase_mode_in_read: &str,
+    disable_row_filter_pushdown: bool,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
     // Computed once and reused below for `try_pushdown_filters`. `copied_config()` clones only
     // `SessionConfig` (an `Arc<ConfigOptions>` plus a small extensions map); `SessionContext::
     // state()` would clone the whole `SessionState`, including the function registries (~250+
     // UDFs) and optimizer rules, on every scan init.
     let mut session_config = session_ctx.copied_config();
-    if data_filters
-        .as_ref()
-        .is_some_and(|filters| filters.iter().any(contains_make_date))
+    if disable_row_filter_pushdown
+        || data_filters
+            .as_ref()
+            .is_some_and(|filters| filters.iter().any(contains_make_date))
     {
         // RowFilter can reorder predicates and flatten their Spark errors. Even pushing only
         // a later sibling could hide a make_date error that Spark evaluates first. Keep all
@@ -597,6 +602,7 @@ mod tests {
             false,
             "",
             "",
+            false,
         )
         .unwrap()
     }
@@ -734,6 +740,7 @@ mod tests {
             rebase_from_file_metadata,
             "",
             "",
+            false,
         )
         .unwrap();
 
@@ -810,6 +817,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             datetime_rebase_mode,
+            false,
         )
         .unwrap();
 
@@ -919,6 +927,7 @@ mod tests {
                 true,
                 "CORRECTED",
                 "CORRECTED",
+                false,
             )
             .unwrap();
 
@@ -1015,6 +1024,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             int96_rebase_mode,
+            false,
         )
         .unwrap();
 
@@ -1162,6 +1172,7 @@ mod tests {
             true,
             datetime_rebase_mode,
             int96_rebase_mode,
+            false,
         )
         .unwrap();
 
@@ -1431,6 +1442,7 @@ mod tests {
             false,
             "",
             "",
+            false,
         )
         .unwrap();
 

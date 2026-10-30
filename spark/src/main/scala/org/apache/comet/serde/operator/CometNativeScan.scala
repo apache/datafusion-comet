@@ -25,7 +25,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal, MakeDate}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
@@ -308,6 +308,10 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       hadoopConf = hadoopConf,
       conf = scan.conf) match {
       case Some(commonBuilder) =>
+        // Original filters include unsupported expressions and unresolved subqueries omitted
+        // from native predicates. A pushed sibling must not hide their make_date errors.
+        commonBuilder.setDisableRowFilterPushdown(
+          scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
         // Sink operators don't have children
         builder.clearChildren()
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
