@@ -148,6 +148,20 @@ impl HllSketchAccumulator {
             Self::Union(union) => union.to_sketch_bytes(),
         }
     }
+
+    /// The union that partial sketches merge into. The first call turns the sketch into one, so
+    /// rows hashed before the first merge carry over.
+    fn union_mut(&mut self) -> &mut SparkHllUnion {
+        match self {
+            Self::Union(union) => union,
+            Self::Sketch(sketch) => {
+                let mut union = SparkHllUnion::new(sketch.lg_config_k());
+                union.merge(sketch);
+                *self = Self::Union(union);
+                self.union_mut()
+            }
+        }
+    }
 }
 
 impl Accumulator for HllSketchAccumulator {
@@ -190,15 +204,7 @@ impl Accumulator for HllSketchAccumulator {
 
     fn merge_batch(&mut self, states: &[ArrayRef]) -> Result<()> {
         let arr = downcast_value!(states[0], BinaryArray);
-        if let Self::Sketch(sketch) = self {
-            // Rows hashed before the first merge carry over into the union.
-            let mut union = SparkHllUnion::new(sketch.lg_config_k());
-            union.merge(sketch);
-            *self = Self::Union(union);
-        }
-        let Self::Union(union) = self else {
-            unreachable!("the sketch was replaced by a union above")
-        };
+        let union = self.union_mut();
         for i in 0..arr.len() {
             if !arr.is_null(i) {
                 union.merge(&SparkHllSketch::from_bytes(arr.value(i))?);
