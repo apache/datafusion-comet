@@ -179,6 +179,37 @@ fn bench_in(c: &mut Criterion) {
             );
         }
     }
+
+    // A value that parses a string is dear to evaluate again for every candidate, so it keeps
+    // DataFusion's `IN`, which evaluates it once
+    for candidates in [8, 64] {
+        let list = || -> Vec<Expr> {
+            (0..candidates)
+                .map(|_| ansi_cast(column("n", 1), DataType::Int32))
+                .collect()
+        };
+        let value = || -> Expr {
+            Arc::new(Cast::new(
+                column("s", 2),
+                DataType::Int32,
+                SparkCastOptions::new_without_timezone(EvalMode::Try),
+                None,
+                None,
+            ))
+        };
+        let eager = in_list(value(), list(), &false, &schema).unwrap();
+        let lazy = spark_in_list(value(), list(), false, &schema).unwrap();
+        for (form, expr) in [("eager", eager), ("lazy", lazy)] {
+            group.bench_with_input(
+                BenchmarkId::new(
+                    format!("in_parsing_value_{form}"),
+                    format!("candidates_{candidates}"),
+                ),
+                &batch,
+                |b, batch| b.iter(|| black_box(expr.evaluate(black_box(batch)).unwrap())),
+            );
+        }
+    }
     group.finish();
 }
 

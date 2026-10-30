@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use super::case_when::cannot_fail;
+use super::case_when::{cannot_fail, is_infallible};
 use super::null_short_circuit::{evaluate_projected, project};
 use crate::{
     spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands, IfExpr,
@@ -105,7 +105,7 @@ impl LazyLogical {
 /// Spark's `In` returns true at the first candidate that equals the value, and NULL if none does
 /// and one is NULL, which is that of `value = c1 OR value = c2 OR ...`. A candidate that can fail
 /// is then evaluated only for the rows that the ones before it have not matched. The value is
-/// evaluated once per link of the chain, so this requires it to be a cheap expression that cannot fail.
+/// evaluated once per term, so this requires it to be a cheap expression that cannot fail.
 /// This returns `None` when no candidate after the first can fail, when the value cannot be
 /// evaluated again, and when a candidate has another type than the value.
 pub fn lazy_in_list(
@@ -114,7 +114,7 @@ pub fn lazy_in_list(
     negated: bool,
     schema: &Schema,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>> {
-    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !cannot_fail(value, schema) {
+    if candidates.iter().skip(1).all(|c| cannot_fail(c, schema)) || !is_infallible(value, schema) {
         return Ok(None);
     }
     let value_type = value.data_type(schema)?;
@@ -127,11 +127,11 @@ pub fn lazy_in_list(
     // A run of candidates that cannot fail is matched at once, as the IN it would be alone. The
     // chain evaluates a candidate that can fail only for the rows that the ones before it did not
     // match.
-    let mut chain: Option<Arc<dyn PhysicalExpr>> = None;
+    let mut terms = vec![];
     let mut rest = candidates;
     while !rest.is_empty() {
         let run = rest.iter().take_while(|c| cannot_fail(c, schema)).count();
-        let term = if run > 0 {
+        terms.push(if run > 0 {
             let (run, remaining) = rest.split_at(run);
             rest = remaining;
             spark_in_list(Arc::clone(value), run.to_vec(), false, schema)?
@@ -145,18 +145,32 @@ pub fn lazy_in_list(
                 schema,
                 FloatOperands::Normalize,
             )?
-        };
-        chain = Some(match chain {
-            Some(matched) => LazyLogical::wrap(matched, Operator::Or, term, schema)?,
-            None => term,
         });
     }
-    let chain = chain.expect("candidates is not empty");
+    let chain = balanced_or(&terms, schema)?;
     Ok(Some(if negated {
         Arc::new(NotExpr::new(chain))
     } else {
         chain
     }))
+}
+
+/// `terms` joined by `OR` in a balanced tree, so that a long list is no deeper than its logarithm.
+/// Each term is still evaluated only for the rows that the ones before it have not matched, since
+/// `OR` is associative.
+fn balanced_or(terms: &[Arc<dyn PhysicalExpr>], schema: &Schema) -> Result<Arc<dyn PhysicalExpr>> {
+    match terms {
+        [term] => Ok(Arc::clone(term)),
+        _ => {
+            let (left, right) = terms.split_at(terms.len() / 2);
+            LazyLogical::wrap(
+                balanced_or(left, schema)?,
+                Operator::Or,
+                balanced_or(right, schema)?,
+                schema,
+            )
+        }
+    }
 }
 
 /// Whether `expr` returns the same for a row whichever rows it has been evaluated for. That holds
@@ -544,5 +558,24 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn long_in_list_does_not_deepen_the_stack() {
+        // 4096 candidates that can fail, on a stack too small for a call per candidate
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| -> Result<()> {
+                let batch = batch(vec![Some(7), Some(9)], vec!["1", "2"]);
+                let schema = batch.schema();
+                let candidates = (0..4096)
+                    .map(|_| ansi_cast(col("s", &schema).unwrap(), DataType::Int32))
+                    .collect::<Vec<_>>();
+                let expr = crate::spark_in_list(col("v", &schema)?, candidates, false, &schema)?;
+                assert_eq!(evaluate(&expr, &batch)?, vec![Some(false); 2]);
+                Ok(())
+            })
+            .unwrap();
+        handle.join().unwrap().unwrap();
     }
 }
