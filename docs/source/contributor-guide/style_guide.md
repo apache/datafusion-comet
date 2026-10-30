@@ -24,7 +24,9 @@ This guide is for anyone who writes or reviews Comet documentation: pages under 
 classes. It defines the words Comet's docs use for how a query runs, and the conventions every page
 follows. The vocabulary rules (`T`, `N`, `O`) and the accuracy rules (`P13`, `P16`) also apply to doc
 comments, `AGENTS.md`, and the agent skills under `.ai/skills`, with the contributor guide's
-allowances.
+allowances. The rules apply to new and changed text. Existing pages move over as they are edited, so
+a review does not ask a change to fix text it leaves alone, unless the change makes that text wrong
+(`P16`).
 
 The sections cover how Comet runs a query, the vocabulary, the rule for "native", operator names,
 page conventions, and generated content.
