@@ -1148,6 +1148,8 @@ message SortMergeJoin {
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
   optional spark.spark_expression.Expr condition = 5;
+  // Spark sets this for a right sort reading a single integer equality key from a Comet shuffle.
+  bool right_key_reduction_enabled = 6;
 }
 
 message BroadcastNestedLoopJoin {
