@@ -241,6 +241,10 @@ query
 SELECT abs(v) FROM test_abs
 ```
 
+This checks the plan's operators and the results. It does not prove that a named expression
+survived optimization, or whether Comet ran it natively or through the JVM codegen
+dispatcher. See [Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet).
+
 #### `query spark_answer_only`
 
 Only checks that Comet results match Spark. Does not assert that the query runs natively.
@@ -289,14 +293,17 @@ Comet runs an expression either natively (a DataFusion expression) or through th
 dispatcher (Spark's own `doGenCode` compiled into an Arrow batch kernel). Both produce
 Spark-matching results, so a plain `query` cannot tell them apart. Use these modes on fixtures
 where the mechanism is the point of the test, typically an expression whose support depends on
-its argument type.
+its argument type or on a config.
 
 ```sql
--- BinaryType has no native path and must route through the dispatcher
-query expect_dispatch(bit_length)
-SELECT bit_length(b) FROM test_bit_length_binary
+-- Config: spark.comet.exec.scalaUDF.codegen.enabled=true
+-- Config: spark.comet.caseConversion.enabled=false
 
--- StringType must stay on the native path
+-- Without native case conversion, lower must route through the dispatcher
+query expect_dispatch(lower)
+SELECT lower(s) FROM test_lower
+
+-- StringType bit_length must stay on the native path
 query expect_native(bit_length)
 SELECT bit_length(s) FROM test_bit_length
 ```
@@ -393,7 +400,10 @@ operators and needs no additional successful query.
    directives speculatively.
 
 4. Create tables and insert test data using `statement` blocks. Include edge cases such as
-   `NULL`, boundary values, and negative numbers.
+   `NULL`, boundary values, and negative numbers. For a small unpartitioned fixture that needs
+   rows together in a file, use `INSERT INTO t SELECT /*+ COALESCE(1) */ * FROM VALUES ... AS v(...)`.
+   See [Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet)
+   for a complete example and the limits of this setup.
 
 5. Add `query` blocks for each expression or behavior to test. Use the default `query` mode
    when you expect Comet to run the expression natively. Use `query spark_answer_only` when
@@ -437,8 +447,11 @@ SELECT ascii(s) FROM test_ascii
 
 -- literal arguments
 query
-SELECT ascii('A'), ascii(''), ascii(NULL)
+SELECT ascii('A'), ascii('')
 ```
+
+Cover NULL through a NULL row in the column data. `ascii(NULL)` does not test `ascii`, because
+`NullPropagation` replaces it with a NULL literal unless the fixture excludes that rule.
 
 For a multi-argument function like `concat_ws(sep, str1, str2, ...)`, test with the separator
 as a column versus a literal, and similarly for the other arguments:
@@ -459,12 +472,60 @@ SELECT concat_ws(',', 'hello', 'world')
 
 **Note on constant folding:** Normally Spark constant-folds all-literal expressions during
 planning, so Comet would never see them. However, `CometSqlFileTestSuite` automatically
-disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so
-all-literal queries are evaluated by Comet's native engine. This means you can use the
-default `query` mode for all-literal cases and they will be tested natively just like
-column-based queries, subject to other optimizer rewrites such as `NullPropagation` and
-Comet's own plan-time literal handling. `ConstantFolding: enabled` opts out of the default
-exclusion for fixtures that deliberately test folded literals.
+disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so that
+rule does not remove all-literal expressions before Comet sees them. Other optimizer rules, such as
+`NullPropagation`, and Comet's own plan-time literal handling can still remove them, so an
+all-literal query is not guaranteed to run the expression natively. See
+[Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet).
+`ConstantFolding: enabled` opts out of the default exclusion for fixtures that deliberately
+test folded literals.
+
+#### Make sure the expression reaches Comet
+
+A passing `query` shows that Comet planned the operators and matched Spark's results. It does
+not show that the expression under test was still in the plan. Watch for these traps:
+
+- **NULL literal arguments.** `NullPropagation` replaces a null-intolerant expression with a
+  NULL argument, such as `abs(NULL)`, by a NULL literal. Put NULLs in the table data, or see
+  [`ExcludeRules`](#excluderules).
+- **Literal casts.** When a `CAST` of a literal evaluates successfully, Comet evaluates it on
+  the JVM while planning and sends only the result, so the native cast never runs. Expression
+  coverage still lists the cast as native, so `expect_native` does not catch this. A literal
+  cast that fails to evaluate is routed through the codegen dispatcher or falls back to Spark.
+  Some column casts are also planned as a NULL literal, such as `DATE` to a numeric type with
+  ANSI disabled. Read cast inputs from Parquet columns.
+- **Inline `VALUES`.** Spark's `ConvertToLocalRelation` evaluates an eligible `Project` or
+  `Filter` over an inline `VALUES` table during optimization, so Comet only sees the result.
+  Read inputs from a Parquet table instead.
+- **Tiny files.** Tests run on `local[5]`, so a small `INSERT ... VALUES` can write several
+  tiny files, often one row each, which can leave the expression with only one-row batches. For a
+  small unpartitioned table whose rows should be written to a single file, use
+  `INSERT INTO t SELECT /*+ COALESCE(1) */ * FROM VALUES ... AS v(...)`. This does not fix the
+  batch size or the row order.
+- **Regex escapes.** With the default `spark.sql.parser.escapedStringLiterals=false`, Spark
+  processes backslash escapes in SQL string literals, so `'\d'` reaches the regex as `d`.
+  Write a raw string, `r'\d'`, or double the backslash, `'\\d'`.
+- **Session time zone.** The default time zone comes from the JVM. Pin it with
+  `-- Config: spark.sql.session.timeZone=UTC` (or another zone) when results depend on it.
+
+For signed zero, see [Cover edge cases](#cover-edge-cases). For how `SET` and `Config` changes
+are scoped, see [Statements](#statements).
+
+This example reads a string column from Parquet, so the native string-to-int cast
+runs on valid values, on `'abc'` (NULL, because the suite disables ANSI by default) and on a
+NULL:
+
+```sql
+statement
+CREATE TABLE test_cast_input(s string) USING parquet
+
+statement
+INSERT INTO test_cast_input SELECT /*+ COALESCE(1) */ * FROM VALUES
+  ('12'), ('-7'), ('abc'), (NULL) AS v(s)
+
+query
+SELECT s, CAST(s AS INT) FROM test_cast_input
+```
 
 #### Cover edge cases
 
