@@ -39,6 +39,7 @@ import org.apache.arrow.vector.{BaseVariableWidthVector, BigIntVector, FieldVect
 import org.apache.arrow.vector.complex.{ListVector, MapVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.{ArrowStreamReader, ArrowStreamWriter, WriteChannel}
+import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.arrow.vector.types.{IntervalUnit, TimeUnit}
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType, Schema}
 import org.apache.spark.{SparkConf, SparkEnv, SparkException, TaskContext, TaskContextImpl}
@@ -1148,6 +1149,54 @@ class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
       }
     } finally {
       values.close()
+      allocator.close()
+    }
+  }
+
+  test("a whole-batch range of a sliced string vector writes only the sliced values") {
+    // A slice of a native string array reaches the JVM with offsets that start past zero and the
+    // bytes of the rows before it at the front of its data buffer. Written as it stands, the
+    // worker would receive those bytes too, however the range is cut.
+    val allocator = new RootAllocator(Long.MaxValue)
+    val values = (0 until 24).map(i => s"value-$i")
+    val skip = 8
+    val full = new VarCharVector("text", allocator)
+    val sliced = new VarCharVector("text", allocator)
+    val fresh = new VarCharVector("text", allocator)
+    try {
+      full.allocateNew()
+      values.zipWithIndex.foreach { case (v, i) =>
+        full.setSafe(i, v.getBytes(StandardCharsets.UTF_8))
+      }
+      full.setValueCount(values.length)
+      val length = values.length - skip
+      sliced.loadFieldBuffers(
+        new ArrowFieldNode(length.toLong, 0L),
+        Seq(
+          full.getValidityBuffer.slice(skip / 8L, (length + 7) / 8L),
+          full.getOffsetBuffer.slice(skip * 4L, (length + 1) * 4L),
+          full.getDataBuffer).asJava)
+      sliced.getOffsetBuffer.getInt(0) should be > 0
+
+      fresh.allocateNew()
+      values.drop(skip).zipWithIndex.foreach { case (v, i) =>
+        fresh.setSafe(i, v.getBytes(StandardCharsets.UTF_8))
+      }
+      fresh.setValueCount(length)
+
+      // The writer allocator is separate because writeInput checks that nothing is left in it.
+      val writerAllocator = new RootAllocator(Long.MaxValue)
+      try {
+        val written =
+          writeInput(Seq(new CometPlainVector(sliced)), length, 0, 0L, writerAllocator)
+        val expected =
+          writeInput(Seq(new CometPlainVector(fresh)), length, 0, 0L, writerAllocator)
+        written.length shouldBe expected.length
+      } finally {
+        writerAllocator.close()
+      }
+    } finally {
+      Seq(fresh, sliced, full).foreach(_.close())
       allocator.close()
     }
   }
