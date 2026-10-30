@@ -715,6 +715,11 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## make_date evaluation
 
+A valid calendar date outside Date32's range raises `ARITHMETIC_OVERFLOW` in both ANSI
+modes. For example, `make_date(6000000, 1, 1)` raises an error even with ANSI disabled.
+Invalid calendar fields still return NULL with ANSI disabled and raise a date error with
+ANSI enabled; a NULL argument returns NULL before date validation.
+
 With ANSI mode enabled, `make_date(2024, 13, 1)` raises an invalid-date error. If an
 input iterator yields a valid row followed by that invalid row, a `LIMIT 1` can stop
 before evaluating the second date. A native projection can evaluate a whole batch

@@ -203,3 +203,42 @@ SET spark.sql.subexpressionElimination.enabled=false
 
 query expect_native(make_date)
 SELECT make_date(y, 1, d + 1), d + 1 FROM make_date_shared
+
+-- The Date32 endpoints remain valid, and NULL arguments skip overflow validation.
+statement
+CREATE TABLE make_date_bounds(y INT, m INT, d INT) USING parquet
+
+statement
+INSERT INTO make_date_bounds VALUES
+  (5881580, 7, 11), (-5877641, 6, 23),
+  (NULL, 13, 32), (6000000, NULL, 1), (6000000, 1, NULL)
+
+query expect_native(make_date)
+SELECT unix_date(make_date(y, m, d)) FROM make_date_bounds
+
+-- Valid calendar dates just outside Date32 must overflow, regardless of ANSI mode.
+statement
+CREATE TABLE make_date_overflow(y INT, m INT, d INT) USING parquet
+
+statement
+INSERT INTO make_date_overflow VALUES (5881580, 7, 12), (-5877641, 6, 22)
+
+query expect_error_class(ARITHMETIC_OVERFLOW)
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y > 0
+
+query expect_error_class(ARITHMETIC_OVERFLOW)
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y < 0
+
+-- An empty input must not evaluate overflowing scalar arguments.
+query expect_native(make_date)
+SELECT make_date(6000000, 1, 1) FROM make_date_overflow WHERE y = 0
+
+-- Invalid calendar fields must report their own error, not Date32 overflow.
+query expect_error(MonthOfYear)
+SELECT make_date(6000000, 13, 32)
+
+query expect_error(Invalid date)
+SELECT make_date(6000000, 2, 30)
+
+query expect_error(Year)
+SELECT make_date(1000000000, 13, 32)

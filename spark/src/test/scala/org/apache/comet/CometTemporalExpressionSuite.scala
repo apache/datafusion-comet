@@ -59,7 +59,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
 
-  test("make_date does not evaluate an invalid row beyond a partial consumer") {
+  test("make_date does not evaluate errors beyond a partial consumer") {
     import testImplicits._
 
     withSQLConf(
@@ -75,7 +75,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             .coalesce(1)
             .selectExpr(
               "CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m",
-              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text")
+              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text",
+              "CAST(CASE WHEN id = 0 THEN 2024 ELSE 6000000 END AS INT) AS y")
             .write
             .parquet(path.getCanonicalPath)
         }
@@ -114,6 +115,25 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                   }
                   assert(expected == Seq(Row(19723)))
                   assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // Date32 overflow throws even with ANSI off, but only on rows Spark consumes.
+              for (ansi <- Seq(false, true)) {
+                withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+                  val overflow = "SELECT unix_date(make_date(y, 1, 1)) FROM make_date_limit"
+                  checkSparkAnswerAndOperator(
+                    sql(overflow + " LIMIT 1"),
+                    includeClasses = Seq(classOf[CometProjectExec], classOf[CometLocalLimitExec]))
+                  partialConsumers.foreach { case (name, consume) =>
+                    withClue(s"$name ansi=$ansi codegen=$codegen: ") {
+                      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                        expected = consume(sql(overflow))
+                      }
+                      assert(expected == Seq(Row(19723)))
+                      assert(consume(sql(overflow)) == expected)
+                    }
+                  }
                 }
               }
 
@@ -183,7 +203,7 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
         "SELECT make_date(2024, 13, 1)",
-        // 999999999 instead overflows the epoch-day conversion as a plain ArithmeticException.
+        // 999999999 instead raises ARITHMETIC_OVERFLOW during the epoch-day conversion.
         "SELECT make_date(1000000000, 1, 1)",
         "SELECT make_date(1000000000, 13, 0)")
         .foreach { query =>
