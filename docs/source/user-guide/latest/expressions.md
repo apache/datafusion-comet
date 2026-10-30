@@ -118,7 +118,7 @@ The tables below list every Spark built-in expression with its current status.
 | `median` | ✅ | — | Rewrites to `percentile(col, 0.5)` and runs natively for supported percentile inputs |
 | `min` | ✅ | Native |  |
 | `min_by` | ✅ | Native | Value and ordering must be fixed-length types |
-| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible |
+| `mode` | ✅ | Native | `mode(col)` only; Spark breaks ties non-deterministically, so Comet returns the smallest tied value and falls back by default, opt-in via allowIncompatible; `FLOAT` and `DOUBLE` input always falls back before Spark 3.5.2, where each NaN is a value of its own |
 | `percentile` | ✅ | Native | Single literal percentage on numeric input runs natively; array of percentages and a frequency argument fall back to Spark |
 | `percentile_approx` | ✅ | Native | Alias of `approx_percentile`; same restrictions apply |
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs natively, `DESC` falls back to Spark |
