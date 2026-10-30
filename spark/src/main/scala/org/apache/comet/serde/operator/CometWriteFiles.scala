@@ -73,12 +73,13 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
         return Unsupported(Some("Only InsertIntoHadoopFsRelationCommand writes are supported"))
     }
 
-    if (!outputPath.startsWith("file:") && !outputPath.startsWith("hdfs:")) {
-      return Unsupported(Some("Supported output filesystems: local, HDFS"))
-    }
-
+    val conf = hadoopConf(op)
     NativeWriteUtils
-      .escapedHdfsDestination(outputPath, fileNamePrefix(hadoopConf(op)))
+      .unsupportedFileSystem(
+        outputPath,
+        op.session.sessionState.conf.fileCommitProtocolClass,
+        conf)
+      .orElse(NativeWriteUtils.escapedHdfsDestination(outputPath, fileNamePrefix(conf)))
       .foreach(reason => return Unsupported(Some(reason)))
 
     if (op.bucketSpec.isDefined) {
@@ -137,7 +138,9 @@ object CometWriteFiles extends CometOperatorSerde[WriteFilesExec] {
       .setCompression(codec)
 
     // getSupportLevel already declined the write if the tag is absent, so this cannot be empty.
-    outputPathOf(op).foreach { outputPath =>
+    // Only a native writer creating its own files reads the options: the files of any other
+    // destination are created and uploaded through Hadoop, see CometWriteFilesExec.writeFile.
+    outputPathOf(op).filter(NativeWriteUtils.nativeWriterCreatesFile).foreach { outputPath =>
       // The tag holds `Path.toString`, which is not a valid URI string: it leaves spaces and
       // literal `%` unescaped, so `URI.create` would throw. Round-tripping through `Path` escapes
       // them again. Only the scheme and authority matter to `extractObjectStoreOptions`, but

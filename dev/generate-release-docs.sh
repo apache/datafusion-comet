@@ -73,12 +73,16 @@ done
 # must pass the check. GenerateDocs wraps the config/cast tables in prettier-ignore, but
 # the surrounding generated Markdown is not guaranteed prettier-clean. prettier honors
 # .prettierignore, so excluded pages (e.g. expressions.md) are left untouched.
+# CI installs the latest prettier (`npm install -g prettier`), and releases of prettier differ
+# in what they accept, so format with the latest too rather than with whatever version is
+# installed locally or cached by npx. Generating the 1.2.0 docs with prettier 3.2.5 left 40
+# pages that the latest prettier rejects.
 if ! command -v npx >/dev/null 2>&1; then
   echo "ERROR: npx not found. Install Node/prettier (see docs/source/contributor-guide/development.md)" >&2
   exit 1
 fi
 echo "Formatting generated Markdown with prettier..."
-npx prettier "${LATEST_USER_GUIDE}/**/*.md" --write
+npx --yes prettier@latest "${LATEST_USER_GUIDE}/**/*.md" --write
 
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"

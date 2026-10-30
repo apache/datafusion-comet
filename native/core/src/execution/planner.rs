@@ -21,6 +21,7 @@ mod aggregate;
 mod explode;
 pub mod expression_registry;
 mod join;
+mod literal;
 pub mod macros;
 mod merge_rows;
 pub mod operator_registry;
@@ -54,7 +55,7 @@ use crate::execution::{
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
+use crate::jvm_bridge::{jni_call, JVMClasses, OutputStreamSink, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
@@ -89,7 +90,6 @@ use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::{
     object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
 };
-use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -97,6 +97,7 @@ use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::LexOrdering;
+use literal::literal_to_scalar;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
@@ -105,20 +106,19 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
-use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::filter::FilterExecBuilder;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
-    spark_expression::{self, expr::ExprStruct, literal::Value, Expr, ScalarFunc},
+    spark_expression::{self, expr::ExprStruct, Expr, ScalarFunc},
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
     coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
     jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
     CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
-    GetStructField, IfExpr, ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats,
+    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
     NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
     WideDecimalOp,
 };
@@ -197,6 +197,10 @@ pub struct PhysicalPlanner {
     /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
     /// thread before native planning. Only explicit RSS destinations may use it.
     shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file the plan's Parquet writer writes, when the JVM created that
+    /// file, registered on the driving Spark task thread before native planning. Only a writer
+    /// planned to write through the JVM may use it.
+    output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
@@ -222,6 +226,7 @@ impl PhysicalPlanner {
             task_context: None,
             class_loader: None,
             shuffle_partition_pusher: None,
+            output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
         }
@@ -251,6 +256,15 @@ impl PhysicalPlanner {
             self.query_context_registry
                 .register(expr_id, self.build_query_context(ctx_proto));
         }
+    }
+
+    /// Look up the `QueryContext` registered for an expression by `register_query_context`, if
+    /// the expression carries an id and a context.
+    fn query_context_for(
+        &self,
+        expr_id: Option<u64>,
+    ) -> Option<Arc<datafusion_comet_spark_expr::QueryContext>> {
+        expr_id.and_then(|expr_id| self.query_context_registry.get(expr_id))
     }
 
     /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
@@ -342,6 +356,15 @@ impl PhysicalPlanner {
         shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
     ) -> Self {
         self.shuffle_partition_pusher = shuffle_partition_pusher;
+        self
+    }
+
+    /// Attach the output stream of the file the plan's Parquet writer writes, for a file the
+    /// Spark task that created this plan created through the JVM.
+    ///
+    /// Only a writer planned to write through the JVM takes it, and such a writer requires it.
+    pub fn with_output_stream(mut self, output_stream: Option<Arc<dyn OutputStreamSink>>) -> Self {
+        self.output_stream = output_stream;
         self
     }
 
@@ -654,127 +677,15 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
-            ExprStruct::Literal(literal) => {
-                let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
-                let scalar_value = if literal.is_null {
-                    match data_type {
-                        DataType::Boolean => ScalarValue::Boolean(None),
-                        DataType::Int8 => ScalarValue::Int8(None),
-                        DataType::Int16 => ScalarValue::Int16(None),
-                        DataType::Int32 => ScalarValue::Int32(None),
-                        DataType::Int64 => ScalarValue::Int64(None),
-                        DataType::Float32 => ScalarValue::Float32(None),
-                        DataType::Float64 => ScalarValue::Float64(None),
-                        DataType::Utf8 => ScalarValue::Utf8(None),
-                        DataType::Date32 => ScalarValue::Date32(None),
-                        DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                            ScalarValue::TimestampMicrosecond(None, timezone)
-                        }
-                        DataType::Binary => ScalarValue::Binary(None),
-                        DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
-                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
-                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
-                        DataType::List(f) => DataType::List(f).try_into()?,
-                        DataType::Null => ScalarValue::Null,
-                        DataType::Time64(TimeUnit::Nanosecond) => {
-                            ScalarValue::Time64Nanosecond(None)
-                        }
-                        DataType::Interval(IntervalUnit::YearMonth) => {
-                            ScalarValue::IntervalYearMonth(None)
-                        }
-                        DataType::Duration(TimeUnit::Microsecond) => {
-                            ScalarValue::DurationMicrosecond(None)
-                        }
-                        DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
-                            ScalarValue::IntervalMonthDayNano(None)
-                        }
-                        dt => {
-                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
-                        }
-                    }
-                } else {
-                    match literal.value.as_ref().unwrap() {
-                        Value::BoolVal(value) => ScalarValue::Boolean(Some(*value)),
-                        Value::ByteVal(value) => ScalarValue::Int8(Some(*value as i8)),
-                        Value::ShortVal(value) => ScalarValue::Int16(Some(*value as i16)),
-                        Value::IntVal(value) => match data_type {
-                            DataType::Int32 => ScalarValue::Int32(Some(*value)),
-                            DataType::Date32 => ScalarValue::Date32(Some(*value)),
-                            DataType::Interval(IntervalUnit::YearMonth) => {
-                                ScalarValue::IntervalYearMonth(Some(*value))
-                            }
-                            dt => {
-                                return Err(GeneralError(format!(
-                                    "Expected either 'Int32', 'Date32', or 'Interval(YearMonth)' for IntVal, but found {dt:?}"
-                                )))
-                            }
-                        },
-                        Value::LongVal(value) => match data_type {
-                            DataType::Int64 => ScalarValue::Int64(Some(*value)),
-                            DataType::Timestamp(TimeUnit::Microsecond, None) => {
-                                ScalarValue::TimestampMicrosecond(Some(*value), None)
-                            }
-                            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-                                ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
-                            }
-                            DataType::Duration(TimeUnit::Microsecond) => {
-                                ScalarValue::DurationMicrosecond(Some(*value))
-                            }
-                            DataType::Time64(TimeUnit::Nanosecond) => {
-                                ScalarValue::Time64Nanosecond(Some(*value))
-                            }
-                            dt => {
-                                return Err(GeneralError(format!(
-                                    "Expected 'Int64', 'Timestamp', 'Duration(Microsecond)', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
-                                )))
-                            }
-                        },
-                        Value::FloatVal(value) => ScalarValue::Float32(Some(*value)),
-                        Value::DoubleVal(value) => ScalarValue::Float64(Some(*value)),
-                        Value::StringVal(value) => ScalarValue::Utf8(Some(value.clone())),
-                        Value::BytesVal(value) => ScalarValue::Binary(Some(value.clone())),
-                        Value::DecimalVal(value) => {
-                            let big_integer = BigInt::from_signed_bytes_be(value);
-                            let integer = big_integer.to_i128().ok_or_else(|| {
-                                GeneralError(format!(
-                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                ))
-                            })?;
-
-                            match data_type {
-                                DataType::Decimal128(p, s) => {
-                                    ScalarValue::Decimal128(Some(integer), p, s)
-                                }
-                                dt => {
-                                    return Err(GeneralError(format!(
-                                        "Decimal literal's data type should be Decimal128 but got {dt:?}"
-                                    )))
-                                }
-                            }
-                        }
-                        Value::ListVal(values) => {
-                            if let DataType::List(_) = data_type {
-                                SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
-                            } else {
-                                return Err(GeneralError(format!(
-                                    "Expected DataType::List but got {data_type:?}"
-                                )));
-                            }
-                        }
-                    }
-                };
-                Ok(Arc::new(DataFusionLiteral::new(scalar_value)))
-            }
+            ExprStruct::Literal(literal) => Ok(Arc::new(DataFusionLiteral::new(
+                literal_to_scalar(literal)?,
+            ))),
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 let mut cast_options = SparkCastOptions::new_with_version(
                     eval_mode,
@@ -795,10 +706,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
@@ -1369,11 +1277,7 @@ impl PhysicalPlanner {
         options: BinaryExprOptions,
         eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Look up query context from registry if expr_id is present
-        let query_context = spark_expr.expr_id.and_then(|expr_id| {
-            let registry = &self.query_context_registry;
-            registry.get(expr_id)
-        });
+        let query_context = self.query_context_for(spark_expr.expr_id);
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -2195,6 +2099,11 @@ impl PhysicalPlanner {
         } else {
             scalar_expr
         };
+        let scalar_expr = if fun_name == "make_date" {
+            Arc::new(MakeDateExpr::new(scalar_expr)) as Arc<dyn PhysicalExpr>
+        } else {
+            scalar_expr
+        };
 
         // DF53 changed some UDFs (e.g. md5) to return StringViewArray at execution
         // time (apache/datafusion#20045). Comet does not yet support view types, so
@@ -2742,7 +2651,11 @@ fn parse_file_scan_tasks_from_common(
                 .with_partition_spec(partition_spec)
                 .with_name_mapping(name_mapping)
                 .with_unified_partition_type(unified_partition_type_for_task)
-                .with_case_sensitive(false)
+                // The only consumer is the binding of an equality delete's predicate, whose
+                // column names iceberg-rust takes from the task schema. They match it exactly,
+                // and a case-insensitive binding rejects a schema with two names that differ
+                // only by case.
+                .with_case_sensitive(true)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
                 .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
@@ -3099,6 +3012,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 mod tests {
     mod empty_native_scan;
     mod multi_store_scan;
+    mod semi_join_reduction;
 
     use futures::{poll, StreamExt};
     use std::{
@@ -4548,7 +4462,6 @@ mod tests {
     #[tokio::test]
     async fn keyless_aggregate_without_functions_emits_one_empty_row() {
         use arrow::array::RecordBatchOptions;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
 
         let scan = Operator {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
@@ -4594,22 +4507,7 @@ mod tests {
             assert_eq!("ScanExec", planned.children[0].native_plan.name());
 
             for batches in [vec![rows(3), rows(2)], vec![]] {
-                let input: Arc<dyn ExecutionPlan> =
-                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
-                        .unwrap();
-                let native_plan = Arc::clone(&planned.native_plan)
-                    .transform_up(|node| {
-                        Ok(if node.name() == "ScanExec" {
-                            Transformed::yes(Arc::clone(&input))
-                        } else {
-                            Transformed::no(node)
-                        })
-                    })
-                    .unwrap()
-                    .data;
-                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
-                    .await
-                    .unwrap();
+                let results = collect_over_batches(&planned, batches, Arc::clone(&task_ctx)).await;
                 assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
             }
         }
@@ -4618,7 +4516,6 @@ mod tests {
     #[tokio::test]
     async fn sort_aggregate_output_is_ordered_by_grouping_keys() {
         use arrow::datatypes::Int32Type;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
 
         let array_type = spark_expression::DataType {
@@ -4698,21 +4595,7 @@ mod tests {
         ])) as ArrayRef;
         let batch =
             RecordBatch::try_new(planned.children[0].schema(), vec![Arc::clone(&keys)]).unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
         assert_eq!(keys.as_ref(), output.column(0).as_ref());
     }
@@ -4772,27 +4655,17 @@ mod tests {
     async fn partial_merge_runs_as_single_and_emits_merged_states() {
         use arrow::array::{BooleanArray, Int64Array};
         use datafusion::assert_batches_sorted_eq;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
         // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
         // states. DataFusion's first has no GroupsAccumulator without an ordering.
-        let int64 = spark_expression::DataType {
-            type_id: 4,
-            type_info: None,
-        };
+        let int64 = create_int64_datatype();
         let boolean = spark_expression::DataType {
             type_id: 0,
             type_info: None,
         };
-        let v = Expr {
-            expr_struct: Some(Unbound(spark_expression::UnboundReference {
-                name: "v".to_string(),
-                datatype: Some(int64.clone()),
-            })),
-            ..Default::default()
-        };
+        let v = create_unbound_int64("v");
         let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
         let aggregate = |mode: i32| Operator {
             plan_id: 1,
@@ -4818,19 +4691,8 @@ mod tests {
                     ..Default::default()
                 }],
                 agg_exprs: vec![
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
-                            child: Some(v.clone()),
-                            datatype: Some(int64.clone()),
-                        })),
-                        ..Default::default()
-                    },
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
-                            children: vec![v.clone()],
-                        })),
-                        ..Default::default()
-                    },
+                    create_max_agg(&v),
+                    create_count_agg(&v),
                     spark_expression::AggExpr {
                         expr_struct: Some(AggExprStruct::First(spark_expression::First {
                             child: Some(v.clone()),
@@ -4895,21 +4757,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         assert_batches_sorted_eq!(
             [
                 "+-------+------------+--------------+--------------------+---------------------------+",
@@ -4922,6 +4770,169 @@ mod tests {
             ],
             &results
         );
+    }
+
+    #[tokio::test]
+    async fn partial_merge_over_sorted_input_runs_as_final() {
+        use arrow::array::Int64Array;
+        use datafusion::assert_batches_sorted_eq;
+        use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+        use datafusion::physical_plan::InputOrderMode;
+        use spark_expression::agg_expr::ExprStruct as AggExprStruct;
+
+        // A Spark PartialMerge grouped by (g, k) over a native sort on g, which DataFusion 55's
+        // Single would run with a GroupedHashAggregateStream that can fail to spill (#6880).
+        let int64 = create_int64_datatype();
+        let v = create_unbound_int64("v");
+        let key = |index: i32| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(int64.clone()),
+            })),
+            ..Default::default()
+        };
+        let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
+        let aggregate = |sort_keys: &[i32],
+                         state_fields: Vec<spark_expression::DataType>,
+                         agg_exprs: Vec<spark_expression::AggExpr>| {
+            Operator {
+                plan_id: 1,
+                children: vec![Operator {
+                    children: vec![Operator {
+                        op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                            fields: [vec![int64.clone(), int64.clone()], state_fields].concat(),
+                            source: String::new(),
+                        })),
+                        ..Default::default()
+                    }],
+                    op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                        sort_orders: sort_keys
+                            .iter()
+                            .map(|&index| create_sort_order(index, 4, false, true))
+                            .collect(),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                    grouping_exprs: vec![key(0), key(1)],
+                    expr_modes: vec![partial_merge; agg_exprs.len()],
+                    agg_exprs,
+                    mode: partial_merge,
+                    initial_input_buffer_offset: 2,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // Over native max and count states, DataFusion's Final runs an ordered aggregate that
+        // spills, and the projection above it unpacks the states as it does above Single.
+        let max_count = |sort_keys: &[i32]| {
+            aggregate(
+                sort_keys,
+                vec![int64.clone(), int64.clone()],
+                vec![create_max_agg(&v), create_count_agg(&v)],
+            )
+        };
+        let (_, _, planned) = planner
+            .create_plan(&max_count(&[0]), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        let final_agg = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Final, final_agg.mode());
+        assert_eq!(
+            &InputOrderMode::PartiallySorted(vec![0]),
+            final_agg.input_order_mode()
+        );
+
+        let input_schema = planned.children[0].schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![2, 1, 1, 2, 1])),
+                Arc::new(Int64Array::from(vec![1, 2, 1, 1, 2])),
+                Arc::new(Int64Array::from(vec![
+                    Some(4),
+                    Some(10),
+                    None,
+                    Some(9),
+                    Some(3),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 0, 3, 4])),
+            ],
+        )
+        .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], Arc::clone(&task_ctx)).await;
+        assert_batches_sorted_eq!(
+            [
+                "+-------+-------+------------+--------------+",
+                "| col_0 | col_1 | max[value] | count[count] |",
+                "+-------+-------+------------+--------------+",
+                "| 1     | 1     |            | 0            |",
+                "| 1     | 2     | 10         | 6            |",
+                "| 2     | 1     | 9          | 4            |",
+                "+-------+-------+------------+--------------+",
+            ],
+            &results
+        );
+
+        // Final reads the keys from the leading columns and each state from the columns after
+        // them, so a PartialMerge whose input is laid out any other way stays Single. So does one
+        // over input sorted on every key, where Final has no spill path to offer.
+        let with_hash_agg =
+            |mut op: Operator, edit: &dyn Fn(&mut spark_operator::HashAggregate)| {
+                if let Some(OpStruct::HashAgg(agg)) = op.op_struct.as_mut() {
+                    edit(agg);
+                }
+                op
+            };
+        // Spark's partial collect_list hands over its buffers as binary, which Final would spill
+        // as list states into binary columns.
+        let collect_list = aggregate(
+            &[0],
+            vec![spark_expression::DataType {
+                type_id: 8,
+                type_info: None,
+            }],
+            vec![spark_expression::AggExpr {
+                expr_struct: Some(AggExprStruct::CollectList(spark_expression::CollectList {
+                    child: Some(v.clone()),
+                    datatype: Some(int64.clone()),
+                })),
+                ..Default::default()
+            }],
+        );
+        let swapped_keys = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.grouping_exprs = vec![key(1), key(0)];
+        });
+        let states_after_one_key = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.initial_input_buffer_offset = 1;
+        });
+        let extra_column = aggregate(
+            &[0],
+            vec![int64.clone(), int64.clone(), int64.clone()],
+            vec![create_max_agg(&v), create_count_agg(&v)],
+        );
+        for (case, op) in [
+            ("collect_list buffers", collect_list),
+            ("swapped keys", swapped_keys),
+            ("states after one key", states_after_one_key),
+            ("a column after the states", extra_column),
+            ("sorted on every key", max_count(&[0, 1])),
+        ] {
+            let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+            let single = planned.additional_native_plans[0]
+                .downcast_ref::<AggregateExec>()
+                .unwrap();
+            assert_eq!(&AggregateMode::Single, single.mode(), "{case}");
+            assert_ne!(&InputOrderMode::Linear, single.input_order_mode(), "{case}");
+        }
     }
 
     #[tokio::test]
@@ -5083,6 +5094,74 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    fn create_int64_datatype() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        }
+    }
+
+    /// An unbound reference to the Int64 column `name`, as a Spark aggregate function's child.
+    fn create_unbound_int64(name: &str) -> Expr {
+        Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: name.to_string(),
+                datatype: Some(create_int64_datatype()),
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn create_max_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Max(
+                spark_expression::Max {
+                    child: Some(child.clone()),
+                    datatype: Some(create_int64_datatype()),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn create_count_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Count(
+                spark_expression::Count {
+                    children: vec![child.clone()],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Runs `planned` with `batches` standing in for its single `ScanExec` and returns the
+    /// output batches.
+    async fn collect_over_batches(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        batches: Vec<RecordBatch>,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+    ) -> Vec<RecordBatch> {
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], planned.children[0].schema(), None)
+                .unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
