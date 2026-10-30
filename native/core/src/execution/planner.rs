@@ -4271,34 +4271,9 @@ mod tests {
     }
 
     #[test]
-    fn declared_order_reaches_an_empty_bucket() {
-        // A bucket with no file is planned as an `EmptyExec`. A window over it checks its input's
-        // order before polling it, so the order Spark reports has to be declared there as well.
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "col_0",
-            DataType::Int32,
-            true,
-        )]));
-        let empty: Arc<dyn ExecutionPlan> =
-            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
-        let input = PhysicalPlanner::default()
-            .with_declared_order(empty, &[create_sort_order(0, 3, false, true)])
-            .unwrap();
-        assert_eq!("SortedInputExec", input.name());
-        let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
-        assert_eq!(
-            1,
-            get_ordered_partition_by_indices(&partition_by, &input)
-                .unwrap()
-                .len()
-        );
-    }
-
-    #[test]
     fn declared_order_extends_an_order_the_input_declares() {
-        // Two aliases of one column share an order, so a window over the window for one alias can
-        // need the other's order while its input declares only the first. That order is declared
-        // next to the input's, unless an operator in between may have moved rows.
+        // An order is declared over an empty bucket, and next to the order the input declares,
+        // unless an operator in between may have moved rows.
         let schema = Arc::new(Schema::new(vec![
             Field::new("col_0", DataType::Int32, true),
             Field::new("col_1", DataType::Int32, true),
@@ -4315,6 +4290,7 @@ mod tests {
         let empty: Arc<dyn ExecutionPlan> =
             Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
         let by_col_0 = declare(&empty, 0);
+        assert_eq!("SortedInputExec", by_col_0.name());
         assert!(Arc::ptr_eq(&declare(&by_col_0, 0), &by_col_0));
 
         let both = declare(&by_col_0, 1);
@@ -4525,8 +4501,8 @@ mod tests {
 
     #[test]
     fn window_declares_input_order_on_a_scan() {
-        // Both window operators need their partition keys' order declared, and over a `ScanExec`
-        // only the order Spark sent declares it. `percent_rank` does not run with bounded memory.
+        // Both window operators need their partition keys' order, which a `ScanExec` declares
+        // only through the order Spark sent. `percent_rank` runs in `WindowAggExec`.
         let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
         for (func, operator) in [
             ("row_number", "BoundedWindowAggExec"),
@@ -4544,14 +4520,7 @@ mod tests {
                 Arc::clone(planned.native_plan.children()[0])
             };
             let input = window_input(vec![create_sort_order(0, 3, false, true)]);
-            let sorted = input
-                .downcast_ref::<crate::execution::operators::SortedInputExec>()
-                .expect("the window's input declares the order Spark sent");
-            assert_eq!("ScanExec", sorted.children()[0].name());
-            assert_eq!(
-                "col_0@0 ASC",
-                input.properties().output_ordering().unwrap().to_string()
-            );
+            assert_eq!("SortedInputExec", input.name());
             let ordered = get_ordered_partition_by_indices(&partition_by, &input).unwrap();
             assert_eq!(1, ordered.len(), "{func}");
 

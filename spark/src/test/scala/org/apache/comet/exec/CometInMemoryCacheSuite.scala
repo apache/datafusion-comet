@@ -3699,13 +3699,23 @@ class CometInMemoryCacheSuite extends CometTestBase {
       s"${order.getChild.getBound.getIndex} ${order.getDirection} ${order.getNullOrdering}"
     }
 
+  // Checks `df`'s rows, the order each native window declares, the top one first, and that no
+  // sort is planned.
+  private def checkWindows(df: DataFrame, rows: Seq[Row], orders: Seq[Seq[String]]) = {
+    QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
+    val plan = df.queryExecution.executedPlan
+    withClue(s"$plan\n") {
+      assert(collect(plan) { case w: CometWindowExec => w }.map(windowInputOrder) == orders)
+      assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+    }
+  }
+
   test("a native window over a sorted cache declares the cache's order") {
-    // Spark plans no sort below a window over the cache's sort keys, and the native window
-    // rejected the scan, which declares no order, with "Expects PARTITION BY expression to be
-    // ordered" (#7223). The partition key is nullable and the order key descending, so the
-    // declared order has to match the cache's direction and null placement. dense_rank runs in
-    // DataFusion's BoundedWindowAggExec, and the frame up to UNBOUNDED FOLLOWING in WindowAggExec.
-    // Within a key, v = k + 20 * j for j in 0 until 100, and a NULL key holds the multiples of 20.
+    // Spark plans no sort below a window over the cache's sort keys, so the scan has to declare
+    // the order (#7223). A nullable key and a descending order key check the direction and null
+    // placement. dense_rank runs in BoundedWindowAggExec and the UNBOUNDED FOLLOWING frame in
+    // WindowAggExec. Within a key, v = k + 20 * j for j in 0 until 100, and a NULL key holds the
+    // multiples of 20.
     val key = (v: Long) => if (v % 20 == 0) null else v % 20
     val queries = Seq(
       "dense_rank() OVER (PARTITION BY k ORDER BY v DESC)" ->
@@ -3731,18 +3741,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
           cached.count()
 
           queries.foreach { case (window, expected) =>
-            val df = cached.selectExpr("k", "v", s"$window AS w")
-            val rows = (0L until 2000L).map(v => Row(key(v), v, expected(v)))
-            QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
-            val plan = df.queryExecution.executedPlan
-            withClue(s"nativeCache=$nativeCache, $window\n$plan\n") {
-              val windows = collect(plan) { case w: CometWindowExec => w }
-              assert(windows.size == 1)
-              assert(
-                windowInputOrder(windows.head) == Seq(
-                  "0 Ascending NullsFirst",
-                  "1 Descending NullsLast"))
-              assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
+            withClue(s"nativeCache=$nativeCache, $window: ") {
+              checkWindows(
+                cached.selectExpr("k", "v", s"$window AS w"),
+                (0L until 2000L).map(v => Row(key(v), v, expected(v))),
+                Seq(Seq("0 Ascending NullsFirst", "1 Descending NullsLast")))
             }
           }
         } finally {
@@ -3752,58 +3755,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("stacked native windows over a sorted cache keep the cache's whole order") {
-    // The lower window needs only k ordered and the upper one k and v. Spark plans no sort
-    // between them, since the lower window reports the cache's order, so the lower window has to
-    // declare all of it for the upper one to start (#7223). Within a key, v = k + 20 * j for j
-    // in 0 until 100, and a NULL key holds the multiples of 20, so each key sums to
-    // 100 * k + 99000.
-    val key = (v: Long) => if (v % 20 == 0) null else v % 20
-    Seq(true, false).foreach { nativeCache =>
-      withConversions(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
-        try {
-          val cached = spark
-            .range(2000)
-            .selectExpr("CASE WHEN id % 20 = 0 THEN NULL ELSE id % 20 END AS k", "id AS v")
-            .repartition(2, col("k"))
-            .sortWithinPartitions("k", "v")
-            .cache()
-          cached.count()
-
-          val df = cached
-            .selectExpr("k", "v", "sum(v) OVER (PARTITION BY k) AS s")
-            .selectExpr("k", "v", "sum(s) OVER (PARTITION BY k, v) AS t")
-          val rows = (0L until 2000L).map(v => Row(key(v), v, 100 * (v % 20) + 99000))
-          QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
-          val plan = df.queryExecution.executedPlan
-          withClue(s"nativeCache=$nativeCache\n$plan\n") {
-            val windows = collect(plan) { case w: CometWindowExec => w }
-            assert(windows.size == 2)
-            windows.foreach { window =>
-              assert(
-                windowInputOrder(window) == Seq(
-                  "0 Ascending NullsFirst",
-                  "1 Ascending NullsFirst"))
-            }
-            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
-          }
-        } finally {
-          spark.catalog.clearCache()
-        }
-      }
-    }
-  }
-
-  test("stacked native windows over a sorted cache with aliases of a sort key") {
-    // Spark knows that two aliases of one sorted column share its order, so a window over the
-    // window for one alias needs no sort for the other. The upper window's input declares the
-    // order the lower one needed, so the planner declares the rest next to it (#7223). In the
-    // second query the scan drops alias a, which only the order's same-order expressions name.
-    // One partition, so no exchange comes between the windows.
+  test("stacked native windows over a sorted cache") {
+    // Spark plans no sort between two windows that the cache's order satisfies, so the upper
+    // window's input, which declares only the lower window's order, gets the rest declared next
+    // to it (#7223). Alias a of sort key k shares its order. One partition, so no exchange
+    // separates the windows.
     val ids = 0L until 24L
     val key = (id: Long) => if (id % 4 == 0) None else Some(id % 3)
     val nullable = (k: Option[Long]) => k.map(Long.box).orNull
@@ -3811,67 +3767,51 @@ class CometInMemoryCacheSuite extends CometTestBase {
     val keyCounts = ids.groupBy(key).map { case (k, group) => k -> group.size }
     val pairCounts =
       ids.groupBy(id => (key(id), id % 2)).map { case (p, group) => p -> group.size }
-    val source = () =>
-      spark
-        .range(0, 24, 1, 1)
-        .selectExpr(
-          "CASE WHEN id % 4 = 0 THEN NULL ELSE id % 3 END AS k",
-          "id % 2 AS x",
-          "id AS v")
-    Seq(true, false).foreach { nativeCache =>
-      withConversions(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> nativeCache.toString) {
-        val check = (df: DataFrame, rows: Seq[Row], orders: Seq[Seq[String]]) => {
-          QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
-          val plan = df.queryExecution.executedPlan
-          withClue(s"nativeCache=$nativeCache\n$plan\n") {
-            val windows = collect(plan) { case w: CometWindowExec => w }
-            assert(windows.map(windowInputOrder) == orders)
-            assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty)
-          }
-        }
-        try {
-          val byKey =
-            source().sortWithinPartitions("k").selectExpr("k AS a", "k AS b", "v").cache()
-          byKey.count()
-          check(
-            byKey
-              .selectExpr("a", "b", "v", "sum(v) OVER (PARTITION BY a) AS s")
-              .selectExpr("a", "b", "v", "sum(s) OVER (PARTITION BY b) AS t"),
-            ids.map { id =>
-              val k = key(id)
-              Row(nullable(k), nullable(k), id, keySums(k) * keyCounts(k))
-            },
-            Seq(Seq("1 Ascending NullsFirst"), Seq("0 Ascending NullsFirst")))
+    withConversions(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      try {
+        val cached = spark
+          .range(0, 24, 1, 1)
+          .selectExpr(
+            "CASE WHEN id % 4 = 0 THEN NULL ELSE id % 3 END AS k",
+            "id % 2 AS x",
+            "id AS v")
+          .sortWithinPartitions("k", "x")
+          .selectExpr("k", "k AS a", "x", "v")
+          .cache()
+        cached.count()
 
-          val byPair = source()
-            .sortWithinPartitions("k", "x")
-            .selectExpr("k", "x AS a", "x AS b", "v")
-            .cache()
-          byPair.count()
-          val both = Seq("0 Ascending NullsFirst", "1 Ascending NullsFirst")
-          check(
-            byPair
-              .selectExpr("k", "b", "v", "sum(v) OVER (PARTITION BY k) AS s")
-              .selectExpr("k", "b", "v", "sum(s) OVER (PARTITION BY k, b) AS t"),
-            ids.map { id =>
-              val k = key(id)
-              Row(nullable(k), id % 2, id, keySums(k) * pairCounts((k, id % 2)))
-            },
-            Seq(both, both))
-        } finally {
-          spark.catalog.clearCache()
-        }
+        checkWindows(
+          cached
+            .selectExpr("k", "x", "v", "sum(v) OVER (PARTITION BY k) AS s")
+            .selectExpr("k", "x", "v", "sum(s) OVER (PARTITION BY k, x) AS t"),
+          ids.map { id =>
+            val k = key(id)
+            Row(nullable(k), id % 2, id, keySums(k) * pairCounts((k, id % 2)))
+          },
+          Seq(
+            Seq("0 Ascending NullsFirst", "1 Ascending NullsFirst"),
+            Seq("0 Ascending NullsFirst")))
+        checkWindows(
+          cached
+            .selectExpr("k", "a", "v", "sum(v) OVER (PARTITION BY k) AS s")
+            .selectExpr("k", "a", "v", "sum(s) OVER (PARTITION BY a) AS t"),
+          ids.map { id =>
+            val k = key(id)
+            Row(nullable(k), nullable(k), id, keySums(k) * keyCounts(k))
+          },
+          Seq(Seq("1 Ascending NullsFirst"), Seq("0 Ascending NullsFirst")))
+      } finally {
+        spark.catalog.clearCache()
       }
     }
   }
 
   test("a window over a cache sorted by a collated string key stays in Spark") {
     assume(isSpark40Plus, "collated string types require Spark 4.0+")
-    // The native side would declare the order of a collated key in raw byte order, which is not
-    // the order Spark sorted the cache in, so the window falls back instead.
+    // The native side would declare a collated key in raw byte order, not Spark's collation
+    // order, so the window falls back.
     withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2") {

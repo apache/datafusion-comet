@@ -409,10 +409,8 @@ impl PhysicalPlanner {
     /// scan the rows arrive through declares none. Only that order is declared: when an operator
     /// in between may have moved rows, `plan` is left as it is.
     ///
-    /// An input can declare part of the order already, as a window does over an input declared
-    /// for the window below it. Spark may know more than that declaration: two aliases of one
-    /// column share an order, so the window above may need the other alias's order. The rest is
-    /// declared next to what `plan` declares.
+    /// An input that declares only part of `sort_orders`, such as a window over another window,
+    /// gets them declared next to its own order.
     ///
     /// The serde sends an order only when the Comet operators of a join's streamed side or of a
     /// window's input report it, and it checks that nothing under them moves rows
@@ -429,7 +427,7 @@ impl PhysicalPlanner {
         plan: Arc<dyn ExecutionPlan>,
         sort_orders: &[Expr],
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-        if !Self::keeps_source_order(&plan) {
+        if sort_orders.is_empty() || !Self::keeps_source_order(&plan) {
             return Ok(plan);
         }
         let exprs = sort_orders
@@ -452,10 +450,10 @@ impl PhysicalPlanner {
     /// keep their input's order, so that the order Spark reports for them still holds. A source is
     /// an input from the JVM, or a scan of files, which reads the files of its one file group one
     /// after the other: Spark reports an order for a file scan only when every partition reads one
-    /// sorted file, as for a sorted bucketed table with one file per bucket. A bucket with no file
-    /// is planned as an `EmptyExec`, which has no rows to be out of order. Any other operator may
-    /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
-    /// declaring Spark's order over it would be wrong.
+    /// sorted file, as for a sorted bucketed table with one file per bucket. An `EmptyExec`, a
+    /// bucket with no file, has no rows to be out of order. Any other operator may have moved
+    /// rows, such as the null-aware anti join, whose streamed side Comet builds on, and declaring
+    /// Spark's order over it would be wrong.
     pub(super) fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
         if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() || plan.is::<EmptyExec>() {
             return true;
