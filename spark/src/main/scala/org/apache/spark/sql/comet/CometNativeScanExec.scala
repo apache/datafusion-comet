@@ -30,6 +30,7 @@ import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -182,8 +183,11 @@ case class CometNativeScanExec(
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
       val base = nativeOp.getNativeScan.getCommon
-      val scalarSubqueryFilters = dataFilters
-        .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+      val scalarSubqueryFilters = if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
+        dataFilters.filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
+      } else {
+        Seq.empty
+      }
       scalarSubqueryFilters.foreach { f =>
         f.foreach {
           case s: ExecScalarSubquery =>

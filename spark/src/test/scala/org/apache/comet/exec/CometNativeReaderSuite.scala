@@ -32,13 +32,14 @@ import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeScanExec
+import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometNativeException, ExtendedExplainInfo}
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
+import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 
 class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -1618,6 +1619,56 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
             assert(actual.getErrorClass == expected.getErrorClass)
             assert(actual.getSqlState == expected.getSqlState)
           }
+        }
+      }
+    }
+  }
+
+  test("resolved scalar data filters respect disabled Parquet filter pushdown") {
+    assume(isSpark40Plus, "SPARK-43402 scalar subquery pushdown is Spark 4.0+ only")
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 1024L, 1L, 1)
+            .selectExpr("CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y", "0 AS keep")
+            .write
+            .parquet(path.toString)
+        }
+        withTempView("make_date_subquery", "make_date_bounds") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("make_date_subquery")
+          spark
+            .range(1)
+            .selectExpr("CAST(id AS INT) AS v")
+            .createOrReplaceTempView("make_date_bounds")
+          val df = sql("""
+            |SELECT count(*) FROM make_date_subquery
+            |WHERE unix_date(make_date(y, 1, 1)) > (SELECT max(v) FROM make_date_bounds)
+            |  AND keep > (SELECT max(v) FROM make_date_bounds)
+            |""".stripMargin)
+          val scan = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec])
+            .getOrElse(fail("Expected a native Parquet scan"))
+            .asInstanceOf[CometNativeScanExec]
+          assert(scan.dataFilters.exists(_.exists(_.isInstanceOf[ScalarSubquery])))
+
+          // keep is zero throughout the file. Statistics must not prune its row group before
+          // Spark evaluates the earlier date predicate, because pushdown was explicitly disabled.
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+          val failures = Seq(sparkError, cometError).map { error =>
+            val failure = error.getOrElse(fail("Expected overflow before the keep predicate"))
+            val chain = causeChain(failure)
+            assert(!chain.exists(_.isInstanceOf[CometNativeException]), failure.toString)
+            chain.collect { case e: SparkThrowable with Throwable => e }.lastOption.getOrElse {
+              fail(s"Expected a SparkThrowable: $failure")
+            }
+          }
+          assert(failures.head.getErrorClass == "ARITHMETIC_OVERFLOW")
+          assert(failures(1).getClass == failures.head.getClass)
+          assert(failures(1).getErrorClass == failures.head.getErrorClass)
+          assert(failures(1).getSqlState == failures.head.getSqlState)
         }
       }
     }
