@@ -39,7 +39,7 @@ import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatch, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, LongType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, Decimal, DecimalType, IntegerType, LongType, StringType, StructType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -876,6 +876,42 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       addStatsCase(benchmark, "Arrow vectors", nestedBatch, nestedAttrs)
       benchmark.run()
     } finally nestedBatch.close()
+
+    // Decimals of one narrow and two wide precisions, one row in ten null and the values on both
+    // sides of zero. A decimal past 18 digits is the one the by-value loop paid a BigInteger and a
+    // BigDecimal for on every row.
+    val decimalTypes: Seq[DataType] =
+      Seq(DecimalType(10, 2), DecimalType(18, 2), DecimalType(38, 2))
+    val decimalAttrs = decimalTypes.zipWithIndex.map { case (dt, i) =>
+      AttributeReference(s"d$i", dt)()
+    }
+    val decimalRows = Iterator.tabulate(batchSize) { r =>
+      if (r % 10 == 0) {
+        new GenericInternalRow(decimalTypes.length)
+      } else {
+        val unscaled = BigInt(r - batchSize / 2) * 7919
+        InternalRow(
+          Decimal(unscaled.toLong, 10, 2),
+          Decimal(unscaled.toLong * 100000, 18, 2),
+          Decimal(BigDecimal(unscaled * BigInt(10).pow(20) + r, 2), 38, 2))
+      }
+    }
+    val decimalBatch = CometArrowConverters
+      .rowToArrowBatchIter(
+        decimalRows,
+        Utils.fromAttributes(decimalAttrs),
+        batchSize,
+        CometArrowStream.NATIVE_TIMEZONE,
+        CometArrowAllocator)
+      .next()
+    try {
+      val benchmark = new Benchmark(
+        "in-memory cache statistics, decimal columns",
+        numRows.toLong,
+        output = output)
+      addStatsCase(benchmark, "Arrow vectors", decimalBatch, decimalAttrs)
+      benchmark.run()
+    } finally decimalBatch.close()
   }
 
   private def runCacheBenchmark(

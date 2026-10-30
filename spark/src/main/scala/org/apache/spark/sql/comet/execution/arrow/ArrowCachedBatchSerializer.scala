@@ -23,6 +23,7 @@ import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float =
 
 import scala.collection.JavaConverters._
 
+import org.apache.arrow.vector.{DecimalVector, VarCharVector}
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -35,11 +36,12 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
+import org.apache.comet.vector.{CometDecodedVector, CometPlainVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -144,7 +146,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         case d: DecimalType => gatherDecimalStats(col, numRows, d)
         // Every StringType, collated ones included, and compared with the ordering resolved for
         // that column rather than with byte order. See boundsOrderings.
-        case _: StringType => gatherStringStats(col, numRows, orderings(c))
+        case dt: StringType => gatherStringStats(col, numRows, dt == StringType, orderings(c))
         case other =>
           assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
           (null, null, knownNulls)
@@ -300,6 +302,64 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   private def gatherDecimalStats(
       col: ColumnVector,
       numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = col match {
+    case v: CometPlainVector if v.getValueVector.isInstanceOf[DecimalVector] =>
+      gatherDecimal128Stats(v, numRows, dt)
+    case _ => gatherDecimalStatsByValue(col, numRows, dt)
+  }
+
+  // Compares the 128-bit unscaled values in Arrow's data buffer rather than building a Decimal for
+  // every row, which for a precision past 18 digits means a BigInteger and a BigDecimal each. All
+  // the values of a column share one scale, so their unscaled order is their numeric order. A
+  // value is a signed high word over an unsigned low word, in little-endian order, and a narrow
+  // decimal is the sign extension of its low word, so one comparison covers every precision. Only
+  // the two bounds become Decimals, through the same getDecimal the by-value loop calls.
+  private def gatherDecimal128Stats(
+      col: CometPlainVector,
+      numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = {
+    val base = col.getValueVector.getDataBuffer.memoryAddress()
+    var minRow = -1
+    var maxRow = -1
+    var minHi = 0L
+    var minLo = 0L
+    var maxHi = 0L
+    var maxLo = 0L
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val lo = Platform.getLong(null, base + r * 16L)
+        val hi = Platform.getLong(null, base + r * 16L + 8L)
+        if (minRow < 0 || hi < minHi || (hi == minHi && JLong.compareUnsigned(lo, minLo) < 0)) {
+          minRow = r
+          minHi = hi
+          minLo = lo
+        }
+        if (maxRow < 0 || hi > maxHi || (hi == maxHi && JLong.compareUnsigned(lo, maxLo) > 0)) {
+          maxRow = r
+          maxHi = hi
+          maxLo = lo
+        }
+      }
+      r += 1
+    }
+    if (minRow < 0) {
+      (null, null, nullCount)
+    } else {
+      (
+        col.getDecimal(minRow, dt.precision, dt.scale),
+        col.getDecimal(maxRow, dt.precision, dt.scale),
+        nullCount)
+    }
+  }
+
+  // The fallback for a decimal column that is not a plain Arrow vector.
+  private def gatherDecimalStatsByValue(
+      col: ColumnVector,
+      numRows: Int,
       dt: DecimalType): (Decimal, Decimal, Int) = {
     var min: Decimal = null
     var max: Decimal = null
@@ -319,6 +379,96 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   }
 
   private def gatherStringStats(
+      col: ColumnVector,
+      numRows: Int,
+      defaultCollation: Boolean,
+      ordering: Ordering[Any]): (UTF8String, UTF8String, Int) = col match {
+    // The default StringType is equal only to itself, so no collated type takes this path.
+    case v: CometPlainVector
+        if defaultCollation && v.getValueVector.isInstanceOf[VarCharVector] =>
+      gatherStringBytesStats(v, numRows)
+    case _ => gatherStringStatsByValue(col, numRows, ordering)
+  }
+
+  // Compares the bytes of the strings in Arrow's data buffer instead of building a UTF8String for
+  // every row. The default collation orders strings by their bytes, unsigned and lexicographic,
+  // which is the order UTF8String.compareTo implements and the one this follows. A row is compared
+  // with the lower bound first, and with the upper one only when it is not below it. Only the two
+  // bounds become UTF8Strings, copied because the vector's buffers are released once the batch is
+  // written.
+  private def gatherStringBytesStats(
+      col: CometPlainVector,
+      numRows: Int): (UTF8String, UTF8String, Int) = {
+    val vector = col.getValueVector.asInstanceOf[VarCharVector]
+    val data = vector.getDataBuffer.memoryAddress()
+    val offsets = vector.getOffsetBuffer.memoryAddress()
+    var minRow = -1
+    var maxRow = -1
+    var minAddress = 0L
+    var minLength = 0
+    var maxAddress = 0L
+    var maxLength = 0
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val start = Platform.getInt(null, offsets + r * 4L)
+        val length = Platform.getInt(null, offsets + (r + 1L) * 4L) - start
+        val address = data + start
+        if (minRow < 0) {
+          minRow = r
+          maxRow = r
+          minAddress = address
+          minLength = length
+          maxAddress = address
+          maxLength = length
+        } else if (compareBytes(address, length, minAddress, minLength) < 0) {
+          minRow = r
+          minAddress = address
+          minLength = length
+        } else if (compareBytes(address, length, maxAddress, maxLength) > 0) {
+          maxRow = r
+          maxAddress = address
+          maxLength = length
+        }
+      }
+      r += 1
+    }
+    if (minRow < 0) {
+      (null, null, nullCount)
+    } else {
+      (col.getUTF8String(minRow).copy(), col.getUTF8String(maxRow).copy(), nullCount)
+    }
+  }
+
+  // The comparison of UTF8String.compareTo: eight bytes at a time as big-endian unsigned longs,
+  // then byte by byte, and the shorter of two strings with the same prefix first.
+  private def compareBytes(left: Long, leftLength: Int, right: Long, rightLength: Int): Int = {
+    val length = math.min(leftLength, rightLength)
+    val words = length & ~7
+    var i = 0
+    while (i < words) {
+      val a = Platform.getLong(null, left + i)
+      val b = Platform.getLong(null, right + i)
+      if (a != b) {
+        return JLong.compareUnsigned(JLong.reverseBytes(a), JLong.reverseBytes(b))
+      }
+      i += 8
+    }
+    while (i < length) {
+      val a = Platform.getByte(null, left + i) & 0xff
+      val b = Platform.getByte(null, right + i) & 0xff
+      if (a != b) return a - b
+      i += 1
+    }
+    leftLength - rightLength
+  }
+
+  // The fallback for a collated string, a large-offset vector, or a column that is not a plain
+  // Arrow vector.
+  private def gatherStringStatsByValue(
       col: ColumnVector,
       numRows: Int,
       ordering: Ordering[Any]): (UTF8String, UTF8String, Int) = {
@@ -530,16 +680,23 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Columnar Comet output is stored as one Arrow IPC record batch message per cached batch. Spark
   // only calls this when supportsColumnarInput returned true, so the schema is known to be
   // Comet-writable here.
+  //
+  // Small input batches are combined first, up to spark.sql.inMemoryColumnarStorage.batchSize
+  // rows, the size the row path cuts at; see CacheBatchCoalescer.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
+    val batchSize = conf.columnBatchSize
     val settings = writeSettings(conf)
 
     input.mapPartitions { batches =>
-      encodeBatches(batches, schema, settings)
+      encodeBatches(
+        new CacheBatchCoalescer(batches, schema, batchSize, CometArrowAllocator),
+        schema,
+        settings)
     }
   }
 
