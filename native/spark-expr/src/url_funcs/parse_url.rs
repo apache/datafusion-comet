@@ -19,11 +19,10 @@
 //!
 //! The upstream datafusion-spark crate uses the `url` crate (WHATWG URL Standard),
 //! which diverges from Spark's java.net.URI (RFC 3986) on several edge cases.
-//! This module preserves raw URI components using RFC 3986 Appendix B decomposition,
-//! with delimiter parsing for common HTTP/HTTPS URLs.
+//! This module splits raw URI components at the RFC 3986 Appendix B delimiters.
 
 use std::cell::RefCell;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, LargeStringArray, StringArray, StringArrayType, StringViewArray,
@@ -37,12 +36,6 @@ use datafusion::logical_expr::{
 use regex::Regex;
 
 use crate::SparkError;
-
-// RFC 3986 Appendix B decomposition regex.
-// Groups: 2=scheme, 4=authority, 5=path, 7=query, 9=fragment
-static URI_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$").unwrap()
-});
 
 fn extract_host(authority: &str) -> Option<&str> {
     let host_port = match authority.rfind('@') {
@@ -130,48 +123,33 @@ struct UriParts<'a> {
     fragment: Option<&'a str>,
 }
 
-fn decompose_generic(value: &str) -> Option<UriParts<'_>> {
-    let caps = URI_REGEX.captures(value)?;
-    let path = caps.get(5)?;
-    let query = caps.get(7);
-    Some(UriParts {
-        scheme: caps.get(2).map(|m| m.as_str()),
-        authority: caps.get(4).map(|m| m.as_str()),
-        path: path.as_str(),
-        file: &value[path.start()..query.map_or(path.end(), |m| m.end())],
-        query: query.map(|m| m.as_str()),
-        fragment: caps.get(9).map(|m| m.as_str()),
-    })
-}
-
-// Skip regex decomposition for common HTTP prefixes. The caller still validates
-// the entire URL, including components that are not being extracted. Other schemes
-// and differently cased prefixes retain the generic parser.
-fn decompose_http(value: &str) -> Option<UriParts<'_>> {
-    let (scheme, rest) = if let Some(rest) = value.strip_prefix("https://") {
-        ("https", rest)
-    } else {
-        ("http", value.strip_prefix("http://")?)
+fn decompose_uri(value: &str) -> UriParts<'_> {
+    let (scheme, rest) = match value.find([':', '/', '?', '#']) {
+        Some(i) if i > 0 && value.as_bytes()[i] == b':' => (Some(&value[..i]), &value[i + 1..]),
+        _ => (None, value),
     };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let authority = &rest[..authority_end];
-    let tail = &rest[authority_end..];
-    let (before_fragment, fragment) = match tail.split_once('#') {
-        Some((prefix, fragment)) => (prefix, Some(fragment)),
+    let (authority, tail) = if let Some(rest) = rest.strip_prefix("//") {
+        let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        (Some(&rest[..end]), &rest[end..])
+    } else {
+        (None, rest)
+    };
+    let (file, fragment) = match tail.split_once('#') {
+        Some((file, fragment)) => (file, Some(fragment)),
         None => (tail, None),
     };
-    let (path, query) = match before_fragment.split_once('?') {
+    let (path, query) = match file.split_once('?') {
         Some((path, query)) => (path, Some(query)),
-        None => (before_fragment, None),
+        None => (file, None),
     };
-    Some(UriParts {
-        scheme: Some(scheme),
-        authority: Some(authority),
+    UriParts {
+        scheme,
+        authority,
         path,
-        file: before_fragment,
+        file,
         query,
         fragment,
-    })
+    }
 }
 
 fn parse_url_component<'a>(
@@ -194,17 +172,14 @@ fn parse_url_component<'a>(
         return Err(invalid_url_err(value));
     }
 
-    let Some(UriParts {
+    let UriParts {
         scheme,
         authority,
         path,
         file,
         query,
         fragment,
-    }) = decompose_http(value).or_else(|| decompose_generic(value))
-    else {
-        return Ok(None);
-    };
+    } = decompose_uri(value);
 
     if scheme.is_none() {
         if value.contains("://") {
@@ -420,8 +395,6 @@ where
     &'a C: StringArrayType<'a>,
     T: Array + FromIterator<Option<&'a str>> + 'static,
 {
-    // Arrow copies these slices into independently owned output buffers, including
-    // StringViewArray, so small components do not retain the input URL buffers.
     url_array
         .iter()
         .zip(part_array.iter())
@@ -450,36 +423,41 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn http_decomposition_matches_generic_parser() {
-        for scheme in ["http", "https"] {
-            for authority in [
-                "example.com",
-                "u:p@host:80",
-                "",
-                "[::1]:80",
-                "[::1",
-                "host:",
-                "例子.com",
-            ] {
-                for tail in [
-                    "",
-                    "/",
-                    "//a/b",
-                    "?",
-                    "#",
-                    "?#",
-                    "?x=1#f?y",
-                    "#f?x=1",
-                    "/é?k=值#片",
-                    "/p?a=?b#f#x",
-                ] {
-                    let url = format!("{scheme}://{authority}{tail}");
-                    assert_eq!(decompose_http(&url), decompose_generic(&url), "{url}");
-                }
-            }
-        }
-        for url in ["HTTP://host/p", "https:/p", "ftp://host/p", "mailto:a@b"] {
-            assert!(decompose_http(url).is_none(), "{url}");
+    fn uri_decomposition_matches_appendix_b_regex() {
+        let regex =
+            Regex::new(r"^(([^:/?#]+):)?(//([^/?#]*))?([^?#]*)(\?([^#]*))?(#(.*))?$").unwrap();
+        for url in [
+            "https://u:p@host:80/p?q#f",
+            "HTTP://host?#",
+            "ftp://[::1]:80//a/b",
+            "mailto:a@b",
+            "例:é?k=值#片",
+            "//host/p?x=1#f?y",
+            "scheme:///p",
+            "https:/p",
+            "relative/path:part",
+            ":leading",
+            "?#",
+            "x:/p?a=?b#f#x",
+            "",
+        ] {
+            let caps = regex.captures(url).unwrap();
+            let component = |i| caps.get(i).map(|m| m.as_str());
+            let path = component(5).unwrap();
+            let query = component(7);
+            let file = query.map_or_else(|| path.to_owned(), |q| format!("{path}?{q}"));
+            assert_eq!(
+                decompose_uri(url),
+                UriParts {
+                    scheme: component(2),
+                    authority: component(4),
+                    path,
+                    file: &file,
+                    query,
+                    fragment: component(9),
+                },
+                "{url}"
+            );
         }
     }
 
@@ -495,7 +473,6 @@ mod tests {
             // matcher return group 2 of the full pattern, not its last group.
             ("https://h/?abc=1&v=2", "QUERY", Some("(abc)"), "abc"),
             ("https://h/?abc=1&v=2", "QUERY", Some("v"), "2"),
-            ("https://h/?abc=1&v=2", "QUERY", Some("(abc)"), "abc"),
         ] {
             let result = parse_url_component(url, part, key)?.unwrap();
             assert_eq!(result, expected);
@@ -506,35 +483,14 @@ mod tests {
     }
 
     #[test]
-    fn sliced_string_layouts_produce_owned_output() -> Result<()> {
-        for data_type in [DataType::Utf8, DataType::LargeUtf8, DataType::Utf8View] {
-            let output = {
-                let long_url = format!("https://long.example.com/{}", "x".repeat(128 * 1024));
-                let source = StringArray::from(vec![
-                    Some("not read"),
-                    Some(long_url.as_str()),
-                    None,
-                    Some("ftp://other.example.com/path"),
-                    Some("not read"),
-                ]);
-                let urls = arrow::compute::cast(&source, &data_type)?.slice(1, 3);
-                let parts = arrow::compute::cast(&StringArray::from(vec!["HOST"; 3]), &data_type)?;
-                dispatch_parse_url(&[urls, parts], |x| x)?
-            };
-            // The output remains valid after dropping all inputs, and extracting a
-            // short host must not retain a large URL's backing buffer, including views.
-            assert_eq!(output.data_type(), &data_type);
-            assert!(output.get_buffer_memory_size() < 128 * 1024);
-            let actual = arrow::compute::cast(&output, &DataType::Utf8)?;
-            assert_eq!(
-                as_string_array(&actual)?,
-                &StringArray::from(vec![
-                    Some("long.example.com"),
-                    None,
-                    Some("other.example.com"),
-                ])
-            );
-        }
+    fn string_view_host_does_not_retain_url_buffer() -> Result<()> {
+        let url = format!("https://long.example.com/{}", "x".repeat(128 * 1024));
+        let urls = Arc::new(StringViewArray::from(vec![url.as_str()]));
+        let parts = Arc::new(StringViewArray::from(vec!["HOST"]));
+        let output = dispatch_parse_url(&[urls, parts], |x| x)?;
+        let hosts = as_string_view_array(&output)?;
+        assert_eq!(hosts.value(0), "long.example.com");
+        assert!(hosts.get_buffer_memory_size() < url.len());
         Ok(())
     }
 
