@@ -413,12 +413,10 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("make_date join input demand reaches local sorts before hash join rewriting") {
+  test("make_date join input demand reaches local sorts") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
-      CometConf.COMET_FORCE_SHJ.key -> "true",
-      CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
       val left = createSparkPlan(spark, "SELECT * FROM VALUES (2024), (2025) AS t(y)")
       val right = createSparkPlan(spark, "SELECT * FROM VALUES (2024) AS t(y)")
       val date = MakeDate(left.output.head, Literal(1), Literal(1), failOnError = false)

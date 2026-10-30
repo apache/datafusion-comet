@@ -1800,6 +1800,39 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  // The condition references both sides, so it stays on the join, which make_date keeps in Spark.
+  for (adaptive <- Seq(false, true)) {
+    test(s"forceShuffledHashJoin hash joins a make_date condition in Spark, AQE=$adaptive") {
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+        CometConf.COMET_FORCE_SHJ.key -> "true",
+        CometConf.COMET_FORCE_SHJ_MAX_BUILD_SIZE.key -> "-1") {
+        withParquetTable(Seq((1, 2024), (2, 2025), (3, 2024), (4, 2023)), "date_years") {
+          withParquetTable(Seq((1, 1), (2, 6), (3, 12), (5, 3)), "date_months") {
+            val (_, cometPlan) = checkSparkAnswer(
+              "SELECT y._1, y._2, m._2 FROM date_years y JOIN date_months m " +
+                "ON y._1 = m._1 AND make_date(y._2, m._2, 1) >= DATE '2024-06-01'")
+            assert(collect(cometPlan) { case j: ShuffledHashJoinExec => j }.size == 1, cometPlan)
+            assert(collect(cometPlan) { case j: CometHashJoinExec => j }.isEmpty, cometPlan)
+            assert(
+              collect(cometPlan) {
+                case j: SortMergeJoinExec => j
+                case j: CometSortMergeJoinExec => j
+              }.isEmpty,
+              cometPlan)
+            assert(
+              new ExtendedExplainInfo()
+                .getFallbackReasons(cometPlan)
+                .exists(_.contains("make_date requires Spark evaluation in ShuffledHashJoin")),
+              cometPlan)
+          }
+        }
+      }
+    }
+  }
+
   // AQE discards a re-plan that hash joins the broadcast stage, so only its warning shows one.
   test("forceShuffledHashJoin leaves a planned broadcast stage to AQE") {
     val appender = new LogAppender("AQE re-plans")
