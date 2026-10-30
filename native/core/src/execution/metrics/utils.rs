@@ -28,7 +28,7 @@ use std::time::Duration;
 /// The name of the metric, reported on the root of a native plan that runs on a Tokio task, that
 /// holds the CPU time the plan's stream used on Comet's Tokio worker threads. Spark's
 /// `executorCpuTime` counts only the Spark task thread, which waits for such a plan's batches.
-pub(crate) const NATIVE_CPU_TIME: &str = "native_cpu_time";
+const NATIVE_CPU_TIME: &str = "native_cpu_time";
 
 /// The CPU time the calling thread has used so far, read from its CPU-time clock. `None` where
 /// there is no such clock.
