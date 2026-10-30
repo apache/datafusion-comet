@@ -80,7 +80,8 @@ SELECT hll_sketch_estimate(hll_sketch_agg(v, 12)) FROM hll_partials
 -- At lgConfigK 18 the partials are coupon sets, and a group's union moves to the register array
 -- during the third merge, past 24,576 coupons. From there the estimate depends on the order the
 -- remaining coupons arrive in, in Spark too, which gives different estimates for different orders
--- of the four partials. So the estimates are compared within 1% of the 40,000 distinct values.
-query tolerance=400
-SELECT g, CAST(hll_sketch_estimate(hll_sketch_agg(v, 18)) AS DOUBLE)
+-- of the four partials. So each engine's estimate is checked against the 40,000 distinct values,
+-- within 1%, rather than against the other engine's.
+query
+SELECT g, abs(hll_sketch_estimate(hll_sketch_agg(v, 18)) - 40000) <= 400
 FROM hll_partials GROUP BY g ORDER BY g
