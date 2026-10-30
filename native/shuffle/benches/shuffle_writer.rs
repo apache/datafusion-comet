@@ -162,28 +162,36 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 
     // High partition counts stress the per-partition write path (one short-lived
-    // buffered writer per partition), which low counts barely exercise; compression
-    // is disabled to isolate it. Few samples: each iteration is a full end-to-end
-    // write across thousands of partitions.
+    // buffered writer per partition), which low counts barely exercise. The None rows
+    // isolate that path. The Lz4Frame rows, what a wide shuffle runs by default, add the
+    // per-block codec cost on top: at 8000 partitions each partition gets about ten rows,
+    // so every block is tiny and still pays for a fresh LZ4 frame encoder, its header and
+    // its end mark. Comparing the two rows at the same partition count shows that cost;
+    // at low counts the smaller compressed output can outweigh it. Few samples: each
+    // iteration is a full end-to-end write across thousands of partitions.
     let mut high_partition_group = c.benchmark_group("shuffle_writer_high_partition");
     high_partition_group.sample_size(10);
     for num_partitions in [200usize, 2000, 8000] {
-        high_partition_group.bench_function(
-            format!("shuffle_writer: end to end (partitions={num_partitions}, compression=None)"),
-            |b| {
-                bench_end_to_end(b, || {
-                    create_shuffle_writer_exec(
-                        CompressionCodec::None,
-                        CometPartitioning::Hash(
-                            vec![Arc::new(Column::new("a", 0))],
-                            num_partitions,
-                        ),
-                        8192,
-                        10,
-                    )
-                })
-            },
-        );
+        for compression_codec in [CompressionCodec::None, CompressionCodec::Lz4Frame] {
+            high_partition_group.bench_function(
+                format!(
+                    "shuffle_writer: end to end (partitions={num_partitions}, compression={compression_codec:?})"
+                ),
+                |b| {
+                    bench_end_to_end(b, || {
+                        create_shuffle_writer_exec(
+                            compression_codec.clone(),
+                            CometPartitioning::Hash(
+                                vec![Arc::new(Column::new("a", 0))],
+                                num_partitions,
+                            ),
+                            8192,
+                            10,
+                        )
+                    })
+                },
+            );
+        }
     }
     high_partition_group.finish();
 }
