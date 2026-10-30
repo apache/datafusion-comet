@@ -59,18 +59,19 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       case cmd: InsertIntoHadoopFsRelationCommand =>
         cmd.fileFormat match {
           case _: ParquetFileFormat =>
-            if (!cmd.outputPath.toString.startsWith("file:") && !cmd.outputPath.toString
-                .startsWith("hdfs:")) {
-              return Unsupported(Some("Supported output filesystems: local, HDFS"))
-            }
-
+            val session = op.session
             // Spark 3.x HadoopMapReduceCommitProtocol.getFilename hardcodes "part";
             // mapreduce.output.basename is only honored on Spark 4.0+. Custom committer paths
             // are still checked by checkNativeWriteDestination before native execution.
             NativeWriteUtils
-              .escapedHdfsDestination(
+              .unsupportedFileSystem(
                 cmd.outputPath.toString,
-                NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME)
+                session.sessionState.conf.fileCommitProtocolClass,
+                session.sessionState.newHadoopConfWithOptions(cmd.options))
+              .orElse(
+                NativeWriteUtils.escapedHdfsDestination(
+                  cmd.outputPath.toString,
+                  NativeWriteUtils.DEFAULT_BASE_OUTPUT_NAME))
               .foreach(reason => return Unsupported(Some(reason)))
 
             if (cmd.bucketSpec.isDefined) {
@@ -134,16 +135,17 @@ object CometDataWritingCommand extends CometOperatorSerde[DataWritingCommandExec
       // CometNativeWriteExec replaces output_path with the committer's exact task filename
       // at execution time.
 
-      // Collect S3/cloud storage configurations
-      val session = op.session
-      val hadoopConf = session.sessionState.newHadoopConfWithOptions(cmd.options)
-      // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
-      // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
-      // give the write back to Spark). Going through `Path` escapes them again.
-      val objectStoreOptions =
-        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri)
-      objectStoreOptions.foreach { case (key, value) =>
-        writerOpBuilder.putObjectStoreOptions(key, value)
+      // Collect S3/cloud storage configurations. Only a native writer creating its own files
+      // reads them: the files of any other destination are created and uploaded through Hadoop,
+      // see CometWriteFilesExec.writeFile.
+      if (NativeWriteUtils.nativeWriterCreatesFile(outputPath)) {
+        val hadoopConf = op.session.sessionState.newHadoopConfWithOptions(cmd.options)
+        // `outputPath` is `Path.toString`, which is not a valid URI string: it leaves spaces and
+        // literal `%` unescaped, so `URI.create` would throw (and the catch below would silently
+        // give the write back to Spark). Going through `Path` escapes them again.
+        NativeConfig.extractObjectStoreOptions(hadoopConf, cmd.outputPath.toUri).foreach {
+          case (key, value) => writerOpBuilder.putObjectStoreOptions(key, value)
+        }
       }
 
       val writerOp = writerOpBuilder.build()
