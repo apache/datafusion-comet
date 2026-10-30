@@ -282,9 +282,10 @@ An executor can be killed by the cluster manager for exceeding its container whi
 the memory usage log stays well inside its limits. A common cause is native memory that Comet has
 already freed but the allocator has not returned to the operating system. Comet's release builds use
 the system allocator, which on Linux is usually glibc's `malloc`. glibc keeps freed memory in
-per-thread arenas so that it can reuse it, and a lot of what Comet's operators free stays there:
-each spill drops the batches the operator buffered, and the next stage's native plans often run on
-different threads, which do not reuse the memory the previous stage's threads left behind. The
+arenas so that it can reuse it, and a thread allocates from the arena it is attached to. A lot of
+what Comet's operators free stays there: each spill drops the batches the operator buffered, and the
+next stage's native plans often run on different threads, attached to other arenas, so they reuse
+only part of what the previous stage left behind. The
 `allocated` figure in the log drops when the memory is freed, but the executor's resident memory
 does not, so it grows from one stage and query to the next until the container's limit is reached.
 See [#7108](https://github.com/apache/datafusion-comet/issues/7108) for measurements.
@@ -296,7 +297,8 @@ they were killed passes on fresh executors.
 
 The JVM can return this memory periodically. `-XX:TrimNativeHeapInterval`, available from JDK
 17.0.12 and 21.0.3, calls glibc's `malloc_trim` at the given interval in milliseconds, which hands
-the free memory in the arenas back to the operating system. It trims the whole process, so it also
+the physical pages of the free memory in the arenas back to the operating system. glibc can still
+reuse that memory afterwards; the pages are mapped in again when they are next written. It trims the whole process, so it also
 covers memory freed by the JVM itself and by native libraries other than Comet. Adding
 `-Xlog:trimnative` logs each trim, with the process's resident memory before and after and how long
 the trim took, which shows whether the flag is in effect and how much it returns:
