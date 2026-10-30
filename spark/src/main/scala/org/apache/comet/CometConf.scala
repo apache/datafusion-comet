@@ -602,6 +602,22 @@ object CometConf extends ShimCometConf {
     .checkValue(_ >= 0, "The memory usage log interval must not be negative")
     .createWithDefault(TimeUnit.SECONDS.toMillis(10))
 
+  // NativeBase reads this from the application's SparkConf rather than through `get`, because
+  // SQLConf.get depends on which thread happens to load the native library first.
+  val COMET_JEMALLOC_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.memory.jemalloc.enabled")
+      .category(CATEGORY_TUNING)
+      .doc(
+        "Whether to load the build of Comet's native library that allocates its memory with " +
+          "jemalloc instead of the system allocator, which is glibc malloc on Linux. glibc can " +
+          "keep several GiB of freed native memory resident in a long-running executor. The " +
+          "release jars bundle the jemalloc build for Linux. Each JVM reads this once, when it " +
+          "loads the native library, from the application's configuration, so it must be set " +
+          "when the application is submitted. Where the jar has no jemalloc build, Comet logs " +
+          s"a warning and loads the default library. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithEnvVarOrDefault("ENABLE_COMET_JEMALLOC", false)
+
   val COMET_SHUFFLE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.enabled")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.enabled")

@@ -31,6 +31,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.spark.SparkEnv;
 import org.apache.spark.sql.comet.util.Utils;
 
 import static org.apache.comet.Constants.LOG_CONF_NAME;
@@ -46,6 +47,8 @@ public abstract class NativeBase {
   private static final String NATIVE_LIB_NAME = "comet";
 
   private static final String libraryToLoad = System.mapLibraryName(NATIVE_LIB_NAME);
+  // Where the jar bundles the jemalloc build of libcomet, relative to the default one.
+  private static final String JEMALLOC_DIRECTORY = "jemalloc/";
   private static boolean loaded = false;
   // The bundled libcomet this class loader unpacked and loaded, or null. Unlike `loaded`, never
   // reset: unpacking it again yields a new temporary file, which the JVM loads as a second
@@ -105,10 +108,11 @@ public abstract class NativeBase {
       loaded = true;
     } catch (UnsatisfiedLinkError ex) {
       // Doesn't exist, so proceed to loading bundled library.
-      bundleLoadLibrary();
+      bundleLoadLibrary(jemallocRequested());
     }
 
     initWithLogConf();
+    logAllocator();
     warnOnTzdataMismatch();
     // Only set the Arrow properties when debugging mode is off
     if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
@@ -117,21 +121,69 @@ public abstract class NativeBase {
   }
 
   /**
-   * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
+   * Whether the application asks for the jemalloc build of the native library. Read from the
+   * application's SparkConf rather than the SQLConf, whose value depends on the thread that loads
+   * the library first. Without a SparkEnv only the default applies, which the environment variable
+   * ENABLE_COMET_JEMALLOC sets.
    */
-  private static void bundleLoadLibrary() {
+  private static boolean jemallocRequested() {
+    ConfigEntry<Object> entry = CometConf.COMET_JEMALLOC_ENABLED();
+    boolean byDefault = (boolean) entry.defaultValue().get();
+    SparkEnv env = SparkEnv.get();
+    if (env == null) {
+      return byDefault;
+    }
+    try {
+      return env.conf().getBoolean(entry.key(), byDefault);
+    } catch (IllegalArgumentException e) {
+      LOG.warn("Ignoring the invalid value of {}: {}", entry.key(), e.getMessage());
+      return byDefault;
+    }
+  }
+
+  /**
+   * Use the bundled native libraries. Functionally equivalent to <code>System.loadLibrary</code>.
+   * With {@code jemalloc}, loads the jemalloc build when the jar has one for this platform.
+   */
+  private static void bundleLoadLibrary(boolean jemalloc) {
     if (bundledLibrary != null) {
       loaded = true;
       return;
     }
 
-    String resourceName = resourceName();
-    InputStream is = NativeBase.class.getResourceAsStream(resourceName);
-    if (is == null) {
+    if (jemalloc) {
+      String jemallocResource = resourceName(JEMALLOC_DIRECTORY);
+      try {
+        if (loadBundledLibrary(jemallocResource)) {
+          return;
+        }
+        LOG.warn(
+            "{} is set, but this jar has no {}. Loading the default native library.",
+            CometConf.COMET_JEMALLOC_ENABLED().key(),
+            jemallocResource);
+      } catch (UnsatisfiedLinkError e) {
+        // System.load failed, so nothing was loaded and the default library still can be.
+        LOG.warn("Cannot load {}. Loading the default native library.", jemallocResource, e);
+      }
+    }
+
+    String resourceName = resourceName("");
+    if (!loadBundledLibrary(resourceName)) {
       throw new UnsupportedOperationException(
           "Unsupported OS/arch, cannot find "
               + resourceName
               + ". Please try building from source.");
+    }
+  }
+
+  /**
+   * Unpacks and loads the library the jar bundles at {@code resourceName}. Returns false, having
+   * loaded nothing, when the jar has no such resource.
+   */
+  private static boolean loadBundledLibrary(String resourceName) {
+    InputStream is = NativeBase.class.getResourceAsStream(resourceName);
+    if (is == null) {
+      return false;
     }
 
     try (InputStream resource = is;
@@ -140,6 +192,7 @@ public abstract class NativeBase {
       library.deleteOnExit();
       bundledLibrary = library.path().toFile();
       loaded = true;
+      return true;
     } catch (IOException e) {
       throw new IllegalStateException("Cannot unpack libcomet", e);
     }
@@ -166,6 +219,17 @@ public abstract class NativeBase {
       LOG.info("Using {} for native library logging", logConfPath);
     }
     init(logConfPath, logLevel);
+  }
+
+  /** Logs which allocator the loaded native library was built with. */
+  private static void logAllocator() {
+    try {
+      LOG.info(
+          "Comet native library uses the {} allocator",
+          isFeatureEnabled("jemalloc") ? "jemalloc" : "system");
+    } catch (Throwable t) {
+      LOG.debug("Could not tell which allocator the native library uses", t);
+    }
   }
 
   /**
@@ -301,11 +365,12 @@ public abstract class NativeBase {
     return true;
   }
 
-  private static String resourceName() {
+  private static String resourceName(String variantDirectory) {
     OS os = os();
     String packagePrefix = NativeBase.class.getPackage().getName().replace('.', '/');
+    String directory = "/" + packagePrefix + "/" + os.name + "/" + arch() + "/";
 
-    return "/" + packagePrefix + "/" + os.name + "/" + arch() + "/" + libraryToLoad;
+    return directory + variantDirectory + libraryToLoad;
   }
 
   /**

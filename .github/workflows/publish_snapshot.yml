@@ -23,6 +23,8 @@
 # inside an Ubuntu 20.04 container so the library links against glibc 2.31 and
 # loads on the older distributions that Spark container images are based on,
 # and with the same baseline CPU targets as the release (`make core-*-libs`).
+# Each architecture has two: the default library and, in `jemalloc/`, the
+# jemalloc build that spark.comet.memory.jemalloc.enabled selects.
 #
 # Credentials come from the NEXUS_USER / NEXUS_PW repository secrets that ASF
 # Infra provisions for snapshot publishing. The parent pom (org.apache:apache)
@@ -156,17 +158,21 @@ jobs:
           # objdump lists every GLIBC_x.y version node the library needs. The
           # release builder is Ubuntu 20.04 (glibc 2.31); anything newer means
           # this job drifted away from the release image.
-          max=$(objdump -T native/target/release/libcomet.so \
-            | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
-          echo "Highest glibc symbol version required: $max"
-          if [ "$(printf '%s\n' "$max" GLIBC_2.31 | sort -V | tail -1)" != "GLIBC_2.31" ]; then
-            echo "libcomet.so requires a glibc newer than the release baseline"
-            exit 1
-          fi
+          for lib in native/target/release/libcomet.so native/target/release/jemalloc/libcomet.so; do
+            max=$(objdump -T "$lib" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+            echo "Highest glibc symbol version required by $lib: $max"
+            if [ "$(printf '%s\n' "$max" GLIBC_2.31 | sort -V | tail -1)" != "GLIBC_2.31" ]; then
+              echo "$lib requires a glibc newer than the release baseline"
+              exit 1
+            fi
+          done
       - uses: ./.github/actions/upload-artifact-retry
         with:
           name: libcomet-linux-${{ matrix.arch }}
-          path: native/target/release/libcomet.so
+          # The artifact keeps the jemalloc build under jemalloc/.
+          path: |
+            native/target/release/libcomet.so
+            native/target/release/jemalloc/libcomet.so
           if-no-files-found: error
           retention-days: 1
 
@@ -230,7 +236,7 @@ jobs:
 
           check_native_libs() {
             local jar=$1 lib
-            for lib in linux/amd64 linux/aarch64; do
+            for lib in linux/amd64 linux/aarch64 linux/amd64/jemalloc linux/aarch64/jemalloc; do
               # grep has to read the whole listing. Stopping at the first match
               # (grep -q) leaves unzip killed by SIGPIPE, which `pipefail` then
               # reports as a missing library.
@@ -259,9 +265,11 @@ jobs:
             echo "::group::Build with $profiles"
             ./mvnw -B -q clean
             lib_dir=spark/target/classes/org/apache/comet/linux
-            mkdir -p "$lib_dir/amd64" "$lib_dir/aarch64"
+            mkdir -p "$lib_dir/amd64/jemalloc" "$lib_dir/aarch64/jemalloc"
             cp native-libs/libcomet-linux-amd64/libcomet.so "$lib_dir/amd64/"
             cp native-libs/libcomet-linux-aarch64/libcomet.so "$lib_dir/aarch64/"
+            cp native-libs/libcomet-linux-amd64/jemalloc/libcomet.so "$lib_dir/amd64/jemalloc/"
+            cp native-libs/libcomet-linux-aarch64/jemalloc/libcomet.so "$lib_dir/aarch64/jemalloc/"
             # Package first so the jar can be checked before it is published.
             # $profiles is a space-separated list of -P flags, so it must
             # word-split.

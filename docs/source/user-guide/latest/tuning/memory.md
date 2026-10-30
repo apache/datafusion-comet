@@ -332,6 +332,14 @@ Limiting the number of glibc arenas with the `MALLOC_ARENA_MAX` environment vari
 resident memory down, but it was markedly slower in the measurements in
 [#7108](https://github.com/apache/datafusion-comet/issues/7108).
 
+The Linux jars also bundle a build of the native library that allocates its memory with jemalloc,
+which returns freed memory to the operating system on a decay timer. Set
+`spark.comet.memory.jemalloc.enabled=true` when the application is submitted to load it instead of
+the default library. Its options are read from the `_RJEM_MALLOC_CONF` environment variable rather
+than `MALLOC_CONF`, for example through `spark.executorEnv._RJEM_MALLOC_CONF`. How it compares with
+glibc on these workloads is being collected in
+[#7344](https://github.com/apache/datafusion-comet/issues/7344).
+
 ## Batch Size
 
 Comet processes data in columnar batches. The batch size is controlled by `spark.comet.batchSize` (default

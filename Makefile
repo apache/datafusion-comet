@@ -23,6 +23,10 @@ endef
 
 # Build optional Comet native features (like hdfs-opendal e.g)
 FEATURES_ARG := $(shell ! [ -z $(COMET_FEATURES) ] && echo '--features=$(COMET_FEATURES)')
+# The same features plus jemalloc, for the jemalloc build of the native library that the release
+# jars bundle next to the default one (see spark.comet.memory.jemalloc.enabled)
+comma := ,
+JEMALLOC_FEATURES_ARG := --features=jemalloc$(if $(COMET_FEATURES),$(comma)$(COMET_FEATURES))
 
 # JVM max heap for the benchmark targets. Lower this when benchmarking on a
 # machine with less memory, for example BENCH_HEAP=8g on a 16 GiB instance.
@@ -67,16 +71,25 @@ format:
 	./mvnw compile test-compile scalafix:scalafix -Psemanticdb $(PROFILES)
 	./mvnw spotless:apply $(PROFILES)
 
-# build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container
+# build native libs for amd64 architecture Linux/MacOS on a Linux/amd64 machine/container. The
+# jemalloc build of the Linux library goes to native/target/release/jemalloc, and the default one is
+# built last so that native/target/release/libcomet.so is the default library.
 core-amd64-libs:
+	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release -p datafusion-comet $(JEMALLOC_FEATURES_ARG)
+	mkdir -p native/target/release/jemalloc
+	cp native/target/release/libcomet.so native/target/release/jemalloc/
 	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add x86_64-apple-darwin
 	cd native && cargo build --target x86_64-apple-darwin --release $(FEATURES_ARG)
 endif
 
-# build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container
+# build native libs for arm64 architecture Linux/MacOS on a Linux/arm64 machine/container, with the
+# jemalloc build next to the default one as for amd64
 core-arm64-libs:
+	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release -p datafusion-comet $(JEMALLOC_FEATURES_ARG)
+	mkdir -p native/target/release/jemalloc
+	cp native/target/release/libcomet.so native/target/release/jemalloc/
 	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
 ifdef HAS_OSXCROSS
 	rustup target add aarch64-apple-darwin

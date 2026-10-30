@@ -210,6 +210,12 @@ docker cp \
   comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
   $JVM_TARGET_DIR/linux/amd64/
 
+# The jemalloc build of the library, which `make core-amd64-libs` puts next to the default one
+mkdir -p $JVM_TARGET_DIR/linux/amd64/jemalloc
+docker cp \
+  comet-amd64-builder-container:"/opt/comet-rm/comet/native/target/release/jemalloc/libcomet.so" \
+  $JVM_TARGET_DIR/linux/amd64/jemalloc/
+
 if [ "$HAS_MACOS_SDK" == "true" ]
 then
   mkdir -p $JVM_TARGET_DIR/darwin/x86_64
@@ -222,6 +228,11 @@ mkdir -p $JVM_TARGET_DIR/linux/aarch64
 docker cp \
   comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/release/libcomet.so" \
   $JVM_TARGET_DIR/linux/aarch64/
+
+mkdir -p $JVM_TARGET_DIR/linux/aarch64/jemalloc
+docker cp \
+  comet-arm64-builder-container:"/opt/comet-rm/comet/native/target/release/jemalloc/libcomet.so" \
+  $JVM_TARGET_DIR/linux/aarch64/jemalloc/
 
 if [ "$HAS_MACOS_SDK" == "true" ]
 then

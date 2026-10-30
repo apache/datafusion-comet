@@ -78,6 +78,10 @@ FILTERS = {
     # runs every Spark profile or only the PR-tier one. ci.yml folds it into
     # the reusable workflow's `profiles` input. Populated below as well.
     "build_linux_all_profiles": [],
+    # A fourth: whether the JVM tests load the jemalloc build of the native
+    # library. ci.yml folds it into the reusable workflow's `jemalloc` input.
+    # Populated below as well.
+    "build_linux_jemalloc": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -473,6 +477,7 @@ FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
 FILTERS["build_linux_full"] = FILTERS["build_linux"]
 FILTERS["build_macos_full"] = FILTERS["build_macos"]
 FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
+FILTERS["build_linux_jemalloc"] = FILTERS["build_linux"]
 FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
 FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 
@@ -547,6 +552,11 @@ POLICY = {
     # not a shim that fails to build. ci.yml turns this output into the
     # workflow's `profiles` input.
     "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
+    # The jemalloc build of the native library. Every tier tests the system
+    # allocator one, which is the default. The label runs a pull request's Linux
+    # build with the jemalloc one instead. ci.yml turns this output into the
+    # workflow's `jemalloc` input.
+    "build_linux_jemalloc": ["label:run-jemalloc-tests"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.

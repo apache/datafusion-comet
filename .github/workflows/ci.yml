@@ -284,6 +284,7 @@ jobs:
       build_linux:  ${{ steps.compute.outputs.build_linux }}
       build_linux_full: ${{ steps.compute.outputs.build_linux_full }}
       build_linux_all_profiles: ${{ steps.compute.outputs.build_linux_all_profiles }}
+      build_linux_jemalloc: ${{ steps.compute.outputs.build_linux_jemalloc }}
       build_macos:  ${{ steps.compute.outputs.build_macos }}
       build_macos_full: ${{ steps.compute.outputs.build_macos_full }}
       benchmark:    ${{ steps.compute.outputs.benchmark }}
@@ -422,14 +423,27 @@ jobs:
     # the whole point: the queue has already tested that tree, so the push run
     # is there for the caches alone. A `labeled` run and the nightly set only
     # the third, and then run just the profiles the PR and queue tiers skip.
-    if: needs.changes.outputs.build_linux == 'true' || needs.changes.outputs.build_linux_all_profiles == 'true'
+    #
+    # A fourth output, `build_linux_jemalloc`, is set for a pull request that
+    # carries the `run-jemalloc-tests` label. It runs the same call with the
+    # jemalloc build of the native library loaded in every JVM test, instead
+    # of the system allocator one. Only a pull request into main turns it on:
+    # a manual run sets every output, and a release branch has no merge queue
+    # to test the system allocator after the label run.
+    if: >-
+      needs.changes.outputs.build_linux == 'true'
+      || needs.changes.outputs.build_linux_all_profiles == 'true'
+      || needs.changes.outputs.build_linux_jemalloc == 'true'
     uses: ./.github/workflows/pr_build_linux.yml
     with:
-      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' && needs.changes.outputs.build_linux_all_profiles != 'true' }}
+      cache-refresh-only: ${{ needs.changes.outputs.build_linux_full != 'true' && needs.changes.outputs.build_linux_all_profiles != 'true' && needs.changes.outputs.build_linux_jemalloc != 'true' }}
       profiles: >-
         ${{ needs.changes.outputs.build_linux_all_profiles != 'true' && 'pr'
             || needs.changes.outputs.build_linux_full != 'true' && 'nightly'
             || 'all' }}
+      jemalloc: >-
+        ${{ github.event_name == 'pull_request' && github.base_ref == 'main'
+            && needs.changes.outputs.build_linux_jemalloc == 'true' }}
 
   pr_build_macos:
     name: PR Build (macOS)
