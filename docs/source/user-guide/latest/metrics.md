@@ -204,12 +204,11 @@ A block with a JVM input, such as one that reads a shuffle or a broadcast, runs 
 where `executorCpuTime` already counts it, and does not report `native CPU time`.
 
 Neither `executorCpuTime` nor `native CPU time` counts work that a block hands to other Tokio
-tasks or threads, such as
-iceberg-rust's delete-file loading and delete filters, object store connection tasks (including
-TLS), the readers of a native sort's spilled runs, and blocking file operations. To measure all of
-an executor's CPU time, use the CPU time of its container or pod, or the `jvmCpuTime` gauge of
-Spark's `JVMCPUSource`, which counts every thread in the executor process and is published through
-Spark's metrics sinks.
+tasks or threads, such as iceberg-rust's delete-file loading and delete filters, object store
+connection tasks (including TLS), the readers of a native sort's spilled runs, and blocking file
+operations. To measure all of an executor's CPU time, use the CPU time of its container or pod, or
+the `jvmCpuTime` gauge of Spark's `JVMCPUSource`, which counts every thread in the executor process
+and is published through Spark's metrics sinks.
 
 ## Native Metrics
 
