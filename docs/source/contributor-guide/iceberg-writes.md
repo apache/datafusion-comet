@@ -121,8 +121,33 @@ conversion by calling `convertToComet`. The converted node keeps the `IcebergWri
 `originalPlan`, so AQE re-plans the write from that node.
 
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
-batches from its child over FFI, so the conversion is declined unless the child is already a Comet
-native operator. This is why a write fed by a `LocalTableScanExec` (`INSERT ... VALUES`, a local
+batches from its child over FFI. If Spark has inserted an `AssertNotNull` projection for required
+fields, `CometExecRule` keeps that projection in Spark. When row conversion is safe, it wraps the
+writer's input in `CometSparkToColumnarExec`. Any Spark sort or limit above the projection stays
+below that conversion, and Spark evaluates the assertions and their child expressions.
+
+For partitioned clustered writers, `isRowInputEvaluationSupported` also requires Spark to
+materialize each writer partition before conversion. It accepts `SortExec`, optionally wrapped
+only in `LocalLimitExec` or `GlobalLimitExec` (and planning placeholders). Unsorted or otherwise
+deferred row input keeps the JVM writer so an earlier partition-order error cannot be overtaken
+by a later Spark expression failure during batch read-ahead. This condition does not apply to
+unpartitioned or fanout writers.
+
+This new row conversion also keeps writes with `fixed(N)` fields, including nested fields, on the
+JVM writer even when sorted. `SparkWrite.writeSchema` retains the fixed width that Spark's
+`BinaryType` cannot enforce, so the gate preserves the JVM writer's fixed-width validation
+failures. Existing native input paths remain eligible for fixed fields.
+
+The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
+string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows
+native inputs through preserving Spark operators and projections, including attributes, struct
+fields and construction, `If` branches, assertions, and validated string literals. Unproven row
+sources or other string-producing expressions, including string-bearing collection transforms,
+keep the JVM writer: importing invalid UTF-8 into Arrow could change the stored bytes. The writer's
+table and schema eligibility checks still apply.
+
+Other inputs must already be Comet native operators. This is why a write fed directly by a
+`LocalTableScanExec` (`INSERT ... VALUES`, a local
 DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.
 
 `CometIcebergWriteExec` is row-based (it emits the commit message row) over a columnar child, so

@@ -22,18 +22,20 @@ package org.apache.comet.serde.operator
 import java.lang.reflect.Modifier
 import java.util.Locale
 
+import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, IcebergWriteExec}
+import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometNativeExec, CometScanWrapper, CometSinkPlaceHolder, IcebergWriteExec}
+import org.apache.spark.sql.execution.{GlobalLimitExec, LocalLimitExec, SortExec, SparkPlan}
 
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.iceberg.{IcebergReflection, IcebergStorageSchemes, PositionDeltaWrite, ReplaceDataWrite}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
-import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.serde.OperatorOuterClass.{IcebergWriterMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
 
 object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
@@ -296,6 +298,64 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case NonFatal(e) =>
         Unsupported(Some(s"Iceberg native write detection failed: ${e.getMessage}"))
     }
+
+  /**
+   * Row-to-Arrow conversion reads ahead before the writer consumes the batch. Keep fixed fields
+   * on the JVM because Spark's BinaryType does not enforce their length. For a clustered writer,
+   * materialize the writer partition so a later Spark expression failure cannot overtake an
+   * earlier partition-order error.
+   */
+  def isRowInputEvaluationSupported(
+      op: IcebergWriteExec,
+      fallbackReasons: ListBuffer[String]): Boolean = {
+    val rowInputConstraints =
+      try {
+        for {
+          sparkWrite <- IcebergReflection.getOuterSparkWrite(op.batchWrite)
+          table <- IcebergReflection.getTableFromSparkWrite(sparkWrite)
+          specId <- IcebergReflection.getOutputSpecIdFromSparkWrite(sparkWrite)
+          spec <- IcebergReflection.getPartitionSpecById(table, specId)
+          fanout <- IcebergReflection.getUseFanoutWriterFromSparkWrite(sparkWrite)
+          writeSchema <- IcebergReflection.getWriteSchemaFromSparkWrite(sparkWrite)
+        } yield {
+          val writerMode = IcebergWriteProtoTranslation.resolveWriterMode(
+            specIsUnpartitioned = isUnpartitionedSpec(spec),
+            useFanoutWriter = fanout)
+          val hasFixedFields =
+            IcebergReflection.findFieldWithTypeIds(writeSchema, Set("FIXED")).nonEmpty
+          (writerMode, hasFixedFields)
+        }
+      } catch {
+        case NonFatal(_) => None
+      }
+
+    rowInputConstraints match {
+      case None =>
+        fallbackReasons +=
+          "Iceberg writer row conversion could not resolve the effective writer constraints"
+        false
+      case Some((_, true)) =>
+        fallbackReasons += "Iceberg writer row conversion keeps fixed fields on the JVM to " +
+          "preserve fixed-width validation failures"
+        false
+      case Some((IcebergWriterMode.ICEBERG_WRITER_CLUSTERED, false))
+          if !hasMaterializedRowInput(op.child) =>
+        fallbackReasons += "Iceberg clustered writer row conversion requires materialized Spark " +
+          "input so batch read-ahead cannot change expression and partition-order error precedence"
+        false
+      case _ => true
+    }
+  }
+
+  private def hasMaterializedRowInput(plan: SparkPlan): Boolean = plan match {
+    // Planning placeholders disappear without evaluating their source.
+    case CometScanWrapper(_, source) => hasMaterializedRowInput(source)
+    case CometSinkPlaceHolder(_, _, child) => hasMaterializedRowInput(child)
+    case _: SortExec => true
+    case limit: LocalLimitExec => hasMaterializedRowInput(limit.child)
+    case limit: GlobalLimitExec => hasMaterializedRowInput(limit.child)
+    case _ => false
+  }
 
   private def checkTriggers(op: IcebergWriteExec): Option[String] = {
     op.dispatch match {

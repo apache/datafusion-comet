@@ -27,6 +27,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
+import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
@@ -603,7 +604,30 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // A shuffle directly under the native write stays in the child stage and is not wrapped
       // again.
       case op: IcebergWriteExec if CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(op.conf) =>
-        convertToComet(op, CometIcebergNativeWrite).getOrElse(op)
+        // Spark inserts AssertNotNull projections for nullable input to required Iceberg fields.
+        // Keep their row-wise evaluation in Spark, including any sort or limit above them, and
+        // convert the writer's input to Arrow only after Spark has evaluated those operators.
+        val needsRowConversion = !op.child.isInstanceOf[CometNativeExec] &&
+          op.child.exists {
+            case project: ProjectExec =>
+              project.projectList.exists(_.exists(_.isInstanceOf[AssertNotNull]))
+            case _ => false
+          }
+        val rowConversionReasons = ListBuffer.empty[String]
+        val prepared =
+          if (needsRowConversion &&
+            CometSparkToColumnarExec.isRowConversionSupported(op.child, rowConversionReasons) &&
+            CometIcebergNativeWrite.isRowInputEvaluationSupported(op, rowConversionReasons)) {
+            val rows = ApplyColumnarRulesAndInsertTransitions(Seq.empty, outputsColumnar = false)
+              .apply(op.child)
+            convertToComet(rows, CometSparkToColumnarExec)
+              .map(child => op.withNewChildren(Seq(child)))
+              .getOrElse(op)
+          } else {
+            rowConversionReasons.foreach(reason => withFallbackReason(op, reason))
+            op
+          }
+        convertToComet(prepared, CometIcebergNativeWrite).getOrElse(op)
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
