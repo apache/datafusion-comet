@@ -106,8 +106,9 @@ case class CometMapInBatchExec(
       columnarBatchIter.map { batch =>
         // Python returns a single struct column; flatten to the user's output columns. The runner
         // produces Comet vectors, so the struct's children are already CometVectors that downstream
-        // consumers (a stacked CometMapInBatchExec, or NativeUtil.exportBatch for a native Comet
-        // operator) can use directly.
+        // consumers (a stacked CometMapInBatchExec, the Arrow C Stream in CometNativeArrowSource
+        // for a native Comet operator, or NativeUtil.exportBatch for native columnar-to-row) can
+        // use directly.
         val structVector = batch.column(0).asInstanceOf[CometStructVector]
         val outputVectors: Array[ColumnVector] =
           outputAttrs.indices.map(i => structVector.getChild(i)).toArray

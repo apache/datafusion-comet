@@ -92,9 +92,12 @@ ownership. A new input shape needs a reader, not a special case elsewhere.
 
 `NativeUtil.exportBatch()` matches on the column type and has exactly two cases. A `CometVector`
 exports its underlying `FieldVector` through `Data.exportVector`, passing the dictionary provider
-only when the field carries a dictionary. Spark's own `ConstantColumnVector` is materialized into a
-fresh Arrow vector first, because native takes Arrow arrays only. Anything else throws
-`"Comet execution only takes Arrow Arrays"`.
+only when the field carries a dictionary. A large-offset string or binary column
+(`LargeVarCharVector` or `LargeVarBinaryVector`, which a PyArrow UDF can return) is exported as it
+is, although `getFieldVector` rejects it: native columnar-to-row, the only consumer, casts it to the
+planned `Utf8` or `Binary` in `maybe_cast_to_schema_type`, so the JVM does not copy it. Spark's own
+`ConstantColumnVector` is materialized into a fresh Arrow vector first, because native takes Arrow
+arrays only. Anything else throws `"Comet execution only takes Arrow Arrays"`.
 
 The `CometVector` hierarchy is the abstract `CometVector`, the abstract `CometDecodedVector` under
 it, and the concrete `CometPlainVector`, `CometDictionaryVector`, `CometListVector`,

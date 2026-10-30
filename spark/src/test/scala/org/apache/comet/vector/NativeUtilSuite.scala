@@ -27,7 +27,7 @@ import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.{IntVector, LargeVarBinaryVector, LargeVarCharVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
@@ -371,6 +371,63 @@ class NativeUtilSuite extends CometTestBase {
       }
       nativeUtil.close()
     }
+  }
+
+  test("exportBatch exports large-offset string and binary vectors as they are") {
+    // Native columnar-to-row narrows them to its planned type; see CometNativeColumnarToRowSuite.
+    val values = Seq("hello", null, "", "wörld")
+    val before = CometArrowAllocator.getAllocatedMemory
+    val strings = new LargeVarCharVector("s", CometArrowAllocator)
+    val binaries = new LargeVarBinaryVector("b", CometArrowAllocator)
+    Seq(strings, binaries).foreach { vector =>
+      vector.allocateNew(values.length)
+      values.zipWithIndex.foreach { case (value, i) =>
+        if (value != null) vector.setSafe(i, value.getBytes(StandardCharsets.UTF_8))
+      }
+      vector.setValueCount(values.length)
+    }
+    val batch = new ColumnarBatch(
+      Array[ColumnVector](new CometPlainVector(strings), new CometPlainVector(binaries)),
+      values.length)
+
+    val structAllocator = new RootAllocator(Long.MaxValue)
+    val arrays = Array.fill(2)(ArrowArray.allocateNew(structAllocator))
+    val schemas = Array.fill(2)(ArrowSchema.allocateNew(structAllocator))
+    val nativeUtil = new NativeUtil
+    var imported: ColumnarBatch = null
+    try {
+      val exportedRows = nativeUtil.exportBatch(
+        arrays.map(_.memoryAddress()),
+        schemas.map(_.memoryAddress()),
+        batch)
+      assert(exportedRows == values.length)
+      strings.close()
+      binaries.close()
+
+      imported =
+        new ColumnarBatch(nativeUtil.importVector(arrays, schemas).toArray, values.length)
+
+      val stringColumn = imported.column(0).asInstanceOf[CometVector]
+      val binaryColumn = imported.column(1).asInstanceOf[CometVector]
+      assert(stringColumn.getValueVector.isInstanceOf[LargeVarCharVector])
+      assert(binaryColumn.getValueVector.isInstanceOf[LargeVarBinaryVector])
+      def read(column: CometVector, get: Int => Array[Byte]): Seq[String] =
+        values.indices.map { i =>
+          if (column.isNullAt(i)) null else new String(get(i), StandardCharsets.UTF_8)
+        }
+      assert(read(stringColumn, stringColumn.getUTF8String(_).getBytes) == values)
+      assert(read(binaryColumn, binaryColumn.getBinary) == values)
+    } finally {
+      strings.close()
+      binaries.close()
+      if (imported != null) {
+        imported.close()
+      }
+      nativeUtil.close()
+      (arrays ++ schemas).foreach(_.close())
+      structAllocator.close()
+    }
+    assert(CometArrowAllocator.getAllocatedMemory == before)
   }
 
   test("imports are charged to the import allocator and roll up into the root") {
