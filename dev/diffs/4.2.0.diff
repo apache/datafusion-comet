@@ -3810,28 +3810,6 @@ index ae977e17755..1d29f424490 100644
  
          case _ => assert(false, "Can not match ParquetTable in the query.")
        }
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-index e91562d097f..54e28f351e0 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetIOSuite.scala
-@@ -41,6 +41,7 @@ import org.apache.parquet.schema.{MessageType, MessageTypeParser}
- import org.apache.spark.{SPARK_VERSION_SHORT, SparkException, TestUtils}
- import org.apache.spark.rdd.RDD
- import org.apache.spark.sql._
-+import org.apache.spark.sql.IgnoreComet
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Attribute, GenericInternalRow, UnsafeRow}
- import org.apache.spark.sql.catalyst.util.{DateTimeConstants, DateTimeUtils}
-@@ -972,7 +973,8 @@ class ParquetIOSuite extends ParquetTest with SharedSparkSession {
-     }
-   }
- 
--  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only") {
-+  test("SPARK-54220: vectorized reader: missing all struct fields, struct with NullType only",
-+      IgnoreComet("https://github.com/apache/datafusion-comet/issues/4199")) {
-     val data = Seq(
-       Tuple1((null, null)),
-       Tuple1((null, null)),
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
 index 38582236c73..028ab7b7905 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/datasources/parquet/ParquetQuerySuite.scala
