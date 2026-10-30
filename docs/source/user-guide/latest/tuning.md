@@ -26,7 +26,7 @@ guide is split into the following pages:
 - [Memory Tuning](tuning/memory.md): configuring Comet's off-heap memory pool and the executor
   memory overhead, choosing a memory pool, batch size, and limiting spill disk usage.
 - [Shuffle Tuning](tuning/shuffle.md): enabling Comet shuffle, the native and columnar shuffle
-  implementations, and shuffle compression.
+  implementations, limiting the native shuffle writer's memory, and shuffle compression.
 - [Remote Shuffle with Celeborn](tuning/celeborn.md): bounding frame sizes and memory admission
   for native remote shuffle.
 - [Parquet Scan Tuning](parquet.md#tuning): row filter pushdown and late materialization, and

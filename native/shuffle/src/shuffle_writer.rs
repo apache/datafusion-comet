@@ -517,6 +517,7 @@ fn contextualize_shuffle_error(error: DataFusionError, phase: &str) -> DataFusio
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::writers::decode_blocks;
     use crate::{read_ipc_compressed, RoundRobinStrategy, ShuffleBlockWriter, ShuffleCodecContext};
     use arrow::array::{Array, Int64Array, StringArray, StringBuilder};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -1121,7 +1122,7 @@ mod test {
         let stream = exec.execute(0, ctx.task_ctx()).unwrap();
         Runtime::new().unwrap().block_on(collect(stream)).unwrap();
 
-        read_all_ipc_batches(&std::fs::read(&data_file).unwrap())
+        decode_blocks(&std::fs::read(&data_file).unwrap())
             .iter()
             .flat_map(|batch| {
                 let column = batch
@@ -1462,33 +1463,9 @@ mod test {
         );
     }
 
-    /// Decode every IPC block in a byte buffer written by BufBatchWriter/ShuffleBlockWriter,
-    /// in file order.
-    fn read_all_ipc_batches(data: &[u8]) -> Vec<RecordBatch> {
-        let mut offset = 0;
-        let mut batches = vec![];
-        while offset < data.len() {
-            // First 8 bytes are the IPC length (little-endian u64)
-            let ipc_length =
-                u64::from_le_bytes(data[offset..offset + 8].try_into().unwrap()) as usize;
-            // Skip the 8-byte length prefix; the next 8 bytes are field_count + codec header
-            let block_start = offset + 8;
-            let block_end = block_start + ipc_length;
-            // read_ipc_compressed expects data starting after the 16-byte header
-            // (i.e., after length + field_count), at the codec tag
-            let ipc_data = &data[block_start + 8..block_end];
-            batches.push(read_ipc_compressed(ipc_data).unwrap());
-            offset = block_end;
-        }
-        batches
-    }
-
     /// Total number of rows across all IPC blocks in a byte buffer.
     fn read_all_ipc_blocks(data: &[u8]) -> usize {
-        read_all_ipc_batches(data)
-            .iter()
-            .map(|b| b.num_rows())
-            .sum()
+        decode_blocks(data).iter().map(|b| b.num_rows()).sum()
     }
 
     /// Batches that are already at least `batch_size` rows should bypass the
@@ -1557,7 +1534,7 @@ mod test {
                 .unwrap();
         }
 
-        let blocks = read_all_ipc_batches(&output);
+        let blocks = decode_blocks(&output);
 
         // The full and oversized batches are emitted verbatim as their own blocks,
         // then the partial+full pair coalesces into a full block plus a 30-row tail.
@@ -1638,7 +1615,7 @@ mod test {
         partitioner.shuffle_write().unwrap();
 
         let data = fs::read(&data_file).unwrap();
-        let blocks = read_all_ipc_batches(&data);
+        let blocks = decode_blocks(&data);
 
         // The oversized batch passes through as one 250-row block; the 30 buffered rows
         // then coalesce with the following 100-row batch into a 100-row block plus a
