@@ -425,11 +425,11 @@ jobs:
     # the third, and then run just the profiles the PR and queue tiers skip.
     #
     # A fourth output, `build_linux_jemalloc`, is set for a pull request that
-    # carries the `jemalloc_test` label. It runs the same call with the jemalloc
-    # build of the native library loaded in every JVM test, instead of the
-    # system allocator one. Only a pull request into main turns it on: a manual
-    # run sets every output, and a release branch has no merge queue to test
-    # the system allocator after the label run.
+    # carries the `run-jemalloc-tests` label. It runs the same call with the
+    # jemalloc build of the native library loaded in every JVM test, instead
+    # of the system allocator one. Only a pull request into main turns it on:
+    # a manual run sets every output, and a release branch has no merge queue
+    # to test the system allocator after the label run.
     if: >-
       needs.changes.outputs.build_linux == 'true'
       || needs.changes.outputs.build_linux_all_profiles == 'true'

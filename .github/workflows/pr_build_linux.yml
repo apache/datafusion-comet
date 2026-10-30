@@ -73,7 +73,7 @@ on:
         default: 'all'
       jemalloc:
         # Set by ci.yml for a pull request into main that carries the
-        # `jemalloc_test` label. build-native then also builds the jemalloc
+        # `run-jemalloc-tests` label. build-native then also builds the jemalloc
         # native library, which Maven bundles from native/target/release/jemalloc,
         # and ENABLE_COMET_JEMALLOC below makes every JVM test load it.
         description: 'Build the jemalloc native library and run the JVM tests with it'

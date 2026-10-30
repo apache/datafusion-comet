@@ -384,15 +384,15 @@ POLICY_CASES = [
     # `labeled` event alone it is the only output set, and ci.yml still makes
     # that a full `profiles: pr` run.
     (
-        {"name": "pull_request", "action": "synchronize", "labels": ["jemalloc_test"]},
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-jemalloc-tests"]},
         PR_TIER | LINUX_JEMALLOC,
     ),
     (
         {
             "name": "pull_request",
             "action": "labeled",
-            "label": "jemalloc_test",
-            "labels": ["jemalloc_test"],
+            "label": "run-jemalloc-tests",
+            "labels": ["run-jemalloc-tests"],
         },
         LINUX_JEMALLOC,
     ),
@@ -585,7 +585,7 @@ POLICY_CASES = [
     ),
     # Likewise the jemalloc label runs here, while the fork's own run tests the
     # system allocator library.
-    (fork_pr(labels=["jemalloc_test"]), LINUX_JEMALLOC),
+    (fork_pr(labels=["run-jemalloc-tests"]), LINUX_JEMALLOC),
     # The exceptions keep the PR tier upstream: a pull request from a branch of
     # this repository (a committer's, or dependabot's), and one that targets a
     # release branch, which has no queue or nightly to catch what a fork run

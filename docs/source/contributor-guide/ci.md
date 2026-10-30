@@ -185,7 +185,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | -------------------------- | ----------------------------------------------------- |
 | `run-macos-tests`          | macOS build and Comet test suites                     |
 | `run-all-spark-profiles`   | Comet test suites against Spark 3.4 / 3.5 / 4.0 / 4.2 |
-| `jemalloc_test`            | Comet test suites with the jemalloc native library    |
+| `run-jemalloc-tests`       | Comet test suites with the jemalloc native library    |
 | `run-benchmark-check`      | Benchmark compile and lint check                      |
 | `run-delta-build-gate`     | Delta contrib build gate                              |
 | `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2           |
@@ -203,9 +203,10 @@ before the change landed. For a nightly-tier suite the label is what gets a verd
 change lands: without it, the first run is the nightly after the merge. For Spark 3.4 the label is
 the only way the suite runs at all.
 
-`jemalloc_test` runs the pull request's Linux build with `ENABLE_COMET_JEMALLOC=true`, so the suites
-load the jemalloc build of the native library instead of the default one, which every tier tests.
-It applies only to a pull request into `main`, whose merge queue still tests the default library.
+`run-jemalloc-tests` runs the pull request's Linux build with `ENABLE_COMET_JEMALLOC=true`, so the
+suites load the jemalloc build of the native library instead of the default one, which every tier
+tests. It applies only to a pull request into `main`, whose merge queue still tests the default
+library.
 
 Apply a label from the pull request sidebar, or from the command line:
 

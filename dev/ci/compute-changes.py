@@ -556,7 +556,7 @@ POLICY = {
     # allocator one, which is the default. The label runs a pull request's Linux
     # build with the jemalloc one instead. ci.yml turns this output into the
     # workflow's `jemalloc` input.
-    "build_linux_jemalloc": ["label:jemalloc_test"],
+    "build_linux_jemalloc": ["label:run-jemalloc-tests"],
     # macOS runners are the scarcest capacity we have, and the Linux build
     # already covers rustfmt and the Rust/JVM compile on every PR. The label
     # is for a change that touches platform-specific code.
