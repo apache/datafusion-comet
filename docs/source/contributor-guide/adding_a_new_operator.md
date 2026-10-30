@@ -365,17 +365,18 @@ the order satisfies. Report what the Spark operator reports and nothing more. `S
 example, reports no order, so `CometSampleExec` must not report its child's.
 
 The claim has to hold at run time as well. A native hash join declares the order Spark reports for
-its streamed side to DataFusion, and an aggregate above the join may then run in sorted mode, or a
-top-k sort may stop reading early, on the strength of that order. If the order is false, the
+its streamed side to DataFusion, and a native window the order of its partition keys. An aggregate
+above may then run in sorted mode, or a top-k sort may stop reading early, on the strength of that
+order. If the order is false, the
 result is wrong groups or wrong rows, not only rows out of order. So an operator that reports an
 ordering must keep it natively, and the native operator must say so by returning `true` from
 `maintains_input_order` for that child, as DataFusion's filter and projection do. The planner
 declares the order through an operator only when the operator says it keeps it. An operator that
 cannot keep the order natively must not report it, or has to be added to `mayReportFalseOrder` in
-`operators.scala`. The hash join serde then sends no order over it, and an outer hash join above it
-that has to keep that order falls back to Spark. Comet's hash joins are the exception within one
-native plan: an outer hash join over one of them stays native, even over one that declared no
-order, since DataFusion keeps the order it can see there.
+`operators.scala`. The hash join and window serdes then send no order over it, and an outer hash
+join or a window above it that needs that order falls back to Spark. Comet's hash joins are the
+exception within one native plan: a join or window over one of them stays native, even over one
+that declared no order, since DataFusion keeps the order it can see there.
 
 A leaf that reports an ordering is where the order starts, so the planner has to know that the
 native operator produces its rows in that order. It knows that of an input from the JVM and of a

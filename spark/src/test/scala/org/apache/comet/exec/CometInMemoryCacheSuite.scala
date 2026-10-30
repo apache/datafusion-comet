@@ -3712,10 +3712,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   test("a native window over a sorted cache declares the cache's order") {
     // Spark plans no sort below a window over the cache's sort keys, so the scan has to declare
-    // the order (#7223). A nullable key and a descending order key check the direction and null
-    // placement. dense_rank runs in BoundedWindowAggExec and the UNBOUNDED FOLLOWING frame in
-    // WindowAggExec. Within a key, v = k + 20 * j for j in 0 until 100, and a NULL key holds the
-    // multiples of 20.
+    // the partition key's order (#7223). The key is nullable, so the null placement has to match,
+    // and the descending order key is not declared. dense_rank runs in BoundedWindowAggExec and
+    // the UNBOUNDED FOLLOWING frame in WindowAggExec. Within a key, v = k + 20 * j for j in
+    // 0 until 100, and a NULL key holds the multiples of 20.
     val key = (v: Long) => if (v % 20 == 0) null else v % 20
     val queries = Seq(
       "dense_rank() OVER (PARTITION BY k ORDER BY v DESC)" ->
@@ -3745,7 +3745,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
               checkWindows(
                 cached.selectExpr("k", "v", s"$window AS w"),
                 (0L until 2000L).map(v => Row(key(v), v, expected(v))),
-                Seq(Seq("0 Ascending NullsFirst", "1 Descending NullsLast")))
+                Seq(Seq("0 Ascending NullsFirst")))
             }
           }
         } finally {
@@ -3836,9 +3836,47 @@ class CometInMemoryCacheSuite extends CometTestBase {
         val plan = df.queryExecution.executedPlan
         assert(collect(plan) { case w: CometWindowExec => w }.isEmpty, plan)
         val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-        assert(reasons.exists(_.contains("the order of the window's input")), reasons)
+        assert(reasons.contains(CometWindowExec.inexpressibleInputOrderReason), reasons)
       } finally {
         spark.catalog.clearCache()
+      }
+    }
+  }
+
+  test("a window over a cache whose order cannot be checked stays in Spark") {
+    // The filter keeps the serde from seeing that the outer join declared its order, so the
+    // window, reading that join's cache from the JVM, cannot check it. Declaring nothing would
+    // fail the native window.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
+      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "false") {
+      withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
+        withParquetTable((0 until 40 by 2).map(m => (m * 1000, m)), "small") {
+          withTempView("cached", "joined") {
+            try {
+              spark
+                .table("big")
+                .toDF("k", "v")
+                .repartition(2, $"k")
+                .sortWithinPartitions("k")
+                .cache()
+                .createOrReplaceTempView("cached")
+              spark.table("cached").count()
+              sql("SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w FROM " +
+                "(SELECT * FROM cached WHERE v >= 0) a LEFT JOIN small b ON a.k = b._1")
+                .cache()
+                .createOrReplaceTempView("joined")
+              spark.table("joined").count()
+              checkSparkAnswerAndFallbackReason(
+                sql("SELECT k, v, sum(v) OVER (PARTITION BY k) AS s FROM joined"),
+                CometWindowExec.uncheckedInputOrderReason)
+            } finally {
+              spark.catalog.clearCache()
+            }
+          }
+        }
       }
     }
   }

@@ -4484,21 +4484,6 @@ mod tests {
         );
     }
 
-    /// `func` over a window partitioned and ordered by `col_0` over `input`.
-    fn partitioned_window(func: &str, input: Operator, input_sort_orders: Vec<Expr>) -> Operator {
-        Operator {
-            children: vec![input],
-            op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
-                window_expr: vec![window_function_expr(func, None)],
-                partition_by_list: vec![create_bound_reference(0)],
-                order_by_list: vec![create_sort_order(0, 3, false, true)],
-                input_sort_orders,
-                ..Default::default()
-            }))),
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn window_declares_input_order_on_a_scan() {
         // Both window operators need their partition keys' order, which a `ScanExec` declares
@@ -4509,12 +4494,19 @@ mod tests {
             ("percent_rank", "WindowAggExec"),
         ] {
             let window_input = |input_sort_orders| {
+                let window = Operator {
+                    children: vec![create_scan()],
+                    op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                        window_expr: vec![window_function_expr(func, None)],
+                        partition_by_list: vec![create_bound_reference(0)],
+                        order_by_list: vec![create_sort_order(0, 3, false, true)],
+                        input_sort_orders,
+                        ..Default::default()
+                    }))),
+                    ..Default::default()
+                };
                 let (_, _, planned) = PhysicalPlanner::default()
-                    .create_plan(
-                        &partitioned_window(func, create_scan(), input_sort_orders),
-                        &mut vec![],
-                        1,
-                    )
+                    .create_plan(&window, &mut vec![], 1)
                     .unwrap();
                 assert_eq!(operator, planned.native_plan.name());
                 Arc::clone(planned.native_plan.children()[0])

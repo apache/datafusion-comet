@@ -40,6 +40,13 @@ import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNo
 
 object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
+  private[apache] val inexpressibleInputOrderReason: String =
+    "the order of the window's input, which Spark relies on, cannot be expressed natively"
+
+  private[apache] val uncheckedInputOrderReason: String =
+    "the order of the window's input, which Spark relies on, cannot be checked, so the window " +
+      "stays in Spark"
+
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_WINDOW_ENABLED)
 
@@ -82,27 +89,35 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
       // Spark plans no sort below the window when its input already reports the order the window
-      // needs, but rows from the JVM arrive through a ScanExec that declares none. Send that order
-      // for the planner to declare (see SortedInputExec), unless a native sort below declares it
-      // or it may be false. A key Comet cannot express, or a collated string key, sends the window
-      // back to Spark.
+      // needs, but rows from the JVM arrive through a ScanExec that declares none. Send the
+      // partition keys' order, the only one the native window checks, for the planner to declare
+      // (see SortedInputExec). When the order may be false, nothing native can declare it, so the
+      // window stays in Spark, unless the doubt is a Comet join in the same native plan, which
+      // DataFusion sees itself. A key Comet cannot express, or a collated string key, sends the
+      // window back to Spark too.
       val requiredOrdering = op.requiredChildOrdering.head
       val inputSortOrders =
-        if (requiredOrdering.nonEmpty && !op.child.isInstanceOf[CometSortExec] &&
-          SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
-          !CometHashJoinExec.mayReportFalseInputOrder(op.child)) {
-          val orders = requiredOrdering.map { order =>
-            if (hasNonDefaultStringCollation(order.dataType)) None
-            else exprToProto(order, op.child.output)
-          }
-          if (!orders.forall(_.isDefined)) {
-            withFallbackReason(
-              op,
-              "the order of the window's input, which Spark relies on, cannot be expressed " +
-                "natively")
+        if (op.partitionSpec.nonEmpty &&
+          SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering)) {
+          // The walk that counts Comet joins in the same native plan flags everything the other
+          // one does, so the other runs only when this one flags the order.
+          if (!CometHashJoinExec.mayReportFalseInputOrder(op.child, countInPlan = true)) {
+            val partitionKeys = requiredOrdering.take(op.partitionSpec.length)
+            val orders = partitionKeys.flatMap { order =>
+              if (hasNonDefaultStringCollation(order.dataType)) None
+              else exprToProto(order, op.child.output)
+            }
+            if (orders.length < partitionKeys.length) {
+              withFallbackReason(op, inexpressibleInputOrderReason)
+              return None
+            }
+            orders
+          } else if (CometHashJoinExec.mayReportFalseInputOrder(op.child, countInPlan = false)) {
+            withFallbackReason(op, uncheckedInputOrderReason)
             return None
+          } else {
+            Nil
           }
-          orders.flatten
         } else {
           Nil
         }
