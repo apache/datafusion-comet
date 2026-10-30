@@ -845,6 +845,17 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
   }
 
+  test("trimming the native heap is off by default and on a value it cannot use") {
+    import CometExecIterator.trimNativeHeapWhenIdle
+    assert(!trimNativeHeapWhenIdle(None))
+    assert(trimNativeHeapWhenIdle(Some("true")))
+    assert(trimNativeHeapWhenIdle(Some(" TRUE ")))
+    assert(!trimNativeHeapWhenIdle(Some("false")))
+    // Values that would otherwise throw from the creation of every native plan, failing its task.
+    assert(!trimNativeHeapWhenIdle(Some("yes")))
+    assert(!trimNativeHeapWhenIdle(Some("")))
+  }
+
   test("the native runtime gets a worker thread for every core the executor runs tasks on") {
     import CometExecIterator.numDriverOrExecutorCores
     def cores(master: String, executorCores: Option[String] = None): Option[Int] =

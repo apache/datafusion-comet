@@ -569,6 +569,32 @@ object CometExecIterator extends Logging {
         }
     }
 
+  private val invalidTrimSettingWarned = new AtomicBoolean(false)
+
+  /**
+   * Whether the executor trims its native heap when its last Comet native plan finishes, for the
+   * executor's configured value, if any. It is read for every native plan, so a value that does
+   * not parse disables trimming with a warning, logged once, rather than failing every Comet
+   * task.
+   */
+  def trimNativeHeapWhenIdle(configured: Option[String]): Boolean =
+    configured match {
+      case None => COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE.defaultValue.get
+      case Some(value) =>
+        try {
+          COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE.valueConverter(value)
+        } catch {
+          case NonFatal(e) =>
+            if (invalidTrimSettingWarned.compareAndSet(false, true)) {
+              logWarning(
+                s"Not trimming the native heap: invalid value '$value' for " +
+                  s"${COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE.key}. Expected true or false. " +
+                  e.getMessage)
+            }
+            false
+        }
+    }
+
   /**
    * Whether the cluster manager for `master` runs each executor in a container whose memory it
    * sizes from the memory overhead settings: YARN and Kubernetes. Local mode, local-cluster
@@ -906,6 +932,13 @@ object CometExecIterator extends Logging {
     // for tokio runtime thread count
     val executorCores = numDriverOrExecutorCores(SparkEnv.get.conf)
     builder.putEntries("spark.executor.cores", executorCores.toString)
+
+    // Trimming acts on the whole executor, so it is read from the executor's configuration rather
+    // than the session's, and overrides a value set in the session.
+    val trimKey = COMET_MEMORY_TRIM_NATIVE_HEAP_WHEN_IDLE.key
+    builder.putEntries(
+      trimKey,
+      trimNativeHeapWhenIdle(SparkEnv.get.conf.getOption(trimKey)).toString)
 
     // Any Comet config that the native side reads must be added here manually, resolved.
     // `cometSqlConfs` only carries values that were explicitly set, exactly as they were

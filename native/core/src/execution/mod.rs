@@ -24,6 +24,7 @@ pub mod expressions;
 pub mod jni_api;
 pub(crate) mod merge_as_partial;
 pub(crate) mod metrics;
+pub(crate) mod native_heap_trim;
 pub mod operators;
 pub(crate) mod planner;
 #[cfg(feature = "python-udf")]
