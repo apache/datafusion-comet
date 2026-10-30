@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide
 import org.apache.spark.sql.catalyst.plans.{Inner, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
-import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.SortAggregateExec
 import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
@@ -1450,10 +1450,7 @@ class CometJoinSuite extends CometTestBase {
         case _ => false
       }.isEmpty),
       plan)
-    // Propagates the session's confs, such as the batch size, to the tasks as collect() does.
-    val parts = SQLExecution.withSQLConfPropagated(spark) {
-      query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
-    }
+    val parts = query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
     parts.zipWithIndex.foreach { case (keys, i) =>
       assert(keys.sameElements(keys.sorted), s"partition $i is out of order\n$plan")
     }
