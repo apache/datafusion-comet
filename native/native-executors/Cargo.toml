@@ -19,8 +19,10 @@
 # DataFusion Ballista. See https://github.com/apache/datafusion-comet/issues/7288.
 #
 # This is its own workspace, with its own lockfile, so that the main Comet build never depends
-# on Ballista. It builds Comet's native crates by path together with the Ballista release on the
-# same DataFusion major version.
+# on Ballista. It builds Comet's native crates by path together with Ballista's `comet-native`
+# branch, which is Ballista's main branch with the enhancements Comet Native Executors need that
+# haven't merged yet (apache/datafusion-ballista#2682, #2721, #2722 and #2723), on the same
+# DataFusion major version.
 [workspace]
 
 [package]
@@ -35,9 +37,9 @@ publish = false
 
 [dependencies]
 arrow-flight = "59.2.0"
-ballista-core = "55.0.0"
-ballista-executor = { version = "55.0.0", default-features = false, features = ["arrow-ipc-optimizations"] }
-ballista-scheduler = { version = "55.0.0", default-features = false }
+ballista-core = { git = "https://github.com/apache/datafusion-ballista", branch = "comet-native" }
+ballista-executor = { git = "https://github.com/apache/datafusion-ballista", branch = "comet-native", default-features = false, features = ["arrow-ipc-optimizations"] }
+ballista-scheduler = { git = "https://github.com/apache/datafusion-ballista", branch = "comet-native", default-features = false }
 datafusion = { version = "55.2.0", default-features = false }
 # Comet's core crate, under the name of its library. Without the default hdfs-opendal feature,
 # which links libjvm through libhdfs.

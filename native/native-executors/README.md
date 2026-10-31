@@ -81,7 +81,13 @@ binaries and runs queries through the scheduler's Flight service, as a driver wo
 
 ## Keeping it building
 
-This workspace builds Comet's native crates by path against the Ballista release on the same
-DataFusion major version, and CI builds and tests it in the `linux-test-native-executors` job. When
-Comet moves to a DataFusion major that Ballista hasn't released yet, the upgrade can turn that job
-off until Ballista catches up.
+This workspace builds Comet's native crates by path against Ballista's
+[`comet-native`](https://github.com/apache/datafusion-ballista/tree/comet-native) branch: Ballista's
+main branch with the enhancements Comet Native Executors need that haven't merged yet
+([#2682](https://github.com/apache/datafusion-ballista/pull/2682),
+[#2721](https://github.com/apache/datafusion-ballista/pull/2721),
+[#2722](https://github.com/apache/datafusion-ballista/pull/2722) and
+[#2723](https://github.com/apache/datafusion-ballista/pull/2723)), on the same DataFusion major
+version. `Cargo.lock` pins the branch's commit. CI builds and tests the workspace in the
+`linux-test-native-executors` job. When Comet moves to a DataFusion major that Ballista hasn't
+caught up with, the upgrade can turn that job off until it does.

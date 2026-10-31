@@ -179,9 +179,10 @@ fn exchange(
                 Partitioning::Hash(keys, hash.num_partitions as usize),
             )?))
         }
-        // Ballista can't plan a range shuffle for a physical plan yet
-        // (https://github.com/apache/datafusion-ballista/issues/2680), so the consuming stage
-        // reads a range exchange as one partition too. That sorts correctly, in a single task.
+        // Ballista plans a range shuffle only for a range partitioning with split points
+        // (https://github.com/apache/datafusion-ballista/pull/2722), and the driver doesn't
+        // sample its input for them yet, so the consuming stage reads a range exchange as one
+        // partition too. That sorts correctly, in a single task.
         Some(PartitioningStruct::SinglePartition(_) | PartitioningStruct::RangePartition(_)) => {
             Ok(Arc::new(CoalescePartitionsExec::new(producer)))
         }

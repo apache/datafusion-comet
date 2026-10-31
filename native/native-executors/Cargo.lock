@@ -999,8 +999,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a090511fa9b3661dbf17444ecbbf5efcd11793e140ddd7fe2fb85f2de88f561"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#2efa802ffd6f454211d516b660a3f9db648bab65"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1029,8 +1028,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "403cdac6a4e822e6025348f4f7e43765ba0ca176ca1f225888a9eeb90b9c66ce"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#2efa802ffd6f454211d516b660a3f9db648bab65"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1059,8 +1057,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "845bb1c2c763ae2b50ecfd9debdfe8e092d13a4fefe84c20e9262bb191a1f1e7"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#2efa802ffd6f454211d516b660a3f9db648bab65"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -3471,7 +3468,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=1f3bc34058e3f3e45336bc5428f37b92649a608b#1f3bc34058e3f3e45336bc5428f37b92649a608b"
+source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3529,7 +3526,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=1f3bc34058e3f3e45336bc5428f37b92649a608b#1f3bc34058e3f3e45336bc5428f37b92649a608b"
+source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3539,7 +3536,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=1f3bc34058e3f3e45336bc5428f37b92649a608b#1f3bc34058e3f3e45336bc5428f37b92649a608b"
+source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4081,9 +4078,9 @@ dependencies = [
 
 [[package]]
 name = "lru"
-version = "0.18.5"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+checksum = "4a9f71e3591c7ec44d3e563e87bf14ddc2bada8519dca046e5b0e560cd004e2d"
 dependencies = [
  "hashbrown 0.17.1",
 ]
