@@ -1815,6 +1815,33 @@ class CometJoinSuite extends CometTestBase {
     }
   }
 
+  test("right key reduction coalesces two nullable INT columns") {
+    val left = Seq[java.lang.Integer](null, 0, 5, 7, 9).map(Tuple1(_))
+    val keys = Seq[(java.lang.Integer, java.lang.Integer)]((5, 9), (null, 7), (null, null))
+    val right = Seq.fill(8192)(keys).flatten
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+      CometConf.COMET_BATCH_SIZE.key -> "4096",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.key -> "true") {
+      withParquetTable(left, "reduction_left") {
+        withParquetTable(right, "reduction_right") {
+          val df = sql("""SELECT /*+ MERGE(r) */ l._1 FROM reduction_left l
+                         |LEFT SEMI JOIN reduction_right r ON l._1 = coalesce(r._1, r._2)""".stripMargin)
+          assert(df.collect().map(_.getInt(0)).sorted.toSeq == Seq(5, 7))
+          val join = collectFirst(df.queryExecution.executedPlan) {
+            case j: CometSortMergeJoinExec =>
+              j
+          }.get
+          val input = join.longMetric("right_key_reduction_input_rows").value
+          val output = join.longMetric("right_key_reduction_output_rows").value
+          assert(input == right.size && output > 0 && output < input)
+        }
+      }
+    }
+  }
+
   for (pool <- Seq("fair_unified", "greedy_unified")) {
     test(s"right key reduction admission with resident JVM execution memory ($pool)") {
       val rightRows = 32768

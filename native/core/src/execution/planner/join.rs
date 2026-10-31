@@ -225,7 +225,7 @@ fn reduce_before_sort(
     let schema = input.schema();
     let order = sort.expr().first();
     if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
-        || !key.data_type(&schema)?.is_signed_integer()
+        || !key.data_type(&schema).is_ok_and(|t| t.is_signed_integer())
         || (key.is::<Column>() && schema.fields().len() != 1)
         || sort.expr().len() != 1
         || order.options != *options
