@@ -1563,11 +1563,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: uuid column in the write schema") {
+  test("Compatible with a uuid column in the write schema") {
     withDetectionCatalog { _ =>
       // Spark DDL cannot declare `uuid`, so evolve the schema through the Iceberg API. Spark
-      // plans the column as StringType, but the native writer's target Arrow schema demands
-      // FixedSizeBinary(16) with no cast from Utf8 -- detection must decline before execution.
+      // plans the column as StringType; the native writer normalizes it to 16 UUID bytes.
       createTable("uuid_col", partitionSpec = "")
       addIcebergColumn(loadIcebergTable(spark, catalog, ns, "uuid_col"), "u", icebergUuidType())
       spark.sql(s"REFRESH TABLE $catalog.$ns.uuid_col")
@@ -1576,7 +1575,46 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           s"INSERT INTO $catalog.$ns.uuid_col VALUES " +
             "(1, 'us', 1.0, 'f47ac10b-58cc-4372-a567-0e02b2c3d479')")
       }
-      assertUnsupportedContains(writeExec, "uuid_col", "column u has Iceberg type uuid")
+      val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+      assert(support.isInstanceOf[Compatible], s"expected Compatible, got $support")
+    }
+  }
+
+  Seq("identity", "bucket", "sort").foreach { kind =>
+    test(s"fall-back: uuid as a $kind source") {
+      withDetectionCatalog { _ =>
+        val name = s"uuid_$kind"
+        createTable(name, partitionSpec = "")
+        val table = loadIcebergTable(spark, catalog, ns, name)
+          .asInstanceOf[org.apache.iceberg.Table]
+        addIcebergColumn(table, "u", icebergUuidType())
+        kind match {
+          case "identity" => table.updateSpec().addField("u").commit()
+          case "bucket" =>
+            table
+              .updateSpec()
+              .addField(org.apache.iceberg.expressions.Expressions.bucket("u", 8))
+              .commit()
+          case "sort" => table.replaceSortOrder().asc("u").commit()
+        }
+        spark.sql(s"REFRESH TABLE $catalog.$ns.$name")
+        val writeExec = planInsertWriteExec(s"$catalog.$ns.$name", "(1, 'us', 1.0, '1-1-1-1-1')")
+        assertUnsupportedContains(writeExec, name, "UUID column u", "partition or sort source")
+      }
+    }
+  }
+
+  test("fall-back: uuid does not make an unknown column eligible") {
+    assume(isSpark40Plus, "unknown requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      createTable("uuid_unknown", partitionSpec = "", properties = Some("'format-version'='3'"))
+      val table = loadIcebergTable(spark, catalog, ns, "uuid_unknown")
+      addIcebergColumn(table, "u", icebergUuidType())
+      addIcebergColumn(table, "un", icebergUnknownType())
+      spark.sql(s"REFRESH TABLE $catalog.$ns.uuid_unknown")
+      val writeExec =
+        planInsertWriteExec(s"$catalog.$ns.uuid_unknown", "(1, 'us', 1.0, '1-1-1-1-1', NULL)")
+      assertUnsupportedContains(writeExec, "uuid_unknown", "unknown")
     }
   }
 

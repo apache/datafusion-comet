@@ -81,11 +81,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   }
 
   private val EncryptionPropertyPrefix = "encryption."
-  // `uuid` plus the v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
+  // The v3-only types. Iceberg plans `variant` as Spark's VariantType and `unknown`
   // as NullType, neither of which the native writer handles; Spark cannot plan a write to
   // `timestamp_ns`, `geometry` or `geography` today, so those are declined in case it learns to.
   private val UnsupportedWriteTypeIds: Set[String] =
-    Set("UUID", "VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
+    Set("VARIANT", "UNKNOWN", "TIMESTAMP_NANO", "GEOMETRY", "GEOGRAPHY")
   // Loaded from the native storage factory: `builtin_storage_schemes` in
   // `native/core/src/execution/operators/iceberg_common.rs` is the single point of change and
   // explains why `oss` is read-only and `memory` write-only. Lazy so constructing the serde does
@@ -415,6 +415,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireSupportedFormatVersion,
     requireNoMetadataColumns,
     requireSupportedColumnTypes,
+    requireNoUuidTransformSource,
     requireNoVoidFieldWithDroppedSource,
     requireNoEncryptionPrefix,
     requireNoBloomFilterColumnsEnabled,
@@ -511,11 +512,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         }
     }
 
-  // Iceberg maps `uuid` to Spark's StringType, so the native writer would receive a Utf8 column
-  // while iceberg-rust's target Arrow schema demands FixedSizeBinary(16) -- no Arrow cast bridges
-  // the two, so the write would pass detection and then fail the task. Decline it up front, along
-  // with the v3-only types in `UnsupportedWriteTypeIds`. `fixed(N)` arrives as Binary and casts to
-  // FixedSizeBinary(N), so it needs no rule.
+  // UUID strings are normalized recursively by the native writer. The remaining unsupported
+  // types must still be declined before execution, including inside nested containers.
   private val requireSupportedColumnTypes: TriggerRule = ctx =>
     IcebergReflection
       .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
@@ -529,6 +527,38 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
               "which the native writer cannot reproduce"
           }
     }
+
+  // Spark distributes/sorts UUIDs as their input strings, before the writer normalizes them.
+  // Case, shortened groups and group masking can put equal UUIDs in different runs, and string
+  // order is not UUID byte order. Keep these sources on iceberg-java until the upstream
+  // distribution and ordering expressions also normalize UUIDs.
+  private val requireNoUuidTransformSource: TriggerRule = ctx => {
+    val schema = IcebergReflection.getSchema(ctx.table).getOrElse {
+      throw new IllegalStateException("could not resolve schema for UUID source checking")
+    }
+    if (IcebergReflection.findFieldWithTypeIds(schema, Set("UUID")).isEmpty) {
+      None
+    } else {
+      val spec = IcebergReflection
+        .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
+        .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _))
+        .getOrElse {
+          throw new IllegalStateException(
+            "could not resolve output spec for UUID source checking")
+        }
+      val order = IcebergReflection
+        .getOutputSortOrderIdFromSparkWrite(ctx.sparkWrite)
+        .flatMap(IcebergReflection.getSortOrderById(ctx.table, _))
+        .getOrElse {
+          IcebergReflection.getMethod(ctx.table.getClass, "sortOrder").invoke(ctx.table)
+        }
+      IcebergReflection
+        .uuidTransformSource(schema, spec)
+        .orElse(IcebergReflection.uuidTransformSource(schema, order))
+        .map(name =>
+          s"UUID column $name is a partition or sort source requiring UUID normalization")
+    }
+  }
 
   // A format-version-1 spec keeps a dropped partition field as a `void` transform, and its source
   // column can be dropped afterwards. iceberg-java cannot write through a spec that mixes such a

@@ -38,6 +38,7 @@ import org.json4s.jackson.JsonMethods.parse
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -4017,6 +4018,197 @@ class CometIcebergWriteActionSuite
         .collect()
         .head
       assert(metrics("fx_native") == metrics("fx_jvm"))
+    }
+  }
+
+  for (mode <- Seq("unpartitioned", "clustered", "fanout"); aqe <- Seq("false", "true")) {
+    test(s"native acceleration: uuid rows, nested fields, metrics and footer ($mode, AQE=$aqe)") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { _ =>
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe) {
+          import org.apache.iceberg.types.Types
+          val uuid = Types.UUIDType.get()
+          val native = s"uuid_${mode}_${aqe}_native"
+          val jvm = s"uuid_${mode}_${aqe}_jvm"
+          Seq(native, jvm).foreach { name =>
+            val partition = if (mode == "unpartitioned") "" else "PARTITIONED BY (p)"
+            spark.sql(s"""CREATE TABLE $catalog.$ns.$name (id INT, p INT) USING iceberg
+              $partition TBLPROPERTIES (
+                'write.metadata.metrics.default'='full',
+                'write.spark.fanout.enabled'='${mode == "fanout"}',
+                'write.distribution-mode'='${if (mode == "fanout") "none" else "hash"}')""")
+            val table = loadIcebergTable(spark, catalog, ns, name)
+            addIcebergColumn(table, "u", uuid)
+            addIcebergColumn(
+              table,
+              "s",
+              Types.StructType.of(Types.NestedField.optional(101, "u", uuid)))
+            addIcebergColumn(table, "l", Types.ListType.ofOptional(102, uuid))
+            addIcebergColumn(table, "m", Types.MapType.ofOptional(103, 104, uuid, uuid))
+            addIcebergColumn(table, "fx", icebergFixedType(16))
+            spark.sql(s"REFRESH TABLE $catalog.$ns.$name")
+            if (mode == "clustered") {
+              spark.sql(s"ALTER TABLE $catalog.$ns.$name WRITE LOCALLY ORDERED BY p")
+            }
+          }
+          val canonical = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+          val short = "1-1-1-1-1"
+          def insert(name: String): Unit = {
+            spark.sql(s"""INSERT INTO $catalog.$ns.$name
+              SELECT /*+ COALESCE(1) */ * FROM VALUES
+                (1, 0, '$canonical', named_struct('u', '${canonical.toUpperCase(
+                java.util.Locale.ROOT)}'),
+                  array('$short', CAST(NULL AS STRING)), map('$short', '$canonical'),
+                  X'00112233445566778899AABBCCDDEEFF'),
+                (2, 1, '+1-1-1-1-1', named_struct('u', '１-１-１-１-１'),
+                  array('$canonical'), map('$canonical', CAST(NULL AS STRING)),
+                  X'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF'),
+                (3, 0, CAST(NULL AS STRING), CAST(NULL AS STRUCT<u: STRING>),
+                  CAST(NULL AS ARRAY<STRING>), CAST(NULL AS MAP<STRING, STRING>),
+                  CAST(NULL AS BINARY)),
+                (4, 1, '100000000-1-1-1-1', named_struct('u', '$canonical'),
+                  CAST(array() AS ARRAY<STRING>), CAST(map() AS MAP<STRING, STRING>),
+                  X'00000000000000000000000000000000')
+              AS src(id, p, u, s, l, m, fx)""")
+          }
+          assertNativeWriteEngages(native, Seq(1, 2, 3, 4))(insert(native))
+          insert(jvm)
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            checkAnswer(spark.table(s"$catalog.$ns.$native"), spark.table(s"$catalog.$ns.$jvm"))
+          }
+          def metrics(name: String): Seq[Row] = spark
+            .sql(s"""
+            SELECT ${if (mode == "unpartitioned") "NULL" else "partition"} AS part,
+              record_count, value_counts, null_value_counts,
+              transform_values(lower_bounds, (k, v) -> hex(v)),
+              transform_values(upper_bounds, (k, v) -> hex(v))
+            FROM $catalog.$ns.$name.data_files
+          """)
+            .collect()
+            .toSeq
+            .sortBy(_.toString)
+          assert(metrics(native) == metrics(jvm))
+
+          val uuidPaths =
+            Seq("u", "s.u", "l.list.element", "m.key_value.key", "m.key_value.value")
+          Seq(native, jvm).foreach { name =>
+            val table = loadIcebergTable(spark, catalog, ns, name)
+              .asInstanceOf[org.apache.iceberg.Table]
+            spark.sql(s"SELECT file_path FROM $catalog.$ns.$name.data_files").collect().foreach {
+              row =>
+                val reader = ParquetFileReader.open(HadoopInputFile
+                  .fromPath(new HadoopPath(row.getString(0)), spark.sessionState.newHadoopConf()))
+                try {
+                  val schema = reader.getFooter.getFileMetaData.getSchema
+                  uuidPaths.foreach { path =>
+                    val leaf = schema.getType(path.split("\\."): _*).asPrimitiveType()
+                    assert(leaf.getPrimitiveTypeName == PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY)
+                    assert(leaf.getTypeLength == 16)
+                    val icebergPath = path.replace(".list.", ".").replace(".key_value.", ".")
+                    assert(
+                      leaf.getId.intValue() == table.schema().findField(icebergPath).fieldId())
+                    // The pinned iceberg-rust writer does not emit the UUID logical annotation.
+                    // Pin that documented physical divergence rather than claiming footer parity.
+                    if (name == native) assert(leaf.getLogicalTypeAnnotation == null)
+                    else assert(leaf.getLogicalTypeAnnotation.toString == "UUID")
+                  }
+                } finally reader.close()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (shape <- Seq("flat", "list_element", "map_value")) {
+    test(s"native acceleration: invalid uuid in a later batch aborts finalized files ($shape)") {
+      assumeNativeAcceleration()
+      withIcebergCatalog { _ =>
+        import org.apache.iceberg.types.Types
+        val canonical = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
+        val uuid = Types.UUIDType.get()
+        val columnType = shape match {
+          case "flat" => uuid
+          case "list_element" => Types.ListType.ofOptional(101, uuid)
+          case "map_value" => Types.MapType.ofOptional(102, 103, Types.StringType.get(), uuid)
+        }
+        def wrap(value: String): String = shape match {
+          case "flat" => value
+          case "list_element" => s"array($value)"
+          case "map_value" => s"map('k', $value)"
+        }
+        val sourceView = s"uuid_cleanup_source_$shape"
+        val native = s"uuid_${shape}_bad_native"
+        val jvm = s"uuid_${shape}_bad_jvm"
+        val control = s"uuid_${shape}_control"
+        val sourceValue = wrap(s"CASE WHEN id = 7000 THEN 'invalid' ELSE '$canonical' END")
+        val seed = wrap(s"'$canonical'")
+        val failingField = shape match {
+          case "flat" => "u"
+          case "list_element" => "element"
+          case "map_value" => "value"
+        }
+        withTempView(sourceView) {
+          // A physical Parquet source avoids a LocalTableScan handing every row over at once.
+          withTempPath { source =>
+            spark
+              .range(10000)
+              .selectExpr("CAST(id AS INT) AS id", s"$sourceValue AS u")
+              .coalesce(1)
+              .write
+              .parquet(source.getCanonicalPath)
+            spark.read
+              .parquet(source.getCanonicalPath)
+              .createOrReplaceTempView(sourceView)
+            Seq(native, jvm, control).foreach { name =>
+              spark.sql(s"""CREATE TABLE $catalog.$ns.$name (id INT) USING iceberg
+              TBLPROPERTIES ('write.target-file-size-bytes'='1')""")
+              addIcebergColumn(loadIcebergTable(spark, catalog, ns, name), "u", columnType)
+              spark.sql(s"REFRESH TABLE $catalog.$ns.$name")
+              spark.sql(s"INSERT INTO $catalog.$ns.$name VALUES (-1, $seed)")
+            }
+            withNativeEnabled {
+              withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "1000") {
+                assertNativeWriteEngages(control, (-1 until 7000)) {
+                  spark.sql(s"INSERT INTO $catalog.$ns.$control " +
+                    s"SELECT id, u FROM $sourceView WHERE id < 7000")
+                }
+                assert(parquetFiles(dataDir(control)).size >= 4)
+              }
+            }
+            Seq("native", "jvm").foreach { arm =>
+              val name = if (arm == "native") native else jvm
+              val before = countSnapshots(name)
+              val committed = parquetFiles(dataDir(name))
+              val committedRows = spark.table(s"$catalog.$ns.$name").collect().toSeq
+              withSQLConf(
+                CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> (arm == "native").toString,
+                CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+                CometConf.COMET_BATCH_SIZE.key -> "1000") {
+                val (plans, error) = captureFailedPlans(spark) {
+                  spark.sql(s"INSERT INTO $catalog.$ns.$name SELECT id, u FROM $sourceView")
+                }
+                assert(error.nonEmpty, s"$arm accepted invalid UUID")
+                if (arm == "native") {
+                  assert(plans.exists(p =>
+                    collectWithSubqueries(p) { case w: CometIcebergWriteExec =>
+                      w
+                    }.nonEmpty))
+                  assert(
+                    error.toSeq
+                      .flatMap(exceptionChain)
+                      .exists(t =>
+                        Option(t.getMessage).exists(
+                          _.contains(s"Invalid UUID string in Iceberg field $failingField"))))
+                }
+              }
+              assert(countSnapshots(name) == before)
+              assert(parquetFiles(dataDir(name)) == committed)
+              checkAnswer(spark.table(s"$catalog.$ns.$name"), committedRows)
+            }
+          }
+        }
+      }
     }
   }
 
