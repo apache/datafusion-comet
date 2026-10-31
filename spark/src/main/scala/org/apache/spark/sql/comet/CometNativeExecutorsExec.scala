@@ -30,7 +30,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
@@ -186,7 +186,8 @@ object CometNativeExecutors {
       !(conf.adaptiveExecutionEnabled && !queryStagePrep && plan.isInstanceOf[Exchange]) &&
       !plan.exists {
         case _: CometNativeExecutorsExec | _: AdaptiveSparkPlanExec | _: QueryStageExec |
-            _: ExecutedCommandExec | _: DataWritingCommandExec | _: V2CommandExec =>
+            _: CommandResultExec | _: ExecutedCommandExec | _: DataWritingCommandExec |
+            _: V2CommandExec =>
           true
         case _ => false
       }

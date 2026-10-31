@@ -351,6 +351,20 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  nativeExecutorsTest("a command's plan stays in Spark") {
+    withTable { path =>
+      onCluster {
+        withTempView("t") {
+          spark.read.parquet(path).createOrReplaceTempView("t")
+          // Explaining a command explains its result, which isn't a query to run on the cluster.
+          val df = sql("create or replace temp view v as select * from t")
+          assert(
+            df.queryExecution.explainString(org.apache.spark.sql.execution.SimpleMode).nonEmpty)
+        }
+      }
+    }
+  }
+
   nativeExecutorsTest("a query the cluster cannot run fails, naming the operator") {
     withTable { path =>
       // With Comet's sort off, the sort stays in Spark.
