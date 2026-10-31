@@ -277,21 +277,69 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
-  test("fall-back: unknown column in the write schema") {
+  test("fall-back: unknown field nested in a struct") {
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
     withDetectionCatalog { _ =>
-      // Spark DDL cannot declare `unknown` (Iceberg plans it as Spark's NullType), so evolve the
-      // schema through the Iceberg API.
+      // Spark DDL cannot declare `unknown`, so add it through the Iceberg API.
       createTable("unknown_col", partitionSpec = "", properties = Some("'format-version'='3'"))
+      spark.sql(s"ALTER TABLE $catalog.$ns.unknown_col ADD COLUMN s STRUCT<a: INT>")
       addIcebergColumn(
         loadIcebergTable(spark, catalog, ns, "unknown_col"),
         "u",
-        icebergUnknownType())
+        icebergUnknownType(),
+        parent = Some("s"))
       spark.sql(s"REFRESH TABLE $catalog.$ns.unknown_col")
       val writeExec = captureWriteExec("unknown_col", allowWriteFailure = true) {
-        spark.sql(s"INSERT INTO $catalog.$ns.unknown_col VALUES (1, 'us', 1.0, NULL)")
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.unknown_col " +
+            "VALUES (1, 'us', 1.0, named_struct('a', 1, 'u', NULL))")
       }
       assertUnsupportedContains(writeExec, "unknown_col", "column u has Iceberg type unknown")
+    }
+  }
+
+  test("fall-back: every column is unknown") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      createTable("only_unknown", partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(
+        loadIcebergTable(spark, catalog, ns, "only_unknown"),
+        "u",
+        icebergUnknownType())
+      Seq("id", "region", "amount").foreach { c =>
+        spark.sql(s"ALTER TABLE $catalog.$ns.only_unknown DROP COLUMN $c")
+      }
+      spark.sql(s"REFRESH TABLE $catalog.$ns.only_unknown")
+      // iceberg-java fails this write too: Parquet cannot write an empty schema.
+      val writeExec = captureWriteExec("only_unknown", allowWriteFailure = true) {
+        spark.sql(s"INSERT INTO $catalog.$ns.only_unknown VALUES (NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        "only_unknown",
+        "every column has Iceberg type unknown")
+    }
+  }
+
+  test("fall-back: partition field sourced from an unknown column") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      val t = "unknown_partition_source"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      loadIcebergTable(spark, catalog, ns, t)
+        .asInstanceOf[org.apache.iceberg.Table]
+        .updateSpec()
+        .addField("u")
+        .commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      val writeExec = captureWriteExec(t, allowWriteFailure = false) {
+        spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        t,
+        "partition field u is sourced from a column of Iceberg type unknown")
     }
   }
 
