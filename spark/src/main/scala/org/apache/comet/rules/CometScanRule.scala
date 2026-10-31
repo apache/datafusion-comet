@@ -746,12 +746,8 @@ case class CometScanRule(session: SparkSession)
         // Projected roots are matched by field ID so historical snapshots still identify renamed
         // columns. Both schema checks below use them.
         val projectedDataColumns = scanExec.output.filterNot(_.isMetadataCol)
-        val resolver = session.sessionState.conf.resolver
-        val projectedFieldIds = projectedDataColumns.map { attr =>
-          metadata.globalFieldIdMapping.collectFirst {
-            case (fieldName, fieldId) if resolver(fieldName, attr.name) => fieldId
-          }
-        }
+        val projectedFieldIds =
+          projectedDataColumns.map(attr => metadata.globalFieldIdMapping.get(attr.name))
         val resolvedProjectedFieldIds = projectedFieldIds.flatten.toSet
         val hasUnresolvedProjectedFieldIds = projectedFieldIds.exists(_.isEmpty)
 
