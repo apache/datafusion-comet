@@ -388,7 +388,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `aggregate` | ✅ | Codegen dispatch |  |
 | `array_sort` | ✅ | Native | The default comparator runs natively; custom comparators and arrays with non-default string collations use the JVM codegen dispatcher |
 | `exists` | ✅ | Codegen dispatch |  |
-| `filter` | ✅ | Native | General lambda routed through the JVM codegen dispatcher; the `array_compact` form runs natively |
+| `filter` | ✅ | Native | A one-parameter lambda whose body is natively supported runs natively, as does the `array_compact` form; other lambdas use the JVM codegen dispatcher. See [Expression Tuning](tuning/expressions.md#lambdas-and-higher-order-functions) |
 | `forall` | ✅ | Codegen dispatch |  |
 | `map_filter` | ✅ | Codegen dispatch |  |
 | `map_zip_with` | ✅ | Codegen dispatch |  |

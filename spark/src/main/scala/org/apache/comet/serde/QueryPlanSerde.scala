@@ -87,6 +87,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     classOf[Size] -> CometSize,
     classOf[ArraysZip] -> CometArraysZip,
     classOf[ArrayTransform] -> CometArrayTransform,
+    classOf[NamedLambdaVariable] -> CometNamedLambdaVariable,
     classOf[ArrayExists] -> CometArrayExists,
     classOf[ArrayForAll] -> CometArrayForAll,
     classOf[ArrayAggregate] -> CometArrayAggregate,

@@ -96,6 +96,8 @@ message Expr {
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
     AtLeastNNonNulls at_least_n_non_nulls = 76;
+    HigherOrderFunc higher_order_func = 77;
+    LambdaVariable lambda_variable = 78;
   }
 
   reserved 20;
@@ -737,6 +739,27 @@ message RandStr {
 message ArraysZip {
   repeated Expr values = 1;
   repeated string names = 2;
+}
+
+// A DataFusion higher-order function applied to one array argument and a
+// one-parameter lambda, e.g. `array_filter(array, x -> body)`. The lambda body
+// is an ordinary expression tree in which `LambdaVariable` nodes refer to the
+// lambda parameter and `BoundReference` nodes refer to columns of the
+// enclosing operator's input.
+message HigherOrderFunc {
+  // DataFusion higher-order function name, e.g. "array_filter".
+  string func = 1;
+  Expr array = 2;
+  // Unique name of the lambda parameter. `LambdaVariable.name` nodes in the
+  // body resolve against it.
+  string param_name = 3;
+  Expr body = 4;
+}
+
+// Reference to a lambda parameter from inside a `HigherOrderFunc` body. The
+// element type is taken from the array argument at planning time.
+message LambdaVariable {
+  string name = 1;
 }
 
 // Scalar UDF dispatched to the JVM via JNI. Native side exports input arrays
