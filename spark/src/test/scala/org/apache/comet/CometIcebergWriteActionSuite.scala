@@ -4901,7 +4901,8 @@ class CometIcebergWriteActionSuite
   // What is asserted here is determinism, not parity: iceberg-java's fanout writer iterates its
   // own `StructLikeMap`, so the two writers only agree where that map order and path order happen
   // to coincide -- which they do for the ascending partition values the upstream test uses. See
-  // the fanout entry under accepted divergences in `iceberg-writes.md`.
+  // the fanout ordering entry in "Accepted divergences" under Writes in
+  // `docs/source/user-guide/latest/iceberg.md`.
   //
   // Eight partitions rather than the two that test uses: an unfixed writer lands in path order by
   // luck 1 time in 8!, where with two it would pass half the time.

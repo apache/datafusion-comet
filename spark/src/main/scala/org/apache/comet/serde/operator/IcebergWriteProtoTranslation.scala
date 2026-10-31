@@ -199,7 +199,8 @@ object IcebergWriteProtoTranslation {
    * zstd (parquet-rs default 1, parquet-mr default 3). To produce files the same size as
    * iceberg-java would, substitute parquet-mr's 3 when zstd is in use and the user did not set an
    * explicit level. gzip defaults to 6 on both sides; snappy and lz4 have no level concept;
-   * compressed bytes are an accepted divergence regardless (see iceberg-writes.md).
+   * compressed bytes are an accepted divergence regardless (see "Accepted divergences" under
+   * Writes in `docs/source/user-guide/latest/iceberg.md`).
    */
   private def resolveCompressionLevel(
       props: Map[String, String],
