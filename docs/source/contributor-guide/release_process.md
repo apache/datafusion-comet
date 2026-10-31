@@ -203,7 +203,9 @@ Create a PR against the main branch to prepare for developing the next release:
 
 - Update the Rust crate version to `0.14.0` in `native/Cargo.toml` and in each `contrib/*/native/Cargo.toml`.
   The contrib crates sit outside the `native/` workspace, so they do not inherit its version. Then run
-  `cargo update --workspace` in `native/` and in each contrib crate that has its own `Cargo.lock`.
+  `cargo update --workspace` in `native/`, in `native/native-executors/` (a workspace with its own `Cargo.lock`,
+  which records the versions of the `native/` crates it uses) and in each contrib crate that has its own
+  `Cargo.lock`.
 - Update the Maven version to `0.14.0-SNAPSHOT` in the same set of files listed above (the `pom.xml` files,
   the Spark test diffs under `dev/diffs`, and the Iceberg test diffs under `dev/diffs/iceberg`).
 

@@ -1068,11 +1068,27 @@ fn prepare_datafusion_session_context(
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let mut rt_config = RuntimeEnvBuilder::new()
-        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size))
-        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
-    rt_config = rt_config.with_memory_pool(memory_pool);
+    let rt_config = comet_runtime_env(memory_pool)
+        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size));
+    comet_session_context(rt_config, batch_size, task_cpus, spark_config, spark_plan)
+}
 
+/// The runtime of a Comet session that reserves memory from `memory_pool`. It has no disk
+/// manager of its own yet.
+pub(crate) fn comet_runtime_env(memory_pool: Arc<dyn MemoryPool>) -> RuntimeEnvBuilder {
+    RuntimeEnvBuilder::new()
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()))
+        .with_memory_pool(memory_pool)
+}
+
+/// Configures a DataFusion session for `spark_plan` over the runtime `rt_config` builds.
+pub(crate) fn comet_session_context(
+    rt_config: RuntimeEnvBuilder,
+    batch_size: usize,
+    task_cpus: usize,
+    spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
+) -> CometResult<SessionContext> {
     let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
@@ -1217,7 +1233,7 @@ fn prepare_output(
 /// # Safety
 /// Each address must point to a writable `FFI_ArrowArray` / `FFI_ArrowSchema` the caller owns.
 /// Whatever the structs hold is overwritten without being released.
-unsafe fn export_batch(
+pub(crate) unsafe fn export_batch(
     array_addrs: &[i64],
     schema_addrs: &[i64],
     output_batch: RecordBatch,

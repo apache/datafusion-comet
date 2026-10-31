@@ -1,0 +1,103 @@
+// Licensed to the Apache Software Foundation (ASF) under one
+// or more contributor license agreements.  See the NOTICE file
+// distributed with this work for additional information
+// regarding copyright ownership.  The ASF licenses this file
+// to you under the Apache License, Version 2.0 (the
+// "License"); you may not use this file except in compliance
+// with the License.  You may obtain a copy of the License at
+//
+//   http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+
+
+// Messages a Spark driver exchanges with a Comet Native Executor cluster. See issue #7288.
+
+syntax = "proto3";
+
+package spark.spark_native_executors;
+
+import "operator.proto";
+import "partitioning.proto";
+
+option java_package = "org.apache.comet.serde";
+
+// A query submitted by a Spark driver to a Comet Native Executor cluster, as the command of
+// an Arrow Flight GetFlightInfo request.
+message QueryRequest {
+  // The Comet version and proto fingerprint of the client's build. The scheduler requires both
+  // to match its own.
+  string comet_version = 1;
+  string proto_fingerprint = 2;
+  // Spark and Comet configs that native execution reads, as a Spark task would pass them.
+  map<string, string> conf = 3;
+  // Stages in topological order: every stage's producers come before it. The last stage is
+  // the root, and its output is the query result.
+  repeated Stage stages = 4;
+}
+
+message Stage {
+  // The stage's native block. Its input leaves (Scan and ShuffleScan) read the stage's
+  // inputs, matched in the order a depth-first walk of the block meets them.
+  spark.spark_operator.Operator plan = 1;
+  repeated StageInput inputs = 2;
+  // For a stage that reads files: the block with each partition's files injected, one
+  // serialized Operator per partition. Empty for a stage whose partitions all run `plan`.
+  repeated bytes partition_plans = 3;
+  // The number of partitions of a stage that reads no exchange: the length of partition_plans
+  // for a stage that reads files, or otherwise the block's own, such as a range's number of
+  // slices. A stage that reads exchanges has as many partitions as they deliver.
+  uint32 num_partitions = 4;
+  // The block's output as Spark declares it. Each partition's output is cast to it before it
+  // leaves the stage, as a Spark task's shuffle writer does, because a hash exchange places
+  // rows by the types of their values too.
+  repeated spark.spark_operator.SparkStructField output_schema = 5;
+}
+
+// How a scheduler sends a stage to its executors, inside the task plans Ballista ships. The
+// scheduler and the executors come from one build, so this needs no version check of its own.
+message Fragment {
+  // The block every partition runs. Empty for a stage that reads files, where each partition
+  // runs its own copy, which the partition descriptor carries.
+  bytes block = 1;
+  repeated spark.spark_operator.SparkStructField output_schema = 2;
+  // Whether every partition reads all of each input, one entry per input.
+  repeated bool broadcast = 3;
+  map<string, string> conf = 4;
+}
+
+// How a scheduler sends the sampling operator of a range exchange to its executors: a
+// reservoir sample of up to `per_partition` rows of each partition, keeping the columns `keys`.
+message Sample {
+  uint64 per_partition = 1;
+  repeated uint64 keys = 2;
+}
+
+message StageInput {
+  // Index into QueryRequest.stages of the stage producing this input.
+  uint32 producer = 1;
+  // How the producer's output is partitioned for this stage. Unset for a broadcast.
+  spark.spark_partitioning.Partitioning partitioning = 2;
+  // Every partition of this stage reads the producer's whole output.
+  bool broadcast = 3;
+}
+
+// The result partitions of a query, in order. The driver's native library converts the
+// endpoints of the FlightInfo the scheduler returns into this message for the JVM.
+message ResultEndpoints {
+  repeated ResultEndpoint endpoints = 1;
+}
+
+message ResultEndpoint {
+  // Arrow Flight location of the executor that holds the partition, such as
+  // grpc+tcp://host:port.
+  string location = 1;
+  // Opaque ticket to pass to DoGet.
+  bytes ticket = 2;
+}
