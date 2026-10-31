@@ -30,6 +30,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
 import org.apache.spark.sql.types.{ByteType, IntegerType, ShortType}
@@ -95,6 +96,8 @@ private[rules] object MakeDateEvaluation {
   // deferred producer, so argument lineage and sibling provenance must be tracked separately.
   private def canEvaluateProjectionEagerly(expression: Expression): Boolean = expression match {
     case Alias(child, _) => canEvaluateProjectionEagerly(child)
+    case _: UnixDate | _: IsNull | _: IsNotNull =>
+      expression.children.forall(canEvaluateProjectionEagerly)
     case date: MakeDate if !date.failOnError =>
       val boundedYear = date.year match {
         case Literal(year: Int, IntegerType) =>
@@ -241,8 +244,17 @@ private[rules] object MakeDateEvaluation {
         case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
         case _ => node
       }
-      val evaluatesDate = containsMakeDate(original.expressions)
+      val evaluatedExpressions = original match {
+        // Residual data filters run in the enclosing FilterExec, not in the reader.
+        case scan: FileSourceScanExec => scan.partitionFilters
+        case _ => original.expressions
+      }
+      val evaluatesDate = containsMakeDate(evaluatedExpressions)
       val exchange = original.isInstanceOf[Exchange]
+      // File writers consume the complete input before producing a result. Spark 3.x replaces
+      // the whole command, so its native write no longer has a WriteFilesExec child.
+      val fileWrite = original.isInstanceOf[WriteFilesExec] ||
+        node.isInstanceOf[CometNativeWriteExec]
       val join = original.isInstanceOf[BaseJoinExec]
       // Broadcast joins can inline streamed expressions into their consumer. Their build side
       // materializes rows; shuffled hash and sort-merge joins also isolate the streamed input.
@@ -268,7 +280,7 @@ private[rules] object MakeDateEvaluation {
         case _ => false
       }
       val childDemand = original match {
-        case _ if exchange => None
+        case _ if exchange || fileWrite => None
         // A join can leave a local sort or aggregate completely unpolled.
         case _ if join || rowDemand.contains("JOIN") => Some("JOIN")
         case _ if startsLimit => Some("LIMIT")
@@ -334,7 +346,7 @@ private[rules] object MakeDateEvaluation {
                 guardedChildInputs,
                 dateInputs))
           }
-        case _ if exchange || localMaterialization => None
+        case _ if exchange || localMaterialization || fileWrite => None
         case _ => projectionDemand
       }
       val childCollectLimit = original match {
@@ -372,7 +384,7 @@ private[rules] object MakeDateEvaluation {
       })
       // Date provenance flows up through aliases while deferred evaluation flows down. This
       // also finds a skipped sibling computed in a projection above the date's producer.
-      val dateDerivedOutputs = if (exchange || localMaterialization) {
+      val dateDerivedOutputs = if (exchange || localMaterialization || fileWrite) {
         AttributeSet.empty
       } else {
         original match {

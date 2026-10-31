@@ -250,8 +250,12 @@ class CometExecRuleSuite extends CometTestBase {
         withParquetTable(path.getCanonicalPath, "make_date_non_ansi") {
           // A literal or widened small-integer year cannot overflow the Date32 representation.
           // The invalid month is harmless with ANSI off, including below a lazy row consumer.
-          for (year <- Seq("2024", "_1")) {
-            val df = sql(s"SELECT make_date($year, _2, 1) FROM make_date_non_ansi LIMIT 10")
+          for (year <- Seq("2024", "_1");
+            projection <- Seq(
+              s"make_date($year, _2, 1)",
+              s"unix_date(make_date($year, _2, 1))",
+              s"make_date($year, _2, 1) IS NULL")) {
+            val df = sql(s"SELECT $projection FROM make_date_non_ansi LIMIT 10")
             checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
           }
 
@@ -324,6 +328,63 @@ class CometExecRuleSuite extends CometTestBase {
         val plan = df.queryExecution.executedPlan
         assert(countOperators(plan, classOf[ProjectExec]) == 2, plan.treeString)
         assert(countOperators(plan, classOf[CometProjectExec]) == 0, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date residual filters keep the native Parquet reader") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((1, 1, 1), (13, 1, 2)), "make_date_residual") {
+        val df = sql("""
+          |SELECT _3 FROM make_date_residual
+          |WHERE unix_date(make_date(2024, _1, _2)) > 0
+          |""".stripMargin)
+        checkSparkAnswer(df)
+        val plan = df.queryExecution.executedPlan
+        val scan = plan
+          .collectFirst { case scan: CometNativeScanExec => scan }
+          .getOrElse(fail(s"Expected a native Parquet reader:\n${plan.treeString}"))
+        assert(scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
+        assert(countOperators(plan, classOf[FilterExec]) == 1, plan.treeString)
+      }
+    }
+  }
+
+  test("make_date file writes consume complete input but preserve inner limits") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.PushProjectionThroughLimit",
+      CometConf.COMET_NATIVE_PARQUET_WRITE_ENABLED.key -> "true",
+      CometConf.COMET_OPERATOR_DATA_WRITING_COMMAND_ALLOW_INCOMPAT.key -> "true") {
+      withParquetTable(Seq(Tuple1(2024), Tuple1(2025)), "make_date_write_input") {
+        withTable("make_date_write_output") {
+          sql("CREATE TABLE make_date_write_output (dt DATE) USING parquet")
+          val insert = "INSERT OVERWRITE TABLE make_date_write_output " +
+            "SELECT make_date(_1, 1, 1) FROM make_date_write_input"
+          val native = sql(s"EXPLAIN $insert").collect().map(_.getString(0)).mkString("\n")
+          val writer = if (isSpark40Plus) "CometWriteFiles" else "CometNativeWrite"
+          assert(native.contains(writer), native)
+          assert(native.contains("CometProject"), native)
+          sql(insert).collect()
+          checkAnswer(
+            sql("SELECT unix_date(dt) FROM make_date_write_output"),
+            Seq(Row(19723), Row(20089)))
+
+          // A limit inside the write can still stop before a later throwing date is evaluated.
+          val limited = sql(s"EXPLAIN $insert LIMIT 1")
+            .collect()
+            .map(_.getString(0))
+            .mkString("\n")
+          // Spark 3.x also adds an alias-only native projection above the limit.
+          assert(
+            limited.linesIterator.exists(line =>
+              line.contains("Project [make_date(") && !line.contains("CometProject")),
+            limited)
+        }
       }
     }
   }
