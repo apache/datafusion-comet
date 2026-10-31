@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -235,6 +235,7 @@ case class CometShuffleExchangeExec(
               nativeChild.nativeOp,
               nativeChildMetricNode,
               ctx,
+              CapturedSQLConf.capture(),
               positionalRoundRobin))
         case None =>
           child match {
@@ -974,7 +975,7 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      NativeShuffleSpec(scanOp, childMetricNode, ctx))
+      NativeShuffleSpec(scanOp, childMetricNode, ctx, CapturedSQLConf.capture()))
   }
 
   /**

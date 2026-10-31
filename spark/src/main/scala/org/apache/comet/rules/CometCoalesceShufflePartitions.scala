@@ -54,9 +54,9 @@ import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNes
  * It rebuilds only operators whose output partitioning is unknown. Spark can coalesce the
  * children of a union differently, and from Spark 4.1 a union whose children share a partitioning
  * reports it, so an aggregate above can rely on it instead of a shuffle. AQE discards a
- * coalescing that breaks a distribution an operator requires, but Comet's operators state none,
- * so the aggregate would read one key from more than one partition. A broadcast join reports the
- * partitioning of its streamed side, so the same applies to it.
+ * coalescing that breaks a distribution an operator requires, and Comet's aggregates, windows and
+ * shuffled joins state theirs. A broadcast join reports the partitioning of its streamed side, so
+ * the same applies to it.
  *
  * When every leaf below such an operator is an exchange stage, Spark's rule already coalesces its
  * shuffles, together rather than child by child, and this leaves them as they are. It steps in

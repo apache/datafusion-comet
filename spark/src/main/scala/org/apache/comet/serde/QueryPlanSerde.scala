@@ -938,19 +938,25 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] =
     CometExplainInfo.withExpressionFallbackReasonScope {
-      val newExpr = DecimalPrecision.promote(expr)
-      val result = exprToProtoInternal(newExpr, inputs, binding)
-      if (!(newExpr eq expr)) {
-        // `promote` rebuilt the tree, so the tags landed on copies that the operator does not hold.
-        // Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk the operator's own
-        // expressions, still see them. Skipped in the common case where `promote` returned the same
-        // tree and there is nothing to lift.
-        liftCoverageTags(newExpr, expr)
-        if (result.isEmpty) {
-          liftFallbackReasons(newExpr, expr)
-        }
+      CometMakeDate.unsupportedParentReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(expr, reason)
+          None
+        case None =>
+          val newExpr = DecimalPrecision.promote(expr)
+          val result = exprToProtoInternal(newExpr, inputs, binding)
+          if (!(newExpr eq expr)) {
+            // `promote` rebuilt the tree, so the tags landed on copies that the operator does
+            // not hold. Lift them onto `expr` so the roll-ups in `CometExecRule`, which walk
+            // the operator's own expressions, still see them. Skipped in the common case where
+            // `promote` returned the same tree and there is nothing to lift.
+            liftCoverageTags(newExpr, expr)
+            if (result.isEmpty) {
+              liftFallbackReasons(newExpr, expr)
+            }
+          }
+          result
       }
-      result
     }
 
   /**
