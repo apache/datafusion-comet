@@ -426,10 +426,45 @@ Three details matter for tuning:
   share, as can happen with wide rows, many cores, little off-heap memory and several consumers
   that can spill in the task. It can also fail on its first request when consumers that cannot
   spill, such as the build side of a shuffled hash join or a sort-merge join's buffered rows, hold
-  the task's whole share, because the limit is then zero. Spark lets such a consumer hold more than
-  `off_heap_size / running_tasks` while other tasks have not yet asked for memory. A larger
+  the task's whole share, because the limit is then zero
+  ([issue #7197](https://github.com/apache/datafusion-comet/issues/7197)). Spark lets such a
+  consumer hold more than `off_heap_size / running_tasks` while other tasks have not yet asked for
+  memory. A larger
   `spark.memory.offHeap.size`, a smaller `spark.comet.batchSize` or `spark.comet.exec.memoryPool=greedy_unified`
   avoids it, and the migration guide says so too.
+
+**The pool has two locks, split the way `TaskMemoryManager` splits a task's calls.**
+`acquireExecutionMemory` holds the task's monitor for the whole call, including while
+`ExecutionMemoryPool.acquireMemory` waits in `lock.wait()` below the task's minimum share, so a
+task's acquires already run one at a time. `releaseExecutionMemory` does not take that monitor, so a
+release can land while an acquire waits. `CometFairMemoryPool` copies this:
+
+- `acquire` is held by `grow` and `try_grow` across their `acquireMemory` call, so the pool asks
+  Spark for one reservation at a time. That costs no concurrency, because Spark would queue the
+  second acquire on the task's monitor anyway. A thread waits for `acquire` in `block_in_place`, as
+  it does for the JNI call, so the other tasks of a Tokio worker keep running.
+- `state` covers the pool's total and each consumer's running total. It is held only while they
+  are read or updated, never across a JNI call. `shrink`, `reserved`, `register` and `unregister`
+  take only `state`, so none of them waits behind an acquire parked in Spark. This matters most for
+  a release: a parked acquire can be waiting for the very bytes another thread of the task is
+  releasing, and a release stuck behind it would stall the task until an unrelated task freed
+  memory.
+- `acquire` is always taken before `state`.
+
+`try_grow` runs both checks under `state`, drops it for the JNI call, and records the bytes once
+Spark has granted them. The checks still hold at that point: while `acquire` is held nothing else
+adds to the totals, a `shrink` only lowers them, and a consumer that registers or a task that
+starts meanwhile lowers the shares just as it would a moment later. A refusal, a JNI error or a
+panic records nothing. Because a pool's acquires run one at a time, two of its `try_grow` calls
+never both ask Spark for the same overcommit.
+
+`shrink` hands its bytes to Spark before it takes them off the totals. A `try_grow` checked in
+between still counts those bytes, so it can be refused where it would fit a moment later, but it is
+never admitted on bytes Spark still holds. One that passes the checks can still come back with a
+short grant if the task is at its Spark share until the release lands.
+
+Nothing reachable from a Spark `spill` callback may reserve memory through this pool. Spark runs
+that callback on the acquiring thread, which already holds `acquire`.
 
 ### Task-shared pools and their lifetime
 
