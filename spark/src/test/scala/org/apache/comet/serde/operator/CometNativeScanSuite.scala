@@ -24,7 +24,7 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Contains, EndsWith, EqualTo, In, InSet, IsNull, Literal, Not, Or, StartsWith}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Contains, EndsWith, EqualTo, GreaterThan, In, InSet, IsNull, Literal, MakeDate, Not, Or, StartsWith, UnixDate}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DateType, IntegerType, LongType, MetadataBuilder, StringType, StructField, StructType}
@@ -132,6 +132,24 @@ class CometNativeScanSuite extends AnyFunSuite {
     conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED, true)
     val combined = Not(And(disabled, enabled))
     assert(CometNativeScan.filterForParquetPushdown(combined, conf).contains(combined))
+  }
+
+  test("Parquet pushdown excludes make_date before rewriting predicates") {
+    val conf = new SQLConf
+    val year = AttributeReference("year", IntegerType)()
+    val a = AttributeReference("a", IntegerType)()
+    val b = AttributeReference("b", IntegerType)()
+    val date = GreaterThan(
+      UnixDate(MakeDate(year, Literal(1), Literal(1), failOnError = false)),
+      Literal(0))
+    val predicate = Or(And(date, EqualTo(a, Literal(1))), EqualTo(b, Literal(1)))
+    val independent = EqualTo(AttributeReference("keep", IntegerType)(), Literal(1))
+    Seq(false, true).foreach { datePushdown =>
+      conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED, datePushdown)
+      assert(
+        Seq(predicate, independent).flatMap(CometNativeScan.filterForParquetPushdown(_, conf)) ==
+          Seq(independent))
+    }
   }
 
   test("Parquet pushdown settings apply to string and IN predicates") {

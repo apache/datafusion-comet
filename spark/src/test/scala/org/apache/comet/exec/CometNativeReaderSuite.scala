@@ -31,7 +31,7 @@ import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.MakeDate
+import org.apache.spark.sql.catalyst.expressions.{MakeDate, Or}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1751,6 +1751,73 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
                 checkSparkAnswer(sql(query))
                 assert(sql(query).collect().toSeq == Seq(Row(0L)))
               }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("make_date disjunctions are not weakened before Parquet metadata pruning") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED.key -> "false") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 1024L, 1L, 1)
+            .selectExpr(
+              "CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y",
+              "0 AS a",
+              "0 AS b",
+              "0 AS keep")
+            .write
+            .parquet(path.toString)
+        }
+        withTempView("make_date_disjunction") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("make_date_disjunction")
+          val query = """SELECT count(*) FROM make_date_disjunction
+            |WHERE ((unix_date(make_date(y, 1, 1)) > 0 AND a = 1) OR b = 1)""".stripMargin
+          for (rowPushdown <- Seq(false, true)) {
+            withSQLConf(
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowPushdown.toString) {
+              val df = sql(query)
+              assert(
+                find(df.queryExecution.executedPlan)(
+                  _.isInstanceOf[CometNativeScanExec]).isDefined)
+              // Removing make_date would leave a = 1 OR b = 1, whose statistics discard the
+              // entire row group before Spark can observe its overflowing year.
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              val failures = Seq(sparkError, cometError).map { error =>
+                val failure = error.getOrElse(fail("Expected overflow before metadata pruning"))
+                val chain = causeChain(failure)
+                assert(!chain.exists(_.isInstanceOf[CometNativeException]), failure.toString)
+                chain
+                  .collect { case e: SparkThrowable with Throwable => e }
+                  .lastOption
+                  .getOrElse {
+                    fail(s"Expected a SparkThrowable: $failure")
+                  }
+              }
+              assert(failures.head.getErrorClass == "ARITHMETIC_OVERFLOW")
+              assert(failures(1).getClass == failures.head.getClass)
+              assert(failures(1).getErrorClass == failures.head.getErrorClass)
+              assert(failures(1).getSqlState == failures.head.getSqlState)
+
+              // An independent predicate may still prune the group. Keep the original OR
+              // in the plan so this exercises metadata pruning rather than simplification.
+              val pruned = sql(s"$query AND keep = 1")
+              val (_, prunedPlan) = checkSparkAnswer(pruned)
+              val scan = find(prunedPlan)(_.isInstanceOf[CometNativeScanExec])
+                .getOrElse(fail("Expected a native Parquet scan"))
+                .asInstanceOf[CometNativeScanExec]
+              assert(scan.dataFilters.exists {
+                case predicate: Or => predicate.exists(_.isInstanceOf[MakeDate])
+                case _ => false
+              })
+              assert(scan.metrics("row_groups_pruned_statistics").value > 0)
+              assert(pruned.collect().toSeq == Seq(Row(0L)))
             }
           }
         }

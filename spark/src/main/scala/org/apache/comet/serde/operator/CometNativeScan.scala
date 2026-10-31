@@ -341,6 +341,12 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
    * Public because execution-time scalar-subquery filters are serialized from Spark's package.
    */
   def filterForParquetPushdown(filter: Expression, conf: SQLConf): Option[Expression] = {
+    // Exclude the whole predicate before rewriting: removing make_date could leave a metadata
+    // filter that skips its required overflow. Independent predicates remain eligible.
+    if (filter.exists(_.isInstanceOf[MakeDate])) {
+      return None
+    }
+
     val pushDownDate = conf.parquetFilterPushDownDate
     val pushDownTimestamp = conf.parquetFilterPushDownTimestamp
     val pushDownDecimal = conf.parquetFilterPushDownDecimal
