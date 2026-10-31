@@ -185,6 +185,9 @@ message NativeScanCommon {
   // True when Spark supplied a Parquet data filter, including when Comet could
   // not serialize any of those filters into data_filters.
   bool has_data_filters = 19;
+  // Keep row filtering above this scan when an original Spark data filter can
+  // throw, even if that filter could not be serialized into data_filters.
+  bool disable_row_filter_pushdown = 20;
 }
 
 message NativeScan {

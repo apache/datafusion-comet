@@ -43,6 +43,7 @@ private[rules] object MakeDateEvaluation {
   private val sparkEvaluation = TreeNodeTag[String]("comet.makeDateSparkEvaluation")
   private val collectProjectionLimit = TreeNodeTag[Int]("comet.makeDateCollectProjectionLimit")
   private val collectLimitReason = "make_date requires Spark evaluation below LIMIT"
+  private val externalRowConsumer = "an external row iterator"
 
   // Return a copy: failed cap conversion must leave the original guarded pipeline untouched.
   def collectLimitProjection(project: ProjectExec, limit: Int): Option[ProjectExec] =
@@ -393,7 +394,9 @@ private[rules] object MakeDateEvaluation {
         case _ => false
       }
       val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
-        rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
+        rowDemand
+          .filterNot(boundary => boundary == externalRowConsumer && localMaterialization)
+          .map(boundary => s"make_date requires Spark evaluation below $boundary")
       } else None
       // A safe date producer can remain native, but its NULL output can still hide a throwing
       // arithmetic operand in the consumer. The expression serde only sees an attribute here.
@@ -464,14 +467,19 @@ private[rules] object MakeDateEvaluation {
       (rebuilt, fallbackReason, dateDerivedOutputs)
     }
 
-    // Dataset.rdd adds an object-producing root, and its caller may read only a few objects.
-    // EliminateSerialization can leave a typed operator, filter, or project at that root.
-    def producesObjects(op: SparkPlan): Boolean = op match {
-      case _: ObjectProducerExec => true
-      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+    // QueryExecution.toRdd (also used by PySpark's DataFrame.rdd) exposes this plan's row
+    // iterator without adding Dataset.rdd's object-producing root. Its caller can stop early,
+    // even if explain() or another action has already prepared the physical plan.
+    // A one-row collect limit can retain its native input cap: producing its only row cannot
+    // skip another row inside that cap. Larger limits and OFFSET do not provide that guarantee.
+    def isSingleRowCollect(op: SparkPlan): Boolean = op match {
+      case limit: CollectLimitExec => limit.limit == 1 && limit.offset == 0
+      case native: CometExec => isSingleRowCollect(native.originalPlan)
+      case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec =>
+        isSingleRowCollect(op.children.head)
       case _ => false
     }
-    val rootDemand = if (producesObjects(plan)) Some("code reading Dataset.rdd") else None
+    val rootDemand = if (isSingleRowCollect(plan)) None else Some(externalRowConsumer)
     visit(plan, rootDemand, None)._1
   }
 }

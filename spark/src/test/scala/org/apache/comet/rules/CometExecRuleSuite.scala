@@ -183,12 +183,27 @@ class CometExecRuleSuite extends CometTestBase {
                 ansi),
               "date")()),
           input)
-        val native = applyCometExecRule(project)
-        assert(countOperators(native, classOf[CometProjectExec]) == 1, native.treeString)
+        val root = applyCometExecRule(project)
+        val requiresRows = ansi || !boundedYear
+        assert(
+          countOperators(root, classOf[CometProjectExec]) == (if (requiresRows) 0 else 1),
+          root.treeString)
+        assert(
+          countOperators(root, classOf[ProjectExec]) == (if (requiresRows) 1 else 0),
+          root.treeString)
+        def materialize(child: SparkPlan): SparkPlan =
+          SortExec(Seq(SortOrder(child.output.head, Ascending)), false, child)
+        def nativeProject: SparkPlan = applyCometExecRule(materialize(project)).collectFirst {
+          case native: CometProjectExec => native
+        }.get
         for ((boundary, consume) <- consumers; reused <- Seq(false, true)) {
-          val child = if (reused) applyCometExecRule(project) else project
+          // Reuse a native projection that was safe below a materializing consumer.
+          val child = if (reused) nativeProject else project
           val consumer = consume(child)
-          val converted = applyCometExecRule(consumer)
+          val root =
+            if (consumer.isInstanceOf[CollectLimitExec]) consumer
+            else materialize(consumer)
+          val converted = applyCometExecRule(root)
           for (result <- Seq(converted, applyCometExecRule(converted))) {
             // A reused local-table sink has no native child operator for a new cap.
             val capped = consumer.isInstanceOf[CollectLimitExec] && !reused
@@ -240,11 +255,12 @@ class CometExecRuleSuite extends CometTestBase {
             checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
           }
 
+          // Materialize results to isolate expression masks from external row demand.
           val deferred = sql("""
           |SELECT r, IF(r < 0, dt, DATE '2024-01-01'), r + 1 FROM (
           |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt FROM make_date_non_ansi
           |)
-          |""".stripMargin)
+          |""".stripMargin).repartition(1)
           checkSparkAnswerAndOperator(deferred, includeClasses = Seq(classOf[CometProjectExec]))
           assert(
             countOperators(deferred.queryExecution.executedPlan, classOf[CometProjectExec]) == 2)
@@ -264,7 +280,7 @@ class CometExecRuleSuite extends CometTestBase {
               |  SELECT rand(7L) AS r, make_date(2024, _2, 1) AS dt, _3 AS i
               |  FROM make_date_non_ansi
               |)
-              |""".stripMargin)
+              |""".stripMargin).repartition(1)
             checkSparkAnswer(df)
             val plan = df.queryExecution.executedPlan
             withClue(s"consumer=$consumer\n${plan.treeString}") {
@@ -430,7 +446,7 @@ class CometExecRuleSuite extends CometTestBase {
         Seq(right.output.head),
         Inner,
         None,
-        sort(applyCometExecRule(projection)),
+        applyCometExecRule(sort(projection)),
         sort(right))
       val converted = applyCometExecRule(join)
       for (result <- Seq(converted, applyCometExecRule(converted))) {
@@ -459,7 +475,9 @@ class CometExecRuleSuite extends CometTestBase {
             expected = sql(query).collect().toSeq
           }
           checkSparkRows(expected)
-          val df = sql(query)
+          // Materialize the complete result so this tests expression demand within the query,
+          // independently of an external RDD consumer stopping at the root.
+          val df = sql(query).repartition(1)
           checkCometAnswer(df, expected)
           stripAQEPlan(df.queryExecution.executedPlan)
         }
@@ -657,7 +675,8 @@ class CometExecRuleSuite extends CometTestBase {
             expected = sql(query).collect().toSeq
           }
           assert(expected.map(_.get(dateIndex)).toSet == expectedDates)
-          val df = sql(query)
+          // Keep the root's external row demand separate from argument demand inside the query.
+          val df = sql(query).repartition(1)
           checkCometAnswer(df, expected)
           val plan = stripAQEPlan(df.queryExecution.executedPlan)
           assert(countOperators(plan, classOf[CometNativeScanExec]) == 1, plan.treeString)

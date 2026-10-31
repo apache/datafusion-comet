@@ -715,6 +715,11 @@ This list is illustrative, not exhaustive: the per-function tables are not the c
 
 ## make_date evaluation
 
+A valid calendar date outside Date32's range raises `ARITHMETIC_OVERFLOW` in both ANSI
+modes. For example, `make_date(6000000, 1, 1)` raises an error even with ANSI disabled.
+Invalid calendar fields still return NULL with ANSI disabled and raise a date error with
+ANSI enabled; a NULL argument returns NULL before date validation.
+
 With ANSI mode enabled, `make_date(2024, 13, 1)` raises an invalid-date error. If an
 input iterator yields a valid row followed by that invalid row, a `LIMIT 1` can stop
 before evaluating the second date. A native projection can evaluate a whole batch
@@ -722,7 +727,8 @@ before the consuming operator decides which rows it needs.
 
 By default, Comet keeps affected operators in Spark to preserve skipped date evaluation.
 This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
-`mapPartitions`, and `Dataset.rdd` consumers; date expressions inside joins, aggregates,
+`mapPartitions`, and external row iterators, including Scala's `Dataset.rdd` and PySpark's
+`DataFrame.rdd`; date expressions inside joins, aggregates,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers,
@@ -734,6 +740,10 @@ These safeguards also cover required arguments, such as a computed year, on inpu
 the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
+
+The physical plan can be reused by a later RDD consumer, so uncapped root date projections
+also retain these safeguards, even when the current action collects the complete result.
+Materializing exchanges, sorts, and aggregates can still allow native date evaluation below them.
 
 With ANSI disabled, a direct date projection can remain native below these consumers when
 all its computations are safe to evaluate early. This includes `make_date(2024, month, day)`
@@ -750,18 +760,27 @@ because Spark checks that argument on every input row. Filtered counts and count
 multiple arguments retain the safeguard when they can skip date evaluation.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
-An adjacent collect limit and date projection can also stay native: Comet caps the projection's
-input before evaluating dates, so unread rows cannot raise errors. This requires a supported
+An adjacent `LIMIT 1` without `OFFSET` and date projection can also stay native: Comet caps
+the projection's input before evaluating dates, so unread rows cannot raise errors. Larger
+root limits retain the safeguard because an RDD caller can stop before reaching the limit.
+The cap requires a supported
 native local limit; otherwise the Spark safeguard remains. The cap does not bypass safeguards
 for a lower argument-producing projection or intervening filters and joins.
 Exchanges materialize their inputs and partition keys independently, so an outer limit does
 not force an eager date partition key to Spark. Local sorts and aggregates can also separate
 date evaluation from an outer limit.
 
+Predicates containing `make_date` stay above the Parquet scan. Comet disables row-level filter
+pushdown for that scan so predicates cannot be reordered or hide a required date error, and
+Spark's structured error is preserved. This safeguard uses Spark's original predicates, including
+those that cannot be serialized for native execution. Other predicates can still use metadata to
+skip row groups and pages when `spark.sql.parquet.filterPushdown` is enabled. That setting also
+applies to filters resolved from scalar subqueries at execution time.
+
 Users who accept eagerly evaluating dates, projected arguments, and sibling expressions can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
 these shapes. The default is `true`. Disabling it can expose invalid-date or argument errors
-that Spark would skip under ANSI mode. This setting does not change
+that Spark would skip, including Date32 overflow with ANSI disabled. This setting does not change
 `make_date`'s invalid-date handling or the expression-level safeguards for skipped
 arguments and operands. For example, an empty `IN` predicate containing `make_date`
 still falls back when needed.

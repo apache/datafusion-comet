@@ -2479,7 +2479,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         // the other. The fallback reason also proves the optimizer retained the empty predicate.
         Seq("In" -> col("d").isin(), "InSet" -> getColumnFromExpression(emptySet)).foreach {
           case (parent, predicate) =>
-            val df = input.select(predicate)
+            // Materialize the result to isolate the parent guard from root row consumption.
+            val df = input.select(predicate).repartition(1)
             val _ = checkSparkAnswerAndFallbackReason(
               df,
               s"make_date requires Spark evaluation under $parent")

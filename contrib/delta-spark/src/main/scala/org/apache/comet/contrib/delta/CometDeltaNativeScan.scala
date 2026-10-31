@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.{Literal, MakeDate}
 import org.apache.spark.sql.comet.{CometScanExec, DeltaPlanDataInjector}
 import org.apache.spark.sql.delta.DeltaParquetFileFormat
 import org.apache.spark.sql.delta.RowIndexFilterType
@@ -166,6 +166,8 @@ object CometDeltaNativeScan
     }
 
     commonOpt.map { commonBuilder =>
+      commonBuilder.setDisableRowFilterPushdown(
+        scanExec.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
       // Already forced by declineReason on this claim; reused rather than deserialized again.
       val dvDescriptors = memo.dvDescriptors
       // Union object-store options over every authority a partition of this scan may need a
