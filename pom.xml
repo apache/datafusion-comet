@@ -1015,6 +1015,7 @@ under the License.
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CodegenDispatchFallback\.dispatchDeclineReason\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.getSupportLevel\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometOperatorSerde\.getSupportLevel\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsSparkPartialToNativeFinal\..*:s</arg>
@@ -1060,6 +1061,7 @@ under the License.
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometExpressionSerde\.getSupportLevel\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CodegenDispatchFallback\.dispatchDeclineReason\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.getSupportLevel\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometOperatorSerde\.getSupportLevel\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsSparkPartialToNativeFinal\..*:s</arg>

@@ -1337,9 +1337,10 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * an aggregation always, and in a projection, such as a project or a shuffle's partitioning
    * keys, only when `spark.sql.subexpressionElimination.enabled` is on. Other operators, such as
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
-   * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
-   * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * every row where Spark does not, or sends to Spark an expression the dispatcher could run.
+   * They are found on the first `canShortCircuitNulls` call for the operator (or
+   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
+   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1347,12 +1348,20 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
     lazy val common: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
-        val equivalence = new EquivalentExpressions
-        expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
+        commonSubexpressions(expressions)
       } else {
         Nil
       }
+  }
+
+  /**
+   * The subexpressions that occur more than once in `expressions`, decimal-promoted so they
+   * compare equal to the promoted trees the serde converts.
+   */
+  private def commonSubexpressions(expressions: Seq[Expression]): Seq[Expression] = {
+    val equivalence = new EquivalentExpressions
+    expressions.foreach(equivalence.addExprTree(_))
+    equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
   }
 
   /**
@@ -1387,12 +1396,50 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      // Avoid decimal promotion when Spark shares nothing.
-      s.common.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
-      }
+      !holdsSharedSubexpression(skippable, s)
     }
   }
+
+  /**
+   * Whether a node of `expr` can skip a child holding a subexpression the operator's expressions
+   * share. Spark evaluates that subexpression for every row, but the dispatcher, compiling `expr`
+   * alone, can skip it and so miss an ANSI error. While subexpression elimination is on, a
+   * subexpression `expr` itself repeats does not count, as the dispatcher eliminates it too.
+   * False outside `withSharedSubexpressions`.
+   */
+  def skipsSharedSubexpression(expr: Expression): Boolean =
+    sharedSubexpressions.value.exists { s =>
+      lazy val repeated =
+        if (SQLConf.get.subexpressionEliminationEnabled) commonSubexpressions(Seq(expr))
+        else Nil
+      expr.exists { node =>
+        val skippable = node match {
+          // the divisor is evaluated first, so only the dividend (`left`) can be skipped
+          case _: DivModLike | _: Pmod => node.children.take(1)
+          // `StringLocate` evaluates `start`, its last child, first and skips the others on NULL
+          case _: StringLocate => node.children.init
+          // `ArrayJoin` evaluates a nullable replacement first and skips the rest when it is NULL
+          case j: ArrayJoin if j.nullReplacement.exists(_.nullable) => node.children.init
+          // Spark 3.x codegen evaluates both children first; 4.0 rewrites it to `ArrayInsert`
+          case _: ArrayAppend => Nil
+          // Spark's codegen evaluates children in order and skips the rest after a NULL one
+          case _ => node.children.drop(1)
+        }
+        !skippable.forall(_.isInstanceOf[LeafExpression]) &&
+        holdsSharedSubexpression(skippable, s, e => !repeated.exists(_.semanticEquals(e)))
+      }
+    }
+
+  private def holdsSharedSubexpression(
+      exprs: Seq[Expression],
+      shared: SharedSubexpressions,
+      counts: Expression => Boolean = _ => true): Boolean =
+    // Avoid decimal promotion when Spark shares nothing.
+    shared.common.nonEmpty && exprs.exists { expr =>
+      DecimalPrecision
+        .promote(expr)
+        .exists(e => shared.common.exists(_.semanticEquals(e)) && counts(e))
+    }
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
@@ -1430,7 +1477,15 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       inputs: Seq[Attribute],
       binding: Boolean): Option[(CodegenDispatchFallback, Expr)] = handler match {
     case h: CodegenDispatchFallback =>
-      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      h.dispatchDeclineReason(expr) match {
+        case Some(reason) =>
+          withFallbackReason(
+            expr,
+            s"${CometExplainInfo.exprDisplayName(expr)}: codegen dispatch: $reason")
+          None
+        case None =>
+          CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding).map(h -> _)
+      }
     case _ => None
   }
 
