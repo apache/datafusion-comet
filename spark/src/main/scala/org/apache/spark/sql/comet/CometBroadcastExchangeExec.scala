@@ -32,12 +32,14 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, BroadcastPartitioning, Partitioning}
+import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.errors.QueryExecutionErrors
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
+import org.apache.spark.sql.types.{BinaryType, BooleanType, IntegerType, LongType, StringType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.{SparkFatalException, ThreadUtils}
 import org.apache.spark.util.io.ChunkedByteBuffer
@@ -110,9 +112,25 @@ case class CometBroadcastExchangeExec(
   private lazy val maxBroadcastRows = 512000000L
 
   private def getByteArrayRdd(plan: SparkPlan): RDD[(Long, ChunkedByteBuffer)] = {
-    plan.executeColumnar().mapPartitionsInternal { iter =>
-      Utils.serializeBatches(iter)
+    // Capture the read mode on the driver. A new RDD keeps it local to this broadcast consumer,
+    // including when AQE or exchange reuse shares the original shuffle with another operator.
+    val input = plan.executeColumnar()
+    // Skip known unsupported schemas without paying for coalescer JNI calls. Native checks
+    // still handle physical representations such as dictionary-encoded strings.
+    def supported: Boolean = plan.output.nonEmpty && plan.output.forall { attribute =>
+      attribute.dataType match {
+        case IntegerType | LongType | BooleanType | StringType | BinaryType => true
+        case _ => false
+      }
     }
+    val readInput = input match {
+      case shuffle: CometShuffledBatchRDD
+          if CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.get(conf) &&
+            supported && shuffle.supportsNativeBatchCoalescing =>
+        shuffle.withNativeBatchCoalescing(CometConf.COMET_BATCH_SIZE.get(conf))
+      case _ => input
+    }
+    readInput.mapPartitionsInternal(iter => Utils.serializeBatches(iter))
   }
 
   def getNumPartitions(): Int = {
@@ -143,7 +161,7 @@ case class CometBroadcastExchangeExec(
         val beforeBuild = System.nanoTime()
         longMetric("collectTime") += NANOSECONDS.toMillis(beforeBuild - beforeCollect)
 
-        // Coalesce the many small per-shuffle-block buffers into a single buffer.
+        // Coalesce the many small per-shuffle-block buffers, usually into a single buffer.
         // Without this, each consumer task deserializes one Arrow IPC stream per
         // shuffle block (one per writer task per partition), which is very expensive
         // when there are hundreds of writer tasks and partitions. See the scaladoc

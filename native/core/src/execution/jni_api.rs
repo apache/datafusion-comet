@@ -25,9 +25,11 @@
 //! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
 //! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
 //! subqueries). Their core functions (`create_execution_context`,
-//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects
-//! as JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that
-//! need an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects as
+//! JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that need
+//! an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `setOutputStream` registers a native write's output stream through the same
+//! `register_before_execution` check as the pusher.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -39,7 +41,10 @@ use crate::{
         serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
     },
-    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
+    jvm_bridge::{
+        JVMClasses, JavaOutputStreamSink, JavaShufflePartitionPusher, OutputStreamSink,
+        ShufflePartitionPusher,
+    },
 };
 use std::collections::HashSet;
 
@@ -57,6 +62,7 @@ use datafusion::{
 use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
+use datafusion_comet_shuffle::decoded_batch_coalescer::DecodedBatchCoalescer;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -586,6 +592,10 @@ struct ExecutionContext {
     /// Task-owned remote shuffle callback, registered before native planning starts.
     /// The callback owns a JNI global reference and can safely run on Tokio workers.
     pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file this plan's Parquet writer writes, registered before native
+    /// planning starts when the JVM created that file through Hadoop's FileSystem API. Like the
+    /// shuffle callback, it owns a JNI global reference and can run on any native thread.
+    pub output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
@@ -898,6 +908,7 @@ fn create_execution_context(
         task_context: jvm.task_context,
         class_loader: jvm.class_loader,
         shuffle_partition_pusher: None,
+        output_stream: None,
         memory_pool_registration,
     }))
 }
@@ -936,21 +947,70 @@ fn register_shuffle_partition_pusher(
     exec_context: &mut ExecutionContext,
     make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback cannot be registered after native execution starts"
-                .to_string(),
-        ));
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.shuffle_partition_pusher,
+        "Remote shuffle callback",
+        make_pusher,
+    )
+}
+
+/// Registers one of a plan's task-owned JVM callbacks in `slot`, built by `make` only once the
+/// plan is known to accept it: before execution has `started`, and once. `what` names the callback
+/// in the errors.
+fn register_before_execution<T: ?Sized>(
+    started: bool,
+    slot: &mut Option<Arc<T>>,
+    what: &str,
+    make: impl FnOnce() -> CometResult<Arc<T>>,
+) -> CometResult<()> {
+    if started {
+        return Err(CometError::Internal(format!(
+            "{what} cannot be registered after native execution starts"
+        )));
     }
 
-    if exec_context.shuffle_partition_pusher.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback has already been registered for this task".to_string(),
-        ));
+    if slot.is_some() {
+        return Err(CometError::Internal(format!(
+            "{what} has already been registered for this task"
+        )));
     }
 
-    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    *slot = Some(make()?);
     Ok(())
+}
+
+/// Binds the output stream of the file the plan's Parquet writer writes, for a file the JVM
+/// created itself, before native execution is initialized.
+///
+/// Separate from `createPlan` for the same reason as `setShufflePartitionPusher`: only native
+/// writes the JVM creates the file for need it, so every other caller keeps the existing ABI.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    output: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "A native write's output stream requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context)?;
+        register_before_execution(
+            exec_context.root_op.is_some(),
+            &mut exec_context.output_stream,
+            "A native write's output stream",
+            || {
+                let sink: Arc<dyn OutputStreamSink> =
+                    Arc::new(JavaOutputStreamSink::try_new(env, &output)?);
+                Ok(sink)
+            },
+        )
+    })
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -1483,7 +1543,8 @@ fn execute_plan(
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
             .with_class_loader(exec_context.class_loader.clone())
-            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone());
+            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone())
+            .with_output_stream(exec_context.output_stream.clone());
         let (scans, shuffle_scans, root_op) = planner.create_plan(
             &exec_context.spark_plan,
             &mut exec_context.input_sources.clone(),
@@ -2105,6 +2166,137 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     })
 }
 
+/// Decode a local frame into owned arrays. The direct buffer can be reused after this call.
+fn append_shuffle_batch(
+    coalescer: &mut DecodedBatchCoalescer,
+    block: &[u8],
+    num_columns: usize,
+) -> CometResult<()> {
+    let batch = read_ipc_compressed(block)?;
+    if batch.num_columns() != num_columns {
+        return Err(CometError::Internal(
+            "Shuffle frame column count mismatch".into(),
+        ));
+    }
+    coalescer.push(batch)?;
+    Ok(())
+}
+
+/// The reader owns this handle and serializes native calls with cleanup.
+/// # Safety
+/// A nonzero handle must refer to a live coalescer exclusively borrowed for this call.
+unsafe fn shuffle_batch_coalescer<'a>(handle: jlong) -> CometResult<&'a mut DecodedBatchCoalescer> {
+    unsafe { (handle as *mut DecodedBatchCoalescer).as_mut() }
+        .ok_or_else(|| CometError::Internal("Closed shuffle batch coalescer".into()))
+}
+
+fn shuffle_batch_ready_columns(coalescer: &DecodedBatchCoalescer) -> jint {
+    coalescer
+        .peek_ready()
+        .map_or(-1, |batch| batch.num_columns() as jint)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_createShuffleBatchCoalescer(
+    e: EnvUnowned,
+    _class: JClass,
+    max_rows: jint,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_| {
+        let coalescer = DecodedBatchCoalescer::try_new(max_rows.max(0) as usize)?;
+        Ok(Box::into_raw(Box::new(coalescer)) as jlong)
+    })
+}
+
+#[no_mangle]
+/// Decode and retain one local frame, returning ready columns or -1 for more input.
+/// # Safety
+/// The handle must be live and exclusively owned by this reader. On error, close the reader.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_appendShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    num_columns: jint,
+    tracing_enabled: jboolean,
+) -> jint {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("appendShuffleBatch", tracing_enabled != JNI_FALSE, || {
+            if num_columns < 0 {
+                return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
+            }
+            let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
+            let coalescer = unsafe { shuffle_batch_coalescer(handle)? };
+            append_shuffle_batch(coalescer, block, num_columns as usize)?;
+            Ok(shuffle_batch_ready_columns(coalescer))
+        })
+    })
+}
+
+#[no_mangle]
+/// Report ready output, flushing the pending group at EOF.
+/// # Safety
+/// The handle must be live and exclusively owned by this reader.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_peekShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    end_of_input: jboolean,
+    tracing_enabled: jboolean,
+) -> jint {
+    try_unwrap_or_throw(&e, |_| {
+        let coalescer = unsafe { shuffle_batch_coalescer(handle)? };
+        if end_of_input != JNI_FALSE {
+            with_trace(
+                "coalesceShuffleBatches",
+                tracing_enabled != JNI_FALSE,
+                || coalescer.finish(),
+            )?;
+        }
+        Ok(shuffle_batch_ready_columns(coalescer))
+    })
+}
+
+#[no_mangle]
+/// Transfer one ready output using the ordinary export path, including offset repair.
+/// # Safety
+/// The handle and Arrow FFI output addresses must be live and exclusively owned by this reader.
+/// Both address arrays must have the column count reported by `peekShuffleBatch`.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_takeShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    tracing_enabled: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("exportShuffleBatch", tracing_enabled != JNI_FALSE, || {
+            let batch = unsafe { shuffle_batch_coalescer(handle)? }
+                .take_ready()
+                .ok_or_else(|| CometError::Internal("No decoded shuffle batch is ready".into()))?;
+            prepare_output(env, array_addrs, schema_addrs, batch, false)
+        })
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// A nonzero handle must be live, must not be in use, and must be released exactly once.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_closeShuffleBatchCoalescer(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if handle != 0 {
+            drop(unsafe { Box::from_raw(handle as *mut DecodedBatchCoalescer) });
+        }
+        Ok(())
+    })
+}
+
 #[no_mangle]
 /// Parse the expected schema once for a remote shuffle iterator.
 ///
@@ -2191,6 +2383,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     })
 }
 
+/// Borrows a codec header and IPC payload from a direct buffer.
+/// # Safety
+/// The buffer's backing memory must remain valid and unmodified for the borrow.
+unsafe fn shuffle_frame_bytes<'a>(
+    env: &mut Env,
+    byte_buffer: &'a JByteBuffer<'_>,
+    length: jint,
+) -> CometResult<&'a [u8]> {
+    let capacity = env.get_direct_buffer_capacity(byte_buffer)?;
+    if length < 4 || length as usize > capacity {
+        return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
+    }
+    let pointer = env.get_direct_buffer_address(byte_buffer)?;
+    Ok(unsafe { std::slice::from_raw_parts(pointer, length as usize) })
+}
+
 /// Converts the JNI arguments of the `decodeShuffleBlock` entry points for
 /// [`decode_shuffle_block`].
 fn decode_shuffle_block_jni(
@@ -2201,9 +2409,7 @@ fn decode_shuffle_block_jni(
     schema_addrs: JLongArray,
     expected_types: Option<&[ArrowDataType]>,
 ) -> CometResult<jlong> {
-    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-    let length = length as usize;
-    let block: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types) }
@@ -3336,6 +3542,36 @@ mod tests {
             unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types)? };
         let data = unsafe { from_ffi(*ffi_array, &ffi_schema) }?;
         Ok((rows, arrow::array::make_array(data)))
+    }
+
+    #[test]
+    fn append_shuffle_batches_owns_decoded_input_and_preserves_values() {
+        let input = int_batch();
+        let mut block = shuffle_block(&input);
+        let mut coalescer = DecodedBatchCoalescer::try_new(16).unwrap();
+        append_shuffle_batch(&mut coalescer, &block, 1).unwrap();
+        assert_eq!(shuffle_batch_ready_columns(&coalescer), -1);
+        // The JVM reuses its direct input buffer before the pending group is exported.
+        block.fill(0);
+        append_shuffle_batch(&mut coalescer, &shuffle_block(&input), 1).unwrap();
+        coalescer.finish().unwrap();
+        assert_eq!(shuffle_batch_ready_columns(&coalescer), 1);
+        let output = coalescer.take_ready().unwrap();
+        assert_eq!(output.num_rows(), 6);
+        assert_eq!(output.slice(0, 3), input);
+        assert_eq!(output.slice(3, 3), input);
+    }
+
+    #[test]
+    fn append_shuffle_batch_rejects_frame_count_mismatch() {
+        let mut coalescer = DecodedBatchCoalescer::try_new(16).unwrap();
+        let error =
+            append_shuffle_batch(&mut coalescer, &shuffle_block(&int_batch()), 2).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Shuffle frame column count mismatch"));
+        coalescer.finish().unwrap();
+        assert!(coalescer.take_ready().is_none());
     }
 
     #[test]
