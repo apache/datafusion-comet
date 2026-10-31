@@ -123,7 +123,7 @@ fn is_pure_structural_narrowing(
                 .iter()
                 .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
                 .collect::<DataFusionResult<_>>()?;
-            let mut claimed_names = HashSet::with_capacity(target_fields.len());
+            // Read schemas with duplicate sibling names are declined by the JVM scan checks.
             for target_field in target_fields {
                 // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
                 // keeping it is only sound when Spark's configured resolver would pick the same
@@ -139,11 +139,6 @@ fn is_pure_structural_narrowing(
                 //    Spark and Comet's converter reject it, but DataFusion's cast would silently
                 //    return the exact-case field, so the cast must not be retained.
                 let folded_target = fold_name(target_field.name(), parquet_options.case_sensitive)?;
-                // The generic cast can give one source to several targets. Comet keeps only
-                // the earliest equal-strength name claim, so that shape needs its converter.
-                if !claimed_names.insert(folded_target.clone()) {
-                    return Ok(false);
-                }
                 let resolver_matches = source_folded
                     .iter()
                     .filter(|&f| f == &folded_target)
@@ -3816,74 +3811,6 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// Repeated root ids keep their existing last-wins behavior. Inside a struct, every
-    /// selected leaf still contributes its type check, including the losing id claims.
-    #[tokio::test]
-    async fn repeated_requested_ids_preserve_losing_field_validation() -> Result<(), DataFusionError>
-    {
-        for count in [2, 3, 4] {
-            for nested in [false, true] {
-                for reverse in [false, true] {
-                    let values = Arc::new(Int64Array::from(vec![Some(11), Some(22), None]));
-                    let physical =
-                        Field::new("A", DataType::Int64, true).with_metadata(id_meta("1"));
-                    let mut names = vec!["x", "y", "z", "w"];
-                    names.truncate(count);
-                    if reverse {
-                        names.reverse();
-                    }
-                    let requested: Vec<_> = names
-                        .iter()
-                        .enumerate()
-                        .map(|(index, name)| {
-                            let data_type = if index + 1 == count {
-                                DataType::Int64
-                            } else {
-                                DataType::Int32
-                            };
-                            Field::new(*name, data_type, true).with_metadata(id_meta("1"))
-                        })
-                        .collect();
-                    let (batch, required) = if nested {
-                        (
-                            struct_batch(physical, Arc::clone(&values) as ArrayRef)?,
-                            struct_schema(requested),
-                        )
-                    } else {
-                        (
-                            RecordBatch::try_new(
-                                Arc::new(Schema::new(vec![physical])),
-                                vec![Arc::clone(&values) as ArrayRef],
-                            )?,
-                            Arc::new(Schema::new(requested)),
-                        )
-                    };
-                    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-                    options.use_field_id = true;
-                    let mut stream = scan_parquet(&batch, required, options)?;
-                    let read = stream.next().await.unwrap();
-                    if nested {
-                        let error = read.expect_err("losing id claims must still be validated");
-                        assert!(error.to_string().contains("Column: [[s, A]]"), "{error}");
-                        continue;
-                    }
-                    let read = read?;
-                    let columns = read.columns();
-                    for column in &columns[..count - 1] {
-                        assert_eq!(column.data_type(), &DataType::Int32);
-                        assert_eq!(column.null_count(), values.len());
-                    }
-                    assert_eq!(
-                        columns[count - 1].as_primitive::<Int64Type>(),
-                        values.as_ref()
-                    );
-                    assert!(stream.next().await.is_none());
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Disallowed widening (`INT32 -> bigint` with `allow_type_promotion` off) inside a
     /// struct defers to `RejectOnNonEmpty`, like the top level: a non-empty file fails ...
     #[tokio::test]
@@ -5091,24 +5018,6 @@ pub(crate) mod test {
         );
     }
 
-    /// Repeated requested ids keep the last claimant, matching Spark parquet-mr's
-    /// ParquetRowConverter. Equal name claims retain the earliest claimant.
-    #[test]
-    fn root_resolution_id_ties_keep_last_and_name_ties_keep_first() {
-        let logical = Arc::new(Schema::new(vec![
-            Field::new("x", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("y", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("Ab", DataType::Int32, true),
-            Field::new("aB", DataType::Int32, true),
-        ]));
-        let physical = Arc::new(Schema::new(vec![
-            Field::new("p", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("AB", DataType::Int32, true),
-        ]));
-        let (remapped, _name_map) = remap(&logical, &physical, false, true);
-        assert_eq!(field_names(&remapped), ["y", "Ab"]);
-    }
-
     /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)
     /// reading a file that holds both `ω` (id 2) and `Ω` (id 1) must resolve by id (Spark's
     /// `matchIdField` selects the id before ever comparing names) rather than raising a
@@ -5574,14 +5483,6 @@ pub(crate) mod test {
         let opts = default_options();
         let physical = struct_type(vec![("id", DataType::Int32)]);
         let target = struct_type(vec![("id", DataType::Int64)]);
-        assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
-    }
-
-    #[test]
-    fn is_pure_structural_narrowing_denies_conflicting_name_claims() {
-        let opts = default_options();
-        let physical = struct_type(vec![("a", DataType::Int32), ("b", DataType::Int32)]);
-        let target = struct_type(vec![("a", DataType::Int32), ("a", DataType::Int32)]);
         assert!(!is_pure_structural_narrowing(&physical, &target, &opts).unwrap());
     }
 

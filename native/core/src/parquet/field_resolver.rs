@@ -48,9 +48,8 @@ pub(crate) enum Selection<'a> {
 }
 
 /// The strongest claim on one file field. Root remapping and nested conversion give a file
-/// field to this claimant only. Repeated id claims keep the last requested field, matching
-/// Spark parquet-mr's `ParquetRowConverter` id-to-index `toMap`. Equal name claims keep the
-/// earliest requested field, retaining the root remap's name-matching behavior.
+/// field to this claimant only. Equal-strength claims keep the earliest requested field,
+/// retaining the root remap's tie order. Repeated required ids are declined during scan planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FieldClaim {
     /// The requested field selects this file field by Parquet field id.
@@ -80,9 +79,7 @@ impl FieldClaim {
     }
 
     fn claim(&mut self, claim: Self) {
-        if claim.strength() > self.strength()
-            || matches!((*self, claim), (Self::IdMatch(_), Self::IdMatch(_)))
-        {
+        if claim.strength() > self.strength() {
             *self = claim;
         }
     }
@@ -288,8 +285,8 @@ impl<'a> FieldResolver<'a> {
     }
 
     /// Resolve claims in file order, with id matches ahead of shadows and name matches.
-    /// Repeated requested ids keep the last claimant, as Spark parquet-mr does. Duplicate file ids are
-    /// checked across the whole requested group, including unprojected root fields (#7006).
+    /// Duplicate file ids are checked across the whole requested group, including unprojected
+    /// root fields (#7006).
     /// Name ambiguity is left to the caller: the root checks referenced columns only, whereas
     /// nested conversion validates every requested field in [`Self::resolve_all`].
     pub(crate) fn file_claims(&self) -> DataFusionResult<Vec<FieldClaim>> {
@@ -587,61 +584,6 @@ mod test {
                         assert_eq!(resolver.resolve_all().unwrap().into_owned(), expected);
                     });
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn id_ties_keep_last_and_name_ties_keep_first() {
-        for use_field_id in [false, true] {
-            for reverse in [false, true] {
-                let mut requested = [
-                    field("x", Some(1)),
-                    field("y", Some(1)),
-                    field("Ab", None),
-                    field("aB", None),
-                ];
-                if reverse {
-                    requested.reverse();
-                }
-                let file = [field("p", Some(1)), field("AB", None)];
-                with_resolver(&requested, &file, false, use_field_id, |resolver| {
-                    let expected = match (reverse, use_field_id) {
-                        (false, true) => vec![None, Some(0), Some(1), None],
-                        (false, false) => vec![None, None, Some(1), None],
-                        (true, true) => vec![Some(1), None, None, Some(0)],
-                        (true, false) => vec![Some(1), None, None, None],
-                    };
-                    assert_eq!(resolver.resolve_all().unwrap().into_owned(), expected);
-                });
-            }
-        }
-    }
-
-    #[test]
-    fn three_or_more_id_claims_keep_last_over_name_and_shadow() {
-        for count in [3, 4] {
-            for reverse in [false, true] {
-                let mut requested: Vec<_> = ["x", "y", "A", "z"][..count]
-                    .iter()
-                    .map(|name| field(name, Some(1)))
-                    .collect();
-                requested.insert(1, field("a", None));
-                requested.push(field("b", None));
-                let mut expected = vec![None; requested.len()];
-                expected[count] = Some(0);
-                expected[count + 1] = Some(1);
-                if reverse {
-                    requested.reverse();
-                    // Reversal changes the winning id claimant to x, now at the last position.
-                    expected.fill(None);
-                    expected[0] = Some(1);
-                    expected[count + 1] = Some(0);
-                }
-                let file = [field("a", Some(1)), field("b", None)];
-                with_resolver(&requested, &file, false, true, |resolver| {
-                    assert_eq!(resolver.resolve_all().unwrap().into_owned(), expected);
-                });
             }
         }
     }

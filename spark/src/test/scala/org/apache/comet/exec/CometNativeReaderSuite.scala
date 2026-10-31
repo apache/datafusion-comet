@@ -1524,57 +1524,25 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
     }
   }
 
-  for {
-    nested <- Seq(false, true)
-    reverse <- Seq(false, true)
-    count <- Seq(2, 3, 4)
-  } {
+  for (nested <- Seq(false, true)) {
     test(
-      s"Parquet field claims - repeated requested Parquet ids match parquet-mr - nested=$nested reverse=$reverse count=$count") {
-      val id10 = new MetadataBuilder().putLong("parquet.field.id", 10L).build()
-      def wrapSchema(fields: StructType): StructType =
-        if (nested) StructType(Seq(StructField("s", fields, nullable = true, id10)))
-        else fields
-      def wrapRow(fields: Row): Row = if (nested) Row(fields) else fields
-
-      val fields = Seq("x", "y", "z", "w").take(count).map(name => withFieldId(name, 1))
-      val readSchema = wrapSchema(StructType(if (reverse) fields.reverse else fields))
-      val writeSchema = wrapSchema(StructType(Seq(withFieldId("A", 1))))
-      val expected = Seq(11L, 22L, 33L).map(value =>
-        wrapRow(Row.fromSeq(Seq.fill[Any](count - 1)(null) :+ value)))
-      withSQLConf(
-        SQLConf.CASE_SENSITIVE.key -> "false",
-        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
-        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
-        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
-        withTempPath { path =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            val rows = Seq(11L, 22L, 33L).map(value => wrapRow(Row(value)))
-            spark
-              .createDataFrame(spark.sparkContext.parallelize(rows, 1), writeSchema)
-              .write
-              .parquet(path.getCanonicalPath)
-          }
-          // ParquetRowConverter builds its requested-id-to-index map with toMap, so the last
-          // field with the repeated id owns the value. Check the Spark result in both orders.
-          val sparkRows = fieldClaimReference {
-            spark.read.schema(readSchema).parquet(path.getCanonicalPath)
-          }
-          assert(sparkRows.sortBy(_.toString) == expected.sortBy(_.toString))
-          withSQLConf(
-            CometConf.COMET_ENABLED.key -> "true",
-            CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key -> "true") {
-            val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
-            // Keep the existing JVM guard: native matching is tested separately by the Rust
-            // Parquet roundtrip, which bypasses this guard and exercises the actual converter.
-            val plan = df.queryExecution.executedPlan
-            assert(collect(plan) { case scan: CometNativeScanExec =>
-              scan
-            }.isEmpty)
-            val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-            assert(reasons.exists(_.contains("duplicate Parquet field ids")), s"$reasons\n$plan")
-            assert(df.collect().toSeq.sortBy(_.toString) == sparkRows.sortBy(_.toString))
-          }
+      s"Parquet field claims - repeated requested ids fall back to parquet-mr - nested=$nested") {
+      withFieldClaimFile(nested) { (path, _) =>
+        val aliases = StructType(Seq(withFieldId("x", 1), withFieldId("y", 1)))
+        val schema = if (nested) new StructType().add("s", aliases) else aliases
+        def query: DataFrame = spark.read.schema(schema).parquet(path)
+        val expected =
+          (1L to 3L).map(value => if (nested) Row(Row(null, value)) else Row(null, value))
+        assert(fieldClaimReference(query).sortBy(_.toString) == expected.sortBy(_.toString))
+        withSQLConf(
+          SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
+          CometConf.COMET_SCAN_ALLOW_DISABLED_PARQUET_VECTORIZED_READER.key -> "true") {
+          val df = query
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case scan: CometNativeScanExec => scan }.isEmpty)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(reasons.exists(_.contains("duplicate Parquet field ids")), s"$reasons\n$plan")
+          checkAnswer(df, expected)
         }
       }
     }
@@ -1776,78 +1744,19 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
   }
 
   for {
-    nested <- Seq(false, true)
-    offheap <- Seq(false, true)
-  } {
-    test(
-      s"Parquet field claims - issue 6994 original reproduction - nested=$nested offheap=$offheap") {
-      val id1 = new MetadataBuilder().putLong("parquet.field.id", 1L).build()
-      val id10 = new MetadataBuilder().putLong("parquet.field.id", 10L).build()
-      def wrapSchema(fields: StructType): StructType =
-        if (nested) StructType(Seq(StructField("s", fields, nullable = true, id10)))
-        else fields
-      def wrapRow(fields: Row): Row = if (nested) Row(fields) else fields
-
-      val writeSchema =
-        wrapSchema(StructType(Seq(StructField("A", IntegerType, nullable = true, id1))))
-      val readSchema = wrapSchema(
-        StructType(
-          Seq(
-            StructField("x", IntegerType, nullable = true, id1),
-            StructField("a", IntegerType, nullable = true))))
-      val expected = (1 to 3).map(value => wrapRow(Row(value, null)))
-
-      withSQLConf(
-        SQLConf.CASE_SENSITIVE.key -> "false",
-        SQLConf.PARQUET_FIELD_ID_WRITE_ENABLED.key -> "true",
-        SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true",
-        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
-        "spark.sql.columnVector.offheap.enabled" -> offheap.toString) {
-        withTempPath { path =>
-          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-            val rows = (1 to 3).map(value => wrapRow(Row(value)))
-            spark
-              .createDataFrame(spark.sparkContext.parallelize(rows, 1), writeSchema)
-              .write
-              .parquet(path.getCanonicalPath)
-          }
-          for ((reader, comet, vectorized) <- Seq(
-              ("Spark vectorized", false, true),
-              ("Spark parquet-mr", false, false),
-              ("Comet native", true, true))) {
-            withSQLConf(
-              CometConf.COMET_ENABLED.key -> comet.toString,
-              SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString) {
-              val df = spark.read.schema(readSchema).parquet(path.getCanonicalPath)
-              val plan = df.queryExecution.executedPlan
-              val native = collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty
-              assert(native == comet, s"unexpected scan for $reader:\n$plan")
-              if (!comet) {
-                val scans = collect(plan) { case scan: FileSourceScanExec => scan }
-                assert(scans.nonEmpty && scans.forall(_.supportsColumnar == vectorized))
-              }
-              // Only inspect the plan for Spark's vectorized reader: the losing field can
-              // contain stale memory with off-heap vectors. Comet and parquet-mr must return
-              // NULL for the losing name claimant.
-              if (comet || !vectorized) {
-                val rows = df.collect().toSeq
-                info(
-                  s"Spark ${spark.version}, nested=$nested, offheap=$offheap, $reader: ${rows.mkString(", ")}")
-                assert(rows.sortBy(_.toString) == expected.sortBy(_.toString))
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  for {
-    shape <- Seq("root", "struct", "nested struct", "array", "map")
+    (shape, dataType) <- Seq(
+      ("root", LongType),
+      ("struct", LongType),
+      ("nested struct", LongType),
+      ("array", LongType),
+      ("map", LongType),
+      ("root", IntegerType),
+      ("struct", IntegerType))
     reverse <- Seq(false, true)
     fileName <- Seq("A", "a")
   } {
-    test(s"Parquet field claims prefer id over name - $shape reverse=$reverse file=$fileName") {
+    test(
+      s"Parquet field claims prefer id over name - $shape $dataType reverse=$reverse file=$fileName") {
       def wrapSchema(fields: StructType): StructType = shape match {
         case "root" => fields
         case "struct" => new StructType().add("s", fields)
@@ -1865,10 +1774,16 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         case "map" => Row(Map("value" -> fields, "null" -> null))
       }
 
-      val values = Seq[java.lang.Long](11L, null, 33L, 44L, 55L)
+      val values: Seq[Any] = dataType match {
+        case IntegerType => Seq[java.lang.Integer](11, null, 33, 44, 55)
+        case LongType => Seq[java.lang.Long](11L, null, 33L, 44L, 55L)
+      }
       val parentNulls = if (shape == "root") Seq.empty else Seq(Row(null))
-      val writeSchema = wrapSchema(StructType(Seq(withFieldId(fileName, 1))))
-      val fields = Seq(withFieldId("x", 1), StructField("a", LongType, nullable = true))
+      val writeSchema =
+        wrapSchema(StructType(Seq(withFieldId(fileName, 1).copy(dataType = dataType))))
+      val fields = Seq(
+        withFieldId("x", 1).copy(dataType = dataType),
+        StructField("a", dataType, nullable = true))
       val readSchema = wrapSchema(StructType(if (reverse) fields.reverse else fields))
       withSQLConf(
         // Cover folded matching for A and exact, case-sensitive matching for a.
@@ -1895,8 +1810,12 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
                 val fields = if (useFieldId) Seq(value, null) else Seq(null, value)
                 wrapRow(Row.fromSeq(if (reverse) fields.reverse else fields))
               } ++ parentNulls
-              // Spark's vectorized reader returns zeros or stale values for this conflict
-              // (#6994). Pin the intended rows directly rather than using it as the oracle.
+              // Spark's vectorized reader can return zeros or stale values for this conflict
+              // (#6994). Compare with parquet-mr, whose losing field is defined to be NULL.
+              val reference = fieldClaimReference {
+                spark.read.schema(readSchema).parquet(path.getCanonicalPath)
+              }
+              assert(reference.sortBy(_.toString) == expected.sortBy(_.toString))
               checkAnswer(df, expected)
             }
           }

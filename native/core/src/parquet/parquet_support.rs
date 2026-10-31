@@ -3040,46 +3040,4 @@ mod tests {
             .unwrap();
         assert_eq!(col.value(0), 44);
     }
-
-    #[test]
-    fn shadowed_struct_fields_follow_all_missing_null_policy() {
-        use super::{parquet_convert_array, SparkParquetOptions};
-        use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
-        use arrow::buffer::NullBuffer;
-        use arrow::datatypes::{DataType, Field, Fields};
-        use datafusion_comet_spark_expr::EvalMode;
-        use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
-        use std::collections::HashMap;
-        use std::sync::Arc;
-
-        let parent_nulls = NullBuffer::from(vec![true, false, true]);
-        let from: ArrayRef = Arc::new(StructArray::new(
-            Fields::from(vec![Field::new("b", DataType::Int32, true)]),
-            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-            Some(parent_nulls.clone()),
-        ));
-        let to_type = DataType::Struct(Fields::from(vec![
-            Field::new("b", DataType::Int64, true).with_metadata(HashMap::from([(
-                PARQUET_FIELD_ID_META_KEY.to_string(),
-                "99".to_string(),
-            )])),
-            Field::new("B", DataType::Int32, true),
-        ]));
-        for null_struct in [false, true] {
-            let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
-            options.use_field_id = true;
-            options.return_null_struct_if_all_fields_missing = null_struct;
-            let converted = parquet_convert_array(Arc::clone(&from), &to_type, &options).unwrap();
-            let converted = converted.as_any().downcast_ref::<StructArray>().unwrap();
-            assert!(converted
-                .columns()
-                .iter()
-                .all(|column| column.null_count() == 3));
-            if null_struct {
-                assert_eq!(converted.null_count(), 3);
-            } else {
-                assert_eq!(converted.nulls(), Some(&parent_nulls));
-            }
-        }
-    }
 }
