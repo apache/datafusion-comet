@@ -321,6 +321,28 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: partition field sourced from an unknown column") {
+    assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
+    withDetectionCatalog { _ =>
+      val t = "unknown_partition_source"
+      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+      loadIcebergTable(spark, catalog, ns, t)
+        .asInstanceOf[org.apache.iceberg.Table]
+        .updateSpec()
+        .addField("u")
+        .commit()
+      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      val writeExec = captureWriteExec(t, allowWriteFailure = false) {
+        spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL)")
+      }
+      assertUnsupportedContains(
+        writeExec,
+        t,
+        "partition field u is sourced from a column of Iceberg type unknown")
+    }
+  }
+
   test("fall-back: encryption.kms-client-impl set") {
     withDetectionCatalog { _ =>
       createTable(
