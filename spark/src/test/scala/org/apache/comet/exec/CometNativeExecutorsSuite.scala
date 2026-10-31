@@ -321,11 +321,13 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
         // Spark's own answer. Comet on the driver would run the whole query in one JVM, in the
         // test's small native memory pool, and Spark's broadcast relations don't fit in the test
         // JVM's heap either.
-        val expected = withSQLConf(
+        // withSQLConf returns Unit on Spark 3.x, so the rows come out through a var.
+        var expected: Seq[Row] = Nil
+        withSQLConf(
           CometConf.COMET_ENABLED.key -> "false",
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
           SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
-          sql(query).collect().toSeq
+          expected = sql(query).collect().toSeq
         }
         checkClusterReturns(sql(query), expected, query.toLowerCase.contains("order by"))
       } finally {
