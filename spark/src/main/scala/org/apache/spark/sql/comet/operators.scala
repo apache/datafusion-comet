@@ -31,7 +31,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
+import org.apache.spark.sql.catalyst.expressions.{Ascending, Attribute, AttributeSeq, AttributeSet, Coalesce, CodegenObjectFactoryMode, Expression, ExpressionSet, Generator, LeafExpression, Literal, NamedExpression, SortOrder, XXH64}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateMode, Average, CollectList, CollectSet, Final, ImperativeAggregate, Mode, Partial, PartialMerge, Percentile, Sum}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
@@ -3595,9 +3595,18 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   // A sort on one integer column uses DataFusion's primitive merge cursor.
   private def canReduceRightKey(join: SortMergeJoinExec): Boolean =
     (join.right, join.rightKeys) match {
-      case (sort: CometSortExec, Seq(key: Attribute)) =>
-        key.dataType.isInstanceOf[IntegralType] && sort.output.size == 1 &&
-        key.semanticEquals(sort.output.head) && readsCometShuffle(sort.child)
+      case (sort: CometSortExec, Seq(key))
+          if key.dataType.isInstanceOf[IntegralType] && readsCometShuffle(sort.child) =>
+        key match {
+          case a: Attribute => sort.output.size == 1 && a.semanticEquals(sort.output.head)
+          // These operands have the key's type and are safe to evaluate before reduction.
+          case Coalesce(values) =>
+            values.forall {
+              case _: Attribute | _: Literal => true
+              case _ => false
+            }
+          case _ => false
+        }
       case _ => false
     }
 
