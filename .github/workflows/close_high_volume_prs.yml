@@ -21,9 +21,10 @@
 # github.pull_requests.creation_cap) limits how many such PRs an account can
 # have open here, but cannot see activity in other repositories.
 #
-# The check runs only for authors without an existing relationship with the
-# project: users with write access, apache org members, and anyone who has
-# had a PR merged here are always skipped.
+# The check runs only for authors without write access: users with write access
+# and apache org members are always skipped. Having a PR merged here does not
+# exempt an author, since merged PRs have come from automated accounts too. Use
+# HIGH_VOLUME_ALLOWLIST for accounts that should never be closed.
 #
 # This workflow never checks out or runs code from the pull request, which is
 # what makes pull_request_target safe to use here.
@@ -99,12 +100,6 @@ jobs:
               --jq '"\(.total_count) \([.items[].repository_url] | unique | length)"'
           }
 
-          merged_here() {
-            gh api -X GET search/issues \
-              -f q="repo:$GH_REPO is:pr is:merged author:$1" -f per_page=1 \
-              --jq '.total_count'
-          }
-
           close_pr() {
             local number="$1" total="$2" repos="$3" body
             body="$(mktemp)"
@@ -125,10 +120,10 @@ jobs:
           # failures resolve to "skip" so one bad lookup can't block a scan.
           decide() {
             local login="$1" association="$2" type="$3"
-            local footprint total repos merged
+            local footprint total repos
 
             case "$association" in
-              OWNER|MEMBER|COLLABORATOR|CONTRIBUTOR) echo skip; return ;;
+              OWNER|MEMBER|COLLABORATOR) echo skip; return ;;
             esac
             if [[ "$type" == "Bot" ]] || is_allowlisted "$login"; then
               echo skip; return
@@ -142,12 +137,6 @@ jobs:
 
             if (( total < MAX_OPEN_PRS || repos < MAX_REPOS )); then
               echo skip; return
-            fi
-            if ! merged="$(merged_here "$login")"; then
-              echo "@$login: merged-PR lookup failed" >&2; echo skip; return
-            fi
-            if (( merged > 0 )); then
-              echo "@$login: has $merged merged PR(s) here" >&2; echo skip; return
             fi
             echo "close $total $repos"
           }
