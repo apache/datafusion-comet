@@ -2344,7 +2344,9 @@ class CometParquetWriterSuite extends CometParquetWriterTestBase {
             captureWritePlan(sql("INSERT INTO v2_file_target SELECT * FROM v2_file_source"))
           assertHasCometNativeWriteExec(plan)
           assert(RecordingFileSystem.created.size == 2, RecordingFileSystem.created)
-          assert(RecordingFileSystem.closed.asScala == RecordingFileSystem.created.asScala)
+          // The two tasks run concurrently, so their files close in any order.
+          assert(
+            RecordingFileSystem.closed.asScala.toSet == RecordingFileSystem.created.asScala.toSet)
           checkAnswer(spark.table("v2_file_target"), df)
         }
       }

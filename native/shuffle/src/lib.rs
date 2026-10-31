@@ -20,6 +20,7 @@
 pub mod bench_support;
 mod codec_context;
 pub(crate) mod comet_partitioning;
+pub mod decoded_batch_coalescer;
 pub mod ipc;
 pub(crate) mod metrics;
 mod offsets_as_lengths;
