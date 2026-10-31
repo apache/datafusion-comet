@@ -28,7 +28,7 @@ import org.apache.hadoop.fs.Path
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
-import org.apache.spark.sql.execution.{InputAdapter, SparkPlan, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{InputAdapter, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, expr, lead, sum}
@@ -539,6 +539,30 @@ class CometWindowExecSuite extends CometTestBase {
         assert(windows.length == 1)
         assert(windows.head.metrics("output_rows").value == 1000)
         assert(windows.head.metrics("elapsed_compute").value > 0)
+      }
+    }
+  }
+
+  test("a native window over a sorted checkpoint runs without Spark's sort") {
+    // Spark drops the window's sort for the checkpoint's order, but those rows enter the native
+    // plan with no declared order, so the native window sorts them itself.
+    // AQE is off, as an adaptive plan reports no order.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+      val checkpoint = spark
+        .range(2000)
+        .selectExpr("id % 20 AS k", "id AS v")
+        .repartition(2, $"k")
+        .sortWithinPartitions("k", "v")
+        .localCheckpoint(eager = true)
+      for (window <- Seq(
+          "dense_rank() OVER (PARTITION BY k ORDER BY v)",
+          "sum(v) OVER (PARTITION BY k)")) {
+        val (_, plan) = checkSparkAnswer(checkpoint.selectExpr("k", "v", s"$window AS r"))
+        val context = s"$window\n$plan"
+        assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, context)
       }
     }
   }

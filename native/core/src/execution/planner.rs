@@ -3010,6 +3010,7 @@ mod tests {
     mod empty_native_scan;
     mod multi_store_scan;
     mod semi_join_reduction;
+    mod window_input_order;
 
     use futures::{poll, StreamExt};
     use std::{
@@ -3965,7 +3966,7 @@ mod tests {
             .expect("a hash join")
     }
 
-    fn sorted_outer_hash_join(
+    fn sorted_hash_join(
         join_type: spark_operator::JoinType,
         build_side: spark_operator::BuildSide,
         children: Vec<Operator>,
@@ -3999,7 +4000,7 @@ mod tests {
             ),
         ] {
             let operator =
-                sorted_outer_hash_join(join_type, build_side, vec![create_scan(), create_scan()]);
+                sorted_hash_join(join_type, build_side, vec![create_scan(), create_scan()]);
             let (_, _, planned) = PhysicalPlanner::default()
                 .create_plan(&operator, &mut vec![], 1)
                 .unwrap();
@@ -4021,6 +4022,39 @@ mod tests {
     }
 
     #[test]
+    fn inner_hash_join_declares_streamed_order_on_probe_input() {
+        // An inner join keeps its probe order whether or not the probe declares it, but the
+        // operators above it, a window for one, see that order only once the probe declares it.
+        for build_side in [
+            spark_operator::BuildSide::BuildLeft,
+            spark_operator::BuildSide::BuildRight,
+        ] {
+            let operator = sorted_hash_join(
+                spark_operator::JoinType::Inner,
+                build_side,
+                vec![create_scan(), create_scan()],
+            );
+            let (_, _, planned) = PhysicalPlanner::default()
+                .create_plan(&operator, &mut vec![], 1)
+                .unwrap();
+            let join = planned_hash_join(&planned.native_plan);
+            assert_eq!(&datafusion::common::JoinType::Inner, join.join_type());
+            assert_eq!("ScanExec", join.left().name(), "{build_side:?}");
+            let probe = join.right();
+            assert_eq!("SortedInputExec", probe.name(), "{build_side:?}");
+            assert_eq!("ScanExec", probe.children()[0].name(), "{build_side:?}");
+            assert_eq!(
+                "col_0@0 ASC",
+                probe.properties().output_ordering().unwrap().to_string()
+            );
+            assert!(
+                planned.native_plan.properties().output_ordering().is_some(),
+                "{build_side:?}"
+            );
+        }
+    }
+
+    #[test]
     fn hash_join_declares_order_through_operators_that_keep_it() {
         let projection = Operator {
             children: vec![create_scan()],
@@ -4029,7 +4063,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let operator = sorted_outer_hash_join(
+        let operator = sorted_hash_join(
             spark_operator::JoinType::RightOuter,
             spark_operator::BuildSide::BuildLeft,
             vec![create_scan(), projection],
@@ -4078,7 +4112,7 @@ mod tests {
             (LeftAnti, BuildRight, DF::RightAnti),
             (Existence, BuildRight, DF::RightMark),
         ] {
-            let operator = sorted_outer_hash_join(
+            let operator = sorted_hash_join(
                 spark_operator::JoinType::RightOuter,
                 BuildLeft,
                 vec![
@@ -4129,7 +4163,7 @@ mod tests {
             ),
         ] {
             let operator =
-                sorted_outer_hash_join(RightOuter, BuildLeft, vec![create_scan(), probe_input]);
+                sorted_hash_join(RightOuter, BuildLeft, vec![create_scan(), probe_input]);
             let (_, _, planned) = PhysicalPlanner::default()
                 .create_plan(&operator, &mut vec![], 1)
                 .unwrap();
@@ -4150,7 +4184,7 @@ mod tests {
             })),
             ..Default::default()
         };
-        let operator = sorted_outer_hash_join(
+        let operator = sorted_hash_join(
             spark_operator::JoinType::RightOuter,
             spark_operator::BuildSide::BuildLeft,
             vec![create_scan(), sort],

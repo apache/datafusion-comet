@@ -28,11 +28,12 @@ use datafusion::common::{internal_err, Result};
 use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::{ChildrenPropertiesMode, ExecutionPlan, ReplaceChildrenOptions};
 use datafusion_comet_operators::CometFilterExec;
 
 use super::parquet_reader::is_direct_column_null_checks;
 use super::{DynamicFilterExec, DynamicFilterJoinExec};
+use crate::execution::operators::SortedInputExec;
 use datafusion_comet_operators::CometProjectionExec;
 
 pub(super) fn place_early_filter(
@@ -125,6 +126,19 @@ fn place(
                 place(&filter.input, Arc::clone(&predicate), metrics, crossed_join)?
             {
                 return Ok(Some(filter.with_execution_input(child)));
+            }
+        } else if let Some(sorted) = input.downcast_ref::<SortedInputExec>() {
+            // It only declares its input's order, which dropping rows below it keeps.
+            if let Some(child) = place(
+                sorted.input(),
+                Arc::clone(&predicate),
+                metrics,
+                crossed_join,
+            )? {
+                return Ok(Some(Arc::clone(input).replace_children(
+                    vec![child],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?));
             }
         }
     }

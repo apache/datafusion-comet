@@ -1053,34 +1053,24 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       }
     } else {
       val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
-      // The rewrite removes the sorts of each join it converts, so put back any sort a kept
-      // operator above still needs. This runs before transform(), which converts the sorts it
-      // adds like any other SortExec.
-      val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        RewriteJoin.restoreRequiredOrdering(planWithDateEvaluation.transformUp { case p =>
-          if (MakeDateEvaluation.reason(p).isDefined) p else RewriteJoin.rewrite(p, conf)
-        })
-      } else {
-        planWithDateEvaluation
-      }
 
       // Tag Partial aggregates that must not be converted to Comet because a
       // corresponding Final or PartialMerge cannot be converted and the intermediate buffer
       // formats are incompatible. This runs before transform() so the tags are checked
       // during the bottom-up conversion. Tags persist through AQE stage creation.
-      tagUnsafePartialAggregates(planWithJoinRewritten)
+      tagUnsafePartialAggregates(planWithDateEvaluation)
 
       // Tag leaves on broadcast join build sides so shouldApplySparkToColumnar can bridge an
       // unsupported build-side scan (e.g. ORC) to Arrow and let the join run natively (#6008).
-      tagBroadcastBuildSideLeaves(planWithJoinRewritten)
+      tagBroadcastBuildSideLeaves(planWithDateEvaluation)
 
-      var transformed = transform(planWithJoinRewritten)
+      var transformed = transform(planWithDateEvaluation)
       // A build-side bridge is only worth keeping when its broadcast join went native. Where the
       // join stayed on Spark, clearWastedBuildSideBridges clears the tag from those scans and we
       // transform once more so the build side rebuilds exactly as it would without the feature.
       // See issue #6008.
       if (clearWastedBuildSideBridges(transformed)) {
-        transformed = transform(planWithJoinRewritten)
+        transformed = transform(planWithDateEvaluation)
       }
       var newPlan = revertUnsafePartialAggregates(transformed)
 
