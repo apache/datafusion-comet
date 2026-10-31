@@ -320,13 +320,14 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, Set.empty) shouldBe Map.empty
   }
 
-  test("the encryption-zone probe lists each parent directory once and caches the answer") {
+  test("the encryption-zone probe lists each parent directory once and keeps the listing") {
     val root = Files.createTempDirectory("comet_ez_probe").toFile
-    val dirs = (1 to 3).map { i =>
-      val dir = new File(root, s"data/p=$i")
+    def dir(relative: String): String = {
+      val dir = new File(root, relative)
       assert(dir.mkdirs())
       s"${CountingHdfsFileSystem.PREFIX}${dir.getAbsolutePath}"
-    }.toSet
+    }
+    val dirs = (1 to 3).map(i => dir(s"data/p=$i")).toSet
     val conf = new Configuration(false)
     conf.set("fs.hdfs.impl", classOf[CountingHdfsFileSystem].getName)
     conf.set("fs.hdfs.impl.disable.cache", "true")
@@ -334,16 +335,39 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     conf.set("hadoop.security.key.provider.path", "kms://http@kms.example.com:9600/kms")
     CountingHdfsFileSystem.reset()
 
-    CometIcebergNativeScan.hdfsEncryptedDirectory(conf, dirs) shouldBe None
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, dirs) shouldBe None
     // The three partition directories share a parent: one listing, no per-directory status.
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 1
     CountingHdfsFileSystem.getFileStatusCalls.get() shouldBe 0
 
-    CometIcebergNativeScan.hdfsEncryptedDirectory(conf, dirs) shouldBe None
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, dirs) shouldBe None
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 1
 
+    // A directory the kept listing does not have, a new partition, lists its parent again.
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, dirs + dir("data/p=4")) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 2
+
+    // An expired listing is taken again.
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+      conf,
+      dirs,
+      ttlSeconds = 60,
+      nowMillis = System.currentTimeMillis() + 61 * 1000) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 3
+
+    // More parents than the budget: the scan is declined after that many listings, which are
+    // kept, and the next scan continues from them.
+    val spread = (1 to 3).map(i => dir(s"spread/t=$i/p=1")).toSet
+    CountingHdfsFileSystem.reset()
+    val declined =
+      CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxListings = 2)
+    assert(declined.exists(_.contains("2 directory listings")), declined)
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 2
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxListings = 2) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 3
+
     // A directory at the filesystem root has no parent to list.
-    CometIcebergNativeScan.hdfsEncryptedDirectory(
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(
       conf,
       Set(s"${CountingHdfsFileSystem.PREFIX}/")) shouldBe None
   }

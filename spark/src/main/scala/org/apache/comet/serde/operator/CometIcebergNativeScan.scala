@@ -737,65 +737,106 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     authorities.filterNot(hasPort).toSeq.sorted
 
   /**
-   * Encrypted flags of HDFS directories already probed, by filesystem URI and directory. A data
-   * directory cannot become a zone root once it holds files, so the answer is kept for the
-   * process; bounded so a long session over many tables stays small.
+   * Listings taken for the encryption-zone check, by filesystem URI and parent directory: when
+   * each was taken, and the encrypted flag of every child. A data directory cannot become a zone
+   * root once it holds files, so a listing is reused until `spark.sql.metadataCacheTTLSeconds`
+   * expires it, if set; bounded so a long session over many tables stays small.
    */
-  private val encryptedDirectories: java.util.Map[(String, String), java.lang.Boolean] =
+  private val listedParents: java.util.Map[(String, String), (Long, Map[String, Boolean])] =
     java.util.Collections.synchronizedMap(
-      new java.util.LinkedHashMap[(String, String), java.lang.Boolean](64, 0.75f, true) {
+      new java.util.LinkedHashMap[(String, String), (Long, Map[String, Boolean])](
+        64,
+        0.75f,
+        true) {
         override def removeEldestEntry(
-            eldest: java.util.Map.Entry[(String, String), java.lang.Boolean]): Boolean =
+            eldest: java.util.Map.Entry[(String, String), (Long, Map[String, Boolean])])
+            : Boolean =
           size() > 10000
       })
 
+  /** Listings one scan may take for the encryption-zone check before it is declined instead. */
+  private[comet] val MaxEncryptionZoneListings = 1000
+
   /**
-   * The first of `directories`, HDFS directories of data and delete files, that lies in an HDFS
-   * encryption zone, or whose status could not be read. iceberg-rust's HDFS client is built
-   * without KMS support and rejects every file of a zone, so such a scan must not be claimed. The
-   * NameNode flags each path inside a zone as encrypted, directories included, so one listing of
-   * a parent tells the flag of every data directory under it: the partitions of a table cost one
-   * call, not one each, and a flag once read is cached. A cluster that cannot hold a zone at all,
-   * one whose NameNode advertises no key provider (a client-cached call) and whose session
-   * configures none, is not listed.
+   * Why a scan of `directories`, HDFS directories of data and delete files, must not be claimed
+   * on account of HDFS encryption zones, or None. iceberg-rust's HDFS client is built without KMS
+   * support and rejects every file of a zone. The NameNode flags each path inside a zone as
+   * encrypted, directories included, so one listing of a parent tells the flag of every data
+   * directory under it: the partitions of a table cost one call, not one each. A listing is kept
+   * (see [[listedParents]]), and a directory missing from a kept listing, a new partition, lists
+   * its parent again. A cluster that cannot hold a zone at all, one whose NameNode advertises no
+   * key provider (a client-cached call) and whose session configures none, is not listed. A scan
+   * that would take more than `maxListings` listings is declined after that many, which are kept,
+   * so a later scan continues from them.
    */
-  def hdfsEncryptedDirectory(
+  def hdfsEncryptionZoneFallback(
       hadoopConf: Configuration,
-      directories: Set[String]): Option[String] = {
+      directories: Set[String],
+      ttlSeconds: Long = -1L,
+      maxListings: Int = MaxEncryptionZoneListings,
+      nowMillis: Long = System.currentTimeMillis()): Option[String] = {
     val configuredProvider =
       Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
         .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    def fresh(listedAt: Long): Boolean =
+      ttlSeconds <= 0 || nowMillis - listedAt < ttlSeconds * 1000
     // A directory at the root of the filesystem has no parent and is listed itself.
     val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
       Option(dir.getParent).getOrElse(dir)
     }
+    var listings = 0
     byParent.toSeq
       .sortBy(_._1.toString)
       .iterator
       .map { case (parent, dirs) =>
         try {
           val fs = parent.getFileSystem(hadoopConf)
-          val key = (dir: Path) => (fs.getUri.toString, dir.toString)
-          val unknown = dirs.filterNot(dir => encryptedDirectories.containsKey(key(dir)))
-          val canHoldZones = unknown.nonEmpty && (configuredProvider ||
-            Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty))
-          if (canHoldZones) {
-            val listed =
-              fs.listStatus(parent).map(status => status.getPath.toString -> status.isEncrypted)
-            val flags = listed.toMap
-            unknown.foreach { dir =>
-              val flag = flags.getOrElse(dir.toString, fs.getFileStatus(dir).isEncrypted)
-              encryptedDirectories.put(key(dir), flag)
-            }
+          val key = (fs.getUri.toString, parent.toString)
+          val kept = Option(listedParents.get(key)).collect {
+            case (listedAt, flags)
+                if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.toString)) =>
+              flags
           }
-          dirs.find(dir => encryptedDirectories.get(key(dir)) == java.lang.Boolean.TRUE)
+          def encryptedReason(flags: Map[String, Boolean]): Option[String] =
+            dirs.find(dir => flags.getOrElse(dir.toString, false)).map { dir =>
+              s"Iceberg scan reads HDFS directory '$dir', which is in an encryption zone; " +
+                "Comet's native Iceberg reader cannot decrypt HDFS encryption zones"
+            }
+          kept match {
+            case Some(flags) => encryptedReason(flags)
+            case None =>
+              val canHoldZones = configuredProvider ||
+                Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty)
+              if (!canHoldZones) {
+                None
+              } else if (listings >= maxListings) {
+                Some(
+                  s"Iceberg scan reads HDFS directories under '$parent' and beyond, which the " +
+                    s"check for encryption zones did not reach within $maxListings directory " +
+                    "listings; a later scan continues from the listings kept")
+              } else {
+                listings += 1
+                val listed = fs
+                  .listStatus(parent)
+                  .map(status => status.getPath.toString -> status.isEncrypted)
+                val missing = dirs
+                  .filterNot(dir => listed.exists(_._1 == dir.toString))
+                  .map(dir => dir.toString -> fs.getFileStatus(dir).isEncrypted)
+                val flags = (listed ++ missing).toMap
+                listedParents.put(key, (nowMillis, flags))
+                encryptedReason(flags)
+              }
+          }
         } catch {
           case NonFatal(e) =>
             logWarning(s"Could not tell whether HDFS directories under $parent are encrypted", e)
-            dirs.headOption
+            Some(
+              s"Iceberg scan reads HDFS directories under '$parent', whose status could not be " +
+                s"read (${e.getClass.getSimpleName}: ${e.getMessage}); Comet's native Iceberg " +
+                "reader cannot decrypt HDFS encryption zones, so the scan is not claimed")
         }
       }
-      .collectFirst { case Some(dir) => dir.toString }
+      .collectFirst { case Some(reason) => reason }
   }
 
   private def hasPort(address: String): Boolean =

@@ -218,7 +218,10 @@ Kerberos cluster. It also falls back when a file location has no port and names 
 the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`), and when a
 data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
 cannot decrypt it. Comet checks that at planning, on clusters whose NameNode advertises a key
-provider, with one directory listing per parent of the data directories, cached for the session.
+provider, with one directory listing per parent of the data directories. A listing is kept for
+the session, or until `spark.sql.metadataCacheTTLSeconds` expires it, and a new partition lists
+its parent again; a scan that would take more than 1000 listings falls back, and later scans
+continue from the listings kept.
 
 On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
 operating system user when that variable is unset, rather than as the Spark user. Comet therefore

@@ -41,7 +41,7 @@ import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, Spark
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, DataTypeSupport, NativeBase}
@@ -1003,19 +1003,17 @@ case class CometScanRule(session: SparkSession)
           // The client is built without KMS support and rejects every file of an encryption
           // zone. Probed only once the scan is otherwise eligible, so an undeclared nameservice
           // is not also dialed.
-          val encryptedDirectory =
+          val encryptionZoneFallback =
             if (secure || undeclared.nonEmpty || !identityKnown) None
             else {
-              CometIcebergNativeScan.hdfsEncryptedDirectory(
+              CometIcebergNativeScan.hdfsEncryptionZoneFallback(
                 hadoopConf,
-                taskValidation.hdfsDirectories)
+                taskValidation.hdfsDirectories,
+                ttlSeconds = session.sessionState.conf
+                  .getConf(StaticSQLConf.METADATA_CACHE_TTL_SECONDS))
             }
-          encryptedDirectory.foreach { dir =>
-            fallbackReasons += s"Iceberg scan reads HDFS directory '$dir', which is in an " +
-              "encryption zone or whose status could not be read; Comet's native Iceberg reader " +
-              "cannot decrypt HDFS encryption zones"
-          }
-          !secure && undeclared.isEmpty && identityKnown && encryptedDirectory.isEmpty
+          encryptionZoneFallback.foreach(fallbackReasons += _)
+          !secure && undeclared.isEmpty && identityKnown && encryptionZoneFallback.isEmpty
         }
 
         if (!taskValidation.allParquet) {
