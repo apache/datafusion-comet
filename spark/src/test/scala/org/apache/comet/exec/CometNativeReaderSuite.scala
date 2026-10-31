@@ -1686,6 +1686,78 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       }
   }
 
+  test("make_date sibling metadata pruning respects Parquet type settings") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 1024L, 1L, 1)
+            .selectExpr(
+              "CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y",
+              "DATE '2020-01-01' AS d",
+              "CAST(1 AS DECIMAL(10, 2)) AS amount")
+            .write
+            .parquet(path.toString)
+        }
+        withTempView("make_date_metadata") {
+          spark.read.parquet(path.toString).createOrReplaceTempView("make_date_metadata")
+          val literalPredicates = Seq(
+            SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED.key -> "d < DATE '1900-01-01'",
+            SQLConf.PARQUET_FILTER_PUSHDOWN_DECIMAL_ENABLED.key ->
+              "amount < CAST(0 AS DECIMAL(10, 2))")
+          // Spark 4 also pushes scalar subqueries, which are serialized after planning.
+          val predicates = literalPredicates ++ (if (isSpark40Plus) {
+                                                   Seq(
+                                                     SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED.key ->
+                                                       "d < (SELECT DATE '1900-01-01' + CAST(min(id) AS INT) FROM range(1))")
+                                                 } else {
+                                                   Seq.empty
+                                                 })
+          for ((setting, predicate) <- predicates; rowPushdown <- Seq(false, true)) {
+            withSQLConf(
+              setting -> "false",
+              CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowPushdown.toString) {
+              val query = s"""SELECT count(*) FROM make_date_metadata
+                |WHERE unix_date(make_date(y, 1, 1)) > 0 AND $predicate""".stripMargin
+              val df = sql(query)
+              val scan = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec])
+                .getOrElse(fail("Expected a native Parquet scan"))
+                .asInstanceOf[CometNativeScanExec]
+              if (predicate.contains("SELECT")) {
+                assert(scan.dataFilters.exists(_.exists(_.isInstanceOf[ScalarSubquery])))
+              }
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              val failures = Seq(sparkError, cometError).map { error =>
+                val failure = error.getOrElse(fail(s"Expected overflow with $setting=false"))
+                val chain = causeChain(failure)
+                assert(!chain.exists(_.isInstanceOf[CometNativeException]), failure.toString)
+                chain
+                  .collect { case e: SparkThrowable with Throwable => e }
+                  .lastOption
+                  .getOrElse {
+                    fail(s"Expected a SparkThrowable: $failure")
+                  }
+              }
+              assert(failures.head.getErrorClass == "ARITHMETIC_OVERFLOW")
+              assert(failures(1).getClass == failures.head.getClass)
+              assert(failures(1).getErrorClass == failures.head.getErrorClass)
+              assert(failures(1).getSqlState == failures.head.getSqlState)
+
+              // When Spark does permit the sibling predicate, both readers may skip this
+              // entire row group, including its overflowing year.
+              withSQLConf(setting -> "true") {
+                checkSparkAnswer(sql(query))
+                assert(sql(query).collect().toSeq == Seq(Row(0L)))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   test("resolved scalar data filters respect disabled Parquet filter pushdown") {
     assume(isSpark40Plus, "SPARK-43402 scalar subquery pushdown is Spark 4.0+ only")
     withSQLConf(

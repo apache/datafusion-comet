@@ -357,11 +357,13 @@ object CometDeltaNativeScan
           case s: ExecScalarSubquery =>
             Literal.create(s.eval(null), s.dataType)
         }
-        val proto = exprToProto(resolved, output)
-        if (proto.isEmpty) {
-          logWarning(s"Could not serialize resolved scalar subquery filter: $resolved")
+        CometNativeScan.filterForParquetPushdown(resolved, conf).flatMap { pushable =>
+          val proto = exprToProto(pushable, output)
+          if (proto.isEmpty) {
+            logWarning(s"Could not serialize resolved scalar subquery filter: $pushable")
+          }
+          proto
         }
-        proto
       }
     ResolvedSubqueryFilters(hasResolvedFilters = true, protos)
   }
@@ -436,6 +438,7 @@ object CometDeltaNativeScan
       val dataColIds = output.take(strippedLen).map(_.exprId).toSet
       val filterProtos = scanHelper.supportedDataFilters
         .filter(_.references.forall(r => dataColIds.contains(r.exprId)))
+        .flatMap(CometNativeScan.filterForParquetPushdown(_, scanExec.conf))
         .flatMap(f => exprToProto(f, output))
       commonBuilder.addAllDataFilters(filterProtos.asJava)
     }
