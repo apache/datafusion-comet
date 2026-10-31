@@ -613,7 +613,8 @@ object CometConf extends ShimCometConf {
           "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
           "Celeborn requires explicit native mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
-          "cannot be changed during the application.")
+          "cannot be changed during the application. On Spark 4.0 and later, " +
+          "`org.apache.spark.CometPlugin` sets it to `CometShuffleManager` if it is unset.")
       .booleanConf
       .createWithDefault(true)
 

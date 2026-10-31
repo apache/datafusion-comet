@@ -26,14 +26,15 @@ import java.util.concurrent.TimeUnit
 
 import org.apache.logging.log4j.Level
 import org.apache.spark.api.plugin.{DriverPlugin, ExecutorPlugin, PluginContext, SparkPlugin}
+import org.apache.spark.internal.config.SHUFFLE_MANAGER
 import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEvent, SparkListenerExecutorMetricsUpdate, SparkListenerExecutorRemoved}
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
-import org.apache.spark.sql.comet.execution.shuffle.{CometShuffleExchangeExec, CometShuffleManager}
+import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleExchangeExec, CometShuffleManager}
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
-import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
+import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions}
 
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
@@ -325,6 +326,46 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
     assert(execMemOverhead2 == "1G")
     assert(execMemOverhead3 == "1G")
     assert(execMemOverhead4 == "1G")
+  }
+
+  // This suite names no shuffle manager. From Spark 4.0 the plugin chooses Comet's; before that
+  // Spark has built its own by the time the plugin runs, and Comet disables itself.
+  test("the plugin sets Comet's shuffle manager from Spark 4.0 and Comet runs") {
+    val expected = CometSparkSessionExtensions.isSpark40Plus
+    assert(SparkEnv.get.shuffleManager.isInstanceOf[CometShuffleManager] == expected)
+    withParquetTable((0 until 100).map(i => (i, (i % 7).toString)), "tbl") {
+      val (_, plan) = checkSparkAnswer("SELECT _2, count(*) FROM tbl GROUP BY _2")
+      assert(collect(plan) { case op: CometShuffleExchangeExec => op }.nonEmpty == expected, plan)
+    }
+  }
+}
+
+class CometDriverPluginShuffleManagerSuite extends SparkFunSuite {
+  private val cometManager = classOf[CometShuffleManager].getName
+
+  private def chosen(conf: SparkConf): Option[String] = {
+    CometDriverPlugin.maybeSetShuffleManager(conf)
+    conf.getOption(SHUFFLE_MANAGER.key)
+  }
+
+  test("sets Comet's shuffle manager only on Spark 4.0 and later") {
+    val expected = if (CometSparkSessionExtensions.isSpark40Plus) Some(cometManager) else None
+    assert(chosen(new SparkConf(false)) == expected)
+  }
+
+  test("keeps the shuffle manager the application set") {
+    Seq("sort", "tungsten-sort", classOf[CometCelebornShuffleManager].getName, "com.example.Mgr")
+      .foreach { manager =>
+        assert(chosen(new SparkConf(false).set(SHUFFLE_MANAGER.key, manager)).contains(manager))
+      }
+  }
+
+  test("leaves the shuffle manager unset when Comet or Comet shuffle is disabled") {
+    val disablingKeys = Seq(CometConf.COMET_ENABLED.key, CometConf.COMET_SHUFFLE_ENABLED.key) ++
+      CometConf.COMET_SHUFFLE_ENABLED.alternatives
+    disablingKeys.foreach { key =>
+      assert(chosen(new SparkConf(false).set(key, "false")).isEmpty, key)
+    }
   }
 }
 
