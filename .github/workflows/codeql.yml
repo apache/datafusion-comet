@@ -36,6 +36,9 @@ permissions:
 jobs:
   analyze:
     name: Analyze Actions
+    # The weekly scan runs upstream only; a fork's own pushes and pull requests
+    # still get one.
+    if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet'
     runs-on: ubuntu-slim
     permissions:
       contents: read

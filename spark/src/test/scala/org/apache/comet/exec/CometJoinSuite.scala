@@ -1454,10 +1454,7 @@ class CometJoinSuite extends CometTestBase {
         case _ => false
       }.isEmpty),
       plan)
-    // Propagates the session's confs, such as the batch size, to the tasks as collect() does.
-    val parts = SQLExecution.withSQLConfPropagated(spark) {
-      query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
-    }
+    val parts = query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
     parts.zipWithIndex.foreach { case (keys, i) =>
       assert(keys.sameElements(keys.sorted), s"partition $i is out of order\n$plan")
     }
