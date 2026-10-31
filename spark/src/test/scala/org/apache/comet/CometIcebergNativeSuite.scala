@@ -2241,6 +2241,47 @@ class CometIcebergNativeSuite
     }
   }
 
+  // No schema change, so the schema evolution fallback does not apply.
+  test("data file that omits an optional nested field stays native") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.omitted_nested"
+        spark.sql(s"""
+          CREATE TABLE $table (id INT, s STRUCT<a: INT, b: INT>, l ARRAY<STRUCT<x: INT, y: INT>>)
+          USING iceberg
+        """)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, named_struct('a', 1, 'b', 10), array(named_struct('x', 1, 'y', 100)))
+          """)
+          // Set after the insert: accept-any-schema matches columns by name.
+          spark.sql(
+            s"ALTER TABLE $table SET TBLPROPERTIES ('write.spark.accept-any-schema' = 'true')")
+          // This file has no s.b and no l.element.y.
+          spark
+            .sql("""
+              SELECT 2 AS id, named_struct('a', 2) AS s, array(named_struct('x', 20)) AS l
+              UNION ALL
+              SELECT 3, CAST(NULL AS STRUCT<a: INT>), CAST(NULL AS ARRAY<STRUCT<x: INT>>)
+            """)
+            .writeTo(table)
+            .append()
+        }
+
+        checkPrunedAndFullReads(s"SELECT * FROM $table ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id, s.b FROM $table WHERE s.b IS NULL ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
   test("schema evolution - nested field dropped, moved, or promoted stays native") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
