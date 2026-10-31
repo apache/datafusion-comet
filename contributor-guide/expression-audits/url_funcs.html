@@ -568,6 +568,7 @@ under the License.
 <h2>parse_url<a class="headerlink" href="#parse-url" title="Link to this heading">#</a></h2>
 <ul class="simple">
 <li><p>Performance (tuned 2026-07-11, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/4893">#4893</a>): cache the compiled query regex in a thread-local single-slot cache keyed by the query key, eliminating per-row <code class="docutils literal notranslate"><span class="pre">Regex::new()</span></code> recompilation in the QUERY-with-key path (the key is constant across a batch in practice). Up to 50x faster. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/parse_url.rs</span></code>.</p></li>
+<li><p>Performance (tuned 2026-10-30, PR <a class="reference external" href="https://github.com/apache/datafusion-comet/pull/7329">#7329</a>): split raw URI components at delimiters and borrow them until Arrow constructs the output. Non-null HTTP(S) component microbenchmarks are 5.3–10.4x faster, FTP host extraction is 5.8–6.4x faster, and query-key extraction is 3.4x faster. Benchmark: <code class="docutils literal notranslate"><span class="pre">benches/parse_url.rs</span></code>.</p></li>
 </ul>
 </section>
 <section id="try-url-decode">
