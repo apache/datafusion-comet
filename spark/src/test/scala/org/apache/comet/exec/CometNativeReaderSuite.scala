@@ -31,6 +31,7 @@ import org.apache.parquet.io.api.RecordConsumer
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.MakeDate
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.ScalarSubquery
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -1628,6 +1629,61 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         }
       }
     }
+  }
+
+  Seq(
+    "partition column" -> "unix_date(make_date(y, m, 1)) > 0",
+    "nondeterministic bound" -> "unix_date(make_date(y, 1, 1)) > rand(42)").foreach {
+    case (shape, datePredicate) =>
+      test(s"make_date predicates outside scan data filters preserve errors: $shape") {
+        withSQLConf(
+          SQLConf.ANSI_ENABLED.key -> "false",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+          withTempPath { path =>
+            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+              spark
+                .range(0L, 1024L, 1L, 1)
+                .selectExpr(
+                  "CAST(IF(id = 1023, 6000000, 2024) AS INT) AS y",
+                  "IF(id = 1023, '', sha2(CAST(id AS STRING), 512)) AS mask",
+                  "1 AS m")
+                .write
+                .partitionBy("m")
+                .parquet(path.toString)
+            }
+            withTempView("make_date_residual_filters") {
+              spark.read
+                .parquet(path.toString)
+                .createOrReplaceTempView("make_date_residual_filters")
+              val df = sql(
+                s"SELECT count(*) FROM make_date_residual_filters " +
+                  s"WHERE $datePredicate AND length(mask) > 0")
+              val scan = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec])
+                .getOrElse(fail("Expected a native Parquet scan"))
+                .asInstanceOf[CometNativeScanExec]
+              // Spark omitted the date predicate before Comet saw the scan's data filters.
+              assert(!scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
+              val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+              val failures = Seq(sparkError, cometError).map { error =>
+                val failure = error.getOrElse(fail(s"Expected overflow for $shape"))
+                val chain = causeChain(failure)
+                assert(!chain.exists(_.isInstanceOf[CometNativeException]), failure.toString)
+                chain
+                  .collect { case e: SparkThrowable with Throwable => e }
+                  .lastOption
+                  .getOrElse {
+                    fail(s"Expected a SparkThrowable: $failure")
+                  }
+              }
+              assert(failures.head.getErrorClass == "ARITHMETIC_OVERFLOW")
+              assert(failures(1).getClass == failures.head.getClass)
+              assert(failures(1).getErrorClass == failures.head.getErrorClass)
+              assert(failures(1).getSqlState == failures.head.getSqlState)
+            }
+          }
+        }
+      }
   }
 
   test("resolved scalar data filters respect disabled Parquet filter pushdown") {

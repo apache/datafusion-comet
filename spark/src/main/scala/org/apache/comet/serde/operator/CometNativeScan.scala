@@ -38,6 +38,7 @@ import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -311,7 +312,8 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
         // Original filters include unsupported expressions and unresolved subqueries omitted
         // from native predicates. A pushed sibling must not hide their make_date errors.
         commonBuilder.setDisableRowFilterPushdown(
-          scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
+          scan.wrapped.getTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG).isDefined ||
+            scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
         // Sink operators don't have children
         builder.clearChildren()
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()

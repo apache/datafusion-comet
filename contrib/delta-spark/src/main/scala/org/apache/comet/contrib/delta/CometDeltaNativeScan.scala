@@ -34,6 +34,7 @@ import org.apache.spark.sql.types.{ByteType, LongType, MetadataBuilder, StructFi
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -167,7 +168,8 @@ object CometDeltaNativeScan
 
     commonOpt.map { commonBuilder =>
       commonBuilder.setDisableRowFilterPushdown(
-        scanExec.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
+        scanExec.getTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG).isDefined ||
+          scanExec.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
       // Already forced by declineReason on this claim; reused rather than deserialized again.
       val dvDescriptors = memo.dvDescriptors
       // Union object-store options over every authority a partition of this scan may need a
