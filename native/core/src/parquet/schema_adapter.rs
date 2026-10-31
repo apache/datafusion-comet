@@ -204,8 +204,9 @@ fn rename_to_logical(
 }
 
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
-/// `clipParquetGroupFields`: prefer ID match for any logical field that carries a
-/// `PARQUET:field_id`, fall back to case-insensitive name match otherwise. `resolver` resolves
+/// `clipParquetGroupFields`: when id matching is enabled, a logical field carrying
+/// `PARQUET:field_id` resolves only by id, never falling back to name if the id is missing.
+/// Other fields resolve by name using the configured case sensitivity. `resolver` resolves
 /// the logical root fields against the physical ones.
 ///
 /// The remap only changes top-level field NAMES so that `DefaultPhysicalExprAdapter`'s

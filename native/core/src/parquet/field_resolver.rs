@@ -90,7 +90,9 @@ impl FieldClaim {
 #[derive(Debug)]
 pub(crate) struct FieldMatches {
     selected: Vec<Option<usize>>,
-    claims: Vec<FieldClaim>,
+    /// All-id groups need no arbitration: repeated required ids are declined by scan planning,
+    /// and only a name selection can lose to an id match or a shadow.
+    claims: Option<Vec<FieldClaim>>,
 }
 
 impl FieldMatches {
@@ -99,17 +101,23 @@ impl FieldMatches {
         self.selected.iter().enumerate().map(|(requested, file)| {
             (
                 *file,
-                file.is_some_and(|index| self.claims[index].owned_by(requested)),
+                file.is_some_and(|index| {
+                    self.claims
+                        .as_ref()
+                        .is_none_or(|claims| claims[index].owned_by(requested))
+                }),
             )
         })
     }
 
     /// Reuse the selection vector for runtime conversion, masking only the losing fields.
     pub(crate) fn into_owned(mut self) -> Vec<Option<usize>> {
-        for (requested, file) in self.selected.iter_mut().enumerate() {
-            if let Some(index) = *file {
-                if !self.claims[index].owned_by(requested) {
-                    *file = None;
+        if let Some(claims) = self.claims {
+            for (requested, file) in self.selected.iter_mut().enumerate() {
+                if let Some(index) = *file {
+                    if !claims[index].owned_by(requested) {
+                        *file = None;
+                    }
                 }
             }
         }
@@ -318,13 +326,28 @@ impl<'a> FieldResolver<'a> {
     /// Select each nested field once and record claims from that selection. Validate selections
     /// in requested order so arbitration cannot hide ambiguity or reorder selection errors.
     /// The caller can validate losing selections before masking them with [`FieldMatches::into_owned`].
+    /// Defer claims until the first name selection: an all-id group has no competing claims
+    /// after scan planning has excluded repeated requested ids. File-side ambiguity is still
+    /// checked by every [`Self::select`] call.
     pub(crate) fn resolve_all(&self) -> DataFusionResult<FieldMatches> {
-        let mut selected = Vec::with_capacity(self.requested.len());
-        let mut claims = vec![FieldClaim::Unchanged; self.file.len()];
+        let mut selected: Vec<Option<usize>> = Vec::with_capacity(self.requested.len());
+        let mut claims = None;
         for requested in 0..self.requested.len() {
             let selection = self.select(requested)?;
-            selected.push(self.resolve_selection(requested, selection)?);
-            self.record_claims(&mut claims, requested, selection);
+            let file = self.resolve_selection(requested, selection)?;
+            if matches!(selection, Selection::ByName(_)) && claims.is_none() {
+                let mut group_claims = vec![FieldClaim::Unchanged; self.file.len()];
+                // Earlier selections were all by id. Reuse their validated indices instead
+                // of selecting them again, including the shadows a name claimant may meet.
+                for (previous, &file) in selected.iter().enumerate() {
+                    self.record_claims(&mut group_claims, previous, Selection::ById(file));
+                }
+                claims = Some(group_claims);
+            }
+            if let Some(claims) = &mut claims {
+                self.record_claims(claims, requested, selection);
+            }
+            selected.push(file);
         }
         Ok(FieldMatches { selected, claims })
     }
@@ -556,6 +579,59 @@ mod test {
             );
             assert_eq!(matches.into_owned(), vec![Some(0), None, None]);
         });
+    }
+
+    #[test]
+    fn id_only_group_preserves_missing_fields_and_file_ambiguity() {
+        let file = [
+            field("y", Some(1)),
+            field("x", Some(2)),
+            field("m", Some(4)),
+        ];
+        let requested = [
+            field("x", Some(1)),
+            field("m", Some(3)),
+            field("y", Some(2)),
+        ];
+        with_resolver(&requested, &file, false, true, |resolver| {
+            let matches = resolver.resolve_all().unwrap();
+            assert_eq!(
+                matches.iter().collect::<Vec<_>>(),
+                vec![(Some(0), true), (None, false), (Some(1), true)]
+            );
+            assert_eq!(matches.into_owned(), vec![Some(0), None, Some(1)]);
+        });
+        let ambiguous = [field("a", Some(1)), field("b", Some(1))];
+        with_resolver(&requested, &ambiguous, false, true, |resolver| {
+            assert_eq!(
+                resolver.resolve_all().unwrap_err().to_string(),
+                resolver.select(0).unwrap_err().to_string()
+            );
+        });
+    }
+
+    #[test]
+    fn name_selection_after_id_prefix_preserves_independent_validation() {
+        let file = [field("A", Some(1)), field("B", Some(2))];
+        for reverse in [false, true] {
+            let mut requested = [field("x", Some(1)), field("y", Some(2)), field("a", None)];
+            let mut expected = vec![(Some(0), true), (Some(1), true), (Some(0), false)];
+            if reverse {
+                requested.reverse();
+                expected.reverse();
+            }
+            with_resolver(&requested, &file, false, true, |resolver| {
+                let matches = resolver.resolve_all().unwrap();
+                assert_eq!(matches.iter().collect::<Vec<_>>(), expected);
+                assert_eq!(
+                    matches.into_owned(),
+                    expected
+                        .iter()
+                        .map(|&(file, owns)| if owns { file } else { None })
+                        .collect::<Vec<_>>()
+                );
+            });
+        }
     }
 
     #[test]

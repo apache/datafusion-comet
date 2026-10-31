@@ -101,9 +101,9 @@ pub struct SparkParquetOptions {
     /// non-null parents keep their structure with all-null leaves. Comet sets it to true
     /// on Spark 3.4 through 4.0, which always use the legacy behavior.
     pub return_null_struct_if_all_fields_missing: bool,
-    /// When true, resolve fields by parquet.field.id metadata instead of name
-    /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
-    /// when both physical and logical fields actually carry IDs.
+    /// When true, requested fields carrying parquet.field.id metadata resolve only by id;
+    /// an absent file id never falls back to a name match. Requested fields without ids
+    /// still resolve by name (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`).
     pub use_field_id: bool,
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
