@@ -28,6 +28,9 @@
 //! - `COMET_EXECUTOR_TASKS`: concurrent tasks (default: the number of CPUs)
 //! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest gRPC message, in bytes, the executor accepts or
 //!   sends, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
+//! - `COMET_EXECUTOR_MEMORY_POOL_SIZE`: the bytes of memory the executor's tasks share (default:
+//!   Ballista's, 70% of the container's memory limit). Memory outside the pool, such as batches
+//!   in flight between stages, comes on top of it.
 //! - `COMET_EXECUTOR_WORK_DIR`: where shuffle and spill files go (default: a temporary directory)
 
 use std::sync::Arc;
@@ -63,6 +66,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.vcores = tasks;
     }
     config.work_dir = env_var("COMET_EXECUTOR_WORK_DIR")?;
+    if let Some(size) = env_var("COMET_EXECUTOR_MEMORY_POOL_SIZE")? {
+        config.memory_pool_size = Some(size);
+    }
     if let Some(size) = env_var("COMET_GRPC_MAX_MESSAGE_SIZE")? {
         config.grpc_max_decoding_message_size = size;
         config.grpc_max_encoding_message_size = size;
