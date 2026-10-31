@@ -1242,6 +1242,9 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+  // The partition keys ascending, when Spark planned no sort below the window because its input
+  // reports that order. Empty otherwise.
+  repeated spark.spark_expression.Expr input_sort_orders = 5;
 }
 
 // Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec

@@ -4015,8 +4015,10 @@ mod tests {
                 "col_0@0 ASC",
                 probe.properties().output_ordering().unwrap().to_string()
             );
-            // The join keeps the order in its own output, so the operators above it see it too.
+            // The join keeps the order in its own output, so the operators above it see it too,
+            // and an order declared above it holds, such as a window's for an alias of the key.
             assert!(planned.native_plan.properties().output_ordering().is_some());
+            assert!(PhysicalPlanner::keeps_source_order(&planned.native_plan));
         }
     }
 
@@ -4184,6 +4186,48 @@ mod tests {
         assert!(!PhysicalPlanner::keeps_source_order(&scan(2)));
     }
 
+    #[test]
+    fn declared_order_extends_an_order_the_input_declares() {
+        // An order is declared over an empty bucket, and next to the order the input declares,
+        // unless an operator in between may have moved rows.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_0", DataType::Int32, true),
+            Field::new("col_1", DataType::Int32, true),
+        ]));
+        let planner = PhysicalPlanner::default();
+        let declare = |plan: &Arc<dyn ExecutionPlan>, index: i32| {
+            planner
+                .with_declared_order(
+                    Arc::clone(plan),
+                    &[create_sort_order(index, 3, false, true)],
+                )
+                .unwrap()
+        };
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
+        let by_col_0 = declare(&empty, 0);
+        assert_eq!("SortedInputExec", by_col_0.name());
+        assert!(Arc::ptr_eq(&declare(&by_col_0, 0), &by_col_0));
+
+        let both = declare(&by_col_0, 1);
+        assert!(Arc::ptr_eq(both.children()[0], &by_col_0));
+        for index in 0..2 {
+            let partition_by: Vec<Arc<dyn PhysicalExpr>> =
+                vec![Arc::new(Column::new(&format!("col_{index}"), index))];
+            let ordered = get_ordered_partition_by_indices(&partition_by, &both).unwrap();
+            assert_eq!(1, ordered.len(), "col_{index}");
+        }
+
+        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
+                "col_0", 0,
+            )))])
+            .unwrap(),
+            empty,
+        ));
+        assert!(Arc::ptr_eq(&declare(&sort, 1), &sort));
+    }
+
     #[tokio::test]
     async fn spark_plan_dynamic_filter_preserves_metrics() {
         use crate::execution::metrics::utils::to_native_metric_node;
@@ -4251,24 +4295,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn window_cast_projection_reports_window_time() {
-        use crate::execution::metrics::utils::to_native_metric_node;
+    /// `func() OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`, returning
+    /// `result_type`.
+    fn window_function_expr(
+        func: &str,
+        result_type: Option<spark_expression::DataType>,
+    ) -> spark_operator::WindowExpr {
         use spark_operator::{
             lower_window_frame_bound::LowerFrameBoundStruct,
             upper_window_frame_bound::UpperFrameBoundStruct, CurrentRow, LowerWindowFrameBound,
             UnboundedPreceding, UpperWindowFrameBound, WindowExpr, WindowFrame, WindowFrameType,
             WindowSpecDefinition,
         };
-
-        let session = Arc::new(SessionContext::new());
-        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
-        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
-        // casting projection above the window.
-        let row_number = WindowExpr {
+        WindowExpr {
             built_in_window_function: Some(Expr {
                 expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
-                    func: "row_number".to_string(),
+                    func: func.to_string(),
                     ..Default::default()
                 })),
                 query_context: None,
@@ -4290,9 +4332,20 @@ mod tests {
                 }),
                 ..Default::default()
             }),
-            result_type: Some(create_proto_datatype()),
+            result_type,
             ..Default::default()
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn window_cast_projection_reports_window_time() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+
+        let session = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
+        // casting projection above the window.
+        let row_number = window_function_expr("row_number", Some(create_proto_datatype()));
         let operator = Operator {
             children: vec![create_scan()],
             op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
@@ -4345,6 +4398,45 @@ mod tests {
             metrics.metrics["elapsed_compute"],
             window_time + projection_time
         );
+    }
+
+    #[test]
+    fn window_declares_input_order_on_a_scan() {
+        // Both window operators need their partition keys' order, which a `ScanExec` declares
+        // only through the order Spark sent. `percent_rank` runs in `WindowAggExec`.
+        let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
+        for (func, operator) in [
+            ("row_number", "BoundedWindowAggExec"),
+            ("percent_rank", "WindowAggExec"),
+        ] {
+            let window_input = |input_sort_orders| {
+                let window = Operator {
+                    children: vec![create_scan()],
+                    op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                        window_expr: vec![window_function_expr(func, None)],
+                        partition_by_list: vec![create_bound_reference(0)],
+                        order_by_list: vec![create_sort_order(0, 3, false, true)],
+                        input_sort_orders,
+                        ..Default::default()
+                    }))),
+                    ..Default::default()
+                };
+                let (_, _, planned) = PhysicalPlanner::default()
+                    .create_plan(&window, &mut vec![], 1)
+                    .unwrap();
+                assert_eq!(operator, planned.native_plan.name());
+                Arc::clone(planned.native_plan.children()[0])
+            };
+            let input = window_input(vec![create_sort_order(0, 3, false, true)]);
+            assert_eq!("SortedInputExec", input.name());
+            let ordered = get_ordered_partition_by_indices(&partition_by, &input).unwrap();
+            assert_eq!(1, ordered.len(), "{func}");
+
+            let input = window_input(vec![]);
+            assert_eq!("ScanExec", input.name());
+            let ordered = get_ordered_partition_by_indices(&partition_by, &input).unwrap();
+            assert!(ordered.is_empty(), "{func}");
+        }
     }
 
     #[test]

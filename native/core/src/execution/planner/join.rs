@@ -35,6 +35,7 @@ use datafusion::{
         LexOrdering, PhysicalExpr,
     },
     physical_plan::{
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{
             utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
@@ -478,27 +479,31 @@ impl PhysicalPlanner {
         Ok(Arc::new(prepared))
     }
 
-    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless it already
-    /// declares one. Spark's plan knows the order of an input that enters the native plan from
-    /// the JVM, and of a scan of sorted files, but the `ScanExec` or the file scan the rows
-    /// arrive through declares none. Only that order is declared: when an operator in between may
-    /// have moved rows, `plan` is left as it is.
+    /// `plan`, declaring `sort_orders` as the order its rows arrive in, unless the order it
+    /// declares already satisfies them. Spark's plan knows the order of an input that enters the
+    /// native plan from the JVM, and of a scan of sorted files, but the `ScanExec` or the file
+    /// scan the rows arrive through declares none. Only that order is declared: when an operator
+    /// in between may have moved rows, `plan` is left as it is.
     ///
-    /// The serde sends an order only when the streamed side's Comet operators report it, and it
-    /// checks that nothing under them moves rows (`mayReportFalseOrder`), while this walk asks
-    /// the native operators the same thing through `maintains_input_order`. The two agree as
-    /// long as a Comet operator that reports an order keeps it natively and says so, and a Comet
-    /// leaf that reports one is a source this walk knows or declares its order itself, as the
-    /// native range does. One that does not lands here with `plan` unchanged, and the join then
-    /// moves its unmatched rows after Spark has dropped the sort above it. Nothing here can fall
-    /// back at that point, so the invariant is kept at the operator: see "Adding a New Operator"
-    /// in the contributor guide.
-    fn with_declared_order(
+    /// An input that declares only part of `sort_orders`, such as a window over another window,
+    /// gets them declared next to its own order.
+    ///
+    /// The serde sends an order only when the Comet operators of a join's streamed side or of a
+    /// window's input report it, and it checks that nothing under them moves rows
+    /// (`mayReportFalseOrder`), while this walk asks the native operators the same thing through
+    /// `maintains_input_order`. The two agree as long as a Comet operator that reports an order
+    /// keeps it natively and says so, and a Comet leaf that reports one is a source this walk
+    /// knows or declares its order itself, as the native range does. One that does not lands
+    /// here with `plan` unchanged, and the join then moves its unmatched rows after Spark has
+    /// dropped the sort above it, or the window rejects its input. Nothing here can fall back at
+    /// that point, so the invariant is kept at the operator: see "Adding a New Operator" in the
+    /// contributor guide.
+    pub(super) fn with_declared_order(
         &self,
         plan: Arc<dyn ExecutionPlan>,
         sort_orders: &[Expr],
     ) -> Result<Arc<dyn ExecutionPlan>, ExecutionError> {
-        if plan.output_ordering().is_some() || !Self::keeps_source_order(&plan) {
+        if sort_orders.is_empty() || !Self::keeps_source_order(&plan) {
             return Ok(plan);
         }
         let exprs = sort_orders
@@ -506,8 +511,14 @@ impl PhysicalPlanner {
             .map(|expr| self.create_sort_expr(expr, plan.schema()))
             .collect::<Result<Vec<_>, _>>()?;
         match LexOrdering::new(exprs) {
-            Some(ordering) => Ok(Arc::new(SortedInputExec::new(plan, ordering))),
-            None => Ok(plan),
+            Some(ordering)
+                if !plan
+                    .equivalence_properties()
+                    .ordering_satisfy(ordering.iter().cloned())? =>
+            {
+                Ok(Arc::new(SortedInputExec::new(plan, ordering)))
+            }
+            _ => Ok(plan),
         }
     }
 
@@ -515,11 +526,12 @@ impl PhysicalPlanner {
     /// keep their input's order, so that the order Spark reports for them still holds. A source is
     /// an input from the JVM, or a scan of files, which reads the files of its one file group one
     /// after the other: Spark reports an order for a file scan only when every partition reads one
-    /// sorted file, as for a sorted bucketed table with one file per bucket. Any other operator may
-    /// have moved rows, such as the null-aware anti join, whose streamed side Comet builds on, and
-    /// declaring Spark's order over it would be wrong.
+    /// sorted file, as for a sorted bucketed table with one file per bucket. An `EmptyExec`, a
+    /// bucket with no file, has no rows to be out of order. Any other operator may have moved
+    /// rows, such as the null-aware anti join, whose streamed side Comet builds on, and declaring
+    /// Spark's order over it would be wrong.
     pub(super) fn keeps_source_order(plan: &Arc<dyn ExecutionPlan>) -> bool {
-        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() {
+        if plan.is::<ScanExec>() || plan.is::<ShuffleScanExec>() || plan.is::<EmptyExec>() {
             return true;
         }
         if let Some(scan) = plan.downcast_ref::<DataSourceExec>() {
@@ -529,18 +541,21 @@ impl PhysicalPlanner {
                 .is_some_and(|config| config.file_groups.len() == 1);
         }
         // DataFusion reports every right hash join as keeping its probe order, but a right outer
-        // join keeps it only when the probe declares one, and no input on this path declares an
-        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
-        // mark join builds its probe indices in ascending order, so none of them depends on a
-        // declaration. Any other join type keeps no probe order at all.
+        // join keeps its unmatched probe rows in place only when the probe declares an order, as
+        // the planner does for the join's streamed side. An inner join emits its matches probe
+        // row by probe row, and a right semi, anti or mark join builds its probe indices in
+        // ascending order, so none of them depends on a declaration. Any other join type keeps no
+        // probe order at all.
         if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-            if !matches!(
-                join.join_type(),
+            let keeps_probe_order = match join.join_type() {
                 DFJoinType::Inner
-                    | DFJoinType::RightSemi
-                    | DFJoinType::RightAnti
-                    | DFJoinType::RightMark
-            ) {
+                | DFJoinType::RightSemi
+                | DFJoinType::RightAnti
+                | DFJoinType::RightMark => true,
+                DFJoinType::Right => join.right().output_ordering().is_some(),
+                _ => false,
+            };
+            if !keeps_probe_order {
                 return false;
             }
         }
