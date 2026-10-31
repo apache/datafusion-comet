@@ -23,7 +23,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometCollectMetricsExec, CometColumnarToRowExec, CometExec, CometNativeColumnarToRowExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, RowToColumnarExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.QueryStageExec
@@ -308,8 +308,9 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       throw new CometExec.InvalidSparkFallbackException(
         "Cannot revert a stage whose stripped root is a stage boundary")
     }
-    val reverted = transformStageUp(stripped) { case cometExec: CometExec =>
-      cometExec.sparkFallback(cometExec.children)
+    val reverted = transformStageUp(stripped) {
+      case collector: CometCollectMetricsExec => collector.toSpark
+      case cometExec: CometExec => cometExec.sparkFallback(cometExec.children)
     }
     insertTransitions(reverted)
   }
