@@ -21,13 +21,16 @@ package org.apache.comet.serde.operator
 
 import java.lang.reflect.InvocationTargetException
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import org.apache.iceberg.{DeleteFile, FileContent}
-import org.apache.iceberg.expressions.Expressions
+import org.apache.iceberg.{DeleteFile, FileContent, Schema}
+import org.apache.iceberg.expressions.{Expression, Expressions}
+import org.apache.iceberg.types.Types
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, DoubleType, FloatType, IntegerType, MapType, StringType, StructType}
 
 import org.apache.comet.iceberg.IcebergReflection
 
@@ -43,7 +46,11 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       predicate <- Seq(Expressions.isNull("value"), Expressions.notNull("value"))) {
       withClue(s"$dataType: $predicate") {
         CometIcebergNativeScan
-          .icebergExprToProto(predicate, Seq(AttributeReference("value", dataType)()), Set.empty)
+          .icebergExprToProto(
+            predicate,
+            Seq(AttributeReference("value", dataType)()),
+            Set.empty,
+            Set.empty)
           .isEmpty shouldBe true
       }
     }
@@ -51,6 +58,7 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .icebergExprToProto(
         Expressions.notNull("value"),
         Seq(AttributeReference("value", IntegerType)()),
+        Set.empty,
         Set.empty)
       .nonEmpty shouldBe true
   }
@@ -59,7 +67,7 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   private val intColumn = Seq(AttributeReference("value", IntegerType)())
 
   private def serialize(residual: Any) =
-    CometIcebergNativeScan.serializeResidual(residual, intColumn, Set.empty)
+    CometIcebergNativeScan.serializeResidual(residual, intColumn, Set.empty, Set.empty)
 
   private def causes(t: Throwable): Iterator[Throwable] =
     Iterator.iterate(t)(_.getCause).takeWhile(_ != null)
@@ -113,10 +121,228 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     }
     // iceberg-rust cannot use these columns in the page index; the post-scan filter has them.
     CometIcebergNativeScan
-      .serializeResidual(Expressions.equal("value", Integer.valueOf(1)), intColumn, Set("value"))
+      .serializeResidual(
+        Expressions.equal("value", Integer.valueOf(1)),
+        intColumn,
+        Set("value"),
+        Set.empty)
       .isEmpty shouldBe true
     // The same predicate converts when nothing declines it, so the cases above are not vacuous.
     serialize(Expressions.equal("value", Integer.valueOf(1))).nonEmpty shouldBe true
+  }
+
+  test("floating-point ranges and zero literals are not pushed") {
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
+    for (dataType <- Seq(FloatType, DoubleType)) {
+      val output = intColumn :+ AttributeReference("floating", dataType)()
+      def convert(expr: Any) =
+        CometIcebergNativeScan.serializeResidual(expr, output, Set.empty, Set.empty)
+      def declined(predicate: Expression): Unit =
+        withClue(s"$dataType: $predicate: ") {
+          convert(predicate).isEmpty shouldBe true
+          convert(Expressions.and(supported, predicate)).isEmpty shouldBe true
+          convert(Expressions.and(predicate, supported)).isEmpty shouldBe true
+          convert(Expressions.or(supported, predicate)).isEmpty shouldBe true
+          convert(Expressions.not(predicate)).isEmpty shouldBe true
+          convert(Expressions.not(Expressions.and(supported, predicate))).isEmpty shouldBe true
+        }
+
+      // The native reader orders floats differently from Spark: it separates the signed zeros
+      // and sorts negative NaNs below every number. Range comparisons stay out for every literal.
+      for (value <- Seq(-0.0, 0.0, 1.0, Double.NegativeInfinity, Double.PositiveInfinity);
+        predicate <- Seq(
+          Expressions.lessThan("floating", Double.box(value)),
+          Expressions.lessThanOrEqual("floating", Double.box(value)),
+          Expressions.greaterThan("floating", Double.box(value)),
+          Expressions.greaterThanOrEqual("floating", Double.box(value)))) {
+        declined(predicate)
+      }
+      // A zero literal is declined, including as any element of IN.
+      for (value <- Seq(-0.0, 0.0);
+        predicate <- Seq(
+          Expressions.equal("floating", Double.box(value)),
+          Expressions.notEqual("floating", Double.box(value)),
+          Expressions.in("floating", Double.box(value), Double.box(2.0)),
+          Expressions.in("floating", Double.box(2.0), Double.box(value)))) {
+        declined(predicate)
+      }
+      // Other literals compare the same way in both, so != and IN are pushed in any position.
+      for (value <- Seq(1.0, -1.0, Double.NegativeInfinity, Double.PositiveInfinity);
+        predicate <- Seq(
+          Expressions.notEqual("floating", Double.box(value)),
+          Expressions.in("floating", Double.box(value), Double.box(2.0)))) {
+        withClue(s"$dataType: $predicate: ") {
+          convert(predicate).nonEmpty shouldBe true
+          convert(Expressions.or(supported, predicate)).nonEmpty shouldBe true
+          convert(Expressions.not(predicate)).nonEmpty shouldBe true
+        }
+      }
+      // Equality under NOT still follows the nullable-column rule tested below.
+      val eq = Expressions.equal("floating", Double.box(1.0))
+      convert(eq).nonEmpty shouldBe true
+      convert(Expressions.not(eq)).isEmpty shouldBe true
+      for (predicate <- Seq(Expressions.isNull("floating"), Expressions.notNull("floating"))) {
+        convert(predicate).nonEmpty shouldBe true
+        convert(Expressions.not(predicate)).nonEmpty shouldBe true
+      }
+    }
+  }
+
+  test("NaN checks are not pushed") {
+    // Spark's isnan(f), f = NaN and f != NaN reach the serde as IS_NAN and NOT_NAN.
+    val supported = Expressions.greaterThan("value", Integer.valueOf(5))
+    for (dataType <- Seq(FloatType, DoubleType);
+      predicate <- Seq(Expressions.isNaN("floating"), Expressions.notNaN("floating"))) {
+      val output = intColumn :+ AttributeReference("floating", dataType)()
+      def convert(expr: Any) =
+        CometIcebergNativeScan.serializeResidual(expr, output, Set.empty, Set.empty)
+      withClue(s"$dataType: $predicate: ") {
+        convert(predicate).isEmpty shouldBe true
+        convert(Expressions.not(predicate)).isEmpty shouldBe true
+        convert(Expressions.and(supported, predicate)).isEmpty shouldBe true
+      }
+    }
+  }
+
+  test("a FLOAT literal is pushed only when it narrows exactly to a nonzero float") {
+    val output = Seq(AttributeReference("floating", FloatType)())
+    def convert(value: AnyRef) =
+      CometIcebergNativeScan.serializeResidual(
+        Expressions.equal("floating", value),
+        output,
+        Set.empty,
+        Set.empty)
+    convert(Float.box(0.1f)).nonEmpty shouldBe true
+    convert(Double.box(0.5)).nonEmpty shouldBe true
+    // 0.1 is not a float, and 1e-50 narrows to 0.0f.
+    convert(Double.box(0.1)).isEmpty shouldBe true
+    convert(Double.box(1e-50)).isEmpty shouldBe true
+  }
+
+  test("promoted columns push only null checks and equality outside NOT") {
+    // Required, so that NOT keeps equality for any reason other than the promotion.
+    val required = Seq(AttributeReference("value", IntegerType, nullable = false)())
+    def unpromoted(expr: Any) =
+      CometIcebergNativeScan.serializeResidual(expr, required, Set.empty, Set.empty)
+    def promoted(expr: Any) =
+      CometIcebergNativeScan.serializeResidual(expr, required, Set.empty, Set("value"))
+    val equal = Expressions.equal("value", Integer.valueOf(1))
+    for (predicate <- Seq(equal, Expressions.isNull("value"), Expressions.notNull("value"))) {
+      withClue(s"$predicate: ") {
+        promoted(predicate).nonEmpty shouldBe true
+        promoted(predicate) shouldBe unpromoted(predicate)
+      }
+    }
+    for (predicate <- Seq(
+        Expressions.not(equal),
+        Expressions.notEqual("value", Integer.valueOf(1)),
+        Expressions.lessThan("value", Integer.valueOf(1)),
+        Expressions.greaterThanOrEqual("value", Integer.valueOf(1)),
+        Expressions.in("value", Integer.valueOf(1), Integer.valueOf(2)))) {
+      withClue(s"$predicate: ") {
+        unpromoted(predicate).nonEmpty shouldBe true
+        promoted(predicate).isEmpty shouldBe true
+      }
+    }
+  }
+
+  /** Stands in for an Iceberg `Table`, of which promotedColumns reads only `schemas()`. */
+  class SchemaHistory(history: (Int, Schema)*) {
+    def schemas(): java.util.Map[Integer, Schema] =
+      history.map { case (id, schema) => Integer.valueOf(id) -> schema }.toMap.asJava
+  }
+
+  test("promoted columns are found by field id across the schema history") {
+    val original = new Schema(
+      Types.NestedField.optional(1, "id", Types.IntegerType.get()),
+      Types.NestedField.optional(2, "f", Types.FloatType.get()),
+      Types.NestedField.optional(3, "s", Types.StringType.get()),
+      Types.NestedField.optional(4, "dropped", Types.IntegerType.get()))
+    val current = new Schema(
+      Types.NestedField.optional(1, "id", Types.LongType.get()),
+      Types.NestedField.optional(2, "f", Types.DoubleType.get()),
+      Types.NestedField.optional(3, "renamed", Types.StringType.get()),
+      Types.NestedField.optional(5, "added", Types.IntegerType.get()))
+    val table = new SchemaHistory(0 -> original, 1 -> current)
+    IcebergReflection.promotedColumns(table, current) shouldBe Set("id", "f")
+    IcebergReflection.promotedColumns(table, original) shouldBe Set("id", "f")
+    IcebergReflection.promotedColumns(new SchemaHistory(0 -> current), current) shouldBe empty
+  }
+
+  test("an incomplete schema history treats every promotable column as promoted") {
+    // Without schema 0, as after expiring snapshots with cleanExpiredMetadata, a long, double or
+    // decimal column may still hold files written as a narrower type.
+    val schema = new Schema(
+      Types.NestedField.optional(1, "id", Types.LongType.get()),
+      Types.NestedField.optional(2, "f", Types.DoubleType.get()),
+      Types.NestedField.optional(3, "amount", Types.DecimalType.of(10, 2)),
+      Types.NestedField.optional(4, "i", Types.IntegerType.get()),
+      Types.NestedField.optional(5, "s", Types.StringType.get()))
+    IcebergReflection.promotedColumns(new SchemaHistory(1 -> schema), schema) shouldBe
+      Set("id", "f", "amount")
+    IcebergReflection.promotedColumns(
+      new SchemaHistory(0 -> schema, 2 -> schema),
+      schema) shouldBe
+      Set("id", "f", "amount")
+    IcebergReflection.promotedColumns(
+      new SchemaHistory(0 -> schema, 1 -> schema),
+      schema) shouldBe
+      empty
+  }
+
+  test("NOT declines equality on a nullable column, which may be a null-safe comparison") {
+    // Iceberg converts Spark's `value <=> 1` to `value = 1`. Negated, Spark keeps NULL rows that
+    // the native reader's not-equal drops.
+    val eq = Expressions.equal("value", Integer.valueOf(1))
+    val lt = Expressions.lessThan("value", Integer.valueOf(5))
+    serialize(eq).nonEmpty shouldBe true
+    for (residual <- Seq(
+        Expressions.not(eq),
+        Expressions.not(Expressions.and(eq, lt)),
+        Expressions.not(Expressions.or(lt, eq)))) {
+      withClue(s"$residual: ") {
+        serialize(residual).isEmpty shouldBe true
+      }
+    }
+    serialize(Expressions.and(lt, Expressions.not(eq))).isEmpty shouldBe true
+    // Spark's other comparisons are NULL for a NULL input, as in the native reader.
+    serialize(Expressions.not(lt)).nonEmpty shouldBe true
+    serialize(Expressions.notEqual("value", Integer.valueOf(1))).nonEmpty shouldBe true
+    // A required column holds no NULLs.
+    val required = Seq(AttributeReference("value", IntegerType, nullable = false)())
+    CometIcebergNativeScan
+      .serializeResidual(Expressions.not(eq), required, Set.empty, Set.empty)
+      .nonEmpty shouldBe true
+  }
+
+  test("a NOT_NULL conjunct lets equality on the same column convert under NOT") {
+    // A NULL value fails the AND in Spark and in the native reader alike, so the negated
+    // equality only sees non-NULL values. Spark writes `b = false` as `b IS NOT NULL AND NOT b`.
+    val eq = Expressions.equal("value", Integer.valueOf(1))
+    val lt = Expressions.lessThan("value", Integer.valueOf(5))
+    val notNull = Expressions.notNull("value")
+    for (residual <- Seq(
+        Expressions.and(notNull, Expressions.not(eq)),
+        Expressions.and(Expressions.and(lt, notNull), Expressions.not(eq)),
+        Expressions.and(notNull, Expressions.or(lt, Expressions.not(eq))),
+        Expressions.not(Expressions.and(notNull, eq)))) {
+      withClue(s"$residual: ") {
+        serialize(residual).nonEmpty shouldBe true
+      }
+    }
+    // The check must be a conjunct of an AND that encloses the equality.
+    val twoColumns = intColumn :+ AttributeReference("other", IntegerType)()
+    for (residual <- Seq(
+        Expressions.or(notNull, Expressions.not(eq)),
+        Expressions.and(Expressions.or(notNull, lt), Expressions.not(eq)),
+        Expressions.and(Expressions.not(notNull), Expressions.not(eq)),
+        Expressions.and(Expressions.notNull("other"), Expressions.not(eq)))) {
+      withClue(s"$residual: ") {
+        CometIcebergNativeScan
+          .serializeResidual(residual, twoColumns, Set.empty, Set.empty)
+          .isEmpty shouldBe true
+      }
+    }
   }
 
   test("a transform residual is declined rather than read as its source column") {
