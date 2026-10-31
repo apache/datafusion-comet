@@ -27,7 +27,7 @@ inspect that behavior.
 
 When Comet is enabled, the `CometSparkSessionExtensions` rules walk the
 physical plan bottom-up and replace Spark operators with Comet equivalents
-where possible. Consecutive Rust-implemented operators are combined into a
+where possible. Consecutive Rust-implemented operators are usually combined into a
 single block that is serialized as protobuf and executed by DataFusion on the
 executor.
 Operators that Comet does not support remain as their original Spark form.
@@ -84,7 +84,7 @@ incompatibility details.
 
 ## Configs for Inspecting Plans and Fallback
 
-Comet provides five configs for understanding what is happening in a plan.
+Comet provides seven configs for understanding what is happening in a plan.
 They serve different purposes and produce output in different places.
 
 | Config                                     | Output destination                 | What you see                                                                                                                                                              |
@@ -94,6 +94,8 @@ They serve different purposes and produce output in different places.
 | `spark.comet.explain.codegen.enabled`      | `ExtendedExplainInfo` / SQL UI     | A single `[COMET-INFO: JVM codegen dispatcher: <name1>, <name2>, ...]` segment naming each expression on the operator that was routed through the JVM codegen dispatcher. |
 | `spark.comet.explain.format`               | Spark SQL UI (Spark 4.0 and newer) | Annotated plan or fallback-reason list, depending on `verbose` (default) or `fallback` value.                                                                             |
 | `spark.comet.explain.native.enabled`       | Executor logs, per task            | The DataFusion plan with metrics, useful for inspecting Rust execution.                                                                                                   |
+| `spark.comet.explain.planOnly.enabled`     | Driver log                         | The Comet plan and coverage summary, prefixed `[Comet plan-only]`, while Spark runs the original plan.                                                                    |
+| `spark.comet.explain.rules`                | Driver log                         | The plan before and after `CometScanRule`, `CometExecRule`, and `EliminateRedundantTransitions`. For stage reverts, use `spark.comet.explain.fallback.log.enabled`.       |
 
 ### `spark.comet.explain.fallback.enabled`
 
@@ -117,12 +119,12 @@ operator (`CometProject`, `CometFilter`, etc.) with a single combined
 every expression on that operator that was routed through the JVM codegen
 dispatcher (Spark's own `doGenCode` running inside a Comet kernel), gated by
 `spark.comet.exec.scalaUDF.codegen.enabled=true`. The projection stays
-Comet-native — this is informational only, useful for distinguishing "runs
-natively in DataFusion" from "runs Spark's generated code inside a Comet
+in the Comet pipeline — this is informational only, useful for distinguishing "runs
+in Rust via DataFusion" from "runs Spark's generated code inside a Comet
 kernel". The annotation only appears for expressions Comet actually routed
-through the dispatcher on this plan — either because no native DataFusion
+through the dispatcher on this plan — either because no Rust
 implementation exists (`CometCodegenDispatch` serdes such as `hypot`,
-`pmod`, `months_between`), or because a native path exists but declined this
+`pmod`, `months_between`), or because a Rust path exists but declined this
 specific input (`CodegenDispatchFallback` mixins). It is not a general "this
 expression ran here" marker.
 
@@ -167,7 +169,7 @@ The format is controlled by `spark.comet.explain.format`:
 - `verbose` (default): the full plan annotated with fallback reasons, plus a
   summary of how much of the plan is accelerated. The summary reports operator
   coverage, the number of Spark/Comet transitions, and how many distinct
-  expressions Comet accelerated - split into those lowered to native DataFusion
+  expressions Comet accelerated - split into those lowered to Rust (DataFusion)
   expressions and those routed through the JVM codegen dispatcher. Expression
   names are counted once per plan, and structural nodes (attribute references,
   literals, aliases) are excluded.
@@ -221,7 +223,7 @@ Keep the following in mind when reading the reports:
   contains them, so each gets its own report alongside the outer query's. The outer report
   also counts its subqueries, so do not add the reports together.
 - Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
-  native plan still counts as accelerated, so treat the percentage as an upper bound.
+  Rust plan still counts as accelerated, so treat the percentage as an upper bound.
 - Comet's split Iceberg V2 write (`spark.comet.write.iceberg.enabled`) is declined in
   plan-only mode, so such writes run on, and are reported as, Spark.
 - Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
@@ -261,7 +263,7 @@ val dispatched: Seq[String] = info.getCodegenDispatchExpressions(plan)
 val formatted: String = info.generateExtendedInfo(plan)
 ```
 
-A name can appear in both lists: the same function may be lowered natively for
+A name can appear in both lists: the same function may be lowered to Rust for
 one set of arguments and routed through the dispatcher for another elsewhere in
 the same plan.
 
@@ -292,23 +294,25 @@ by role. Names match what is shown in the plan output.
 
 ### Scans
 
-| Node                     | Description                                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.                      |
-| `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                            |
-| `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                                    |
-| `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                                 |
-| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                       |
-| `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                                     |
-| `CometEmptyRelation`     | Empty native input that replaces `EmptyRelationExec` (Spark 4.0 and later).                                        |
-| `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in native code, replacing `RangeExec` (disabled by default). |
+| Node                     | Description                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| `CometBatchScan`         | DataSource V2 scan, including Iceberg Parquet, that produces Arrow batches consumed by Comet.               |
+| `CometNativeScan`        | Parquet scan that runs entirely in Rust via DataFusion.                                                     |
+| `CometIcebergNativeScan` | Iceberg Parquet scan that runs entirely in Rust via DataFusion.                                             |
+| `CometCsvNativeScan`     | CSV scan that runs entirely in Rust via DataFusion (experimental).                                          |
+| `CometInMemoryTableScan` | JVM-side scan of a table cached in Comet's Arrow format (experimental, disabled by default).                |
+| `CometLocalTableScan`    | JVM-side scan of a `LocalTableScanExec` (disabled by default).                                              |
+| `CometEmptyRelation`     | Empty input to a Rust plan that replaces `EmptyRelationExec` (Spark 4.0 and later).                         |
+| `CometRange`             | Generates the rows of `spark.range` and SQL `range()` in Rust, replacing `RangeExec` (disabled by default). |
 
 ### Native Rust Operators
 
 These are implemented in Rust and run in DataFusion. When several appear
 consecutively in a plan, they execute as a single fused block. The write operators
-(`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are the exception: each runs as its
-own native plan over its child's output.
+(`CometWriteFiles`, `CometNativeWrite` and `CometIcebergWrite`) are exceptions: each runs as its
+own Rust plan over its child's output. `CometTakeOrderedAndProject` is another: it runs its own final
+Rust plan, and when its input has several partitions, it first gathers the top rows of each partition
+through a single-partition Comet shuffle.
 
 | Node                           | Spark equivalent                                                                  |
 | ------------------------------ | --------------------------------------------------------------------------------- |
@@ -329,24 +333,25 @@ own native plan over its child's output.
 | `CometWindowGroupLimitExec`    | `WindowGroupLimitExec` (Spark 3.5 and later)                                      |
 | `CometSample`                  | `SampleExec` (sampling without replacement)                                       |
 | `CometTakeOrderedAndProject`   | `TakeOrderedAndProjectExec`                                                       |
-| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental native Parquet writes)        |
-| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental native Parquet writes)          |
+| `CometWriteFiles`              | `WriteFilesExec` (Spark 4.0 and later, experimental Rust Parquet writer)          |
+| `CometNativeWrite`             | `DataWritingCommandExec` (Spark 3.x, experimental Rust Parquet writer)            |
 | `CometIcebergWrite`            | `IcebergWrite` (native Iceberg data-file writes, opt-in)                          |
 
 ### JVM-Side Operators
 
-These keep their data on the JVM but participate in the Comet pipeline.
+These do their own work on the JVM and participate in the Comet pipeline. Some of them also run
+Rust plans, as their rows say.
 
-| Node                     | Notes                                                                                                                                   |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                     |
-| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                            |
-| `CometCollectLimit`      | JVM-side collect limit, equivalent to `CollectLimitExec`.                                                                               |
-| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                     |
-| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                         |
-| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md). |
-| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).            |
-| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                       |
+| Node                     | Notes                                                                                                                                    |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `CometUnion`             | JVM-side union of Comet inputs. The Rust side reads each branch as a separate scan.                                                      |
+| `CometCoalesce`          | JVM-side partition coalesce.                                                                                                             |
+| `CometCollectLimit`      | Collect limit (`CollectLimitExec`). `collect`, `show`, and `take` take rows from its child on the JVM; other reads run Rust limit plans. |
+| `CometBroadcastExchange` | Broadcast exchange producing serialized Arrow batches that the consumer can decode.                                                      |
+| `CometSubqueryBroadcast` | Companion to `CometBroadcastExchange` for dynamic partition pruning subqueries.                                                          |
+| `CometMapInBatch`        | Runs `mapInArrow` / `mapInPandas` Python UDFs on Comet's Arrow batches (experimental). See [PyArrow UDF Acceleration](pyarrow-udfs.md).  |
+| `IcebergWrite`           | Executor-side Iceberg data-file write in Comet's split-operator Iceberg write plan. See [Iceberg Writes](iceberg.md#writes).             |
+| `IcebergCommit`          | Driver-side commit for Comet's split-operator Iceberg write plan.                                                                        |
 
 ### Shuffle Operators
 
@@ -367,14 +372,14 @@ use:
   fallback when the child is not a Comet operator or when a hash/range key
   type is not supported by native shuffle (for example, a struct or array
   hash key while nested hash keys are disabled). It is still preferred over
-  Spark's native shuffle when Comet shuffle is enabled. Keys with a
+  Spark's built-in shuffle when Comet shuffle is enabled. Keys with a
   non-default string collation are supported by neither path and use Spark's
   shuffle.
 
 Both paths support the same set of partitioning schemes
 (`HashPartitioning`, `RangePartitioning`, `RoundRobinPartitioning`,
-`SinglePartition`) and both can carry complex types in data columns. Native
-round-robin partitioning is disabled by default; see
+`SinglePartition`) and both can carry complex types in data columns. Round-robin
+partitioning in native shuffle is disabled by default; see
 [Round-Robin Partitioning](compatibility/operators.md#round-robin-partitioning).
 
 The choice between the two is automatic. See the

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="880" height="640" viewBox="0 0 880 640" role="img" aria-labelledby="title desc">
   <title id="title">How Comet runs a Spark query on Apache DataFusion</title>
-  <desc id="desc">Spark plans the query as usual. The Comet plugin replaces the operators it supports with native ones and sends them to the Apache DataFusion native engine as a protobuf plan. DataFusion reads Parquet and Iceberg data, executes the plan, and returns the results to Spark as Arrow columnar batches. Anything Comet does not support keeps running in Spark.</desc>
+  <desc id="desc">Spark plans the query as usual. The Comet plugin replaces the operators it supports with Comet operators and sends the ones that run in Rust to Apache DataFusion as a protobuf plan. DataFusion reads Parquet and Iceberg data, executes the plan, and returns the results to Spark as Arrow columnar batches. Anything Comet does not support keeps running in Spark.</desc>
   <style>
     .sans { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
   </style>
@@ -21,7 +21,7 @@
   <rect x="20" y="190" width="600" height="110" rx="14" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
   <text class="sans" x="44" y="230" font-size="21" font-weight="700" fill="#222">Comet plugin</text>
   <text class="sans" font-size="15" fill="#444">
-    <tspan x="44" y="260">Replaces each operator it supports with a native one.</tspan>
+    <tspan x="44" y="260">Replaces the operators it supports with Comet operators.</tspan>
     <tspan x="44" y="282">Anything else keeps running in Spark.</tspan>
   </text>
   <rect x="544" y="210" width="56" height="26" rx="13" fill="#ffffff" stroke="#6BAF4E" stroke-width="1.5"/>
@@ -29,10 +29,10 @@
 
   <!-- Apache DataFusion -->
   <rect x="20" y="370" width="840" height="144" rx="14" fill="#C8EBB5" stroke="#6BAF4E" stroke-width="1.5"/>
-  <text class="sans" x="44" y="410" font-size="21" font-weight="700" fill="#222">Apache DataFusion native engine</text>
+  <text class="sans" x="44" y="410" font-size="21" font-weight="700" fill="#222">Apache DataFusion</text>
   <rect x="724" y="390" width="116" height="26" rx="13" fill="#ffffff" stroke="#6BAF4E" stroke-width="1.5"/>
-  <text class="sans" x="782" y="408" font-size="13" font-weight="700" fill="#555" text-anchor="middle">Native · Rust</text>
-  <text class="sans" x="44" y="442" font-size="15" fill="#444">Vectorized, columnar execution on Apache Arrow</text>
+  <text class="sans" x="782" y="408" font-size="13" font-weight="700" fill="#555" text-anchor="middle">Rust</text>
+  <text class="sans" x="44" y="442" font-size="15" fill="#444">Columnar execution on Apache Arrow</text>
   <g class="sans" font-size="15" font-weight="600" fill="#2F5E1E" text-anchor="middle">
     <rect x="44" y="460" width="76" height="32" rx="8" fill="#ffffff" stroke="#6BAF4E" stroke-width="1.5"/>
     <text x="82" y="481">Scan</text>
@@ -54,7 +54,7 @@
   <line x1="180" y1="122" x2="180" y2="186" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
   <text class="sans" x="196" y="160" font-size="15" font-weight="700" fill="#222">Physical plan</text>
   <line x1="180" y1="302" x2="180" y2="366" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
-  <text class="sans" x="196" y="340" font-size="15" font-weight="700" fill="#222">Native plan <tspan font-weight="400" fill="#444">(protobuf)</tspan></text>
+  <text class="sans" x="196" y="340" font-size="15" font-weight="700" fill="#222">Rust plan <tspan font-weight="400" fill="#444">(protobuf)</tspan></text>
 
   <!-- Results come back up on the right -->
   <line x1="680" y1="368" x2="680" y2="124" stroke="#444" stroke-width="2.5" marker-end="url(#arrowHead)"/>
@@ -69,6 +69,6 @@
   <path d="M48,574 a34,10 0 0,0 68,0" fill="none" stroke="#5B8DB8" stroke-width="1.5"/>
   <text class="sans" font-size="15" fill="#444">
     <tspan x="134" y="590" font-weight="700" fill="#222">Parquet files and Apache Iceberg tables</tspan>
-    <tspan x="134" y="612">Read directly by the native engine</tspan>
+    <tspan x="134" y="612">Read directly by DataFusion</tspan>
   </text>
 </svg>

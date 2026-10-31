@@ -25,34 +25,40 @@ see [JVM Shuffle](jvm_shuffle.md).
 
 ## Overview
 
-Native shuffle takes columnar input directly from Comet native operators and performs partitioning,
+Native shuffle takes Arrow batches directly from Comet operators and performs partitioning,
 encoding, and writing in native Rust code. This avoids the columnar-to-row-to-columnar conversion
 overhead that JVM shuffle incurs.
 
 ```
-Comet Native (columnar) → Native Shuffle → Arrow IPC → columnar
+Comet operator (Arrow batches) → Native Shuffle → Arrow IPC → columnar
 ```
 
 Compare this to JVM shuffle's data path:
 
 ```
-Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
+Comet operator (Arrow batches) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 ```
 
 When `RevertNativeForTransitionHeavyStages` restores the map stage to Spark execution, the
-native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
-restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec` to
-convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
-them. Spark's `RowToColumnarExec` alone does not satisfy this input contract.
+native shuffle exchange usually stays in place. Its input still needs Arrow-backed Comet vectors,
+even if the restored Spark operator supports columnar output. The rule adds `CometSparkToColumnarExec`
+to convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark's `RowToColumnarExec` alone does not satisfy this input contract. The exception is a
+native shuffle whose input was converted by `spark.comet.convert.shuffleInput.enabled`: the rule
+switches it back to JVM columnar shuffle, which reads the restored stage's rows.
 
 ## When Native Shuffle is Used
 
 Native shuffle (`CometExchange`) is selected when all of the following conditions are met:
 
-1. **Shuffle mode allows native**: `spark.comet.shuffle.mode` is `native` or `auto`.
+1. **Shuffle mode allows native shuffle**: `spark.comet.shuffle.mode` is `native` or `auto`.
 
-2. **Child plan is a Comet native operator**: The child must be a `CometPlan` that produces
-   columnar output. Row-based Spark operators require JVM shuffle, unless
+2. **Child plan is a Comet operator**: The child must be a `CometPlan` that produces
+   columnar output. With the Celeborn shuffle manager, `spark.comet.shuffle.mode` must be `native`,
+   the child must be a `CometNativeExec`, and
+   `CometCelebornShuffleManager.nativeShuffleFallbackReason` must accept the configuration.
+   Otherwise Spark's shuffle is used, because Celeborn has no JVM columnar shuffle to fall back to.
+   Row-based Spark operators require JVM shuffle, unless
    `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
    uses native shuffle instead, provided native shuffle supports the partitioning and the
    columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
@@ -71,12 +77,11 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 4. **Supported partition key types**: The rule differs by partitioning, and neither restricts data
    columns. Complex types are fully supported as data columns in native shuffle.
    - `RangePartitioning` keys must be primitive. `supportedRangePartitioningDataType` rejects every
-     nested type, because native cannot sort them, and rejects collated strings, because Comet
-     compares raw bytes. Scalar float and double are supported, including when
-     `spark.comet.exec.strictFloatingPoint` is enabled, because the native range partitioner
-     normalizes its comparison keys and its sampled boundary rows the same way the native sort
-     does. The native sort normalizes floating-point values nested in arrays and structs as well,
-     but those keys are rejected as range keys for being nested.
+     nested type. It also rejects collated strings, because Comet compares raw bytes. Scalar float
+     and double are supported, including when `spark.comet.exec.strictFloatingPoint` is enabled,
+     because the Rust range partitioner normalizes its comparison keys and its sampled boundary
+     rows the same way the Rust sort does. The Rust sort normalizes floating-point values nested
+     in arrays and structs as well, but those keys are rejected as range keys for being nested.
    - `HashPartitioning` keys must be primitive **by default**. Setting
      `spark.comet.shuffle.native.partitioning.hash.nested.enabled` to `true` admits structs and
      arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
@@ -137,7 +142,7 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
 | `CometShuffleDependency`       | `.../shuffle/CometShuffleDependency.scala`       | Extends `ShuffleDependency`. Holds shuffle type, schema, range partition bounds, and (native shuffle only) a `NativeShuffleSpec`.                   |
 | `CometNativeShuffleInputRDD`   | `.../shuffle/CometNativeShuffleInputRDD.scala`   | Thin scheduling-anchor RDD on the native-shuffle path. `compute` returns a `CometNativeShuffleInputIterator` carrying per-partition leaf iterators. |
 | `CometBlockStoreShuffleReader` | `.../shuffle/CometBlockStoreShuffleReader.scala` | Reads shuffle blocks via `ShuffleBlockFetcherIterator`. Decodes Arrow IPC to `ColumnarBatch`.                                                       |
-| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls native decode via JNI.                                                                          |
+| `NativeBatchDecoderIterator`   | `.../shuffle/NativeBatchDecoderIterator.scala`   | Reads compressed Arrow IPC from input stream. Calls the Rust decoder via JNI.                                                                       |
 
 ### Rust Side
 
@@ -168,15 +173,15 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
      `CometNativeExec` subtree. The upstream operators run inside the same `CometExecIterator`
      as the writer, with no JVM-to-native batch boundary between them.
    - A synthetic `Scan("ShuffleWriterInput")` placeholder, when the exchange's child is a
-     non-native `CometPlan`, and for the dependencies that `CometCollectLimitExec` and
-     `CometTakeOrderedAndProjectExec` build. Native code reads the input through the Arrow C
-     Stream Interface. A `CometNativeArrowSource` child, such as `CometSparkToColumnarExec`,
-     exports its own Arrow stream from `doExecuteAsArrowStream()`, which
-     `prepareArrowStreamShuffleDependency` hands to native. Any other input is an
+     `CometPlan` that is not a `CometNativeExec`, and for the dependencies that
+     `CometCollectLimitExec` and `CometTakeOrderedAndProjectExec` build. Native code reads the
+     input through the Arrow C Stream Interface. A `CometNativeArrowSource` child, such as
+     `CometSparkToColumnarExec`, exports its own Arrow stream from `doExecuteAsArrowStream()`, which
+     `prepareArrowStreamShuffleDependency` hands to the Rust side. Any other input is an
      `RDD[ColumnarBatch]`, which the convenience `prepareShuffleDependency(rdd, ...)` overload
      wraps in a stream.
 
-2. **Native execution**: A single `CometExecIterator` per partition runs the unified plan.
+2. **Plan execution**: A single `CometExecIterator` per partition runs the unified plan in Rust.
 
 3. **Partitioning**: `ShuffleWriterExec` receives batches and routes to the appropriate partitioner:
    - `MultiPartitionShuffleRepartitioner`: For hash/range/round-robin partitioning
@@ -210,8 +215,8 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
 
 1. `CometBlockStoreShuffleReader.readAsRawStream()` concatenates the fetched block streams and
    skips decoding entirely.
-2. `CometShuffleBlockIterator` hands native one compressed block at a time.
-3. The native `ShuffleScanExec` decodes each block with `read_ipc_compressed` and feeds the
+2. `CometShuffleBlockIterator` hands the Rust side one compressed block at a time.
+3. The Rust `ShuffleScanExec` decodes each block with `read_ipc_compressed` and feeds the
    resulting `RecordBatch` straight into the plan. No Arrow FFI export or import happens.
 
 For a direct local native shuffle feeding a broadcast exchange, the opt-in
@@ -238,10 +243,10 @@ pending native batches, exported Arrow batches, and the raw stream.
 
 ## Direct Read (ShuffleScan)
 
-Direct read lets a native operator consume shuffle output without the batch ever being decoded in
-the JVM or crossing Arrow FFI. It is controlled by `spark.comet.shuffle.directRead.enabled`, which
-defaults to `true` and requires `spark.comet.shuffle.enabled`. It applies to both native shuffle and
-JVM columnar shuffle, because both write the same Arrow IPC block format.
+Direct read lets a Rust-implemented operator consume shuffle output without the batch ever being
+decoded in the JVM or crossing Arrow FFI. It is controlled by `spark.comet.shuffle.directRead.enabled`,
+which defaults to `true` and requires `spark.comet.shuffle.enabled`. It applies to both native shuffle
+and JVM columnar shuffle, because both write the same Arrow IPC block format.
 
 ### How the path is selected
 
@@ -255,13 +260,13 @@ of a two-phase aggregate, comes back from re-planning as the node already planne
 serialized as a `Scan` before the stage existed. `CometExecRule` refreshes such a node: once its input
 is a sink that emits a `ShuffleScan`, that `ShuffleScan` replaces the stale `Scan` leaf.
 
-The two are not alternatives on failure. If any output type fails `supportedSinkDataType`,
+The two are not alternatives on failure. If any output type fails `QueryPlanSerde.supportedDataType`,
 `convertToShuffleScan` records the fallback reason `Unsupported data type for shuffle direct read`
 and returns `None`. It does not retry as a regular `Scan`, and retrying would not help, because
-`CometSink.convert` gates on the same `supportedSinkDataType`. `CometExecRule` calls this as
-`convertToComet(s, CometExchangeSink).getOrElse(s)`, so `None` leaves the original Spark shuffle stage
-in the plan. An unsupported output type therefore means the stage is not converted natively at all,
-not that it is served over the FFI read path instead.
+`CometSink.convert` gates on the same `supportedDataType` check. `CometExecRule` calls this as
+`convertToComet(s, CometExchangeSink).getOrElse(s)`, so `None` leaves the shuffle stage as it is, and the
+operators that read it cannot join a Rust plan. An unsupported output type therefore means those operators do not
+run in Rust, not that the stage is served over the FFI read path instead.
 
 **The protobuf is the source of truth for which slots are direct read, not the config.**
 `findShuffleScanIndices` (`operators.scala`) walks the serialized plan, counting scan slots in order
@@ -269,7 +274,7 @@ and collecting the indices that carry a `ShuffleScan`. JVM-side input dispatch r
 than re-checking the config, so the two cannot disagree. Anything changing the serde condition has to
 leave that walk consistent with it.
 
-### How blocks reach native
+### How blocks reach the Rust side
 
 `CometExecRDD.resolveInputObjects` fills one input slot per scan input, in scan-input order:
 
@@ -283,7 +288,7 @@ includes the field count but not itself, followed by an 8-byte field count that 
 the schema comes from the `ShuffleScan` protobuf fields. The 4-byte codec tag after it is read only by
 native code; the high bit of its first byte marks a block whose offsets buffers hold lengths. The
 compressed body is read into a reused `DirectByteBuffer`, **valid only until the next `hasNext()`
-call**. Native must fully consume it
+call**. `ShuffleScanExec` must fully consume it
 before pulling the next block, which `read_ipc_compressed` satisfies because it allocates fresh
 native memory for the decoded data.
 
@@ -300,7 +305,7 @@ Two details matter when changing it:
 
 Blocks are validated before decoding when `CometShuffleBlockIterator.requiresValidation()` is true,
 which happens when the underlying stream implements `CometShuffleReadFailureHandler` so a corrupt
-block can be reported back as a shuffle read failure rather than a native decode panic.
+block can be reported back as a shuffle read failure rather than a panic in the Rust decoder.
 
 Celeborn reuses the same expected-schema contract from the JVM side. `CometCelebornShuffleReader`
 builds a `ShuffleScan` message from the dependency's output attributes and passes it to
@@ -441,8 +446,8 @@ same rows, and once any consumer has fetched the output that attempt replaces, t
 silently gets some rows twice and others not at all. Comet establishes the condition in two places:
 
 - **In the plan, which is the gate that matters.** `CometShuffleExchangeExec.replaysRowsInOrder`
-  walks the native subtree fused into the writer, which the RDD graph cannot see because the whole
-  subtree collapses into one `CometNativeShuffleInputRDD`. It is a short allowlist, not a
+  walks the Rust-implemented subtree fused into the writer, which the RDD graph cannot see because
+  the whole subtree collapses into one `CometNativeShuffleInputRDD`. It is a short allowlist, not a
   denylist: a native scan under nothing but projections and filters whose expressions are all
   deterministic. A native scan replays its partition because its file splits are fixed on the
   driver. A nondeterministic expression, such as a UDF marked `asNondeterministic`, is out even
@@ -519,16 +524,16 @@ independently compressed, allowing parallel decompression during reads.
 | ------------------------------------------------------------------------- | ------- | ----------------------------------------------------------------------------- |
 | `spark.comet.shuffle.enabled`                                             | `true`  | Enable Comet shuffle                                                          |
 | `spark.comet.shuffle.mode`                                                | `auto`  | Shuffle mode: `native`, `jvm`, or `auto`                                      |
-| `spark.comet.shuffle.directRead.enabled`                                  | `true`  | Decode shuffle blocks in native code, bypassing Arrow FFI                     |
+| `spark.comet.shuffle.directRead.enabled`                                  | `true`  | Decode shuffle blocks inside the Rust plan, bypassing Arrow FFI               |
 | `spark.comet.shuffle.compression.codec`                                   | `lz4`   | Compression codec                                                             |
 | `spark.comet.shuffle.compression.zstd.level`                              | `1`     | Zstd compression level                                                        |
 | `spark.comet.shuffle.compression.offsetsAsLengths.enabled`                | `true`  | Store offsets as lengths in zstd blocks                                       |
 | `spark.comet.shuffle.native.writeBufferSize`                              | `1MB`   | Write buffer size                                                             |
 | `spark.comet.shuffle.native.maxBufferBytes`                               | `0`     | Fixed spill threshold. `0` disables it, leaving pool pressure                 |
-| `spark.comet.shuffle.native.partitioning.hash.enabled`                    | `true`  | Allow `HashPartitioning` on the native path                                   |
+| `spark.comet.shuffle.native.partitioning.hash.enabled`                    | `true`  | Allow `HashPartitioning` in native shuffle                                    |
 | `spark.comet.shuffle.native.partitioning.hash.nested.enabled`             | `false` | Allow struct and array hash keys, and map keys on Spark 4.0+                  |
-| `spark.comet.shuffle.native.partitioning.range.enabled`                   | `true`  | Allow `RangePartitioning` on the native path                                  |
-| `spark.comet.shuffle.native.partitioning.roundrobin.enabled`              | `false` | Allow `RoundRobinPartitioning` on the native path                             |
+| `spark.comet.shuffle.native.partitioning.range.enabled`                   | `true`  | Allow `RangePartitioning` in native shuffle                                   |
+| `spark.comet.shuffle.native.partitioning.roundrobin.enabled`              | `false` | Allow `RoundRobinPartitioning` in native shuffle                              |
 | `spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns`       | `0`     | Columns to hash for round robin. `0` hashes all of them                       |
 | `spark.comet.shuffle.native.partitioning.roundrobin.positional.enabled`   | `false` | Place round-robin rows by position where the plan allows it                   |
 | `spark.comet.shuffle.native.partitioning.roundrobin.positional.groupRows` | `0`     | Rows per positional group. `0` derives it from batch size and partition count |
