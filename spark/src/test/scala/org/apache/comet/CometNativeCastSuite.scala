@@ -31,7 +31,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometGlobalLimitExec, CometLocalLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, monotonically_increasing_id}
 import org.apache.spark.sql.internal.SQLConf
@@ -124,6 +124,68 @@ class CometNativeCastSuite
             checkSparkError(sql(s"$acrossBatches LIMIT 4"), "CAST_INVALID_INPUT")
           }
         }
+      }
+    }
+  }
+
+  test("non-collect LIMIT preserves projection input caps with AQE") {
+    withTempPath { path =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .range(5)
+          .selectExpr("id", "CAST(id AS STRING) AS value")
+          .coalesce(1)
+          .write
+          .parquet(path.getCanonicalPath)
+      }
+      for (aqe <- Seq("false", "true")) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.ANSI_ENABLED.key -> "true",
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+          CometConf.COMET_BATCH_SIZE.key -> "8192") {
+          withParquetTable(path.getCanonicalPath, "non_collect_cast_rows") {
+            val (_, plan) = checkSparkAnswerAndOperator(
+              sql("""SELECT parsed FROM (
+                  |  SELECT CAST(IF(id = 3, 'bad', value) AS INT) AS parsed
+                  |  FROM non_collect_cast_rows LIMIT 2 OFFSET 1
+                  |) q WHERE parsed >= 0""".stripMargin),
+              includeClasses = Seq(classOf[CometLocalLimitExec], classOf[CometProjectExec]))
+            // AQE can remove the global limit after the shuffle materializes enough rows.
+            if (aqe == "false") {
+              assert(collect(plan) { case p: CometGlobalLimitExec => p }.nonEmpty)
+            }
+            val project = collect(plan) { case p: CometProjectExec => p }.find {
+              _.child.isInstanceOf[CometLocalLimitExec]
+            }.get
+            assert(project.child.asInstanceOf[CometLocalLimitExec].limit == 3)
+          }
+        }
+      }
+    }
+  }
+
+  test("non-collect LIMIT caps projection input in each partition") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_RANGE_ENABLED.key -> "true") {
+      withTempView("non_collect_partition_rows") {
+        spark.range(0, 4, 1, 2).createOrReplaceTempView("non_collect_partition_rows")
+        val (_, plan) = checkSparkAnswerAndOperator(
+          sql("""SELECT parsed FROM (
+              |  SELECT CAST(IF(id % 2 = 1, 'bad', '0') AS INT) AS parsed
+              |  FROM non_collect_partition_rows LIMIT 1
+              |) q WHERE parsed >= 0""".stripMargin),
+          includeClasses = Seq(
+            classOf[CometLocalLimitExec],
+            classOf[CometGlobalLimitExec],
+            classOf[CometProjectExec]))
+        val localLimit = collect(plan) {
+          case p: CometLocalLimitExec if p.child.isInstanceOf[CometProjectExec] => p
+        }.head
+        assert(localLimit.executeColumnar().getNumPartitions == 2)
       }
     }
   }

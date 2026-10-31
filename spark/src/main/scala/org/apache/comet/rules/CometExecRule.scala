@@ -730,7 +730,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     plan.transformUp { case op =>
-      val converted = convertNode(limitCollectProjectionInput(refreshStaleShuffleScans(op)))
+      val converted = convertNode(limitProjectionInput(refreshStaleShuffleScans(op)))
       // Replace SubqueryBroadcastExec with CometSubqueryBroadcastExec in DPP expressions
       // when the broadcast child has a Comet plan underneath. This enables exchange reuse
       // between the DPP subquery and the join's CometBroadcastExchangeExec because both
@@ -740,25 +740,32 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Spark's collect limit consumes at most `limit` rows per partition, but a native projection
-   * evaluates its whole input batch before that limit can stop reading. Limit the projection's
-   * input first so an expression on an unconsumed row cannot raise an error. Keep the outer
-   * limit: it still combines partitions and drops OFFSET rows, which Spark evaluates before
-   * dropping.
+   * Spark's limits stop consuming rows, but a native limit slices a projection's output after the
+   * whole input batch has been evaluated. Cap the projection's input first so expressions on
+   * unconsumed rows cannot raise an error. The cap includes the OFFSET prefix; the outer limit
+   * still applies the offset and, for collect/global limits, preserves the single-partition
+   * result. Keep local limits too, preserving their plan shape and AQE links.
    *
-   * Only handle an immediately adjacent native projection. A filter or join between the limit and
+   * Only handle an immediately adjacent projection. A filter or join between the limit and
    * projection can require more input rows, and a blocking operator must consume its input.
-   * Non-collect LocalLimit/GlobalLimit plans can still evaluate a projection before limiting its
-   * output. That preexisting gap and throwing filter predicates are tracked separately in
+   * Throwing filter predicates and other partial-consumption gaps remain tracked in
    * https://github.com/apache/datafusion-comet/issues/7147.
    */
-  private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
-    case limit: CollectLimitExec if limit.limit >= 0 =>
+  private def limitProjectionInput(op: SparkPlan): SparkPlan = {
+    val rows = op match {
+      case limit: CollectLimitExec => limit.limit
+      case limit: LocalLimitExec => limit.limit
+      case limit: GlobalLimitExec => limit.limit
+      case _ => -1
+    }
+    if (rows < 0) {
+      op
+    } else {
       def capProjection(project: SparkPlan, original: SparkPlan): Option[SparkPlan] = {
         val input = project.children.head
         val cap = input match {
-          case bounded: CometLocalLimitExec if bounded.limit <= limit.limit => Some(bounded)
-          case _ => convertToComet(LocalLimitExec(limit.limit, input), CometLocalLimitExec)
+          case bounded: CometLocalLimitExec if bounded.limit <= rows => Some(bounded)
+          case _ => convertToComet(LocalLimitExec(rows, input), CometLocalLimitExec)
         }
         for {
           bounded <- cap
@@ -773,8 +780,8 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         }
       }
 
-      limit.child match {
-        case project: CometProjectExec =>
+      (op, op.children) match {
+        case (_, Seq(project: CometProjectExec)) =>
           // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
           // native planning can prune columns used only by the filter's predicate.
           val onlyColumns = project.projectList.forall {
@@ -782,27 +789,27 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             case _ => false
           }
           val alreadyCapped = project.child match {
-            case cap: CometLocalLimitExec => cap.limit <= limit.limit
+            case cap: CometLocalLimitExec => cap.limit <= rows
             case _ => false
           }
           if (onlyColumns || alreadyCapped) {
             op
           } else {
             capProjection(project, project.originalPlan)
-              .map(rebuilt => limit.withNewChildren(Seq(rebuilt)))
+              .map(rebuilt => op.withNewChildren(Seq(rebuilt)))
               .getOrElse(op)
           }
-        case project: ProjectExec =>
+        case (limit: CollectLimitExec, Seq(project: ProjectExec)) =>
           // The date guard stays in place until both the cap and projection convert. This
           // candidate excludes other lazy consumers and guarded producers below the projection.
           MakeDateEvaluation
-            .collectLimitProjection(project, limit.limit)
+            .collectLimitProjection(project, rows)
             .flatMap(candidate => capProjection(candidate, candidate))
             .map(rebuilt => MakeDateEvaluation.withCappedProjection(limit, rebuilt))
             .getOrElse(op)
         case _ => op
       }
-    case _ => op
+    }
   }
 
   /**
