@@ -26,7 +26,8 @@ Comet transfers Arrow data across the JVM/native boundary in two directions:
 1. **JVM → Native**: Native code pulls batches from the JVM over the
    [Arrow C Stream Interface](https://arrow.apache.org/docs/format/CStreamInterface.html). The JVM exports each
    per-partition iterator once as an `ArrowArrayStream`, and native pulls every batch through a single C callback.
-2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`, via the
+2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator` (or `LocalQueryIterator` for
+   [local execution](local-execution.md)), via the
    [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray`/`ArrowSchema`
    pair per column of each batch).
 
@@ -229,6 +230,11 @@ When the JVM needs results from native execution:
 `SchemaImporter`. Arrow Java's own `Data.importField` creates a new `SchemaImporter` for each field, and each one
 numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared `CDataDictionaryProvider`.
 
+A [local execution](local-execution.md) query takes the same path through `LocalQueryIterator`, which calls
+`NativeLocal.nextBatch` in place of `Native.executePlan`. `nextBatch` exports the next batch of the query with the same
+`prepare_output`, and so with `move_to_spark`, and returns `-2` while none is ready yet, so that the task can check
+whether it was killed between pulls.
+
 ### Array Offsets
 
 Arrow Java's C Data import ignores `ArrowArray.offset` at every level
@@ -265,6 +271,8 @@ Native allocates the data, and the JVM references it without copying:
 - `CometExecIterator` closes the batch it returned when the consumer next calls `hasNext` or `next`, and on
   `close()`. A batch is therefore valid only until the consumer asks for the next one, and a consumer that keeps the
   data longer has to copy it.
+- `LocalQueryIterator` closes its batches the same way. A batch it returned stays valid after the native query is
+  closed, until the JVM closes the batch.
 
 By the time the JVM receives a batch, native has usually stopped reserving it in the memory pool, but it stays
 resident until the JVM closes it. See [Crossing the FFI boundary](memory_management.md#crossing-the-ffi-boundary).
