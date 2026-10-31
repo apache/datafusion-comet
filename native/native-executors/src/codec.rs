@@ -21,11 +21,10 @@ use std::sync::Arc;
 
 use ballista_core::serde::BallistaPhysicalExtensionCodec;
 use comet::execution::native_executors::CometFragmentExec;
-use datafusion::common::plan_datafusion_err;
 use datafusion::common::{internal_datafusion_err, Result};
 use datafusion::execution::TaskContext;
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion_comet_proto::spark_native_executors::Fragment;
+use datafusion_comet_proto::spark_native_executors::{Fragment, Sample};
 use datafusion_proto::physical_plan::{PhysicalExtensionCodec, PhysicalProtoConverterExtension};
 use prost::Message;
 
@@ -35,38 +34,8 @@ use crate::range::SampleExec;
 /// The rest is its `Fragment`; its children travel separately, as the plan's.
 const FRAGMENT_MAGIC: &[u8] = b"COMET_FRAGMENT\0";
 
-/// Prefix of an encoded [`SampleExec`]. The rest is its sample size per partition, its number of
-/// keys and its keys, each a little-endian `u64`.
+/// Prefix of an encoded [`SampleExec`]. The rest is its `Sample`; its input travels separately.
 const SAMPLE_MAGIC: &[u8] = b"COMET_SAMPLE\0";
-
-fn encode_sample(sample: &SampleExec, buf: &mut Vec<u8>) {
-    buf.extend_from_slice(SAMPLE_MAGIC);
-    buf.extend_from_slice(&(sample.per_partition() as u64).to_le_bytes());
-    buf.extend_from_slice(&(sample.keys().len() as u64).to_le_bytes());
-    for key in sample.keys() {
-        buf.extend_from_slice(&(*key as u64).to_le_bytes());
-    }
-}
-
-fn decode_sample(buf: &[u8], inputs: &[Arc<dyn ExecutionPlan>]) -> Result<Arc<dyn ExecutionPlan>> {
-    let (words, rest) = buf.as_chunks::<8>();
-    let mut words = words.iter().map(|word| u64::from_le_bytes(*word) as usize);
-    let bad = || plan_datafusion_err!("Cannot decode a SampleExec");
-    let per_partition = words.next().ok_or_else(bad)?;
-    let num_keys = words.next().ok_or_else(bad)?;
-    let keys: Vec<usize> = words.collect();
-    let [input] = inputs else {
-        return Err(bad());
-    };
-    if keys.len() != num_keys || !rest.is_empty() {
-        return Err(bad());
-    }
-    Ok(Arc::new(SampleExec::try_new(
-        Arc::clone(input),
-        keys,
-        per_partition,
-    )?))
-}
 
 /// Ballista's physical extension codec, extended with Comet's operators.
 #[derive(Debug, Default)]
@@ -83,7 +52,16 @@ impl PhysicalExtensionCodec for CometPhysicalCodec {
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         if let Some(buf) = buf.strip_prefix(SAMPLE_MAGIC) {
-            return decode_sample(buf, inputs);
+            let sample = Sample::decode(buf)
+                .map_err(|e| internal_datafusion_err!("Cannot decode a SampleExec: {e}"))?;
+            let [input] = inputs else {
+                return Err(internal_datafusion_err!("A SampleExec takes one input"));
+            };
+            return Ok(Arc::new(SampleExec::try_new(
+                Arc::clone(input),
+                sample.keys.iter().map(|key| *key as usize).collect(),
+                sample.per_partition as usize,
+            )?));
         }
         let Some(buf) = buf.strip_prefix(FRAGMENT_MAGIC) else {
             return self.ballista.try_decode(buf, inputs, ctx, proto_converter);
@@ -103,8 +81,13 @@ impl PhysicalExtensionCodec for CometPhysicalCodec {
         proto_converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
         if let Some(sample) = node.downcast_ref::<SampleExec>() {
-            encode_sample(sample, buf);
-            return Ok(());
+            buf.extend_from_slice(SAMPLE_MAGIC);
+            return Sample {
+                per_partition: sample.per_partition() as u64,
+                keys: sample.keys().iter().map(|key| *key as u64).collect(),
+            }
+            .encode(buf)
+            .map_err(|e| internal_datafusion_err!("Cannot encode a SampleExec: {e}"));
         }
         let Some(fragment) = node.downcast_ref::<CometFragmentExec>() else {
             return self.ballista.try_encode(node, buf, proto_converter);

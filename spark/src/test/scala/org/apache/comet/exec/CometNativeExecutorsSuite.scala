@@ -27,7 +27,7 @@ import java.util.concurrent.TimeUnit
 import scala.util.Try
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeExecutorsExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions.{col, count, max, sum}
@@ -142,15 +142,26 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     CometConf.COMET_NATIVE_EXECUTORS_ENABLED.key -> "true",
     CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key -> schedulerUrl)(body)
 
-  /** Checks that the cluster runs `query` and returns what Spark returns. */
-  private def checkOnCluster(query: => DataFrame): Unit = {
-    val expected = query.collect().toSeq
-    onCluster {
-      val df = query
+  /**
+   * Checks that the cluster runs `query` and returns what Spark returns, in order if `ordered`.
+   */
+  private def checkOnCluster(query: => DataFrame, ordered: Boolean = false): Unit =
+    checkClusterReturns(query, query.collect().toSeq, ordered)
+
+  /** Checks that the cluster runs `query` and returns `expected`, in order if `ordered`. */
+  private def checkClusterReturns(
+      query: => DataFrame,
+      expected: Seq[Row],
+      ordered: Boolean): Unit = onCluster {
+    // A new Dataset, since a Dataset keeps the plan it was first run with.
+    val df = query
+    if (ordered) {
+      assert(df.collect().toSeq == expected, "the cluster returned other rows or another order")
+    } else {
       checkAnswer(df, expected)
-      val plan = df.queryExecution.executedPlan
-      assert(collect(plan) { case exec: CometNativeExecutorsExec => exec }.size == 1, plan)
     }
+    val plan = df.queryExecution.executedPlan
+    assert(collect(plan) { case exec: CometNativeExecutorsExec => exec }.size == 1, plan)
   }
 
   /** A Parquet table with several files, read as several partitions. */
@@ -265,12 +276,9 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   nativeExecutorsTest("TPC-H q1") {
     withLineitem {
-      // A new Dataset each time, since a Dataset keeps the plan it was first run with.
-      def q1 = sql(s"$q1Aggregate\norder by\n  l_returnflag,\n  l_linestatus")
-      checkOnCluster(q1)
-      // checkAnswer ignores the order of the rows.
-      val expected = q1.collect().toSeq
-      onCluster(assert(q1.collect().toSeq == expected))
+      checkOnCluster(
+        sql(s"$q1Aggregate\norder by\n  l_returnflag,\n  l_linestatus"),
+        ordered = true)
     }
   }
 
@@ -319,17 +327,7 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
           SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
           sql(query).collect().toSeq
         }
-        onCluster {
-          val df = sql(query)
-          val actual = df.collect().toSeq
-          val plan = df.queryExecution.executedPlan
-          assert(collect(plan) { case exec: CometNativeExecutorsExec => exec }.nonEmpty, plan)
-          if (query.toLowerCase.contains("order by")) {
-            assert(actual == expected, s"q$q returned rows in another order or other rows")
-          } else {
-            checkAnswer(df, expected)
-          }
-        }
+        checkClusterReturns(sql(query), expected, query.toLowerCase.contains("order by"))
       } finally {
         teardown.foreach(sql)
       }

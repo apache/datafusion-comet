@@ -20,7 +20,7 @@
 
 mod common;
 
-use comet_native_executors::assembly::{build_plan, build_plan_with_sampler};
+use comet_native_executors::assembly::build_plan;
 use common::*;
 use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
@@ -38,10 +38,29 @@ use datafusion_comet_proto::spark_operator::{
 use prost::Message;
 use std::sync::Arc;
 
+/// Assembles `request`, running each sampling plan in this process.
 async fn assemble(request: QueryRequest) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    tokio::task::spawn_blocking(move || build_plan(request))
+    assemble_counting_samples(request)
         .await
-        .unwrap()
+        .map(|(plan, _)| plan)
+}
+
+/// Assembles `request` like [`assemble`], and also returns how many sampling plans ran.
+async fn assemble_counting_samples(
+    request: QueryRequest,
+) -> datafusion::common::Result<(Arc<dyn ExecutionPlan>, usize)> {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let mut samples = 0;
+        let mut sampler = |plan: Arc<dyn ExecutionPlan>| {
+            samples += 1;
+            runtime.block_on(collect(plan, SessionContext::new().task_ctx()))
+        };
+        let plan = build_plan(request, &mut sampler)?;
+        Ok((plan, samples))
+    })
+    .await
+    .unwrap()
 }
 
 /// Runs `request` and returns its single column, sorted.
@@ -78,32 +97,15 @@ async fn single_partition_exchange_collects_every_row() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn range_exchange_is_read_as_one_partition() {
-    // The driver asks for the exchange's partition count.
+async fn range_exchange_without_column_keys_is_read_as_one_partition() {
+    // The driver asks for the exchange's partition count, but sends no sort key to sample.
     let request = query(vec![
         range_stage(100, 4),
-        reading_stage(0, range_partitioning(4), 4),
+        reading_stage(0, range_partitioning(4, vec![]), 4),
     ]);
     let plan = assemble(request.clone()).await.unwrap();
     assert_eq!(plan.output_partitioning().partition_count(), 1);
     assert_eq!(run(request).await, (0..100).collect::<Vec<_>>());
-}
-
-/// Assembles `request` with a sampler that runs each sampling plan in this process, and returns
-/// the plan and how many sampling plans ran.
-async fn assemble_sampling(request: QueryRequest) -> (Arc<dyn ExecutionPlan>, usize) {
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        let mut samples = 0;
-        let mut sampler = |plan: Arc<dyn ExecutionPlan>| {
-            samples += 1;
-            runtime.block_on(collect(plan, SessionContext::new().task_ctx()))
-        };
-        let plan = build_plan_with_sampler(request, &mut sampler).unwrap();
-        (plan, samples)
-    })
-    .await
-    .unwrap()
 }
 
 /// The exchange a reading stage reads: its second child, after the partition descriptor.
@@ -115,9 +117,9 @@ fn exchange_of(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
 async fn range_exchange_is_range_partitioned_by_a_sample() {
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_on_first_column_descending(4), 4),
+        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
     ]);
-    let (plan, samples) = assemble_sampling(request).await;
+    let (plan, samples) = assemble_counting_samples(request).await.unwrap();
     assert_eq!(samples, 1);
     assert_eq!(plan.output_partitioning().partition_count(), 4);
     let exchange = exchange_of(&plan);
@@ -141,9 +143,9 @@ async fn range_exchange_on_a_float_key_is_read_as_one_partition() {
     producer.output_schema = vec![field(double_type())];
     let request = query(vec![
         producer,
-        reading_stage(0, range_on_first_column_descending(4), 4),
+        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
     ]);
-    let (plan, samples) = assemble_sampling(request).await;
+    let (plan, samples) = assemble_counting_samples(request).await.unwrap();
     assert_eq!(samples, 0);
     assert!(exchange_of(&plan).is::<CoalescePartitionsExec>());
 }

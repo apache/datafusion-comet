@@ -18,20 +18,17 @@
 //! Range exchanges: the split points of a range shuffle, found by sampling the exchange's input
 //! as Spark's `RangePartitioner` does.
 //!
-//! The scheduler runs a sampling job over the stage that feeds a range exchange: a
-//! [`SampleExec`] over each of its partitions, gathered to one partition. It then sorts the
-//! sample by the exchange's sort keys and takes evenly spaced rows as the split points of a
-//! [`RangePartitioning`](datafusion::physical_expr::Partitioning::Range), which Ballista plans as a
-//! range shuffle. Like Spark's, the sampling job runs the producing stage once more.
+//! The scheduler runs a sampling job over the stage that feeds a range exchange, a
+//! [`SampleExec`] over each of its partitions, and reads every partition's sample back. It then
+//! sorts the sample by the exchange's sort keys and takes evenly spaced rows as the split points
+//! of a [`RangePartitioning`](datafusion::physical_expr::Partitioning::Range), which Ballista
+//! plans as a range shuffle. Like Spark's, the sampling job runs the producing stage once more.
 
 use std::fmt;
 use std::sync::Arc;
 
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::compute::{
-    concat_batches, interleave_record_batch, lexsort_to_indices, take_record_batch, SortColumn,
-    SortOptions,
-};
+use datafusion::arrow::compute::{concat_batches, interleave_record_batch, SortOptions};
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::row::{RowConverter, SortField};
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -156,24 +153,30 @@ impl ExecutionPlan for SampleExec {
             while let Some(batch) = input.next().await {
                 let batch = batch?.project(&keys)?;
                 // Where each row of the new reservoir comes from: (0, row) of the reservoir or
-                // (1, row) of the batch.
-                let mut indices: Vec<(usize, usize)> =
-                    (0..reservoir.num_rows()).map(|row| (0, row)).collect();
-                let mut changed = false;
+                // (1, row) of the batch. Built only once the batch changes the reservoir, which
+                // most batches of a large partition don't.
+                let mut indices: Option<Vec<(usize, usize)>> = None;
+                let mut size = reservoir.num_rows();
                 for row in 0..batch.num_rows() {
-                    if indices.len() < capacity {
-                        indices.push((1, row));
-                        changed = true;
+                    let slot = if size < capacity {
+                        size += 1;
+                        size - 1
                     } else {
-                        let slot = rng.below(seen + 1) as usize;
-                        if slot < capacity {
+                        rng.below(seen + 1) as usize
+                    };
+                    if slot < capacity {
+                        let indices = indices.get_or_insert_with(|| {
+                            (0..reservoir.num_rows()).map(|row| (0, row)).collect()
+                        });
+                        if slot == indices.len() {
+                            indices.push((1, row));
+                        } else {
                             indices[slot] = (1, row);
-                            changed = true;
                         }
                     }
                     seen += 1;
                 }
-                if changed {
+                if let Some(indices) = indices {
                     reservoir = interleave_record_batch(&[&reservoir, &batch], &indices)?;
                 }
             }
@@ -226,16 +229,6 @@ pub fn split_points(
     if rows == 0 || partitions <= 1 {
         return Ok(vec![]);
     }
-    let columns: Vec<SortColumn> = batch
-        .columns()
-        .iter()
-        .zip(options)
-        .map(|(values, options)| SortColumn {
-            values: Arc::clone(values),
-            options: Some(*options),
-        })
-        .collect();
-    let sorted = take_record_batch(&batch, &lexsort_to_indices(&columns, None)?)?;
     let converter = RowConverter::new(
         schema
             .fields()
@@ -246,18 +239,22 @@ pub fn split_points(
             })
             .collect(),
     )?;
-    let keys = converter.convert_columns(sorted.columns())?;
+    // The row format orders the keys as `options` say, so it both sorts the sample and tells
+    // equal neighbours apart.
+    let keys = converter.convert_columns(batch.columns())?;
+    let mut order: Vec<usize> = (0..rows).collect();
+    order.sort_unstable_by(|a, b| keys.row(*a).cmp(&keys.row(*b)));
     let mut points = vec![];
     let mut last = None;
     for i in 1..partitions {
-        let index = i * rows / partitions;
+        let index = order[i * rows / partitions];
         let key = keys.row(index);
         // Split points must be strictly ordered.
         if last.is_some_and(|last| key <= keys.row(last)) {
             continue;
         }
         last = Some(index);
-        let values = sorted
+        let values = batch
             .columns()
             .iter()
             .map(|column| ScalarValue::try_from_array(column, index))

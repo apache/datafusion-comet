@@ -64,13 +64,19 @@ async fn connect(location: &str) -> CometResult<FlightClient> {
 
 /// Submits `query`, a serialized `QueryRequest`, to the scheduler at `scheduler_url` and waits
 /// for it to finish. Returns where its result partitions are.
-async fn submit(scheduler_url: &str, query: &[u8]) -> CometResult<ResultEndpoints> {
-    let mut request = QueryRequest::decode(query).map_err(|e| client_error("bad query", e))?;
-    request.comet_version = COMET_VERSION.to_string();
-    request.proto_fingerprint = PROTO_FINGERPRINT.to_string();
+async fn submit(scheduler_url: &str, mut query: Vec<u8>) -> CometResult<ResultEndpoints> {
+    // Stamp the query with this build's version and plan format. A field that appears again
+    // replaces the first, so appending them spares decoding and encoding the whole query.
+    QueryRequest {
+        comet_version: COMET_VERSION.to_string(),
+        proto_fingerprint: PROTO_FINGERPRINT.to_string(),
+        ..Default::default()
+    }
+    .encode(&mut query)
+    .map_err(|e| client_error("bad query", e))?;
     let mut client = connect(scheduler_url).await?;
     let info = client
-        .get_flight_info(FlightDescriptor::new_cmd(request.encode_to_vec()))
+        .get_flight_info(FlightDescriptor::new_cmd(query))
         .await
         .map_err(|e| client_error("the query failed", e))?;
     let endpoints = info
@@ -106,7 +112,7 @@ pub extern "system" fn Java_org_apache_comet_NativeExecutorsClient_submit(
             .try_to_string(env)
             .map_err(|e| client_error("bad scheduler URL", e))?;
         let query = env.convert_byte_array(query)?;
-        let endpoints = get_runtime().block_on(submit(&scheduler_url, &query))?;
+        let endpoints = get_runtime().block_on(submit(&scheduler_url, query))?;
         Ok(env
             .byte_array_from_slice(&endpoints.encode_to_vec())?
             .into_raw())

@@ -197,7 +197,7 @@ async fn runs_a_query_across_a_range_exchange() {
     let cluster = Cluster::start();
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_partitioning(4), 4),
+        reading_stage(0, range_partitioning(4, vec![]), 4),
     ]);
     let partitions = cluster.run(&request).await;
     assert_eq!(partitions.len(), 1);
@@ -214,7 +214,7 @@ async fn range_partitions_a_range_exchange_by_sampled_split_points() {
     let cluster = Cluster::start();
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_on_first_column_descending(4), 4),
+        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
     ]);
     let partitions = cluster.run(&request).await;
     assert_eq!(partitions.len(), 4);

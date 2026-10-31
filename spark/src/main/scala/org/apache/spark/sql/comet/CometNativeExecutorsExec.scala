@@ -46,7 +46,7 @@ import com.google.protobuf.Message
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometRuntimeException, NativeExecutorsClient}
 import org.apache.comet.serde.{ExprOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.Config.ConfigMap
-import org.apache.comet.serde.NativeExecutors.{QueryRequest, ResultEndpoints, Stage, StageInput}
+import org.apache.comet.serde.NativeExecutors.{QueryRequest, ResultEndpoint, ResultEndpoints, Stage, StageInput}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.schema2Proto
 import org.apache.comet.vector.NativeUtil
@@ -83,20 +83,17 @@ case class CometNativeExecutorsExec(
       subqueryResults.collect { case sub: ScalarSubquery => sub })
     val endpoints =
       ResultEndpoints.parseFrom(new NativeExecutorsClient().submit(schedulerUrl, request))
-    val partitions = endpoints.getEndpointsList.asScala.map { endpoint =>
-      (endpoint.getLocation, endpoint.getTicket.toByteArray)
-    }
-    new CometNativeExecutorsRDD(sparkContext, partitions.toSeq, output.length)
+    new CometNativeExecutorsRDD(
+      sparkContext,
+      endpoints.getEndpointsList.asScala.toSeq,
+      output.length)
   }
 
   override def stringArgs: Iterator[Any] =
     Iterator(output, s"${query.length} bytes", schedulerUrl)
 }
 
-private class CometNativeExecutorsPartition(
-    override val index: Int,
-    val location: String,
-    val ticket: Array[Byte])
+private class CometNativeExecutorsPartition(override val index: Int, val endpoint: ResultEndpoint)
     extends Partition
 
 /**
@@ -105,28 +102,30 @@ private class CometNativeExecutorsPartition(
  */
 private class CometNativeExecutorsRDD(
     sc: SparkContext,
-    endpoints: Seq[(String, Array[Byte])],
+    endpoints: Seq[ResultEndpoint],
     numColumns: Int)
     extends RDD[ColumnarBatch](sc, Nil) {
 
   override protected def getPartitions: Array[Partition] =
-    endpoints.zipWithIndex.map { case ((location, ticket), index) =>
-      new CometNativeExecutorsPartition(index, location, ticket): Partition
+    endpoints.zipWithIndex.map { case (endpoint, index) =>
+      new CometNativeExecutorsPartition(index, endpoint): Partition
     }.toArray
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometNativeExecutorsPartition]
     val client = new NativeExecutorsClient()
     val nativeUtil = new NativeUtil()
-    val handle = client.openPartition(partition.location, partition.ticket)
+    val handle =
+      client.openPartition(
+        partition.endpoint.getLocation,
+        partition.endpoint.getTicket.toByteArray)
     val batches = new Iterator[ColumnarBatch] with AutoCloseable {
       private var current: Option[ColumnarBatch] = None
       private var pending: Option[ColumnarBatch] = None
-      private var finished = false
       private var closed = false
 
       override def hasNext: Boolean = {
-        if (pending.isEmpty && !finished) {
+        if (pending.isEmpty && !closed) {
           // The consumer has moved past the batch it last got.
           current.foreach(_.close())
           current = None
@@ -134,7 +133,6 @@ private class CometNativeExecutorsRDD(
             numColumns,
             (arrays, schemas) => client.nextBatch(handle, arrays, schemas))
           if (pending.isEmpty) {
-            finished = true
             close()
           }
         }
@@ -174,7 +172,8 @@ object CometNativeExecutors {
   /**
    * Messages of native plans that call back into the JVM, which a cluster doesn't have. A scalar
    * subquery's `Subquery` is not one of them: the driver runs the subquery and puts its result in
-   * the plan before submitting it.
+   * the plan before submitting it. The native planner could refuse them all instead
+   * (https://github.com/apache/datafusion-comet/issues/7375).
    */
   private val jvmCallbacks = Set("JvmScalarUdf", "ArrowPythonUdf")
 
@@ -252,7 +251,8 @@ object CometNativeExecutors {
 
   /**
    * `query` with each scalar subquery's `Subquery` expression replaced by a literal of its
-   * result. The subqueries must have run.
+   * result. The subqueries must have run. Sending the results alongside the plan would spare
+   * rewriting it (https://github.com/apache/datafusion-comet/issues/7374).
    */
   def withSubqueryResults(query: Array[Byte], subqueries: Seq[ScalarSubquery]): Array[Byte] = {
     if (subqueries.isEmpty) {
@@ -267,55 +267,82 @@ object CometNativeExecutors {
           s"Comet Native Executors cannot pass the result of $sub to the cluster"))
       sub.exprId.id -> expr
     }.toMap
+    val replace: PartialFunction[Message, Message] = {
+      case expr: ExprOuterClass.Expr if expr.hasSubquery =>
+        literals.getOrElse(
+          expr.getSubquery.getId,
+          throw new CometRuntimeException(
+            s"Comet Native Executors found no result for subquery ${expr.getSubquery.getId}"))
+    }
     val request = QueryRequest.parseFrom(query).toBuilder
     (0 until request.getStagesCount).foreach { i =>
-      val stage = request.getStages(i).toBuilder
-      stage.setPlan(replaceSubqueries(stage.getPlan, literals).asInstanceOf[Operator])
-      (0 until stage.getPartitionPlansCount).foreach { p =>
-        val plan = Operator.parseFrom(stage.getPartitionPlans(p))
-        stage.setPartitionPlans(
-          p,
-          ByteString.copyFrom(replaceSubqueries(plan, literals).toByteArray))
+      val stage = request.getStages(i)
+      val plan = transformMessages(stage.getPlan)(replace)
+      // A partition's plan is the stage's with its files added, so it holds a subquery only
+      // when the stage's plan does.
+      if (plan ne stage.getPlan) {
+        val replaced = stage.toBuilder.setPlan(plan.asInstanceOf[Operator])
+        (0 until stage.getPartitionPlansCount).foreach { p =>
+          val partitionPlan = Operator.parseFrom(stage.getPartitionPlans(p))
+          replaced.setPartitionPlans(p, transformMessages(partitionPlan)(replace).toByteString)
+        }
+        request.setStages(i, replaced)
       }
-      request.setStages(i, stage)
     }
     request.build().toByteArray
   }
 
-  private def replaceSubqueries(
-      message: Message,
-      literals: Map[Long, ExprOuterClass.Expr]): Message = message match {
-    case expr: ExprOuterClass.Expr if expr.hasSubquery =>
-      literals.getOrElse(
-        expr.getSubquery.getId,
-        throw new CometRuntimeException(
-          s"Comet Native Executors found no result for subquery ${expr.getSubquery.getId}"))
-    case _ =>
-      val builder = message.toBuilder
-      var changed = false
-      message.getAllFields.asScala.foreach { case (field, value) =>
-        if (field.getJavaType == FieldDescriptor.JavaType.MESSAGE) {
-          if (field.isRepeated) {
-            value.asInstanceOf[java.util.List[Message]].asScala.zipWithIndex.foreach {
-              case (element, index) =>
-                val replaced = replaceSubqueries(element, literals)
-                if (replaced ne element) {
-                  builder.setRepeatedField(field, index, replaced)
-                  changed = true
-                }
-            }
-          } else {
-            val element = value.asInstanceOf[Message]
-            val replaced = replaceSubqueries(element, literals)
-            if (replaced ne element) {
-              builder.setField(field, replaced)
-              changed = true
-            }
+  /**
+   * The messages directly inside `message`, each with how to put a replacement for it in a
+   * builder of `message`.
+   */
+  private def childMessages(
+      message: Message): Iterator[(Message, (Message.Builder, Message) => Unit)] =
+    message.getAllFields.asScala.iterator
+      .filter { case (field, _) => field.getJavaType == FieldDescriptor.JavaType.MESSAGE }
+      .flatMap { case (field, value) =>
+        if (field.isRepeated) {
+          value.asInstanceOf[java.util.List[Message]].asScala.iterator.zipWithIndex.map {
+            case (child, index) =>
+              (
+                child,
+                (builder: Message.Builder, m: Message) => {
+                  builder.setRepeatedField(field, index, m)
+                  ()
+                })
           }
+        } else {
+          Iterator(
+            (
+              value.asInstanceOf[Message],
+              (builder: Message.Builder, m: Message) => {
+                builder.setField(field, m)
+                ()
+              }))
         }
       }
-      if (changed) builder.build() else message
-  }
+
+  /**
+   * `message` with every message inside it that `pf` matches replaced by what `pf` returns. A
+   * message nothing inside changed is returned as is.
+   */
+  private def transformMessages(message: Message)(
+      pf: PartialFunction[Message, Message]): Message =
+    pf.applyOrElse(
+      message,
+      (m: Message) => {
+        var builder: Message.Builder = null
+        childMessages(m).foreach { case (child, set) =>
+          val replaced = transformMessages(child)(pf)
+          if (replaced ne child) {
+            if (builder == null) {
+              builder = m.toBuilder
+            }
+            set(builder, replaced)
+          }
+        }
+        if (builder == null) m else builder.build()
+      })
 
   /** The configs a Spark task would pass to native code with a plan. */
   private def nativeConf(): java.util.Map[String, String] = {
@@ -325,6 +352,11 @@ object CometNativeExecutors {
     conf.put(CometConf.COMET_BATCH_SIZE.key, CometConf.COMET_BATCH_SIZE.get().toString)
     conf
   }
+
+  private val singlePartition = PartitioningOuterClass.Partitioning
+    .newBuilder()
+    .setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder())
+    .build()
 
   private class StageGraphBuilder(query: SparkPlan) {
     val stages: ArrayBuffer[Stage] = ArrayBuffer.empty
@@ -343,17 +375,8 @@ object CometNativeExecutors {
       }
       val inputs = inputsOf(block).map {
         case exchange: CometShuffleExchangeExec =>
-          StageInput
-            .newBuilder()
-            .setProducer(stageOf(exchange.child))
-            .setPartitioning(partitioningOf(exchange))
-            .build()
-        case broadcast =>
-          StageInput
-            .newBuilder()
-            .setProducer(stageOf(broadcast.children.head))
-            .setBroadcast(true)
-            .build()
+          stageInput(exchange.child)(_.setPartitioning(partitioningOf(exchange)))
+        case broadcast => stageInput(broadcast.children.head)(_.setBroadcast(true))
       }
       val blockPlan = Operator.parseFrom(block.serializedPlanOpt.plan.get)
 
@@ -373,27 +396,27 @@ object CometNativeExecutors {
       val numPartitions =
         if (partitionPlans.nonEmpty) partitionPlans.length
         else block.outputPartitioning.numPartitions
-      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions, block.output)
+      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions)
     }
+
+    /** An input of a stage that reads the stage running `producer`, as `configure` says. */
+    private def stageInput(producer: SparkPlan)(
+        configure: StageInput.Builder => StageInput.Builder): StageInput =
+      configure(StageInput.newBuilder().setProducer(stageOf(producer))).build()
 
     /**
      * A stage for `take` that reads its child's whole output as one partition and keeps the first
-     * rows in order, as Comet's final top-K plan does after its shuffle to one partition.
+     * rows in order, as Comet's final top-K plan does after its shuffle to one partition. A top-K
+     * of each partition first would send fewer rows through the exchange
+     * (https://github.com/apache/datafusion-comet/issues/7365).
      */
     private def takeOrderedStage(take: CometTakeOrderedAndProjectExec): Int = {
-      val input = StageInput
-        .newBuilder()
-        .setProducer(stageOf(take.child))
-        .setPartitioning(
-          PartitioningOuterClass.Partitioning
-            .newBuilder()
-            .setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder()))
-        .build()
+      val input = stageInput(take.child)(_.setPartitioning(singlePartition))
       // More than one input partition, so that the plan sorts across all of them.
       val blockPlan = take
         .finalNativePlan(inputPartitions = 2)
         .getOrElse(fail(take, "its top-K plan cannot run natively"))
-      addStage(take, blockPlan, Seq(input), Seq.empty, 1, take.output)
+      addStage(take, blockPlan, Seq(input), Seq.empty, 1)
     }
 
     private def addStage(
@@ -401,15 +424,14 @@ object CometNativeExecutors {
         blockPlan: Operator,
         inputs: Seq[StageInput],
         partitionPlans: Seq[ByteString],
-        numPartitions: Int,
-        output: Seq[Attribute]): Int = {
+        numPartitions: Int): Int = {
       findJvmCallback(blockPlan).foreach { name =>
         fail(plan, s"its native plan calls back into the JVM ($name)")
       }
       // Declared as Comet's shuffle writer declares its input, since the cluster casts the
       // block's output to it as that writer does.
-      val outputSchema =
-        schema2Proto(output.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
+      val outputSchema = schema2Proto(
+        plan.output.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
       stages += Stage
         .newBuilder()
         .setPlan(blockPlan)
@@ -450,7 +472,7 @@ object CometNativeExecutors {
 
     private def partitioningOf(
         exchange: CometShuffleExchangeExec): PartitioningOuterClass.Partitioning = {
-      val partitioning = PartitioningOuterClass.Partitioning.newBuilder()
+      def partitioning = PartitioningOuterClass.Partitioning.newBuilder()
       exchange.outputPartitioning match {
         case HashPartitioning(expressions, numPartitions) =>
           val keys = expressions.map { key =>
@@ -458,11 +480,13 @@ object CometNativeExecutors {
               .exprToProto(key, exchange.child.output)
               .getOrElse(fail(exchange, s"its partitioning key $key cannot run natively"))
           }
-          partitioning.setHashPartition(
-            PartitioningOuterClass.HashPartition
-              .newBuilder()
-              .addAllHashExpression(keys.asJava)
-              .setNumPartitions(numPartitions))
+          partitioning
+            .setHashPartition(
+              PartitioningOuterClass.HashPartition
+                .newBuilder()
+                .addAllHashExpression(keys.asJava)
+                .setNumPartitions(numPartitions))
+            .build()
         case RangePartitioning(ordering, numPartitions) =>
           // Without bounds: the cluster decides how to range-partition.
           val sortOrders = ordering.map { order =>
@@ -470,17 +494,17 @@ object CometNativeExecutors {
               .exprToProto(order, exchange.child.output)
               .getOrElse(fail(exchange, s"its sort key $order cannot run natively"))
           }
-          partitioning.setRangePartition(
-            PartitioningOuterClass.RangePartition
-              .newBuilder()
-              .addAllSortOrders(sortOrders.asJava)
-              .setNumPartitions(numPartitions))
-        case SinglePartition =>
-          partitioning.setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder())
+          partitioning
+            .setRangePartition(
+              PartitioningOuterClass.RangePartition
+                .newBuilder()
+                .addAllSortOrders(sortOrders.asJava)
+                .setNumPartitions(numPartitions))
+            .build()
+        case SinglePartition => singlePartition
         case other =>
           fail(exchange, s"Comet Native Executors do not support $other exchanges yet")
       }
-      partitioning.build()
     }
 
     private def fail(node: SparkPlan, reason: String): Nothing = {
@@ -498,22 +522,11 @@ object CometNativeExecutors {
     }
   }
 
+  /** `message` and every message inside it, depth first. */
+  private def messagesIn(message: Message): Iterator[Message] =
+    Iterator(message) ++ childMessages(message).flatMap { case (child, _) => messagesIn(child) }
+
   /** The first message in `message` that calls back into the JVM, if any. */
-  private def findJvmCallback(message: Message): Option[String] = {
-    val name = message.getDescriptorForType.getName
-    if (jvmCallbacks.contains(name)) {
-      Some(name)
-    } else {
-      val found = message.getAllFields.asScala.iterator.flatMap { case (field, value) =>
-        if (field.getJavaType != FieldDescriptor.JavaType.MESSAGE) {
-          Iterator.empty
-        } else if (field.isRepeated) {
-          value.asInstanceOf[java.util.List[Message]].asScala.iterator.flatMap(findJvmCallback)
-        } else {
-          findJvmCallback(value.asInstanceOf[Message]).iterator
-        }
-      }
-      if (found.hasNext) Some(found.next()) else None
-    }
-  }
+  private def findJvmCallback(message: Message): Option[String] =
+    messagesIn(message).map(_.getDescriptorForType.getName).find(jvmCallbacks.contains)
 }

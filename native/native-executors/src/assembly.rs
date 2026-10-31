@@ -25,7 +25,7 @@ use comet::execution::native_executors::{
 };
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::SortOptions;
-use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::{plan_datafusion_err, plan_err, Result};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, RangePartitioning};
@@ -63,34 +63,17 @@ pub fn check_version(request: &QueryRequest) -> Result<()> {
 }
 
 /// Builds the physical plan of `request`: a [`CometFragmentExec`] per stage, with a node that
-/// Ballista's planner turns into a stage boundary on each edge. The root is the last stage.
+/// Ballista's planner turns into a stage boundary on each edge. The root is the last stage. Each
+/// range exchange is range-partitioned by split points found by sampling its input with
+/// `sampler`, as Spark does.
 ///
 /// Each stage's block is planned with Comet's planner to check it before anything runs. That can
 /// block, so don't call this on an async runtime's thread. A stage that several stages read runs
 /// once for each of them, since Ballista's planner doesn't share a stage between consumers yet.
-///
-/// A range exchange is read as one partition, so the stage that sorts it runs in a single task.
-/// [`build_plan_with_sampler`] range-partitions it instead.
-pub fn build_plan(request: QueryRequest) -> Result<Arc<dyn ExecutionPlan>> {
-    build(request, None)
-}
-
-/// Builds the physical plan of `request` like [`build_plan`], but range-partitions each range
-/// exchange by split points found by sampling its input with `sampler`, as Spark does.
-pub fn build_plan_with_sampler(
-    request: QueryRequest,
-    sampler: &mut Sampler,
-) -> Result<Arc<dyn ExecutionPlan>> {
-    build(request, Some(sampler))
-}
-
-fn build(
-    request: QueryRequest,
-    mut sampler: Option<&mut Sampler>,
-) -> Result<Arc<dyn ExecutionPlan>> {
+pub fn build_plan(request: QueryRequest, sampler: &mut Sampler) -> Result<Arc<dyn ExecutionPlan>> {
     let mut stages: Vec<Arc<dyn ExecutionPlan>> = Vec::with_capacity(request.stages.len());
     for (index, stage) in request.stages.into_iter().enumerate() {
-        let fragment = build_stage(stage, &stages, &request.conf, sampler.as_deref_mut())
+        let fragment = build_stage(stage, &stages, &request.conf, sampler)
             .map_err(|e| e.context(format!("Stage {index} of the query")))?;
         stages.push(fragment);
     }
@@ -103,13 +86,12 @@ fn build_stage(
     stage: Stage,
     producers: &[Arc<dyn ExecutionPlan>],
     conf: &HashMap<String, String>,
-    mut sampler: Option<&mut Sampler>,
+    sampler: &mut Sampler,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let block = stage
+    let plan = stage
         .plan
         .as_ref()
-        .ok_or_else(|| plan_datafusion_err!("The stage has no plan"))?
-        .encode_to_vec();
+        .ok_or_else(|| plan_datafusion_err!("The stage has no plan"))?;
     let mut inputs = Vec::with_capacity(stage.inputs.len());
     for input in &stage.inputs {
         let producer = producers.get(input.producer as usize).ok_or_else(|| {
@@ -118,21 +100,21 @@ fn build_stage(
                 input.producer
             )
         })?;
-        inputs.push(exchange(
-            input,
-            Arc::clone(producer),
-            sampler.as_deref_mut(),
-        )?);
+        inputs.push(exchange(input, Arc::clone(producer), sampler)?);
     }
-    // A stage that reads exchanges has as many partitions as they deliver, which
-    // `CometFragmentExec` checks they agree on.
-    let num_partitions = stage
+    // A stage that reads exchanges has as many partitions as they deliver, and they must agree.
+    let mut partitioned = stage
         .inputs
         .iter()
         .zip(&inputs)
-        .find(|(input, _)| !input.broadcast)
-        .map(|(_, exchange)| exchange.output_partitioning().partition_count())
-        .unwrap_or(stage.num_partitions as usize);
+        .filter(|(input, _)| !input.broadcast)
+        .map(|(_, exchange)| exchange.output_partitioning().partition_count());
+    let num_partitions = partitioned.next().unwrap_or(stage.num_partitions as usize);
+    if let Some(other) = partitioned.find(|count| *count != num_partitions) {
+        return plan_err!(
+            "The stage reads exchanges of {num_partitions} and {other} partitions, which must agree"
+        );
+    }
     if num_partitions == 0 {
         return plan_err!("The stage has no partitions");
     }
@@ -142,8 +124,14 @@ fn build_stage(
             stage.partition_plans.len()
         );
     }
-    // A stage that reads files carries its scans' schemas and options only in each partition's
-    // copy of the block, so check one of those. Checking reads none of its files.
+    // A stage that reads files runs each partition's own copy of the block, so the block itself
+    // is only needed for a stage that doesn't. Checking one of those copies reads none of its
+    // files.
+    let block = if stage.partition_plans.is_empty() {
+        plan.encode_to_vec()
+    } else {
+        vec![]
+    };
     let planned = block_schema(stage.partition_plans.first().unwrap_or(&block), conf)?;
     if planned.fields().len() != stage.output_schema.len() {
         return plan_err!(
@@ -159,12 +147,7 @@ fn build_stage(
     )?];
     children.extend(inputs);
     let fragment = Fragment {
-        // A stage that reads files runs each partition's own copy of the block instead.
-        block: if stage.partition_plans.is_empty() {
-            block
-        } else {
-            vec![]
-        },
+        block,
         broadcast: stage.inputs.iter().map(|input| input.broadcast).collect(),
         output_schema: stage.output_schema,
         conf: conf.clone(),
@@ -180,14 +163,15 @@ fn build_stage(
 ///
 /// A hash exchange partitions with DataFusion's hash function, not Spark's Murmur3. That is
 /// consistent within a query, which is all joins, aggregates and windows need, but a plan that
-/// relies on Spark's own placement of rows, such as a join with a bucketed table, would be wrong.
+/// relies on Spark's own placement of rows, such as a join with a bucketed table, would be wrong
+/// (https://github.com/apache/datafusion-comet/issues/7368).
 fn exchange(
     input: &StageInput,
     producer: Arc<dyn ExecutionPlan>,
-    sampler: Option<&mut Sampler>,
+    sampler: &mut Sampler,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     if input.broadcast {
-        return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
+        return Ok(one_partition(producer));
     }
     let partitioning = input
         .partitioning
@@ -205,8 +189,7 @@ fn exchange(
                             "Hash partitioning keys must be columns of the stage's input"
                         )
                     })?;
-                    Ok(Arc::new(Column::new(schema.field(index).name(), index))
-                        as Arc<dyn PhysicalExpr>)
+                    Ok(column(&schema, index))
                 })
                 .collect::<Result<Vec<_>>>()?;
             Ok(Arc::new(RepartitionExec::try_new(
@@ -214,15 +197,25 @@ fn exchange(
                 Partitioning::Hash(keys, hash.num_partitions as usize),
             )?))
         }
-        Some(PartitioningStruct::RangePartition(range)) => match sampler {
-            Some(sampler) => range_exchange(range, producer, sampler),
-            None => Ok(Arc::new(CoalescePartitionsExec::new(producer))),
-        },
-        Some(PartitioningStruct::SinglePartition(_)) => {
-            Ok(Arc::new(CoalescePartitionsExec::new(producer)))
+        Some(PartitioningStruct::RangePartition(range)) => {
+            Ok(match range_exchange(range, &producer, sampler)? {
+                Some(partitioning) => Arc::new(RepartitionExec::try_new(producer, partitioning)?),
+                // Read as one partition, the stage sorts correctly in a single task.
+                None => one_partition(producer),
+            })
         }
+        Some(PartitioningStruct::SinglePartition(_)) => Ok(one_partition(producer)),
         other => plan_err!("Comet Native Executors don't support this exchange yet: {other:?}"),
     }
+}
+
+/// `producer`'s output gathered into one partition.
+fn one_partition(producer: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    Arc::new(CoalescePartitionsExec::new(producer))
+}
+
+fn column(schema: &SchemaRef, index: usize) -> Arc<dyn PhysicalExpr> {
+    Arc::new(Column::new(schema.field(index).name(), index))
 }
 
 /// The index of the column `expr` reads, if it reads a column of an input with `num_fields`.
@@ -238,7 +231,8 @@ fn bound_column(expr: &Expr, num_fields: usize) -> Option<usize> {
 /// Whether Arrow orders values of `data_type` as Spark does, so that a range shuffle, which
 /// compares raw values, puts rows in the ranges that Comet's sort orders them by. Comet's sort
 /// normalizes floats first (a NaN of either sign sorts last), so a float key, or a nested one
-/// that may hold floats, can't be range-partitioned this way.
+/// that may hold floats, can't be range-partitioned this way
+/// (https://github.com/apache/datafusion-comet/issues/7366).
 fn orders_like_spark(data_type: &DataType) -> bool {
     data_type.is_integer()
         || matches!(
@@ -260,18 +254,25 @@ fn orders_like_spark(data_type: &DataType) -> bool {
         )
 }
 
-/// A range exchange as a range shuffle (`RepartitionExec` with a range partitioning), with
-/// split points found by sampling `producer`. It falls back to reading the exchange as one
-/// partition, which sorts correctly in a single task, when a sort key is not a column, or of a
-/// type a range shuffle doesn't order as Spark does, or the sample yields no split points.
+/// The range partitioning of a range exchange over `producer`, with split points found by
+/// sampling it. `None` when the exchange should be read as one partition instead: when a sort
+/// key is not a column, or of a type a range shuffle doesn't order as Spark does, or the sample
+/// yields no split points.
+///
+/// The sampling job runs the stages below the exchange once more
+/// (https://github.com/apache/datafusion-comet/issues/7367).
 fn range_exchange(
     range: &datafusion_comet_proto::spark_partitioning::RangePartition,
-    producer: Arc<dyn ExecutionPlan>,
+    producer: &Arc<dyn ExecutionPlan>,
     sampler: &mut Sampler,
-) -> Result<Arc<dyn ExecutionPlan>> {
+) -> Result<Option<Partitioning>> {
+    let partitions = range.num_partitions.max(1) as usize;
+    if partitions == 1 {
+        return Ok(None);
+    }
     let schema = producer.schema();
     let mut keys = Vec::with_capacity(range.sort_orders.len());
-    let mut options = Vec::with_capacity(range.sort_orders.len());
+    let mut sort_exprs = Vec::with_capacity(range.sort_orders.len());
     for order in &range.sort_orders {
         let key = match order.expr_struct.as_ref() {
             Some(ExprStruct::SortOrder(order)) => order.child.as_deref().and_then(|child| {
@@ -281,51 +282,46 @@ fn range_exchange(
         };
         let Some((index, order)) = key else {
             warn!("A range exchange sorts by an expression that is not a column, so it runs in one task");
-            return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
+            return Ok(None);
         };
         let data_type = schema.field(index).data_type();
         if !orders_like_spark(data_type) {
             warn!("A range exchange sorts by a {data_type} column, so it runs in one task");
-            return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
+            return Ok(None);
         }
         keys.push(index);
-        options.push(SortOptions {
-            descending: order.direction == SortDirection::Descending as i32,
-            nulls_first: order.null_ordering == NullOrdering::NullsFirst as i32,
-        });
+        sort_exprs.push(PhysicalSortExpr::new(
+            column(&schema, index),
+            SortOptions {
+                descending: order.direction == SortDirection::Descending as i32,
+                nulls_first: order.null_ordering == NullOrdering::NullsFirst as i32,
+            },
+        ));
     }
-    let partitions = range.num_partitions.max(1) as usize;
-    if keys.is_empty() || partitions == 1 {
-        return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
-    }
+    let options: Vec<SortOptions> = sort_exprs.iter().map(|expr| expr.options).collect();
+    let Some(ordering) = LexOrdering::new(sort_exprs) else {
+        return Ok(None);
+    };
 
     let per_partition =
         sample_size_per_partition(partitions, producer.output_partitioning().partition_count());
     let sample = Arc::new(SampleExec::try_new(
-        Arc::clone(&producer),
-        keys.clone(),
+        Arc::clone(producer),
+        keys,
         per_partition,
     )?);
     let sample_schema = sample.schema();
     let samples = sampler(sample)?;
     let points = split_points(&sample_schema, &samples, &options, partitions)?;
     if points.is_empty() {
-        return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
+        return Ok(None);
     }
     info!(
         "Range-partitioning an exchange into {} partitions by a sample of {} rows",
         points.len() + 1,
         samples.iter().map(RecordBatch::num_rows).sum::<usize>()
     );
-    let ordering = LexOrdering::new(keys.iter().zip(&options).map(|(index, options)| {
-        PhysicalSortExpr::new(
-            Arc::new(Column::new(schema.field(*index).name(), *index)),
-            *options,
-        )
-    }))
-    .ok_or_else(|| plan_datafusion_err!("A range exchange has no sort keys"))?;
-    Ok(Arc::new(RepartitionExec::try_new(
-        producer,
-        Partitioning::Range(RangePartitioning::try_new(ordering, points)?),
-    )?))
+    Ok(Some(Partitioning::Range(RangePartitioning::try_new(
+        ordering, points,
+    )?)))
 }

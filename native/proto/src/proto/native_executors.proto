@@ -72,6 +72,13 @@ message Fragment {
   map<string, string> conf = 4;
 }
 
+// How a scheduler sends the sampling operator of a range exchange to its executors: a
+// reservoir sample of up to `per_partition` rows of each partition, keeping the columns `keys`.
+message Sample {
+  uint64 per_partition = 1;
+  repeated uint64 keys = 2;
+}
+
 message StageInput {
   // Index into QueryRequest.stages of the stage producing this input.
   uint32 producer = 1;

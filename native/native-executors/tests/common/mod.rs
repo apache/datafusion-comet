@@ -146,32 +146,26 @@ pub fn single_partition() -> Partitioning {
     }
 }
 
-/// A range exchange as a driver sends it: its sort keys don't matter here, and it has no bounds.
-pub fn range_partitioning(num_partitions: i32) -> Partitioning {
+/// A range exchange as a driver sends it, with no bounds: sorting by `sort_orders`.
+pub fn range_partitioning(num_partitions: i32, sort_orders: Vec<Expr>) -> Partitioning {
     Partitioning {
         partitioning_struct: Some(PartitioningStruct::RangePartition(RangePartition {
+            sort_orders,
             num_partitions,
             ..Default::default()
         })),
     }
 }
 
-/// A range exchange as a driver sends it, sorting by the first column, descending.
-pub fn range_on_first_column_descending(num_partitions: i32) -> Partitioning {
-    let order = Expr {
+/// The first column, descending, as a range exchange's sort key.
+pub fn first_column_descending() -> Expr {
+    Expr {
         expr_struct: Some(ExprStruct::SortOrder(Box::new(SortOrder {
             child: Some(Box::new(bound(0, long_type()))),
             direction: SortDirection::Descending as i32,
             null_ordering: NullOrdering::NullsLast as i32,
         }))),
         ..Default::default()
-    };
-    Partitioning {
-        partitioning_struct: Some(PartitioningStruct::RangePartition(RangePartition {
-            sort_orders: vec![order],
-            num_partitions,
-            ..Default::default()
-        })),
     }
 }
 
