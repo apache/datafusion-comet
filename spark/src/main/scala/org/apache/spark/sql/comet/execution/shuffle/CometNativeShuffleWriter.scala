@@ -95,7 +95,7 @@ class CometNativeShuffleWriter[K, V](
 
   override def write(inputs: Iterator[Product2[K, V]]): Unit = {
     try {
-      writeInternal(inputs)
+      spec.sqlConf.withConf(writeInternal(inputs))
     } catch {
       case failure: Throwable =>
         remoteDestination.foreach { destination =>

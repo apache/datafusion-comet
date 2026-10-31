@@ -95,7 +95,7 @@ under the License.
          release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
     <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <guava.version>33.2.1-jre</guava.version>
+    <guava.version>33.7.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided

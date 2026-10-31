@@ -35,6 +35,8 @@ permissions:
 jobs:
   miri:
     name: Miri (${{ matrix.suite }})
+    # The nightly runs upstream only. A fork can still run it by dispatch.
+    if: github.event_name != 'schedule' || github.repository == 'apache/datafusion-comet'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false

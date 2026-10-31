@@ -730,6 +730,17 @@ private[python] object CometArrowPythonRunnerBase {
       allocator: BufferAllocator): Unit = {
     val sourceRoot =
       new VectorSchemaRoot(sourceVectors.map(_.getField).asJava, sourceVectors.asJava, numRows)
+    // A slice of a native array reaches the JVM with offsets that start past zero, and the bytes
+    // before the first of them would be written with the batch. The slice this makes holds its
+    // own references, so it is closed here and the source root still is not.
+    Utils.withRebasedOffsets(sourceRoot)(serializeRoot(writeChannel, _, numRows, allocator))
+  }
+
+  private def serializeRoot(
+      writeChannel: WriteChannel,
+      sourceRoot: VectorSchemaRoot,
+      numRows: Int,
+      allocator: BufferAllocator): Unit = {
     val sourceBatch = new VectorUnloader(sourceRoot).getRecordBatch
     try {
       val validityBytes = (numRows.toLong + 7L) / 8L
