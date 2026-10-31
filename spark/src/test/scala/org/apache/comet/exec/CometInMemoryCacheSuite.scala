@@ -3755,11 +3755,12 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("stacked native windows over a sorted cache") {
-    // Spark plans no sort between two windows that the cache's order satisfies, so the upper
-    // window's input, which declares only the lower window's order, gets the rest declared next
-    // to it (#7223). Alias a of sort key k shares its order. One partition, so no exchange
-    // separates the windows.
+  test("a native window declares its order next to the order its input declares") {
+    // Spark plans no sort above an operator that keeps the cache's order, so a window's input may
+    // declare only the order that operator needed: an upper window's input the lower window's,
+    // and an outer join's output its streamed side's. The window's order is declared next to it
+    // (#7223). Alias a of sort key k shares its order. One partition, so no exchange comes in
+    // between.
     val ids = 0L until 24L
     val key = (id: Long) => if (id % 4 == 0) None else Some(id % 3)
     val nullable = (k: Option[Long]) => k.map(Long.box).orNull
@@ -3802,6 +3803,18 @@ class CometInMemoryCacheSuite extends CometTestBase {
             Row(nullable(k), nullable(k), id, keySums(k) * keyCounts(k))
           },
           Seq(Seq("1 Ascending NullsFirst"), Seq("0 Ascending NullsFirst")))
+        // The residual condition leaves rows of key 0 unmatched among matched ones, so the key
+        // stays together only if the join keeps its unmatched probe rows in place.
+        val one = spark.range(1).toDF("j").hint("broadcast")
+        checkWindows(
+          cached
+            .join(one, col("k") === col("j") && col("v") % 2 === 0, "left_outer")
+            .selectExpr("k", "a", "v", "sum(v) OVER (PARTITION BY a) AS s"),
+          ids.map { id =>
+            val k = key(id)
+            Row(nullable(k), nullable(k), id, keySums(k))
+          },
+          Seq(Seq("1 Ascending NullsFirst")))
       } finally {
         spark.catalog.clearCache()
       }
@@ -3810,73 +3823,40 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
   test("a window over a cache sorted by a collated string key stays in Spark") {
     assume(isSpark40Plus, "collated string types require Spark 4.0+")
-    // The native side would declare a collated key in raw byte order, not Spark's collation
-    // order, so the window falls back.
+    // The native window compares keys byte by byte, so it would split the UTF8_LCASE partition
+    // of '0a' and '0A' and rank them apart.
+    val key = (v: Long) => s"${v % 4}${if (v % 8 < 4) "a" else "A"}"
     withConversions(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2") {
       try {
-        val cached = spark
+        val source = spark
           .range(200)
           .selectExpr(
             "CAST(id % 4 AS STRING) || CASE WHEN id % 8 < 4 THEN 'a' ELSE 'A' END " +
               "COLLATE UTF8_LCASE AS k",
+            "id % 2 AS n",
             "id AS v")
-          .repartition(2, col("k"))
-          .sortWithinPartitions("k", "v")
-          .cache()
-        cached.count()
+        val byKey = source.repartition(2, col("k")).sortWithinPartitions("k", "v").cache()
+        val byGroup = source.repartition(2, col("n")).sortWithinPartitions("n", "k").cache()
+        byKey.count()
+        byGroup.count()
 
-        val df = cached.selectExpr("k", "v", "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r")
-        // UTF8_LCASE puts 'a' and 'A' in one partition, so each of the four keys holds 50 rows.
-        val rows = (0L until 200L).map { v =>
-          Row(s"${v % 4}${if (v % 8 < 4) "a" else "A"}", v, (v / 4 + 1).toInt)
+        Seq(
+          // Each of the four keys holds 50 rows.
+          byKey.selectExpr("k", "v", "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r") ->
+            ((v: Long) => Row(key(v), v, (v / 4 + 1).toInt)),
+          // Each group holds two keys, '0' and '2' or '1' and '3'.
+          byGroup.selectExpr("n", "k", "dense_rank() OVER (PARTITION BY n ORDER BY k) AS r") ->
+            ((v: Long) => Row(v % 2, key(v), (v % 4 / 2 + 1).toInt))).foreach { case (df, row) =>
+          QueryTest.sameRows((0L until 200L).map(row), df.collect().toSeq).foreach(fail(_))
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case w: CometWindowExec => w }.isEmpty, plan)
+          val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
+          assert(reasons.exists(_.startsWith("Window: non-default string collation")), reasons)
         }
-        QueryTest.sameRows(rows, df.collect().toSeq).foreach(fail(_))
-        val plan = df.queryExecution.executedPlan
-        assert(collect(plan) { case w: CometWindowExec => w }.isEmpty, plan)
-        val reasons = new ExtendedExplainInfo().getFallbackReasons(plan)
-        assert(reasons.contains(CometWindowExec.inexpressibleInputOrderReason), reasons)
       } finally {
         spark.catalog.clearCache()
-      }
-    }
-  }
-
-  test("a window over a cache whose order cannot be checked stays in Spark") {
-    // The filter keeps the serde from seeing that the outer join declared its order, so the
-    // window, reading that join's cache from the JVM, cannot check it. Declaring nothing would
-    // fail the native window.
-    withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "2",
-      CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true",
-      CometConf.COMET_CONVERT_FROM_IN_MEMORY_CACHE_ENABLED.key -> "false") {
-      withParquetTable((0 until 2000).map(i => ((i % 40) * 1000, i)), "big") {
-        withParquetTable((0 until 40 by 2).map(m => (m * 1000, m)), "small") {
-          withTempView("cached", "joined") {
-            try {
-              spark
-                .table("big")
-                .toDF("k", "v")
-                .repartition(2, $"k")
-                .sortWithinPartitions("k")
-                .cache()
-                .createOrReplaceTempView("cached")
-              spark.table("cached").count()
-              sql("SELECT /*+ BROADCAST(b) */ a.k, a.v, b._2 AS w FROM " +
-                "(SELECT * FROM cached WHERE v >= 0) a LEFT JOIN small b ON a.k = b._1")
-                .cache()
-                .createOrReplaceTempView("joined")
-              spark.table("joined").count()
-              checkSparkAnswerAndFallbackReason(
-                sql("SELECT k, v, sum(v) OVER (PARTITION BY k) AS s FROM joined"),
-                CometWindowExec.uncheckedInputOrderReason)
-            } finally {
-              spark.catalog.clearCache()
-            }
-          }
-        }
       }
     }
   }

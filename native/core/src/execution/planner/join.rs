@@ -465,18 +465,21 @@ impl PhysicalPlanner {
                 .is_some_and(|config| config.file_groups.len() == 1);
         }
         // DataFusion reports every right hash join as keeping its probe order, but a right outer
-        // join keeps it only when the probe declares one, and no input on this path declares an
-        // order. An inner join emits its matches probe row by probe row, and a right semi, anti or
-        // mark join builds its probe indices in ascending order, so none of them depends on a
-        // declaration. Any other join type keeps no probe order at all.
+        // join keeps its unmatched probe rows in place only when the probe declares an order, as
+        // the planner does for the join's streamed side. An inner join emits its matches probe
+        // row by probe row, and a right semi, anti or mark join builds its probe indices in
+        // ascending order, so none of them depends on a declaration. Any other join type keeps no
+        // probe order at all.
         if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-            if !matches!(
-                join.join_type(),
+            let keeps_probe_order = match join.join_type() {
                 DFJoinType::Inner
-                    | DFJoinType::RightSemi
-                    | DFJoinType::RightAnti
-                    | DFJoinType::RightMark
-            ) {
+                | DFJoinType::RightSemi
+                | DFJoinType::RightAnti
+                | DFJoinType::RightMark => true,
+                DFJoinType::Right => join.right().output_ordering().is_some(),
+                _ => false,
+            };
+            if !keeps_probe_order {
                 return false;
             }
         }

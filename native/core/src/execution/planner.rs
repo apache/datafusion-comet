@@ -4101,8 +4101,10 @@ mod tests {
                 "col_0@0 ASC",
                 probe.properties().output_ordering().unwrap().to_string()
             );
-            // The join keeps the order in its own output, so the operators above it see it too.
+            // The join keeps the order in its own output, so the operators above it see it too,
+            // and an order declared above it holds, such as a window's for an alias of the key.
             assert!(planned.native_plan.properties().output_ordering().is_some());
+            assert!(PhysicalPlanner::keeps_source_order(&planned.native_plan));
         }
     }
 
