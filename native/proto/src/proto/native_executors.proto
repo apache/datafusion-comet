@@ -23,6 +23,7 @@ syntax = "proto3";
 
 package spark.spark_native_executors;
 
+import "expr.proto";
 import "operator.proto";
 import "partitioning.proto";
 
@@ -58,6 +59,11 @@ message Stage {
   // leaves the stage, as a Spark task's shuffle writer does, because a hash exchange places
   // rows by the types of their values too.
   repeated spark.spark_operator.SparkStructField output_schema = 5;
+  // For a stage that reads a range exchange, the order its block sorts each partition by, as
+  // SortOrder expressions over the block's output. Rather than range-partition the exchange,
+  // which needs bounds Spark would sample for, the cluster reads the producer's partitions as
+  // they are, sorts each, and merges them in this order.
+  repeated spark.spark_expression.Expr output_ordering = 6;
 }
 
 // How a scheduler sends a stage to its executors, inside the task plans Ballista ships. The
@@ -70,13 +76,6 @@ message Fragment {
   // Whether every partition reads all of each input, one entry per input.
   repeated bool broadcast = 3;
   map<string, string> conf = 4;
-}
-
-// How a scheduler sends the sampling operator of a range exchange to its executors: a
-// reservoir sample of up to `per_partition` rows of each partition, keeping the columns `keys`.
-message Sample {
-  uint64 per_partition = 1;
-  repeated uint64 keys = 2;
 }
 
 message StageInput {

@@ -30,7 +30,7 @@ use datafusion_comet_proto::spark_expression::{
 };
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, Operator, RangeScan, Scan, SparkStructField,
+    operator::OpStruct, Operator, RangeScan, Scan, Sort, SparkStructField,
 };
 use datafusion_comet_proto::spark_partitioning::{
     partitioning::PartitioningStruct, HashPartition, Partitioning, RangePartition, SinglePartition,
@@ -131,6 +131,43 @@ pub fn reading_stage(producer: u32, partitioning: Partitioning, num_partitions: 
     }
 }
 
+/// A stage that sorts what stage `producer` sends it through an exchange with `partitioning`, by
+/// `order`, of a column of type `data_type`, and declares that order, as a driver does for a
+/// stage that reads a range exchange.
+pub fn sorting_stage(
+    producer: u32,
+    partitioning: Partitioning,
+    order: Expr,
+    data_type: spark_expression::DataType,
+) -> Stage {
+    let scan = Operator {
+        op_struct: Some(OpStruct::Scan(Scan {
+            fields: vec![data_type.clone()],
+            source: "test".to_string(),
+        })),
+        ..Default::default()
+    };
+    Stage {
+        plan: Some(Operator {
+            children: vec![scan],
+            op_struct: Some(OpStruct::Sort(Sort {
+                sort_orders: vec![order.clone()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }),
+        inputs: vec![StageInput {
+            producer,
+            partitioning: Some(partitioning),
+            broadcast: false,
+        }],
+        num_partitions: 1,
+        output_schema: vec![field(data_type)],
+        output_ordering: vec![order],
+        ..Default::default()
+    }
+}
+
 pub fn hash_on_first_column(num_partitions: i32) -> Partitioning {
     Partitioning {
         partitioning_struct: Some(PartitioningStruct::HashPartition(HashPartition {
@@ -157,11 +194,11 @@ pub fn range_partitioning(num_partitions: i32, sort_orders: Vec<Expr>) -> Partit
     }
 }
 
-/// The first column, descending, as a range exchange's sort key.
-pub fn first_column_descending() -> Expr {
+/// The first column, of type `data_type`, descending, as a sort key.
+pub fn first_column_descending(data_type: spark_expression::DataType) -> Expr {
     Expr {
         expr_struct: Some(ExprStruct::SortOrder(Box::new(SortOrder {
-            child: Some(Box::new(bound(0, long_type()))),
+            child: Some(Box::new(bound(0, data_type))),
             direction: SortDirection::Descending as i32,
             null_ordering: NullOrdering::NullsLast as i32,
         }))),

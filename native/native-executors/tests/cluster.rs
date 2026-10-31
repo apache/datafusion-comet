@@ -30,7 +30,7 @@ use std::time::{Duration, Instant, SystemTime};
 use arrow_flight::error::FlightError;
 use arrow_flight::{FlightClient, FlightDescriptor, FlightEndpoint, FlightInfo};
 use common::*;
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::Int64Type;
 use datafusion_comet_proto::spark_native_executors::QueryRequest;
 use futures::TryStreamExt;
@@ -207,34 +207,29 @@ async fn runs_a_query_across_a_range_exchange() {
     );
 }
 
-/// The scheduler samples the producer for split points, so each partition holds one range of
-/// keys, in the exchange's order.
+/// A global sort runs as a sort of each partition and a merge, so its result comes back as one
+/// partition, in order.
 #[tokio::test(flavor = "multi_thread")]
-async fn range_partitions_a_range_exchange_by_sampled_split_points() {
+async fn sorts_across_a_range_exchange_by_merging_sorted_partitions() {
     let cluster = Cluster::start();
+    let order = first_column_descending(long_type());
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
+        sorting_stage(0, range_partitioning(4, vec![]), order, long_type()),
     ]);
     let partitions = cluster.run(&request).await;
-    assert_eq!(partitions.len(), 4);
-    let ranges: Vec<Vec<i64>> = partitions
+    assert_eq!(partitions.len(), 1);
+    let values: Vec<i64> = partitions[0]
         .iter()
-        .map(|partition| sorted_values::<Int64Type>(partition))
+        .flat_map(|batch| {
+            batch
+                .column(0)
+                .as_primitive::<Int64Type>()
+                .values()
+                .to_vec()
+        })
         .collect();
-    for (index, range) in ranges.iter().enumerate() {
-        assert!(!range.is_empty(), "partition {index} is empty");
-    }
-    for pair in ranges.windows(2) {
-        assert!(
-            pair[0].first() > pair[1].last(),
-            "a partition holds keys below the next one's"
-        );
-    }
-    assert_eq!(
-        sorted_values::<Int64Type>(&partitions.concat()),
-        (0..1000).collect::<Vec<_>>()
-    );
+    assert_eq!(values, (0..1000).rev().collect::<Vec<_>>());
 }
 
 #[tokio::test(flavor = "multi_thread")]

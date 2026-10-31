@@ -397,7 +397,16 @@ object CometNativeExecutors {
       val numPartitions =
         if (partitionPlans.nonEmpty) partitionPlans.length
         else block.outputPartitioning.numPartitions
-      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions)
+      // A stage that reads a range exchange sorts each of its partitions. The cluster merges them
+      // in this order instead of range-partitioning the exchange. Without it, the cluster reads
+      // the exchange as one partition.
+      val outputOrdering = if (inputs.exists(_.getPartitioning.hasRangePartition)) {
+        val orders = block.outputOrdering.map(QueryPlanSerde.exprToProto(_, block.output))
+        if (orders.nonEmpty && orders.forall(_.isDefined)) orders.flatten else Nil
+      } else {
+        Nil
+      }
+      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions, outputOrdering)
     }
 
     /** An input of a stage that reads the stage running `producer`, as `configure` says. */
@@ -417,7 +426,7 @@ object CometNativeExecutors {
       val blockPlan = take
         .finalNativePlan(inputPartitions = 2)
         .getOrElse(fail(take, "its top-K plan cannot run natively"))
-      addStage(take, blockPlan, Seq(input), Seq.empty, 1)
+      addStage(take, blockPlan, Seq(input), Seq.empty, 1, Nil)
     }
 
     private def addStage(
@@ -425,7 +434,8 @@ object CometNativeExecutors {
         blockPlan: Operator,
         inputs: Seq[StageInput],
         partitionPlans: Seq[ByteString],
-        numPartitions: Int): Int = {
+        numPartitions: Int,
+        outputOrdering: Seq[ExprOuterClass.Expr]): Int = {
       findJvmCallback(blockPlan).foreach { name =>
         fail(plan, s"its native plan calls back into the JVM ($name)")
       }
@@ -440,6 +450,7 @@ object CometNativeExecutors {
         .addAllPartitionPlans(partitionPlans.asJava)
         .setNumPartitions(numPartitions)
         .addAllOutputSchema(outputSchema.asJava)
+        .addAllOutputOrdering(outputOrdering.asJava)
         .build()
       val index = stages.length - 1
       stageIndexes.put(plan, index)
@@ -489,7 +500,7 @@ object CometNativeExecutors {
                 .setNumPartitions(numPartitions))
             .build()
         case RangePartitioning(ordering, numPartitions) =>
-          // Without bounds: the cluster decides how to range-partition.
+          // Without bounds: the cluster merges the stage's sorted partitions instead.
           val sortOrders = ordering.map { order =>
             QueryPlanSerde
               .exprToProto(order, exchange.child.output)

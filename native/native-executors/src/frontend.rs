@@ -44,14 +44,13 @@ use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind}
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::common::DataFusionError;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_comet_proto::spark_native_executors::QueryRequest;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::stream::BoxStream;
-use futures::{StreamExt, TryStreamExt};
+use futures::TryStreamExt;
 use log::info;
 use prost::Message;
 use prost_types::Timestamp;
@@ -97,7 +96,7 @@ impl CometFlightService {
     }
 
     /// Whether queries run in Ballista's pipelined mode, which streams batches between stages
-    /// instead of writing shuffle files, and can't range-partition.
+    /// instead of writing shuffle files.
     fn pipelined(&self) -> bool {
         matches!(
             self.session.ballista_config().execution_mode(),
@@ -143,69 +142,6 @@ impl CometFlightService {
             .checked_add(Duration::from_secs(retention))
             .map(Timestamp::from)
     }
-}
-
-/// Runs `plan` as a Ballista job on `scheduler` and reads the rows of all its partitions back from
-/// the executors that hold them, a few partitions at a time.
-async fn collect(
-    scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
-    session: &SessionConfig,
-    plan: Arc<dyn ExecutionPlan>,
-) -> Result<Vec<RecordBatch>, Status> {
-    let job = run(scheduler, session, plan).await?;
-    let config = BallistaConfig::default();
-    let batches: Vec<Vec<RecordBatch>> = futures::stream::iter(job.partition_location)
-        .map(|location| fetch(location, &config))
-        .buffer_unordered(FETCH_CONCURRENCY)
-        .try_collect()
-        .await?;
-    Ok(batches.concat())
-}
-
-/// How many sample partitions the scheduler reads at once.
-const FETCH_CONCURRENCY: usize = 16;
-
-/// Reads the rows of one partition from the executor that holds it, with Ballista's client.
-async fn fetch(
-    location: PartitionLocation,
-    config: &BallistaConfig,
-) -> Result<Vec<RecordBatch>, Status> {
-    let layout = location.layout();
-    let (Some(executor), Some(partition)) = (location.executor_meta, location.partition_id) else {
-        return Err(Status::internal("A sample partition has no executor or ID"));
-    };
-    let failed = |e: BallistaError| {
-        Status::internal(format!(
-            "Cannot read a sample from {}:{}: {e}",
-            executor.host, executor.port
-        ))
-    };
-    let mut client = BallistaClient::try_new(
-        &executor.host,
-        executor.port as u16,
-        config.grpc_client_max_message_size(),
-        false,
-        None,
-        config.io_retries_times() as u8,
-        config.io_retry_wait_time_ms() as u64,
-        0,
-        0,
-    )
-    .await
-    .map_err(failed)?;
-    let stream = client
-        .fetch_partition(
-            &executor.id,
-            &partition.into(),
-            location.file_id,
-            layout,
-            true,
-        )
-        .await
-        .map_err(failed)?;
-    datafusion::physical_plan::common::collect(stream)
-        .await
-        .map_err(|e| failed(BallistaError::DataFusionError(Box::new(e))))
 }
 
 /// Runs `plan` as a Ballista job on `scheduler` to completion and returns its result: where its
@@ -268,8 +204,8 @@ async fn submit(
 /// since Spark can compute a partition of an RDD again, so the scheduler reads the streams itself
 /// and serves them from its own Flight service for as long as a blocking job's results are kept.
 ///
-/// The result is gathered into one partition first. A pipelined query's order lives in one
-/// partition anyway, since a pipelined job reads a range exchange as one partition.
+/// The result is gathered into one partition first. A sorted query's result is already one
+/// partition, the merge of its sorted partitions.
 async fn run_pipelined(
     scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     session: &SessionConfig,
@@ -410,17 +346,6 @@ fn endpoint(
     Ok(endpoint)
 }
 
-/// The status for a query the scheduler couldn't plan: a sampling job's own status when that job
-/// failed, and otherwise an invalid query.
-fn planning_status(error: DataFusionError) -> Status {
-    if let DataFusionError::External(cause) = error.find_root() {
-        if let Some(status) = cause.downcast_ref::<Status>() {
-            return status.clone();
-        }
-    }
-    Status::invalid_argument(error.to_string())
-}
-
 fn unimplemented<T>(method: &str) -> Result<T, Status> {
     Err(Status::unimplemented(format!(
         "A Comet scheduler doesn't implement {method}"
@@ -445,28 +370,11 @@ impl FlightService for CometFlightService {
         let query = QueryRequest::decode(descriptor.cmd.as_ref())
             .map_err(|e| Status::invalid_argument(format!("Cannot decode the query: {e}")))?;
         check_version(&query).map_err(|e| Status::failed_precondition(e.to_string()))?;
-        // A range exchange is sampled by a job of its own while the query is planned, which
-        // blocks the planning thread on this runtime.
-        let scheduler = self.scheduler.clone();
-        let session = self.session.clone();
         let pipelined = self.pipelined();
-        let runtime = tokio::runtime::Handle::current();
-        let plan = tokio::task::spawn_blocking(move || {
-            let mut sampler = |plan| {
-                // A pipelined job can't range-partition, so an empty sample, which yields no
-                // split points, has the range exchange read as one partition.
-                if pipelined {
-                    return Ok(vec![]);
-                }
-                runtime
-                    .block_on(collect(&scheduler, &session, plan))
-                    .map_err(|e| DataFusionError::External(Box::new(e)))
-            };
-            build_plan(query, &mut sampler)
-        })
-        .await
-        .map_err(|e| Status::internal(e.to_string()))?
-        .map_err(planning_status)?;
+        let plan = tokio::task::spawn_blocking(move || build_plan(query))
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let mut info = FlightInfo::new();
         if pipelined {
             let (job_id, result) = run_pipelined(&self.scheduler, &self.session, plan).await?;

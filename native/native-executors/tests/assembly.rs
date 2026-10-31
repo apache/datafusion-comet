@@ -22,10 +22,11 @@ mod common;
 
 use comet_native_executors::assembly::build_plan;
 use common::*;
+use datafusion::arrow::array::AsArray;
 use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
-use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{collect, ExecutionPlan, ExecutionPlanProperties, Partitioning};
+use datafusion::physical_plan::sorts::sort_preserving_merge::SortPreservingMergeExec;
+use datafusion::physical_plan::{collect, ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionContext;
 use datafusion_comet_proto::spark_expression::{
     expr::ExprStruct, literal::Value, Expr, IfExpr, Literal, Subquery,
@@ -38,29 +39,10 @@ use datafusion_comet_proto::spark_operator::{
 use prost::Message;
 use std::sync::Arc;
 
-/// Assembles `request`, running each sampling plan in this process.
 async fn assemble(request: QueryRequest) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-    assemble_counting_samples(request)
+    tokio::task::spawn_blocking(move || build_plan(request))
         .await
-        .map(|(plan, _)| plan)
-}
-
-/// Assembles `request` like [`assemble`], and also returns how many sampling plans ran.
-async fn assemble_counting_samples(
-    request: QueryRequest,
-) -> datafusion::common::Result<(Arc<dyn ExecutionPlan>, usize)> {
-    let runtime = tokio::runtime::Handle::current();
-    tokio::task::spawn_blocking(move || {
-        let mut samples = 0;
-        let mut sampler = |plan: Arc<dyn ExecutionPlan>| {
-            samples += 1;
-            runtime.block_on(collect(plan, SessionContext::new().task_ctx()))
-        };
-        let plan = build_plan(request, &mut sampler)?;
-        Ok((plan, samples))
-    })
-    .await
-    .unwrap()
+        .unwrap()
 }
 
 /// Runs `request` and returns its single column, sorted.
@@ -97,8 +79,8 @@ async fn single_partition_exchange_collects_every_row() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn range_exchange_without_column_keys_is_read_as_one_partition() {
-    // The driver asks for the exchange's partition count, but sends no sort key to sample.
+async fn range_exchange_without_an_ordering_is_read_as_one_partition() {
+    // A stage that declares no ordering has nothing to merge its partitions by.
     let request = query(vec![
         range_stage(100, 4),
         reading_stage(0, range_partitioning(4, vec![]), 4),
@@ -108,46 +90,50 @@ async fn range_exchange_without_column_keys_is_read_as_one_partition() {
     assert_eq!(run(request).await, (0..100).collect::<Vec<_>>());
 }
 
-/// The exchange a reading stage reads: its second child, after the partition descriptor.
-fn exchange_of(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    Arc::clone(plan.children()[1])
-}
-
 #[tokio::test(flavor = "multi_thread")]
-async fn range_exchange_is_range_partitioned_by_a_sample() {
+async fn range_exchange_is_sorted_in_each_partition_and_merged() {
+    let order = first_column_descending(long_type());
     let request = query(vec![
         range_stage(1000, 4),
-        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
+        sorting_stage(0, range_partitioning(4, vec![]), order, long_type()),
     ]);
-    let (plan, samples) = assemble_counting_samples(request).await.unwrap();
-    assert_eq!(samples, 1);
-    assert_eq!(plan.output_partitioning().partition_count(), 4);
-    let exchange = exchange_of(&plan);
-    let repartition = exchange
-        .downcast_ref::<RepartitionExec>()
-        .expect("a range exchange becomes a RepartitionExec");
-    let Partitioning::Range(range) = repartition.partitioning() else {
-        panic!(
-            "expected a range partitioning, got {}",
-            repartition.partitioning()
-        );
-    };
-    assert_eq!(range.split_points().len(), 3);
-    assert!(range.ordering()[0].options.descending);
+    let plan = assemble(request).await.unwrap();
+    let merge = plan
+        .downcast_ref::<SortPreservingMergeExec>()
+        .expect("the stage's sorted partitions are merged");
+    assert!(merge.expr()[0].options.descending);
+    // The stage reads the producer's four partitions without an exchange.
+    assert_eq!(merge.input().output_partitioning().partition_count(), 4);
+    let batches = collect(plan, SessionContext::new().task_ctx())
+        .await
+        .unwrap();
+    let values: Vec<i64> = batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(0)
+                .as_primitive::<Int64Type>()
+                .values()
+                .to_vec()
+        })
+        .collect();
+    assert_eq!(values, (0..1000).rev().collect::<Vec<_>>());
 }
 
-/// A range shuffle compares raw values, which order floats differently from Comet's sort.
+/// A merge compares raw values, which order floats differently from Comet's sort.
 #[tokio::test(flavor = "multi_thread")]
-async fn range_exchange_on_a_float_key_is_read_as_one_partition() {
+async fn range_exchange_sorted_by_a_float_is_read_as_one_partition() {
     let mut producer = range_stage(1000, 4);
     producer.output_schema = vec![field(double_type())];
+    let order = first_column_descending(double_type());
     let request = query(vec![
         producer,
-        reading_stage(0, range_partitioning(4, vec![first_column_descending()]), 4),
+        sorting_stage(0, range_partitioning(4, vec![]), order, double_type()),
     ]);
-    let (plan, samples) = assemble_counting_samples(request).await.unwrap();
-    assert_eq!(samples, 0);
-    assert!(exchange_of(&plan).is::<CoalescePartitionsExec>());
+    let plan = assemble(request).await.unwrap();
+    assert!(!plan.is::<SortPreservingMergeExec>());
+    assert!(plan.children()[1].is::<CoalescePartitionsExec>());
+    assert_eq!(plan.output_partitioning().partition_count(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

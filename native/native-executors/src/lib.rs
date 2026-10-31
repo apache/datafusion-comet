@@ -31,7 +31,6 @@ use std::str::FromStr;
 pub mod assembly;
 pub mod codec;
 pub mod frontend;
-pub mod range;
 
 /// The value of the environment variable `key`, if it is set, for the binaries' settings.
 pub fn env_var<T: FromStr>(key: &str) -> Result<Option<T>, String>

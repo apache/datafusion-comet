@@ -169,7 +169,7 @@ impl CometFragmentExec {
 /// The cast to those types keeps a column nullable wherever the block's output is, even where
 /// Spark knows it has no nulls, such as a join key a filter has checked, so a fragment can't
 /// promise more. Nothing between stages relies on a column having no nulls.
-fn fragment_schema(output_schema: &[SparkStructField]) -> SchemaRef {
+pub fn fragment_schema(output_schema: &[SparkStructField]) -> SchemaRef {
     let declared = convert_spark_types_to_arrow_schema(output_schema);
     let fields: Vec<Field> = declared
         .fields()
