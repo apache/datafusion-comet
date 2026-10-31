@@ -123,7 +123,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 // Re-exported for local execution, whose memory pool is the one `createPlan` creates.
-pub(crate) use crate::execution::memory_pools::create_memory_pool;
+pub(crate) use crate::execution::memory_pools::{create_memory_pool, running_native_tasks};
 use crate::execution::memory_pools::{
     overcommit, parse_memory_pool_config, MemoryPoolConfig, PlanMemoryPool,
 };
@@ -1650,7 +1650,7 @@ pub extern "system" fn Java_org_apache_comet_Native_releasePlan(
 /// Releases a plan: stops it, publishes its final metrics through `publish_metrics`, drops it,
 /// and waits briefly for its memory reservations to be returned. The context is freed even if a
 /// step fails. Core of `Native.releasePlan`.
-fn release_plan(
+pub(crate) fn release_plan(
     mut execution_context: Box<ExecutionContext>,
     publish_metrics: &mut PublishMetrics,
 ) -> CometResult<()> {

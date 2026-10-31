@@ -70,7 +70,10 @@ private[comet] object CometLocalRule {
     convert(plan) match {
       case block: CometNativeExec if admits(block) =>
         val partitions = block.collectLeaves().head.outputPartitioning.numPartitions
-        val spec = LocalQuerySpec(block.serializedPlanOpt.plan.get, partitions, block.output.size)
+        val spec = LocalQuerySpec(
+          block.serializedPlanOpt.plan.get,
+          partitions,
+          block.output.map(_.dataType))
         CometLocalResultExec(
           CometLocalExec(block.output, spec, resultOrdering(block, partitions), block))
       case converted => converted
@@ -95,6 +98,8 @@ private[comet] object CometLocalRule {
 
   private def environmentAdmits(session: SparkSession, plan: SparkPlan): Boolean = {
     session.sparkContext.isLocal &&
+    // A child-first task loader would load its own copy of the driver's result slots.
+    !session.sparkContext.getConf.getBoolean("spark.executor.userClassPathFirst", false) &&
     !ShimCometStreaming.isStreamingPlan(plan) &&
     // As in CometRule's plan-only reporting, this identifies subquery preparation.
     !Thread

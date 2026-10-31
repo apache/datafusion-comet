@@ -50,6 +50,9 @@ pub struct QueryHandle {
     reader: Mutex<Option<Thread>>,
     cancelled: AtomicBool,
     runtime: Handle,
+    /// Set when a reader is about to park, so that a test can cancel a parked reader.
+    #[cfg(test)]
+    parking: AtomicBool,
 }
 
 /// Wakes a reader parked in `QueryHandle::poll`.
@@ -72,6 +75,8 @@ impl QueryHandle {
             reader: Mutex::new(None),
             cancelled: AtomicBool::new(false),
             runtime: runtime.clone(),
+            #[cfg(test)]
+            parking: AtomicBool::new(false),
         })
     }
 
@@ -104,7 +109,7 @@ impl QueryHandle {
         let deadline = Instant::now() + wait;
         let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
         let mut cx = Context::from_waker(&waker);
-        // Starting a partition executes its operators, which may spawn tasks.
+        // Ending the query drops its streams here, which may need the runtime.
         let _guard = self.runtime.enter();
         loop {
             // Checked after the reader is registered, so a cancel either sees the reader and
@@ -128,6 +133,8 @@ impl QueryHandle {
             if now >= deadline {
                 return Ok(QueryPoll::Pending);
             }
+            #[cfg(test)]
+            self.parking.store(true, Ordering::Release);
             std::thread::park_timeout(deadline - now);
         }
     }
@@ -188,7 +195,14 @@ mod tests {
         let thread = std::thread::spawn(move || {
             sender.send(reader.poll(Duration::from_secs(60))).unwrap();
         });
-        while lock(&query.reader).is_none() {
+        // Cancel only once the reader has passed its last check before parking, so that only
+        // the wakeup can end its wait.
+        let waiting = Instant::now();
+        while !query.parking.load(Ordering::Acquire) {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "the reader never parked"
+            );
             std::thread::yield_now();
         }
         assert!(query.poll(Duration::ZERO).is_err(), "a second reader");

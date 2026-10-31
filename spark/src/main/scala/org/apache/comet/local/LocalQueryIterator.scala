@@ -37,6 +37,7 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
   private var closed = false
   private var pending: ColumnarBatch = _
   private var previous: ColumnarBatch = _
+  private val checkTimestampLabels = CometConf.COMET_STRICT_TIMESTAMP_LABELS.get()
 
   // Shared by every native plan of the task, and released when the task completes.
   private val taskMemory = CometExecIterator.taskMemory(context, CometExec.newIterId)
@@ -108,6 +109,7 @@ private[local] class LocalQueryIterator(spec: LocalQuerySpec, context: TaskConte
           })
         .orNull
       if (pending == null) close()
+      else if (checkTimestampLabels) util.checkTimestampLabels(pending, spec.outputTypes)
       pending != null
     } catch {
       case failure: Throwable =>

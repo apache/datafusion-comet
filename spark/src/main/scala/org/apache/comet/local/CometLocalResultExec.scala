@@ -31,6 +31,8 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, SortOrder, UnsafeRo
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNode}
 
+import org.apache.comet.rules.EliminateRedundantTransitions
+
 /**
  * Row result boundary of a local query. Spark's collect encodes and compresses every row of each
  * result partition in its task, then decodes them on the driver. A local collect instead runs the
@@ -38,9 +40,10 @@ import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnaryExecNo
  * SQL metrics), which hands copied rows to the driver in this JVM, since admission requires an
  * in-process local master.
  *
- * Only `collect` runs that way. Everything else reads the result as an RDD: a take requests
- * partitions in growing batches, an iterator fetches one partition at a time, a tail scans from
- * the last one, and a cache, `df.rdd` or PySpark's collect keep its partitions. So the node
+ * Only `collect` runs that way, including classic PySpark's `collect()`, which goes through
+ * `executeCollect`. Everything else reads the result as an RDD: a take requests partitions in
+ * growing batches, an iterator (PySpark's `toLocalIterator()` too) fetches one partition at a
+ * time, a tail scans from the last one, and a cache or `df.rdd` keep its partitions. So the node
  * executes as the ordinary native block otherwise, one Spark task per partition, and reports the
  * block's partitioning and ordering.
  */
@@ -55,12 +58,16 @@ case class CometLocalResultExec(child: SparkPlan) extends UnaryExecNode {
     if (sparkContext.isLocal) LocalResultHandoff.collect(child.execute(), maxResultSize)
     else super.executeCollect()
 
-  private def ordinary: SparkPlan =
+  // The block as ordinary planning prepares it, which runs after this node is created: the
+  // columnar-to-row transition Comet picks, or Spark's RangeExec for a bare range.
+  @transient private[local] lazy val ordinary: SparkPlan =
     child
-      .collectFirst { case local: CometLocalExec => ColumnarToRowExec(local.block) }
+      .collectFirst { case local: CometLocalExec =>
+        EliminateRedundantTransitions(session)(ColumnarToRowExec(local.block))
+      }
       .getOrElse(child)
 
-  // Spark enforces this on serialized task results; this boundary enforces it while copying.
+  // Spark enforces this on serialized task results; this boundary enforces it on copied rows.
   private def maxResultSize: Long =
     sparkContext.getConf.getSizeAsBytes("spark.driver.maxResultSize", "1g")
 
@@ -84,8 +91,9 @@ private[local] object LocalResultHandoff {
   /**
    * Runs the single result partition of `rdd` and returns its rows. Stops reading, which closes
    * the native query, once the copied rows exceed `maxResultSize` bytes (unlimited if not
-   * positive). Unlike Spark's compressed size, this counts uncompressed UnsafeRow bytes, so it is
-   * the more conservative of the two.
+   * positive). This counts the uncompressed UnsafeRow bytes of the rows, while Spark counts each
+   * task's serialized, compressed result, overhead included. Either can reach the limit first:
+   * rows that compress well reach it here, and many small partitions reach Spark's.
    */
   def collect(rdd: RDD[InternalRow], maxResultSize: Long): Array[InternalRow] = {
     require(rdd.getNumPartitions == 1, "Local results have exactly one partition")

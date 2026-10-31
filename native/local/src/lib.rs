@@ -47,11 +47,15 @@ use tokio::task::JoinHandle;
 /// limit.
 const PARTITION_BUFFER: usize = 2;
 
+/// How many partitions may run at once as of now.
+pub type RunningLimit = Arc<dyn Fn() -> usize + Send + Sync>;
+
 /// One execution's graph and resources. Consumed when execution starts; not a plan cache.
 pub struct LocalQuery {
     plan: Arc<dyn ExecutionPlan>,
     context: Arc<TaskContext>,
     max_running: usize,
+    running_limit: Option<RunningLimit>,
     read_ahead: usize,
 }
 
@@ -63,6 +67,10 @@ impl LocalQuery {
     /// starts when the first is delivered, as Spark runs at most as many tasks as it has cores.
     /// A partition's operators register their memory consumers when it starts, so this also
     /// bounds how many share the memory pool.
+    ///
+    /// A partition starts its operators on its own task, so a start that waits, for instance to
+    /// register a memory consumer, does not hold up delivery. A failure to start is reported in
+    /// the partition's turn.
     ///
     /// The running partitions do not wait for their turn: each runs ahead of delivery while the
     /// batches they all hold total less than `read_ahead` bytes, and up to a few batches beyond
@@ -81,8 +89,17 @@ impl LocalQuery {
             plan,
             context,
             max_running: max_running.max(1),
+            running_limit: None,
             read_ahead,
         }
+    }
+
+    /// Lowers the number of partitions that may run at once to what `limit` returns whenever
+    /// another partition would start, and to at least one. Partitions already running keep
+    /// running.
+    pub fn with_running_limit(mut self, limit: RunningLimit) -> Self {
+        self.running_limit = Some(limit);
+        self
     }
 
     /// Starts the first root partitions and exposes one streaming result. No result-wide
@@ -92,8 +109,7 @@ impl LocalQuery {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
         let schema = self.plan.schema();
-        let stream =
-            in_partition_order(&self.plan, &self.context, self.max_running, self.read_ahead)?;
+        let stream = in_partition_order(&self);
         Ok(LocalQueryStream {
             stream: Some(stream),
             query: Some(self),
@@ -102,31 +118,23 @@ impl LocalQuery {
     }
 }
 
-fn in_partition_order(
-    plan: &Arc<dyn ExecutionPlan>,
-    context: &Arc<TaskContext>,
-    max_running: usize,
-    read_ahead: usize,
-) -> Result<SendableRecordBatchStream> {
+fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
     let mut order = PartitionOrder {
-        plan: Arc::clone(plan),
-        context: Arc::clone(context),
+        plan: Arc::clone(&query.plan),
+        context: Arc::clone(&query.context),
         runtime: tokio::runtime::Handle::current(),
         next: 0,
-        max_running,
+        max_running: query.max_running,
+        running_limit: query.running_limit.clone(),
         read_ahead: Arc::new(ReadAhead {
-            limit: read_ahead,
+            limit: query.read_ahead,
             held: AtomicUsize::new(0),
             delivered: Notify::new(),
         }),
         running: VecDeque::new(),
     };
-    // Start the first partitions now, so that a failure to start them fails here.
-    order.start_partitions()?;
-    Ok(Box::pin(RecordBatchStreamAdapter::new(
-        plan.schema(),
-        order,
-    )))
+    order.start_partitions();
+    Box::pin(RecordBatchStreamAdapter::new(query.plan.schema(), order))
 }
 
 /// What the running partitions hold ahead of delivery, shared by them.
@@ -151,25 +159,48 @@ struct Partition {
     ended: Arc<AtomicBool>,
     /// The partition's stream. The task locks it only while polling it, so dropping the
     /// partition can take it whenever the task is waiting.
-    stream: Arc<Mutex<Option<SendableRecordBatchStream>>>,
+    stream: Arc<Mutex<Slot>>,
     task: JoinHandle<()>,
 }
 
+/// A partition's stream over its lifetime.
+enum Slot {
+    /// The task is starting the partition's operators.
+    Starting,
+    Running(SendableRecordBatchStream),
+    /// The partition was dropped. A task that started the stream afterwards drops it.
+    Closed,
+}
+
 impl Partition {
-    fn spawn(
-        runtime: &tokio::runtime::Handle,
-        stream: SendableRecordBatchStream,
-        read_ahead: &Arc<ReadAhead>,
-    ) -> Self {
+    fn spawn(order: &PartitionOrder, partition: usize) -> Self {
         let (sender, batches) = tokio::sync::mpsc::unbounded_channel();
         let queued = Arc::new(AtomicUsize::new(0));
         let ended = Arc::new(AtomicBool::new(false));
-        let stream = Arc::new(Mutex::new(Some(stream)));
+        let stream = Arc::new(Mutex::new(Slot::Starting));
         let (task_queued, task_ended, polled) =
             (Arc::clone(&queued), Arc::clone(&ended), Arc::clone(&stream));
-        let read_ahead = Arc::clone(read_ahead);
-        let task = runtime.spawn(async move {
+        let read_ahead = Arc::clone(&order.read_ahead);
+        let (plan, context) = (Arc::clone(&order.plan), Arc::clone(&order.context));
+        let task = order.runtime.spawn(async move {
             let result = AssertUnwindSafe(async {
+                let started = plan.execute(partition, context);
+                drop(plan);
+                match started {
+                    Ok(started) => {
+                        let mut slot = lock(&polled);
+                        if matches!(*slot, Slot::Closed) {
+                            drop(slot);
+                            drop(started);
+                            return;
+                        }
+                        *slot = Slot::Running(started);
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(error));
+                        return;
+                    }
+                }
                 loop {
                     // Wait before polling while this partition holds `PARTITION_BUFFER` batches
                     // and the partitions together hold the read-ahead limit. The first partition
@@ -183,9 +214,9 @@ impl Partition {
                         }
                         delivered.await;
                     }
-                    let next = poll_fn(|cx| match lock(&polled).as_mut() {
-                        Some(stream) => stream.poll_next_unpin(cx),
-                        None => Poll::Ready(None),
+                    let next = poll_fn(|cx| match &mut *lock(&polled) {
+                        Slot::Running(stream) => stream.poll_next_unpin(cx),
+                        Slot::Starting | Slot::Closed => Poll::Ready(None),
                     })
                     .await;
                     match next {
@@ -232,7 +263,7 @@ impl Drop for Partition {
     /// effect once a Tokio worker is free. See `QueryHandle::cancel`.
     fn drop(&mut self) {
         self.task.abort();
-        let stream = lock(&self.stream).take();
+        let stream = std::mem::replace(&mut *lock(&self.stream), Slot::Closed);
         let _ = std::panic::catch_unwind(AssertUnwindSafe(|| drop(stream)));
     }
 }
@@ -247,21 +278,27 @@ struct PartitionOrder {
     /// The first partition not started yet.
     next: usize,
     max_running: usize,
+    running_limit: Option<RunningLimit>,
     read_ahead: Arc<ReadAhead>,
     /// Started partitions, the first of which is being delivered.
     running: VecDeque<Partition>,
 }
 
 impl PartitionOrder {
-    fn start_partitions(&mut self) -> Result<()> {
+    fn start_partitions(&mut self) {
         let partitions = self.plan.output_partitioning().partition_count();
-        while self.running.len() < self.max_running && self.next < partitions {
-            let stream = self.plan.execute(self.next, Arc::clone(&self.context))?;
-            let partition = Partition::spawn(&self.runtime, stream, &self.read_ahead);
+        if self.next >= partitions {
+            return;
+        }
+        let limit = self
+            .running_limit
+            .as_ref()
+            .map_or(self.max_running, |limit| limit().clamp(1, self.max_running));
+        while self.running.len() < limit && self.next < partitions {
+            let partition = Partition::spawn(self, self.next);
             self.running.push_back(partition);
             self.next += 1;
         }
-        Ok(())
     }
 
     fn fail(&mut self, error: DataFusionError) -> Poll<Option<Result<RecordBatch>>> {
@@ -276,9 +313,7 @@ impl Stream for PartitionOrder {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            if let Err(error) = self.start_partitions() {
-                return self.fail(error);
-            }
+            self.start_partitions();
             let Some(partition) = self.running.front_mut() else {
                 return Poll::Ready(None);
             };

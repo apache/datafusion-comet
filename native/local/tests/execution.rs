@@ -17,8 +17,9 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use datafusion::arrow::array::Int64Array;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -94,6 +95,9 @@ struct Observations {
 struct ObserveExec {
     input: Arc<dyn ExecutionPlan>,
     observations: Arc<Observations>,
+    /// How long starting a partition blocks its caller, as a memory consumer's registration
+    /// can while the pool waits for Spark.
+    start_delay: Duration,
 }
 
 impl DisplayAs for ObserveExec {
@@ -131,6 +135,7 @@ impl ExecutionPlan for ObserveExec {
         Ok(Arc::new(Self {
             input: Arc::clone(&children[0]),
             observations: Arc::clone(&self.observations),
+            start_delay: self.start_delay,
         }))
     }
 
@@ -149,6 +154,7 @@ impl ExecutionPlan for ObserveExec {
         partition: usize,
         ctx: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        std::thread::sleep(self.start_delay);
         self.observations.executions.lock().unwrap().push(partition);
         let observations = Arc::clone(&self.observations);
         let stream = self.input.execute(partition, ctx)?.map_ok(move |batch| {
@@ -168,11 +174,19 @@ impl ExecutionPlan for ObserveExec {
 }
 
 fn observe(input: Arc<dyn ExecutionPlan>) -> (Arc<dyn ExecutionPlan>, Arc<Observations>) {
+    observe_starting_in(input, Duration::ZERO)
+}
+
+fn observe_starting_in(
+    input: Arc<dyn ExecutionPlan>,
+    start_delay: Duration,
+) -> (Arc<dyn ExecutionPlan>, Arc<Observations>) {
     let observations = Arc::new(Observations::default());
     (
         Arc::new(ObserveExec {
             input,
             observations: Arc::clone(&observations),
+            start_delay,
         }),
         observations,
     )
@@ -310,15 +324,37 @@ async fn cancelling_one_query_does_not_cancel_another() {
 }
 
 #[tokio::test]
-async fn startup_error_releases_query() {
+async fn startup_error_is_reported_in_its_turn_and_releases_query() {
     let plan = Arc::new(ErrorExec::new());
     let refs = Arc::downgrade(&plan);
-    let error = LocalQuery::new(plan, context(), usize::MAX, usize::MAX)
+    let mut stream = LocalQuery::new(plan, context(), usize::MAX, usize::MAX)
         .execute()
-        .err()
         .unwrap();
+    let error = timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
     assert!(error.to_string().contains("ErrorExec"));
+    drop(stream);
     wait_released(&refs).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partition_start_that_waits_does_not_hold_up_the_reader() {
+    let (plan, observations) = observe_starting_in(ordered_input(2, 1), Duration::from_millis(500));
+    let started = Instant::now();
+    let mut stream = LocalQuery::new(plan, context(), usize::MAX, usize::MAX)
+        .execute()
+        .unwrap();
+    assert!(futures::poll!(stream.next()).is_pending());
+    assert!(started.elapsed() < Duration::from_millis(250));
+    let batches: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(batches.len(), 2);
+    assert_executed_once(&observations, 2);
 }
 
 #[test]
@@ -446,7 +482,7 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
         .execute()
         .unwrap();
     // The first two partitions start with the query; the rest wait for their turn.
-    assert_eq!(executed(), vec![0, 1]);
+    wait_started(&observations, 2).await;
     for _ in 0..3 {
         timeout(DEADLINE, stream.next())
             .await
@@ -461,7 +497,7 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
         .unwrap()
         .unwrap()
         .unwrap();
-    assert_eq!(executed(), vec![0, 1, 2]);
+    wait_started(&observations, 3).await;
     let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
         .await
         .unwrap()
@@ -505,4 +541,37 @@ async fn partition_order_holds_a_few_batches_beyond_the_limit() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(produced(&observations, 1), 2);
     stream.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partition_order_follows_a_changing_running_limit() {
+    let (plan, observations) = observe(ordered_input(6, 1));
+    let limit = Arc::new(AtomicUsize::new(1));
+    let current = Arc::clone(&limit);
+    let mut stream = LocalQuery::new(plan, context(), 3, usize::MAX)
+        .with_running_limit(Arc::new(move || current.load(Ordering::Acquire)))
+        .execute()
+        .unwrap();
+    let executed = || observations.executions.lock().unwrap().len();
+    wait_started(&observations, 1).await;
+    // A limit of zero still runs one partition at a time.
+    limit.store(0, Ordering::Release);
+    for partition in 0..2 {
+        timeout(DEADLINE, stream.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // The next partition starts only once this one ends.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert_eq!(executed(), partition + 1, "started beyond the limit");
+    }
+    // A higher limit applies to the partitions started from then on.
+    limit.store(usize::MAX, Ordering::Release);
+    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rest.len(), 4);
+    assert_executed_once(&observations, 6);
 }

@@ -33,22 +33,40 @@ use datafusion_comet_local::LocalQuery;
 use jni::objects::{JByteArray, JLongArray, JObject, JObjectArray, JString, ReleaseMode};
 use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
 use jni::{Env, EnvUnowned};
+use log::warn;
 use parking_lot::Mutex;
 
 use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
 use crate::execution::jni_api::{
     create_execution_context, create_memory_pool, get_runtime, prepare_output,
-    prepare_plan_settings, ExecutionContext, PlanInputs, PlanJvmRefs,
+    prepare_plan_settings, release_plan, running_native_tasks, ExecutionContext, PlanInputs,
+    PlanJvmRefs,
 };
 use crate::execution::spark_config::{SparkConfig, SPARK_EXECUTOR_CORES};
 
 struct Entry {
     query: QueryHandle,
     columns: usize,
-    // Holds the plan's memory pool and session until the query is closed. Dropped after the
+    /// Validates exported batches, as `spark.comet.debug.enabled` does for any Comet plan.
+    validate: bool,
+    // Holds the plan's memory pool and session until the query is closed. Released after the
     // query, which cancels the graph that reserves from the pool. Only the creating thread
     // uses it; the mutex makes the entry shareable with result pulls.
-    _context: Mutex<Box<ExecutionContext>>,
+    context: Mutex<Option<Box<ExecutionContext>>>,
+}
+
+impl Drop for Entry {
+    /// Releases the context as `Native.releasePlan` does, waiting briefly for the reservations
+    /// that the cancelled graph's tasks still hold, so that they are returned before the Spark
+    /// task can end.
+    fn drop(&mut self) {
+        self.query.cancel();
+        if let Some(context) = self.context.get_mut().take() {
+            if let Err(error) = release_plan(context, &mut |_| Ok(())) {
+                warn!("Releasing a local query failed: {error}");
+            }
+        }
+    }
 }
 
 // JNI carries numeric IDs instead of raw pointers, so close racing with a result pull
@@ -94,9 +112,11 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
         }
         let start = Instant::now();
         let settings = prepare_plan_settings(&env.convert_byte_array(serialized_spark_configs)?)?;
-        // Run as many partitions at once as Spark would run tasks, which also bounds how many
-        // operators share the memory pool. `local[N]` resolves to N here.
-        let max_running = settings.spark_config.get_usize(SPARK_EXECUTOR_CORES, 1);
+        // `local[N]` resolves to N cores here.
+        let slots = task_slots(
+            settings.spark_config.get_usize(SPARK_EXECUTOR_CORES, 1),
+            task_cpus as usize,
+        );
         JVMClasses::init(env);
         let serialized_plan = env.convert_byte_array(serialized_query)?;
         let task_memory_manager =
@@ -135,19 +155,24 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
                 "Local output schema width mismatch".into(),
             ));
         }
+        // Run at most as many partitions at once as Spark runs tasks. Comet's pools split Spark's
+        // memory equally among the tasks running native plans, this one included, so with T of
+        // them the partitions each get what a task would only while at most slots / T run.
         let query = LocalQuery::new(
             plan,
             context.session_ctx.task_ctx(),
-            max_running,
+            slots,
             read_ahead_bytes.max(0) as usize,
-        );
+        )
+        .with_running_limit(Arc::new(move || slots / running_native_tasks().max(1)));
         let query = QueryHandle::start(query, &get_runtime())?;
         register(
             id,
             Entry {
                 query,
                 columns: columns as usize,
-                _context: Mutex::new(context),
+                validate: context.debug_native,
+                context: Mutex::new(Some(context)),
             },
         )?;
         Ok(id)
@@ -155,6 +180,11 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
 }
 
 const MAX_PARTITIONS: jint = 1024;
+
+/// The tasks Spark runs at once with `cores`, as `LocalSchedulerBackend` counts them.
+fn task_slots(cores: usize, task_cpus: usize) -> usize {
+    (cores / task_cpus.max(1)).max(1)
+}
 
 /// One graph for the whole query. Each partition's operators are created by the planner for
 /// that partition, as a Spark task would create them, so per-partition state such as a range
@@ -220,7 +250,7 @@ fn next(env: &mut Env, id: i64, arrays: JLongArray, schemas: JLongArray) -> Come
     match entry.query.poll(Duration::from_millis(50))? {
         QueryPoll::Pending => Ok(-2),
         QueryPoll::Finished => Ok(-1),
-        QueryPoll::Batch(batch) => prepare_output(env, arrays, schemas, batch, false),
+        QueryPoll::Batch(batch) => prepare_output(env, arrays, schemas, batch, entry.validate),
     }
 }
 
@@ -260,4 +290,18 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_activeQueries(
     _: JObject,
 ) -> jlong {
     try_unwrap_or_throw(&e, |_| Ok(QUERIES.lock().len() as jlong))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::task_slots;
+
+    #[test]
+    fn task_slots_divide_cores_by_task_cpus() {
+        assert_eq!(task_slots(32, 16), 2);
+        assert_eq!(task_slots(8, 3), 2);
+        assert_eq!(task_slots(4, 1), 4);
+        assert_eq!(task_slots(2, 4), 1);
+        assert_eq!(task_slots(4, 0), 4);
+    }
 }

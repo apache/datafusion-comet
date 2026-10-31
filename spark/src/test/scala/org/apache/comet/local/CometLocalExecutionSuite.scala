@@ -29,6 +29,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, RangeExec, SparkPlan}
 import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.expressions.Window
@@ -227,6 +228,27 @@ class CometLocalExecutionSuite
     assert(
       query.rdd.mapPartitions(rows => Iterator(rows.size)).collect().toSeq == Seq.fill(6)(50))
     assert(query.localCheckpoint().rdd.getNumPartitions == 6)
+
+    def ordinary(df: DataFrame): SparkPlan =
+      df.queryExecution.executedPlan.collectFirst { case r: CometLocalResultExec =>
+        r.ordinary
+      }.get
+    // Prepared as ordinary planning prepares the block: a bare range as Spark's RangeExec,
+    // which no native operator consumes, and otherwise with Comet's columnar-to-row transition.
+    val range = spark.range(0, 300, 1, 6).toDF()
+    assert(localNodes(range).size == 1)
+    assert(ordinary(range).isInstanceOf[RangeExec], ordinary(range))
+    assert(
+      range.rdd.mapPartitions(rows => Iterator(rows.size)).collect().toSeq == Seq.fill(6)(50))
+    assert(!ordinary(query).isInstanceOf[ColumnarToRowExec], ordinary(query))
+  }
+
+  test("output validation and timestamp label checks apply to local output") {
+    withConf(CometConf.COMET_DEBUG_ENABLED.key, "true") {
+      withConf(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key, "true") {
+        checkLocal(spark.range(0, 100, 1, 3).selectExpr("id", "CAST(id AS TIMESTAMP) AS ts"))
+      }
+    }
   }
 
   test("only an ordering that holds across concatenated partitions is reported") {

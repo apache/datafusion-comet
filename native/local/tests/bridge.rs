@@ -167,17 +167,27 @@ fn worker_panic_is_an_error_not_successful_eof() {
 #[test]
 fn startup_failure_is_returned() {
     let runtime = runtime();
-    let plan = Arc::new(ErrorExec::new());
-    assert!(QueryHandle::start(
+    let query = QueryHandle::start(
         LocalQuery::new(
-            plan,
+            Arc::new(ErrorExec::new()),
             Arc::new(TaskContext::default()),
             usize::MAX,
-            usize::MAX
+            usize::MAX,
         ),
-        runtime.handle()
+        runtime.handle(),
     )
-    .is_err());
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match query.poll(Duration::from_millis(50)) {
+            Err(error) => {
+                assert!(error.to_string().contains("ErrorExec"));
+                break;
+            }
+            Ok(QueryPoll::Pending) => assert!(Instant::now() < deadline, "no startup failure"),
+            Ok(_) => panic!("startup failure was lost"),
+        }
+    }
 }
 
 #[test]

@@ -33,6 +33,8 @@ Admission runs in `CometRule`, on the plan that Comet's ordinary conversion prod
 admitted when:
 
 - the application's `SparkContext` is local (`local[N]`), so the query runs in this process;
+- `spark.executor.userClassPathFirst` is off, since a child-first task class loader would load
+  its own copy of the driver's result slots;
 - the plan is a batch query and not a subquery being prepared;
 - the converted plan is one native block, a tree of Comet native operators whose root carries
   the block's serialized plan, with no JVM input, broadcast or shuffle inside it;
@@ -61,11 +63,17 @@ single partition. That partition's task creates the native graph:
   for partition `i`, so per-partition state such as a range slice is the same as with ordinary
   Comet execution.
 - `native/local` runs the partitions on Comet's Tokio runtime and delivers them in partition
-  order. At most `spark.executor.cores` partitions (N for `local[N]`) run at once, and the next
-  starts when the first is delivered, as Spark runs at most that many tasks. A partition's
-  operators register their memory consumers when it starts, so this also bounds how many share
-  the task's memory pool. The result therefore has Spark's row order. A partition's error is
-  reported when its turn comes.
+  order, so the result has Spark's row order. Each partition starts its operators on its own
+  task, so a start that waits, for instance for a memory grant, does not hold up the pull, and a
+  partition's error, including a failure to start, is reported when its turn comes.
+- At most as many partitions run at once as Spark runs tasks, `spark.executor.cores` divided by
+  `spark.task.cpus`, and the next starts when the first is delivered. A partition's operators
+  register their memory consumers when it starts, so this also bounds how many share the task's
+  memory pool. Whenever another partition would start, the bound is further divided among the
+  executor's tasks running native plans, this one included: Comet's pools give each of those
+  tasks an equal share of Spark's memory, so a partition gets what a task would. Partitions
+  already running keep running, so a job that starts after a local query has started all its
+  partitions still leaves those partitions less than a task's share, until they end.
 - The running partitions do not wait for their turn to produce batches, so they all make
   progress, as Spark's tasks do. What they hold ahead of delivery is bounded by
   `spark.driver.maxResultSize`, the most a collect may bring to the driver; past it, each holds
@@ -100,20 +108,24 @@ timer, which only fires once a worker is free.
 
 `CometLocalResultExec` sits above Spark's columnar-to-row transition. For `collect` it still
 runs the single task as a Spark job, which keeps cancellation, job groups and SQL metrics, but
-the task copies its rows into a driver-side slot instead of returning an encoded task result. Spark would otherwise encode and compress every row in that one task and decode
-them on the driver, all on one thread. While copying, the task counts uncompressed `UnsafeRow`
-bytes and stops reading, which closes the native query, once they exceed
-`spark.driver.maxResultSize`; the driver then fails the action. Spark counts compressed bytes,
-so this check is the stricter one. On a non-local master the node uses Spark's ordinary
-collect.
+the task copies its rows into a driver-side slot instead of returning an encoded task result.
+Spark would otherwise encode and compress every row in that one task and decode them on the
+driver, all on one thread. While copying, the task counts uncompressed `UnsafeRow` bytes and
+stops reading, which closes the native query, once they exceed `spark.driver.maxResultSize`;
+the driver then fails the action. Spark instead counts each task's serialized, compressed
+result, overhead included, so either can reach the limit first: rows that compress well reach
+it here, and many small partitions reach Spark's. Classic PySpark's `collect()` goes through
+the same path. On a non-local master the node uses Spark's ordinary collect.
 
-Every other action reads the result as an RDD of the block's partitions: an iterator fetches
-one partition at a time so that it holds at most one, a tail scans partitions from the last one, and a cache,
-`df.rdd`, `foreachPartition`, `localCheckpoint` or PySpark's collect and `toLocalIterator` keep
-the partitions for later reads. So `CometLocalResultExec` executes as the ordinary native block,
-one Spark task per partition, for everything but `collect`. The partitions these actions
-evaluate, and so the rows they return and the errors they raise, are Spark's, and a cached result
-is scanned as many partitions as without local execution.
+Every other action reads the result as an RDD of the block's partitions: an iterator,
+PySpark's `toLocalIterator()` included, fetches one partition at a time so that it holds at
+most one, a tail scans partitions from the last one, and a cache, `df.rdd`, `foreachPartition`
+or `localCheckpoint` keep the partitions for later reads. So `CometLocalResultExec` executes as
+the ordinary native block, one Spark task per partition, for everything but `collect`, prepared
+as ordinary planning prepares it: with the columnar-to-row transition Comet picks, and as
+Spark's `RangeExec` for a bare range. The partitions these actions evaluate, and so the rows
+they return and the errors they raise, are Spark's, and a cached result is scanned as many
+partitions as without local execution.
 
 ## Lifecycle and cancellation
 
@@ -126,21 +138,27 @@ if the runtime stops it before that, the reader reports an error instead of a tr
 Closing a query drops its streams on the calling thread, as `releasePlan` does for an ordinary
 plan without JVM input: cancelling a Tokio task only takes effect once a worker is free, and
 every worker can be waiting, for instance in Spark's `acquireMemory` for memory those streams
-hold. Tasks that DataFusion operators spawn themselves still end asynchronously.
+hold. It then releases the context as `releasePlan` does, waiting briefly for the reservations
+that tasks DataFusion operators spawned still hold, since they give them back only the next time
+they yield. This applies however the query ends, including early on cancellation or the result
+size limit.
 
 ## Testing
 
-Build native code before the JVM suite, and never use Maven `-pl`:
+Build native code, including the JNI library, before the JVM suite, and never use Maven
+`-pl`:
 
 ```shell
 cd native
 cargo test -p datafusion-comet-local
 cd ..
+make core
 ./mvnw test -Dsuites=org.apache.comet.local.CometLocalExecutionSuite
 ```
 
-The native tests cover partition-order delivery, the bound on running partitions, read-ahead, errors reported in a partition's turn, cancellation with busy workers,
-the pull that waits on its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
+The native tests cover partition-order delivery, the bound on running partitions and its
+changes, partition starts that wait, read-ahead, errors reported in a partition's turn,
+cancellation with busy workers, the pull that waits on its own thread, and runtime shutdown. `CometLocalExecutionSuite` compares admitted queries
 with Spark's results and order, and covers ranges Spark would overflow, declined expressions,
 AQE, reported orderings, limits left to ordinary execution, iterators, tails, many partitions with sorts in a small memory pool, caching and other RDD consumers, the result size limit, job and task cancellation, and native errors. After
 each test it checks that no native query, imported Arrow memory or result slot is left.

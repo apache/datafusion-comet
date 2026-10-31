@@ -27,10 +27,16 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, LeafExecNode, SparkPlan}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 /** What the result task needs to create the native graph: no plan objects. */
-private[local] case class LocalQuerySpec(plan: Array[Byte], partitions: Int, columns: Int)
+private[local] case class LocalQuerySpec(
+    plan: Array[Byte],
+    partitions: Int,
+    outputTypes: Seq[DataType]) {
+  def columns: Int = outputTypes.size
+}
 
 /**
  * A whole query run as one native graph by the single Spark task of its result. `block` is the

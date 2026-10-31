@@ -117,6 +117,12 @@ fn create_pool(
     }
 }
 
+/// The tasks of this executor running native plans, among which Comet's pools divide a task's
+/// share of Spark's memory.
+pub(crate) fn running_native_tasks() -> usize {
+    RunningTasks::of_executor().count()
+}
+
 /// The bytes that `pool` has recorded beyond what Spark granted it, which it carries as overcommit
 /// until Spark grants them or the pool frees memory; see [`SparkMemory`]. This looks through the
 /// wrappers that [`create_memory_pool`] puts around a Comet pool, and is zero for a pool that
