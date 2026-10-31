@@ -274,24 +274,100 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  private val tpchTables =
+    Seq("customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier")
+
+  /**
+   * The 22 TPC-H queries, on the tables under `SPARK_TPCH_DATA`. `TPCH_QUERIES`, a
+   * comma-separated list of query numbers, runs only those.
+   */
+  private val tpchQueries = {
+    val only = sys.env.get("TPCH_QUERIES").map(_.split(",").map(_.trim.toInt).toSet)
+    (1 to 22).filter(q => only.forall(_.contains(q)))
+  }
+
+  tpchQueries.foreach { q =>
+    nativeExecutorsTest(s"TPC-H query $q") {
+      val data = sys.env.get("SPARK_TPCH_DATA")
+      assume(data.isDefined, "SPARK_TPCH_DATA is not set")
+      tpchTables.foreach { table =>
+        spark.read.parquet(s"${data.get}/$table").createOrReplaceTempView(table)
+      }
+      val file =
+        new File(getClass.getResource("/").toURI.resolve("../../../benchmarks/tpc/queries/tpch/"))
+      val text = new String(Files.readAllBytes(new File(file, s"q$q.sql").toPath), "UTF-8")
+      val statements = text
+        .split("\n")
+        .filterNot(_.trim.startsWith("--"))
+        .mkString("\n")
+        .split(";")
+        .map(_.trim)
+        .filter(_.nonEmpty)
+      // q15 creates a view, queries it and drops it.
+      val (setup, rest) = statements.span(!_.toLowerCase.startsWith("select"))
+      val query = rest.head
+      val teardown = rest.tail
+      // The tables are temporary views, which only a temporary view can read.
+      setup.map(_.replaceFirst("(?i)^create view", "create temp view")).foreach(sql)
+      try {
+        // Spark's own answer. Comet on the driver would run the whole query in one JVM, in the
+        // test's small native memory pool, and Spark's broadcast relations don't fit in the test
+        // JVM's heap either.
+        val expected = withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+          SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+          sql(query).collect().toSeq
+        }
+        onCluster {
+          val df = sql(query)
+          val actual = df.collect().toSeq
+          val plan = df.queryExecution.executedPlan
+          assert(collect(plan) { case exec: CometNativeExecutorsExec => exec }.nonEmpty, plan)
+          if (query.toLowerCase.contains("order by")) {
+            assert(actual == expected, s"q$q returned rows in another order or other rows")
+          } else {
+            checkAnswer(df, expected)
+          }
+        }
+      } finally {
+        teardown.foreach(sql)
+      }
+    }
+  }
+
+  nativeExecutorsTest("broadcast hash join") {
+    withTable { path =>
+      val left = spark.read.parquet(path).select("id", "k")
+      val right = spark.read.parquet(path).where("id < 10").select(col("k").as("k2"), col("v"))
+      checkOnCluster(left.join(right, left("k") === right("k2")).select("id", "v"))
+    }
+  }
+
+  nativeExecutorsTest("scalar subquery") {
+    withTable { path =>
+      spark.read.parquet(path).createOrReplaceTempView("t")
+      checkOnCluster(sql("select id, v from t where v > (select avg(v) from t where k = 3)"))
+    }
+  }
+
   nativeExecutorsTest("a query the cluster cannot run fails, naming the operator") {
     withTable { path =>
-      onCluster {
-        // A small join is broadcast, and the prototype doesn't support broadcast exchanges.
-        val left = spark.read.parquet(path)
-        val right = spark.read.parquet(path).where("id < 10").select(col("k").as("k2"))
-        val error =
-          intercept[Exception](left.join(right, left("k") === right("k2")).collect())
-        val messages = Iterator
-          .iterate[Throwable](error)(_.getCause)
-          .takeWhile(_ != null)
-          .map(e => String.valueOf(e.getMessage))
-          .toSeq
-        assert(
-          messages.exists(message =>
-            message.contains("Comet Native Executors cannot run this query") &&
-              message.contains("CometBroadcastExchange")),
-          error)
+      // With Comet's sort off, the sort stays in Spark.
+      withSQLConf(CometConf.COMET_EXEC_SORT_ENABLED.key -> "false") {
+        onCluster {
+          val error = intercept[Exception](spark.read.parquet(path).orderBy("v").collect())
+          val messages = Iterator
+            .iterate[Throwable](error)(_.getCause)
+            .takeWhile(_ != null)
+            .map(e => String.valueOf(e.getMessage))
+            .toSeq
+          assert(
+            messages.exists(message =>
+              message.contains("Comet Native Executors cannot run this query") &&
+                message.contains("Sort")),
+            error)
+        }
       }
     }
   }
