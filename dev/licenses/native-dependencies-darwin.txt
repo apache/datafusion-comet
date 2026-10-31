@@ -1,0 +1,11 @@
+Platform supplement: darwin
+
+================================================================================
+Licenses: Apache-2.0
+Used by:
+  core-foundation 0.10.1
+  core-foundation-sys 0.8.7
+  security-framework 3.7.0
+  security-framework-sys 2.17.0
+
+[Apache-2.0 license terms: see META-INF/LICENSE.]

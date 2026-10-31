@@ -27,30 +27,51 @@ Committee (PMC) member.
 
 The shaded `comet-spark` jars include compiled Rust and vendored C dependencies.
 Maven cannot obtain their licenses from Java dependency POMs. The reviewed files in
-`dev/licenses/` supply their license texts, original copyrights, and upstream
-`NOTICE` contents. Packaging appends a reference to the native license bundle to
-`META-INF/LICENSE` and combines the upstream notices with Comet's `NOTICE.txt`.
+`dev/licenses/` supply their license texts, copyrights and relevant upstream
+`NOTICE` attribution. Packaging reads the actual `libcomet` payloads and their
+ELF/Mach-O architecture headers, then combines the shared materials with the
+matching Linux and/or macOS supplement. It references that bundle from
+`META-INF/LICENSE` and adds the curated notices to Comet's `NOTICE.txt`.
 
 When `native/Cargo.lock`, a native or contrib Cargo manifest, or the collection
 configuration changes, regenerate the files before building a release:
 
 ```shell
 cargo install --locked --version 0.9.3 --features cli cargo-about
+# Regeneration needs Python 3.11 or newer; package/check paths use only stdlib.
 python3 dev/release/update-native-licenses.py
 python3 dev/release/test-native-licenses.py
 ```
 
-Collection uses the default features of `native/core/Cargo.toml` and the Linux and
-macOS targets in `dev/release/native-licenses.toml`. Review that configuration and
-regenerate the bundle when distributing a library with a different feature or
-target selection. Build-only and test-only dependencies are excluded. Generation
-needs network access for license files omitted from crates.io packages; the
-clarifications pin their contents with SHA-256. Review new licenses and changed
-copyrights as part of each dependency update.
+Collection uses core's default features (`hdfs-opendal`, `delta`). It evaluates
+Linux/macOS and x86_64/aarch64 separately. The standard release script ships the
+two Linux payloads; a local macOS build selects the macOS supplement instead.
+Regeneration fails if the two architectures of an OS need different component
+sets, so such a change needs a reviewed supplement split. Other targets or custom
+features require updating this selection and regenerating before distribution.
 
-The collector preserves distinct license texts even when they have the same SPDX
-identifier. Aggregate files, such as AWS-LC's and libm's, retain their original
-subcomponent notices. Two legacy packages, `typemap-ors` and `unsafe-any-ors` 1.0.0,
+Cargo's normal dependency graph with proc-macro edges removed supplies the target
+libraries. `dev/release/native-license-review.toml` separately records versioned
+code-generation decisions: terms for generated runtime impls, wrappers and tables
+are retained, while host-only parsers/token processing are excluded. This is a
+maintained release inventory, not a claim to subtract every linker-discarded
+function. The separate `native-inventory.json` records the full lockfile and graph
+roles for audit; it is not packaged or added to NOTICE.
+
+Build/dev-only dependencies are excluded. Generation needs network access for
+license files omitted from crates.io packages; clarifications pin their SHA-256.
+Review new licenses, code generators and changed copyrights with each dependency
+update. The receipt also covers the release build inputs and packaging checker.
+
+The collector preserves distinct copyright texts even under the same SPDX ID.
+Apache-2.0 terms appear once in `META-INF/LICENSE`; reviewed input hashes guard
+consolidation so LLVM exceptions and embedded third-party terms survive. Vendor
+aggregates retain compiled subcomponent terms. AWS-LC's explicitly noncompiled
+test/tooling section is omitted under a hash-pinned review. NOTICE preserves
+relevant project and third-party attribution without repeated ASF boilerplate or
+dependency inventories; a changed upstream NOTICE requires review.
+
+Two legacy packages, `typemap-ors` and `unsafe-any-ors` 1.0.0,
 declare MIT but provide no license or copyright file in their packages or
 publishing repositories. The generated bundle labels their canonical MIT
 permission text and upstream metadata explicitly. It does not invent copyright
@@ -58,8 +79,8 @@ ownership. A new missing permissive-license text fails collection for review.
 
 CI checks the receipt against the lockfile, manifests, configuration, and generator
 without installing cargo-about or using the network. Maven `verify` checks the
-actual shaded jar, including the complete bundle, the license reference, the
-combined notices, and duplicate legal entries. To check a staged artifact:
+actual shaded jar, including platform selection, complete legal materials, the
+license reference, combined notices, and duplicate legal entries. To check a staged artifact:
 
 ```shell
 python3 dev/release/check-native-licenses.py path/to/comet-spark.jar

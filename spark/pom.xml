@@ -722,16 +722,15 @@ under the License.
             <configuration>
               <target>
                 <mkdir dir="${project.build.directory}/native-legal" />
-                <concat destfile="${project.build.directory}/native-legal/LICENSE"
-                  encoding="UTF-8" outputencoding="UTF-8">
-                  <filelist dir="${project.build.outputDirectory}/META-INF" files="LICENSE" />
-                  <filelist dir="${project.basedir}/../dev/licenses" files="native-license-reference.txt" />
-                </concat>
-                <concat destfile="${project.build.directory}/native-legal/NOTICE"
-                  encoding="UTF-8" outputencoding="UTF-8">
-                  <filelist dir="${project.basedir}/.." files="NOTICE.txt" />
-                  <filelist dir="${project.basedir}/../dev/licenses" files="native-NOTICE.txt" />
-                </concat>
+                <exec executable="python3" failonerror="true">
+                  <arg value="${project.basedir}/../dev/release/check-native-licenses.py" />
+                  <arg value="--assemble" />
+                  <arg value="${project.build.outputDirectory}" />
+                  <arg value="--output" />
+                  <arg value="${project.build.directory}/native-legal" />
+                  <arg value="--base-license" />
+                  <arg value="${project.build.outputDirectory}/META-INF/LICENSE" />
+                </exec>
               </target>
             </configuration>
           </execution>
@@ -902,7 +901,7 @@ under the License.
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
                   <resource>META-INF/licenses/native-dependencies.txt</resource>
-                  <file>${project.basedir}/../dev/licenses/native-dependencies.txt</file>
+                  <file>${project.build.directory}/native-legal/native-dependencies.txt</file>
                 </transformer>
               </transformers>
             </configuration>

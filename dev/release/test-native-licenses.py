@@ -30,17 +30,28 @@ CHECKER = runpy.run_path(str(ROOT / "dev/release/check-native-licenses.py"))
 
 
 class NativeLicenseTest(unittest.TestCase):
+    @staticmethod
+    def elf(machine=183):
+        header = bytearray(32)
+        header[:6] = b"\x7fELF\x02\x01"
+        header[18:20] = machine.to_bytes(2, "little")
+        return bytes(header)
+
+    @staticmethod
+    def macho():
+        return b"\xcf\xfa\xed\xfe" + (0x0100000c).to_bytes(4, "little") + bytes(24)
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.jar = Path(self.directory.name) / "comet.jar"
         self.entries = {
-            "org/apache/comet/linux/aarch64/libcomet.so": b"native packaging fixture",
+            "org/apache/comet/linux/aarch64/libcomet.so": self.elf(),
             CHECKER["LICENSE"]: ((ROOT / "LICENSE.txt").read_bytes()
                                  + (ROOT / "dev/licenses/native-license-reference.txt").read_bytes()),
             CHECKER["NOTICE"]: ((ROOT / "NOTICE.txt").read_bytes()
                                 + (ROOT / "dev/licenses/native-NOTICE.txt").read_bytes()),
-            CHECKER["BUNDLE"]: (ROOT / "dev/licenses/native-dependencies.txt").read_bytes(),
+            CHECKER["BUNDLE"]: COLLECTOR["packaged_bundle"](ROOT, {"linux"}).encode(),
         }
 
     def write_jar(self):
@@ -111,10 +122,8 @@ class NativeLicenseTest(unittest.TestCase):
 
     def test_dependency_and_feature_changes_require_regeneration(self):
         root = Path(self.directory.name) / "source"
-        paths = list(COLLECTOR["inputs"]()) + [
-            "dev/licenses/native-licenses.json", "dev/licenses/native-dependencies.txt",
-            "dev/licenses/native-NOTICE.txt",
-        ]
+        paths = list(COLLECTOR["inputs"]()) + ["dev/licenses/native-licenses.json"]
+        paths += ["dev/licenses/" + name for name in COLLECTOR["OUTPUTS"]]
         for path in paths:
             destination = root / path
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -134,6 +143,116 @@ class NativeLicenseTest(unittest.TestCase):
                       "For Zstandard software", "Copyright (c) Meta Platforms, Inc. and affiliates.",
                       "Redistributions in binary form", "AWS Libcrypto (AWS-LC)"):
             self.assertIn(value, text)
+
+    def test_platform_materials_match_actual_payloads(self):
+        linux = self.entries[CHECKER["BUNDLE"]].decode()
+        self.assertIn("procfs 0.18.0", linux)
+        self.assertNotIn("core-foundation 0.10.1", linux)
+        del self.entries["org/apache/comet/linux/aarch64/libcomet.so"]
+        self.entries["org/apache/comet/darwin/aarch64/libcomet.dylib"] = self.macho()
+        mac = COLLECTOR["packaged_bundle"](ROOT, {"darwin"})
+        self.assertIn("core-foundation 0.10.1", mac)
+        self.assertNotIn("procfs 0.18.0", mac)
+        self.entries[CHECKER["BUNDLE"]] = mac.encode()
+        self.write_jar()
+        CHECKER["check_jar"](self.jar)
+
+    def test_wrong_platform_legal_materials_are_rejected(self):
+        self.entries[CHECKER["BUNDLE"]] = COLLECTOR["packaged_bundle"](ROOT, {"darwin"}).encode()
+        self.write_jar()
+        with self.assertRaisesRegex(ValueError, "reviewed dependency bundle"):
+            CHECKER["check_jar"](self.jar)
+
+    def test_mislabeled_native_architecture_is_rejected(self):
+        self.entries["org/apache/comet/linux/aarch64/libcomet.so"] = self.elf(62)
+        self.write_jar()
+        with self.assertRaisesRegex(ValueError, "header disagrees"):
+            CHECKER["check_jar"](self.jar)
+
+    def test_no_native_payload_has_no_native_attribution(self):
+        del self.entries["org/apache/comet/linux/aarch64/libcomet.so"]
+        self.entries[CHECKER["LICENSE"]] = (ROOT / "LICENSE.txt").read_bytes()
+        self.entries[CHECKER["NOTICE"]] = (ROOT / "NOTICE.txt").read_bytes()
+        self.entries[CHECKER["BUNDLE"]] = COLLECTOR["packaged_bundle"](ROOT, set()).encode()
+        self.write_jar()
+        CHECKER["check_jar"](self.jar)
+        self.assertNotIn(b"Pascal Seitz", self.entries[CHECKER["BUNDLE"]])
+
+    def test_assembly_selects_both_platforms_once(self):
+        classes = Path(self.directory.name) / "classes"
+        payloads = {"org/apache/comet/linux/amd64/libcomet.so": self.elf(62),
+                    "org/apache/comet/darwin/aarch64/libcomet.dylib": self.macho()}
+        for name, header in payloads.items():
+            path = classes / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(header)
+        output = Path(self.directory.name) / "legal"
+        CHECKER["assemble"](classes, output, ROOT / "LICENSE.txt")
+        self.entries = dict(payloads)
+        self.entries.update({CHECKER["LICENSE"]: (output / "LICENSE").read_bytes(),
+                             CHECKER["NOTICE"]: (output / "NOTICE").read_bytes(),
+                             CHECKER["BUNDLE"]: (output / "native-dependencies.txt").read_bytes()})
+        self.write_jar()
+        CHECKER["check_jar"](self.jar)
+        legal = self.entries[CHECKER["BUNDLE"]].decode()
+        self.assertIn("procfs 0.18.0", legal)
+        self.assertIn("core-foundation 0.10.1", legal)
+        self.assertEqual(legal.count("Copyright (c) 2020 Pascal Seitz"), 1)
+
+    def test_unreviewed_codegen_requires_review(self):
+        package = {"name": "new-macro", "version": "1.0.0", "source": "registry+test",
+                   "targets": [{"kind": ["proc-macro"]}]}
+        data = {"crates": [{"package": package}]}
+        with self.assertRaisesRegex(ValueError, "review new or changed code generator"):
+            COLLECTOR["select_packages"](data, set(), {})
+        selected, _ = COLLECTOR["select_packages"](data, set(), {"new-macro 1.0.0": "generated-code"})
+        self.assertEqual(selected, {"new-macro 1.0.0"})
+
+    def test_apache_consolidation_keeps_exceptions_and_copyrights(self):
+        text = ((ROOT / "LICENSE.txt").read_text()
+                + "\nThird-party exception\nCopyright Alice\nMIT permission text\n")
+        result = COLLECTOR["consolidate_apache"](text)
+        self.assertNotIn("END OF TERMS AND CONDITIONS", result)
+        self.assertIn("see META-INF/LICENSE", result)
+        self.assertIn("Copyright Alice", result)
+        self.assertIn("MIT permission text", result)
+        legal = self.entries[CHECKER["BUNDLE"]].decode()
+        self.assertIn("LLVM Exceptions", legal)
+        self.assertIn("Oliver Margetts", legal)
+        self.assertIn("Sun Microsystems", legal)
+        self.assertNotIn("END OF TERMS AND CONDITIONS", legal)
+        self.assertNotIn("Copyright {yyyy}", legal)
+
+    def test_changed_apache_input_requires_exception_review(self):
+        text = (ROOT / "LICENSE.txt").read_text() + "\nNew exception\n"
+        with self.assertRaisesRegex(ValueError, "review changed Apache text"):
+            COLLECTOR["vendor_text"](text, [], {"apache": {"texts": []}})
+
+    def test_vendor_test_only_components_are_not_attributed(self):
+        legal = self.entries[CHECKER["BUNDLE"]].decode()
+        self.assertIn("fiat-crypto authors", legal)
+        self.assertIn("Stephan Mueller", legal)
+        self.assertNotIn("Third-Party Libraries (NOT compiled", legal)
+        self.assertNotIn("Wycheproof Test Vectors", legal)
+
+    def test_codegen_terms_survive_without_host_parser_inventory(self):
+        legal = self.entries[CHECKER["BUNDLE"]].decode()
+        self.assertIn("derive_more-impl 2.1.1", legal)
+        self.assertIn("tokio-macros 2.7.2", legal)
+        self.assertNotIn("darling_macro ", legal)
+        self.assertNotIn("  syn ", legal)
+        inventory = (ROOT / "dev/licenses/native-inventory.json").read_text()
+        self.assertIn("darling_macro 0.24.1", inventory)
+        self.assertIn("host-only", inventory)
+
+    def test_notice_retains_attribution_without_duplicate_boilerplate(self):
+        notice = (ROOT / "dev/licenses/native-NOTICE.txt").read_text()
+        self.assertIn("Flavien Raynaud", notice)
+        self.assertIn("Java Caffeine library", notice)
+        self.assertIn("compact-thrift", notice)
+        self.assertNotIn("This product includes software developed at", notice)
+        self.assertNotIn("Used by:", notice)
+        self.assertNotIn("Please refer to the LICENSE-APACHE", notice)
 
 
 if __name__ == "__main__":
