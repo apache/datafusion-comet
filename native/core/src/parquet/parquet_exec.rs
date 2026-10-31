@@ -19,12 +19,12 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::file_error_context::ParquetErrorContext;
-use crate::parquet::name_fold::fold_schema_names;
+use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
 use crate::parquet::schema_adapter::SparkPhysicalExprAdapterFactory;
-use arrow::datatypes::{Field, FieldRef, Schema, SchemaRef};
+use arrow::datatypes::{DataType, Field, FieldRef, Schema, SchemaRef};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::config::{ParquetOptions, TableParquetOptions};
 use datafusion::datasource::listing::PartitionedFile;
@@ -33,16 +33,21 @@ use datafusion::datasource::physical_plan::{
 };
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::object_store::ObjectStoreUrl;
-use datafusion::physical_expr::expressions::Column;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{
+    in_list, BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
+};
+use datafusion::physical_expr::projection::{ProjectionExpr, ProjectionExprs};
+use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr_adapter::PhysicalExprAdapterFactory;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -62,6 +67,187 @@ pub(crate) struct CometParquetScanOptions {
     /// Load the next file's footer and page index while the current file is read
     /// (`spark.comet.parquet.prefetchNextFileMetadata.enabled`).
     pub prefetch_next_file_metadata: bool,
+}
+
+/// Keep top-level Spark string fields as binary while arrow-rs decodes Parquet. arrow-rs only
+/// validates UTF-8 for columns annotated as strings, so decoding an unannotated BINARY column that
+/// `spark.sql.parquet.binaryAsString=true` types as a string straight into Arrow Utf8 would admit
+/// invalid UTF-8. A projection added at the scan boundary converts the binary arrays to valid Utf8
+/// with Spark-compatible replacement semantics.
+fn binary_as_string_read_schema(schema: &SchemaRef) -> SchemaRef {
+    Arc::new(Schema::new_with_metadata(
+        schema
+            .fields()
+            .iter()
+            .map(binary_as_string_read_field)
+            .collect::<Vec<_>>(),
+        schema.metadata().clone(),
+    ))
+}
+
+/// The field `binary_as_string_read_schema` reads a top-level `field` as. Spark's StringType is
+/// Arrow Utf8.
+fn binary_as_string_read_field(field: &FieldRef) -> FieldRef {
+    if is_binary_as_string_read(field.data_type()) {
+        Arc::new(field.as_ref().clone().with_data_type(DataType::Binary))
+    } else {
+        Arc::clone(field)
+    }
+}
+
+/// Whether `binary_as_string_read_schema` reads a top-level field of `data_type` as Binary.
+fn is_binary_as_string_read(data_type: &DataType) -> bool {
+    data_type == &DataType::Utf8
+}
+
+/// Whether `expr` references a column whose folded name is in `folded_names`.
+fn references_any_column(
+    expr: &Arc<dyn PhysicalExpr>,
+    folded_names: &HashSet<String>,
+    case_sensitive: bool,
+) -> Result<bool, ExecutionError> {
+    for column in collect_columns(expr) {
+        if folded_names.contains(&fold_name(column.name(), case_sensitive)?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Rewrites a data filter for a scan that reads string columns as Binary (see
+/// `binary_as_string_read_schema`), or returns `None` when it can't go into the scan.
+///
+/// The scan decodes each such column with replacement: a valid value decodes to itself, and an
+/// invalid one to a string containing U+FFFD. So for a literal without U+FFFD, `s = 'lit'` on the
+/// decoded string holds exactly when `s = X'<bytes of lit>'` holds on the raw bytes, and the same
+/// goes for `IN`. `IS [NOT] NULL` holds on both, because decoding keeps nulls. Other filters on
+/// these columns stay above the scan. A range can disagree because decoding can reorder values:
+/// `"a\x80"` sorts below `"aé"` as bytes, but `"a\u{FFFD}"` sorts above it.
+///
+/// Spark's Filter above the scan re-evaluates every data filter, so a pushed filter only has to
+/// keep every row the original keeps. That's why an `AND` keeps whichever side can be pushed.
+fn binary_as_string_pushdown_filter(
+    filter: &Arc<dyn PhysicalExpr>,
+    binary_read_columns: &HashSet<String>,
+    case_sensitive: bool,
+    filter_read_schema: &Schema,
+) -> Result<Option<Arc<dyn PhysicalExpr>>, ExecutionError> {
+    if !references_any_column(filter, binary_read_columns, case_sensitive)? {
+        return Ok(Some(Arc::clone(filter)));
+    }
+    let reads_binary = |expr: &Arc<dyn PhysicalExpr>| -> Result<bool, ExecutionError> {
+        match expr.downcast_ref::<Column>() {
+            Some(column) => {
+                Ok(binary_read_columns.contains(&fold_name(column.name(), case_sensitive)?))
+            }
+            None => Ok(false),
+        }
+    };
+    let pushdown = |expr: &Arc<dyn PhysicalExpr>| {
+        binary_as_string_pushdown_filter(
+            expr,
+            binary_read_columns,
+            case_sensitive,
+            filter_read_schema,
+        )
+    };
+
+    if let Some(binary) = filter.downcast_ref::<BinaryExpr>() {
+        let (left, right) = (binary.left(), binary.right());
+        match binary.op() {
+            Operator::And => {
+                return Ok(match (pushdown(left)?, pushdown(right)?) {
+                    (Some(left), Some(right)) => {
+                        Some(Arc::new(BinaryExpr::new(left, Operator::And, right)))
+                    }
+                    (side, None) | (None, side) => side,
+                });
+            }
+            Operator::Or => {
+                return Ok(match (pushdown(left)?, pushdown(right)?) {
+                    (Some(left), Some(right)) => {
+                        Some(Arc::new(BinaryExpr::new(left, Operator::Or, right)))
+                    }
+                    _ => None,
+                });
+            }
+            Operator::Eq => {
+                if reads_binary(left)? {
+                    if let Some(literal) = binary_literal(right) {
+                        let eq = BinaryExpr::new(Arc::clone(left), Operator::Eq, literal);
+                        return Ok(Some(Arc::new(eq)));
+                    }
+                }
+                if reads_binary(right)? {
+                    if let Some(literal) = binary_literal(left) {
+                        let eq = BinaryExpr::new(literal, Operator::Eq, Arc::clone(right));
+                        return Ok(Some(Arc::new(eq)));
+                    }
+                }
+            }
+            _ => {}
+        }
+    } else if let Some(list) = filter.downcast_ref::<InListExpr>() {
+        if !list.negated() && reads_binary(list.expr())? {
+            if let Some(values) = list.list().iter().map(binary_literal).collect() {
+                let expr = Arc::clone(list.expr());
+                return Ok(Some(in_list(expr, values, &false, filter_read_schema)?));
+            }
+        }
+    } else if let Some(is_null) = filter.downcast_ref::<IsNullExpr>() {
+        if reads_binary(is_null.arg())? {
+            return Ok(Some(Arc::clone(filter)));
+        }
+    } else if let Some(is_not_null) = filter.downcast_ref::<IsNotNullExpr>() {
+        if reads_binary(is_not_null.arg())? {
+            return Ok(Some(Arc::clone(filter)));
+        }
+    }
+    Ok(None)
+}
+
+/// `expr` as a Binary literal holding the same bytes, if it is a string literal without U+FFFD.
+fn binary_literal(expr: &Arc<dyn PhysicalExpr>) -> Option<Arc<dyn PhysicalExpr>> {
+    match expr.downcast_ref::<Literal>()?.value() {
+        ScalarValue::Utf8(Some(value)) if !value.contains(char::REPLACEMENT_CHARACTER) => {
+            let bytes = value.as_bytes().to_vec();
+            Some(Arc::new(Literal::new(ScalarValue::Binary(Some(bytes)))))
+        }
+        _ => None,
+    }
+}
+
+fn binary_as_string_projection(
+    read_schema: &SchemaRef,
+    output_schema: &SchemaRef,
+    projection: Option<&[usize]>,
+    parquet_options: &SparkParquetOptions,
+) -> ProjectionExprs {
+    let indices: Vec<usize> = projection
+        .map(<[usize]>::to_vec)
+        .unwrap_or_else(|| (0..read_schema.fields().len()).collect());
+
+    ProjectionExprs::new(indices.into_iter().map(|index| {
+        let read_field = read_schema.field(index);
+        let output_field = output_schema.field(index);
+        let child: Arc<dyn PhysicalExpr> = Arc::new(Column::new(read_field.name().as_str(), index));
+        let expr = if read_field.data_type() == output_field.data_type() {
+            child
+        } else {
+            let mut cast_options =
+                SparkCastOptions::new(parquet_options.eval_mode, &parquet_options.timezone);
+            cast_options.allow_cast_unsigned_ints = parquet_options.allow_cast_unsigned_ints;
+            cast_options.is_adapting_schema = true;
+            Arc::new(Cast::new(
+                child,
+                output_field.data_type().clone(),
+                cast_options,
+                None,
+                None,
+            )) as Arc<dyn PhysicalExpr>
+        };
+        ProjectionExpr::new(expr, output_field.name())
+    }))
 }
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
@@ -99,6 +285,7 @@ pub(crate) fn init_datasource_exec(
     return_null_struct_if_all_fields_missing: bool,
     allow_type_promotion: bool,
     allow_timestamp_ltz_to_ntz: bool,
+    binary_as_string: bool,
     session_ctx: &Arc<SessionContext>,
     encryption_enabled: bool,
     use_field_id: bool,
@@ -198,9 +385,40 @@ pub(crate) fn init_datasource_exec(
         .flat_map(|s| s.fields().iter())
         .map(|f| Arc::new(Field::new(f.name(), f.data_type().clone(), f.is_nullable())))
         .collect();
-    let table_schema = TableSchema::builder(base_schema)
-        .with_table_partition_cols(partition_fields)
+    let output_table_schema = TableSchema::builder(Arc::clone(&base_schema))
+        .with_table_partition_cols(partition_fields.clone())
         .build();
+    let read_base_schema = if binary_as_string {
+        binary_as_string_read_schema(&base_schema)
+    } else {
+        Arc::clone(&base_schema)
+    };
+    let table_schema = TableSchema::builder(read_base_schema)
+        .with_table_partition_cols(partition_fields.clone())
+        .build();
+
+    // Folded names of the columns read as binary. Filters that reference one are rewritten for
+    // the binary read below, or kept out of the scan.
+    let binary_read_columns: HashSet<String> = if binary_as_string {
+        let names: Vec<&str> = base_schema
+            .fields()
+            .iter()
+            .filter(|field| is_binary_as_string_read(field.data_type()))
+            .map(|field| field.name().as_str())
+            .collect();
+        fold_names(&names, case_sensitive)?.into_iter().collect()
+    } else {
+        HashSet::new()
+    };
+
+    let binary_projection = binary_as_string.then(|| {
+        binary_as_string_projection(
+            table_schema.table_schema(),
+            output_table_schema.table_schema(),
+            projection.as_deref(),
+            &spark_parquet_options,
+        )
+    });
 
     let mut parquet_source = ParquetSource::new(table_schema)
         .with_table_parquet_options(table_parquet_options)
@@ -298,7 +516,37 @@ pub(crate) fn init_datasource_exec(
             .filter(|filter| !calls_jvm(filter))
             .collect::<Vec<_>>()
     });
-    let file_source: Arc<dyn FileSource> = match data_filters {
+    // In binaryAsString mode the filters are typed against the Utf8 output schema, but the scan
+    // reads the string columns as Binary. Rewrite the filters on those columns that can compare
+    // raw bytes, and keep the rest out of the scan. Filters on other columns are pushed as is.
+    let data_filters = match data_filters {
+        Some(filters) if !binary_read_columns.is_empty() => {
+            // The planner binds data filters against the required columns followed by the
+            // partition columns.
+            let filter_read_schema = Schema::new(
+                required_schema
+                    .fields()
+                    .iter()
+                    .map(binary_as_string_read_field)
+                    .chain(partition_fields.iter().cloned())
+                    .collect::<Vec<_>>(),
+            );
+            let mut pushable = Vec::with_capacity(filters.len());
+            for filter in filters {
+                if let Some(filter) = binary_as_string_pushdown_filter(
+                    &filter,
+                    &binary_read_columns,
+                    case_sensitive,
+                    &filter_read_schema,
+                )? {
+                    pushable.push(filter);
+                }
+            }
+            Some(pushable)
+        }
+        other => other,
+    };
+    let mut file_source: Arc<dyn FileSource> = match data_filters {
         Some(filters) if !filters.is_empty() => {
             let propagation =
                 parquet_source.try_pushdown_filters(filters, session_config.options())?;
@@ -310,6 +558,16 @@ pub(crate) fn init_datasource_exec(
         }
         _ => Arc::new(parquet_source),
     };
+
+    if let Some(binary_projection) = &binary_projection {
+        file_source = file_source
+            .try_pushdown_projection(binary_projection)?
+            .ok_or_else(|| {
+                ExecutionError::GeneralError(
+                    "ParquetSource rejected binaryAsString projection pushdown".to_string(),
+                )
+            })?;
+    }
 
     let file_source = if spark_parquet_options.checked_timestamp_overflow {
         ParquetErrorContext::wrap(file_source)
@@ -329,9 +587,11 @@ pub(crate) fn init_datasource_exec(
         .with_file_groups(file_groups)
         .with_expr_adapter(Some(expr_adapter_factory));
 
-    if let Some(projection) = projection {
-        file_scan_config_builder =
-            file_scan_config_builder.with_projection_indices(Some(projection))?;
+    if binary_projection.is_none() {
+        if let Some(projection) = projection {
+            file_scan_config_builder =
+                file_scan_config_builder.with_projection_indices(Some(projection))?;
+        }
     }
 
     let file_scan_config = file_scan_config_builder.build();
@@ -456,7 +716,7 @@ fn get_options(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Date32Array, Int32Array};
+    use arrow::array::{AsArray, BinaryArray, Date32Array, Int32Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use bytes::Bytes;
@@ -469,6 +729,7 @@ mod tests {
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::prelude::SessionConfig;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
     use object_store::memory::InMemory;
@@ -480,6 +741,7 @@ mod tests {
     use parquet::encryption::encrypt::FileEncryptionProperties;
     use parquet::file::metadata::{KeyValue, PageIndexPolicy, ParquetMetaDataReader};
     use parquet::file::properties::{EnabledStatistics, WriterProperties};
+    use std::collections::BTreeMap;
     use std::fs::File;
     use std::time::Duration;
 
@@ -504,6 +766,281 @@ mod tests {
 
         assert!(calls_jvm(&nested));
         assert!(!calls_jvm(&native));
+    }
+
+    /// How many rows of a scan hold each decoded value of `s`.
+    type DecodedCounts = BTreeMap<Option<String>, usize>;
+
+    /// Writes three 500-row row groups with `a` counting from 0, 1,000 and 2,000, and `s` holding
+    /// `values[i]` in every row of group `i` as `s_type`. A scan's values then show which groups a
+    /// filter pruned.
+    fn write_binary_as_string_fixture(
+        s_type: DataType,
+        values: [Option<&[u8]>; 3],
+    ) -> PartitionedFile {
+        let file_schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("s", s_type.clone(), true),
+        ]));
+        let filename = get_temp_filename()
+            .as_path()
+            .as_os_str()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(500))
+            .build();
+        let file = File::create(&filename).unwrap();
+        let mut writer = ArrowWriter::try_new(file, Arc::clone(&file_schema), Some(props)).unwrap();
+        for (group, value) in values.into_iter().enumerate() {
+            let start = group as i32 * 1_000;
+            let s = arrow::compute::cast(&BinaryArray::from(vec![value; 500]), &s_type).unwrap();
+            let a = Arc::new(Int32Array::from((start..start + 500).collect::<Vec<i32>>()));
+            let batch = RecordBatch::try_new(Arc::clone(&file_schema), vec![a, s]).unwrap();
+            writer.write(&batch).unwrap();
+        }
+        writer.close().unwrap();
+        PartitionedFile::from_path(filename).unwrap()
+    }
+
+    fn binary_as_string_required_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("s", DataType::Utf8, true),
+        ]))
+    }
+
+    /// A session whose scans evaluate pushed filters on every row when `row_filter` is set, and
+    /// otherwise use them only to prune row groups.
+    fn binary_as_string_session(row_filter: bool) -> Arc<SessionContext> {
+        let mut config = SessionConfig::new();
+        config.options_mut().execution.parquet.pushdown_filters = row_filter;
+        Arc::new(SessionContext::new_with_config(config))
+    }
+
+    /// A scan of `file` with `binaryAsString` on, reading `s` as a string.
+    fn binary_as_string_scan(
+        file: &PartitionedFile,
+        filters: Vec<Arc<dyn PhysicalExpr>>,
+        session_ctx: &Arc<SessionContext>,
+    ) -> Arc<DataSourceExec> {
+        let required_schema = binary_as_string_required_schema();
+        init_datasource_exec(
+            Arc::clone(&required_schema),
+            Some(required_schema),
+            None,
+            ObjectStoreUrl::local_filesystem(),
+            ObjectStoreBackend::Local,
+            vec![vec![file.clone()]],
+            Some(vec![0, 1]),
+            Some(filters),
+            None,
+            "UTC",
+            true,
+            false,
+            false,
+            false,
+            true,
+            session_ctx,
+            false,
+            false,
+            false,
+            false,
+            "",
+            "",
+        )
+        .unwrap()
+    }
+
+    /// Counts the decoded values of `s` that `scan` returns. The scan has no residual filter, so
+    /// it returns every row of each row group its filters keep, or with row filters only the rows
+    /// they match.
+    async fn decoded_counts(
+        scan: &Arc<DataSourceExec>,
+        session_ctx: &Arc<SessionContext>,
+    ) -> DecodedCounts {
+        let batches: Vec<RecordBatch> = scan
+            .execute(0, session_ctx.task_ctx())
+            .unwrap()
+            .map(|batch| batch.unwrap())
+            .collect()
+            .await;
+        let mut counts = BTreeMap::new();
+        for batch in &batches {
+            assert_eq!(batch.schema().field(1).data_type(), &DataType::Utf8);
+            for value in batch.column(1).as_string::<i32>() {
+                *counts.entry(value.map(str::to_string)).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    async fn scan_binary_as_string(
+        file: &PartitionedFile,
+        filters: Vec<Arc<dyn PhysicalExpr>>,
+        row_filter: bool,
+    ) -> DecodedCounts {
+        let session_ctx = binary_as_string_session(row_filter);
+        decoded_counts(
+            &binary_as_string_scan(file, filters, &session_ctx),
+            &session_ctx,
+        )
+        .await
+    }
+
+    fn compare_s(op: Operator, value: &str) -> Arc<dyn PhysicalExpr> {
+        let literal = Literal::new(ScalarValue::Utf8(Some(value.to_string())));
+        Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("s", 1)),
+            op,
+            Arc::new(literal),
+        ))
+    }
+
+    fn s_in(values: &[&str], negated: bool) -> Arc<dyn PhysicalExpr> {
+        let values = values
+            .iter()
+            .map(|value| {
+                let literal = Literal::new(ScalarValue::Utf8(Some(value.to_string())));
+                Arc::new(literal) as Arc<dyn PhysicalExpr>
+            })
+            .collect();
+        let schema = binary_as_string_required_schema();
+        in_list(Arc::new(Column::new("s", 1)), values, &negated, &schema).unwrap()
+    }
+
+    fn groups(values: &[Option<&str>]) -> DecodedCounts {
+        values
+            .iter()
+            .map(|value| (value.map(str::to_string), 500))
+            .collect()
+    }
+
+    /// An unannotated BINARY column read as a string prunes on `=`, `IN` and `IS [NOT] NULL`
+    /// compared as raw bytes, while filters that could disagree with the decoded strings stay
+    /// above the scan.
+    #[tokio::test]
+    async fn binary_as_string_pushes_raw_byte_filters_on_unannotated_binary() {
+        let file = write_binary_as_string_fixture(
+            DataType::Binary,
+            [Some(b"one".as_slice()), Some(&[0xff]), None],
+        );
+        let s = || Arc::new(Column::new("s", 1)) as Arc<dyn PhysicalExpr>;
+        let a_below_1000: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            Arc::new(Column::new("a", 0)),
+            Operator::Lt,
+            Arc::new(Literal::new(ScalarValue::Int32(Some(1_000)))),
+        ));
+        let every_group = groups(&[Some("one"), Some("\u{fffd}"), None]);
+        let cases: Vec<(&str, Arc<dyn PhysicalExpr>, DecodedCounts)> = vec![
+            ("=", compare_s(Operator::Eq, "one"), groups(&[Some("one")])),
+            ("IN", s_in(&["one", "zzz"], false), groups(&[Some("one")])),
+            ("IS NULL", Arc::new(IsNullExpr::new(s())), groups(&[None])),
+            (
+                "IS NOT NULL",
+                Arc::new(IsNotNullExpr::new(s())),
+                groups(&[Some("one"), Some("\u{fffd}")]),
+            ),
+            // Pushed, this would prune the null group. It isn't, because a range on the decoded
+            // strings can disagree with the same range on the bytes.
+            ("range", compare_s(Operator::Gt, "a"), every_group.clone()),
+            // The scan pushes only `=`, `IN` and `IS [NOT] NULL`, so `NOT IN` stays above it.
+            ("NOT IN", s_in(&["one"], true), every_group.clone()),
+            // The invalid group decodes to U+FFFD, so comparing the literal's bytes would prune a
+            // group that matches.
+            (
+                "U+FFFD literal",
+                compare_s(Operator::Eq, "\u{fffd}"),
+                every_group.clone(),
+            ),
+            // Nor is an `IN` list holding one: pushing its other values would prune that group too.
+            (
+                "IN with a U+FFFD literal",
+                s_in(&["one", "\u{fffd}"], false),
+                every_group,
+            ),
+            // A filter on another column still prunes, and `AND` keeps the side that is pushed.
+            (
+                "AND",
+                Arc::new(BinaryExpr::new(
+                    a_below_1000,
+                    Operator::And,
+                    compare_s(Operator::Gt, "a"),
+                )),
+                groups(&[Some("one")]),
+            ),
+        ];
+        for (name, filter, expected) in cases {
+            for row_filter in [false, true] {
+                assert_eq!(
+                    scan_binary_as_string(&file, vec![Arc::clone(&filter)], row_filter).await,
+                    expected,
+                    "{name}, row filter {row_filter}"
+                );
+            }
+        }
+    }
+
+    /// A join or TopK dynamic filter is pushed onto the scan's output, which holds the decoded
+    /// strings, so the scan maps it through its decoding projection and it compares decoded
+    /// values rather than bytes. `"a\x80"` sorts below `"aé"` as bytes, but it decodes to
+    /// `"a\u{FFFD}"`, which sorts above it.
+    #[tokio::test]
+    async fn binary_as_string_output_filter_compares_decoded_strings() {
+        let file = write_binary_as_string_fixture(
+            DataType::Binary,
+            [Some(b"a\x80".as_slice()), Some(b"a"), None],
+        );
+        let session_ctx = binary_as_string_session(true);
+        let scan = binary_as_string_scan(&file, vec![], &session_ctx);
+        let config = session_ctx.copied_config();
+        let pushed = scan
+            .data_source()
+            .try_pushdown_filters(vec![compare_s(Operator::Lt, "aé")], config.options())
+            .unwrap()
+            .updated_node
+            .expect("the scan should accept the filter");
+        let scan = Arc::new(scan.as_ref().clone().with_data_source(pushed));
+        assert_eq!(
+            decoded_counts(&scan, &session_ctx).await,
+            groups(&[Some("a")])
+        );
+    }
+
+    /// A column the file annotates as a string is read as Binary too, and the adapter's cast back
+    /// would hide it from pruning. The adapter compares the column directly instead.
+    #[tokio::test]
+    async fn binary_as_string_prunes_annotated_strings() {
+        let file = write_binary_as_string_fixture(
+            DataType::Utf8,
+            [Some(b"one".as_slice()), Some(b"two"), None],
+        );
+        let s = || Arc::new(Column::new("s", 1)) as Arc<dyn PhysicalExpr>;
+        let cases: Vec<(&str, Arc<dyn PhysicalExpr>, DecodedCounts)> = vec![
+            ("=", compare_s(Operator::Eq, "one"), groups(&[Some("one")])),
+            ("IN", s_in(&["two"], false), groups(&[Some("two")])),
+            (
+                "NOT IN",
+                s_in(&["one"], true),
+                groups(&[Some("one"), Some("two"), None]),
+            ),
+            ("IS NULL", Arc::new(IsNullExpr::new(s())), groups(&[None])),
+            (
+                "IS NOT NULL",
+                Arc::new(IsNotNullExpr::new(s())),
+                groups(&[Some("one"), Some("two")]),
+            ),
+        ];
+        for (name, filter, expected) in cases {
+            for row_filter in [false, true] {
+                assert_eq!(
+                    scan_binary_as_string(&file, vec![Arc::clone(&filter)], row_filter).await,
+                    expected,
+                    "{name}, row filter {row_filter}"
+                );
+            }
+        }
     }
 
     fn write_scan_io_fixture() -> (String, SchemaRef) {
@@ -568,6 +1105,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
@@ -708,6 +1246,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             &session_ctx,
             false,
             false,
@@ -781,6 +1320,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
@@ -893,6 +1433,7 @@ mod tests {
                 false,
                 false,
                 false,
+                false,
                 &session_ctx,
                 false,
                 false,
@@ -986,6 +1527,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
@@ -1136,6 +1678,7 @@ mod tests {
             false,
             false,
             allow_timestamp_ltz_to_ntz,
+            false,
             &session_ctx,
             false,
             false,
@@ -1402,6 +1945,7 @@ mod tests {
             None,
             "UTC",
             true,
+            false,
             false,
             false,
             false,
