@@ -224,8 +224,10 @@ above it.
 Building the cache is measured the same way, from the same source, with its rows produced either by
 Comet operators or by Spark operators. Comet's format is written straight from the Arrow batches of
 Comet operators, while Spark's is always built from rows, so above Comet operators it first converts
-their batches. On Spark 3.4 and 3.5, Comet's format is written from Arrow batches only with AQE off;
-see [Limitations](#limitations). Measured on an Apple M3 Max (JDK 17, Spark 4.1, release build):
+their batches. On Spark 3.5, and on Spark 3.4 with
+`spark.sql.optimizer.canChangeCachedPlanOutputPartitioning` set, Comet's format is written from
+Arrow batches only with AQE off; see [Limitations](#limitations). Measured on an Apple M3 Max
+(JDK 17, Spark 4.1, release build):
 
 | Rows produced by | Spark's cache format | Comet's cache format, `zstd` | Comet's cache format, `none` |
 | ---------------- | -------------------: | ---------------------------: | ---------------------------: |
@@ -302,13 +304,15 @@ operator reads a relation cached in Comet's format depends on the scan below it:
 Whenever Spark's scan reads Comet's format, which also happens for a relation whose cached plan
 records `Dataset.observe` metrics, Comet records a fallback reason on the scan.
 
-On **Spark 3.4 and 3.5**, a relation cached under AQE (`spark.sql.adaptive.enabled`, on by default) is
-built from rows. Spark builds a cache from the batches of its plan only when the plan supports
-columnar output, and a cached `AdaptiveSparkPlanExec` does not until Spark 4.0. So the cached plan
-runs natively, then converts its batches to rows, which are written into Arrow again before they
-are compressed, where Spark 4.0 and later, or any version without AQE, write the Arrow batches as
-they are. Comet cannot change this without a hook in Spark. The relation is read the same way once
-it is built, but the build timings above are from Spark 4.1 and do not apply to this case.
+On **Spark 3.5**, a relation cached under AQE (`spark.sql.adaptive.enabled`, on by default) is built
+from rows. Spark builds a cache from the batches of its plan only when the plan supports columnar
+output, and a cached `AdaptiveSparkPlanExec` does not until Spark 4.0. So the cached plan runs
+natively, then converts its batches to rows, which are written into Arrow again before they are
+compressed, where Spark 4.0 and later, or any version without AQE, write the Arrow batches as they
+are. Comet cannot change this without a hook in Spark. The relation is read the same way once it is
+built, but the build timings above are from Spark 4.1 and do not apply to this case. Spark 3.4 does
+the same only with `spark.sql.optimizer.canChangeCachedPlanOutputPartitioning` set to `true`. By
+default it turns AQE off for the plan it caches, which is then written from its Arrow batches.
 
 Measured by the same benchmark over the same 5M-row relation, with native execution off so that
 Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused

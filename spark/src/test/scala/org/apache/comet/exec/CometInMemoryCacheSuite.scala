@@ -2998,10 +2998,13 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // supports columnar output. A cached AdaptiveSparkPlanExec does not before Spark 4.0, so there
     // a relation cached under AQE goes native plan, columnar-to-row, UnsafeRow and back to Arrow
     // before it is compressed. Without AQE, or from 4.0 on, it is written from the Arrow batches.
-    // The user guide's build timings are from Spark 4.1 and say so.
+    // Spark 3.4 turns AQE off for the cached plan unless canChangeCachedPlanOutputPartitioning,
+    // which defaults to true only from 3.5, is set. The user guide's build timings are from Spark
+    // 4.1 and say so.
     Seq(true, false).foreach { adaptive =>
       withConversions(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        SQLConf.CAN_CHANGE_CACHED_PLAN_OUTPUT_PARTITIONING.key -> "true",
         SQLConf.SHUFFLE_PARTITIONS.key -> "3",
         CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
         CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
