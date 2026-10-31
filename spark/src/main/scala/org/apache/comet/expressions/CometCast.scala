@@ -135,6 +135,10 @@ object CometCast
       Compatible()
     } else if (CometTimeZone.nativeId(cast.timeZoneId).isEmpty) {
       CometTimeZone.supportLevel(cast.timeZoneId)
+    } else if (canProduceNullMapKey(cast)) {
+      // A failing key cast under TRY leaves a null key, which an Arrow map cannot hold. Checked
+      // here at every depth, so a sibling's support level in `isSupported` cannot hide it.
+      Unsupported(Some(tryCastNullMapKeyReason))
     } else {
       isSupported(cast.child.dataType, cast.dataType, cast.timeZoneId, evalMode(cast))
     }
@@ -563,6 +567,10 @@ object CometCast
       case _ => Unsupported(Some(s"Cast from DateType to $toType is not supported"))
     }
 
+  private[comet] val tryCastNullMapKeyReason: String =
+    "TRY_CAST of a map key that can fail produces a null key, which Arrow's map format " +
+      "cannot hold (https://github.com/apache/datafusion-comet/issues/5995)"
+
   /**
    * Whether evaluating `cast` can produce a map with a null key. Under TRY a key cast that throws
    * becomes a null key, and Spark's `Cast.castMap` builds the result without rejecting it, so any
@@ -575,7 +583,9 @@ object CometCast
   private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case (MapType(fromKey, fromValue, _), MapType(toKey, toValue, _)) =>
-        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromValue, toValue)
+        // An array or struct key cannot itself become null, but a map inside it still can.
+        !keyCastCannotFail(fromKey, toKey) || mayNullMapKey(fromKey, toKey) ||
+        mayNullMapKey(fromValue, toValue)
       case (ArrayType(fromElement, _), ArrayType(toElement, _)) =>
         mayNullMapKey(fromElement, toElement)
       case (StructType(fromFields), StructType(toFields)) =>
@@ -610,6 +620,18 @@ object CometCast
   private def keyCastCannotFail(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
       case _ if fromType == toType => true
+      // TRY casts each element on its own, so a failing element becomes a null element and the
+      // array or struct key itself is never null.
+      case (_: ArrayType, _: ArrayType) | (_: StructType, _: StructType) => true
+      case (DataTypes.BooleanType, to: DecimalType) => to.precision - to.scale >= 1
+      case (DataTypes.BooleanType, _: NumericType) => true
+      case (_: NumericType, DataTypes.BooleanType) => true
+      case (DataTypes.TimestampType, DataTypes.LongType | DataTypes.BooleanType) => true
+      case (
+            DataTypes.StringType | DataTypes.ByteType | DataTypes.ShortType |
+            DataTypes.IntegerType | DataTypes.LongType,
+            DataTypes.BinaryType) =>
+        true
       case (from, to) if numericWidening.contains(from) && numericWidening.contains(to) =>
         numericWidening.indexOf(from) < numericWidening.indexOf(to)
       case (from, to: DecimalType) if integralDigits(from).isDefined =>

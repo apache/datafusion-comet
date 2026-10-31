@@ -217,11 +217,8 @@ The following casts are exceptions to these rules:
 - When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
   maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
   string format.
-
-In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
-a result ([#5995](https://github.com/apache/datafusion-comet/issues/5995)). This only affects key
-casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. Spark rejects a
-`STRING` key cast at analysis.
+- In Try mode, a cast between maps whose key cast can fail, such as narrowing `BIGINT` to `INT`, is
+  unsupported. A key that fails to cast becomes `NULL`, and an Arrow map cannot hold a `NULL` key.
 
 ## Decimal with Negative Scale to Integral Types
 
