@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometBypassMergeSortShuffleH
 import org.apache.spark.sql.comet.execution.shuffle.CometColumnarShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometNativeShuffle
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
-import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
+import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -1224,19 +1224,17 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           // The task deserializes this metric together with the scan's metric node, so both
           // refer to the task-side copy that native execution publishes into.
           val outputRows = scan.metrics("output_rows")
-          val (midStream, atEnd) = SQLExecution.withSQLConfPropagated(spark) {
-            scan
-              .executeColumnar()
-              .mapPartitions { batches =>
-                Thread.sleep(100)
-                batches.next()
-                val mid = outputRows.value
-                batches.foreach(_ => ())
-                Iterator((mid, outputRows.value))
-              }
-              .collect()
-              .head
-          }
+          val (midStream, atEnd) = scan
+            .executeColumnar()
+            .mapPartitions { batches =>
+              Thread.sleep(100)
+              batches.next()
+              val mid = outputRows.value
+              batches.foreach(_ => ())
+              Iterator((mid, outputRows.value))
+            }
+            .collect()
+            .head
           check(midStream, atEnd)
         }
 

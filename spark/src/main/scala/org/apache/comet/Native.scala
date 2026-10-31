@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -98,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -288,6 +302,29 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
+
+  /** Own a bounded group of decoded local shuffle batches until export or reader cleanup. */
+  @native def createShuffleBatchCoalescer(maxRows: Int): Long
+
+  /** Decode one frame and return the next output's column count, or -1 for more input. */
+  @native def appendShuffleBatch(
+      handle: Long,
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      numColumns: Int,
+      tracingEnabled: Boolean): Int
+
+  /** Return ready columns, flushing any pending group at EOF. */
+  @native def peekShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
+
+  /** Transfer one ready batch through Arrow FFI, returning its row count. */
+  @native def takeShuffleBatch(
+      handle: Long,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
+
+  @native def closeShuffleBatchCoalescer(handle: Long): Unit
 
   /**
    * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
