@@ -26,6 +26,8 @@
 //! - `COMET_SCHEDULER_FLIGHT_PORT`: the Flight port, for drivers (default `50060`)
 //! - `COMET_SCHEDULER_RESULT_RETENTION_SECONDS`: how long a query's results stay readable after
 //!   the query ends, whether or not a driver has read them (default `300`). `0` keeps them.
+//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest gRPC message, in bytes, the scheduler sends or
+//!   accepts, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -52,6 +54,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(host) = env_var("COMET_SCHEDULER_EXTERNAL_HOST")? {
         config.external_host = host;
+    }
+    if let Some(size) = env_var("COMET_GRPC_MAX_MESSAGE_SIZE")? {
+        config.grpc_server_max_decoding_message_size = size;
+        config.grpc_server_max_encoding_message_size = size;
+        config.grpc_client_max_message_size = size;
     }
     if let Some(port) = env_var("COMET_SCHEDULER_PORT")? {
         config.bind_port = port;

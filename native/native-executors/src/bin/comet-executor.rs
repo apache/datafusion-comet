@@ -26,6 +26,8 @@
 //! - `COMET_EXECUTOR_GRPC_PORT` (default `50052`)
 //! - `COMET_SCHEDULER_HOST` (default `localhost`) and `COMET_SCHEDULER_PORT` (default `50050`)
 //! - `COMET_EXECUTOR_TASKS`: concurrent tasks (default: the number of CPUs)
+//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest gRPC message, in bytes, the executor accepts or
+//!   sends, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
 //! - `COMET_EXECUTOR_WORK_DIR`: where shuffle and spill files go (default: a temporary directory)
 
 use std::sync::Arc;
@@ -61,6 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.vcores = tasks;
     }
     config.work_dir = env_var("COMET_EXECUTOR_WORK_DIR")?;
+    if let Some(size) = env_var("COMET_GRPC_MAX_MESSAGE_SIZE")? {
+        config.grpc_max_decoding_message_size = size;
+        config.grpc_max_encoding_message_size = size;
+    }
 
     start_executor_process(Arc::new(config)).await?;
     Ok(())
