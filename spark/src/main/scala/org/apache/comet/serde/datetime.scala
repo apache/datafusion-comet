@@ -21,7 +21,7 @@ package org.apache.comet.serde
 
 import java.util.Locale
 
-import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, Attribute, BinaryComparison, CaseWhen, Cast, Coalesce, ConvertTimezone, CreateArray, CreateNamedStruct, DateAdd, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, EqualNullSafe, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Greatest, HashExpression, Hour, Hours, If, In, InSet, LastDay, LeafExpression, Least, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, Multiply, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, SortOrder, Subtract, TimestampAdd, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
+import org.apache.spark.sql.catalyst.expressions.{Add, AddMonths, Attribute, BinaryComparison, CaseWhen, Cast, Coalesce, ConvertTimezone, CreateArray, CreateNamedStruct, DateAdd, DateAddInterval, DateAddYMInterval, DateDiff, DateFormatClass, DateFromUnixDate, DateSub, DayOfMonth, DayOfWeek, DayOfYear, Days, DivideDTInterval, EqualNullSafe, Expression, FromUTCTimestamp, GetDateField, GetTimestamp, Greatest, HashExpression, Hour, Hours, If, In, InSet, LastDay, LeafExpression, Least, Literal, MakeDate, MakeDTInterval, MakeInterval, MakeTimestamp, MakeYMInterval, MicrosToTimestamp, MillisToTimestamp, Minute, Month, MonthsBetween, Multiply, MultiplyDTInterval, MultiplyYMInterval, NextDay, PreciseTimestampConversion, Quarter, Second, SecondsToTimestamp, SortOrder, Subtract, SubtractDates, SubtractTimestamps, TimestampAdd, TimestampAddYMInterval, TimestampDiff, ToUnixTimestamp, ToUTCTimestamp, TruncDate, TruncTimestamp, UnixDate, UnixMicros, UnixMillis, UnixSeconds, UnixTimestamp, WeekDay, WeekOfYear, Year}
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
 import org.apache.spark.sql.types.{CalendarIntervalType, DataType, DateType, DoubleType, FloatType, IntegerType, LongType, StringType, TimestampNTZType, TimestampType}
 import org.apache.spark.unsafe.types.UTF8String
@@ -1036,6 +1036,33 @@ object CometMultiplyDTInterval extends CometCodegenDispatch[MultiplyDTInterval]
 object CometTimestampAdd extends CometCodegenDispatch[TimestampAdd]
 
 object CometTimestampDiff extends CometCodegenDispatch[TimestampDiff]
+
+// No `timestamp + interval` serde here: Spark 4.1 renames `TimeAdd`, so the shims own it.
+object CometDateAddInterval extends CometCodegenDispatch[DateAddInterval]
+
+object CometDateAddYMInterval extends CometCodegenDispatch[DateAddYMInterval]
+
+object CometTimestampAddYMInterval extends CometCodegenDispatch[TimestampAddYMInterval]
+
+// subtractDates leaves microseconds at 0, so legacy mode needs no guard here.
+object CometSubtractDates extends CometCodegenDispatch[SubtractDates]
+
+object CometSubtractTimestamps extends CometCodegenDispatch[SubtractTimestamps] {
+  private val legacyIntervalReason =
+    "In legacy interval mode (`spark.sql.legacy.interval.enabled=true`) the result is a" +
+      " `CalendarIntervalType`, and the JVM codegen dispatcher's calendar-interval output" +
+      " cannot carry a span past about 292 years (see" +
+      " https://github.com/apache/datafusion-comet/issues/5279), so the expression falls" +
+      " back to Spark"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(legacyIntervalReason)
+
+  // Unlike `make_interval`, `ts - ts` can exceed the #5279 span limit on ordinary data.
+  override def getSupportLevel(expr: SubtractTimestamps): SupportLevel = expr.dataType match {
+    case CalendarIntervalType => Unsupported(Some(legacyIntervalReason))
+    case _ => Compatible()
+  }
+}
 
 /**
  * Spark's internal `PreciseTimestampConversion` reinterprets a value between the timestamp types
