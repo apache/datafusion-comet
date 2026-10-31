@@ -44,10 +44,16 @@ needs. A native Iceberg fanout write is the exception: it closes some of its ope
 
 Comet's memory pool only tracks memory that an operator explicitly reserves, which in practice means the batches
 an operator deliberately accumulates: the sort buffer, the build side of a hash join, hash aggregation state, the
-shuffle writer's buffered partitions, and the files a native writer holds open. Memory that is not reserved is
-invisible to the pool no matter how much of it there is. That includes:
+shuffle writer's buffered partitions, the files a native writer holds open, and the write buffers, encode scratch
+and zstd context of the native shuffle writer when it writes to more than one local partition (the scratch is
+charged as each write ends, so its transient peak within a write, the write buffer size plus one block, is not, and
+the zstd context only up to level 8, as [Sizing the Overhead from the Memory Usage Log] describes).
+Memory that is not reserved is invisible to the pool no matter how much of it there is. That includes:
 
 - per-batch working memory in expression kernels and Arrow array builders,
+- the write buffers and encode scratch of the single-partition, empty-schema and remote shuffle writers
+  (`spark.comet.shuffle.native.writeBufferSize` sizes the local ones), and the zstd context they keep while
+  encoding when `spark.comet.shuffle.compression.codec` is `zstd`,
 - decompression buffers and Parquet reader structures,
 - object store request buffers and the async runtime's own machinery,
 - Arrow buffers allocated on the JVM side, which no budget covers at all,
@@ -184,11 +190,19 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
-   PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
-   result buffer later imported into the JVM can appear in the `imported from native` figure that
-   the estimate subtracts, even though Rust's `allocated` does not count it. Use the executor's
-   peak resident memory to size this additional overhead.
+   libraries such as zstd. The zstd context of the native shuffle writer is the exception at levels
+   up to 8: when `spark.comet.shuffle.compression.codec` is `zstd`, a shuffle task writing to more
+   than one local partition reserves the context it keeps between blocks while spilling or writing
+   its output, so that memory is in `reserved` but never in `allocated`, and the untracked memory
+   worked out from the log understates what has to fit in the overhead by one context per such task
+   (about 1.3 MiB at the default level, close to 8 MiB at levels 7 and 8). Above level 8 the context
+   is too large to keep, so each block creates and frees its own and it appears in neither figure:
+   budget one per task writing shuffle output, about 15 MiB at level 9 and 90 MiB at level 19, on
+   top of the untracked memory. With native Arrow UDFs, budget the embedded
+   Python interpreter and PyArrow allocations in addition to the untracked memory calculated from
+   the log. A PyArrow result buffer later imported into the JVM can appear in the
+   `imported from native` figure that the estimate subtracts, even though Rust's `allocated` does
+   not count it. Use the executor's peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
