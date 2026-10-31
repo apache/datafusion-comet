@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! A fork of DataFusion's `UnnestExec`, kept for two unnesting kernels Comet has specialized.
+//! A fork of DataFusion's `UnnestExec`, kept for Comet's specialized unnesting kernels.
 //!
 //! # Why this fork exists
 //!
@@ -23,16 +23,20 @@
 //! however many rows the unnesting produced, and never consulted
 //! `datafusion.execution.batch_size`. That fix is now upstream
 //! (apache/datafusion#24384, in DataFusion 55.1.0), so it is no longer the reason to keep
-//! the fork. What is left are two performance paths that have not been upstreamed:
+//! the fork. What is left are performance improvements that have not been upstreamed:
 //!
-//! * `list_output_lens`, which computes the per-row output lengths of a single `List` column
-//!   in one pass over the offsets instead of chaining six arrow kernels;
+//! * `list_output_lens`, which computes per-row output lengths in one pass for `List` columns
+//!   sharing offsets and validity, instead of chaining arrow kernels;
 //! * the contiguous-run fast path in `unnest_list_array`, which returns a slice of the child
 //!   values instead of gathering them, and the buffer fills in `create_take_indices`.
+//! * splitting individual List rows before repeating carried values, including a repetition
+//!   bound that prevents copied variable-width buffers and child offsets from overflowing, and
+//!   trimming list children so retained slices do not inflate Arrow take's preallocation.
+//! * skipping gather indices and placeholders when every column is being unnested.
 //!
 //! # Deleting this file
 //!
-//! Upstream those two paths, then delete this module and go back to
+//! Upstream these improvements, then delete this module and go back to
 //! `datafusion::physical_plan::unnest::UnnestExec` in the planner. Deleting it before that
 //! would regress `explode`, so measure with `native/operators/benches/explode.rs` first.
 //!
@@ -51,15 +55,16 @@
 //! * dropping upstream's `ListUnnest` declaration in favor of importing the public one;
 //! * `find_longest_length` applies the empty-list bump once after the row-wise maximum rather
 //!   than once per array, which is equivalent because `max` is associative;
-//! * `list_output_lens` and the contiguous-run fast path described above.
+//! * the performance improvements described above.
 //!
 //! `ExplodeExec` and `ExplodeStream` were always Comet's own.
 
 use arrow::array::{
-    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray, Int64Array,
-    LargeListArray, LargeListViewArray, ListArray, ListViewArray, PrimitiveArray, Scalar,
-    StructArray,
+    new_null_array, Array, ArrayRef, AsArray, BooleanBufferBuilder, FixedSizeListArray,
+    GenericListArray, Int64Array, LargeListArray, LargeListViewArray, ListArray, ListViewArray,
+    MapArray, OffsetSizeTrait, PrimitiveArray, Scalar, StructArray,
 };
+use arrow::buffer::OffsetBuffer;
 use arrow::compute::kernels::length::length;
 use arrow::compute::kernels::zip::zip;
 use arrow::compute::{cast, is_not_null, kernels, sum};
@@ -276,10 +281,8 @@ impl ExecutionPlan for ExplodeExec {
             pending_input: None,
         });
 
-        // Chunking the input bounds each build to roughly `batch_size` rows, but two cases can
-        // still produce an oversized batch (see `predict_output_lens`), so the output goes
-        // through DataFusion's splitter to make the bound unconditional. Note this only bounds
-        // the emitted row count; bounding peak memory is the job of the input chunking.
+        // Depth-1 List inputs are split before materialization, including within one row.
+        // Keep the output splitter for the generic shapes described in `predict_output_lens`.
         Ok(Box::pin(BatchSplitStream::new(
             stream,
             batch_size,
@@ -302,6 +305,10 @@ struct PendingInput {
     batch: RecordBatch,
     /// Index of the next input row to unnest.
     row_offset: usize,
+    /// Elements already emitted from the current input row.
+    element_offset: usize,
+    /// Repetition safe for every slice of this input. None for unsupported list shapes.
+    safe_repetitions: Option<usize>,
     /// How many output rows each input row expands into, indexed by input row.
     ///
     /// `None` when the expansion factor cannot be predicted from the input alone, in which
@@ -318,10 +325,7 @@ impl PendingInput {
     /// How many input rows to unnest next so the resulting batch holds at most `batch_size`
     /// rows.
     ///
-    /// Always returns at least 1 while rows remain, so the stream always makes progress: a
-    /// single input row is never split across output batches, so one row whose array is
-    /// longer than `batch_size` still produces one oversized build, which `BatchSplitStream`
-    /// slices down on the way out.
+    /// Oversized List rows are handled separately by `next_chunk`.
     fn next_chunk_rows(&self, batch_size: usize) -> usize {
         let Some(output_lens) = &self.output_lens else {
             return self.remaining_rows();
@@ -346,6 +350,189 @@ impl PendingInput {
             .as_ref()
             .map(|lens| lens.slice(self.row_offset, rows))
     }
+
+    fn next_chunk(
+        &mut self,
+        batch_size: usize,
+        list_columns: &[ListUnnest],
+    ) -> Result<(RecordBatch, Option<Int64Array>)> {
+        let mut rows = self.next_chunk_rows(batch_size);
+        let mut chunk = self.batch.slice(self.row_offset, rows);
+        let mut lengths = self.chunk_lengths(rows);
+        if let Some(safe_repetitions) = self.safe_repetitions {
+            // The input-wide bound only skips checks. A candidate's maximum repetition times
+            // its span is sufficient, but skewed byte columns can use their actual repeats.
+            let limit = if safe_repetitions >= batch_size {
+                batch_size
+            } else {
+                loop {
+                    let limit = batch_size.min(repetition_limit(&chunk, list_columns));
+                    let repeats = lengths.as_ref().unwrap();
+                    let max_repeat = *repeats.values().iter().max().unwrap() as usize;
+                    if rows == 1 || max_repeat <= limit {
+                        break limit;
+                    }
+                    if chunk
+                        .columns()
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| {
+                            !list_columns
+                                .iter()
+                                .any(|list| list.index_in_input_schema == *index)
+                        })
+                        .all(|(_, column)| {
+                            repeated_offsets_fit(column.as_ref(), repeats, max_repeat)
+                        })
+                    {
+                        break batch_size;
+                    }
+                    rows = rows.div_ceil(2);
+                    chunk = self.batch.slice(self.row_offset, rows);
+                    lengths = self.chunk_lengths(rows);
+                }
+            };
+            let row_length = self.output_lens.as_ref().unwrap().value(self.row_offset) as usize;
+            if row_length > limit {
+                let length = limit.min(row_length - self.element_offset);
+                let mut columns = chunk.columns().to_vec();
+                for unnest in list_columns {
+                    let list = columns[unnest.index_in_input_schema].as_list::<i32>();
+                    let DataType::List(field) = list.data_type() else {
+                        unreachable!();
+                    };
+                    let available = if list.is_null(0) {
+                        0
+                    } else {
+                        list.value_length(0) as usize
+                    };
+                    let skip = self.element_offset.min(available);
+                    let start = list.value_offsets()[0] + skip as i32;
+                    let end = start + length.min(available - skip) as i32;
+                    // Narrow the entries and parallel positions together, preserving their
+                    // original values and sharing their buffers. Shorter lists still pad.
+                    columns[unnest.index_in_input_schema] = Arc::new(ListArray::new(
+                        Arc::clone(field),
+                        OffsetBuffer::new(vec![start, end].into()),
+                        Arc::clone(list.values()),
+                        list.nulls().cloned(),
+                    ));
+                }
+                self.element_offset += length;
+                if self.element_offset == row_length {
+                    self.row_offset += 1;
+                    self.element_offset = 0;
+                }
+                return Ok((
+                    RecordBatch::try_new(chunk.schema(), columns)?,
+                    Some(Int64Array::from(vec![length as i64])),
+                ));
+            }
+        }
+        self.row_offset += rows;
+        Ok((chunk, lengths))
+    }
+}
+
+/// The largest visible span addressed by 32-bit offsets. Fixed-width buffers do not constrain
+/// these offsets; a sliced list still needs its selected child count even when that child has
+/// no buffers, as with List<Null>.
+fn max_offset_span(array: &dyn Array) -> usize {
+    match array.data_type() {
+        DataType::Utf8 => {
+            let offsets = array.as_string::<i32>().value_offsets();
+            (offsets[array.len()] - offsets[0]) as usize
+        }
+        DataType::Binary => {
+            let offsets = array.as_binary::<i32>().value_offsets();
+            (offsets[array.len()] - offsets[0]) as usize
+        }
+        DataType::List(_) => {
+            let list = array.as_list::<i32>();
+            let offsets = list.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[list.len()] as usize - start;
+            length.max(max_offset_span(list.values().slice(start, length).as_ref()))
+        }
+        DataType::Map(_, _) => {
+            let map = array.as_map();
+            let offsets = map.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[map.len()] as usize - start;
+            length.max(max_offset_span(&map.entries().slice(start, length)))
+        }
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .map(|column| max_offset_span(column.as_ref()))
+            .max()
+            .unwrap_or(0),
+        DataType::LargeList(_) => {
+            let list = array.as_list::<i64>();
+            let offsets = list.value_offsets();
+            let start = offsets[0] as usize;
+            let length = offsets[list.len()] as usize - start;
+            max_offset_span(list.values().slice(start, length).as_ref())
+        }
+        DataType::FixedSizeList(_, _) => {
+            max_offset_span(array.as_fixed_size_list().values().as_ref())
+        }
+        _ => 0,
+    }
+}
+
+/// A conservative bound safe for every subset of these rows and repetitions up to the limit.
+fn repetition_limit(batch: &RecordBatch, list_columns: &[ListUnnest]) -> usize {
+    let span = batch
+        .columns()
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            !list_columns
+                .iter()
+                .any(|list| list.index_in_input_schema == *index)
+        })
+        .map(|(_, column)| max_offset_span(column.as_ref()))
+        .max()
+        .unwrap_or(0);
+    (i32::MAX as usize / span.max(1)).max(1)
+}
+
+/// Tighten the byte budget for skewed chunks while retaining collection allocation bounds.
+fn repeated_offsets_fit(array: &dyn Array, repeats: &Int64Array, max_repeat: usize) -> bool {
+    fn bytes_fit(array: &dyn Array, offsets: &[i32], repeats: &Int64Array) -> bool {
+        offsets
+            .windows(2)
+            .zip(repeats.values())
+            .enumerate()
+            .try_fold(i32::MAX as usize, |remaining, (row, (w, &repeat))| {
+                if array.is_null(row) {
+                    Some(remaining)
+                } else {
+                    let bytes = (w[1] - w[0]) as usize;
+                    remaining.checked_sub(bytes.saturating_mul(repeat as usize))
+                }
+            })
+            .is_some()
+    }
+
+    if max_repeat <= i32::MAX as usize / max_offset_span(array).max(1) {
+        return true;
+    }
+    match array.data_type() {
+        DataType::Utf8 => bytes_fit(array, array.as_string::<i32>().value_offsets(), repeats),
+        DataType::Binary => bytes_fit(array, array.as_binary::<i32>().value_offsets(), repeats),
+        // Arrow Struct take copies children even when the parent struct is NULL.
+        DataType::Struct(_) => array
+            .as_struct()
+            .columns()
+            .iter()
+            .all(|column| repeated_offsets_fit(column.as_ref(), repeats, max_repeat)),
+        // List/map take also estimates child capacity from the unweighted input average.
+        // Keep their conservative bound even when the logical weighted output would fit.
+        _ => false,
+    }
 }
 
 /// A stream that unnests its input, bounding output batches to `batch_size` rows.
@@ -364,10 +551,8 @@ struct ExplodeStream {
     /// batch can produce arbitrarily many output rows, so the input is consumed in chunks
     /// small enough that each chunk's output stays near `batch_size`.
     ///
-    /// Note the scope of the memory bound this buys: chunking removes the input batch size
-    /// from the peak, but not the length of an individual list. A single row whose list is
-    /// longer than `batch_size`, and recursive unnesting (where the expansion cannot be
-    /// predicted up front), both still materialize their full expansion in one build.
+    /// Comet's depth-1 List rows are also split within a row before carried values repeat.
+    /// Generic recursive unnesting still materializes its expansion before output splitting.
     pending_input: Option<PendingInput>,
 }
 
@@ -390,14 +575,11 @@ impl ExplodeStream {
         loop {
             // Unnest the next chunk of the input batch already in hand.
             if let Some(pending) = self.pending_input.as_mut() {
-                // `PendingInput` is only built from a non-empty batch and `next_chunk_rows`
-                // always consumes at least one row, so it is dropped the moment it drains.
+                // Pending input is non-empty; each chunk advances a row or its element cursor.
                 debug_assert!(pending.remaining_rows() > 0);
 
-                let rows = pending.next_chunk_rows(self.batch_size);
-                let chunk = pending.batch.slice(pending.row_offset, rows);
-                let chunk_lengths = pending.chunk_lengths(rows);
-                pending.row_offset += rows;
+                let (chunk, chunk_lengths) =
+                    pending.next_chunk(self.batch_size, &self.list_type_columns)?;
                 let drained = pending.remaining_rows() == 0;
 
                 let timer = self.baseline_metrics.elapsed_compute().timer();
@@ -438,10 +620,21 @@ impl ExplodeStream {
                     if batch.num_rows() > 0 {
                         let timer = self.baseline_metrics.elapsed_compute().timer();
                         let output_lens = self.predict_output_lens(&batch);
+                        let safe_repetitions = (!self.list_type_columns.is_empty()
+                            && self.list_type_columns.iter().all(|unnest| {
+                                unnest.depth == 1
+                                    && matches!(
+                                        batch.column(unnest.index_in_input_schema).data_type(),
+                                        DataType::List(_)
+                                    )
+                            }))
+                        .then(|| repetition_limit(&batch, &self.list_type_columns));
                         timer.done();
                         self.pending_input = Some(PendingInput {
                             batch,
                             row_offset: 0,
+                            element_offset: 0,
+                            safe_repetitions,
                             output_lens: output_lens?,
                         });
                     }
@@ -496,8 +689,20 @@ impl ExplodeStream {
         // This is exactly the per-row length that `list_unnest_at_level` derives when it
         // actually unnests, so the chunk boundaries are exact rather than estimated, and each
         // chunk's slice of it is handed back to `build_batch` instead of recomputed there.
-        if let [single] = list_arrays.as_slice() {
-            if let Some(list) = single.as_any().downcast_ref::<ListArray>() {
+        if let Some(list) = list_arrays[0].as_any().downcast_ref::<ListArray>() {
+            // Shared offset and validity views guarantee identical per-row lengths.
+            // Check validity's bit offset too; bitmap bytes alone do not suffice.
+            if list_arrays.iter().skip(1).all(|other| {
+                let Some(other) = other.as_any().downcast_ref::<ListArray>() else {
+                    return false;
+                };
+                list.offsets().ptr_eq(other.offsets())
+                    && match (list.nulls(), other.nulls()) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) => a.inner().ptr_eq(b.inner()),
+                        _ => false,
+                    }
+            }) {
                 return Ok(Some(list_output_lens(list, &self.options)));
             }
         }
@@ -513,8 +718,8 @@ impl ExplodeStream {
 /// rather than the kernels it chains to stay generic over list types — `length` (which returns
 /// `Int32` for `List`), `cast` to widen it, `is_not_null` and `zip` to substitute the NULL
 /// length, and a second `eq`/`zip` pair to bump the empty rows. Comet only ever plans `List`,
-/// and `explode` plans exactly one of them, so this is the path every non-positional explode
-/// takes; `posexplode` unnests two arrays in parallel and uses the general version.
+/// and parallel lists sharing offsets and validity have the same per-row length, so one
+/// pass also covers `posexplode` when its position and value lists share those views.
 fn list_output_lens(list: &ListArray, options: &UnnestOptions) -> PrimitiveArray<Int64Type> {
     // The floor every row's length is raised to. Under `PreserveAndExpandEmpty` an empty row
     // expands to one NULL just like a NULL row, including in an array with no validity buffer,
@@ -683,8 +888,6 @@ fn list_unnest_at_level(
     let unnested_temp_arrays =
         unnest_list_arrays(arrs_to_unnest.as_ref(), unnested_length, total_length)?;
 
-    // Create the take indices array for other columns
-    let take_indices = create_take_indices(unnested_length, total_length);
     unnested_temp_arrays
         .into_iter()
         .zip(list_unnest_specs.iter())
@@ -713,7 +916,13 @@ fn list_unnest_at_level(
 
     // Dimension of arrays in batch is untouched, but the values are repeated
     // as the side effect of unnesting
-    let ret = repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?;
+    let ret = if repeat_mask.iter().any(|&repeat| repeat) {
+        let take_indices = create_take_indices(unnested_length, total_length);
+        repeat_arrs_from_indices(batch, &take_indices, &repeat_mask)?
+    } else {
+        // Every column is replaced by an unnested result before the output is built.
+        batch.to_vec()
+    };
 
     Ok(Some(ret))
 }
@@ -1242,6 +1451,79 @@ fn create_take_indices(
     PrimitiveArray::<Int64Type>::from(indices)
 }
 
+/// Arrow take estimates list child capacity from its full length, even for a sliced parent.
+/// Restrict that estimate to the referenced children before repeating carried columns.
+/// See https://github.com/apache/arrow-rs/pull/11360.
+fn trim_list_children(array: &ArrayRef) -> Result<Option<ArrayRef>> {
+    fn trim_list<O: OffsetSizeTrait>(list: &GenericListArray<O>) -> Result<Option<ArrayRef>> {
+        let start = list.value_offsets()[0].as_usize();
+        let end = list.value_offsets()[list.len()].as_usize();
+        if start == 0 && end == list.values().len() {
+            return Ok(None);
+        }
+        let (field, offsets, values, nulls) = list.clone().into_parts();
+        let base = offsets[0];
+        Ok(Some(Arc::new(GenericListArray::<O>::try_new(
+            field,
+            offsets.subtract(base),
+            values.slice(start, end - start),
+            nulls,
+        )?)))
+    }
+
+    let trimmed: ArrayRef = match array.data_type() {
+        DataType::List(_) => return trim_list(array.as_list::<i32>()),
+        DataType::LargeList(_) => return trim_list(array.as_list::<i64>()),
+        DataType::Map(field, ordered) => {
+            let map = array.as_map();
+            let start = map.value_offsets()[0] as usize;
+            let end = map.value_offsets()[map.len()] as usize;
+            if start == 0 && end == map.entries().len() {
+                return Ok(None);
+            }
+            Arc::new(MapArray::try_new(
+                Arc::clone(field),
+                map.offsets().clone().subtract(start as i32),
+                map.entries().slice(start, end - start),
+                map.nulls().cloned(),
+                *ordered,
+            )?)
+        }
+        DataType::Struct(fields) => {
+            let array = array.as_struct();
+            let mut columns = None;
+            for (index, column) in array.columns().iter().enumerate() {
+                if let Some(trimmed) = trim_list_children(column)? {
+                    columns.get_or_insert_with(|| array.columns().to_vec())[index] = trimmed;
+                }
+            }
+            let Some(columns) = columns else {
+                return Ok(None);
+            };
+            Arc::new(StructArray::try_new(
+                fields.clone(),
+                columns,
+                array.nulls().cloned(),
+            )?)
+        }
+        DataType::FixedSizeList(field, size) => {
+            let array = array.as_fixed_size_list();
+            let Some(values) = trim_list_children(array.values())? else {
+                return Ok(None);
+            };
+            Arc::new(FixedSizeListArray::try_new_with_length(
+                Arc::clone(field),
+                *size,
+                values,
+                array.nulls().cloned(),
+                array.len(),
+            )?)
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(trimmed))
+}
+
 /// Create a batch of arrays based on an input `batch` and a `indices` array.
 /// The `indices` array is used by the take kernel to repeat values in the arrays
 /// that are marked with `true` in the `repeat_mask`. Arrays marked with `false`
@@ -1298,7 +1580,12 @@ fn repeat_arrs_from_indices(
         .zip(repeat_mask.iter())
         .map(|(arr, &repeat)| {
             if repeat {
-                Ok(kernels::take::take(arr, indices, None)?)
+                let trimmed = trim_list_children(arr)?;
+                Ok(kernels::take::take(
+                    trimmed.as_ref().unwrap_or(arr),
+                    indices,
+                    None,
+                )?)
             } else {
                 Ok(new_null_array(arr.data_type(), arr.len()))
             }
@@ -1309,7 +1596,7 @@ fn repeat_arrs_from_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::Int32Array;
+    use arrow::array::{Int32Array, StringArray};
     use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
     use arrow::datatypes::{Field, Int32Type, Schema};
     use datafusion::common::NullHandling;
@@ -1363,7 +1650,14 @@ mod tests {
         batch_size: usize,
         null_handling: NullHandling,
     ) -> Result<Vec<RecordBatch>> {
-        let output_schema = Arc::new(Schema::new(vec![Field::new("l", DataType::Int32, true)]));
+        let mut fields: Vec<Field> = child
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields[0] = Field::new("l", DataType::Int32, true);
+        let output_schema = Arc::new(Schema::new(fields));
         let explode = ExplodeExec::new(
             child,
             vec![ListUnnest {
@@ -1439,12 +1733,673 @@ mod tests {
 
     #[tokio::test]
     async fn single_row_exceeding_batch_size_is_sliced() {
-        // One row cannot be chunked on the input side, so the oversized build is sliced.
         let batches = explode(vec![list_batch(&[Some(25)])], 10, NullHandling::Preserve)
             .await
             .unwrap();
         assert_eq!(sizes(&batches), vec![10, 10, 5]);
         assert_eq!(values(&batches), seq(25));
+    }
+
+    #[tokio::test]
+    async fn ordinary_carried_strings_keep_multi_row_chunks() {
+        let lists = list_batch(&vec![Some(300); 8192]);
+        let payload = "x".repeat(1024);
+        let strings = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+            payload.as_str(),
+            8192,
+        ))) as ArrayRef;
+        let schema = Arc::new(Schema::new(vec![
+            lists.schema().field(0).clone(),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::clone(lists.column(0)), strings],
+        )
+        .unwrap();
+        let source = MemorySourceConfig::try_new_exec(&[vec![input]], schema, None).unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("l", DataType::Int32, true),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let exec = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap();
+        let context = Arc::new(
+            TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(8192)),
+        );
+        let mut stream = exec.execute(0, context).unwrap();
+        let first = stream.next().await.unwrap().unwrap();
+        assert_eq!(first.num_rows(), 27 * 300);
+        assert_eq!(
+            first.column(1).as_string::<i32>().value_data().len(),
+            8100 * 1024
+        );
+    }
+
+    #[tokio::test]
+    async fn skewed_carried_bytes_use_each_rows_repetition() {
+        use arrow::array::BinaryArray;
+
+        let wide = "w".repeat(16 * 1024 * 1024);
+        for wide_row in [0, 16, 32] {
+            let mut lens = vec![Some(300); 33];
+            lens[wide_row] = Some(1);
+            let lists = list_batch(&lens);
+            let strings = StringArray::from_iter_values((0..33).map(|row| {
+                if row == wide_row {
+                    wide.as_str()
+                } else {
+                    "x"
+                }
+            }));
+            let binary = Arc::new(BinaryArray::new(
+                strings.offsets().clone(),
+                strings.values().clone(),
+                None,
+            )) as ArrayRef;
+            let strings = Arc::new(strings) as ArrayRef;
+            let structure = Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("s", DataType::Utf8, false)),
+                    Arc::clone(&strings),
+                ),
+                (
+                    Arc::new(Field::new("b", DataType::Binary, false)),
+                    Arc::clone(&binary),
+                ),
+            ])) as ArrayRef;
+            let indices = Int64Array::from_iter_values(
+                lens.iter()
+                    .enumerate()
+                    .flat_map(|(row, len)| std::iter::repeat_n(row as i64, len.unwrap())),
+            );
+            for carried in [strings, binary, structure] {
+                let input = RecordBatch::try_from_iter(vec![
+                    ("l", Arc::clone(lists.column(0))),
+                    ("payload", Arc::clone(&carried)),
+                ])
+                .unwrap();
+                let batches = explode(vec![input], 8192, NullHandling::Drop)
+                    .await
+                    .unwrap();
+                assert_eq!(batches.len(), 2, "wide row at {wide_row}");
+                let schema = batches[0].schema();
+                let expected = RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::clone(lists.column(0).as_list::<i32>().values()),
+                        kernels::take::take(carried.as_ref(), &indices, None).unwrap(),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(expected.num_rows(), 9601);
+                assert_eq!(
+                    arrow::compute::concat_batches(&schema, &batches).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn sliced_carried_bytes_ignore_unused_backing() {
+        let padding = "p".repeat(64 * 1024 * 1024);
+        let carried = StringArray::from(vec![padding.as_str(), "x"]).slice(1, 1);
+        let lists = list_batch(&[Some(1024)]);
+        let input = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("payload", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let batches = explode(vec![input], 8192, NullHandling::Drop)
+            .await
+            .unwrap();
+        assert_eq!(sizes(&batches), vec![1024]);
+        assert_eq!(values(&batches), seq(1024));
+        assert!(batches[0]
+            .column(1)
+            .as_string::<i32>()
+            .iter()
+            .all(|s| s == Some("x")));
+    }
+
+    #[tokio::test]
+    async fn null_carried_bytes_do_not_spend_the_offset_budget() {
+        let wide = "w".repeat(2 * 1024 * 1024);
+        let strings = StringArray::from(vec![wide.as_str(), "x"]);
+        let carried = StringArray::new(
+            strings.offsets().clone(),
+            strings.values().clone(),
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        let lists = list_batch(&[Some(1024), Some(300)]);
+        let input = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("payload", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let batches = explode(vec![input], 8192, NullHandling::Drop)
+            .await
+            .unwrap();
+        assert_eq!(sizes(&batches), vec![1324]);
+        assert_eq!(values(&batches), seq(1324));
+        let carried = batches[0].column(1).as_string::<i32>();
+        assert_eq!(carried.null_count(), 1024);
+        assert_eq!(carried.value_data().len(), 300);
+    }
+
+    #[test]
+    fn null_struct_children_still_constrain_copied_offsets() {
+        let wide = "w".repeat(2 * 1024 * 1024);
+        let strings = StringArray::from(vec![wide.as_str(), "x"]);
+        let repeats = Int64Array::from(vec![1024, 300]);
+        assert!(!repeated_offsets_fit(&strings, &repeats, 1024));
+        let nullable_strings = StringArray::new(
+            strings.offsets().clone(),
+            strings.values().clone(),
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        assert!(repeated_offsets_fit(&nullable_strings, &repeats, 1024));
+        let structure = StructArray::new(
+            vec![Arc::new(Field::new("s", DataType::Utf8, false))].into(),
+            vec![Arc::new(strings)],
+            Some(NullBuffer::from(vec![false, true])),
+        );
+        assert!(!repeated_offsets_fit(&structure, &repeats, 1024));
+    }
+
+    #[test]
+    fn repetition_limit_ignores_fixed_width_buffers() {
+        let batch = RecordBatch::try_from_iter(vec![(
+            "id",
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+        )])
+        .unwrap();
+        assert_eq!(repetition_limit(&batch, &[]), i32::MAX as usize);
+    }
+
+    #[tokio::test]
+    async fn carried_nested_columns_do_not_preallocate_for_unselected_children() {
+        use arrow::array::MapArray;
+
+        let lists = list_batch(&vec![Some(2); 1024]);
+        let list = lists.column(0).as_list::<i32>();
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::clone(list.values()),
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Int32, true)),
+                Arc::clone(list.values()),
+            ),
+        ]);
+        let map = Arc::new(MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            list.offsets().clone(),
+            entries,
+            None,
+            false,
+        )) as ArrayRef;
+        let nested_field = Arc::new(Field::new("item", map.data_type().clone(), true));
+        let carried: Vec<ArrayRef> = vec![
+            Arc::clone(&map),
+            Arc::clone(lists.column(0)),
+            Arc::new(LargeListArray::new(
+                Arc::new(Field::new("item", DataType::Int32, true)),
+                OffsetBuffer::new(list.value_offsets().iter().map(|&o| i64::from(o)).collect()),
+                Arc::clone(list.values()),
+                None,
+            )),
+            Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("m", map.data_type().clone(), true)),
+                Arc::clone(&map),
+            )])),
+            Arc::new(FixedSizeListArray::new(
+                Arc::clone(&nested_field),
+                1,
+                Arc::clone(&map),
+                None,
+            )),
+            Arc::new(ListArray::new(
+                nested_field,
+                OffsetBuffer::new((0..=1024).collect()),
+                map,
+                None,
+            )),
+        ];
+
+        fn assert_small_buffers(array: &ArrayRef) {
+            match array.data_type() {
+                DataType::Map(_, _) => {
+                    for column in array.as_map().entries().columns() {
+                        assert_small_buffers(column);
+                    }
+                }
+                DataType::List(_) => assert_small_buffers(array.as_list::<i32>().values()),
+                DataType::LargeList(_) => assert_small_buffers(array.as_list::<i64>().values()),
+                DataType::FixedSizeList(_, _) => {
+                    assert_small_buffers(array.as_fixed_size_list().values());
+                }
+                DataType::Struct(_) => {
+                    for column in array.as_struct().columns() {
+                        assert_small_buffers(column);
+                    }
+                }
+                _ => assert!(
+                    array.get_buffer_memory_size() <= 1024,
+                    "eight output rows must not allocate for the 1024-row source: {} bytes",
+                    array.get_buffer_memory_size()
+                ),
+            }
+        }
+
+        for carried in carried {
+            let input = RecordBatch::try_from_iter(vec![
+                ("l", Arc::clone(lists.column(0))),
+                ("carried", Arc::clone(&carried)),
+            ])
+            .unwrap();
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("l", DataType::Int32, true),
+                input.schema().field(1).clone(),
+            ]));
+            let input_schema = input.schema();
+            let source =
+                MemorySourceConfig::try_new_exec(&[vec![input]], input_schema, None).unwrap();
+            let exec = ExplodeExec::new(
+                source,
+                vec![ListUnnest {
+                    index_in_input_schema: 0,
+                    depth: 1,
+                }],
+                vec![],
+                Arc::clone(&schema),
+                UnnestOptions::new(),
+            )
+            .unwrap();
+            let context = Arc::new(
+                TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(8)),
+            );
+            let mut stream = exec.execute(0, context).unwrap();
+            for start in [0, 8] {
+                let actual = stream.next().await.unwrap().unwrap();
+                let expected = RecordBatch::try_new(
+                    Arc::clone(&schema),
+                    vec![
+                        Arc::new(Int32Array::from_iter_values(start..start + 8)),
+                        kernels::take::take(
+                            &carried,
+                            &Int64Array::from_iter_values(
+                                (start / 2..start / 2 + 4).flat_map(|row| [i64::from(row); 2]),
+                            ),
+                            None,
+                        )
+                        .unwrap(),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(actual, expected);
+                assert_small_buffers(actual.column(1));
+            }
+        }
+    }
+
+    #[test]
+    fn repetition_limit_uses_selected_nested_offsets() {
+        use arrow::array::NullArray;
+
+        let length = i32::MAX as usize / 2 + 1;
+        let list = ListArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            OffsetBuffer::new(vec![0, length as i32 - 1, length as i32].into()),
+            Arc::new(NullArray::new(length)),
+            None,
+        );
+        let batch =
+            RecordBatch::try_from_iter(vec![("carried", Arc::new(list) as ArrayRef)]).unwrap();
+        assert_eq!(repetition_limit(&batch.slice(1, 1), &[]), i32::MAX as usize);
+    }
+
+    #[test]
+    fn repetition_limit_follows_nested_variable_width_slices() {
+        use arrow::array::{BinaryArray, MapArray};
+
+        let strings = Arc::new(StringArray::from(vec!["ignored prefix", "a", "bc"])) as ArrayRef;
+        let field = Arc::new(Field::new("item", DataType::Utf8, false));
+        let list = ListArray::new(
+            Arc::clone(&field),
+            OffsetBuffer::new(vec![0, 1, 3].into()),
+            Arc::clone(&strings),
+            None,
+        );
+        let entries = StructArray::from(vec![
+            (
+                Arc::new(Field::new("key", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![0, 1, 2])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("value", DataType::Utf8, false)),
+                Arc::clone(&strings),
+            ),
+        ]);
+        let map = MapArray::new(
+            Arc::new(Field::new("entries", entries.data_type().clone(), false)),
+            list.offsets().clone(),
+            entries,
+            None,
+            false,
+        );
+        let arrays: Vec<ArrayRef> = vec![
+            strings.slice(1, 2),
+            Arc::new(BinaryArray::from(vec![b"prefix".as_slice(), b"a", b"bc"]).slice(1, 2)),
+            Arc::new(list.slice(1, 1)),
+            Arc::new(map.slice(1, 1)),
+            Arc::new(
+                StructArray::from(vec![(Arc::clone(&field), Arc::clone(&strings))]).slice(1, 2),
+            ),
+            Arc::new(
+                LargeListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(vec![0i64, 1, 3].into()),
+                    Arc::clone(&strings),
+                    None,
+                )
+                .slice(1, 1),
+            ),
+            Arc::new(FixedSizeListArray::new(field, 1, strings, None).slice(1, 2)),
+        ];
+        for array in arrays {
+            let batch = RecordBatch::try_from_iter(vec![("carried", array)]).unwrap();
+            assert_eq!(repetition_limit(&batch, &[]), i32::MAX as usize / 3);
+        }
+    }
+
+    #[test]
+    fn chunk_offset_bound_counts_all_repeated_rows() {
+        use arrow::array::NullArray;
+
+        let child_length = i32::MAX / 3;
+        let carried = ListArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            OffsetBuffer::new(vec![0, child_length, 2 * child_length].into()),
+            Arc::new(NullArray::new(2 * child_length as usize)),
+            None,
+        );
+        let lists = list_batch(&[Some(2), Some(2)]);
+        let batch = RecordBatch::try_from_iter(vec![
+            ("l", Arc::clone(lists.column(0))),
+            ("carried", Arc::new(carried) as ArrayRef),
+        ])
+        .unwrap();
+        let list_columns = [ListUnnest {
+            index_in_input_schema: 0,
+            depth: 1,
+        }];
+        let mut pending = PendingInput {
+            batch,
+            row_offset: 0,
+            element_offset: 0,
+            safe_repetitions: Some(1),
+            output_lens: Some(Int64Array::from(vec![2, 2])),
+        };
+        // Each row can repeat twice, but their combined child offsets would overflow.
+        for _ in 0..2 {
+            let (chunk, lengths) = pending.next_chunk(4, &list_columns).unwrap();
+            assert_eq!(chunk.num_rows(), 1);
+            assert_eq!(lengths.unwrap().values(), &[2]);
+        }
+        assert_eq!(pending.remaining_rows(), 0);
+    }
+
+    #[tokio::test]
+    async fn splits_one_list_before_repeating_carried_values() {
+        let list = list_batch(&[Some(25)]);
+        let schema = Arc::new(Schema::new(vec![
+            list.schema().field(0).clone(),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let payload = "x".repeat(1024);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::clone(list.column(0)),
+                Arc::new(StringArray::from(vec![payload])),
+            ],
+        )
+        .unwrap();
+        let source = MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("l", DataType::Int32, true),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let exec = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap();
+        let context = Arc::new(
+            TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(10)),
+        );
+        let mut stream = exec.execute(0, context).unwrap();
+        let mut actual = Vec::new();
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            let strings = batch.column(1).as_string::<i32>();
+            assert_eq!(
+                strings.value_data().len(),
+                batch.num_rows() * 1024,
+                "carried values must be materialized only for this output chunk"
+            );
+            actual.extend(batch.column(0).as_primitive::<Int32Type>().iter());
+        }
+        assert_eq!(actual, seq(25));
+    }
+
+    #[tokio::test]
+    async fn wide_carried_string_respects_offset_limit_at_large_batch_size() {
+        let list = list_batch(&[Some(2049)]);
+        let schema = Arc::new(Schema::new(vec![
+            list.schema().field(0).clone(),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::clone(list.column(0)),
+                Arc::new(StringArray::from(vec!["x".repeat(1024 * 1024)])),
+            ],
+        )
+        .unwrap();
+        let source = MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("l", DataType::Int32, true),
+            Field::new("payload", DataType::Utf8, false),
+        ]));
+        let exec = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap();
+        let context = Arc::new(
+            TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(8192)),
+        );
+        let mut stream = exec.execute(0, context).unwrap();
+        let mut next = 0;
+        while let Some(batch) = stream.next().await {
+            let batch = batch.unwrap();
+            assert!(batch.num_rows() < 2049);
+            let strings = batch.column(1).as_string::<i32>();
+            for (i, value) in batch
+                .column(0)
+                .as_primitive::<Int32Type>()
+                .iter()
+                .enumerate()
+            {
+                assert_eq!(value, Some(next));
+                assert_eq!(strings.value(i).len(), 1024 * 1024);
+                next += 1;
+            }
+        }
+        assert_eq!(next, 2049);
+    }
+
+    #[tokio::test]
+    async fn splitting_preserves_map_entries_positions_and_nested_carried_columns() {
+        use arrow::array::{BinaryArray, BooleanArray};
+        let lists = list_batch(&[Some(1), None, Some(11), Some(0), Some(3)]);
+        let list = lists.column(0).as_list::<i32>();
+        let fields = vec![
+            Field::new("key", DataType::Int32, false),
+            Field::new("value", DataType::Boolean, true),
+        ];
+        let entries = StructArray::new(
+            fields.clone().into(),
+            vec![
+                Arc::clone(list.values()),
+                Arc::new(BooleanArray::from_iter(
+                    (0..list.values().len()).map(|i| (!i.is_multiple_of(3)).then_some(i % 5 < 2)),
+                )),
+            ],
+            None,
+        );
+        let entries = ListArray::new(
+            Arc::new(Field::new("entry", entries.data_type().clone(), false)),
+            list.offsets().clone(),
+            Arc::new(entries),
+            list.nulls().cloned(),
+        );
+        let positions = ListArray::new(
+            Arc::new(Field::new("pos", DataType::Int32, true)),
+            list.offsets().clone(),
+            Arc::new(Int32Array::from_iter_values(
+                list.offsets().windows(2).flat_map(|w| 0..w[1] - w[0]),
+            )),
+            list.nulls().cloned(),
+        );
+        let carried = StructArray::from(vec![
+            (
+                Arc::new(Field::new("s", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![
+                    Some("skip"),
+                    Some("null map"),
+                    Some("populated"),
+                    None,
+                    Some("tail"),
+                ])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("b", DataType::Binary, true)),
+                Arc::new(BinaryArray::from(vec![
+                    Some(b"skip".as_slice()),
+                    None,
+                    Some(b"binary"),
+                    Some(b"empty"),
+                    Some(b"tail"),
+                ])) as ArrayRef,
+            ),
+        ]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("pos", positions.data_type().clone(), true),
+            Field::new("entries", entries.data_type().clone(), true),
+            Field::new("carried", carried.data_type().clone(), true),
+        ]));
+        let input = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(positions), Arc::new(entries), Arc::new(carried)],
+        )
+        .unwrap()
+        .slice(1, 4);
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("pos", DataType::Int32, true),
+            fields[0].clone().with_nullable(true),
+            fields[1].clone(),
+            input.schema().field(2).clone(),
+        ]));
+        let list_columns = vec![
+            ListUnnest {
+                index_in_input_schema: 0,
+                depth: 1,
+            },
+            ListUnnest {
+                index_in_input_schema: 1,
+                depth: 1,
+            },
+        ];
+        for handling in [NullHandling::Drop, NullHandling::PreserveAndExpandEmpty] {
+            let options = UnnestOptions::new().with_null_handling(handling);
+            let expected = build_batch(
+                &input,
+                &output_schema,
+                &list_columns,
+                &HashSet::from([1]),
+                &options,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+            let source =
+                MemorySourceConfig::try_new_exec(&[vec![input.clone()]], input.schema(), None)
+                    .unwrap();
+            let exec = ExplodeExec::new(
+                source,
+                list_columns.clone(),
+                vec![1],
+                Arc::clone(&output_schema),
+                options,
+            )
+            .unwrap();
+            let context = Arc::new(
+                TaskContext::default().with_session_config(SessionConfig::new().with_batch_size(4)),
+            );
+            let output =
+                datafusion::physical_plan::common::collect(exec.execute(0, context).unwrap())
+                    .await
+                    .unwrap();
+            assert!(output.iter().all(|batch| batch.num_rows() <= 4));
+            let actual = arrow::compute::concat_batches(&output_schema, &output).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn repetition_limit_counts_zero_width_children() {
+        use arrow::array::NullArray;
+        let length = i32::MAX as usize / 2 + 1;
+        let list = ListArray::new(
+            Arc::new(Field::new("item", DataType::Null, true)),
+            OffsetBuffer::new(vec![0, length as i32].into()),
+            Arc::new(NullArray::new(length)),
+            None,
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "carried",
+            list.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(list)]).unwrap();
+        assert_eq!(repetition_limit(&batch, &[]), 1);
     }
 
     /// Chunked output must match unchunked output exactly, and hold the invariants that
@@ -1830,6 +2785,128 @@ mod tests {
             let longest = longest.as_primitive::<Int64Type>();
             assert_eq!(&longest.values()[..], &expected, "{null_handling:?}");
             assert_eq!(longest.null_count(), 0, "lengths must never be NULL");
+        }
+    }
+
+    #[tokio::test]
+    async fn parallel_lists_match_upstream_with_shared_and_distinct_views() {
+        use datafusion::physical_plan::{common::collect, unnest::UnnestExec};
+
+        let offsets = OffsetBuffer::new(vec![0, 2, 2, 5, 10, 11].into());
+        let values = Arc::new(Int32Array::from_iter_values(0..11)) as ArrayRef;
+        let other_values = Arc::new(Int32Array::from_iter_values(100..111)) as ArrayRef;
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let validity = NullBuffer::from(vec![true, false, true, false, true]);
+        let nulls = validity.slice(0, 4);
+        // These views share the same bitmap bytes and null count, but different valid rows.
+        let shifted_nulls = validity.slice(1, 4);
+        let validity_pairs = [
+            (None, None),
+            (Some(nulls.clone()), Some(nulls.clone())),
+            (Some(nulls.clone()), Some(shifted_nulls)),
+            (
+                Some(nulls.clone()),
+                Some(NullBuffer::from(vec![true, false, true, false])),
+            ),
+            (Some(nulls.clone()), None),
+            (None, Some(nulls)),
+        ];
+
+        for (left_nulls, right_nulls) in validity_pairs {
+            for offset in [0, 1] {
+                let left = ListArray::new(
+                    Arc::clone(&field),
+                    offsets.slice(0, 4),
+                    Arc::clone(&values),
+                    left_nulls.clone(),
+                );
+                let right = ListArray::new(
+                    Arc::clone(&field),
+                    offsets.slice(offset, 4),
+                    Arc::clone(&other_values),
+                    right_nulls.clone(),
+                );
+                let large_right = LargeListArray::new(
+                    Arc::clone(&field),
+                    OffsetBuffer::new(
+                        right
+                            .value_offsets()
+                            .iter()
+                            .map(|&o| i64::from(o))
+                            .collect(),
+                    ),
+                    Arc::clone(&other_values),
+                    right_nulls.clone(),
+                );
+                for right in [Arc::new(right) as ArrayRef, Arc::new(large_right)] {
+                    let batch = RecordBatch::try_from_iter(vec![
+                        ("left", Arc::new(left.clone()) as ArrayRef),
+                        ("right", right),
+                        ("id", Arc::new(Int32Array::from_iter_values(0..4))),
+                    ])
+                    .unwrap();
+                    for batch in [batch.clone(), batch.slice(1, 3)] {
+                        let source: Arc<dyn ExecutionPlan> = MemorySourceConfig::try_new_exec(
+                            &[vec![batch.clone()]],
+                            batch.schema(),
+                            None,
+                        )
+                        .unwrap();
+                        let schema = Arc::new(Schema::new(vec![
+                            Field::new("left", DataType::Int32, true),
+                            Field::new("right", DataType::Int32, true),
+                            batch.schema().field(2).clone(),
+                        ]));
+                        let specs: Vec<_> = (0..2)
+                            .map(|index_in_input_schema| ListUnnest {
+                                index_in_input_schema,
+                                depth: 1,
+                            })
+                            .collect();
+                        for mode in [
+                            NullHandling::Drop,
+                            NullHandling::Preserve,
+                            NullHandling::PreserveAndExpandEmpty,
+                        ] {
+                            let options = UnnestOptions::new().with_null_handling(mode);
+                            let comet = ExplodeExec::new(
+                                Arc::clone(&source),
+                                specs.clone(),
+                                vec![],
+                                Arc::clone(&schema),
+                                options.clone(),
+                            )
+                            .unwrap();
+                            let upstream = UnnestExec::new(
+                                Arc::clone(&source),
+                                specs.clone(),
+                                vec![],
+                                Arc::clone(&schema),
+                                options,
+                            )
+                            .unwrap();
+                            for size in [1, 3, 8] {
+                                let context = Arc::new(TaskContext::default().with_session_config(
+                                    SessionConfig::new().with_batch_size(size),
+                                ));
+                                let actual =
+                                    collect(comet.execute(0, Arc::clone(&context)).unwrap())
+                                        .await
+                                        .unwrap();
+                                let expected = collect(upstream.execute(0, context).unwrap())
+                                    .await
+                                    .unwrap();
+                                assert!(actual.iter().all(|b| b.num_rows() <= size));
+                                assert_eq!(
+                                    arrow::compute::concat_batches(&schema, &actual).unwrap(),
+                                    arrow::compute::concat_batches(&schema, &expected).unwrap(),
+                                    "offset={offset}, {mode:?}, batch_size={size}, {batch:?}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

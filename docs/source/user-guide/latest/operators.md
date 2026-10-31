@@ -124,12 +124,15 @@ combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinEx
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                            |
-| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays. `inline` / `stack` fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                  |
-| `UnionExec`    | ✅     |                                                                                                                  |
-| `CoalesceExec` | ✅     |                                                                                                                  |
+| Operator       | Status | Notes                                                                                                                     |
+| -------------- | ------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays and maps. `inline` / `stack` fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                           |
+| `UnionExec`    | ✅     |                                                                                                                           |
+| `CoalesceExec` | ✅     |                                                                                                                           |
+
+Chained array and map generators run natively. They materialize carried columns between generators,
+so their latency can exceed Spark's fused generators on a single task with idle cores.
 
 ## Writes
 

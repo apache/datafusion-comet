@@ -5094,11 +5094,23 @@ mod tests {
 
     #[tokio::test]
     async fn explode_evaluates_array_once_per_batch() {
+        check_explode_evaluates_collection_once_per_batch(false).await;
+    }
+
+    #[tokio::test]
+    async fn explode_evaluates_map_once_per_batch() {
+        check_explode_evaluates_collection_once_per_batch(true).await;
+    }
+
+    async fn check_explode_evaluates_collection_once_per_batch(map: bool) {
+        use arrow::array::{AsArray, MapArray, StructArray};
         use arrow::datatypes::Int32Type;
         use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::logical_expr::{create_udf, Volatility};
         use datafusion::physical_plan::projection::ProjectionExec;
-        use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
+        use spark_expression::data_type::{
+            data_type_info::DatatypeStruct, DataTypeInfo, ListInfo, MapInfo,
+        };
 
         let array_type = spark_expression::DataType {
             type_id: 14,
@@ -5116,6 +5128,55 @@ mod tests {
             None,
             Some(vec![Some(20)]),
         ])) as ArrayRef;
+
+        let (array_type, arrays) = if map {
+            // Slice away a leading entry to exercise non-zero map offsets.
+            let values = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+                Some(vec![Some(99)]),
+                Some(vec![Some(10), None]),
+                Some(vec![]),
+                None,
+                Some(vec![Some(20)]),
+            ])
+            .slice(1, 4);
+            let fields: Fields = vec![
+                Field::new("key", DataType::Int32, false)
+                    .with_metadata([("PARQUET:field_id".to_string(), "10".to_string())].into()),
+                Field::new("value", DataType::Int32, true)
+                    .with_metadata([("PARQUET:field_id".to_string(), "11".to_string())].into()),
+            ]
+            .into();
+            let entries = StructArray::new(
+                fields.clone(),
+                vec![
+                    Arc::new(Int32Array::from(vec![99, 1, 2, 3])),
+                    Arc::clone(values.values()),
+                ],
+                None,
+            );
+            let maps = MapArray::new(
+                Arc::new(Field::new("entries", DataType::Struct(fields), false)),
+                values.offsets().clone(),
+                entries,
+                values.nulls().cloned(),
+                false,
+            );
+            let map_type = spark_expression::DataType {
+                type_id: 15,
+                type_info: Some(Box::new(DataTypeInfo {
+                    datatype_struct: Some(DatatypeStruct::Map(Box::new(MapInfo {
+                        key_type: Some(Box::new(create_proto_datatype())),
+                        value_type: Some(Box::new(create_proto_datatype())),
+                        value_contains_null: true,
+                        key_field_id: Some(10),
+                        value_field_id: Some(11),
+                    }))),
+                })),
+            };
+            (map_type, Arc::new(maps) as ArrayRef)
+        } else {
+            (array_type, arrays)
+        };
 
         for outer in [false, true] {
             for position in [false, true] {
@@ -5195,20 +5256,21 @@ mod tests {
                     let results = collect(native_plan.execute(0, task_ctx).unwrap())
                         .await
                         .unwrap();
-                    let context =
-                        format!("outer={outer}, position={position}, computed={computed}");
+                    let context = format!(
+                        "outer={outer}, position={position}, computed={computed}, map={map}"
+                    );
                     assert_eq!(
                         calls.load(Ordering::Relaxed),
                         if computed { 2 } else { 0 },
                         "{context}"
                     );
                     // The array is pre-projected only to share one evaluation between the
-                    // `pos` and `value` references, so only a computed child needs it. `outer`
+                    // `pos` and `value` references, so a computed child or map wrapper needs it. `outer`
                     // does not, since it is now a `UnnestOptions` mode rather than a wrapper
                     // expression around the child.
                     assert_eq!(
                         projections,
-                        1 + usize::from(position && computed),
+                        1 + usize::from(position && (computed || map)),
                         "{context}"
                     );
                     let expected_values = if outer {
@@ -5228,6 +5290,38 @@ mod tests {
                         })
                         .collect();
                     assert_eq!(values, expected_values.repeat(2), "{context}");
+                    if map {
+                        let schema = native_plan.schema();
+                        for (index, id) in [
+                            (schema.fields().len() - 2, "10"),
+                            (schema.fields().len() - 1, "11"),
+                        ] {
+                            assert_eq!(
+                                schema
+                                    .field(index)
+                                    .metadata()
+                                    .get("PARQUET:field_id")
+                                    .map(String::as_str),
+                                Some(id)
+                            );
+                        }
+                        assert_eq!(schema.field(schema.fields().len() - 2).is_nullable(), outer);
+                        let expected_keys = if outer {
+                            vec![Some(1), Some(2), None, None, Some(3)]
+                        } else {
+                            vec![Some(1), Some(2), Some(3)]
+                        };
+                        let keys: Vec<_> = results
+                            .iter()
+                            .flat_map(|batch| {
+                                batch
+                                    .column(batch.num_columns() - 2)
+                                    .as_primitive::<Int32Type>()
+                                    .iter()
+                            })
+                            .collect();
+                        assert_eq!(keys, expected_keys.repeat(2), "{context}");
+                    }
                     if position {
                         let expected_positions = if outer {
                             vec![Some(0), Some(1), None, None, Some(0)]
