@@ -222,6 +222,31 @@ class CometIcebergHdfsSuite
     }
   }
 
+  // Delete files are opened through the same FileIO as the data files, so a merge-on-read table
+  // is the one read where the HDFS backend serves two kinds of file of one task.
+  test("native Iceberg scan on HDFS applies position deletes") {
+    withHdfsIcebergCatalog() { catalog =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.db.mor (id INT, name STRING) USING iceberg
+        TBLPROPERTIES ('format-version' = '2', 'write.delete.mode' = 'merge-on-read')
+      """)
+      // One data file, so the delete cannot drop whole files through metadata and must write a
+      // position-delete file on HDFS.
+      spark.sql(s"""
+        INSERT INTO $catalog.db.mor
+        SELECT /*+ COALESCE(1) */ id, name FROM VALUES (1, 'a'), (2, 'b'), (3, 'c'), (4, 'd') AS t(id, name)
+      """)
+      spark.sql(s"DELETE FROM $catalog.db.mor WHERE id IN (2, 4)")
+      val summary =
+        loadIcebergTable(spark, catalog, "db", "mor").asInstanceOf[Table].currentSnapshot.summary
+      assert(summary.get("added-delete-files") == "1", summary)
+
+      val (_, cometPlan) = checkSparkAnswer(s"SELECT * FROM $catalog.db.mor ORDER BY id")
+      assertSingleNativeScan(cometPlan)
+      assert(spark.sql(s"SELECT count(*) FROM $catalog.db.mor").collect().head.getLong(0) == 2L)
+    }
+  }
+
   test("native Iceberg scan reads a partitioned table across multiple HDFS data files") {
     withHdfsIcebergCatalog() { catalog =>
       spark.sql(
