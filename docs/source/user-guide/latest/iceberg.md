@@ -197,12 +197,20 @@ These `s3.*` storage properties are not specific to the Hive catalog shown here.
 
 The native reader reads HDFS through iceberg-rust's experimental `hdfs-native` backend, a Rust HDFS
 client that uses neither libhdfs nor the JVM. The client reads `core-site.xml` and `hdfs-site.xml`
-from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor, so `spark.hadoop.*`
-settings do not reach it. The one exception is an HA nameservice. A location such as
-`hdfs://ns1/warehouse` has no port, and Comet passes the client the NameNodes that the session's
-Hadoop configuration declares for `ns1` with `dfs.ha.namenodes.ns1` and
-`dfs.namenode.rpc-address.ns1.<id>`. A portless location that the configuration does not declare
-is a single NameNode on Hadoop's default port, 8020, as it is to the JVM client.
+from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor. Of the session's
+Hadoop configuration (the driver's XML and `spark.hadoop.*`), Comet forwards the settings the
+client reads: `dfs.client.use.datanode.hostname`, `dfs.client.socket-timeout`,
+`dfs.client.failover.max.attempts`, `dfs.client.failover.sleep.base.millis` and
+`dfs.client.failover.sleep.max.millis` when the session sets them, and the NameNodes of an HA
+nameservice. A location such as `hdfs://ns1/warehouse` has no port, and Comet passes the client
+the NameNodes that the session's Hadoop configuration declares for `ns1` with
+`dfs.ha.namenodes.ns1` and `dfs.namenode.rpc-address.ns1.<id>`. A portless location that the
+configuration does not declare is a single NameNode on Hadoop's default port, 8020, as it is to
+the JVM client. A catalog property under `hadoop.` sets any client key directly and wins over the
+forwarded value. The client does not read the JVM client's other settings, among them short-circuit
+and hedged reads, `dfs.client.retry.*`, `ipc.client.*`, `hadoop.rpc.protection` and the
+per-nameservice `dfs.client.failover.*.<ns>` keys. Data transfer is encrypted when the NameNode
+requires it (`dfs.encrypt.data.transfer`), as for the JVM client.
 
 A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
 because the client cannot authenticate with the delegation tokens that Spark executors use on a

@@ -897,6 +897,19 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
         Map("hdfs.name-node.nn.example.com" -> "nn.example.com:8020"))
   }
 
+  test(
+    "iceberg scan: HDFS client settings of the session reach the FileIO, behind the catalog's") {
+    val (claimed, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/t/data/f.parquet"),
+      hadoopConf =
+        Seq("dfs.client.use.datanode.hostname" -> "true", "dfs.client.socket-timeout" -> "30000"),
+      catalogProps = Seq("hadoop.dfs.client.socket-timeout" -> "5000"))
+    assert(reasons.isEmpty, reasons)
+    val properties = claimed.head.nativeIcebergScanMetadata.get.catalogProperties
+    assert(properties.get("hadoop.dfs.client.use.datanode.hostname").contains("true"), properties)
+    assert(properties.get("hadoop.dfs.client.socket-timeout").contains("5000"), properties)
+  }
+
   test("iceberg scan: HDFS files are declined when executors would read as another user") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     // The native client connects as HADOOP_USER_NAME or the executor's OS user, never as the

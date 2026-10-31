@@ -660,8 +660,28 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   }
 
   /**
-   * Declares the HDFS nameservices among `authorities` for iceberg-rust's HDFS backend. That
-   * backend dials an authority with a port as written, but resolves a portless one
+   * The client settings iceberg-rust's HDFS backend reads from its configuration and the JVM
+   * client reads too (hdfs-native 0.14, `common/config.rs`). The client otherwise reads only the
+   * executors' `$HADOOP_CONF_DIR`, so a value the session sets would never reach it. Not
+   * forwarded: the per-nameservice `dfs.client.failover.*.<ns>` keys, which the client would look
+   * up under a nameservice name of opendal's own, and `dfs.data.transfer.protection`, on which
+   * the client negotiates SASL whenever it is set where the JVM client does so only on a secure
+   * cluster, which falls back.
+   */
+  private[comet] val forwardedHdfsClientKeys: Seq[String] = Seq(
+    "dfs.client.use.datanode.hostname",
+    "dfs.client.socket-timeout",
+    "dfs.client.failover.max.attempts",
+    "dfs.client.failover.sleep.base.millis",
+    "dfs.client.failover.sleep.max.millis")
+
+  /**
+   * The HDFS properties a scan of `authorities` needs from the Hadoop configuration, for
+   * iceberg-rust's HDFS backend: nameservice declarations, and the client settings of
+   * [[forwardedHdfsClientKeys]] that the session set (a value from Hadoop's own `*-default.xml`
+   * is not a setting, and forwarded would override the executors' XML), as `hadoop.<key>`.
+   *
+   * The backend dials an authority with a port as written, but resolves a portless one
    * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
    * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
    * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
@@ -674,8 +694,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   def hadoopToIcebergHdfsProperties(
       hadoopConf: Configuration,
       authorities: Set[String]): Map[String, String] = {
+    val clientSettings = if (authorities.isEmpty) {
+      Map.empty[String, String]
+    } else {
+      forwardedHdfsClientKeys.flatMap { key =>
+        val sources = Option(hadoopConf.getPropertySources(key)).getOrElse(Array.empty[String])
+        val set = sources.nonEmpty && !sources.exists(_.endsWith("-default.xml"))
+        if (set) Option(hadoopConf.getTrimmed(key)).map(s"hadoop.$key" -> _) else None
+      }.toMap
+    }
     val logicalNames = hadoopConf.getTrimmedStringCollection("dfs.nameservices").asScala.toSet
-    hdfsNameservices(authorities).flatMap { ns =>
+    val declarations = hdfsNameservices(authorities).flatMap { ns =>
       val nameNodes = hadoopConf
         .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
         .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
@@ -689,6 +718,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           s"hdfs.name-node.$ns" -> s"$ns:${HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT}")
       }
     }.toMap
+    declarations ++ clientSettings
   }
 
   /**

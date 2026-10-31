@@ -640,8 +640,9 @@ case class CometScanRule(session: SparkSession)
                 hadoopS3Options,
                 icebergDataBucket)
 
-            // Declares the HDFS nameservices the data/delete files name. Merged before the
-            // catalog's properties, so a catalog's own declaration wins.
+            // Declares the HDFS nameservices the data/delete files name, and forwards the client
+            // settings the session set. Merged before the catalog's properties, so a catalog's own
+            // declaration or setting wins.
             val hdfsProperties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(
               hadoopConf,
               taskValidation.hdfsAuthorities)
@@ -664,8 +665,9 @@ case class CometScanRule(session: SparkSession)
             // A nameservice the catalog declares with Hadoop's own keys is not also given a
             // default-port host declaration.
             val derivedHdfsProperties = hdfsProperties.filterNot { case (key, _) =>
-              val ns = key.stripPrefix("hdfs.name-node.")
-              fileIOProperties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+              key.startsWith("hdfs.name-node.") &&
+              fileIOProperties.contains(
+                s"hadoop.dfs.ha.namenodes.${key.stripPrefix("hdfs.name-node.")}")
             }
             val catalogProperties =
               hadoopDerivedProperties ++ derivedHdfsProperties ++ fileIOProperties ++

@@ -302,6 +302,24 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     CometIcebergNativeScan.undeclaredHdfsNameservice(authorities, properties) shouldBe Some("ns1")
   }
 
+  test("HDFS client settings the session sets are forwarded under hadoop.") {
+    val conf = new Configuration(false)
+    conf.set("dfs.client.use.datanode.hostname", "true")
+    conf.set("dfs.client.socket-timeout", "30000")
+    // Hadoop's own default is not a setting: forwarded, it would override the executors' XML.
+    conf.set("dfs.client.failover.max.attempts", "15", "hdfs-default.xml")
+    // What the client does not read, or must not be given, stays behind.
+    conf.set("dfs.client.read.shortcircuit", "true")
+    conf.set("dfs.data.transfer.protection", "privacy")
+    conf.set("dfs.client.failover.random.order.ns1", "true")
+
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, Set("nn1:8020")) shouldBe Map(
+      "hadoop.dfs.client.use.datanode.hostname" -> "true",
+      "hadoop.dfs.client.socket-timeout" -> "30000")
+    // A scan with no HDFS files needs none of it.
+    CometIcebergNativeScan.hadoopToIcebergHdfsProperties(conf, Set.empty) shouldBe Map.empty
+  }
+
   test("the encryption-zone probe lists each parent directory once and caches the answer") {
     val root = Files.createTempDirectory("comet_ez_probe").toFile
     val dirs = (1 to 3).map { i =>
