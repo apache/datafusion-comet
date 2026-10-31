@@ -259,7 +259,8 @@ object CometNativeExecutors {
       return query
     }
     val literals: Map[Long, ExprOuterClass.Expr] = subqueries.map { sub =>
-      val literal = Literal.create(sub.eval(null), sub.dataType)
+      // The result is already in Catalyst's internal form.
+      val literal = Literal(sub.eval(null), sub.dataType)
       val expr = QueryPlanSerde
         .exprToProto(literal, Seq.empty)
         .getOrElse(throw new CometRuntimeException(

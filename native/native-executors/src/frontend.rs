@@ -92,8 +92,8 @@ impl CometFlightService {
     }
 }
 
-/// Runs `plan`, which has one output partition, as a Ballista job on `scheduler`, and reads its
-/// rows back from the executor that holds them, as a driver reads a query's result.
+/// Runs `plan` as a Ballista job on `scheduler` and reads the rows of each of its partitions back
+/// from the executor that holds it, as a driver reads a query's result.
 async fn collect(
     scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
     plan: Arc<dyn ExecutionPlan>,
@@ -209,6 +209,17 @@ fn endpoint(
     Ok(endpoint)
 }
 
+/// The status for a query the scheduler couldn't plan: a sampling job's own status when that job
+/// failed, and otherwise an invalid query.
+fn planning_status(error: DataFusionError) -> Status {
+    if let DataFusionError::External(cause) = error.find_root() {
+        if let Some(status) = cause.downcast_ref::<Status>() {
+            return status.clone();
+        }
+    }
+    Status::invalid_argument(error.to_string())
+}
+
 fn unimplemented<T>(method: &str) -> Result<T, Status> {
     Err(Status::unimplemented(format!(
         "A Comet scheduler doesn't implement {method}"
@@ -247,7 +258,7 @@ impl FlightService for CometFlightService {
         })
         .await
         .map_err(|e| Status::internal(e.to_string()))?
-        .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        .map_err(planning_status)?;
         let job = self.run(plan).await?;
         let expires_at = self.results_expire_at(job.ended_at);
         let mut info = FlightInfo::new();

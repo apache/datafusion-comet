@@ -62,6 +62,10 @@ pub fn int_type() -> spark_expression::DataType {
     data_type(DataTypeId::Int32)
 }
 
+pub fn double_type() -> spark_expression::DataType {
+    data_type(DataTypeId::Double)
+}
+
 pub fn bool_type() -> spark_expression::DataType {
     data_type(DataTypeId::Bool)
 }

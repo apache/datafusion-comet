@@ -25,6 +25,7 @@ use comet::execution::native_executors::{
 };
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::SortOptions;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::common::{plan_datafusion_err, plan_err, Result};
 use datafusion::physical_expr::expressions::Column;
 use datafusion::physical_expr::{LexOrdering, PhysicalExpr, PhysicalSortExpr, RangePartitioning};
@@ -42,7 +43,7 @@ use prost::Message;
 
 use crate::range::{sample_size_per_partition, split_points, SampleExec};
 
-/// Runs a plan with one output partition to completion and returns its rows: how the scheduler
+/// Runs a plan to completion and returns the rows of all its partitions: how the scheduler
 /// samples the input of a range exchange.
 pub type Sampler<'a> = dyn FnMut(Arc<dyn ExecutionPlan>) -> Result<Vec<RecordBatch>> + 'a;
 
@@ -234,10 +235,35 @@ fn bound_column(expr: &Expr, num_fields: usize) -> Option<usize> {
     }
 }
 
+/// Whether Arrow orders values of `data_type` as Spark does, so that a range shuffle, which
+/// compares raw values, puts rows in the ranges that Comet's sort orders them by. Comet's sort
+/// normalizes floats first (a NaN of either sign sorts last), so a float key, or a nested one
+/// that may hold floats, can't be range-partitioned this way.
+fn orders_like_spark(data_type: &DataType) -> bool {
+    data_type.is_integer()
+        || matches!(
+            data_type,
+            DataType::Boolean
+                | DataType::Decimal32(_, _)
+                | DataType::Decimal64(_, _)
+                | DataType::Decimal128(_, _)
+                | DataType::Decimal256(_, _)
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+                | DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Utf8View
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::BinaryView
+        )
+}
+
 /// A range exchange as a range shuffle (`RepartitionExec` with a range partitioning), with
 /// split points found by sampling `producer`. It falls back to reading the exchange as one
-/// partition, which sorts correctly in a single task, when a sort key is not a column or the
-/// sample yields no split points.
+/// partition, which sorts correctly in a single task, when a sort key is not a column, or of a
+/// type a range shuffle doesn't order as Spark does, or the sample yields no split points.
 fn range_exchange(
     range: &datafusion_comet_proto::spark_partitioning::RangePartition,
     producer: Arc<dyn ExecutionPlan>,
@@ -257,6 +283,11 @@ fn range_exchange(
             warn!("A range exchange sorts by an expression that is not a column, so it runs in one task");
             return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
         };
+        let data_type = schema.field(index).data_type();
+        if !orders_like_spark(data_type) {
+            warn!("A range exchange sorts by a {data_type} column, so it runs in one task");
+            return Ok(Arc::new(CoalescePartitionsExec::new(producer)));
+        }
         keys.push(index);
         options.push(SortOptions {
             descending: order.direction == SortDirection::Descending as i32,
@@ -276,7 +307,7 @@ fn range_exchange(
         per_partition,
     )?);
     let sample_schema = sample.schema();
-    let samples = sampler(Arc::new(CoalescePartitionsExec::new(sample)))?;
+    let samples = sampler(sample)?;
     let points = split_points(&sample_schema, &samples, &options, partitions)?;
     if points.is_empty() {
         return Ok(Arc::new(CoalescePartitionsExec::new(producer)));

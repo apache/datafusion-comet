@@ -20,10 +20,12 @@
 
 mod common;
 
-use comet_native_executors::assembly::build_plan;
+use comet_native_executors::assembly::{build_plan, build_plan_with_sampler};
 use common::*;
 use datafusion::arrow::datatypes::{DataType, Int32Type, Int64Type};
-use datafusion::physical_plan::{collect, ExecutionPlan, ExecutionPlanProperties};
+use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
+use datafusion::physical_plan::{collect, ExecutionPlan, ExecutionPlanProperties, Partitioning};
 use datafusion::prelude::SessionContext;
 use datafusion_comet_proto::spark_expression::{
     expr::ExprStruct, literal::Value, Expr, IfExpr, Literal, Subquery,
@@ -85,6 +87,65 @@ async fn range_exchange_is_read_as_one_partition() {
     let plan = assemble(request.clone()).await.unwrap();
     assert_eq!(plan.output_partitioning().partition_count(), 1);
     assert_eq!(run(request).await, (0..100).collect::<Vec<_>>());
+}
+
+/// Assembles `request` with a sampler that runs each sampling plan in this process, and returns
+/// the plan and how many sampling plans ran.
+async fn assemble_sampling(request: QueryRequest) -> (Arc<dyn ExecutionPlan>, usize) {
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let mut samples = 0;
+        let mut sampler = |plan: Arc<dyn ExecutionPlan>| {
+            samples += 1;
+            runtime.block_on(collect(plan, SessionContext::new().task_ctx()))
+        };
+        let plan = build_plan_with_sampler(request, &mut sampler).unwrap();
+        (plan, samples)
+    })
+    .await
+    .unwrap()
+}
+
+/// The exchange a reading stage reads: its second child, after the partition descriptor.
+fn exchange_of(plan: &Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    Arc::clone(plan.children()[1])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn range_exchange_is_range_partitioned_by_a_sample() {
+    let request = query(vec![
+        range_stage(1000, 4),
+        reading_stage(0, range_on_first_column_descending(4), 4),
+    ]);
+    let (plan, samples) = assemble_sampling(request).await;
+    assert_eq!(samples, 1);
+    assert_eq!(plan.output_partitioning().partition_count(), 4);
+    let exchange = exchange_of(&plan);
+    let repartition = exchange
+        .downcast_ref::<RepartitionExec>()
+        .expect("a range exchange becomes a RepartitionExec");
+    let Partitioning::Range(range) = repartition.partitioning() else {
+        panic!(
+            "expected a range partitioning, got {}",
+            repartition.partitioning()
+        );
+    };
+    assert_eq!(range.split_points().len(), 3);
+    assert!(range.ordering()[0].options.descending);
+}
+
+/// A range shuffle compares raw values, which order floats differently from Comet's sort.
+#[tokio::test(flavor = "multi_thread")]
+async fn range_exchange_on_a_float_key_is_read_as_one_partition() {
+    let mut producer = range_stage(1000, 4);
+    producer.output_schema = vec![field(double_type())];
+    let request = query(vec![
+        producer,
+        reading_stage(0, range_on_first_column_descending(4), 4),
+    ]);
+    let (plan, samples) = assemble_sampling(request).await;
+    assert_eq!(samples, 0);
+    assert!(exchange_of(&plan).is::<CoalescePartitionsExec>());
 }
 
 #[tokio::test(flavor = "multi_thread")]
