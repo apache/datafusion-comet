@@ -126,15 +126,6 @@ impl CometFragmentExec {
             ));
         }
         let partitions = descriptor.output_partitioning().partition_count();
-        for (index, (input, broadcast)) in inputs.iter().zip(&fragment.broadcast).enumerate() {
-            let expected = if *broadcast { 1 } else { partitions };
-            let actual = input.output_partitioning().partition_count();
-            if actual != expected {
-                return Err(internal_datafusion_err!(
-                    "CometFragmentExec input {index} has {actual} partitions, expected {expected}"
-                ));
-            }
-        }
         let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(fragment_schema(&fragment.output_schema)),
             Partitioning::UnknownPartitioning(partitions),
@@ -150,6 +141,27 @@ impl CometFragmentExec {
 
     pub fn fragment(&self) -> &Arc<Fragment> {
         &self.fragment
+    }
+
+    /// Checks that each input's partitions line up with the descriptor's. This is checked when the
+    /// plan runs rather than when it is built, since an optimizer can rebuild the node with an
+    /// input whose exchange it has taken away and is about to put back.
+    fn check_inputs(&self) -> Result<()> {
+        let partitions = self.props.output_partitioning().partition_count();
+        for (index, (input, broadcast)) in self.children[1..]
+            .iter()
+            .zip(&self.fragment.broadcast)
+            .enumerate()
+        {
+            let expected = if *broadcast { 1 } else { partitions };
+            let actual = input.output_partitioning().partition_count();
+            if actual != expected {
+                return Err(internal_datafusion_err!(
+                    "CometFragmentExec input {index} has {actual} partitions, expected {expected}"
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -193,10 +205,13 @@ impl ExecutionPlan for CometFragmentExec {
 
     /// The descriptor's and the partitioned inputs' partitions line up with this plan's, while a
     /// broadcast input is read whole by every partition, so a distributed engine must not split
-    /// it between tasks.
+    /// it between tasks. A stage with one partition reads every input as one partition, which
+    /// keeps an optimizer such as `EnsureRequirements` from removing the coalesce that gathers
+    /// it.
     fn input_distribution_requirements(&self) -> InputDistributionRequirements {
+        let single = self.props.output_partitioning().partition_count() == 1;
         let inputs = self.fragment.broadcast.iter().map(|broadcast| {
-            if *broadcast {
+            if *broadcast || single {
                 Distribution::SinglePartition
             } else {
                 Distribution::UnspecifiedDistribution
@@ -237,6 +252,7 @@ impl ExecutionPlan for CometFragmentExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        self.check_inputs()?;
         let descriptor = Arc::clone(&self.children[0]);
         let inputs = self.children[1..]
             .iter()
