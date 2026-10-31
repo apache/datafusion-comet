@@ -22,7 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.net.URI
 import java.nio.file.Files
-import java.util.UUID
+import java.util.{EnumSet, UUID}
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
@@ -32,7 +32,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.crypto.key.{KeyProvider, KeyProviderFactory}
 import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hdfs.{MiniDFSCluster, MiniDFSNNTopology}
-import org.apache.hadoop.hdfs.client.HdfsAdmin
+import org.apache.hadoop.hdfs.client.{CreateEncryptionZoneFlag, HdfsAdmin}
 import org.apache.hadoop.util.VersionInfo
 import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.sql.CometTestBase
@@ -392,7 +392,10 @@ class CometIcebergHdfsSuite
     val fs = ezCluster.getFileSystem
     fs.mkdirs(new Path("/ez"))
     new HdfsAdmin(fs.getUri, ezCluster.getConfiguration(0))
-      .createEncryptionZone(new Path("/ez"), "ez-key")
+      .createEncryptionZone(
+        new Path("/ez"),
+        "ez-key",
+        EnumSet.noneOf(classOf[CreateEncryptionZoneFlag]))
   }
 
   test("native Iceberg scan falls back for a table in an HDFS encryption zone") {
