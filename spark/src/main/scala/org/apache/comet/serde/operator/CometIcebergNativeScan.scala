@@ -26,10 +26,14 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -654,6 +658,122 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /**
+   * Declares the HDFS nameservices among `authorities` for iceberg-rust's HDFS backend. That
+   * backend dials an authority with a port as written, but resolves a portless one
+   * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
+   * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
+   * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
+   * NameNode, becomes `hdfs.name-node.<ns>` with its NameNodes in declaration order. An authority
+   * the configuration knows nothing of is a single NameNode on Hadoop's default port, as
+   * `DFSUtilClient.getNNAddress` dials it for the JVM client. A name in `dfs.nameservices`
+   * without NameNodes, or with one that has no port, is left out, and
+   * [[undeclaredHdfsNameservice]] then declines the scan.
+   */
+  def hadoopToIcebergHdfsProperties(
+      hadoopConf: Configuration,
+      authorities: Set[String]): Map[String, String] = {
+    val logicalNames = hadoopConf.getTrimmedStringCollection("dfs.nameservices").asScala.toSet
+    hdfsNameservices(authorities).flatMap { ns =>
+      val nameNodes = hadoopConf
+        .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
+        .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
+      if (nameNodes.nonEmpty) {
+        if (nameNodes.forall(hasPort)) Some(s"hdfs.name-node.$ns" -> nameNodes.mkString(","))
+        else None
+      } else if (logicalNames.contains(ns)) {
+        None
+      } else {
+        Some(
+          s"hdfs.name-node.$ns" -> s"$ns:${HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT}")
+      }
+    }.toMap
+  }
+
+  /**
+   * The first portless HDFS authority among `authorities` that `properties` declares neither with
+   * iceberg-rust's `hdfs.name-node.<ns>` nor with Hadoop's `dfs.ha.namenodes.<ns>`.
+   */
+  def undeclaredHdfsNameservice(
+      authorities: Set[String],
+      properties: Map[String, String]): Option[String] =
+    hdfsNameservices(authorities).find { ns =>
+      !properties.contains(s"hdfs.name-node.$ns") &&
+      !properties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+    }
+
+  private def hdfsNameservices(authorities: Set[String]): Seq[String] =
+    authorities.filterNot(hasPort).toSeq.sorted
+
+  /**
+   * Encrypted flags of HDFS directories already probed, by filesystem URI and directory. A data
+   * directory cannot become a zone root once it holds files, so the answer is kept for the
+   * process; bounded so a long session over many tables stays small.
+   */
+  private val encryptedDirectories: java.util.Map[(String, String), java.lang.Boolean] =
+    java.util.Collections.synchronizedMap(
+      new java.util.LinkedHashMap[(String, String), java.lang.Boolean](64, 0.75f, true) {
+        override def removeEldestEntry(
+            eldest: java.util.Map.Entry[(String, String), java.lang.Boolean]): Boolean =
+          size() > 10000
+      })
+
+  /**
+   * The first of `directories`, HDFS directories of data and delete files, that lies in an HDFS
+   * encryption zone, or whose status could not be read. iceberg-rust's HDFS client is built
+   * without KMS support and rejects every file of a zone, so such a scan must not be claimed. The
+   * NameNode flags each path inside a zone as encrypted, directories included, so one listing of
+   * a parent tells the flag of every data directory under it: the partitions of a table cost one
+   * call, not one each, and a flag once read is cached. A cluster that cannot hold a zone at all,
+   * one whose NameNode advertises no key provider (a client-cached call) and whose session
+   * configures none, is not listed.
+   */
+  def hdfsEncryptedDirectory(
+      hadoopConf: Configuration,
+      directories: Set[String]): Option[String] = {
+    val configuredProvider =
+      Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
+        .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    // A directory at the root of the filesystem has no parent and is listed itself.
+    val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
+      Option(dir.getParent).getOrElse(dir)
+    }
+    byParent.toSeq
+      .sortBy(_._1.toString)
+      .iterator
+      .map { case (parent, dirs) =>
+        try {
+          val fs = parent.getFileSystem(hadoopConf)
+          val key = (dir: Path) => (fs.getUri.toString, dir.toString)
+          val unknown = dirs.filterNot(dir => encryptedDirectories.containsKey(key(dir)))
+          val canHoldZones = unknown.nonEmpty && (configuredProvider ||
+            Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty))
+          if (canHoldZones) {
+            val listed =
+              fs.listStatus(parent).map(status => status.getPath.toString -> status.isEncrypted)
+            val flags = listed.toMap
+            unknown.foreach { dir =>
+              val flag = flags.getOrElse(dir.toString, fs.getFileStatus(dir).isEncrypted)
+              encryptedDirectories.put(key(dir), flag)
+            }
+          }
+          dirs.find(dir => encryptedDirectories.get(key(dir)) == java.lang.Boolean.TRUE)
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Could not tell whether HDFS directories under $parent are encrypted", e)
+            dirs.headOption
+        }
+      }
+      .collectFirst { case Some(dir) => dir.toString }
+  }
+
+  private def hasPort(address: String): Boolean =
+    address != null && {
+      val colon = address.lastIndexOf(':')
+      colon > address.lastIndexOf(']') && colon < address.length - 1 &&
+      address.substring(colon + 1).forall(_.isDigit)
+    }
 
   /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
   def ioTimeoutProperty(): (String, String) =

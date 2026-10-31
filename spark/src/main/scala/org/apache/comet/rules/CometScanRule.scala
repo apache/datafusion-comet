@@ -640,6 +640,12 @@ case class CometScanRule(session: SparkSession)
                 hadoopS3Options,
                 icebergDataBucket)
 
+            // Declares the HDFS nameservices the data/delete files name. Merged before the
+            // catalog's properties, so a catalog's own declaration wins.
+            val hdfsProperties = CometIcebergNativeScan.hadoopToIcebergHdfsProperties(
+              hadoopConf,
+              taskValidation.hdfsAuthorities)
+
             // Forward the full FileIO property bag (including credentials.uri, OAuth tokens,
             // tenant-id, etc.) so a CometS3CredentialProvider can see everything LoadTableResponse
             // returned. The storage-prefix narrowing happens native-side just before
@@ -655,10 +661,17 @@ case class CometScanRule(session: SparkSession)
             // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
             // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
             // it. That is intended: the provider gets the full property bag.
-            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties ++
-              hadoopS3Options
-                .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
-                .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
+            // A nameservice the catalog declares with Hadoop's own keys is not also given a
+            // default-port host declaration.
+            val derivedHdfsProperties = hdfsProperties.filterNot { case (key, _) =>
+              val ns = key.stripPrefix("hdfs.name-node.")
+              fileIOProperties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+            }
+            val catalogProperties =
+              hadoopDerivedProperties ++ derivedHdfsProperties ++ fileIOProperties ++
+                hadoopS3Options
+                  .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
+                  .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
 
             val result = CometIcebergNativeScanMetadata.extract(
               scanExec.scan,
@@ -702,6 +715,22 @@ case class CometScanRule(session: SparkSession)
               s"it). ${CometScanRule.icebergSupportedSchemesMessage(s3CompliantSchemes)}"
             false
           }
+
+        // The native scan opens every data and delete file through one storage, built from the
+        // metadata location's scheme (`load_file_io` in iceberg_scan.rs), so a file on another
+        // backend fails at open time: an `hdfs://` file handed to the local storage, a local path
+        // to the S3 one. Declined here instead; the multi-bucket check above is the same idea one
+        // level down.
+        val metadataFamily = CometScanRule.storageFamily(metadataUri.getScheme)
+        val foreignFamilies =
+          taskValidation.fileSchemes.map(CometScanRule.storageFamily) - metadataFamily
+        val storageFamiliesConsistent = foreignFamilies.isEmpty || {
+          fallbackReasons += "Iceberg scan reads data/delete files on storage " +
+            s"${foreignFamilies.toSeq.sorted.map(f => s"'$f'").mkString(", ")} while the table " +
+            s"metadata is on '$metadataFamily'; Comet's native Iceberg reader opens every file " +
+            "of a scan through one storage backend, chosen from the metadata location"
+          false
+        }
 
         // Now perform all validation using the pre-extracted metadata
         // Check if table uses a FileIO implementation compatible with iceberg-rust.
@@ -924,6 +953,69 @@ case class CometScanRule(session: SparkSession)
           case None => true
         }
 
+        // iceberg-rust's HDFS client cannot use an executor's delegation tokens: opendal builds
+        // every client for a synthetic nameservice, and the client looks tokens up by that name.
+        // A portless authority must be a declared nameservice (see hadoopToIcebergHdfsProperties).
+        val hdfsSupported = taskValidation.hdfsAuthorities.isEmpty || {
+          val authentication = hadoopConf.getTrimmed("hadoop.security.authentication", "simple")
+          val secure = !authentication.equalsIgnoreCase("simple")
+          if (secure) {
+            fallbackReasons += "Iceberg scan reads HDFS with " +
+              s"hadoop.security.authentication=$authentication, but Comet's native Iceberg " +
+              "reader cannot authenticate to HDFS with delegation tokens"
+          }
+          val undeclared = CometIcebergNativeScan.undeclaredHdfsNameservice(
+            taskValidation.hdfsAuthorities,
+            metadata.catalogProperties)
+          undeclared.foreach { ns =>
+            fallbackReasons += s"Iceberg scan reads HDFS authority '$ns', which has no port and " +
+              "which the Hadoop configuration does not declare as a nameservice " +
+              s"(dfs.ha.namenodes.$ns, and a host:port dfs.namenode.rpc-address.$ns.<id> for " +
+              "each NameNode)"
+          }
+          // The client connects as HADOOP_USER_NAME, or as the executor's OS user, never as the
+          // Spark user the JVM reader runs as (opendal exposes no user setting). Claimed only
+          // when the executors are known to read as the Spark user: HADOOP_USER_NAME set to it
+          // in their environment, or, in local mode, the JVM's own user.
+          val sparkUser = session.sparkContext.sparkUser
+          val executorEnvKey = "spark.executorEnv.HADOOP_USER_NAME"
+          val executorUser = Option(
+            session.sessionState.conf
+              .getConfString(
+                executorEnvKey,
+                session.sparkContext.getConf.get(executorEnvKey, null)))
+            .orElse {
+              if (session.sparkContext.isLocal) {
+                Some(sys.env.getOrElse("HADOOP_USER_NAME", System.getProperty("user.name")))
+              } else {
+                None
+              }
+            }
+          val identityKnown = executorUser.contains(sparkUser)
+          if (!identityKnown) {
+            fallbackReasons += "Iceberg scan reads HDFS as the executors' user " +
+              s"${executorUser.map(u => s"'$u'").getOrElse("(unknown)")} rather than the Spark " +
+              s"user '$sparkUser'; set $executorEnvKey=$sparkUser so Comet's native Iceberg " +
+              "reader connects as the Spark user"
+          }
+          // The client is built without KMS support and rejects every file of an encryption
+          // zone. Probed only once the scan is otherwise eligible, so an undeclared nameservice
+          // is not also dialed.
+          val encryptedDirectory =
+            if (secure || undeclared.nonEmpty || !identityKnown) None
+            else {
+              CometIcebergNativeScan.hdfsEncryptedDirectory(
+                hadoopConf,
+                taskValidation.hdfsDirectories)
+            }
+          encryptedDirectory.foreach { dir =>
+            fallbackReasons += s"Iceberg scan reads HDFS directory '$dir', which is in an " +
+              "encryption zone or whose status could not be read; Comet's native Iceberg reader " +
+              "cannot decrypt HDFS encryption zones"
+          }
+          !secure && undeclared.isEmpty && identityKnown && encryptedDirectory.isEmpty
+        }
+
         if (!taskValidation.allParquet) {
           fallbackReasons += "Iceberg scan contains non-Parquet files (ORC or Avro). " +
             "Comet only supports Parquet files in Iceberg tables"
@@ -1135,9 +1227,11 @@ case class CometScanRule(session: SparkSession)
         if (schemaSupported && fileIOCompatible && formatVersionSupported &&
           defaultValuesSupported && schemaTypesSupported && encryptionKeyLengthSupported &&
           taskValidation.allParquet && allSupportedFilesystems && allLocationsOpenable &&
-          metadataSchemeSupported && partitionTypesSupported && unifiedPartitionTypeSupported &&
+          metadataSchemeSupported && storageFamiliesConsistent && partitionTypesSupported &&
+          unifiedPartitionTypeSupported &&
           transformFunctionsSupported && deleteFileTypesSupported && dppSubqueriesSupported &&
-          nestedFieldsSupported && taskSchemaNamesSupported && nestedNameMappingSupported) {
+          nestedFieldsSupported && taskSchemaNamesSupported && hdfsSupported &&
+          nestedNameMappingSupported) {
           CometBatchScanExec(
             scanExec.clone().asInstanceOf[BatchScanExec],
             runtimeFilters = scanExec.runtimeFilters,
@@ -1475,6 +1569,13 @@ object CometScanRule extends Logging {
     // Buckets the native FileIO must read (data + delete files), for the single-config check in
     // CometScanRule; only S3-family locations contribute (see NativeConfig.bucketForUri).
     val dataFileBuckets = mutable.Set[String]()
+    // Schemes of the data/delete files the native FileIO opens, for the storage-family check in
+    // CometScanRule; a schemeless path is local, as iceberg-rust's `scheme_of` reads it.
+    val fileSchemes = mutable.Set[String]()
+    // HDFS authorities and directories of the data/delete files, for the HDFS checks in
+    // CometScanRule.
+    val hdfsAuthorities = mutable.Set[String]()
+    val hdfsDirectories = mutable.Set[String]()
     // First data/delete location with a readable scheme but no URL host (see
     // hasOpenableAuthority); non-empty => decline. One example suffices for the message.
     var hostlessLocation: Option[String] = None
@@ -1488,14 +1589,24 @@ object CometScanRule extends Logging {
         catch { case _: java.net.URISyntaxException => return }
       // A schemeless local path routes to iceberg-rust's LocalFs and needs no host.
       val scheme = uri.getScheme
-      if (scheme == null) return
+      if (scheme == null) {
+        fileSchemes += "file"
+        return
+      }
       if (!isAdmittedIcebergScheme(scheme, s3CompliantSchemes)) {
         unsupportedSchemes += scheme
       } else if (!hasOpenableAuthority(uri, s3CompliantSchemes)) {
         if (hostlessLocation.isEmpty) hostlessLocation = Some(rawPath)
       } else {
-        // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed here.
-        NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        fileSchemes += scheme
+        if (scheme == "hdfs") {
+          hdfsAuthorities += uri.getRawAuthority
+          val slash = rawPath.lastIndexOf('/')
+          if (slash > 0) hdfsDirectories += rawPath.substring(0, slash)
+        } else {
+          // bucketForUri yields None for non-S3-family URIs, so no scheme re-check is needed.
+          NativeConfig.bucketForUri(uri, s3CompliantSchemes).foreach(dataFileBuckets += _)
+        }
       }
     }
 
@@ -1567,8 +1678,22 @@ object CometScanRule extends Logging {
       nonIdentityTransform,
       deleteFiles,
       dataFileBuckets.toSet,
+      fileSchemes.toSet,
+      hdfsAuthorities.toSet,
+      hdfsDirectories.toSet,
       hostlessLocation,
       requiredFieldIds)
+  }
+
+  /**
+   * The native storage backend a data/delete file scheme routes to (`storage_factory_for` in
+   * iceberg_common.rs): `s3` and `s3a` share one, a schemeless path is local, and every other
+   * scheme, an S3-compliant alias included, is its own.
+   */
+  private[rules] def storageFamily(scheme: String): String = scheme match {
+    case null | "file" => "file"
+    case "s3" | "s3a" => "s3"
+    case other => other
   }
 }
 
@@ -1581,5 +1706,8 @@ case class IcebergTaskValidationResult(
     nonIdentityTransform: Option[String],
     deleteFiles: java.util.List[_],
     dataFileBuckets: Set[String],
+    fileSchemes: Set[String],
+    hdfsAuthorities: Set[String],
+    hdfsDirectories: Set[String],
     hostlessLocation: Option[String],
     requiredFieldIds: Set[Int])
