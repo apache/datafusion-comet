@@ -19,7 +19,8 @@
 
 package org.apache.comet
 
-import java.io.File
+import java.io.{ByteArrayOutputStream, File}
+import java.nio.ByteBuffer
 import java.nio.file.{FileAlreadyExistsException, Files}
 import java.sql.Timestamp
 import java.util.concurrent.{ConcurrentLinkedQueue, CountDownLatch, TimeUnit}
@@ -38,6 +39,7 @@ import org.json4s.jackson.JsonMethods.parse
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
+import org.apache.parquet.io.api.Binary
 import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkException, SparkThrowable, Success, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -1237,6 +1239,859 @@ class CometIcebergWriteActionSuite
         assert(
           fallbackDirs == nativeDirs,
           s"partition layout fallback=$fallbackDirs native=$nativeDirs")
+      }
+    }
+  }
+
+  test("legacy Bloom settings use Java despite the native folding opt-in") {
+    assumeNativeAcceleration()
+    assume(!icebergVersionAtLeast(1, 10), "legacy runtime only")
+    withIcebergCatalog { _ =>
+      Seq("true", "false").zipWithIndex.foreach { case (enabled, index) =>
+        val table = s"legacy_bloom_$index"
+        createTable(
+          table,
+          partitionSpec = "",
+          properties = Some(s"'write.parquet.bloom-filter-enabled.column.id'='$enabled'"))
+        assertNativeWriteDoesNotEngage(table, Seq(1)) {
+          spark.sql(s"INSERT INTO $catalog.$ns.$table VALUES (1, 'region', 1.0)")
+        }
+      }
+    }
+  }
+
+  test("native acceleration: writes configured Iceberg Parquet bloom filters") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      createTable(
+        "native_bloom",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+
+      val expectedIds = 0 until 256
+      assertNativeWriteEngages("native_bloom", expectedIds) {
+        spark.sql(
+          "INSERT INTO cat.db.native_bloom " +
+            "SELECT CAST(id AS INT), CONCAT('region-', CAST(id % 4 AS STRING)), " +
+            "CAST(id AS DOUBLE) FROM range(256)")
+      }
+
+      assertParquetBloomFilters("native_bloom", enabledColumns = Set("id"))
+
+    }
+  }
+
+  test("Bloom-filter folding config selects the native or JVM Iceberg writer") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'")
+      createTable("bloom_folding_enabled", partitionSpec = "", properties)
+      createTable("bloom_folding_disabled", partitionSpec = "", properties)
+
+      assertNativeWriteEngages("bloom_folding_enabled", Seq(1)) {
+        spark.sql("INSERT INTO cat.db.bloom_folding_enabled VALUES (1, 'region', 1.0)")
+      }
+      assertNativeWriteDoesNotEngage(
+        "bloom_folding_disabled",
+        Seq(1),
+        bloomFilterFoldingEnabled = false) {
+        spark.sql("INSERT INTO cat.db.bloom_folding_disabled VALUES (1, 'region', 1.0)")
+      }
+      assertParquetBloomFilters("bloom_folding_enabled", enabledColumns = Set("id"))
+      assertParquetBloomFilters("bloom_folding_disabled", enabledColumns = Set("id"))
+    }
+  }
+
+  test("floating-point Bloom writes fall back and preserve NaN predicate results") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val table = "floating_bloom_nan"
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.$table (
+          id INT, region STRING, amount DOUBLE, f FLOAT
+        ) USING iceberg TBLPROPERTIES (
+          'write.parquet.bloom-filter-enabled.column.amount'='true',
+          'write.parquet.bloom-filter-enabled.column.f'='true',
+          'write.parquet.dict-size-bytes'='1'
+        )
+      """)
+      val count = 4096
+      assertNativeWriteDoesNotEngage(table, 0 until count) {
+        spark.sql(s"""
+          INSERT INTO $catalog.$ns.$table
+          SELECT CAST(id AS INT), 'region', CAST('NaN' AS DOUBLE), CAST('NaN' AS FLOAT)
+          FROM range(0, $count, 1, 1)
+        """)
+      }
+      val paths = spark
+        .sql(s"SELECT file_path FROM $catalog.$ns.$table.data_files")
+        .collect()
+        .map(_.getString(0))
+      assert(paths.nonEmpty)
+      val conf = spark.sparkContext.hadoopConfiguration
+      val bloomKey = "parquet.filter.bloom.enabled"
+      val previous = Option(conf.get(bloomKey))
+      try {
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          Seq(false, true).foreach { enabled =>
+            conf.setBoolean(bloomKey, enabled)
+            val written = spark.read.parquet(paths: _*)
+            assert(written.filter("amount = CAST('NaN' AS DOUBLE)").count() == count)
+            assert(written.filter("f = CAST('NaN' AS FLOAT)").count() == count)
+          }
+        }
+      } finally {
+        previous match {
+          case Some(value) => conf.set(bloomKey, value)
+          case None => conf.unset(bloomKey)
+        }
+      }
+    }
+  }
+
+  test("floating-point columns without Bloom filters keep native writes") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      createTable(
+        "unfiltered_floating_column",
+        partitionSpec = "",
+        properties = Some("'write.parquet.bloom-filter-enabled.column.id'='true'"))
+      assertNativeWriteEngages("unfiltered_floating_column", Seq(1)) {
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.unfiltered_floating_column " +
+            "VALUES (1, 'region', CAST('NaN' AS DOUBLE))")
+      }
+      assertParquetBloomFilters("unfiltered_floating_column", enabledColumns = Set("id"))
+    }
+  }
+
+  test("enabled=false plus NDV matches JVM behavior for the Iceberg runtime") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val configuredFpp = 0.01
+      val configuredNdv = 1000
+      val properties = Some(
+        "'write.parquet.bloom-filter-enabled.column.id'='false', " +
+          s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
+          s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
+      createTable("bloom_false_ndv_native", partitionSpec = "", properties)
+      createTable("bloom_false_ndv_jvm", partitionSpec = "", properties)
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) " +
+          s"FROM range(0, $configuredNdv, 1, 1)")
+
+      assertNativeWriteEngages("bloom_false_ndv_native", 0 until configuredNdv) {
+        insert("bloom_false_ndv_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_false_ndv_jvm")
+      }
+
+      val nativeHasBloom = parquetBloomFilterPresent("bloom_false_ndv_native", "id")
+      val jvmHasBloom = parquetBloomFilterPresent("bloom_false_ndv_jvm", "id")
+      assert(nativeHasBloom == jvmHasBloom)
+      if (icebergSupportsBloomNdv) {
+        assert(nativeHasBloom, "an interpreted NDV must re-enable the Bloom filter")
+        val native = parquetBloomFilterBytes("bloom_false_ndv_native", "id")
+        val jvm = parquetBloomFilterBytes("bloom_false_ndv_jvm", "id")
+        assert(native.map(_.length) == jvm.map(_.length))
+        assert(native.zip(jvm).forall { case (left, right) =>
+          java.util.Arrays.equals(left, right)
+        })
+      } else {
+        assert(!nativeHasBloom, "an uninterpreted NDV must not override enabled=false")
+      }
+    }
+  }
+
+  test("enabled=false preserves JVM validation errors for malformed FPP and NDV") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq(
+        ("fpp", "'write.parquet.bloom-filter-fpp.column.id'='garbage'", icebergSupportsBloomFpp),
+        ("ndv", "'write.parquet.bloom-filter-ndv.column.id'='garbage'", icebergSupportsBloomNdv))
+        .foreach { case (suffix, malformedProperty, interpreted) =>
+          val properties =
+            Some(s"'write.parquet.bloom-filter-enabled.column.id'='false', $malformedProperty")
+          val nativeTable = s"bloom_false_bad_${suffix}_native"
+          val jvmTable = s"bloom_false_bad_${suffix}_jvm"
+          Seq(nativeTable, jvmTable).foreach { table =>
+            createTable(table, partitionSpec = "", properties = properties)
+          }
+
+          def insert(table: String): Unit =
+            spark.sql(s"INSERT INTO cat.db.$table VALUES (1, 'region', 1.0)")
+
+          if (interpreted) {
+            val withComet = intercept[Throwable] {
+              withNativeEnabled(insert(nativeTable))
+            }
+            val withJvm = intercept[Throwable] {
+              withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+                insert(jvmTable)
+              }
+            }
+            val cometCause = exceptionChain(withComet).last
+            val jvmCause = exceptionChain(withJvm).last
+            assert(cometCause.getClass == jvmCause.getClass)
+            assert(cometCause.getMessage == jvmCause.getMessage)
+          } else {
+            assertNativeWriteEngages(nativeTable, Seq(1))(insert(nativeTable))
+            withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+              insert(jvmTable)
+            }
+            assert(
+              !parquetBloomFilterPresent(nativeTable, "id") &&
+                !parquetBloomFilterPresent(jvmTable, "id"),
+              s"uninterpreted $suffix must not enable a Bloom filter")
+          }
+        }
+    }
+  }
+
+  test("max-bytes=32 falls back only when parquet-mr ignores the cap") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { _ =>
+      val minimumBytes = 32
+      val naturallyMinimumNdv = 1
+      val bindingNdv = 1000000
+      val bindingFpp = 0.0001
+      val parquetMrBindingBytes = 4 * 1024 * 1024
+      val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
+      createTable(
+        "bloom_minimum_native",
+        partitionSpec = "",
+        properties = Some(
+          enabled + s"'write.parquet.bloom-filter-ndv.column.id'='$naturallyMinimumNdv', " +
+            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+      createTable(
+        "bloom_minimum_fallback",
+        partitionSpec = "",
+        properties = Some(
+          enabled + s"'write.parquet.bloom-filter-fpp.column.id'='$bindingFpp', " +
+            s"'write.parquet.bloom-filter-ndv.column.id'='$bindingNdv', " +
+            s"'write.parquet.bloom-filter-max-bytes'='$minimumBytes'"))
+
+      assertNativeWriteEngages("bloom_minimum_native", Seq(1)) {
+        spark.sql("INSERT INTO cat.db.bloom_minimum_native VALUES (1, 'region', 1.0)")
+      }
+      assertNativeWriteDoesNotEngage("bloom_minimum_fallback", Seq(1)) {
+        spark.sql("INSERT INTO cat.db.bloom_minimum_fallback VALUES (1, 'region', 1.0)")
+      }
+
+      assert(
+        parquetBloomFilterBytes("bloom_minimum_native", "id").forall(_.length == minimumBytes))
+      assert(
+        parquetBloomFilterBytes("bloom_minimum_fallback", "id")
+          .forall(_.length == parquetMrBindingBytes))
+    }
+  }
+
+  test("native bloom filters resolve list and map leaves to physical Parquet paths") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("native_nested_bloom", "native_nested_bloom_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.element.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.key'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.value.b'='true'
+          )
+        """)
+      }
+
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10), named_struct('a', 20)),
+            map('small', named_struct('b', 30), 'large', named_struct('b', 40))),
+          (2, array(named_struct('a', 50)), map('medium', named_struct('b', 60)))
+      """)
+
+      assertNativeWriteEngages("native_nested_bloom", Seq(1, 2)) {
+        insert("native_nested_bloom")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("native_nested_bloom_jvm")
+      }
+
+      val physicalColumns =
+        Set("tags.list.element.a", "attrs.key_value.key", "attrs.key_value.value.b")
+      // Iceberg 1.5 passes the configured logical names directly to Parquet Java, where they do
+      // not match these physical list/map paths. Iceberg 1.8+ resolves canonical names first.
+      val expectedColumns =
+        if (icebergVersionAtLeast(1, 8)) physicalColumns else Set.empty[String]
+      assertParquetBloomFilters("native_nested_bloom", enabledColumns = expectedColumns)
+      assertParquetBloomFilters("native_nested_bloom_jvm", enabledColumns = expectedColumns)
+    }
+  }
+
+  test("short nested bloom aliases match the Iceberg runtime footer") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("nested_alias_native", "nested_alias_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.b'='true'
+          )
+        """)
+      }
+
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10)), map('first', named_struct('b', 20))),
+          (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
+      """)
+
+      assertNativeWriteEngages("nested_alias_native", Seq(1, 2)) {
+        insert("nested_alias_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("nested_alias_jvm")
+      }
+
+      val icebergUsesFieldIdResolution =
+        icebergVersionAtLeast(1, 8) && !icebergVersionAtLeast(1, 10)
+      Seq("tags.list.element.a", "attrs.key_value.value.b").foreach { physicalColumn =>
+        val nativeHasBloom = parquetBloomFilterPresent("nested_alias_native", physicalColumn)
+        val jvmHasBloom = parquetBloomFilterPresent("nested_alias_jvm", physicalColumn)
+        assert(nativeHasBloom == jvmHasBloom, s"native and JVM footer differ for $physicalColumn")
+        assert(
+          jvmHasBloom == icebergUsesFieldIdResolution,
+          s"unexpected short-alias behavior for $physicalColumn on this Iceberg runtime")
+      }
+    }
+  }
+
+  test("Iceberg 1.5 physical nested bloom paths use the JVM writer") {
+    assumeNativeAcceleration()
+    assume(
+      !icebergVersionAtLeast(1, 8),
+      "physical-path Bloom properties are specific to Iceberg 1.5")
+    withIcebergCatalog { _ =>
+      Seq("physical_path_native", "physical_path_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            id INT,
+            tags ARRAY<STRUCT<a: INT>>,
+            attrs MAP<STRING, STRUCT<b: INT>>
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.tags.list.element.a'='true',
+            'write.parquet.bloom-filter-enabled.column.attrs.key_value.value.b'='true'
+          )
+        """)
+      }
+
+      def insert(table: String): Unit = spark.sql(s"""
+        INSERT INTO $catalog.$ns.$table VALUES
+          (1, array(named_struct('a', 10)), map('first', named_struct('b', 20))),
+          (2, array(named_struct('a', 30)), map('second', named_struct('b', 40)))
+      """)
+
+      assertNativeWriteDoesNotEngage("physical_path_native", Seq(1, 2)) {
+        insert("physical_path_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("physical_path_jvm")
+      }
+
+      Seq("tags.list.element.a", "attrs.key_value.value.b").foreach { physicalColumn =>
+        assert(
+          parquetBloomFilterPresent("physical_path_native", physicalColumn),
+          s"expected preserved Bloom filter for $physicalColumn")
+        assert(
+          parquetBloomFilterPresent("physical_path_jvm", physicalColumn),
+          s"expected JVM Bloom filter for $physicalColumn")
+      }
+    }
+  }
+
+  test("unconfigured quoted columns preserve native Bloom writes") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      spark.sql(s"""
+        CREATE TABLE $catalog.$ns.bloom_unconfigured_quoted (
+          id INT, `order id` INT
+        ) USING iceberg
+        TBLPROPERTIES ('write.parquet.bloom-filter-enabled.column.id'='true')
+      """)
+      assertNativeWriteEngages("bloom_unconfigured_quoted", 0 until 1000) {
+        spark.sql(s"""
+          INSERT INTO $catalog.$ns.bloom_unconfigured_quoted
+          SELECT CAST(id AS INT), CAST(id AS INT) FROM range(0, 1000, 1, 1)
+        """)
+      }
+      assert(parquetBloomFilterPresent("bloom_unconfigured_quoted", "id"))
+      assertParquetBloomContainsInts("bloom_unconfigured_quoted", "id", 0 until 1000)
+      assert(!parquetBloomFilterPresent("bloom_unconfigured_quoted", "order id"))
+    }
+  }
+
+  test("quoted bloom-filter columns renamed by Iceberg fall back to the JVM footer") {
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      Seq("bloom_quoted_name", "bloom_quoted_name_jvm").foreach { table =>
+        spark.sql(s"""
+          CREATE TABLE $catalog.$ns.$table (
+            `order id` INT
+          ) USING iceberg
+          TBLPROPERTIES (
+            'write.parquet.bloom-filter-enabled.column.order id'='true'
+          )
+        """)
+      }
+
+      val snapshot = withNativeEnabled {
+        captureWrite("bloom_quoted_name") {
+          spark.sql(s"INSERT INTO $catalog.$ns.bloom_quoted_name VALUES (1), (2)")
+        }
+      }
+      assertExactlyOneCommit(snapshot)
+      val nativeExecs = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case exec: CometIcebergWriteExec => exec }
+      }
+      assert(
+        nativeExecs.isEmpty,
+        s"expected the sanitized Bloom-filter path to fall back, plans:\n${snapshot.plans.mkString("\n--\n")}")
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        spark.sql(s"INSERT INTO $catalog.$ns.bloom_quoted_name_jvm VALUES (1), (2)")
+      }
+      val fallbackHasBloom = parquetBloomFilterPresent("bloom_quoted_name", "order_x20id")
+      val jvmHasBloom = parquetBloomFilterPresent("bloom_quoted_name_jvm", "order_x20id")
+      assert(
+        fallbackHasBloom == jvmHasBloom,
+        "expected the fallback write to match the Parquet Java footer")
+      if (icebergSupportsBloomFpp) {
+        assert(jvmHasBloom, "expected this Iceberg version to write the quoted-column filter")
+      }
+    }
+  }
+
+  test("native bloom filter is byte-identical to parquet-mr when max-bytes binds") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { _ =>
+      // This NDV/FPP pair requests a 128 MiB allocation before max-bytes is applied. The 4 KiB
+      // maximum must therefore bind on both writers rather than merely coinciding with the
+      // naturally selected size.
+      val configuredNdv = 100000000L
+      val bindingMaxBytes = 4 * 1024
+      val properties = Some(
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          "'write.parquet.bloom-filter-fpp.column.id'='0.01', " +
+          s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv', " +
+          s"'write.parquet.bloom-filter-max-bytes'='$bindingMaxBytes'")
+      createTable("bloom_identity_native", partitionSpec = "", properties)
+      createTable("bloom_identity_jvm", partitionSpec = "", properties)
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) FROM range(0, 10000, 1, 1)")
+
+      assertNativeWriteEngages("bloom_identity_native", 0 until 10000) {
+        insert("bloom_identity_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_identity_jvm")
+      }
+
+      val native = parquetBloomFilterBytes("bloom_identity_native", "id")
+      val jvm = parquetBloomFilterBytes("bloom_identity_jvm", "id")
+      assert(
+        native.nonEmpty && native.forall(_.length == bindingMaxBytes),
+        s"native Bloom filter must be capped at $bindingMaxBytes bytes")
+      assert(
+        jvm.nonEmpty && jvm.forall(_.length == bindingMaxBytes),
+        s"JVM Bloom filter must be capped at $bindingMaxBytes bytes")
+      assert(native.size == jvm.size, "native and JVM writes must produce the same file count")
+      assert(
+        native.zip(jvm).forall { case (left, right) => java.util.Arrays.equals(left, right) },
+        "expected byte-identical capped SBBF bitsets for identical values and allocation")
+    }
+  }
+
+  test("native bloom filters match Java bytes and membership across physical types") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      case class BloomColumn(
+          name: String,
+          sqlType: String,
+          expression: String,
+          physicalType: String,
+          encodedValue: Int => Any)
+      val columns = Seq(
+        BloomColumn(
+          "big",
+          "BIGINT",
+          "(id - 5000) * 1000000007",
+          "INT64",
+          id => (id - 5000).toLong * 1000000007L),
+        BloomColumn(
+          "text",
+          "STRING",
+          "concat('bloom-', cast(id - 5000 AS STRING), 'é')",
+          "BINARY",
+          id => Binary.fromString(s"bloom-${id - 5000}é")),
+        BloomColumn(
+          "bytes",
+          "BINARY",
+          "unhex(concat('00FF', lpad(hex(id), 8, '0')))",
+          "BINARY",
+          id =>
+            Binary.fromConstantByteArray(
+              ByteBuffer
+                .allocate(6)
+                .put(0.toByte)
+                .put(0xff.toByte)
+                .putInt(id)
+                .array())),
+        BloomColumn(
+          "day",
+          "DATE",
+          "date_add(DATE '1970-01-01', cast(id - 5000 AS INT))",
+          "INT32",
+          id => id - 5000),
+        BloomColumn(
+          "ts",
+          "TIMESTAMP",
+          "timestamp_micros((id - 5000) * 1000003)",
+          "INT64",
+          id => (id - 5000).toLong * 1000003L),
+        BloomColumn(
+          "decimal_int32",
+          "DECIMAL(9, 2)",
+          "cast((id - 5000) / 100.0 AS DECIMAL(9, 2))",
+          "INT32",
+          id => id - 5000),
+        BloomColumn(
+          "decimal_int64",
+          "DECIMAL(18, 2)",
+          "cast((id - 5000) * 10000000000 AS DECIMAL(18, 2))",
+          "INT64",
+          id => (id - 5000).toLong * 1000000000000L),
+        BloomColumn(
+          "decimal_fixed",
+          "DECIMAL(38, 2)",
+          "cast((id - 5000) * 10000000000000000000000 AS DECIMAL(38, 2))",
+          "FIXED_LEN_BYTE_ARRAY",
+          id => {
+            val unscaled = BigInt(id - 5000) * BigInt(10).pow(24)
+            val bytes = unscaled.toByteArray
+            val padding = Array.fill[Byte](16 - bytes.length)(
+              if (unscaled.signum < 0) 0xff.toByte else 0.toByte)
+            Binary.fromConstantByteArray(padding ++ bytes)
+          }))
+      // Java can suppress filters for dictionary-only chunks. Force plain pages so every
+      // configured type contributes a filter to the cross-writer comparison.
+      val properties = (Seq(
+        "'write.parquet.bloom-filter-max-bytes'='4096'",
+        "'write.parquet.dict-size-bytes'='1'") ++ columns.map { column =>
+        s"'write.parquet.bloom-filter-enabled.column.${column.name}'='true'"
+      }).mkString(", ")
+      Seq("bloom_types_native", "bloom_types_jvm").foreach { table =>
+        val fields = columns.map(column => s"${column.name} ${column.sqlType}").mkString(", ")
+        spark.sql(
+          s"CREATE TABLE $catalog.$ns.$table (id INT, $fields) " +
+            s"USING iceberg TBLPROPERTIES ($properties)")
+      }
+      def insert(table: String): Unit = {
+        val values = columns.map(_.expression).mkString(", ")
+        spark.sql(
+          s"INSERT INTO $catalog.$ns.$table SELECT cast(id AS INT), $values " +
+            "FROM range(0, 10000, 1, 1)")
+      }
+      // No NDV/FPP properties: this fixture also runs on Iceberg 1.5.2. Ten thousand distinct
+      // values keep the 4 KiB filters dense enough to prevent Rust's post-insert folding.
+      // FLOAT/DOUBLE have separate fallback coverage because their Bloom writes use Java.
+      assertNativeWriteEngages("bloom_types_native", 0 until 10000)(insert("bloom_types_native"))
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_types_jvm")
+      }
+      columns.foreach { column =>
+        val native = parquetBloomFilterBytes("bloom_types_native", column.name)
+        val jvm = parquetBloomFilterBytes("bloom_types_jvm", column.name)
+        assert(native.size == 1 && jvm.size == 1, s"expected one filter for ${column.name}")
+        assert(native.head.length == 4096 && jvm.head.length == 4096)
+        assert(
+          java.util.Arrays.equals(native.head, jvm.head),
+          s"expected byte-identical Bloom filters for ${column.name}")
+        Seq("bloom_types_native", "bloom_types_jvm").foreach { table =>
+          assertParquetBloomContainsValues(
+            table,
+            column.name,
+            column.physicalType,
+            (0 until 10000).map(column.encodedValue))
+        }
+      }
+    }
+  }
+
+  test("native bloom sizing matches JVM for shape properties supported by the Iceberg runtime") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true'"
+      val cases: Seq[(String, String, Boolean, Boolean)] = Seq(
+        (
+          "fpp_only",
+          s"$enabled, 'write.parquet.bloom-filter-fpp.column.id'='0.02'",
+          icebergSupportsBloomFpp,
+          false),
+        (
+          "ndv_only",
+          s"$enabled, 'write.parquet.bloom-filter-ndv.column.id'='1000'",
+          icebergSupportsBloomNdv,
+          true),
+        (
+          "both",
+          s"$enabled, 'write.parquet.bloom-filter-fpp.column.id'='0.005', " +
+            "'write.parquet.bloom-filter-ndv.column.id'='1000'",
+          icebergSupportsBloomFpp && icebergSupportsBloomNdv,
+          true),
+        // The requested NDV/FPP needs far more than 64 bytes. Like parquet-mr, max wins and the
+        // target FPP becomes impossible to guarantee, but membership must remain correct.
+        (
+          "binding_cap",
+          s"$enabled, 'write.parquet.bloom-filter-fpp.column.id'='0.0001', " +
+            "'write.parquet.bloom-filter-ndv.column.id'='1000000', " +
+            "'write.parquet.bloom-filter-max-bytes'='64'",
+          icebergSupportsBloomFpp && icebergSupportsBloomNdv,
+          true))
+
+      cases.filter(_._3).foreach { case (suffix, properties, _, expectByteIdentity) =>
+        val nativeTable = s"bloom_shape_${suffix}_native"
+        val jvmTable = s"bloom_shape_${suffix}_jvm"
+        Seq(nativeTable, jvmTable).foreach { table =>
+          createTable(table, partitionSpec = "", properties = Some(properties))
+        }
+        // Keep the explicit-NDV cases at their estimated cardinality so parquet-rs does not
+        // fold their allocation before byte-parity is checked.
+        val insertedCardinality = if (suffix == "ndv_only" || suffix == "both") 1000 else 256
+        val ids = 0 until insertedCardinality
+        def insert(table: String): Unit =
+          spark.sql(s"INSERT INTO cat.db.$table SELECT CAST(id AS INT), 'region', " +
+            s"CAST(id AS DOUBLE) FROM range(${ids.start}, ${ids.end}, 1, 1)")
+
+        assertNativeWriteEngages(nativeTable, ids) {
+          insert(nativeTable)
+        }
+        withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+          insert(jvmTable)
+        }
+        val native = parquetBloomFilterBytes(nativeTable, "id")
+        val jvm = parquetBloomFilterBytes(jvmTable, "id")
+        if (expectByteIdentity) {
+          assert(native.map(_.length) == jvm.map(_.length))
+          assert(native.zip(jvm).forall { case (left, right) =>
+            java.util.Arrays.equals(left, right)
+          })
+        } else {
+          // Without explicit NDV, parquet-rs can fold to the observed cardinality while Parquet
+          // Java retains its initial maximum allocation. Folding is safe for readers, so require
+          // only that native uses no more space and still contains every inserted value.
+          assert(native.zip(jvm).forall { case (left, right) => left.length <= right.length })
+          assertParquetBloomContainsInts(nativeTable, "id", ids)
+        }
+        if (suffix == "binding_cap") {
+          assert(native.forall(_.length == 64), s"expected binding 64-byte cap for $nativeTable")
+          assertParquetBloomContainsInts(nativeTable, "id", ids)
+        }
+      }
+    }
+  }
+
+  test("explicit underestimated NDV retains parquet-mr allocation precedence") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { _ =>
+      // max-bytes is only a cap in parquet-mr; it does not enlarge a filter whose explicit NDV
+      // was underestimated. This comparison prevents Comet from silently replacing the user's
+      // NDV with an artificial NDV derived from the much larger maximum.
+      val properties = Some(
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          "'write.parquet.bloom-filter-fpp.column.id'='0.01', " +
+          "'write.parquet.bloom-filter-ndv.column.id'='10', " +
+          "'write.parquet.bloom-filter-max-bytes'='67108864'")
+      createTable("bloom_low_ndv_native", partitionSpec = "", properties)
+      createTable("bloom_low_ndv_jvm", partitionSpec = "", properties)
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) FROM range(0, 4096, 1, 1)")
+
+      assertNativeWriteEngages("bloom_low_ndv_native", 0 until 4096) {
+        insert("bloom_low_ndv_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_low_ndv_jvm")
+      }
+
+      val native = parquetBloomFilterBytes("bloom_low_ndv_native", "id")
+      val jvm = parquetBloomFilterBytes("bloom_low_ndv_jvm", "id")
+      assert(native.map(_.length) == jvm.map(_.length))
+      assert(native.zip(jvm).forall { case (left, right) =>
+        java.util.Arrays.equals(left, right)
+      })
+    }
+  }
+
+  test("overestimated explicit NDV folds and exposes the realized-FPP tradeoff") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { _ =>
+      val configuredNdv = 1000L
+      val configuredFpp = 0.01
+      val insertedIds = 0 until 100
+      val absentProbeValues = 10000000 until 11000000
+      val expectedNativeBytes = 128
+      val expectedJvmBytes = 2048
+      val expectedNativeFalsePositives = 9088L
+      val properties = Some(
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          s"'write.parquet.bloom-filter-fpp.column.id'='$configuredFpp', " +
+          s"'write.parquet.bloom-filter-ndv.column.id'='$configuredNdv'")
+      createTable("bloom_explicit_ndv_fold_native", partitionSpec = "", properties)
+      createTable("bloom_explicit_ndv_fold_jvm", partitionSpec = "", properties)
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) " +
+          s"FROM range(${insertedIds.start}, ${insertedIds.end}, 1, 1)")
+
+      assertNativeWriteEngages("bloom_explicit_ndv_fold_native", insertedIds) {
+        insert("bloom_explicit_ndv_fold_native")
+      }
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_explicit_ndv_fold_jvm")
+      }
+
+      val native = parquetBloomFilterBytes("bloom_explicit_ndv_fold_native", "id")
+      val jvm = parquetBloomFilterBytes("bloom_explicit_ndv_fold_jvm", "id")
+      assert(native.nonEmpty && native.size == jvm.size)
+      assert(
+        native.forall(_.length == expectedNativeBytes),
+        s"expected folded native filters of $expectedNativeBytes bytes")
+      assert(
+        jvm.forall(_.length == expectedJvmBytes),
+        s"expected Parquet Java filters of $expectedJvmBytes bytes")
+      assertParquetBloomContainsInts("bloom_explicit_ndv_fold_native", "id", insertedIds)
+      assertParquetBloomContainsInts("bloom_explicit_ndv_fold_jvm", "id", insertedIds)
+
+      val nativeFalsePositives =
+        parquetBloomFalsePositiveCount("bloom_explicit_ndv_fold_native", "id", absentProbeValues)
+      val jvmFalsePositives =
+        parquetBloomFalsePositiveCount("bloom_explicit_ndv_fold_jvm", "id", absentProbeValues)
+      assert(nativeFalsePositives == expectedNativeFalsePositives)
+      assert(jvmFalsePositives == 0L)
+      assert(nativeFalsePositives > jvmFalsePositives)
+      assert(nativeFalsePositives.toDouble / absentProbeValues.size <= configuredFpp)
+    }
+  }
+
+  test("large representable max folds natively while adjacent non-power-of-two falls back") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    withIcebergCatalog { _ =>
+      val powerOfTwo = 64 * 1024 * 1024
+      val enabled = "'write.parquet.bloom-filter-enabled.column.id'='true', "
+      createTable(
+        "bloom_large_native",
+        partitionSpec = "",
+        properties = Some(enabled + s"'write.parquet.bloom-filter-max-bytes'='$powerOfTwo'"))
+      createTable(
+        "bloom_large_jvm",
+        partitionSpec = "",
+        properties =
+          Some(enabled + s"'write.parquet.bloom-filter-max-bytes'='${powerOfTwo + 1}'"))
+
+      def insert(table: String): Unit = spark.sql(
+        s"INSERT INTO cat.db.$table " +
+          "SELECT CAST(id AS INT), 'region', CAST(id AS DOUBLE) FROM range(0, 256, 1, 1)")
+
+      assertNativeWriteEngages("bloom_large_native", 0 until 256) {
+        insert("bloom_large_native")
+      }
+      assertNativeWriteDoesNotEngage("bloom_large_jvm", 0 until 256) {
+        insert("bloom_large_jvm")
+      }
+
+      val nativeBytes = parquetBloomFilterBytes("bloom_large_native", "id")
+      val nativeSize = nativeBytes.head.length
+      val jvmSize = parquetBloomFilterBytes("bloom_large_jvm", "id").head.length
+      assert(nativeSize < 1024 * 1024, s"expected folding, got $nativeSize bytes")
+      // Iceberg runtimes bundle different Parquet Java versions: newer versions retain the exact
+      // cap while older ones round it upward. Both demonstrate that the fallback avoids folding
+      // this deliberately oversized filter down to the native allocation.
+      assert(jvmSize > powerOfTwo, s"expected an oversized JVM filter, got $jvmSize bytes")
+      assertParquetBloomContainsInts("bloom_large_native", "id", 0 until 256)
+
+      // The adjacent non-power-of-two JVM filter is intentionally much larger, so comparing its
+      // bytes with the folded native filter would be meaningless. Instead, write the same values
+      // through the JVM writer with a cap equal to the observed folded size. Power-of-two folding
+      // must produce exactly the same SBBF bitset as hashing directly into that final allocation.
+      createTable(
+        "bloom_large_folded_jvm",
+        partitionSpec = "",
+        properties = Some(enabled + s"'write.parquet.bloom-filter-max-bytes'='$nativeSize'"))
+      withSQLConf(CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> "false") {
+        insert("bloom_large_folded_jvm")
+      }
+      assertRows("bloom_large_folded_jvm", 0 until 256)
+      val foldedJvmBytes = parquetBloomFilterBytes("bloom_large_folded_jvm", "id")
+      assert(nativeBytes.map(_.length) == foldedJvmBytes.map(_.length))
+      assert(
+        nativeBytes.zip(foldedJvmBytes).forall { case (left, right) =>
+          java.util.Arrays.equals(left, right)
+        },
+        "folded native SBBF must be byte-identical to a same-sized JVM SBBF")
+    }
+  }
+
+  test("out-of-range bloom max uses the classic writer when a bloom column is configured") {
+    assumeNativeBloomRuntime()
+    assumeNativeAcceleration()
+    assumeIcebergBloomShapeProperties()
+    withIcebergCatalog { _ =>
+      // A tiny explicit NDV keeps the fallback writer's allocation small even for the oversized
+      // maximum. Without a configured Bloom column, the maximum is unused and stays native.
+      val enabledWithSmallNdv =
+        "'write.parquet.bloom-filter-enabled.column.id'='true', " +
+          "'write.parquet.bloom-filter-ndv.column.id'='1', "
+      val max = "134217729"
+      val table = "bloom_range_fallback"
+      createTable(
+        table,
+        partitionSpec = "",
+        properties = Some(enabledWithSmallNdv + s"'write.parquet.bloom-filter-max-bytes'='$max'"))
+      assertNativeWriteDoesNotEngage(table, Seq(1)) {
+        spark.sql(s"INSERT INTO cat.db.$table VALUES (1, 'region', 1.0)")
       }
     }
   }
@@ -4821,10 +5676,216 @@ class CometIcebergWriteActionSuite
     assert(ids == expectedIds, s"expected $expectedIds, got $ids")
   }
 
+  /**
+   * Reads every current data-file footer and verifies that parquet-rs emitted bloom-filter data
+   * exactly for the configured columns. Checking the plan alone would not catch a translation bug
+   * that selected `CometIcebergWriteExec` but silently omitted the bloom writer properties.
+   */
+  private def assertParquetBloomFilters(tableName: String, enabledColumns: Set[String]): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .map(_.getString(0))
+      .toSeq
+    assert(paths.nonEmpty, s"expected $tableName to have at least one data file")
+
+    val conf = spark.sparkContext.hadoopConfiguration
+    paths.foreach { path =>
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        val columns = reader.getFooter.getBlocks.asScala.flatMap(_.getColumns.asScala)
+        assert(columns.nonEmpty, s"expected at least one column chunk in $path")
+        columns.foreach { column =>
+          val columnName = column.getPath.toDotString
+          val bloomFilter = reader.readBloomFilter(column)
+          if (enabledColumns.contains(columnName)) {
+            assert(
+              bloomFilter != null && bloomFilter.getBitsetSize > 0,
+              s"expected a non-empty bloom filter for $columnName in $path")
+          } else {
+            assert(
+              bloomFilter == null,
+              s"expected no bloom filter for unconfigured column $columnName in $path")
+          }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+  }
+
+  private def parquetBloomFilterBytes(tableName: String, columnName: String): Seq[Array[Byte]] = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files ORDER BY file_path")
+      .collect()
+      .map(_.getString(0))
+    val conf = spark.sparkContext.hadoopConfiguration
+    paths.toSeq.flatMap { path =>
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        reader.getFooter.getBlocks.asScala.flatMap { block =>
+          block.getColumns.asScala
+            .filter(_.getPath.toDotString == columnName)
+            .map { column =>
+              val bloom = reader.readBloomFilter(column)
+              assert(bloom != null, s"expected Bloom filter for $columnName in $path")
+              val out = new ByteArrayOutputStream(bloom.getBitsetSize)
+              bloom.writeTo(out)
+              out.toByteArray
+            }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+  }
+
+  private def parquetBloomFilterPresent(tableName: String, columnName: String): Boolean = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files ORDER BY file_path")
+      .collect()
+      .map(_.getString(0))
+    val conf = spark.sparkContext.hadoopConfiguration
+    val present = paths.toSeq.flatMap { path =>
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        reader.getFooter.getBlocks.asScala.flatMap { block =>
+          block.getColumns.asScala
+            .filter(_.getPath.toDotString == columnName)
+            .map(column => reader.readBloomFilter(column) != null)
+        }
+      } finally {
+        reader.close()
+      }
+    }
+    assert(present.nonEmpty, s"expected Parquet column $columnName in $tableName")
+    present.forall(identity)
+  }
+
+  private def parquetBloomFalsePositiveCount(
+      tableName: String,
+      columnName: String,
+      absentValues: Seq[Int]): Long = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files ORDER BY file_path")
+      .collect()
+      .map(_.getString(0))
+    val conf = spark.sparkContext.hadoopConfiguration
+    val counts = paths.toSeq.flatMap { path =>
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        reader.getFooter.getBlocks.asScala.flatMap { block =>
+          block.getColumns.asScala
+            .filter(_.getPath.toDotString == columnName)
+            .map { column =>
+              val bloom = reader.readBloomFilter(column)
+              assert(bloom != null, s"expected Bloom filter for $columnName in $path")
+              absentValues.count(value => bloom.findHash(bloom.hash(value))).toLong
+            }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+    assert(counts.size == 1, s"expected one Bloom filter for $columnName, got ${counts.size}")
+    counts.head
+  }
+
+  private def assertParquetBloomContainsValues(
+      tableName: String,
+      columnName: String,
+      physicalType: String,
+      values: Seq[Any]): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .map(_.getString(0))
+    assert(paths.length == 1, s"expected one data file for $tableName")
+    val conf = spark.sparkContext.hadoopConfiguration
+    val input = HadoopInputFile.fromPath(new HadoopPath(paths.head.stripPrefix("file:")), conf)
+    val reader = ParquetFileReader.open(input)
+    try {
+      val chunks = reader.getFooter.getBlocks.asScala
+        .flatMap(_.getColumns.asScala)
+        .filter(_.getPath.toDotString == columnName)
+      assert(chunks.size == 1, s"expected one column chunk for $columnName in $tableName")
+      val column = chunks.head
+      assert(column.getPrimitiveType.getPrimitiveTypeName.name() == physicalType)
+      val bloom = reader.readBloomFilter(column)
+      assert(bloom != null, s"expected Bloom filter for $columnName in $tableName")
+      values.foreach { value =>
+        val hash = value match {
+          case v: Int => bloom.hash(v)
+          case v: Long => bloom.hash(v)
+          case v: Binary => bloom.hash(v)
+          case other => fail(s"unsupported Bloom membership value: $other")
+        }
+        assert(bloom.findHash(hash), s"Bloom false negative for $columnName=$value in $tableName")
+      }
+    } finally {
+      reader.close()
+    }
+  }
+
+  private def assertParquetBloomContainsInts(
+      tableName: String,
+      columnName: String,
+      values: Seq[Int]): Unit = {
+    val paths = spark
+      .sql(s"SELECT file_path FROM $catalog.$ns.$tableName.data_files")
+      .collect()
+      .map(_.getString(0))
+    val conf = spark.sparkContext.hadoopConfiguration
+    paths.foreach { path =>
+      val input = HadoopInputFile.fromPath(new HadoopPath(path.stripPrefix("file:")), conf)
+      val reader = ParquetFileReader.open(input)
+      try {
+        reader.getFooter.getBlocks.asScala.foreach { block =>
+          block.getColumns.asScala
+            .filter(_.getPath.toDotString == columnName)
+            .foreach { column =>
+              val bloom = reader.readBloomFilter(column)
+              assert(bloom != null, s"expected Bloom filter for $columnName in $path")
+              values.foreach { value =>
+                assert(
+                  bloom.findHash(bloom.hash(value)),
+                  s"Bloom filter false negative for $columnName=$value in $path")
+              }
+            }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+  }
+
   /** Native acceleration shared assumption -- currently just the Iceberg-on-classpath check. */
   private def assumeNativeAcceleration(): Unit = {
     assume(icebergAvailable, "Iceberg not available in classpath")
   }
+
+  private def assumeNativeBloomRuntime(): Unit =
+    assume(icebergVersionAtLeast(1, 10), "Native Bloom writes require Iceberg 1.10 or later")
+
+  private def assumeIcebergBloomShapeProperties(): Unit = {
+    assume(
+      icebergSupportsBloomFpp && icebergSupportsBloomNdv,
+      "Iceberg runtime does not interpret per-column Bloom FPP/NDV properties")
+  }
+
+  private def icebergSupportsBloomFpp: Boolean =
+    org.apache.comet.iceberg.IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_FPP_PREFIX")
+      .isDefined
+
+  private def icebergSupportsBloomNdv: Boolean =
+    org.apache.comet.iceberg.IcebergReflection
+      .tablePropertyConstantOpt("PARQUET_BLOOM_FILTER_COLUMN_NDV_PREFIX")
+      .isDefined
 
   /**
    * Every row-consuming operator must receive row-based input. Spark guarantees that by inserting
@@ -4862,10 +5923,12 @@ class CometIcebergWriteActionSuite
    * version / session-state combinations where `withSQLConf` loses the override before the rule
    * fires.
    */
-  private def withNativeEnabled[T](action: => T): T =
+  private def withNativeEnabled[T](action: => T, bloomFilterFoldingEnabled: Boolean = true): T =
     withSessionConf(
       CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.key -> Some("true"),
-      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"))(action)
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> Some("true"),
+      CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key ->
+        Some(bloomFilterFoldingEnabled.toString))(action)
 
   /**
    * Sets each key to its value, or unsets it for `None`, for the duration of `action`, then puts
@@ -5093,7 +6156,15 @@ class CometIcebergWriteActionSuite
    */
   private def assertNativeWriteDoesNotEngage(tableName: String, expectedIds: Seq[Int])(
       action: => Unit): Unit = {
-    val snapshot = withNativeEnabled { captureWrite(tableName)(action) }
+    assertNativeWriteDoesNotEngage(tableName, expectedIds, bloomFilterFoldingEnabled = true)(
+      action)
+  }
+
+  private def assertNativeWriteDoesNotEngage(
+      tableName: String,
+      expectedIds: Seq[Int],
+      bloomFilterFoldingEnabled: Boolean)(action: => Unit): Unit = {
+    val snapshot = withNativeEnabled(captureWrite(tableName)(action), bloomFilterFoldingEnabled)
     assertExactlyOneCommit(snapshot)
     val nativeExecs = snapshot.plans.flatMap { p =>
       collectWithSubqueries(p) { case e: CometIcebergWriteExec => e }

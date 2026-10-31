@@ -20,7 +20,11 @@
 package org.apache.spark.sql.benchmark
 
 import scala.concurrent.duration._
+import scala.jdk.CollectionConverters._
 
+import org.apache.hadoop.fs.{Path => HadoopPath}
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
@@ -61,8 +65,8 @@ import org.apache.comet.CometSparkSessionExtensions
  *     pay equally. It dilutes the writer's factor rather than inflating it.
  *   - The warehouse is a local temporary directory, so no object-store latency is included.
  *   - The two writers choose different file roll points (see the accepted divergences in
- *     `docs/source/user-guide/latest/iceberg-writes.md`), so the resulting file layouts are not
- *     expected to match. Only wall clock and row counts are compared.
+ *     `docs/source/user-guide/latest/iceberg.md`), so the resulting file layouts are not expected
+ *     to match. Only wall clock and row counts are compared.
  *   - `Rate` and `Per Row` are always computed against the corpus size, so for the `DELETE` case
  *     they describe the rows the statement passed over, not the far smaller number it removed.
  *   - The corpus below is this benchmark's own, not the one #5361 measured. The factors are the
@@ -72,7 +76,10 @@ import org.apache.comet.CometSparkSessionExtensions
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark
  * }}}
- * Results will be written to "spark/benchmarks/CometIcebergWriteBenchmark-**results.txt".
+ * Results will be written to "spark/benchmarks/CometIcebergWriteBenchmark-**results.txt". Pass
+ * `bloom`, `bloom-off`, or `bloom-on`, followed optionally by row count and iteration count, to
+ * compare native writes without and with Bloom filters. The contributor benchmarking guide
+ * describes collecting peak RSS in separate JVMs with the operating system's time utility.
  */
 object CometIcebergWriteBenchmark extends CometBenchmarkBase {
 
@@ -285,6 +292,16 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
+    val mode = mainArgs.headOption.getOrElse("all")
+    require(
+      Set("all", "bloom", "bloom-off", "bloom-on").contains(mode),
+      "Expected all, bloom, bloom-off, or bloom-on, optionally followed by rows and iterations")
+    require(mainArgs.length <= 3, "Expected at most mode, rows, and iterations")
+    val rows = mainArgs.lift(1).map(_.toInt).getOrElse(4 * 1024 * 1024)
+    val iterations = mainArgs.lift(2).map(_.toInt).getOrElse(5)
+    require(
+      rows >= sourceFiles && iterations > 0,
+      "Need at least eight rows and positive iterations")
     if (!icebergOnClasspath) {
       // scalastyle:off println
       println("Iceberg is not on the classpath; skipping. Build with an Iceberg-enabled profile.")
@@ -295,14 +312,18 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     withTempPath { warehouse =>
       configureIcebergHadoopCatalog(warehouse, catalog)
 
-      runBenchmarkWithTable("Iceberg write", 4 * 1024 * 1024) { values =>
+      runBenchmarkWithTable("Iceberg write", rows) { values =>
         withTempPath { dir =>
           withTempTable("parquetV1Table") {
             saveAsParquetV1Table(
               spark.sql(corpusQuery).repartition(sourceFiles).write,
               dir.getCanonicalPath + "/parquetV1")
             try {
-              workloads(values).foreach(runWorkload(_, values))
+              if (mode == "all") {
+                workloads(values).foreach(runWorkload(_, values, iterations))
+              } else {
+                runBloomWorkload(values, iterations, mode)
+              }
             } finally {
               spark.sql(s"DROP TABLE IF EXISTS $targetTable")
             }
@@ -312,7 +333,84 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
     }
   }
 
-  private def runWorkload(workload: Workload, values: Int): Unit = {
+  private val bloomColumns = Set("c_long", "c_str", "c_bin")
+
+  private def runBloomWorkload(values: Int, iterations: Int, mode: String): Unit = {
+    val benchmark = new Benchmark(
+      "Native Iceberg writes, default Bloom cap (1 MiB per column)",
+      values.toLong,
+      minNumIters = iterations,
+      warmupTime = 500.millis,
+      minTime = 500.millis,
+      output = output)
+    Seq(false, true)
+      .filter(enabled => mode == "bloom" || mode == s"bloom-${if (enabled) "on" else "off"}")
+      .foreach { enabled =>
+        val arm = arms.last.copy(
+          name = s"Native Bloom ${if (enabled) "on" else "off"}",
+          // Keep native writes on in BOTH arms. Turning this option off selects Java for
+          // Bloom-enabled tables, which would measure a different writer rather than hashing.
+          confs = arms.last.confs :+
+            (CometConf.COMET_ICEBERG_NATIVE_WRITE_BLOOM_FILTER_FOLDING_ENABLED.key -> "true"))
+        val workload = Workload(
+          title = "unpartitioned INSERT with native Bloom filters",
+          partitionSpec = "",
+          properties = if (enabled) bloomColumns.toSeq.sorted.map { column =>
+            s"'write.parquet.bloom-filter-enabled.column.$column'='true'"
+          }
+          else Nil,
+          orderBy = None,
+          prePopulate = false,
+          statement = s"INSERT INTO $targetTable SELECT * FROM parquetV1Table",
+          expectedRowsAfter = values.toLong,
+          expectShuffle = None,
+          expectSort = None)
+        val label = verifyArm(benchmark, arm, workload)
+        require(label == arm.name, "Bloom benchmark requires native writes in both arms")
+        verifyBloomFilters(if (enabled) bloomColumns else Set.empty)
+        benchmark.addTimerCase(label) { timer =>
+          resetTable(workload)
+          withSQLConf(arm.confs: _*) {
+            timer.startTiming()
+            spark.sql(workload.statement)
+            timer.stopTiming()
+          }
+        }
+      }
+    benchmark.run()
+  }
+
+  private def verifyBloomFilters(expected: Set[String]): Unit = {
+    val files = spark.sql(s"SELECT file_path FROM $targetTable.data_files").collect()
+    require(files.nonEmpty, "Bloom benchmark must produce data files")
+    files.foreach { file =>
+      val input = HadoopInputFile.fromPath(
+        new HadoopPath(file.getString(0)),
+        spark.sparkContext.hadoopConfiguration)
+      val reader = ParquetFileReader.open(input)
+      try {
+        val columns = reader.getFooter.getBlocks.asScala.flatMap(_.getColumns.asScala)
+        require(
+          expected.subsetOf(columns.map(_.getPath.toDotString).toSet),
+          "Benchmark output is missing configured Bloom columns")
+        columns.foreach { column =>
+          val bloom = reader.readBloomFilter(column)
+          require(
+            (bloom != null) == expected.contains(column.getPath.toDotString),
+            s"Unexpected Bloom filter presence for ${column.getPath} in ${file.getString(0)}")
+          if (bloom != null) {
+            require(
+              bloom.getBitsetSize > 0 && bloom.getBitsetSize <= 1024 * 1024,
+              "Bloom filter must fit the default 1 MiB cap")
+          }
+        }
+      } finally {
+        reader.close()
+      }
+    }
+  }
+
+  private def runWorkload(workload: Workload, values: Int, iterations: Int): Unit = {
     // `warmupTime` is a deadline and `minTime` a total across the measured iterations, so both are
     // floors on a case's total cost rather than on one write. The floors are set below the fastest
     // write the corpus produces - the native writer is around half a second here - so that every
@@ -326,7 +424,7 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       // its own runtime as spread between iterations, against a few percent for the two Comet arms
       // - and it is also the divisor of every `Relative` figure. Five iterations rather than the
       // usual three are cheap here and steady the number the table is read for.
-      minNumIters = 5,
+      minNumIters = iterations,
       warmupTime = 500.millis,
       minTime = 500.millis,
       output = output)
