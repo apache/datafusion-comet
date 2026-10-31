@@ -7,6 +7,12 @@
 CLAUDE.md
 native/Cargo.lock
 native/native-executors/Cargo.lock
+# Generated upstream license/NOTICE texts retain their original licenses.
+dev/licenses/native-dependencies.txt
+dev/licenses/native-NOTICE.txt
+# Machine-generated receipt and LICENSE appendix (appended to Apache-2.0).
+dev/licenses/native-licenses.json
+dev/licenses/native-license-reference.txt
 dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt

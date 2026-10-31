@@ -1,0 +1,59 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Prefer Apache-2.0 for dual-licensed dependencies. Other entries cover the
+# licenses of dependencies in the normal native release graph.
+accepted = [
+    "Apache-2.0", "BSD-3-Clause", "BSD-2-Clause", "MIT", "ISC", "Unicode-3.0",
+    "Zlib", "0BSD", "CDLA-Permissive-2.0", "bzip2-1.0.6", "CC0-1.0", "MIT-0",
+]
+targets = [
+    "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin", "aarch64-apple-darwin",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }
+workarounds = ["chrono", "cocoa", "prost", "ring", "rustix", "linux-raw-sys", "unicode-ident"]
+
+# Preserve complete aggregate files for vendored cryptography and libm rather
+# than replacing their multiple copyright holders with canonical templates.
+[aws-lc-rs.clarify]
+license = "ISC AND (Apache-2.0 OR ISC)"
+files = [{ path = "LICENSE", checksum = "b50b376e7d24a0598488b730c3034ffcd0b58dd36c0913a24b9903a3cfd04bf7" }]
+
+[aws-lc-sys.clarify]
+license = "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)"
+files = [{ path = "LICENSE", checksum = "728536b4160e051f86d7c9c388f704866b3d512cd7df97ac3516c65279523c4e" }]
+
+[libm.clarify]
+license = "MIT"
+files = [{ path = "LICENSE.txt", checksum = "3823dda7cf046602f4b4e77ec8e227863dc4736037cc85bb33d9f19febe16bb7" }]
+
+# These crates omit a license file from their crates.io packages. cargo-about
+# fetches the repository file at the publishing commit in .cargo_vcs_info.json.
+[alloc-stdlib.clarify]
+license = "BSD-3-Clause"
+git = [{ path = "LICENSE", checksum = "c0c56f26d9c051cac4d200c34c84e7ae9aaa853e01a982a1df08b09931e518ae" }]
+
+[base64-simd.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d" }]
+
+[vsimd.clarify]
+license = "MIT"
+git = [{ path = "LICENSE", checksum = "71674605ec4c087fe9eb534e3e4f9e26eb2e4aabcd76a29fd156c6a844d44b3d" }]

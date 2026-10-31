@@ -1,0 +1,104 @@
+
+Notices from dependencies of Comet's native libraries
+
+--------------------------------------------------------------------------------
+Used by: apache-avro 0.22.0
+
+Apache Avro
+Copyright 2010-2025 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/).
+
+The initial implementation of the Apache Avro Rust SDK has been 
+developed by Flavien Raynaud (https://github.com/flavray/avro-rs)
+and donated to the Apache Avro project in 2020.
+
+--------------------------------------------------------------------------------
+Used by: arrow 59.3.1, arrow-arith 59.3.1, arrow-array 59.3.1, arrow-buffer 59.3.1, arrow-cast 59.3.1, arrow-csv 59.3.1, arrow-data 59.3.1, arrow-ipc 59.3.1, arrow-json 59.3.1, arrow-ord 59.3.1, arrow-row 59.3.1, arrow-schema 59.3.1, arrow-select 59.3.1, arrow-string 59.3.1, parquet 59.3.1
+
+Apache Arrow
+Copyright 2016-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+This product includes software from the chronoutil crate (MIT)
+ * Copyright (c) 2020-2022 Oliver Margetts
+ * https://github.com/olliemath/chronoutil
+
+This product includes software from the compact-thrift project (Apache 2.0)
+ * Copyright Jörn Horstmann
+ * https://github.com/jhorstmann/compact-thrift
+
+--------------------------------------------------------------------------------
+Used by: asyncband 0.7.3
+
+Apache Asyncband (Incubating)
+Copyright 2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (https://www.apache.org/).
+
+--------------------------------------------------------------------------------
+Used by: datafusion 55.2.0, datafusion-catalog 55.2.0, datafusion-catalog-listing 55.2.0, datafusion-common 55.2.0, datafusion-common-runtime 55.2.0, datafusion-datasource 55.2.0, datafusion-datasource-arrow 55.2.0, datafusion-datasource-csv 55.2.0, datafusion-datasource-json 55.2.0, datafusion-datasource-parquet 55.2.0, datafusion-doc 55.2.0, datafusion-execution 55.2.0, datafusion-expr 55.2.0, datafusion-expr-common 55.2.0, datafusion-functions 55.2.0, datafusion-functions-aggregate 55.2.0, datafusion-functions-aggregate-common 55.2.0, datafusion-functions-nested 55.2.0, datafusion-functions-table 55.2.0, datafusion-functions-window 55.2.0, datafusion-functions-window-common 55.2.0, datafusion-macros 55.2.0, datafusion-optimizer 55.2.0, datafusion-physical-expr 55.2.0, datafusion-physical-expr-adapter 55.2.0, datafusion-physical-expr-common 55.2.0, datafusion-physical-optimizer 55.2.0, datafusion-physical-plan 55.2.0, datafusion-pruning 55.2.0, datafusion-session 55.2.0, datafusion-spark 55.2.0, datafusion-sql 55.2.0
+
+Apache DataFusion
+Copyright 2019-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
+Used by: iceberg 0.10.1, iceberg-property-macro 0.10.1, iceberg-storage-opendal 0.10.1
+
+Apache Iceberg Rust
+Copyright 2023-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
+Used by: moka 0.12.16
+
+Additional Notices for Moka
+
+The majority of the Moka library is dual-licensed under the MIT and Apache 2.0
+licenses.
+
+However, the following files are an exception and are licensed solely under
+the Apache License 2.0:
+
+- src/common/frequency_sketch.rs
+- src/common/timer_wheel.rs
+
+These files were ported from the Java Caffeine library and are not dual-licensed.
+
+Please refer to the LICENSE-APACHE file for more details on the Apache License 2.0.
+
+--------------------------------------------------------------------------------
+Used by: object_store 0.13.2
+
+Apache Arrow Object Store
+Copyright 2020-2024 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
+Used by: opendal 0.58.2, opendal-core 0.58.2, opendal-http-transport-reqwest 0.58.2, opendal-layer-concurrent-limit 0.58.2, opendal-layer-logging 0.58.2, opendal-layer-retry 0.58.2, opendal-layer-timeout 0.58.2, opendal-service-azdls 0.58.2, opendal-service-azure-common 0.58.2, opendal-service-fs 0.58.2, opendal-service-gcs 0.58.2, opendal-service-hdfs 0.58.2, opendal-service-oss 0.58.2, opendal-service-s3 0.58.2
+
+Apache OpenDAL
+Copyright 2023-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
+Used by: reqsign-aliyun-oss 3.2.0, reqsign-aws-core 3.2.0, reqsign-aws-v4 3.3.1, reqsign-azure-storage 3.3.0, reqsign-core 3.3.2, reqsign-file-read-tokio 3.0.7, reqsign-google 3.2.0
+
+Apache OpenDAL Reqsign
+Copyright 2025-2026 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).

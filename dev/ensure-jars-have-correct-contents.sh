@@ -152,3 +152,6 @@ done
 if [ "${bad_artifacts}" -gt 0 ]; then
   exit 1
 fi
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+python3 "${script_dir}/release/check-native-licenses.py" "${artifact_list[@]}"

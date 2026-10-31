@@ -1,0 +1,8 @@
+
+================================================================================
+Licenses for bundled native dependencies
+================================================================================
+
+Comet's native libraries include third-party software. Their license texts and
+copyright notices are reproduced in META-INF/licenses/native-dependencies.txt.
+Additional upstream notices are included in META-INF/NOTICE.

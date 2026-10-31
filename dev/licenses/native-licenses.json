@@ -1,0 +1,26 @@
+{
+  "cargo_about": "0.9.3",
+  "configuration": "default features; targets in native-licenses.toml",
+  "inputs": {
+    "contrib/delta/native/Cargo.toml": "4c4f87ff0dba1193880ac7f2998c91c4bd9717a12da23c1170e02f5258877817",
+    "contrib/lance/native/Cargo.toml": "9a169ac28d05ad119eb40580587271784b0abd8ca40f9759a0cde3c0c2dd0ef0",
+    "dev/release/native-licenses.toml": "59b0797ec422f61521dddb3deedddf09d97699c203dac824ba1fc928d6bb39e2",
+    "dev/release/update-native-licenses.py": "889728d358284e301ea2d4847403ffbbf3213c53dff8db1abd520e9dc10fe2e9",
+    "native/Cargo.lock": "5bbe8eca71137b24ebbc2a0af642c1412d0cb618424018c8efb08a2e3fd1e266",
+    "native/Cargo.toml": "266654e660fefbaf08a09ed9d83f767aaa4ffd8e808ece8b11eb31855611d4a7",
+    "native/comet-test-udfs/Cargo.toml": "bbe2fef13f9cabdc9d32527d222add5a6e7abe03800432d9ad7da0497b73c447",
+    "native/comet-udf-sdk/Cargo.toml": "19366302979f496ddd60d54204e6c087f479c2e8163e826c9097b660313d18d6",
+    "native/common/Cargo.toml": "26ef4c0c43447f3a8b927816b851e5c97633453cd58dc6a1260d4b903a7852b2",
+    "native/core/Cargo.toml": "014692055d56d453084737422abb7b5bb207dea291cd1129f6dae147b01fbd40",
+    "native/jni-bridge/Cargo.toml": "f5de4a642cf89491e12876862e31ab74c8cf4a06e54e2edf485be8c88e837e0e",
+    "native/operators/Cargo.toml": "0af75a07d4ece6df88a7fa252a6b64a716edc1a4dbb7c2c68e0df4716fa0219b",
+    "native/proto/Cargo.toml": "dbd3659aa9b986e7115885598a8b9fbc6b0d4ed6fd4b1641149f616e82b11c5d",
+    "native/shuffle/Cargo.toml": "6b1185e17ebf78224411574f0ef7edd54480d3a9dc5ac34318472fccdc735e62",
+    "native/spark-expr/Cargo.toml": "d52c62536a0e53f4ed461cdeb564575d17addb857822a88107874a78494410eb"
+  },
+  "outputs": {
+    "native-NOTICE.txt": "a9fae5d896e37ce07081a677ffcc342c253cb11643beb14e8c4548b60ab08ae8",
+    "native-dependencies.txt": "f01fdb569b73476797c39651e0489e3bcfd8e57f7c0930ce4175746dea3e5d39"
+  },
+  "packages": 507
+}

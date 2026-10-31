@@ -23,6 +23,48 @@ This documentation explains the release process for Apache DataFusion Comet. Som
 performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
 Committee (PMC) member.
 
+## Native dependency licenses
+
+The shaded `comet-spark` jars include compiled Rust and vendored C dependencies.
+Maven cannot obtain their licenses from Java dependency POMs. The reviewed files in
+`dev/licenses/` supply their license texts, original copyrights, and upstream
+`NOTICE` contents. Packaging appends a reference to the native license bundle to
+`META-INF/LICENSE` and combines the upstream notices with Comet's `NOTICE.txt`.
+
+When `native/Cargo.lock`, a native or contrib Cargo manifest, or the collection
+configuration changes, regenerate the files before building a release:
+
+```shell
+cargo install --locked --version 0.9.3 --features cli cargo-about
+python3 dev/release/update-native-licenses.py
+python3 dev/release/test-native-licenses.py
+```
+
+Collection uses the default features of `native/core/Cargo.toml` and the Linux and
+macOS targets in `dev/release/native-licenses.toml`. Review that configuration and
+regenerate the bundle when distributing a library with a different feature or
+target selection. Build-only and test-only dependencies are excluded. Generation
+needs network access for license files omitted from crates.io packages; the
+clarifications pin their contents with SHA-256. Review new licenses and changed
+copyrights as part of each dependency update.
+
+The collector preserves distinct license texts even when they have the same SPDX
+identifier. Aggregate files, such as AWS-LC's and libm's, retain their original
+subcomponent notices. Two legacy packages, `typemap-ors` and `unsafe-any-ors` 1.0.0,
+declare MIT but provide no license or copyright file in their packages or
+publishing repositories. The generated bundle labels their canonical MIT
+permission text and upstream metadata explicitly. It does not invent copyright
+ownership. A new missing permissive-license text fails collection for review.
+
+CI checks the receipt against the lockfile, manifests, configuration, and generator
+without installing cargo-about or using the network. Maven `verify` checks the
+actual shaded jar, including the complete bundle, the license reference, the
+combined notices, and duplicate legal entries. To check a staged artifact:
+
+```shell
+python3 dev/release/check-native-licenses.py path/to/comet-spark.jar
+```
+
 ## Release Cycle
 
 Comet targets a minor release every four to six weeks (see

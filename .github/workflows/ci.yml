@@ -175,6 +175,9 @@ jobs:
       - name: Apache RAT license check
         run: ./dev/release/check-rat.sh HEAD
 
+      - name: Check native license packaging
+        run: python3 dev/release/test-native-licenses.py
+
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
