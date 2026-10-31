@@ -79,7 +79,7 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
         prepareTable(
           dir,
           spark.sql(
-            s"SELECT CAST(id % 1000003 AS INT) AS a, CAST(id AS INT) AS b, " +
+            "SELECT CAST(id % 1000003 AS INT) AS a, CAST(id AS INT) AS b, " +
               s"CAST(id AS STRING) AS c FROM $tbl"))
 
         checkPlans()
@@ -173,7 +173,7 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
         if (!exchanges.exists(meetsRemovedCheck)) {
           throw new IllegalStateException(
             s"${c.label}: no exchange here has a partition key the removed check rejected, so " +
-              s"this case does not exercise the change. Partitionings: " +
+              "this case does not exercise the change. Partitionings: " +
               s"${exchanges.map(_.outputPartitioning)} in:\n$plan")
         }
       }
