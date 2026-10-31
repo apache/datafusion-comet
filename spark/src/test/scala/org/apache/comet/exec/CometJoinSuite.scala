@@ -32,7 +32,7 @@ import org.apache.spark.memory.{MemoryConsumer, MemoryMode}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.UnresolvedRelation
-import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Cast, Descending, DynamicPruningExpression, Expression, IsNotNull, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{And, Ascending, AttributeReference, BoundReference, Cast, Coalesce, Descending, DynamicPruningExpression, Expression, IsNotNull, Literal, SortOrder}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{Inner, JoinType, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
@@ -1710,7 +1710,9 @@ class CometJoinSuite extends CometTestBase {
       assert(!eligible(CoalesceExec(1, shuffle), keys))
       assert(!eligible(shuffle, keys, Inner))
       assert(!eligible(shuffle, keys, condition = Some(Literal.TrueLiteral)))
-      assert(!eligible(shuffle, Seq(Cast(keys.head, IntegerType))))
+      val cast = Cast(keys.head, IntegerType)
+      assert(!eligible(shuffle, Seq(cast)))
+      assert(!eligible(shuffle, Seq(Coalesce(Seq(cast, Literal(0))))))
     }
   }
 
@@ -1791,6 +1793,13 @@ class CometJoinSuite extends CometTestBase {
             config.key -> "true",
             CometConf.COMET_SHUFFLE_MODE.key -> "native",
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+            val computed = run(s"l._2 = coalesce(r._1, ${wideKey - 1}L)", expected :+ 8)
+            val reduced = collectFirst(computed.queryExecution.executedPlan) {
+              case j: CometSortMergeJoinExec => j
+            }.get
+            val input = reduced.longMetric("right_key_reduction_input_rows").value
+            val output = reduced.longMetric("right_key_reduction_output_rows").value
+            assert(output > 0 && output < input, computed.queryExecution.executedPlan.treeString)
             for ((condition, ids) <- Seq(
                 ("l._2 <=> r._1", Seq(1, 1, 2, 3, 3, 4, 5, 6, 7)),
                 (s"$equality AND l._3 = r._2", Seq(3, 3, 5, 6, 7)))) {

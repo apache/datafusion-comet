@@ -32,7 +32,7 @@ use datafusion::{
     config::ConfigOptions,
     physical_expr::{
         expressions::{CastExpr, Column},
-        LexOrdering, PhysicalExpr,
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
     },
     physical_plan::{
         filter::FilterExec,
@@ -219,15 +219,14 @@ fn reduce_before_sort(
         return Ok(None);
     };
     let input = sort.input();
-    let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
+    let ([(_, key)], [options]) = (params.join_on.as_mut_slice(), sort_options) else {
         return Ok(None);
     };
     let schema = input.schema();
     let order = sort.expr().first();
     if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
-        || schema.fields().len() != 1
-        || !schema.field(0).data_type().is_signed_integer()
-        || !key.is::<Column>()
+        || !key.data_type(&schema)?.is_signed_integer()
+        || (key.is::<Column>() && schema.fields().len() != 1)
         || sort.expr().len() != 1
         || order.options != *options
         || !order.expr.eq(key)
@@ -260,12 +259,23 @@ fn reduce_before_sort(
             return Ok(None);
         }
     }
-    let reducer: Arc<dyn ExecutionPlan> =
-        Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
-    let sort = Arc::clone(&params.right.native_plan).replace_children(
-        vec![Arc::clone(&reducer)],
-        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
-    )?;
+    let (input, ordering) = if key.is::<Column>() {
+        (Arc::clone(input), sort.expr().clone())
+    } else {
+        // Spark admitted an integer coalesce. Evaluate it once and use that column for
+        // reduction, sorting, and the join. A left-semi join needs no other right columns.
+        let name = "membership_key";
+        let projected =
+            ProjectionExec::try_new([(Arc::clone(key), name.to_owned())], Arc::clone(input))?;
+        *key = Arc::new(Column::new(name, 0));
+        let ordering = LexOrdering::from([PhysicalSortExpr::new(Arc::clone(key), *options)]);
+        (Arc::new(projected) as Arc<dyn ExecutionPlan>, ordering)
+    };
+    let reducer: Arc<dyn ExecutionPlan> = Arc::new(MembershipKeyReductionExec::new(input));
+    let sort = Arc::new(
+        SortExec::new(ordering, Arc::clone(&reducer))
+            .with_preserve_partitioning(sort.preserve_partitioning()),
+    );
     Arc::make_mut(&mut params.right).native_plan = sort;
     // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
     Ok(Some(reducer))
