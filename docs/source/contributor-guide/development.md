@@ -633,6 +633,8 @@ It is possible to debug both native and JVM code concurrently as described in th
 
 ## Submitting a Pull Request
 
+If you use an AI tool to prepare your change, read the [AI Policy](ai-policy.md) first.
+
 With coding agents, the number of open PRs can far exceed our review capacity. To help reviewers
 focus on fewer PRs at a time, users without write access are limited to **3 open, non-draft PRs**.
 If you reach the limit, wait for existing PRs to be merged, close them, or convert them to drafts

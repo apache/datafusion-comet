@@ -37,6 +37,7 @@ menu to read more.
 
 Getting Started <contributing>
 Development Guide <development>
+AI Policy <ai-policy>
 ```
 
 ```{toctree}

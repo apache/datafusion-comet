@@ -34,6 +34,10 @@ We maintain a list of good first issues in GitHub [here](https://github.com/apac
 
 To assign yourself an issue, comment `take` on the issue. To unassign yourself, comment `untake`.
 
+## AI-assisted contributions
+
+AI-assisted contributions are welcome, but unreviewed "AI dumps" are not. Please read the [AI Policy](ai-policy.md) before opening a pull request.
+
 ## Reporting issues
 
 We use [GitHub issues](https://github.com/apache/datafusion-comet/issues) for bug reports and feature requests.

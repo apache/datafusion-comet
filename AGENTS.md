@@ -20,6 +20,9 @@ under the License.
 # Agent Guidelines for Apache DataFusion Comet
 
 Read the [Contributor Guide](docs/source/contributor-guide/index.md) before making changes.
+Follow the [AI Policy](docs/source/contributor-guide/ai-policy.md): the person submitting a change
+must have read it and understand it end-to-end, and must not open duplicate or bulk PRs.
+
 Relevant entry points:
 
 - [Development Guide](docs/source/contributor-guide/development.md): build, test, and common

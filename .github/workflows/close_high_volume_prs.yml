@@ -1,0 +1,183 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Closes pull requests from accounts that have a very large number of open
+# pull requests spread across many repositories, which is the signature of
+# automated bulk submission. GitHub's per-repository creation cap (.asf.yaml
+# github.pull_requests.creation_cap) limits how many such PRs an account can
+# have open here, but cannot see activity in other repositories.
+#
+# The check runs only for authors without write access: users with write access
+# and apache org members are always skipped. Having a PR merged here does not
+# exempt an author, since merged PRs have come from automated accounts too. Use
+# HIGH_VOLUME_ALLOWLIST for accounts that should never be closed.
+#
+# This workflow never checks out or runs code from the pull request, which is
+# what makes pull_request_target safe to use here.
+#
+# Tuning (repository variables, all optional):
+#   HIGH_VOLUME_MAX_OPEN_PRS  open PRs across GitHub at or above which to act (default 50)
+#   HIGH_VOLUME_MAX_REPOS     distinct repos among those PRs at or above which to act (default 20)
+#   HIGH_VOLUME_ALLOWLIST     comma-separated logins that are never closed
+#   HIGH_VOLUME_DRY_RUN       "true" to log matches on new PRs without closing them
+#
+# To scan PRs that are already open, run the workflow manually. It defaults to
+# a dry run that only reports what it would close.
+
+name: Close PRs from high-volume accounts
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Only report matching PRs, do not close them"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: close-high-volume-prs-${{ github.event.pull_request.number || 'scan' }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'apache/datafusion-comet'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      EVENT_ACTION: ${{ github.event.action }}
+      SENDER: ${{ github.event.sender.login }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+      PR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+      MAX_OPEN_PRS: ${{ vars.HIGH_VOLUME_MAX_OPEN_PRS || '50' }}
+      MAX_REPOS: ${{ vars.HIGH_VOLUME_MAX_REPOS || '20' }}
+      ALLOWLIST: ${{ vars.HIGH_VOLUME_ALLOWLIST || '' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || vars.HIGH_VOLUME_DRY_RUN || 'false' }}
+      LABEL: high-volume-account
+    steps:
+      - name: Check PR authors
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          is_allowlisted() {
+            local login="${1,,}" u
+            for u in ${ALLOWLIST//,/ }; do
+              [[ "${u,,}" == "$login" ]] && return 0
+            done
+            return 1
+          }
+
+          # Prints "<open PR count> <distinct repos in the first 100 results>".
+          open_pr_footprint() {
+            gh api -X GET search/issues \
+              -f q="is:pr is:open author:$1" -f per_page=100 \
+              --jq '"\(.total_count) \([.items[].repository_url] | unique | length)"'
+          }
+
+          close_pr() {
+            local number="$1" total="$2" repos="$3" body
+            body="$(mktemp)"
+            cat > "$body" <<EOF
+          Thank you for the contribution. This pull request was closed automatically because the account that opened it currently has $total open pull requests across at least $repos repositories. That pattern usually indicates automated bulk submission, and Comet does not have the review capacity to handle it.
+
+          If you are a person who intends to follow this change through review, please reply here or write to dev@datafusion.apache.org, and a committer can reopen it.
+          EOF
+            gh label create "$LABEL" --color ededed \
+              --description "Closed automatically: author has many open PRs across many repos" \
+              --force > /dev/null
+            gh pr comment "$number" --body-file "$body"
+            gh pr edit "$number" --add-label "$LABEL"
+            gh pr close "$number"
+          }
+
+          # Prints "close <total> <repos>" or "skip" for an author. Lookup
+          # failures resolve to "skip" so one bad lookup can't block a scan.
+          decide() {
+            local login="$1" association="$2" type="$3"
+            local footprint total repos
+
+            case "$association" in
+              OWNER|MEMBER|COLLABORATOR) echo skip; return ;;
+            esac
+            if [[ "$type" == "Bot" ]] || is_allowlisted "$login"; then
+              echo skip; return
+            fi
+
+            if ! footprint="$(open_pr_footprint "$login")"; then
+              echo "@$login: search failed" >&2; echo skip; return
+            fi
+            read -r total repos <<< "$footprint"
+            echo "@$login: $total open PRs across $repos+ repos" >&2
+
+            if (( total < MAX_OPEN_PRS || repos < MAX_REPOS )); then
+              echo skip; return
+            fi
+            echo "close $total $repos"
+          }
+
+          act() {
+            local number="$1" login="$2" decision="$3" verb total repos
+            read -r verb total repos <<< "$decision"
+            [[ "$verb" == "close" ]] || return 0
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "#$number @$login: would close (dry run)"
+              echo "- would close #$number @$login: $total open PRs across $repos+ repos" >> "$GITHUB_STEP_SUMMARY"
+            else
+              if ! close_pr "$number" "$total" "$repos"; then
+                echo "#$number @$login: close failed"
+                return 0
+              fi
+              echo "#$number @$login: closed"
+              echo "- closed #$number @$login: $total open PRs across $repos+ repos" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
+          if [[ "$EVENT_NAME" == "pull_request_target" ]]; then
+            # A reopen by someone other than the author is a maintainer
+            # overriding a previous close, so leave it alone.
+            if [[ "$EVENT_ACTION" == "reopened" && "$SENDER" != "$PR_AUTHOR" ]]; then
+              echo "Reopened by @$SENDER, not the author; skipping"
+              exit 0
+            fi
+            act "$PR_NUMBER" "$PR_AUTHOR" "$(decide "$PR_AUTHOR" "$PR_ASSOCIATION" "$PR_AUTHOR_TYPE")"
+            exit 0
+          fi
+
+          # Manual scan of all open PRs. The search API allows 30 requests a
+          # minute, so decide once per author and pace the lookups.
+          echo "## High-volume account scan (dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
+          declare -A decisions=()
+          while IFS=$'\t' read -r number login association type; do
+            if [[ -z "${decisions[$login]+set}" ]]; then
+              decisions[$login]="$(decide "$login" "$association" "$type")"
+              sleep 4
+            fi
+            act "$number" "$login" "${decisions[$login]}"
+          done < <(gh api --paginate "repos/$GH_REPO/pulls?state=open&per_page=100" \
+                     --jq '.[] | [.number, .user.login, .author_association, .user.type] | @tsv')
