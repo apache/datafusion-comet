@@ -811,6 +811,13 @@ skips decoding entirely.</p></li>
 <li><p>The native <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> decodes each block with <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and feeds the
 resulting <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> straight into the plan. No Arrow FFI export or import happens.</p></li>
 </ol>
+<p>For a direct local native shuffle feeding a broadcast exchange, the opt-in
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.producerCoalesce.enabled</span></code> mode uses one decoder across the task’s fetched
+blocks. <code class="docutils literal notranslate"><span class="pre">DecodedBatchCoalescer</span></code> groups eligible small decoded batches before FFI export and
+<code class="docutils literal notranslate"><span class="pre">Utils.serializeBatches</span></code>. The read RDD is copied with the same dependency and AQE partition
+specifications, so other consumers of a reused shuffle keep their original reader. Grouping is
+bounded as described in <a class="reference internal" href="memory_management.html"><span class="std std-doc">Memory Management</span></a>. Task completion releases
+pending native batches, exported Arrow batches, and the raw stream.</p>
 <p><strong>JVM decode</strong>, used when direct read does not apply:</p>
 <ol class="arabic simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code> fetches shuffle blocks via <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>.</p></li>

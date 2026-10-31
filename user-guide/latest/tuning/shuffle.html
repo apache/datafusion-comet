@@ -875,6 +875,18 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.</p>
 </section>
+<section id="batching-shuffle-inputs-to-broadcast">
+<h3>Batching shuffle inputs to broadcast<a class="headerlink" href="#batching-shuffle-inputs-to-broadcast" title="Link to this heading">#</a></h3>
+<p>The experimental <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.producerCoalesce.enabled</span></code> setting combines small
+local native shuffle batches before broadcast serialization. It is disabled by default. It
+can reduce Arrow export, serialization, and driver assembly work when a broadcast build reads
+many small shuffle blocks.</p>
+<p>The broadcast must read directly from a local Comet native shuffle, including an AQE shuffle
+read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
+selected shuffle partitions and row order. Large batches pass through without a merge copy.</p>
+<p>Reader buffers are outside Spark’s execution memory pool. The contributor guide describes the
+<a class="reference internal" href="../../../contributor-guide/memory_management.html"><span class="std std-doc">grouping limits and memory lifetime</span></a>.</p>
+</section>
 <section id="columnar-jvm-shuffle">
 <h3>Columnar (JVM) Shuffle<a class="headerlink" href="#columnar-jvm-shuffle" title="Link to this heading">#</a></h3>
 <p>Comet Columnar shuffle is JVM-based and supports <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, and
@@ -996,6 +1008,7 @@ single-node setups with fast NVMe drives, at the expense of increased disk space
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#shuffle-implementations">Shuffle Implementations</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-shuffle">Native Shuffle</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#batching-shuffle-inputs-to-broadcast">Batching shuffle inputs to broadcast</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#columnar-jvm-shuffle">Columnar (JVM) Shuffle</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#automatic-revert-to-spark-shuffle">Automatic Revert to Spark Shuffle</a></li>
 </ul>

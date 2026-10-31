@@ -697,6 +697,11 @@ backpressure. A broadcast is the largest case: a task that reads one holds all o
 the tasks of an executor that read it at the same time share one such copy. The executor’s memory
 usage log reports the allocator’s total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.</p>
+<p>The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
+the execution pool. Each group is bounded by <code class="docutils literal notranslate"><span class="pre">min(spark.comet.batchSize,</span> <span class="pre">65536)</span></code> rows, 8 MiB of
+retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
+Inputs and output coexist during that copy, and one decoded lookahead can be retained. The grouping
+limit therefore does not cap total reader RSS, and oversized input batches pass through unchanged.</p>
 <p>Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task’s native
 join reserves its whole build side, because DataFusion skips only the buffers that the same plan
 has already counted, so with N tasks sharing one copy the pool holds N times the bytes that are
