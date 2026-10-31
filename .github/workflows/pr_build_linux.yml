@@ -543,6 +543,7 @@ jobs:
               org.apache.spark.sql.comet.execution.shuffle.CometNativePositionalRoundRobinSuite
               org.apache.spark.sql.comet.execution.shuffle.CometDiskBlockWriterSuite
               org.apache.spark.sql.comet.execution.shuffle.CometBlockStoreShuffleReaderSuite
+              org.apache.spark.sql.comet.execution.shuffle.NativeBatchDecoderIteratorSuite
               org.apache.comet.exec.CometShuffleEncryptionSuite
               org.apache.comet.exec.CometShuffleManagerSuite
               org.apache.comet.exec.DisableAQECometShuffleSuite

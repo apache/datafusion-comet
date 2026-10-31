@@ -65,8 +65,7 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
       case exchange: ShuffleExchangeLike =>
         revertShuffleStageIfNeeded(exchange).getOrElse(plan)
       case _ =>
-        // Result stage: its output is collected as rows.
-        revertStageIfNeeded(plan, outputColumnar = false).getOrElse(plan)
+        revertResultStageIfNeeded(plan).getOrElse(plan)
     }
   }
 
@@ -74,8 +73,35 @@ case class RevertNativeForTransitionHeavyStages(session: SparkSession, wholePlan
     val withRevertedStages = plan.transformUp { case exchange: ShuffleExchangeLike =>
       revertShuffleStageIfNeeded(exchange).getOrElse(exchange)
     }
-    revertStageIfNeeded(withRevertedStages, outputColumnar = false)
-      .getOrElse(withRevertedStages)
+    revertResultStageIfNeeded(withRevertedStages).getOrElse(withRevertedStages)
+  }
+
+  /**
+   * Reverts the result stage if needed, keeping the output format its consumer reads. That is
+   * usually rows, but on Spark 4.0+, when the cache serializer accepts columnar input, as Comet's
+   * does, Spark marks a cached `AdaptiveSparkPlanExec` columnar and AQE plans its final stage to
+   * output columnar batches. Only then does Spark's transition insertion leave a columnar-only
+   * root; when rows are wanted it puts a columnar-to-row transition on top.
+   *
+   * Spark leaves a root that supports both formats as it is in either case, so under AQE such a
+   * root, for example `ArrowEvalPythonExec` over a columnar child on Spark 4.2, does not say
+   * which format its consumer reads. No transition provides both, so that stage is reverted only
+   * if the reverted root supports both formats too. Without AQE the consumer reads rows, or, for
+   * a cache, picks the format from the root this rule leaves, so such a root is reverted to row
+   * output like any other. The check reads the AQE conf rather than `wholePlan`, so that the
+   * plan-only preview under AQE shows what AQE executes.
+   */
+  private def revertResultStageIfNeeded(plan: SparkPlan): Option[SparkPlan] = {
+    val bothFormats = plan.supportsColumnar && plan.supportsRowBased
+    if (bothFormats && session.sessionState.conf.adaptiveExecutionEnabled) {
+      // Unlike row output, columnar output adds no transition over a reverted root that
+      // supports both formats.
+      revertStageIfNeeded(plan, outputColumnar = true)
+        .filter(reverted => reverted.supportsColumnar && reverted.supportsRowBased)
+    } else {
+      // Only a root that cannot output rows was planned for columnar output.
+      revertStageIfNeeded(plan, outputColumnar = !plan.supportsRowBased)
+    }
   }
 
   /**

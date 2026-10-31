@@ -21,6 +21,7 @@ mod aggregate;
 mod explode;
 pub mod expression_registry;
 mod join;
+mod literal;
 pub mod macros;
 mod merge_rows;
 pub mod operator_registry;
@@ -89,7 +90,6 @@ use crate::parquet::objectstore::s3_blob_fs_support::normalize_object_store_url;
 use crate::parquet::parquet_support::{
     object_store_url_key, prepare_object_store_with_configs, ObjectStoreBackend,
 };
-use datafusion::common::scalar::ScalarStructBuilder;
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
@@ -97,6 +97,7 @@ use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
 use datafusion::physical_expr::LexOrdering;
+use literal::literal_to_scalar;
 
 use crate::parquet::parquet_exec::init_datasource_exec;
 use arrow::array::{
@@ -105,13 +106,12 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
-use datafusion::common::utils::SingleRowListArrayBuilder;
 use datafusion::physical_plan::filter::FilterExec;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
 use datafusion_comet_proto::{
-    spark_expression::{self, expr::ExprStruct, literal::Value, Expr, ScalarFunc},
+    spark_expression::{self, expr::ExprStruct, Expr, ScalarFunc},
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
@@ -256,6 +256,15 @@ impl PhysicalPlanner {
             self.query_context_registry
                 .register(expr_id, self.build_query_context(ctx_proto));
         }
+    }
+
+    /// Look up the `QueryContext` registered for an expression by `register_query_context`, if
+    /// the expression carries an id and a context.
+    fn query_context_for(
+        &self,
+        expr_id: Option<u64>,
+    ) -> Option<Arc<datafusion_comet_spark_expr::QueryContext>> {
+        expr_id.and_then(|expr_id| self.query_context_registry.get(expr_id))
     }
 
     /// Resolve a serialized `QueryContext` into a `QueryContext`, sharing the pooled SQL text
@@ -668,127 +677,15 @@ impl PhysicalPlanner {
                     data_type,
                 )))
             }
-            ExprStruct::Literal(literal) => {
-                let data_type = to_arrow_datatype(literal.datatype.as_ref().unwrap());
-                let scalar_value = if literal.is_null {
-                    match data_type {
-                        DataType::Boolean => ScalarValue::Boolean(None),
-                        DataType::Int8 => ScalarValue::Int8(None),
-                        DataType::Int16 => ScalarValue::Int16(None),
-                        DataType::Int32 => ScalarValue::Int32(None),
-                        DataType::Int64 => ScalarValue::Int64(None),
-                        DataType::Float32 => ScalarValue::Float32(None),
-                        DataType::Float64 => ScalarValue::Float64(None),
-                        DataType::Utf8 => ScalarValue::Utf8(None),
-                        DataType::Date32 => ScalarValue::Date32(None),
-                        DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-                            ScalarValue::TimestampMicrosecond(None, timezone)
-                        }
-                        DataType::Binary => ScalarValue::Binary(None),
-                        DataType::Decimal128(p, s) => ScalarValue::Decimal128(None, p, s),
-                        DataType::Struct(fields) => ScalarStructBuilder::new_null(fields),
-                        DataType::Map(f, s) => DataType::Map(f, s).try_into()?,
-                        DataType::List(f) => DataType::List(f).try_into()?,
-                        DataType::Null => ScalarValue::Null,
-                        DataType::Time64(TimeUnit::Nanosecond) => {
-                            ScalarValue::Time64Nanosecond(None)
-                        }
-                        DataType::Interval(IntervalUnit::YearMonth) => {
-                            ScalarValue::IntervalYearMonth(None)
-                        }
-                        DataType::Duration(TimeUnit::Microsecond) => {
-                            ScalarValue::DurationMicrosecond(None)
-                        }
-                        DataType::Interval(arrow::datatypes::IntervalUnit::MonthDayNano) => {
-                            ScalarValue::IntervalMonthDayNano(None)
-                        }
-                        dt => {
-                            return Err(GeneralError(format!("{dt:?} is not supported in Comet")))
-                        }
-                    }
-                } else {
-                    match literal.value.as_ref().unwrap() {
-                        Value::BoolVal(value) => ScalarValue::Boolean(Some(*value)),
-                        Value::ByteVal(value) => ScalarValue::Int8(Some(*value as i8)),
-                        Value::ShortVal(value) => ScalarValue::Int16(Some(*value as i16)),
-                        Value::IntVal(value) => match data_type {
-                            DataType::Int32 => ScalarValue::Int32(Some(*value)),
-                            DataType::Date32 => ScalarValue::Date32(Some(*value)),
-                            DataType::Interval(IntervalUnit::YearMonth) => {
-                                ScalarValue::IntervalYearMonth(Some(*value))
-                            }
-                            dt => {
-                                return Err(GeneralError(format!(
-                                    "Expected either 'Int32', 'Date32', or 'Interval(YearMonth)' for IntVal, but found {dt:?}"
-                                )))
-                            }
-                        },
-                        Value::LongVal(value) => match data_type {
-                            DataType::Int64 => ScalarValue::Int64(Some(*value)),
-                            DataType::Timestamp(TimeUnit::Microsecond, None) => {
-                                ScalarValue::TimestampMicrosecond(Some(*value), None)
-                            }
-                            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
-                                ScalarValue::TimestampMicrosecond(Some(*value), Some(tz))
-                            }
-                            DataType::Duration(TimeUnit::Microsecond) => {
-                                ScalarValue::DurationMicrosecond(Some(*value))
-                            }
-                            DataType::Time64(TimeUnit::Nanosecond) => {
-                                ScalarValue::Time64Nanosecond(Some(*value))
-                            }
-                            dt => {
-                                return Err(GeneralError(format!(
-                                    "Expected 'Int64', 'Timestamp', 'Duration(Microsecond)', or 'Time64(Nanosecond)' for LongVal, but found {dt:?}"
-                                )))
-                            }
-                        },
-                        Value::FloatVal(value) => ScalarValue::Float32(Some(*value)),
-                        Value::DoubleVal(value) => ScalarValue::Float64(Some(*value)),
-                        Value::StringVal(value) => ScalarValue::Utf8(Some(value.clone())),
-                        Value::BytesVal(value) => ScalarValue::Binary(Some(value.clone())),
-                        Value::DecimalVal(value) => {
-                            let big_integer = BigInt::from_signed_bytes_be(value);
-                            let integer = big_integer.to_i128().ok_or_else(|| {
-                                GeneralError(format!(
-                                    "Cannot parse {big_integer:?} as i128 for Decimal literal"
-                                ))
-                            })?;
-
-                            match data_type {
-                                DataType::Decimal128(p, s) => {
-                                    ScalarValue::Decimal128(Some(integer), p, s)
-                                }
-                                dt => {
-                                    return Err(GeneralError(format!(
-                                        "Decimal literal's data type should be Decimal128 but got {dt:?}"
-                                    )))
-                                }
-                            }
-                        }
-                        Value::ListVal(values) => {
-                            if let DataType::List(_) = data_type {
-                                SingleRowListArrayBuilder::new(literal_to_array_ref(data_type, values.clone())?).build_list_scalar()
-                            } else {
-                                return Err(GeneralError(format!(
-                                    "Expected DataType::List but got {data_type:?}"
-                                )));
-                            }
-                        }
-                    }
-                };
-                Ok(Arc::new(DataFusionLiteral::new(scalar_value)))
-            }
+            ExprStruct::Literal(literal) => Ok(Arc::new(DataFusionLiteral::new(
+                literal_to_scalar(literal)?,
+            ))),
             ExprStruct::Cast(expr) => {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), input_schema)?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let eval_mode = from_protobuf_eval_mode(expr.eval_mode)?;
 
-                // Look up query context from registry if expr_id is present
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 let mut cast_options = SparkCastOptions::new_with_version(
                     eval_mode,
@@ -809,10 +706,7 @@ impl PhysicalPlanner {
                     self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&input_schema))?;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let fail_on_error = expr.fail_on_error;
-                let query_context = spark_expr.expr_id.and_then(|expr_id| {
-                    let registry = &self.query_context_registry;
-                    registry.get(expr_id)
-                });
+                let query_context = self.query_context_for(spark_expr.expr_id);
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
@@ -1383,11 +1277,7 @@ impl PhysicalPlanner {
         options: BinaryExprOptions,
         eval_mode: EvalMode,
     ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        // Look up query context from registry if expr_id is present
-        let query_context = spark_expr.expr_id.and_then(|expr_id| {
-            let registry = &self.query_context_registry;
-            registry.get(expr_id)
-        });
+        let query_context = self.query_context_for(spark_expr.expr_id);
 
         let left = self.create_expr(left, Arc::clone(&input_schema))?;
         let right = self.create_expr(right, Arc::clone(&input_schema))?;
@@ -2758,7 +2648,11 @@ fn parse_file_scan_tasks_from_common(
                 .with_partition_spec(partition_spec)
                 .with_name_mapping(name_mapping)
                 .with_unified_partition_type(unified_partition_type_for_task)
-                .with_case_sensitive(false)
+                // The only consumer is the binding of an equality delete's predicate, whose
+                // column names iceberg-rust takes from the task schema. They match it exactly,
+                // and a case-insensitive binding rejects a schema with two names that differ
+                // only by case.
+                .with_case_sensitive(true)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
                 .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
@@ -3115,6 +3009,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 mod tests {
     mod empty_native_scan;
     mod multi_store_scan;
+    mod semi_join_reduction;
 
     use futures::{poll, StreamExt};
     use std::{

@@ -48,8 +48,8 @@ The Comet project uses the same Slack and Discord channels as the main Apache Da
 The Comet contributors hold regular video calls where new and current contributors are welcome to ask questions and
 coordinate on issues that they are working on.
 
-The call is held weekly on Thursdays from 4:00 PM to 5:00 PM PST (America/Los_Angeles). Join via the
-[Google Meet video call link](https://meet.google.com/hjb-waqs-hfv), or add the meeting to your
+The call is held weekly on Fridays at 10:00 AM Pacific Time (America/Los_Angeles). Join via the
+[Google Meet video call link](https://meet.google.com/bxo-sozo-ttr), or add the meeting to your
 calendar by subscribing to the [Comet community meeting Google Calendar].
 
 See the [Comet community meeting notes] for more information.
