@@ -665,6 +665,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_BROADCAST_PRODUCER_COALESCE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.broadcastExchange.producerCoalesce.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental batching for direct local native shuffle reads feeding a broadcast " +
+        "exchange. Combines small INT, BIGINT, BOOLEAN, STRING and BINARY batches before " +
+        "Arrow export and serialization. Large batches pass through without copying. " +
+        "Measure the setting on your workload before enabling it, particularly for wide rows. " +
+        s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_FORCE_SHJ: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.forceShuffledHashJoin")
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.replaceSortMergeJoin")

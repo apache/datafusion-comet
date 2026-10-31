@@ -21,6 +21,7 @@ package org.apache.comet.exec
 
 import java.io.{ByteArrayInputStream, IOException}
 import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -42,7 +43,7 @@ import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference,
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
@@ -73,6 +74,64 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   import testImplicits._
+
+  test("broadcast producer batching combines local native shuffle blocks with and without AQE") {
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "4096",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_SIZE.key -> "1") {
+      for (adaptive <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+          val streams = scala.collection.mutable.ArrayBuffer.empty[Long]
+          Seq(false, true).foreach { enabled =>
+            withSQLConf(
+              CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.key -> enabled.toString) {
+              val build = spark
+                .range(0, 512, 1, 16)
+                .selectExpr(
+                  "CAST(id AS INT) AS k",
+                  "CASE WHEN id % 3 = 0 THEN NULL ELSE concat('v', id) END AS v",
+                  "CASE WHEN id % 5 = 0 THEN NULL ELSE id + 4294967296 END AS l",
+                  "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 2 = 0 END AS b",
+                  "CASE WHEN id % 11 = 0 THEN NULL ELSE CAST(concat('b', id) AS BINARY) END AS bytes")
+                .repartition(col("k"))
+              val probe = spark.range(0, 512, 1, 2).selectExpr("CAST(id AS INT) AS k")
+              val df = probe.join(broadcast(build), "k")
+              checkAnswer(
+                df,
+                (0 until 512).map { i =>
+                  Row(
+                    i,
+                    if (i % 3 == 0) null else s"v$i",
+                    if (i % 5 == 0) null else i.toLong + 4294967296L,
+                    if (i % 7 == 0) null else i % 2 == 0,
+                    if (i % 11 == 0) null else s"b$i".getBytes(UTF_8))
+                })
+              val plan = df.queryExecution.executedPlan
+              val exchanges = collect(plan) { case exchange: CometBroadcastExchangeExec =>
+                exchange
+              }
+              assert(exchanges.size == 1, plan.treeString)
+              val exchange = exchanges.head
+              assert(exchange.metrics("numOutputRows").value == 512L)
+              assert(
+                collect(plan) {
+                  case shuffle: CometShuffleExchangeExec
+                      if shuffle.shuffleType == CometNativeShuffle =>
+                    shuffle
+                }.nonEmpty,
+                plan.treeString)
+              streams += exchange.metrics("numCoalescedBatches").value
+              ()
+            }
+          }
+          assert(streams(1) > 0L && streams(1) < streams(0), s"AQE=$adaptive, batches=$streams")
+        }
+      }
+    }
+  }
 
   /**
    * Runs `f` with nested hash partitioning keys enabled. The config is disabled by default, so
