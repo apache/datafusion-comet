@@ -24,6 +24,7 @@ import scala.math.min
 import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmetic, Cast, Divide, EmptyRow, EqualTo, EvalMode, Expression, If, IntegralDivide, Literal, Multiply, Remainder, Round, Subtract, UnaryMinus}
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
+import org.apache.comet.DataTypeSupport.{isNegativeScaleDecimal, negativeScaleDecimalReason}
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
@@ -101,17 +102,11 @@ trait MathBase {
   // and `create_modulo_expr`, where a negative scale underflowed a `u8` and panicked in a debug
   // build. Both compute that width in `i16` now. They run natively on negative-scale decimals
   // and are pinned by a regression test in `CometExpressionSuite`. See issue #5013.
-  private[comet] val negScaleDecimalArithmeticReason: String =
-    "Decimal division with negative scale is not supported natively"
-
   private[comet] def negScaleDecimalRejection(expr: BinaryArithmetic): Option[Unsupported] = {
-    def isNegScale(dt: DataType): Boolean = dt match {
-      case d: DecimalType => d.scale < 0
-      case _ => false
-    }
-    if (isNegScale(expr.left.dataType) || isNegScale(expr.right.dataType) ||
-      isNegScale(expr.dataType)) {
-      Some(Unsupported(Some(negScaleDecimalArithmeticReason)))
+    if (isNegativeScaleDecimal(expr.left.dataType) ||
+      isNegativeScaleDecimal(expr.right.dataType) ||
+      isNegativeScaleDecimal(expr.dataType)) {
+      Some(Unsupported(Some(negativeScaleDecimalReason)))
     } else {
       None
     }
@@ -271,7 +266,7 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
 object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(negScaleDecimalArithmeticReason)
+    Seq(negativeScaleDecimalReason)
 
   override def getSupportLevel(expr: Divide): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse {
@@ -308,7 +303,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
 object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with MathBase {
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(negScaleDecimalArithmeticReason)
+    Seq(negativeScaleDecimalReason)
 
   override def getSupportLevel(expr: IntegralDivide): SupportLevel =
     negScaleDecimalRejection(expr).getOrElse(mathDataTypeSupportLevel(expr.left.dataType))
@@ -401,21 +396,18 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
  */
 object CometRound extends CometExpressionSerde[Round] with CodegenDispatchFallback {
 
-  private val negativeScaleReason =
-    "Negative-scale decimal inputs, which are only creatable with " +
-      "spark.sql.legacy.allowNegativeScaleOfDecimal=true"
-
   private val floatingPointReason =
     "Float and double inputs. Spark rounds them through a BigDecimal built from " +
       "`java.lang.Double.toString()` rather than from the exact binary value, and that " +
       "shortened decimal string can round differently than the value it came from"
 
   override def getUnsupportedReasons(): Seq[String] =
-    Seq(floatingPointReason, negativeScaleReason)
+    Seq(floatingPointReason, negativeScaleDecimalReason)
 
   override def getSupportLevel(expr: Round): SupportLevel = expr.child.dataType match {
-    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-      Unsupported(Some(negativeScaleReason))
+    // Spark disallows negative scale SPARK-30252
+    case t: DecimalType if isNegativeScaleDecimal(t) =>
+      Unsupported(Some(negativeScaleDecimalReason))
     case _: FloatType | DoubleType =>
       // We cannot properly match with the Spark behavior for floating-point numbers.
       // Spark uses BigDecimal for rounding float/double, and BigDecimal fist converts a
