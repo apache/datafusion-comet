@@ -1477,14 +1477,17 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         // (262543 → 1743), disagreeing with Spark/Java which use the first offset before
         // any transition and the permanent/final standard offset for post-horizon dates.
         //   far-past  → 400..=799   (before every IANA transition we care about → LMT)
-        //   far-future → 2200..=2599 (past temporary historical standard-offset regimes
+        //   far-future → 2400..=2799 (past temporary historical standard-offset regimes
         //                such as Asia/Colombo +06:00 in 1996–2006; a 2000+rem probe for
         //                year 262400 landed on 2000 and was 1800s early vs Spark/Java
         //                +05:30. Summer DST after chrono-tz's last timespan remains #6816)
+        // Both bases are multiples of 400 so the probe year has the same leap-ness as the
+        // input year (e.g. 262400-02-29 → 2400-02-29; a 2200 base would give the invalid
+        // 2200-02-29).
         // Fixed offsets and UTC are unchanged either way.
         let rem = year.rem_euclid(400);
         let probe_year = if year > CHRONO_MAX_YEAR {
-            (2200 + rem) as i32
+            (2400 + rem) as i32
         } else {
             (400 + rem) as i32
         };
@@ -3175,10 +3178,27 @@ mod tests {
         );
         // Asia/Colombo: year 262400 ≡ 2000 (mod 400). A 2000+rem probe used the
         // temporary +06:00 standard (1996–2006); Spark/Java use permanent +05:30.
-        // 2200+rem lands on 2200 → +05:30 (19800s), 1800s later than the +06:00 probe.
+        // 2400+rem lands on 2400 → +05:30 (19800s), 1800s later than the +06:00 probe.
         assert_eq!(
             timestamp_parser("262400-01-01", EvalMode::Legacy, colombo, true).unwrap(),
             Some(8218376965800000000),
+        );
+        // Leap day in a far-future leap year: 262400 ≡ 0 (mod 400) is a leap year, so the
+        // probe must be too (2400-02-29). A 2200 base produced 2200-02-29, which is not a
+        // valid date, and panicked even in UTC. Spark 4.1.3 returns 8218382083200000000 in
+        // UTC.
+        let utc = &Tz::from_str("UTC").unwrap();
+        assert_eq!(
+            timestamp_parser("262400-02-29 00:00:00", EvalMode::Legacy, utc, true).unwrap(),
+            Some(8218382083200000000),
+        );
+        assert_eq!(
+            timestamp_parser("262400-02-29 00:00:00", EvalMode::Legacy, colombo, true).unwrap(),
+            Some(8218382083200000000 - 19800 * 1_000_000),
+        );
+        assert_eq!(
+            timestamp_parser("-262400-02-29 00:00:00", EvalMode::Legacy, utc, true).unwrap(),
+            Some(ymd_to_epoch_day(-262400, 2, 29).unwrap() * 86400 * 1_000_000),
         );
         let plus2 = &Tz::from_str("+02:00").unwrap();
         // Local = UTC+2, so the UTC instant is 2h earlier than the UTC-session parse.
