@@ -144,8 +144,7 @@ shows a result is rechecked only by a sweep that takes 25 open pull requests eve
 is about two hours to go round 200 of them. So after you re-run a failed job in your fork, the pull
 request can keep showing the old result for hours. Your fork's **Actions** tab is the source of truth:
 read the details and re-run failed jobs there. If the check says **Enable CI on your fork** or **No fork CI
-run for this commit**, no run was found for the pull request's head commit: Actions is disabled, the
-branch does not include the fork workflows, or the run has not appeared yet.
+run for this commit**, see [When the fork check finds no run](#when-the-fork-check-finds-no-run).
 
 Some things to know:
 
@@ -176,6 +175,38 @@ Some things to know:
 If you cannot enable Actions on your fork, say so on the pull request. Nothing else will run the PR
 tier for you before the queue does, so a maintainer may ask you to reproduce a failure with
 [`dev/local-ci.sh`](#reproducing-a-suite-failure-locally) first.
+
+### When the fork check finds no run
+
+When no run of your fork exists for the pull request's head commit, `CI (fork)` says one of two
+things:
+
+- **Enable CI on your fork.** Your fork has no enabled `Comet CI (fork run)` workflow. Usually
+  GitHub Actions was never enabled on the fork, or no branch that includes the fork workflows has
+  been pushed to it. GitHub shows this check as failed because it asks you to act. It does not block
+  merging, but the PR tier has not run on this commit anywhere, so a reviewer has no CI result to
+  go on.
+- **No fork CI run for this commit.** The workflow exists but has no run for this commit. Either
+  the run has not appeared yet, or the commit was pushed before Actions was enabled.
+
+Either way, the fix is the three steps above, followed by a new push:
+
+```shell
+# 1. Enable Actions in your fork's Actions tab, then:
+git fetch upstream
+git push origin upstream/main:main   # 2. sync your fork's main (or use "Sync fork" on GitHub)
+git merge upstream/main              # 3. bring the fork workflows into your branch (or rebase)
+git push                             # starts a Comet CI (fork run) in your fork
+```
+
+These commands assume the remote named `upstream` is `apache/datafusion-comet` and `origin` is your
+fork. Enabling Actions does not start a run for commits already pushed, so a push is needed even
+when your branch already includes the fork workflows. If `main` has nothing new to merge, an empty
+commit (`git commit --allow-empty`) will do. The check picks up the new run within a few minutes.
+
+A pull request opened before the PR tier moved to forks on 30 October 2026 had the PR tier run here
+for the commits pushed up to then, and those results still show on it. The sweep still adds a
+failed `CI (fork)` check to it, so set up your fork as above before your next push.
 
 ## Opting a pull request into a suite the PR tier skips
 
