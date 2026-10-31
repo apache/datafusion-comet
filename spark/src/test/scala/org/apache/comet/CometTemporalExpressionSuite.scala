@@ -91,8 +91,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             .toSeq
         }
 
-        val expected = withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          firstPythonBatch(frame)
+        var expected = Seq.empty[Byte]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          expected = firstPythonBatch(frame)
         }
         assert(expected.nonEmpty)
         for (df <- Seq(frame, frame.limit(4096))) {
