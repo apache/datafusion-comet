@@ -20,6 +20,7 @@
 package org.apache.comet.objectstore
 
 import java.net.URI
+import java.util.Arrays
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
@@ -211,7 +212,7 @@ private[comet] object AbfsAuthResolver extends Logging {
       hadoopConf: Configuration,
       uri: URI,
       handles: Try[Handles]): Outcome = {
-    val secrets = ArrayBuffer[String]()
+    val secrets = ArrayBuffer[String](uriSecrets(uri): _*)
     // Set once the AbfsConfiguration exists, so a failure can read the credentials it skipped.
     var openSession: Option[Session] = None
     try {
@@ -260,17 +261,17 @@ private[comet] object AbfsAuthResolver extends Logging {
   private[objectstore] def authorityParts(uri: URI): Either[Failed, (String, String)] = {
     Option(uri.getRawAuthority) match {
       case None =>
-        Left(Failed(Exceptions.INVALID_URI_AUTHORITY, s"$uri has invalid authority."))
+        Left(Failed(Exceptions.INVALID_URI_AUTHORITY, s"${display(uri)} has invalid authority."))
       case Some(authority) if !authority.contains("@") =>
-        Left(Failed(Exceptions.INVALID_URI_AUTHORITY, s"$uri has invalid authority."))
+        Left(Failed(Exceptions.INVALID_URI_AUTHORITY, s"${display(uri)} has invalid authority."))
       case Some(authority) =>
         val parts = authority.split("@", 2)
         if (parts.length < 2 || parts(0).isEmpty) {
           Left(
             Failed(
               Exceptions.INVALID_URI,
-              s"Invalid URI '$uri' has a malformed authority, expected container name. " +
-                "Authority takes the form abfs://[<container name>@]<account name>"))
+              s"Invalid URI '${display(uri)}' has a malformed authority, expected container " +
+                "name. Authority takes the form abfs://[<container name>@]<account name>"))
         } else {
           Right((parts(0), parts(1)))
         }
@@ -354,7 +355,9 @@ private[comet] object AbfsAuthResolver extends Logging {
   private def sharedKey(session: Session, uri: URI, account: String): Outcome = {
     // Store.initializeClient checks the account name before fetching the key.
     if (account.indexOf('.') <= 0) {
-      Failed(Exceptions.INVALID_URI, s"Invalid URI $uri - account name is not fully qualified.")
+      Failed(
+        Exceptions.INVALID_URI,
+        s"Invalid URI ${display(uri)} - account name is not fully qualified.")
     } else {
       val key = session.storageAccountKey()
       if (key.isEmpty) {
@@ -481,11 +484,8 @@ private[comet] object AbfsAuthResolver extends Logging {
   def nativeFallbackReason(uri: URI, outcome: Outcome): Option[String] = {
     // The container and host only: a password in the user info stays out of the reason.
     val authority = Option(uri.getRawAuthority).getOrElse("")
-    val at = authority.lastIndexOf('@')
-    val safeAuthority =
-      if (at < 0) authority
-      else authority.substring(0, at).takeWhile(_ != ':') + authority.substring(at)
-    val location = s"${uri.getScheme}://$safeAuthority"
+    val safeAuthority = NativeConfig.authorityWithoutPassword(uri)
+    val location = display(uri)
     outcome match {
       case Declined(authType, providerClass, assertionProviderClass) =>
         val classes = providerClass.map(c => s" with provider $c").getOrElse("") +
@@ -537,14 +537,36 @@ private[comet] object AbfsAuthResolver extends Logging {
 
   /**
    * Hides every `secret` of at least [[MIN_REDACTED_LENGTH]] characters in `message`, and the raw
-   * key a `SimpleKeyProvider` message quotes.
+   * key a `SimpleKeyProvider` message quotes. Secrets are matched in the same text, so one that
+   * overlaps or contains another is hidden whole, and each run of hidden characters becomes one
+   * marker.
    */
   private[objectstore] def redact(message: String, secrets: Iterable[String]): String = {
-    val withoutQuotedKey = QUOTED_KEY_PATTERN.replaceAllIn(message, "key =\"" + REDACTED + "\"")
-    secrets
-      .filter(_.length >= MIN_REDACTED_LENGTH)
-      .foldLeft(withoutQuotedKey)((text, secret) => text.replace(secret, REDACTED))
+    val text = QUOTED_KEY_PATTERN.replaceAllIn(message, "key =\"" + REDACTED + "\"")
+    val hidden = new Array[Boolean](text.length)
+    secrets.filter(_.length >= MIN_REDACTED_LENGTH).foreach { secret =>
+      var i = text.indexOf(secret)
+      while (i >= 0) {
+        Arrays.fill(hidden, i, i + secret.length, true)
+        i = text.indexOf(secret, i + 1)
+      }
+    }
+    val out = new StringBuilder(text.length)
+    for (i <- 0 until text.length) {
+      if (!hidden(i)) out += text(i)
+      else if (i == 0 || !hidden(i - 1)) out ++= REDACTED
+    }
+    out.toString
   }
+
+  /** The parts of `uri` that can carry a credential: the password and the raw query. */
+  private[objectstore] def uriSecrets(uri: URI): Seq[String] = {
+    val password = Option(uri.getRawUserInfo).map(_.dropWhile(_ != ':').drop(1))
+    (password ++ Option(uri.getRawQuery)).filter(_.nonEmpty).toSeq
+  }
+
+  // Messages reach native errors and logs, so they omit the password, path and query.
+  private def display(uri: URI): String = NativeConfig.displayAuthority(uri)
 
   private def failed(uri: URI, e: Throwable, secrets: Iterable[String]): Failed = {
     val chain = causeChain(e)
@@ -554,8 +576,8 @@ private[comet] object AbfsAuthResolver extends Logging {
       if (verbatim) s"$name: ${redact(Option(t.getMessage).getOrElse(""), secrets)}" else name
     }
     logWarning(
-      s"Hadoop ABFS authentication for ${uri.getScheme}://${uri.getRawAuthority} failed on the " +
-        s"driver: ${chain.map(describe(_, verbatim = true)).mkString(", caused by ")}")
+      s"Hadoop ABFS authentication for ${display(uri)} failed on the driver: " +
+        s"${chain.map(describe(_, verbatim = true)).mkString(", caused by ")}")
 
     val forwarded = chain.map(t => describe(t, isVerbatim(t)))
     val hidden = chain.exists(t => !isVerbatim(t))

@@ -96,20 +96,23 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
   }
 
   test("authorityParts - no '@', empty container and null authority fail as Hadoop does") {
-    val noAt = "abfss://myacct.dfs.core.windows.net/p"
-    authorityParts(new URI(noAt)) shouldBe
-      Left(Failed(invalidUriAuthorityException, s"$noAt has invalid authority."))
+    // Messages name the URI by scheme and authority only, so a SAS query never reaches them.
+    val noAt = "abfss://myacct.dfs.core.windows.net/p?sig=SAS-MARKER"
+    authorityParts(new URI(noAt)) shouldBe Left(
+      Failed(
+        invalidUriAuthorityException,
+        "abfss://myacct.dfs.core.windows.net has invalid authority."))
 
-    val emptyContainer = "abfss://@myacct.dfs.core.windows.net/p"
+    val emptyContainer = "abfss://@myacct.dfs.core.windows.net/p?sig=SAS-MARKER"
     authorityParts(new URI(emptyContainer)) shouldBe Left(
       Failed(
         invalidUriException,
-        s"Invalid URI '$emptyContainer' has a malformed authority, expected container name. " +
-          "Authority takes the form abfs://[<container name>@]<account name>"))
+        "Invalid URI 'abfss://myacct.dfs.core.windows.net' has a malformed authority, expected " +
+          "container name. Authority takes the form abfs://[<container name>@]<account name>"))
 
-    val nullAuthority = "abfss:///p"
+    val nullAuthority = "abfss:///p?sig=SAS-MARKER"
     authorityParts(new URI(nullAuthority)) shouldBe
-      Left(Failed(invalidUriAuthorityException, s"$nullAuthority has invalid authority."))
+      Left(Failed(invalidUriAuthorityException, "abfss:// has invalid authority."))
   }
 
   // ---- reflection ----
@@ -295,6 +298,18 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     failed.message should not include secret
   }
 
+  test("Failed - a credential that contains the URI's password is redacted whole") {
+    val secret = "oauth-client-secret-4f9a2c"
+    val secretUri = new URI(s"abfss://data:client-secret@$account/path/file.parquet")
+    val outcome =
+      resolve(conf(acct(Keys.AUTH_TYPE) -> secret, acct(Keys.CLIENT_SECRET) -> secret), secretUri)
+    outcome shouldBe a[Failed]
+    val failed = outcome.asInstanceOf[Failed]
+    failed.message should include("No enum constant")
+    Seq("oauth-", "-4f9a2c", "client-secret").foreach(part =>
+      failed.message should not include part)
+  }
+
   test("Failed - an unknown auth type value is Hadoop's enum error") {
     val outcome = resolveWith(acct(Keys.AUTH_TYPE) -> "oauth")
     outcome shouldBe a[Failed]
@@ -335,7 +350,27 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     val shortUri = new URI("abfss://data@myacct/path")
     val outcome = resolve(conf("fs.azure.account.key.myacct" -> "c2VjcmV0"), shortUri)
     outcome shouldBe
-      Failed(invalidUriException, s"Invalid URI $shortUri - account name is not fully qualified.")
+      Failed(
+        invalidUriException,
+        "Invalid URI abfss://data@myacct - account name is not fully qualified.")
+  }
+
+  test("Failed - the forwarded message drops the URI's password, path and query") {
+    val shortUri = new URI("abfss://data:SECRET@myacct/path?sig=SAS-MARKER")
+    val outcome = resolve(conf("fs.azure.account.key.myacct" -> "c2VjcmV0"), shortUri)
+    outcome shouldBe a[Failed]
+    val message = toOptions(outcome)(Markers.ERROR_MESSAGE)
+    Seq("SECRET", "SAS-MARKER", "/path").foreach(leaked => message should not include leaked)
+    message should include("abfss://data@myacct")
+  }
+
+  test("Failed - a forwarded message is scrubbed of the URI's password and query") {
+    // Forwarded verbatim, so it stands in for a Hadoop message that quotes the URI.
+    val secretUri = new URI(s"abfss://data:the-uri-password@$account/p?sig=the-sas-signature")
+    val thrown = new ClassNotFoundException(s"no class for $secretUri")
+    val message = toOptions(resolve(conf(), secretUri, Failure(thrown)))(Markers.ERROR_MESSAGE)
+    message should include(s"no class for abfss://data:<redacted>@$account/p?<redacted>")
+    Seq("the-uri-password", "the-sas-signature").foreach(s => message should not include s)
   }
 
   test("Failed - a LinkageError from the reflection layer is an error marker, not a crash") {
@@ -359,6 +394,20 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     val message = "Failure for acct key =\"c2VjcmV0c2VjcmV0\": token=the-secret-value port=8080"
     redact(message, Seq("the-secret-value", "8080")) shouldBe
       "Failure for acct key =\"<redacted>\": token=<redacted> port=8080"
+  }
+
+  test("redact - overlapping, contained and adjacent secrets become one marker") {
+    // Each secret is matched in the original text, so the order they arrive in does not matter.
+    val cases = Seq(
+      ("x oauth-client-secret-4f9a2c y", Seq("client-secret", "oauth-client-secret-4f9a2c")),
+      ("x first-secret-tail y", Seq("first-secret", "secret-tail")),
+      ("x first-secretsecond-secret y", Seq("first-secret", "second-secret")),
+      ("x abababababab y", Seq("abababab")))
+    for ((message, secrets) <- cases; ordered <- Seq(secrets, secrets.reverse)) {
+      withClue(s"$message with $ordered: ") {
+        redact(message, ordered) shouldBe "x <redacted> y"
+      }
+    }
   }
 
   test("redact - a padded secret is hidden in its trimmed form too") {

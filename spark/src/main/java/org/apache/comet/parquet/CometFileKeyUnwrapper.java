@@ -155,6 +155,43 @@ public class CometFileKeyUnwrapper {
   }
 
   /**
+   * The ABFS path native looks keys up by: the scheme lowercased and the password dropped from the
+   * authority, where the user ends at the first {@code :} and the host follows the last {@code @},
+   * as native {@code authority_without_password} reads it. Non-ABFS paths are returned unchanged.
+   */
+  static String withoutAbfsPassword(final String filePath) {
+    final int schemeEnd = filePath.indexOf(':');
+    if (schemeEnd <= 0) {
+      return filePath;
+    }
+    final String scheme = filePath.substring(0, schemeEnd).toLowerCase(Locale.ROOT);
+    if (!scheme.equals("abfs") && !scheme.equals("abfss")) {
+      return filePath;
+    }
+    if (!filePath.startsWith("//", schemeEnd + 1)) {
+      return scheme + filePath.substring(schemeEnd);
+    }
+    final int start = schemeEnd + 3;
+    int end = start;
+    while (end < filePath.length() && "/?#".indexOf(filePath.charAt(end)) < 0) {
+      end++;
+    }
+    final String authority = filePath.substring(start, end);
+    final int at = authority.lastIndexOf('@');
+    final String userInfo = at < 0 ? "" : authority.substring(0, at);
+    final int colon = userInfo.indexOf(':');
+    final String user = colon < 0 ? userInfo : userInfo.substring(0, colon);
+    final String host = authority.substring(at + 1);
+    final String key = user.isEmpty() ? host : user + "@" + host;
+    return scheme + "://" + key + filePath.substring(end);
+  }
+
+  /** The retriever cache key: S3 aliases folded to s3a and the ABFS password dropped. */
+  private String cacheKey(final String filePath) {
+    return withoutAbfsPassword(normalizeS3Scheme(filePath));
+  }
+
+  /**
    * Creates and stores a DecryptionKeyRetriever instance for the given file path.
    *
    * @param filePath The path to the Parquet file
@@ -175,13 +212,13 @@ public class CometFileKeyUnwrapper {
       // Check the assumption that all files have the same hadoopConf and thus same Factory
       assert (conf == hadoopConf);
     }
-    final String normalizedPath = normalizeS3Scheme(filePath);
+    final String key = cacheKey(filePath);
     Path path = new Path(filePath);
     FileDecryptionProperties decryptionProperties =
         factory.getFileDecryptionProperties(hadoopConf, path);
 
     DecryptionKeyRetriever keyRetriever = decryptionProperties.getKeyRetriever();
-    retrieverCache.put(normalizedPath, keyRetriever);
+    retrieverCache.put(key, keyRetriever);
   }
 
   /**
@@ -195,11 +232,10 @@ public class CometFileKeyUnwrapper {
    */
   public byte[] getKey(final String filePath, final byte[] keyMetadata)
       throws ParquetCryptoRuntimeException {
-    final String normalizedPath = normalizeS3Scheme(filePath);
-    DecryptionKeyRetriever keyRetriever = retrieverCache.get(normalizedPath);
+    DecryptionKeyRetriever keyRetriever = retrieverCache.get(cacheKey(filePath));
     if (keyRetriever == null) {
       throw new ParquetCryptoRuntimeException(
-          "Failed to find DecryptionKeyRetriever for path: " + filePath);
+          "Failed to find DecryptionKeyRetriever for path: " + cacheKey(filePath));
     }
     return keyRetriever.getKey(keyMetadata);
   }
