@@ -999,7 +999,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#6ef9fe84d3fa41837b6876b09fba7da46942df77"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1028,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#6ef9fe84d3fa41837b6876b09fba7da46942df77"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1057,7 +1057,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#6ef9fe84d3fa41837b6876b09fba7da46942df77"
+source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -5073,8 +5073,8 @@ version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
- "heck 0.4.1",
- "itertools 0.13.0",
+ "heck 0.5.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -5095,7 +5095,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",

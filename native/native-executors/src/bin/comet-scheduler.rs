@@ -24,6 +24,8 @@
 //! - `COMET_SCHEDULER_FLIGHT_PORT`: the Flight port, for drivers (default `50060`)
 //! - `COMET_SCHEDULER_RESULT_RETENTION_SECONDS`: how long a query's results stay readable after
 //!   the query ends, whether or not a driver has read them (default `300`). `0` keeps them.
+//! - `COMET_SCHEDULER_BALLISTA_CONFIG`: Ballista settings for every query, as comma-separated
+//!   `key=value` pairs, such as `ballista.execution.mode=pipelined`
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -55,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.finished_job_data_clean_up_interval_seconds = seconds;
     }
     let flight_port: u16 = env_var("COMET_SCHEDULER_FLIGHT_PORT")?.unwrap_or(50060);
+    let ballista_settings =
+        parse_settings(&env_var::<String>("COMET_SCHEDULER_BALLISTA_CONFIG")?.unwrap_or_default())?;
     let grpc_addr: SocketAddr = format!("{}:{}", config.bind_host, config.bind_port).parse()?;
     let flight_addr = SocketAddr::new(grpc_addr.ip(), flight_port);
     let config = Arc::new(config);
@@ -68,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc = tokio::spawn(start_grpc_service(grpc_addr, scheduler.clone()));
     let flight = tonic::transport::Server::builder()
         .add_service(
-            FlightServiceServer::new(CometFlightService::new(scheduler))
+            FlightServiceServer::new(CometFlightService::try_new(scheduler, &ballista_settings)?)
                 .max_decoding_message_size(usize::MAX)
                 .max_encoding_message_size(usize::MAX),
         )
@@ -78,4 +82,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = flight => result?,
     }
     Ok(())
+}
+
+/// `key=value` pairs separated by commas.
+fn parse_settings(settings: &str) -> Result<Vec<(String, String)>, String> {
+    settings
+        .split(',')
+        .map(str::trim)
+        .filter(|setting| !setting.is_empty())
+        .map(|setting| {
+            setting
+                .split_once('=')
+                .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
+                .ok_or_else(|| format!("Invalid Ballista setting {setting:?}: expected key=value"))
+        })
+        .collect()
 }

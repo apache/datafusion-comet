@@ -83,11 +83,11 @@ async fn submit(scheduler_url: &str, mut query: Vec<u8>) -> CometResult<ResultEn
         .endpoint
         .into_iter()
         .map(|endpoint| {
+            // A partition without a location is served by the scheduler itself.
             let location = endpoint
                 .location
                 .first()
-                .map(|location| location.uri.clone())
-                .ok_or_else(|| client_error("bad result", "a partition has no location"))?;
+                .map_or_else(|| scheduler_url.to_string(), |location| location.uri.clone());
             let ticket = endpoint
                 .ticket
                 .map(|ticket| ticket.ticket.to_vec())
