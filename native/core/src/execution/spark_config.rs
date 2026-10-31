@@ -32,6 +32,9 @@ pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
     "spark.comet.exec.spill.compression.codec";
 pub(crate) const COMET_NATIVE_UDF_ENABLED: &str = "spark.comet.nativeUdf.enabled";
 pub(crate) const COMET_NATIVE_UDF_ALLOWED_PATHS: &str = "spark.comet.nativeUdf.allowedPaths";
+/// A Spark task passes the batch size to native code apart from the other configs, so only a host
+/// other than a Spark executor reads it from them.
+pub(crate) const COMET_BATCH_SIZE: &str = "spark.comet.batchSize";
 pub(crate) const COMET_STRICT_TIMESTAMP_LABELS: &str =
     "spark.comet.testing.strictTimestampLabels.enabled";
 pub(crate) const SPARK_EXECUTOR_CORES: &str = "spark.executor.cores";
