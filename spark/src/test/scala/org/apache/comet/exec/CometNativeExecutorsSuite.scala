@@ -138,7 +138,7 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     body
   }
 
-  private def onCluster[T](body: => T): T = withSQLConf(
+  private def onCluster(body: => Unit): Unit = withSQLConf(
     CometConf.COMET_NATIVE_EXECUTORS_ENABLED.key -> "true",
     CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key -> schedulerUrl)(body)
 
