@@ -227,11 +227,26 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     // GEOGRAPHY) would otherwise crash schema serialization; fall back instead. Validate the same
     // pruned data schema `convert` serializes, and the full partition schema, which is never
     // pruned.
-    val serializedFields =
+    val serializedDataSchema =
       nativeDataSchema(
         scanExec.relation.dataSchema,
         scanExec.requiredSchema,
-        scanExec.conf.resolver).fields ++ scanExec.relation.partitionSchema.fields
+        scanExec.conf.resolver)
+
+    // Spark clips only required roots, but native root remapping sees every serialized root.
+    // An unread alias with the same id can take a required root's value. The type checker only
+    // sees requiredSchema, so also check the required roots against the actual serialized schema.
+    if (CometParquetUtils.readFieldId(scanExec.conf) &&
+      DataTypeSupport.hasDuplicateFieldIds(
+        serializedDataSchema.fields,
+        scanExec.requiredSchema.fieldNames.toSet)) {
+      withFallbackReason(
+        scanExec,
+        "Native Parquet scan does not support duplicate Parquet field ids shared by " +
+          "a required root and another serialized data root")
+    }
+
+    val serializedFields = serializedDataSchema.fields ++ scanExec.relation.partitionSchema.fields
     serializedFields.foreach { field =>
       if (serializeDataType(field.dataType).isEmpty) {
         withFallbackReason(

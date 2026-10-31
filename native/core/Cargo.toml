@@ -175,5 +175,9 @@ name = "parquet_timestamp_conversion"
 harness = false
 
 [[bench]]
+name = "parquet_field_resolution"
+harness = false
+
+[[bench]]
 name = "sort_row_partitions"
 harness = false

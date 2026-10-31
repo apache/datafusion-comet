@@ -297,10 +297,6 @@ for production, so do not turn it off to avoid an entry on this page.
   differ only in such bytes distinct: they match Spark in a release build, and a debug build
   panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
-- **Field-id reads where one file column matches a field by id and a sibling by name.** With
-  `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
-  level. Inside a struct, it returns the values of the field matched by id. Spark's own readers
-  disagree here ([#6994](https://github.com/apache/datafusion-comet/issues/6994)).
 - **`TIMESTAMP_MILLIS` values that overflow when converted to microseconds.** In nested fields, and
   in every column of a scan that has data filters, Comet returns NULL where Spark fails with
   `ArithmeticException: long overflow`
@@ -386,6 +382,13 @@ With `spark.comet.write.parquet.enabled=true`:
 
 ### Differences that are not Comet bugs
 
+- **Field-id reads where one file column matches a field by id and a sibling by name.** With
+  `spark.sql.parquet.fieldId.read.enabled=true`, when both siblings are requested and their types
+  are compatible with the file column, Comet's native reader gives the value to the id match and
+  returns NULL for the name match, both at the top level and inside structs. Spark's parquet-mr
+  reader does the same. Spark's vectorized reader can return zeros for the losing sibling with
+  on-heap column vectors, or uninitialized memory values with off-heap column vectors
+  ([#6994](https://github.com/apache/datafusion-comet/issues/6994)).
 - **Field-id reads with a read schema that swaps two nested field names.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Spark's vectorized reader pairs the file's columns
   with the read fields by the file's names, so it fails with a type mismatch or returns no rows.
