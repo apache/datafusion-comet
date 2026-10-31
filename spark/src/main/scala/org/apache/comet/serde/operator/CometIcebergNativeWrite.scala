@@ -546,35 +546,32 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // decline and let the write fail the way iceberg-java fails it. An all-`void` spec stays
   // eligible, since the native writer writes it unpartitioned.
   // https://github.com/apache/datafusion-comet/issues/6141
-  private val requireNoVoidFieldWithDroppedSource: TriggerRule = ctx =>
-    IcebergReflection
-      .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
-      .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
-      case None => Some("could not resolve the output partition spec for void field checking")
-      case Some(spec) =>
-        try {
-          IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
-            s"partition field $name is a void transform whose source column was dropped, " +
-              "beside a live partition field"
-          }
-        } catch {
-          case e: Exception =>
-            Some(s"could not inspect the output partition spec: ${e.getMessage}")
-        }
+  private val requireNoVoidFieldWithDroppedSource: TriggerRule =
+    requireOutputPartitionSpec { spec =>
+      IcebergReflection.voidFieldsWithDroppedSource(spec).headOption.map { name =>
+        s"partition field $name is a void transform whose source column was dropped, " +
+          "beside a live partition field"
+      }
     }
 
   // Top-level `unknown` columns are pruned from the native schema, so a partition field sourced
   // from one would fail the native partition calculator with `Field not found`.
-  private val requireNoUnknownPartitionSource: TriggerRule = ctx =>
+  private val requireNoUnknownPartitionSource: TriggerRule =
+    requireOutputPartitionSpec { spec =>
+      IcebergReflection.partitionFieldsWithUnknownSource(spec).headOption.map { name =>
+        s"partition field $name is sourced from a column of Iceberg type unknown"
+      }
+    }
+
+  // Applies `check` to the output partition spec, declining if it cannot be resolved or inspected.
+  private def requireOutputPartitionSpec(check: Any => Option[String]): TriggerRule = ctx =>
     IcebergReflection
       .getOutputSpecIdFromSparkWrite(ctx.sparkWrite)
       .flatMap(IcebergReflection.getPartitionSpecById(ctx.table, _)) match {
-      case None => Some("could not resolve the output partition spec for unknown source checking")
+      case None => Some("could not resolve the output partition spec")
       case Some(spec) =>
         try {
-          IcebergReflection.partitionFieldsWithUnknownSource(spec).headOption.map { name =>
-            s"partition field $name is sourced from a column of Iceberg type unknown"
-          }
+          check(spec)
         } catch {
           case e: Exception =>
             Some(s"could not inspect the output partition spec: ${e.getMessage}")
