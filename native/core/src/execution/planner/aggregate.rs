@@ -275,13 +275,21 @@ impl OperatorBuilder for HashAggBuilder {
             mode
         };
 
+        let filter_exprs = filter_exprs?;
+        let input_exprs: Vec<Arc<dyn PhysicalExpr>> = group_by
+            .input_exprs()
+            .into_iter()
+            .chain(aggr_expr.iter().flat_map(|expr| expr.expressions()))
+            .chain(filter_exprs.iter().flatten().cloned())
+            .collect();
+        let input = planner.bound_scalar_expansion(Arc::clone(&child.native_plan), &input_exprs);
         let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
             datafusion::physical_plan::aggregates::AggregateExec::try_new(
                 mode,
                 group_by,
                 aggr_expr,
-                filter_exprs?,
-                Arc::clone(&child.native_plan),
+                filter_exprs,
+                input,
                 Arc::clone(&schema),
             )?,
         );

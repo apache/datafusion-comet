@@ -25,6 +25,7 @@ mod literal;
 pub mod macros;
 mod merge_rows;
 pub mod operator_registry;
+mod scalar_expansion;
 mod shuffle;
 mod window;
 mod write;
@@ -1595,10 +1596,10 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
-                    predicate,
-                    Arc::clone(&child.native_plan),
-                )?);
+                let input =
+                    self.bound_scalar_expansion(Arc::clone(&child.native_plan), [&predicate]);
+                let filter: Arc<dyn ExecutionPlan> =
+                    Arc::new(FilterExec::try_new(predicate, input)?);
 
                 Ok((
                     scans,
