@@ -150,7 +150,7 @@ SELECT id, posexplode_outer(m) FROM explode_nested_maps
 query
 SELECT id, k, v.a, v.m FROM explode_nested_maps LATERAL VIEW OUTER explode(m) e AS k, v
 
-query expect_fallback(Chained map generators stay on Spark)
+query
 SELECT id, p, k, item FROM explode_nested_maps
 LATERAL VIEW OUTER posexplode(m) e AS p, k, v
 LATERAL VIEW OUTER explode(v.a) a AS item

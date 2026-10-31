@@ -61,8 +61,8 @@ import org.apache.comet.CometConf
  * plain `explode` in production usually sees an array column with no nulls and no empty rows.
  *
  * Map cases consume both keys and values. The nesting group compares maps keyed by platform with
- * equivalent arrays of structs, including a second generator over each platform's event list. The
- * chained map case retains Spark generators above the native scan.
+ * equivalent arrays of structs, with a second generator over each platform's event collection.
+ * Both map-to-array and array-to-map chains assert that both generators execute natively.
  */
 object CometExplodeBenchmark extends CometBenchmarkBase {
 
@@ -163,9 +163,12 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
        |  'entries', ${fullArray(entryStruct, entriesLen, "y")})""".stripMargin
 
   private val eventsMap = mapColumn(eventStruct, eventsLen)
-  private val eventsArray = arrayColumn(
-    s"named_struct('platform', concat('p_', CAST(x AS STRING)), " +
-      s"'entries', ${fullArray(entryStruct, entriesLen, "y")})",
+  private val entryMap =
+    s"map_from_arrays(${fullArray("concat('e_', CAST(y AS STRING))", entriesLen, "y")}, " +
+      s"${fullArray(entryStruct, entriesLen, "y")})"
+
+  private def eventsArray(entries: String): String = arrayColumn(
+    s"named_struct('platform', concat('p_', CAST(x AS STRING)), 'entries', $entries)",
     eventsLen)
 
   /** The collection wrapped in the struct chain that puts it eight accessors down. */
@@ -213,7 +216,8 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
         s"${nullableExpr("CAST(id AS STRING)", "id < 0")} AS s",
         s"${nullableExpr("id * 2", "id < 0")} AS v")),
     nestedView("nested_map", eventsMap),
-    nestedView("nested_array", eventsArray))
+    nestedView("nested_array", eventsArray(fullArray(entryStruct, entriesLen, "y"))),
+    nestedView("nested_array_map", eventsArray(entryMap)))
 
   private def nestedView(name: String, events: String): TempView =
     TempView(
@@ -289,7 +293,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    */
   private def aggregate(column: String): String = column match {
     case "pos" => s"sum($column)"
-    case "key" | "platform" => s"sum(length($column))"
+    case "key" | "platform" | "entry_key" => s"sum(length($column))"
     case _ => s"count($column)"
   }
 
@@ -449,10 +453,24 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
    * pair measures what the struct chain costs: extra definition levels in the Parquet column and
    * a chain of `GetStructField` above the scan. `then its inner array` chains a second generator
    * onto the first, which is the shape the review asked about; its fan-out is 20 against the
-   * other two's 4, so read it on its own rather than against them.
+   * other two's 4, so read it on its own rather than against them. The reverse case has the same
+   * outer NULL/empty distribution and fan-out, with full inner maps instead of arrays:
+   * `array<struct<platform, entries: map<string, struct<...>>>>`.
    */
-  private def nestedInputCases: Seq[(String, Case)] =
-    Seq(true, false).flatMap(mapInput => nestedInputCases(mapInput))
+  private def nestedInputCases: Seq[(String, Case)] = {
+    val entries = nonEmptyRows(nestedRows) * eventsLen * entriesLen
+    val reverse =
+      s"SELECT ${Seq("k", "region", "platform", "entry_key", "entry").map(aggregate).mkString(", ")} " +
+        "FROM (SELECT k, region, platform, explode(entries) AS (entry_key, entry) FROM (" +
+        "SELECT k, region, ev.platform AS platform, ev.entries AS entries FROM (" +
+        s"SELECT k, region, explode($deepEvents) AS ev FROM nested_array_map)))"
+    Seq(true, false).flatMap(mapInput => nestedInputCases(mapInput)) :+
+      ("array<struct> at depth 8, then its inner map" ->
+        Case(
+          reverse,
+          Seq(entries, entries, entries * 3, entries * 3, entries),
+          nativeGenerators = 2))
+  }
 
   private def nestedInputCases(mapInput: Boolean): Seq[(String, Case)] = {
     val view = if (mapInput) "nested_map" else "nested_array"
@@ -485,11 +503,7 @@ object CometExplodeBenchmark extends CometBenchmarkBase {
       s"SELECT ${Seq("k", "region", "platform", "entry").map(aggregate).mkString(", ")} " +
         s"FROM (SELECT k, region, platform, explode(entries) AS entry FROM ($outer))"
 
-    val execution = if (mapInput) "Spark generators" else "native generators"
-    single :+ (s"$element at depth 8, then its inner array ($execution)" ->
-      Case(
-        chained,
-        Seq(entries, entries, entries * 3, entries),
-        nativeGenerators = if (mapInput) 0 else 2))
+    single :+ (s"$element at depth 8, then its inner array" ->
+      Case(chained, Seq(entries, entries, entries * 3, entries), nativeGenerators = 2))
   }
 }

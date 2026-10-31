@@ -298,7 +298,7 @@ class CometGenerateExecSuite extends CometTestBase {
 
   for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer");
     adaptive <- Seq(false, true)) {
-    test(s"chained map generators stay on Spark: $generator, AQE=$adaptive") {
+    test(s"map followed by array generators stay native: $generator, AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
         CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
@@ -315,10 +315,10 @@ class CometGenerateExecSuite extends CometTestBase {
             .filter("k IS NULL OR k <> 'drop'")
             .selectExpr("*", s"$generator(a) AS $arrayAliases")
             .repartition(2, col("id"))
-          val (_, plan) =
-            checkSparkAnswerAndFallbackReason(generated, "Chained map generators stay on Spark")
-          assert(collect(plan) { case e: CometExplodeExec => e }.isEmpty)
+          val (_, plan) = checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
+          assert(collect(plan) { case e: CometExplodeExec => e }.size == 2)
           assert(collect(plan) { case e: CometNativeScanExec => e }.nonEmpty)
+          checkSparkSchema(generated)
         }
       }
     }
@@ -347,23 +347,28 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  for (adaptive <- Seq(false, true)) {
-    test(s"exchange separates map and array generator chains: AQE=$adaptive") {
+  for (generator <- Seq("explode", "explode_outer", "posexplode", "posexplode_outer");
+    adaptive <- Seq(false, true)) {
+    test(s"array followed by map generators stay native: $generator, AQE=$adaptive") {
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
-        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-        CometConf.COMET_SHUFFLE_MODE.key -> "native") {
-        withParquetDataFrame(Seq((1, Map("a" -> Seq(10, 20), "b" -> Seq(30))))) { input =>
+        CometConf.COMET_EXEC_EXPLODE_ENABLED.key -> "true") {
+        val rows = Seq(
+          (1, Seq(Map("a" -> Integer.valueOf(10), "b" -> null), Map.empty[String, Integer])),
+          (2, Seq.empty[Map[String, Integer]]),
+          (3, null.asInstanceOf[Seq[Map[String, Integer]]]),
+          (4, Seq(null.asInstanceOf[Map[String, Integer]], Map("c" -> Integer.valueOf(30)))))
+        withParquetDataFrame(rows) { input =>
+          val arrayAliases = if (generator.startsWith("pos")) "(array_pos, m)" else "m"
+          val mapAliases = if (generator.startsWith("pos")) "(map_pos, k, v)" else "(k, v)"
           val generated = input
-            .toDF("id", "m")
-            .selectExpr("id", "explode(m) AS (k, a)")
+            .toDF("id", "a")
+            .selectExpr("id", s"$generator(a) AS $arrayAliases")
+            .selectExpr("*", s"$generator(m) AS $mapAliases")
             .repartition(2, col("id"))
-            .selectExpr("id", "k", "explode(a) AS value")
-          checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
-          assert(collect(generated.queryExecution.executedPlan) { case e: CometExplodeExec =>
-            e
-          }.size == 2)
+          val (_, plan) = checkSparkAnswerAndOperator(generated, Seq(classOf[CometExplodeExec]))
+          assert(collect(plan) { case e: CometExplodeExec => e }.size == 2)
+          checkSparkSchema(generated)
         }
       }
     }
