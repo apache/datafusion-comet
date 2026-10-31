@@ -46,9 +46,11 @@ remote changes before retrying; do not bypass it with `--force`. See
 ## Checking a change against CI
 
 A green pull request does not mean a change is safe to queue. The pull request tier runs the Comet
-suites against the default Spark profile only. Spark's own SQL suite and the Iceberg suites first
-report in the merge queue, where a failure evicts the pull request and blocks everyone else's
-merges, or in the nightly run, after the change has already landed.
+suites against the default Spark profile only. For a pull request from a fork it runs on the fork,
+where `CI (fork)` reports it as advisory, and `Required Checks` here passes without a build. Spark's
+own SQL suite and the Iceberg suites first report in the merge queue, where a failure evicts the
+pull request and blocks everyone else's merges, or in the nightly run, after the change has already
+landed.
 
 So when a change touches the serde, the planner, a native operator, a Spark shim, an Iceberg code
 path, or anything under `dev/diffs/`, get a verdict first. Either run the suite locally:
