@@ -25,7 +25,9 @@ use comet::execution::native_executors::COMET_VERSION;
 use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::ArrowPrimitiveType;
 use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
-use datafusion_comet_proto::spark_expression::{self, expr::ExprStruct, BoundReference, Expr};
+use datafusion_comet_proto::spark_expression::{
+    self, expr::ExprStruct, BoundReference, Expr, NullOrdering, SortDirection, SortOrder,
+};
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
     operator::OpStruct, Operator, RangeScan, Scan, SparkStructField,
@@ -144,6 +146,25 @@ pub fn single_partition() -> Partitioning {
 pub fn range_partitioning(num_partitions: i32) -> Partitioning {
     Partitioning {
         partitioning_struct: Some(PartitioningStruct::RangePartition(RangePartition {
+            num_partitions,
+            ..Default::default()
+        })),
+    }
+}
+
+/// A range exchange as a driver sends it, sorting by the first column, descending.
+pub fn range_on_first_column_descending(num_partitions: i32) -> Partitioning {
+    let order = Expr {
+        expr_struct: Some(ExprStruct::SortOrder(Box::new(SortOrder {
+            child: Some(Box::new(bound(0, long_type()))),
+            direction: SortDirection::Descending as i32,
+            null_ordering: NullOrdering::NullsLast as i32,
+        }))),
+        ..Default::default()
+    };
+    Partitioning {
+        partitioning_struct: Some(PartitioningStruct::RangePartition(RangePartition {
+            sort_orders: vec![order],
             num_partitions,
             ..Default::default()
         })),

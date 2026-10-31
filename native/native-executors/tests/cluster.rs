@@ -207,6 +207,36 @@ async fn runs_a_query_across_a_range_exchange() {
     );
 }
 
+/// The scheduler samples the producer for split points, so each partition holds one range of
+/// keys, in the exchange's order.
+#[tokio::test(flavor = "multi_thread")]
+async fn range_partitions_a_range_exchange_by_sampled_split_points() {
+    let cluster = Cluster::start();
+    let request = query(vec![
+        range_stage(1000, 4),
+        reading_stage(0, range_on_first_column_descending(4), 4),
+    ]);
+    let partitions = cluster.run(&request).await;
+    assert_eq!(partitions.len(), 4);
+    let ranges: Vec<Vec<i64>> = partitions
+        .iter()
+        .map(|partition| sorted_values::<Int64Type>(partition))
+        .collect();
+    for (index, range) in ranges.iter().enumerate() {
+        assert!(!range.is_empty(), "partition {index} is empty");
+    }
+    for pair in ranges.windows(2) {
+        assert!(
+            pair[0].first() > pair[1].last(),
+            "a partition holds keys below the next one's"
+        );
+    }
+    assert_eq!(
+        sorted_values::<Int64Type>(&partitions.concat()),
+        (0..1000).collect::<Vec<_>>()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn refuses_a_query_from_another_build() {
     let cluster = Cluster::start();

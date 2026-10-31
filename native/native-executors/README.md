@@ -48,15 +48,22 @@ A client runs a query through the scheduler's Arrow Flight service:
 A stage that several other stages read runs once for each of them, since Ballista's planner
 doesn't share a stage between consumers yet.
 
+A range exchange needs split points, which Spark's driver would find by sampling the exchange's
+input. The scheduler does the same while it builds the plan: it runs a job of its own over the
+stage that feeds the exchange, which keeps a reservoir sample of the sort keys of each partition,
+and cuts the sorted sample into ranges of about the same number of rows. Like Spark's, the sampling
+job runs that stage once more. A range exchange whose sort keys aren't all columns is read as one
+partition instead, so its sort runs in a single task.
+
 Each stage runs on the executors as a `CometFragmentExec`
 (`native/core/src/execution/native_executors`), which plans the stage's block with Comet's planner
 for each partition. Ballista moves the data between stages:
 
-| Exchange                    | Ballista plan                                                                                                                     |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| Hash                        | `RepartitionExec(Hash)`: Ballista's hash shuffle, with DataFusion's hash                                                          |
-| Single partition, broadcast | `CoalescePartitionsExec`                                                                                                          |
-| Range                       | `CoalescePartitionsExec`, so a sort runs in one task ([ballista#2680](https://github.com/apache/datafusion-ballista/issues/2680)) |
+| Exchange                    | Ballista plan                                                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Hash                        | `RepartitionExec(Hash)`: Ballista's hash shuffle, with DataFusion's hash                                    |
+| Single partition, broadcast | `CoalescePartitionsExec`                                                                                    |
+| Range                       | `RepartitionExec(Range)`: Ballista's range shuffle, with split points from a sample of the exchange's input |
 
 ## Building and running
 

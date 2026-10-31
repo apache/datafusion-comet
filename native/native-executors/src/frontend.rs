@@ -26,6 +26,7 @@
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
+use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
@@ -35,17 +36,20 @@ use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{job_status, PartitionLocation, SuccessfulJob};
 use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind};
 use ballista_scheduler::scheduler_server::SchedulerServer;
+use datafusion::arrow::array::RecordBatch;
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_comet_proto::spark_native_executors::QueryRequest;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::stream::BoxStream;
+use futures::TryStreamExt;
 use log::info;
 use prost::Message;
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::assembly::{build_plan, check_version};
+use crate::assembly::{build_plan_with_sampler, check_version};
 
 /// The Ballista session every query runs in. Every query uses Ballista's default settings, and
 /// executors cache a runtime per session, so sharing one lets queries share those runtimes.
@@ -65,41 +69,7 @@ impl CometFlightService {
     /// Runs `plan` to completion and returns its result: where its output partitions are, in
     /// partition order, and when it ended.
     async fn run(&self, plan: Arc<dyn ExecutionPlan>) -> Result<SuccessfulJob, Status> {
-        let ctx = self
-            .scheduler
-            .state
-            .session_manager
-            .create_or_update_session(SESSION_ID, &SessionConfig::new_with_ballista())
-            .await
-            .map_err(|e| Status::internal(format!("Cannot create a session: {e}")))?;
-        let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
-        let job_id = self
-            .scheduler
-            .submit_physical_plan("comet", ctx, plan, Some(sender))
-            .await
-            .map_err(|e| Status::internal(format!("Cannot submit the query: {e}")))?;
-        info!("Submitted query as job {job_id}");
-        while let Some(status) = receiver.recv().await {
-            match status.status {
-                Some(job_status::Status::Successful(mut job)) => {
-                    job.partition_location.sort_by_key(|location| {
-                        let partition = location.partition_id.as_ref().map(|p| p.partition_id);
-                        (partition, location.map_partition_id)
-                    });
-                    return Ok(job);
-                }
-                Some(job_status::Status::Failed(job)) => {
-                    return Err(Status::internal(format!(
-                        "Job {job_id} failed: {}",
-                        job.error
-                    )))
-                }
-                _ => {}
-            }
-        }
-        Err(Status::internal(format!(
-            "Job {job_id} ended without a final status"
-        )))
+        run(&self.scheduler, plan).await
     }
 
     /// When the executors delete the results of a query that ended at `ended_at`, in milliseconds
@@ -120,6 +90,88 @@ impl CometFlightService {
             .checked_add(Duration::from_secs(retention))
             .map(Timestamp::from)
     }
+}
+
+/// Runs `plan`, which has one output partition, as a Ballista job on `scheduler`, and reads its
+/// rows back from the executor that holds them, as a driver reads a query's result.
+async fn collect(
+    scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<Vec<RecordBatch>, Status> {
+    let job = run(scheduler, plan).await?;
+    let mut batches = vec![];
+    for location in &job.partition_location {
+        let endpoint = endpoint(location, None)?;
+        let uri = endpoint
+            .location
+            .first()
+            .map(|location| location.uri.replacen("grpc+tcp://", "http://", 1))
+            .ok_or_else(|| Status::internal("A sample partition has no location"))?;
+        let channel = tonic::transport::Endpoint::from_shared(uri.clone())
+            .map_err(|e| Status::internal(format!("Invalid executor location {uri}: {e}")))?
+            .connect()
+            .await
+            .map_err(|e| Status::internal(format!("Cannot connect to {uri}: {e}")))?;
+        let mut client = arrow_flight::FlightClient::new_from_inner(
+            FlightServiceClient::new(channel)
+                .max_decoding_message_size(usize::MAX)
+                .max_encoding_message_size(usize::MAX),
+        );
+        let ticket = endpoint
+            .ticket
+            .ok_or_else(|| Status::internal("A sample partition has no ticket"))?;
+        let stream = client
+            .do_get(ticket)
+            .await
+            .map_err(|e| Status::internal(format!("Cannot read a sample from {uri}: {e}")))?;
+        batches.extend(
+            stream
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| Status::internal(format!("Cannot read a sample from {uri}: {e}")))?,
+        );
+    }
+    Ok(batches)
+}
+
+/// Runs `plan` as a Ballista job on `scheduler` and waits for it to end.
+async fn run(
+    scheduler: &SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    plan: Arc<dyn ExecutionPlan>,
+) -> Result<SuccessfulJob, Status> {
+    let ctx = scheduler
+        .state
+        .session_manager
+        .create_or_update_session(SESSION_ID, &SessionConfig::new_with_ballista())
+        .await
+        .map_err(|e| Status::internal(format!("Cannot create a session: {e}")))?;
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(16);
+    let job_id = scheduler
+        .submit_physical_plan("comet", ctx, plan, Some(sender))
+        .await
+        .map_err(|e| Status::internal(format!("Cannot submit the query: {e}")))?;
+    info!("Submitted query as job {job_id}");
+    while let Some(status) = receiver.recv().await {
+        match status.status {
+            Some(job_status::Status::Successful(mut job)) => {
+                job.partition_location.sort_by_key(|location| {
+                    let partition = location.partition_id.as_ref().map(|p| p.partition_id);
+                    (partition, location.map_partition_id)
+                });
+                return Ok(job);
+            }
+            Some(job_status::Status::Failed(job)) => {
+                return Err(Status::internal(format!(
+                    "Job {job_id} failed: {}",
+                    job.error
+                )))
+            }
+            _ => {}
+        }
+    }
+    Err(Status::internal(format!(
+        "Job {job_id} ended without a final status"
+    )))
 }
 
 /// The Flight endpoint for a result partition: the executor's location, a ticket the executor's
@@ -181,10 +233,21 @@ impl FlightService for CometFlightService {
         let query = QueryRequest::decode(descriptor.cmd.as_ref())
             .map_err(|e| Status::invalid_argument(format!("Cannot decode the query: {e}")))?;
         check_version(&query).map_err(|e| Status::failed_precondition(e.to_string()))?;
-        let plan = tokio::task::spawn_blocking(move || build_plan(query))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        // A range exchange is sampled by a job of its own while the query is planned, which
+        // blocks the planning thread on this runtime.
+        let scheduler = self.scheduler.clone();
+        let runtime = tokio::runtime::Handle::current();
+        let plan = tokio::task::spawn_blocking(move || {
+            let mut sampler = |plan| {
+                runtime
+                    .block_on(collect(&scheduler, plan))
+                    .map_err(|e| DataFusionError::External(Box::new(e)))
+            };
+            build_plan_with_sampler(query, &mut sampler)
+        })
+        .await
+        .map_err(|e| Status::internal(e.to_string()))?
+        .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let job = self.run(plan).await?;
         let expires_at = self.results_expire_at(job.ended_at);
         let mut info = FlightInfo::new();
