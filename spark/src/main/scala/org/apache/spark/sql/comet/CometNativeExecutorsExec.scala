@@ -27,23 +27,24 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
-import org.apache.spark.sql.execution.{ColumnarToRowExec, DeserializeToObjectExec, LeafExecNode, SparkPlan}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, QueryStageExec}
 import org.apache.spark.sql.execution.command.{DataWritingCommandExec, ExecutedCommandExec}
 import org.apache.spark.sql.execution.datasources.v2.V2CommandExec
-import org.apache.spark.sql.execution.exchange.Exchange
+import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
+import com.google.protobuf.ByteString
 import com.google.protobuf.Descriptors.FieldDescriptor
 import com.google.protobuf.Message
 
 import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometRuntimeException, NativeExecutorsClient}
-import org.apache.comet.serde.{PartitioningOuterClass, QueryPlanSerde}
+import org.apache.comet.serde.{ExprOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.NativeExecutors.{QueryRequest, ResultEndpoints, Stage, StageInput}
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -60,11 +61,15 @@ import org.apache.comet.vector.NativeUtil
  *
  * @param query
  *   the serialized `QueryRequest` built by [[CometNativeExecutors.buildQuery]]
+ * @param subqueryResults
+ *   the query's scalar subqueries. They are expressions of this node, so Spark runs them before
+ *   it executes the node, and their results replace them in the query before it is submitted.
  */
 case class CometNativeExecutorsExec(
     override val output: Seq[Attribute],
     query: Array[Byte],
-    schedulerUrl: String)
+    schedulerUrl: String,
+    subqueryResults: Seq[Expression] = Nil)
     extends LeafExecNode {
 
   override def supportsColumnar: Boolean = true
@@ -73,8 +78,11 @@ case class CometNativeExecutorsExec(
     throw new UnsupportedOperationException(s"$nodeName only produces columnar output")
 
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    val request = CometNativeExecutors.withSubqueryResults(
+      query,
+      subqueryResults.collect { case sub: ScalarSubquery => sub })
     val endpoints =
-      ResultEndpoints.parseFrom(new NativeExecutorsClient().submit(schedulerUrl, query))
+      ResultEndpoints.parseFrom(new NativeExecutorsClient().submit(schedulerUrl, request))
     val partitions = endpoints.getEndpointsList.asScala.map { endpoint =>
       (endpoint.getLocation, endpoint.getTicket.toByteArray)
     }
@@ -163,8 +171,12 @@ private class CometNativeExecutorsRDD(
  */
 object CometNativeExecutors {
 
-  /** Messages of native plans that call back into the JVM, which a cluster doesn't have. */
-  private val jvmCallbacks = Set("JvmScalarUdf", "Subquery", "ArrowPythonUdf")
+  /**
+   * Messages of native plans that call back into the JVM, which a cluster doesn't have. A scalar
+   * subquery's `Subquery` is not one of them: the driver runs the subquery and puts its result in
+   * the plan before submitting it.
+   */
+  private val jvmCallbacks = Set("JvmScalarUdf", "ArrowPythonUdf")
 
   /**
    * Whether Comet runs `plan` on a Comet Native Executor cluster. It must be a whole query: not a
@@ -192,7 +204,8 @@ object CometNativeExecutors {
       val exec = CometNativeExecutorsExec(
         native.output,
         buildQuery(native).toByteArray,
-        CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.get())
+        CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.get(),
+        scalarSubqueries(native))
       native.logicalLink.orElse(original.logicalLink).foreach(exec.setLogicalLink)
       exec
   }
@@ -220,6 +233,89 @@ object CometNativeExecutors {
       .build()
   }
 
+  /** The scalar subqueries of `plan`'s expressions, through exchanges, each once. */
+  private def scalarSubqueries(plan: SparkPlan): Seq[Expression] = {
+    val found = ArrayBuffer.empty[ScalarSubquery]
+    def walk(node: SparkPlan): Unit = {
+      node.expressions.foreach(_.foreach {
+        case sub: ScalarSubquery if !found.exists(_.exprId == sub.exprId) => found += sub
+        case _ =>
+      })
+      node match {
+        case reused: ReusedExchangeExec => walk(reused.child)
+        case _ => node.children.foreach(walk)
+      }
+    }
+    walk(plan)
+    found.toSeq
+  }
+
+  /**
+   * `query` with each scalar subquery's `Subquery` expression replaced by a literal of its
+   * result. The subqueries must have run.
+   */
+  def withSubqueryResults(query: Array[Byte], subqueries: Seq[ScalarSubquery]): Array[Byte] = {
+    if (subqueries.isEmpty) {
+      return query
+    }
+    val literals: Map[Long, ExprOuterClass.Expr] = subqueries.map { sub =>
+      val literal = Literal.create(sub.eval(null), sub.dataType)
+      val expr = QueryPlanSerde
+        .exprToProto(literal, Seq.empty)
+        .getOrElse(throw new CometRuntimeException(
+          s"Comet Native Executors cannot pass the result of $sub to the cluster"))
+      sub.exprId.id -> expr
+    }.toMap
+    val request = QueryRequest.parseFrom(query).toBuilder
+    (0 until request.getStagesCount).foreach { i =>
+      val stage = request.getStages(i).toBuilder
+      stage.setPlan(replaceSubqueries(stage.getPlan, literals).asInstanceOf[Operator])
+      (0 until stage.getPartitionPlansCount).foreach { p =>
+        val plan = Operator.parseFrom(stage.getPartitionPlans(p))
+        stage.setPartitionPlans(
+          p,
+          ByteString.copyFrom(replaceSubqueries(plan, literals).toByteArray))
+      }
+      request.setStages(i, stage)
+    }
+    request.build().toByteArray
+  }
+
+  private def replaceSubqueries(
+      message: Message,
+      literals: Map[Long, ExprOuterClass.Expr]): Message = message match {
+    case expr: ExprOuterClass.Expr if expr.hasSubquery =>
+      literals.getOrElse(
+        expr.getSubquery.getId,
+        throw new CometRuntimeException(
+          s"Comet Native Executors found no result for subquery ${expr.getSubquery.getId}"))
+    case _ =>
+      val builder = message.toBuilder
+      var changed = false
+      message.getAllFields.asScala.foreach { case (field, value) =>
+        if (field.getJavaType == FieldDescriptor.JavaType.MESSAGE) {
+          if (field.isRepeated) {
+            value.asInstanceOf[java.util.List[Message]].asScala.zipWithIndex.foreach {
+              case (element, index) =>
+                val replaced = replaceSubqueries(element, literals)
+                if (replaced ne element) {
+                  builder.setRepeatedField(field, index, replaced)
+                  changed = true
+                }
+            }
+          } else {
+            val element = value.asInstanceOf[Message]
+            val replaced = replaceSubqueries(element, literals)
+            if (replaced ne element) {
+              builder.setField(field, replaced)
+              changed = true
+            }
+          }
+        }
+      }
+      if (changed) builder.build() else message
+  }
+
   /** The configs a Spark task would pass to native code with a plan. */
   private def nativeConf(): java.util.Map[String, String] = {
     val conf = new java.util.HashMap[String, String](
@@ -240,21 +336,25 @@ object CometNativeExecutors {
         return known
       }
       val block = plan match {
+        case take: CometTakeOrderedAndProjectExec => return takeOrderedStage(take)
         case native: CometNativeExec if native.serializedPlanOpt.isDefined => native
         case other => fail(other, "it does not run natively")
       }
-      val exchanges = inputsOf(block)
-      val inputs = exchanges.map { exchange =>
-        StageInput
-          .newBuilder()
-          .setProducer(stageOf(exchange.child))
-          .setPartitioning(partitioningOf(exchange))
-          .build()
+      val inputs = inputsOf(block).map {
+        case exchange: CometShuffleExchangeExec =>
+          StageInput
+            .newBuilder()
+            .setProducer(stageOf(exchange.child))
+            .setPartitioning(partitioningOf(exchange))
+            .build()
+        case broadcast =>
+          StageInput
+            .newBuilder()
+            .setProducer(stageOf(broadcast.children.head))
+            .setBroadcast(true)
+            .build()
       }
       val blockPlan = Operator.parseFrom(block.serializedPlanOpt.plan.get)
-      findJvmCallback(blockPlan).foreach { name =>
-        fail(block, s"its native plan calls back into the JVM ($name)")
-      }
 
       // A block that reads files runs one copy per partition, each naming its own files.
       val (common, perPartition) = PlanDataInjector.findAllPlanData(block)
@@ -272,11 +372,43 @@ object CometNativeExecutors {
       val numPartitions =
         if (partitionPlans.nonEmpty) partitionPlans.length
         else block.outputPartitioning.numPartitions
+      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions, block.output)
+    }
+
+    /**
+     * A stage for `take` that reads its child's whole output as one partition and keeps the first
+     * rows in order, as Comet's final top-K plan does after its shuffle to one partition.
+     */
+    private def takeOrderedStage(take: CometTakeOrderedAndProjectExec): Int = {
+      val input = StageInput
+        .newBuilder()
+        .setProducer(stageOf(take.child))
+        .setPartitioning(
+          PartitioningOuterClass.Partitioning
+            .newBuilder()
+            .setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder()))
+        .build()
+      // More than one input partition, so that the plan sorts across all of them.
+      val blockPlan = take
+        .finalNativePlan(inputPartitions = 2)
+        .getOrElse(fail(take, "its top-K plan cannot run natively"))
+      addStage(take, blockPlan, Seq(input), Seq.empty, 1, take.output)
+    }
+
+    private def addStage(
+        plan: SparkPlan,
+        blockPlan: Operator,
+        inputs: Seq[StageInput],
+        partitionPlans: Seq[ByteString],
+        numPartitions: Int,
+        output: Seq[Attribute]): Int = {
+      findJvmCallback(blockPlan).foreach { name =>
+        fail(plan, s"its native plan calls back into the JVM ($name)")
+      }
       // Declared as Comet's shuffle writer declares its input, since the cluster casts the
       // block's output to it as that writer does.
-      val outputSchema = schema2Proto(
-        block.output.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
-
+      val outputSchema =
+        schema2Proto(output.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
       stages += Stage
         .newBuilder()
         .setPlan(blockPlan)
@@ -291,13 +423,18 @@ object CometNativeExecutors {
     }
 
     /**
-     * The exchanges that feed `block`, in the order its native plan's input leaves read them.
+     * The exchanges that feed `block`, in the order its native plan's input leaves read them:
+     * native shuffles and broadcasts, with a reused exchange resolved to the one it reuses.
      */
-    private def inputsOf(block: CometNativeExec): Seq[CometShuffleExchangeExec] = {
-      val inputs = ArrayBuffer.empty[CometShuffleExchangeExec]
+    private def inputsOf(block: CometNativeExec): Seq[SparkPlan] = {
+      val inputs = ArrayBuffer.empty[SparkPlan]
       def walk(plan: SparkPlan): Unit = plan match {
+        case reused: ReusedExchangeExec =>
+          walk(reused.child)
         case exchange: CometShuffleExchangeExec if exchange.shuffleType == CometNativeShuffle =>
           inputs += exchange
+        case broadcast: CometBroadcastExchangeExec =>
+          inputs += broadcast
         case _: CometNativeScanExec | _: CometIcebergNativeScanExec | _: CometRangeExec =>
         // Read inside the block.
         // Part of the block, even when it has a serialized plan of its own: the conversion
