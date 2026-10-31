@@ -20,6 +20,8 @@
 //!
 //! Configured through environment variables, with Ballista's defaults otherwise:
 //! - `COMET_SCHEDULER_BIND_HOST` (default `127.0.0.1`)
+//! - `COMET_SCHEDULER_EXTERNAL_HOST`: the host executors reach this scheduler at, which they
+//!   report task status to (default `localhost`)
 //! - `COMET_SCHEDULER_PORT`: Ballista's gRPC port, for executors (default `50050`)
 //! - `COMET_SCHEDULER_FLIGHT_PORT`: the Flight port, for drivers (default `50060`)
 //! - `COMET_SCHEDULER_RESULT_RETENTION_SECONDS`: how long a query's results stay readable after
@@ -47,6 +49,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some(host) = env_var("COMET_SCHEDULER_BIND_HOST")? {
         config.bind_host = host;
+    }
+    if let Some(host) = env_var("COMET_SCHEDULER_EXTERNAL_HOST")? {
+        config.external_host = host;
     }
     if let Some(port) = env_var("COMET_SCHEDULER_PORT")? {
         config.bind_port = port;
