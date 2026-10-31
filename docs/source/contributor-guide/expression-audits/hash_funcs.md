@@ -54,14 +54,14 @@
 ## sha1
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha1(child) extends UnaryExpression with NullIntolerant`; `inputTypes = Seq(BinaryType) -> StringType`. Comet routes via `CometSha1` to the native `sha1` UDF.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha1(child) extends UnaryExpression with NullIntolerant`; `inputTypes = Seq(BinaryType) -> StringType`. The Analyzer casts accepted inputs to `BinaryType` before Comet serde, and `CometSha1` routes the resulting binary child to the native `sha1` UDF.
 - Spark 4.0.1 (audited 2026-05-27): trait set gains `DefaultStringProducingExpression` and `NullIntolerant` is replaced by `nullIntolerant: Boolean`. Runtime unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
 ## sha2
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha2(left, right) extends BinaryExpression`; `inputTypes = Seq(BinaryType, IntegerType) -> StringType`. The `numBits` argument selects SHA-224/256/384/512 (0 is treated as 256); other values return NULL. Comet routes via `CometSha2` to the native `sha2` UDF; non-foldable `numBits` falls back to Spark.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `Sha2(left, right) extends BinaryExpression`; `inputTypes = Seq(BinaryType, IntegerType) -> StringType`. The `numBits` argument selects SHA-224/256/384/512 (0 is treated as 256); other values return NULL. Comet routes via `CometSha2` to the native `SparkSha2` UDF for both foldable and column `numBits`. Tests cover STRING and BINARY payload columns with row-varying bit lengths, including invalid values and NULL, with the JVM codegen dispatcher enabled and disabled.
 - Spark 4.0.1 (audited 2026-05-27): trait set gains `DefaultStringProducingExpression` and the `nullIntolerant: Boolean` refactor. Runtime unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
@@ -70,7 +70,7 @@
 - Performance (tuned 2026-09-28, issue #5994): the shared typed wide-decimal list path was 2.1–15.8x faster in local Criterion measurements across 8,192-row `decimal(38,0)` List, LargeList and FixedSizeList inputs with 2/32 elements and no/sparse/dense nulls; paired scalar remeasurement found no significant slowdown. Benchmark: `benches/decimal_hash.rs`.
 
 - Spark 3.4.3 (audited 2026-05-27): identical to 3.5.8.
-- Spark 3.5.8 (audited 2026-05-27): baseline. `XxHash64(children, seed) extends HashExpression[Long]`; produces an xxHash64 hash with a configurable Long seed and `LongType` result. Comet routes via `CometXxHash64` to the native `xxhash64` UDF.
+- Spark 3.5.8 (audited 2026-05-27): baseline. `XxHash64(children, seed) extends HashExpression[Long]`; produces an xxHash64 hash with a configurable Long seed and `LongType` result. Comet routes via `CometXxHash64` to the native `xxhash64` UDF. Wide decimals, including nested decimals, hash natively as for `hash`; `TimeType` falls back to Spark.
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 - Native routing: Comet's native `xxhash64` UDF delegates compatible arguments at Spark's default seed (`42`) to `datafusion-spark::SparkXxhash64`. Differential tests in `native/spark-expr/src/hash_funcs/xxhash64_diff.rs` compare Comet's kernel against `SparkXxhash64` for primitives, narrow decimals, dictionaries, lists, maps, and nested combinations, and record where the two differ on a NaN whose bits are not canonical. Wide-decimal tests verify that the expression stays on Comet's kernel: the pinned DataFusion implementation uses fixed-width little-endian bytes rather than Spark's minimal signed big-endian bytes. The Comet kernel is retained for wide decimals (also within nested types), a non-default seed (`SparkXxhash64` hardcodes 42), `Struct` (upstream does not push a parent null mask into children; see #5753), a `Dictionary` nested in a list/map (upstream restarts those hashes from 42), `Time64`, and `Float32`/`Float64`, including values nested in lists and maps (upstream hashes the raw bits of a NaN, where Spark hashes every NaN as the canonical NaN; see [apache/datafusion#25913](https://github.com/apache/datafusion/issues/25913)). `create_xxhash64_hashes` remains for `approx_count_distinct` and the non-delegated native path.
