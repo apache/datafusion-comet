@@ -693,8 +693,8 @@ fn check_conversion(
 /// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
 /// (they read as null / default, as before). Independently selected losing fields still undergo
-/// open-time shape validation, but do not contribute deferred decoder rejections because their
-/// values are not read. Sibling verdicts combine as in [`combine_checks`].
+/// open-time shape validation and deferred leaf checks, like Spark's `getUpdater`. Only runtime
+/// conversion masks their values with NULL. Sibling verdicts combine as in [`combine_checks`].
 ///
 /// `physical_field` may carry [`NANOS_TIMESTAMP_KEY`].
 fn check_field_conversion(
@@ -737,24 +737,15 @@ fn check_nested_conversion(
                 target_fields
                     .iter()
                     .zip(physical_indices.iter())
-                    .filter_map(|(target_field, (physical_index, owns_value))| {
+                    .filter_map(|(target_field, (physical_index, _))| {
                         let physical_field = &physical_fields[physical_index?];
-                        Some(
-                            check_nested_conversion(
-                                physical_field.data_type(),
-                                target_field.data_type(),
-                                &format!("{column}, {}", physical_field.name()),
-                                options,
-                                is_nanos_timestamp(physical_field),
-                            )
-                            .map(|check| {
-                                if owns_value {
-                                    check
-                                } else {
-                                    ConversionCheck::Accept
-                                }
-                            }),
-                        )
+                        Some(check_nested_conversion(
+                            physical_field.data_type(),
+                            target_field.data_type(),
+                            &format!("{column}, {}", physical_field.name()),
+                            options,
+                            is_nanos_timestamp(physical_field),
+                        ))
                     }),
             )
         }
@@ -3744,10 +3735,11 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// The losing name claimant reads NULL even when converting that physical column to its
-    /// requested type would fail. This exercises both the file-open check and runtime adapter.
+    /// Losing name claims read NULL, but a nested leaf must still pass Spark's conversion
+    /// check. Root losing-field validation is tracked separately in #7207.
     #[tokio::test]
-    async fn conflicting_field_claims_read_null_at_every_depth() -> Result<(), DataFusionError> {
+    async fn conflicting_field_claims_validate_losing_fields_at_every_depth(
+    ) -> Result<(), DataFusionError> {
         use arrow::buffer::NullBuffer;
 
         for depth in 0..=2 {
@@ -3794,7 +3786,25 @@ pub(crate) mod test {
                     let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                     options.use_field_id = true;
                     let mut stream = scan_parquet(&batch, expected.schema(), options)?;
-                    let read = stream.next().await.unwrap()?;
+                    let read = stream.next().await.unwrap();
+                    if depth > 0 && losing_type == DataType::Int32 {
+                        let error = read.expect_err("losing nested leaf must still be validated");
+                        let message = error.to_string();
+                        let column = (0..depth)
+                            .rev()
+                            .map(|level| format!("s{level}"))
+                            .chain(std::iter::once("A".to_string()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        assert!(
+                            message.contains(&format!("Column: [[{column}]]")),
+                            "{message}"
+                        );
+                        assert!(message.contains("Expected: int"), "{message}");
+                        assert!(message.contains("Found: INT64"), "{message}");
+                        continue;
+                    }
+                    let read = read?;
                     assert_eq!(
                         read, expected,
                         "depth={depth}, reverse={reverse}, losing_type={losing_type}"
@@ -3806,11 +3816,11 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// Spark parquet-mr assigns repeated requested ids to the last field. The first field's
-    /// incompatible type must not reject a read after that field loses its claim.
+    /// Repeated root ids keep their existing last-wins behavior. Inside a struct, every
+    /// selected leaf still contributes its type check, including the losing id claims.
     #[tokio::test]
-    async fn repeated_requested_ids_read_last_field_at_root_and_nested(
-    ) -> Result<(), DataFusionError> {
+    async fn repeated_requested_ids_preserve_losing_field_validation() -> Result<(), DataFusionError>
+    {
         for count in [2, 3, 4] {
             for nested in [false, true] {
                 for reverse in [false, true] {
@@ -3851,12 +3861,14 @@ pub(crate) mod test {
                     let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
                     options.use_field_id = true;
                     let mut stream = scan_parquet(&batch, required, options)?;
-                    let read = stream.next().await.unwrap()?;
-                    let columns = if nested {
-                        read.column(0).as_struct().columns()
-                    } else {
-                        read.columns()
-                    };
+                    let read = stream.next().await.unwrap();
+                    if nested {
+                        let error = read.expect_err("losing id claims must still be validated");
+                        assert!(error.to_string().contains("Column: [[s, A]]"), "{error}");
+                        continue;
+                    }
+                    let read = read?;
+                    let columns = read.columns();
                     for column in &columns[..count - 1] {
                         assert_eq!(column.data_type(), &DataType::Int32);
                         assert_eq!(column.null_count(), values.len());
@@ -3959,6 +3971,62 @@ pub(crate) mod test {
                 let err = stream.next().await.unwrap().expect_err(&label);
                 let column = if nested { "[[s, x]]" } else { "[[s]]" };
                 assert!(err.to_string().contains(column), "{label}: {err}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A losing leaf's rejection is deferred too: neither an empty file nor a pruned row
+    /// group may raise it before any rows are decoded.
+    #[tokio::test]
+    async fn losing_field_claim_rejection_passes_for_empty_and_pruned_reads(
+    ) -> Result<(), DataFusionError> {
+        let nested = struct_batch(
+            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+            Arc::new(Int64Array::from(vec![7])),
+        )?;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                nested.schema().field(0).clone(),
+                Field::new("id", DataType::Int32, false),
+            ])),
+            vec![
+                Arc::clone(nested.column(0)),
+                Arc::new(Int32Array::from(vec![1])),
+            ],
+        )?;
+        for reverse in [false, true] {
+            let mut fields = vec![
+                Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                Field::new("a", DataType::Int32, true),
+            ];
+            if reverse {
+                fields.reverse();
+            }
+            let required = Arc::new(Schema::new(vec![
+                struct_schema(fields).field(0).clone(),
+                Field::new("id", DataType::Int32, false),
+            ]));
+            let mut options = default_options();
+            options.use_field_id = true;
+            let id_is_100: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("id", 1)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(100)))),
+            ));
+            for (input, predicate) in [
+                (RecordBatch::new_empty(batch.schema()), None),
+                (batch.clone(), Some(id_is_100)),
+            ] {
+                let mut stream = scan_parquet_with_predicate(
+                    &input,
+                    Arc::clone(&required),
+                    options.clone(),
+                    predicate,
+                )?;
+                while let Some(read) = stream.next().await {
+                    assert_eq!(read?.num_rows(), 0, "reverse={reverse}");
+                }
             }
         }
         Ok(())
@@ -4380,11 +4448,9 @@ pub(crate) mod test {
         Ok(())
     }
 
-    /// Clipping validates a selected container even when another claimant owns its value.
-    /// Losing leaf conversions do not install a decoder and must not add deferred failures.
+    /// Losing selections preserve both open-time shape errors and deferred leaf rejections.
     #[test]
-    fn losing_field_claims_preserve_open_errors_but_not_deferred_rejections(
-    ) -> Result<(), DataFusionError> {
+    fn losing_field_claims_preserve_open_and_deferred_errors() -> Result<(), DataFusionError> {
         let mut options = default_options();
         options.use_field_id = true;
         for reverse in [false, true] {
@@ -4422,7 +4488,14 @@ pub(crate) mod test {
                     };
                     let result = check_conversion(&physical, &target, "s", &options);
                     if matches!(losing_type, DataType::Int32) {
-                        assert!(matches!(result?, ConversionCheck::Accept));
+                        assert!(matches!(
+                            result?,
+                            ConversionCheck::RejectOnNonEmpty {
+                                column,
+                                physical_type: DataType::Int64,
+                                target_type: DataType::Int32,
+                            } if column.ends_with(", A")
+                        ));
                     } else {
                         let error = result
                             .err()

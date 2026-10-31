@@ -33,6 +33,7 @@ import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.execution.datasources.SchemaColumnConvertNotSupportedException
 import org.apache.spark.sql.functions.{array, col}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -1338,7 +1339,8 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       nullable = true,
       new MetadataBuilder().putLong("parquet.field.id", id.toLong).build())
 
-  private def withFieldClaimFile(nested: Boolean)(f: (String, StructType) => Unit): Unit = {
+  private def withFieldClaimFile(nested: Boolean, empty: Boolean = false)(
+      f: (String, StructType) => Unit): Unit = {
     val id10 = new MetadataBuilder().putLong("parquet.field.id", 10L).build()
     def wrapSchema(fields: StructType): StructType =
       if (nested) StructType(Seq(StructField("s", fields, nullable = true, id10)))
@@ -1352,7 +1354,9 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
       SQLConf.PARQUET_FIELD_ID_READ_ENABLED.key -> "true") {
       withTempPath { path =>
         withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          val rows = (1L to 3L).map(value => if (nested) Row(Row(value)) else Row(value))
+          val rows =
+            if (empty) Seq.empty[Row]
+            else (1L to 3L).map(value => if (nested) Row(Row(value)) else Row(value))
           spark
             .createDataFrame(spark.sparkContext.parallelize(rows, 1), writeSchema)
             .write
@@ -1588,6 +1592,58 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
         val expected = fieldClaimReference(query)
         assert(expected == Seq(Row(1L), Row(2L), Row(3L)))
         checkNativeFieldClaimAnswer(query, expected)
+      }
+    }
+  }
+
+  for {
+    reverse <- Seq(false, true)
+    empty <- Seq(false, true)
+  } {
+    test(
+      s"Parquet field claims - losing leaf retains deferred rejection - reverse=$reverse empty=$empty") {
+      withFieldClaimFile(nested = true, empty = empty) { (path, schema) =>
+        val fields = Seq(withFieldId("x", 1), StructField("a", IntegerType, nullable = true))
+        val readType = StructType(if (reverse) fields.reverse else fields)
+        val readSchema = StructType(Seq(schema("s").copy(dataType = readType)))
+        def query: DataFrame = spark.read.schema(readSchema).parquet(path)
+
+        def checkDeferredRejection(df: DataFrame): Unit = {
+          if (empty) {
+            checkAnswer(df, Seq.empty[Row])
+          } else {
+            val error = intercept[Exception](df.collect())
+            val messages = causeMessages(error)
+            assert(
+              causeChain(error).exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]),
+              messages)
+            assert(messages.contains("[s, A]") && messages.contains("INT64"), messages)
+          }
+        }
+
+        withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            val df = query
+            val scans = collect(df.queryExecution.executedPlan) { case scan: FileSourceScanExec =>
+              scan
+            }
+            assert(scans.nonEmpty && scans.forall(_.supportsColumnar))
+            checkDeferredRejection(df)
+          }
+          val df = query
+          assert(
+            collect(df.queryExecution.executedPlan) { case scan: CometNativeScanExec =>
+              scan
+            }.nonEmpty,
+            s"expected native losing-leaf validation:\n${df.queryExecution.executedPlan}")
+          checkDeferredRejection(df)
+        }
+
+        // parquet-mr has no deferred updater check on the losing leaf and returns NULL.
+        val expected =
+          if (empty) Seq.empty[Row]
+          else (1L to 3L).map(value => Row(if (reverse) Row(null, value) else Row(value, null)))
+        assert(fieldClaimReference(query).sortBy(_.toString) == expected.sortBy(_.toString))
       }
     }
   }
