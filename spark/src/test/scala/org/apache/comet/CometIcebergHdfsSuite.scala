@@ -22,6 +22,7 @@ package org.apache.comet
 import java.io.File
 import java.net.URI
 import java.nio.file.Files
+import java.security.PrivilegedExceptionAction
 import java.util.{EnumSet, UUID}
 
 import org.scalactic.source.Position
@@ -31,8 +32,10 @@ import org.apache.commons.io.FileUtils
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.crypto.key.{KeyProvider, KeyProviderFactory}
 import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.permission.FsPermission
 import org.apache.hadoop.hdfs.{MiniDFSCluster, MiniDFSNNTopology}
 import org.apache.hadoop.hdfs.client.{CreateEncryptionZoneFlag, HdfsAdmin}
+import org.apache.hadoop.security.UserGroupInformation
 import org.apache.hadoop.util.VersionInfo
 import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.sql.CometTestBase
@@ -131,8 +134,11 @@ class CometIcebergHdfsSuite
     finally {
       try stopEncryptedCluster()
       finally {
-        try stopHdfsCluster()
-        finally super.afterAll()
+        try stopPermissionsCluster()
+        finally {
+          try stopHdfsCluster()
+          finally super.afterAll()
+        }
       }
     }
   }
@@ -496,5 +502,95 @@ class CometIcebergHdfsSuite
       catch { case _: Exception => () }
       stopHaCluster()
     }
+  }
+
+  private var permCluster: MiniDFSCluster = _
+  private var permBaseDir: File = _
+
+  private def stopPermissionsCluster(): Unit = {
+    try if (permCluster != null) permCluster.shutdown(true)
+    finally {
+      permCluster = null
+      if (permBaseDir != null) FileUtils.deleteQuietly(permBaseDir)
+      permBaseDir = null
+    }
+  }
+
+  /**
+   * Starts a cluster as `superUser`, which makes that user the NameNode's superuser instead of
+   * this JVM's user. `dfs.permissions.enabled` is on by default; what makes every check pass on
+   * the other clusters here is that the JVM's user started their NameNodes. To this one it is an
+   * ordinary user, which owns `/perm`.
+   */
+  private def startPermissionsCluster(superUser: UserGroupInformation): Unit = {
+    val conf = new Configuration()
+    conf.set("dfs.namenode.metrics.logger.period.seconds", "0")
+    conf.set("dfs.datanode.metrics.logger.period.seconds", "0")
+    conf.setIfUnset("dfs.namenode.rpc-bind-host", "localhost")
+    permBaseDir = Files.createTempDirectory("comet_perm_dfs_").toFile
+    conf.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, permBaseDir.getAbsolutePath)
+    val owner = spark.sparkContext.sparkUser
+    permCluster = superUser.doAs(new PrivilegedExceptionAction[MiniDFSCluster] {
+      override def run(): MiniDFSCluster = {
+        val cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build()
+        val fs = cluster.getFileSystem
+        fs.mkdirs(new Path("/perm"))
+        fs.setOwner(new Path("/perm"), owner, null)
+        cluster
+      }
+    })
+  }
+
+  // The planner claims an HDFS scan on the premise that the native client connects as the Spark
+  // user (in local mode, this JVM's user). With permissions enforced by a NameNode that does not
+  // treat that user as its superuser, a read of a directory only that user may enter proves it.
+  test("native Iceberg scan reads HDFS as the Spark user when permissions are enforced") {
+    val superUser = UserGroupInformation.createRemoteUser("hdfs-super")
+    startPermissionsCluster(superUser)
+    try {
+      val sparkUser = spark.sparkContext.sparkUser
+      val permUri = s"hdfs://localhost:${permCluster.getNameNodePort}"
+      withHdfsIcebergCatalog(baseUri = s"$permUri/perm", cleanup = false) { catalog =>
+        spark.sql(s"CREATE TABLE $catalog.db.owned (id INT, name STRING) USING iceberg")
+        spark.sql(s"INSERT INTO $catalog.db.owned VALUES (1, 'a'), (2, 'b')")
+        val dataDir = new Path(
+          IcebergReflection
+            .getDataLocation(loadIcebergTable(spark, catalog, "db", "owned"))
+            .getOrElse(fail("could not resolve the Iceberg data location")))
+        // Outside `doAs` the filesystem is this JVM's user, an ordinary user to this NameNode.
+        val fs = permCluster.getFileSystem
+        assert(
+          fs.getFileStatus(dataDir).getOwner == sparkUser,
+          s"$dataDir is owned by ${fs.getFileStatus(dataDir).getOwner}, not $sparkUser")
+        fs.setPermission(dataDir, new FsPermission("700"))
+
+        // Only the owner may enter the data directory, so the native read succeeds only if the
+        // client connected as that user.
+        val query = s"SELECT * FROM $catalog.db.owned ORDER BY id"
+        val (_, cometPlan) = checkSparkAnswer(query)
+        assertSingleNativeScan(cometPlan)
+
+        // The check is live for this client: once the directory belongs to someone else, the
+        // native read is denied as Spark's is.
+        superUser.doAs(new PrivilegedExceptionAction[Unit] {
+          override def run(): Unit =
+            permCluster.getFileSystem.setOwner(dataDir, "someone-else", null)
+        })
+        Seq(true, false).foreach { cometEnabled =>
+          withSQLConf(CometConf.COMET_ENABLED.key -> cometEnabled.toString) {
+            val e = intercept[Exception](spark.sql(query).collect())
+            val messages = Iterator
+              .iterate(e: Throwable)(_.getCause)
+              .takeWhile(_ != null)
+              .map(_.getMessage)
+              .mkString("\n")
+            assert(
+              messages.contains("AccessControlException") || messages.contains(
+                "Permission denied"),
+              s"comet=$cometEnabled failed for another reason: $messages")
+          }
+        }
+      }
+    } finally stopPermissionsCluster()
   }
 }
