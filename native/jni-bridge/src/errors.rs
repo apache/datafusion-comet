@@ -899,6 +899,20 @@ fn parquet_external_spark_error(error: &DataFusionError) -> Option<&SparkError> 
     }
 }
 
+/// The `CannotReadFile` error a scan should raise for `error`, if it is a per-file read failure,
+/// classified the same way the JNI conversion does. A `SparkError` the reader raised itself keeps
+/// its own type, so this returns `None` for it. The scan calls this where it still knows which
+/// file failed, so that file can be named in the error.
+pub fn file_read_error(error: &DataFusionError) -> Option<SparkError> {
+    if parquet_external_spark_error(error).is_some() {
+        return None;
+    }
+    match try_classify_file_read_error(error)? {
+        cannot_read @ SparkError::CannotReadFile { .. } => Some(cannot_read),
+        _ => None,
+    }
+}
+
 /// Classify a `DataFusionError` as a per-file read failure by TYPED variant (not message text),
 /// returning `SparkError::CannotReadFile` if so. This is the structured replacement for the
 /// previous JVM-side substring matching on error prose.
@@ -914,8 +928,9 @@ fn parquet_external_spark_error(error: &DataFusionError) -> Option<&SparkError> 
 /// `Internal`/`External`-string or `object_store::Error::Generic`: those also carry non-file
 /// errors (e.g. "Hdfs support is not enabled in this build") that must surface as-is.
 ///
-/// `file_path` is populated from `object_store::Error::NotFound { path, .. }` when available;
-/// otherwise it is left empty and the JVM side fills it from the per-task file list.
+/// `file_path` is left empty here. The native scan fills it with the file that failed (see
+/// `file_read_error`); for errors raised elsewhere the JVM side fills it from the per-task file
+/// list.
 fn try_classify_file_read_error(error: &DataFusionError) -> Option<SparkError> {
     use datafusion::common::DataFusionError as DFE;
     match error {
