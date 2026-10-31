@@ -248,16 +248,14 @@ ORDER BY cate, val_date
 -- Ported from Spark's typeCoercion/native/windowFrameCoercion.sql:
 --   SELECT COUNT(*) OVER (PARTITION BY 1 ORDER BY cast(1 as decimal(10, 0)) DESC
 --     RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t
--- Comet falls back because Spark decimal arithmetic widens precision on
--- +/-, so the native frame-boundary arithmetic produces e.g. Decimal(11,0)
--- while the current row stays Decimal(10,0), and DataFusion's comparator
--- fails with "Uncomparable values". Once the native planner preserves the
--- ORDER BY column's precision when computing RANGE boundaries, the guard
--- in CometWindowExec can be removed and this test will start failing
--- because Comet stops falling back — that's the signal to re-enable it.
+-- Runs natively: Spark casts the frame offset to the ORDER BY decimal type.
+-- Boundary arithmetic still widens precision (e.g. DECIMAL(11,0)), but
+-- DataFusion compares Decimal128 values with matching scales regardless of
+-- precision. The DATE case in 1.11 keeps an IntegerType offset instead, which
+-- the native planner coerces to IntervalDayTime.
 -- ============================================================
 
-query expect_fallback(RANGE frame with explicit offset on DECIMAL ORDER BY is not supported)
+query
 SELECT COUNT(*) OVER (PARTITION BY 1
                       ORDER BY CAST(1 AS DECIMAL(10, 0)) DESC
                       RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) AS c

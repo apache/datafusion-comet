@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Divide, Expression, FrameType, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, Cast, CumeDist, CurrentRow, DenseRank, Descending, Divide, Expression, FrameType, Lag, Lead, Literal, MakeDecimal, NamedExpression, NthValue, NTile, PercentRank, RangeFrame, Rank, RowFrame, RowNumber, SortOrder, SpecialFrameBoundary, SpecifiedWindowFrame, UnaryMinus, UnboundedFollowing, UnboundedPreceding, UnscaledValue, WindowExpression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, Average, Complete, Count, First, Last, Max, Min, Sum}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.execution.SparkPlan
@@ -393,30 +393,33 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
     }
 
-    // Comet's native window planner ships RANGE frame offsets as
-    // ScalarValue::Int64, which the DECIMAL comparator can't handle: Spark
-    // decimal arithmetic widens precision on +/-, so the computed boundary
-    // (e.g. Decimal(11,0)) doesn't match the current value's precision
-    // (e.g. Decimal(10,0)) and the comparator fails with "Uncomparable
-    // values". Fall back for DECIMAL until the native side normalizes
-    // precision. DATE is now handled natively by wrapping the offset as
-    // IntervalDayTime in the planner. UNBOUNDED / CURRENT ROW bounds don't
-    // evaluate the offending arithmetic and stay native regardless.
+    // DataFusion computes a RANGE frame bound as `current +/- offset` and treats
+    // a bound that overflows as the edge of the partition, which also takes in
+    // NULL keys sorted at that edge. Spark's bound never overflows that way, so
+    // fall back for the offsets that can overflow. UNBOUNDED / CURRENT ROW
+    // bounds skip the arithmetic and stay native.
     //
     // For DATE, Spark computes the bound with DateAdd, an Int addition that
-    // wraps silently on overflow, while DataFusion treats an overflowing bound
-    // as the partition edge. Over dates in Spark's supported range the two only
-    // disagree when the offset is large enough to wrap, so fall back for those
-    // offsets. https://github.com/apache/datafusion-comet/issues/5022
+    // wraps silently on overflow. Over dates in Spark's supported range the two
+    // only disagree when the offset is large enough to wrap, so fall back for
+    // those offsets.
+    //
+    // For DECIMAL, Spark's DecimalAddNoOverflowCheck keeps the exact bound,
+    // while DataFusion adds in Decimal128 and overflows past i128.
+    // https://github.com/apache/datafusion-comet/issues/5022
+    val rangeDescending =
+      windowExpr.windowSpec.orderSpec.headOption.exists(_.direction == Descending)
     f match {
       case SpecifiedWindowFrame(RangeFrame, lb, ub)
           if !lb.isInstanceOf[SpecialFrameBoundary] ||
             !ub.isInstanceOf[SpecialFrameBoundary] =>
         windowExpr.windowSpec.orderSpec.headOption.map(_.dataType) match {
-          case Some(_: DecimalType) =>
+          case Some(dt: DecimalType)
+              if !Seq(lb, ub).forall(isDecimalRangeOffsetSafe(_, dt, rangeDescending)) =>
             withFallbackReason(
               windowExpr,
-              "RANGE frame with explicit offset on DECIMAL ORDER BY is not supported")
+              s"RANGE frame on ${dt.catalogString} ORDER BY with an offset whose bound can " +
+                "overflow Decimal128 is not supported")
             return None
           case Some(DateType) if !Seq(lb, ub).forall(isDateRangeOffsetSafe) =>
             withFallbackReason(
@@ -512,21 +515,22 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
-            val preceding = boundOffset(e, frameType, isLower = true, output) match {
-              case Right(RowOffset(offset)) =>
-                OperatorOuterClass.Preceding
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build()
-              case Right(RangeOffset(lit)) =>
-                OperatorOuterClass.Preceding
-                  .newBuilder()
-                  .setRangeOffset(lit)
-                  .build()
-              case Left(reason) =>
-                withFallbackReason(windowExpr, reason)
-                return None
-            }
+            val preceding =
+              boundOffset(e, frameType, isLower = true, rangeDescending, output) match {
+                case Right(RowOffset(offset)) =>
+                  OperatorOuterClass.Preceding
+                    .newBuilder()
+                    .setOffset(offset)
+                    .build()
+                case Right(RangeOffset(lit)) =>
+                  OperatorOuterClass.Preceding
+                    .newBuilder()
+                    .setRangeOffset(lit)
+                    .build()
+                case Left(reason) =>
+                  withFallbackReason(windowExpr, reason)
+                  return None
+              }
             OperatorOuterClass.LowerWindowFrameBound
               .newBuilder()
               .setPreceding(preceding)
@@ -545,21 +549,22 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
               .setCurrentRow(OperatorOuterClass.CurrentRow.newBuilder().build())
               .build()
           case e =>
-            val following = boundOffset(e, frameType, isLower = false, output) match {
-              case Right(RowOffset(offset)) =>
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setOffset(offset)
-                  .build()
-              case Right(RangeOffset(lit)) =>
-                OperatorOuterClass.Following
-                  .newBuilder()
-                  .setRangeOffset(lit)
-                  .build()
-              case Left(reason) =>
-                withFallbackReason(windowExpr, reason)
-                return None
-            }
+            val following =
+              boundOffset(e, frameType, isLower = false, rangeDescending, output) match {
+                case Right(RowOffset(offset)) =>
+                  OperatorOuterClass.Following
+                    .newBuilder()
+                    .setOffset(offset)
+                    .build()
+                case Right(RangeOffset(lit)) =>
+                  OperatorOuterClass.Following
+                    .newBuilder()
+                    .setRangeOffset(lit)
+                    .build()
+                case Left(reason) =>
+                  withFallbackReason(windowExpr, reason)
+                  return None
+              }
             OperatorOuterClass.UpperWindowFrameBound
               .newBuilder()
               .setFollowing(following)
@@ -664,6 +669,38 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       }
   }
 
+  private val MaxDecimal128Unscaled: BigInt = BigInt(2).pow(127) - 1
+
+  // DataFusion rescales both operands to the larger scale and adds them as
+  // i128, so the bound cannot overflow when the largest value the ORDER BY
+  // type holds plus the offset fits in an i128.
+  private def isDecimalRangeOffsetSafe(
+      bound: Expression,
+      orderType: DecimalType,
+      descending: Boolean): Boolean =
+    bound match {
+      case _: SpecialFrameBoundary => true
+      case e =>
+        val offset =
+          try {
+            evalRangeOffset(e, descending)
+          } catch {
+            // Rejected when the bound is serialized.
+            case _: Exception => return true
+          }
+        offset match {
+          case d: Decimal if d.scale >= 0 && orderType.scale >= 0 =>
+            val scale = math.max(orderType.scale, d.scale)
+            val maxValue = (BigInt(10).pow(orderType.precision) - 1) *
+              BigInt(10).pow(scale - orderType.scale)
+            val offsetValue =
+              BigInt(d.toJavaBigDecimal.unscaledValue).abs * BigInt(10).pow(scale - d.scale)
+            maxValue + offsetValue <= MaxDecimal128Unscaled
+          case _: Decimal => false
+          case _ => true
+        }
+    }
+
   private sealed trait BoundOffset
   private case class RowOffset(offset: Long) extends BoundOffset
   private case class RangeOffset(literal: LiteralOuterClass.Literal) extends BoundOffset
@@ -675,6 +712,7 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
       bound: Expression,
       frameType: FrameType,
       isLower: Boolean,
+      descending: Boolean,
       output: Seq[Attribute]): Either[String, BoundOffset] = {
     val side = if (isLower) "lower" else "upper"
     bound match {
@@ -685,13 +723,25 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
           case _ => Left(s"Unsupported ROWS frame $side offset: $e (${e.dataType})")
         }
       case e if frameType == RangeFrame && e.dataType.isInstanceOf[NumericType] =>
-        rangeBoundLiteral(e, isLower, output)
+        rangeBoundLiteral(e, isLower, descending, output)
           .map(RangeOffset)
           .toRight(s"Unsupported RANGE frame $side offset: $e")
       case e =>
         Left(s"RANGE frame with non-numeric offset is not supported: ${e.dataType}")
     }
   }
+
+  // For a descending ORDER BY, Spark negates the frame offset before adding it
+  // to the current value (WindowEvaluatorFactoryBase), and on Scala 2.13
+  // negating a Decimal rounds it to 34 significant digits. Negate it the same
+  // way, then back, which is exact once rounded, so the native frame uses the
+  // offset Spark does with the sign of the bound.
+  private def evalRangeOffset(bound: Expression, descending: Boolean): Any =
+    if (descending && bound.dataType.isInstanceOf[DecimalType]) {
+      UnaryMinus(UnaryMinus(bound)).eval()
+    } else {
+      bound.eval()
+    }
 
   // Folds a RANGE frame bound expression to a constant and serializes its
   // magnitude as a typed Literal proto. Spark encodes PRECEDING/FOLLOWING via
@@ -702,10 +752,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
   private def rangeBoundLiteral(
       bound: Expression,
       isLower: Boolean,
+      descending: Boolean,
       output: Seq[Attribute]): Option[LiteralOuterClass.Literal] = {
     val rawValue =
       try {
-        bound.eval()
+        evalRangeOffset(bound, descending)
       } catch {
         case _: Exception => return None
       }
@@ -733,8 +784,10 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         (Math.signum(f.doubleValue()).toInt, java.lang.Float.valueOf(Math.abs(f.floatValue())))
       case d: java.lang.Double =>
         (Math.signum(d.doubleValue()).toInt, java.lang.Double.valueOf(Math.abs(d.doubleValue())))
+      // Decimal.abs negates a negative value, which rounds it to 34 significant
+      // digits on Scala 2.13, while Spark adds the offset it evaluated exactly.
       case d: Decimal =>
-        (d.toBigDecimal.signum, d.abs)
+        (d.toBigDecimal.signum, Decimal(d.toJavaBigDecimal.abs, d.precision, d.scale))
       case _ => return None
     }
     if (isLower && signum > 0) return None

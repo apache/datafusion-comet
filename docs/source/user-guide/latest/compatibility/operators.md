@@ -177,8 +177,11 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `avg` or `try_avg` on `DECIMAL(p, s)` with an expanding frame when `p >= 28`, because Spark can preserve
   a wider intermediate sum until division, as described under hash aggregation above. Removing this restriction
   with a wider scalar accumulator is tracked in [#7116](https://github.com/apache/datafusion-comet/issues/7116).
-- `RANGE` frame with an explicit offset when the `ORDER BY` column is `DECIMAL`
-  ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
+- `RANGE` frame with an offset when the `ORDER BY` column is `DECIMAL` and the bound can overflow `Decimal128`, that
+  is, when the largest value of the `ORDER BY` type plus the offset exceeds 2^127 - 1 unscaled. Only `DECIMAL(38, s)`
+  can reach that, and only with an offset above about 7.01 * 10^37 unscaled. Spark computes the bound exactly, while
+  the native frame treats an overflowing bound as the edge of the partition and so takes in `NULL` keys sorted
+  there ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset
   to the date as an `Int` that wraps on overflow, while the native frame treats an overflowing bound as the edge of
   the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
