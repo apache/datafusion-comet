@@ -30,6 +30,7 @@ pub(crate) mod planner;
 pub mod python_udf;
 pub mod serde;
 pub use datafusion_comet_shuffle as shuffle;
+pub mod lambda;
 mod memory_pools;
 pub mod row_partition_sort;
 pub(crate) mod spark_aggregate_state;

@@ -96,6 +96,8 @@ message Expr {
     Uuid uuid = 74;
     NativeScalarUdf native_scalar_udf = 75;
     AtLeastNNonNulls at_least_n_non_nulls = 76;
+    HigherOrderFunc high_order_func = 77;
+    NamedLambdaVariable named_lambda_variable = 78;
   }
 
   reserved 20;
@@ -784,4 +786,22 @@ message NativeScalarUdf {
 message AtLeastNNonNulls {
   int32 n = 1;
   repeated Expr children = 2;
+}
+
+message HigherOrderFunc {
+  string func_name = 1;
+  repeated Expr value_args = 2;
+  repeated LambdaFunction lambdas = 3;
+}
+
+message NamedLambdaVariable {
+  string name = 1;
+  DataType data_type = 2;
+  bool nullable = 3;
+  int64 expr_id = 4;
+}
+
+message LambdaFunction {
+  Expr body = 1;
+  repeated NamedLambdaVariable args = 2;
 }
