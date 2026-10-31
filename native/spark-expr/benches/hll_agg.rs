@@ -20,6 +20,8 @@
 //! Each runs as a grouped `AggregateMode::Partial` over 8192 rows x 10 batches, mirroring
 //! the other aggregate benches. The union input is a column of real sketch bytes minted
 //! up front with `SparkHllSketch`, since the kernel deserializes and merges each one.
+//! `hll_sketch_agg_final_dense` runs `hll_sketch_agg` as an `AggregateMode::Final` over
+//! partial states instead, with groups that turn dense at lgConfigK 18.
 
 use arrow::array::{ArrayRef, BinaryBuilder, Int64Builder, RecordBatch, StringBuilder};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
@@ -43,19 +45,32 @@ use tokio::runtime::Runtime;
 const LG_CONFIG_K: u8 = 12;
 /// Number of distinct sketches minted for the union input; rows cycle through them.
 const SKETCH_POOL: usize = 256;
+/// `lgConfigK` for the Final-mode case, where a dense group holds 2^18 one-byte registers.
+const FINAL_LG_CONFIG_K: u8 = 18;
 
+/// Runs the aggregate in `mode` over `partitions`. `input_schema` is the schema of the rows the
+/// Partial stage reads, which in Final mode is not the schema of `partitions`.
 async fn agg_test(
     partitions: &[Vec<RecordBatch>],
+    mode: AggregateMode,
+    input_schema: &SchemaRef,
     group_col: Arc<dyn PhysicalExpr>,
     input_exprs: Vec<Arc<dyn PhysicalExpr>>,
     aggregate_udf: Arc<AggregateUDF>,
     alias: &str,
 ) {
-    let schema = &partitions[0][0].schema();
     let scan: Arc<dyn ExecutionPlan> = Arc::new(DataSourceExec::new(Arc::new(
-        MemorySourceConfig::try_new(partitions, Arc::clone(schema), None).unwrap(),
+        MemorySourceConfig::try_new(partitions, partitions[0][0].schema(), None).unwrap(),
     )));
-    let aggregate = create_aggregate(scan, group_col, input_exprs, schema, aggregate_udf, alias);
+    let aggregate = create_aggregate(
+        scan,
+        mode,
+        group_col,
+        input_exprs,
+        input_schema,
+        aggregate_udf,
+        alias,
+    );
     let mut stream = aggregate
         .execute(0, Arc::new(TaskContext::default()))
         .unwrap();
@@ -66,14 +81,15 @@ async fn agg_test(
 
 fn create_aggregate(
     scan: Arc<dyn ExecutionPlan>,
+    mode: AggregateMode,
     group_col: Arc<dyn PhysicalExpr>,
     input_exprs: Vec<Arc<dyn PhysicalExpr>>,
-    schema: &SchemaRef,
+    input_schema: &SchemaRef,
     aggregate_udf: Arc<AggregateUDF>,
     alias: &str,
 ) -> Arc<AggregateExec> {
     let aggr_expr = AggregateExprBuilder::new(aggregate_udf, input_exprs)
-        .schema(schema.clone())
+        .schema(input_schema.clone())
         .alias(alias)
         .with_ignore_nulls(false)
         .with_distinct(false)
@@ -82,12 +98,12 @@ fn create_aggregate(
 
     Arc::new(
         AggregateExec::try_new(
-            AggregateMode::Partial,
+            mode,
             PhysicalGroupBy::new_single(vec![(group_col, "c0".to_string())]),
             vec![aggr_expr.into()],
             vec![None], // no filter expressions
             scan,
-            Arc::clone(schema),
+            Arc::clone(input_schema),
         )
         .unwrap(),
     )
@@ -134,10 +150,38 @@ fn create_record_batch(num_rows: usize, pool: &[Vec<u8>]) -> RecordBatch {
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
 
+/// Partial `hll_sketch_agg` states for the Final-mode case: 20 groups, each merging 400 partial
+/// sketches of 200 distinct values. After 123 of them a group has more than 24,576 distinct
+/// values, the most a lgConfigK 18 sketch holds before it moves to the register array. `c0` is
+/// the Int64 group key and `c1` the state, one partial per group per round, the way a reducer
+/// reads map outputs.
+fn partial_states() -> RecordBatch {
+    let (groups, partials, values) = (20i64, 400i64, 200i64);
+    let mut keys = Int64Builder::with_capacity((groups * partials) as usize);
+    let mut states = BinaryBuilder::new();
+    for round in 0..partials {
+        for group in 0..groups {
+            let mut sketch = SparkHllSketch::new(FINAL_LG_CONFIG_K);
+            let start = (round * groups + group) * values;
+            for v in start..start + values {
+                sketch.update_i64(v);
+            }
+            keys.append_value(group);
+            states.append_value(sketch.to_sketch_bytes());
+        }
+    }
+    RecordBatch::try_from_iter([
+        ("c0", Arc::new(keys.finish()) as ArrayRef),
+        ("c1", Arc::new(states.finish()) as ArrayRef),
+    ])
+    .unwrap()
+}
+
 fn criterion_benchmark(c: &mut Criterion) {
     let num_rows = 8192;
     let pool = sketch_pool();
     let batch = create_record_batch(num_rows, &pool);
+    let schema = batch.schema();
     let batches = vec![batch; 10];
     let partitions = &[batches];
 
@@ -155,6 +199,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             black_box(agg_test(
                 partitions,
+                AggregateMode::Partial,
+                &schema,
                 c0.clone(),
                 vec![c1.clone()],
                 sketch_udf.clone(),
@@ -169,10 +215,36 @@ fn criterion_benchmark(c: &mut Criterion) {
         b.to_async(&rt).iter(|| {
             black_box(agg_test(
                 partitions,
+                AggregateMode::Partial,
+                &schema,
                 c0.clone(),
                 vec![c2.clone()],
                 union_udf.clone(),
                 "hll_union_agg",
+            ))
+        })
+    });
+
+    // The Final stage reads the states, but its aggregate is declared against the Int64 values
+    // the Partial stage hashed.
+    let final_partitions = &[vec![partial_states()]];
+    let final_input_schema: SchemaRef = Arc::new(Schema::new(vec![
+        Field::new("c0", DataType::Int64, false),
+        Field::new("c1", DataType::Int64, false),
+    ]));
+    let final_udf: Arc<AggregateUDF> = Arc::new(AggregateUDF::new_from_impl(HllSketchAgg::new(
+        FINAL_LG_CONFIG_K as i32,
+    )));
+    group.bench_function("hll_sketch_agg_final_dense", |b| {
+        b.to_async(&rt).iter(|| {
+            black_box(agg_test(
+                final_partitions,
+                AggregateMode::Final,
+                &final_input_schema,
+                c0.clone(),
+                vec![c1.clone()],
+                final_udf.clone(),
+                "hll_sketch_agg",
             ))
         })
     });

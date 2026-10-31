@@ -269,14 +269,6 @@ impl SparkHllSketch {
         self.inner.estimate()
     }
 
-    /// Merge another sketch into this one via a union, keeping HLL_8 output.
-    pub fn merge_sketch(&mut self, other: &SparkHllSketch) {
-        let mut u = SparkHllUnion::new(self.lg_config_k());
-        u.merge(self);
-        u.merge(other);
-        *self = u.to_sketch();
-    }
-
     fn is_dense(&self) -> bool {
         layout::is_dense(self.lg_config_k(), self.dense, self.inner.estimate())
     }
@@ -305,18 +297,15 @@ impl SparkHllUnion {
         }
     }
 
+    /// The `lgMaxK` the union was created with.
+    pub fn lg_max_k(&self) -> u8 {
+        self.inner.lg_max_k()
+    }
+
     /// Merge a sketch into the union.
     pub fn merge(&mut self, sketch: &SparkHllSketch) {
         self.dense = self.is_dense() || sketch.is_dense();
         self.inner.update(&sketch.inner);
-    }
-
-    /// The union result as an HLL_8 sketch.
-    fn to_sketch(&self) -> SparkHllSketch {
-        SparkHllSketch {
-            inner: self.inner.to_sketch(HllType::Hll8),
-            dense: self.is_dense(),
-        }
     }
 
     /// The union result as an HLL_8 sketch's serialized bytes.
@@ -579,12 +568,5 @@ mod tests {
         assert!(union.inner.estimate() < 100.0);
         assert_eq!(allocated(&union.to_sketch_bytes()), 1 << 16);
         assert_eq!(union.heap_size(), 1 << 16);
-
-        // `merge_sketch` goes through a union too, and keeps the flag.
-        let mut small = sketch(0..5);
-        small.merge_sketch(&barely_used);
-        assert!(small.estimate() < 100.0);
-        assert_eq!(allocated(&small.to_sketch_bytes()), 1 << 16);
-        assert_eq!(small.heap_size(), 1 << 16);
     }
 }
