@@ -2274,6 +2274,26 @@ class CometIcebergNativeSuite
             .append()
         }
 
+        // Check the footers, so the test fails if a writer starts filling in the missing fields.
+        val fileLeaves = spark.sql(s"SELECT file_path FROM $table.files").collect().map { row =>
+          val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
+              new org.apache.hadoop.fs.Path(row.getString(0)),
+              spark.sessionState.newHadoopConf()))
+          try {
+            reader.getFooter.getFileMetaData.getSchema.getColumns.asScala
+              .map(_.getPath.mkString("."))
+              .toSet
+          } finally {
+            reader.close()
+          }
+        }
+        val omitted = Set("s.b", "l.list.element.y")
+        // Check the paths against the full-schema file first, or a wrong path makes the next
+        // assert always pass.
+        assert(fileLeaves.exists(omitted.subsetOf), s"leaves: ${fileLeaves.mkString(", ")}")
+        assert(fileLeaves.exists(!_.exists(omitted)), s"leaves: ${fileLeaves.mkString(", ")}")
+
         checkPrunedAndFullReads(s"SELECT * FROM $table ORDER BY id")
         checkPrunedAndFullReads(s"SELECT id, s.b FROM $table WHERE s.b IS NULL ORDER BY id")
 
