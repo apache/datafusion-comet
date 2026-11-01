@@ -25,11 +25,13 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use datafusion::physical_plan::union::UnionExec;
+use arrow::datatypes::SchemaRef;
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion_comet_jni_bridge::{jni_new_global_ref, JVMClasses};
 use datafusion_comet_local::handle::{QueryHandle, QueryPoll};
-use datafusion_comet_local::LocalQuery;
+use datafusion_comet_local::{LocalQuery, PartitionStart};
+use datafusion_comet_proto::spark_operator::Operator;
 use jni::objects::{JByteArray, JLongArray, JObject, JObjectArray, JString, ReleaseMode};
 use jni::sys::{jboolean, jint, jlong, JNI_FALSE};
 use jni::{Env, EnvUnowned};
@@ -42,6 +44,7 @@ use crate::execution::jni_api::{
     prepare_plan_settings, release_plan, running_native_tasks, ExecutionContext, PlanInputs,
     PlanJvmRefs,
 };
+use crate::execution::planner::PhysicalPlanner;
 use crate::execution::spark_config::{SparkConfig, SPARK_EXECUTOR_CORES};
 
 struct Entry {
@@ -149,8 +152,8 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
         let context = create_execution_context(inputs, |config| {
             create_memory_pool(config, task_memory_manager, task_attempt_id)
         })?;
-        let plan = local_plan(&context, partitions)?;
-        if plan.schema().fields().len() != columns as usize {
+        let (schema, start) = local_plan(&context, partitions as usize)?;
+        if schema.fields().len() != columns as usize {
             return Err(CometError::Internal(
                 "Local output schema width mismatch".into(),
             ));
@@ -158,8 +161,10 @@ pub extern "system" fn Java_org_apache_comet_local_NativeLocal_createQuery(
         // Run at most as many partitions at once as Spark runs tasks. Comet's pools split Spark's
         // memory equally among the tasks running native plans, this one included, so with T of
         // them the partitions each get what a task would only while at most slots / T run.
-        let query = LocalQuery::new(
-            plan,
+        let query = LocalQuery::from_partitions(
+            schema,
+            partitions as usize,
+            start,
             context.session_ctx.task_ctx(),
             slots,
             read_ahead_bytes.max(0) as usize,
@@ -186,29 +191,54 @@ fn task_slots(cores: usize, task_cpus: usize) -> usize {
     (cores / task_cpus.max(1)).max(1)
 }
 
-/// One graph for the whole query. Each partition's operators are created by the planner for
-/// that partition, as a Spark task would create them, so per-partition state such as a range
-/// slice or a partition-dependent expression is correct. Partition `i` of the graph is the
-/// single output partition of the operators created for partition `i`.
-fn local_plan(context: &ExecutionContext, partitions: jint) -> CometResult<Arc<dyn ExecutionPlan>> {
-    let mut plans = Vec::with_capacity(partitions as usize);
-    for partition in 0..partitions {
-        let (scans, shuffle_scans, root) = context.planner(partition).create_plan(
-            &context.spark_plan,
-            &mut vec![],
-            partitions as usize,
-        )?;
-        if !scans.is_empty()
-            || !shuffle_scans.is_empty()
-            || root.native_plan.output_partitioning().partition_count() != 1
-        {
-            return Err(CometError::Internal(
-                "Local query plans must have no JVM input and one output partition".into(),
-            ));
+/// One graph for the whole query, planned a partition at a time. Each partition's operators are
+/// created by the planner for that partition, as a Spark task would create them, so per-partition
+/// state such as a range slice or a partition-dependent expression is correct. A partition is
+/// planned only when it starts, as a Spark task plans only when it runs, so the plans held at once,
+/// and whatever each copies from the serialized plan, are those of the running partitions.
+///
+/// Partition 0 is planned here too, for the output schema and so that a plan the planner rejects
+/// fails the query before it starts.
+fn local_plan(
+    context: &ExecutionContext,
+    partitions: usize,
+) -> CometResult<(SchemaRef, PartitionStart)> {
+    let planner = context.planner(0);
+    let spark_plan = Arc::new(context.spark_plan.clone());
+    let schema = plan_partition(&planner, &spark_plan, 0, partitions)?.schema();
+    let expected = Arc::clone(&schema);
+    let start: PartitionStart = Arc::new(move |partition, task_context| {
+        let plan = plan_partition(&planner, &spark_plan, partition, partitions)?;
+        if plan.schema() != expected {
+            return Err(DataFusionError::Internal(format!(
+                "Local query partition {partition} has a different output schema"
+            )));
         }
-        plans.push(Arc::clone(&root.native_plan));
+        plan.execute(0, task_context)
+    });
+    Ok((schema, start))
+}
+
+/// The operators of `partition`, whose single output partition is that partition of the graph.
+fn plan_partition(
+    planner: &PhysicalPlanner,
+    spark_plan: &Operator,
+    partition: usize,
+    partitions: usize,
+) -> CometResult<Arc<dyn ExecutionPlan>> {
+    let (scans, shuffle_scans, root) =
+        planner
+            .for_partition(partition as i32)
+            .create_plan(spark_plan, &mut vec![], partitions)?;
+    if !scans.is_empty()
+        || !shuffle_scans.is_empty()
+        || root.native_plan.output_partitioning().partition_count() != 1
+    {
+        return Err(CometError::Internal(
+            "Local query plans must have no JVM input and one output partition".into(),
+        ));
     }
-    Ok(UnionExec::try_new(plans)?)
+    Ok(Arc::clone(&root.native_plan))
 }
 
 fn next_id() -> CometResult<i64> {

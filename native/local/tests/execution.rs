@@ -37,7 +37,7 @@ use datafusion::physical_plan::{
     ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
     RecordBatchStream, ReplaceChildrenOptions, SendableRecordBatchStream,
 };
-use datafusion_comet_local::LocalQuery;
+use datafusion_comet_local::{LocalQuery, PartitionStart};
 use futures::{StreamExt, TryStreamExt};
 use tokio::time::timeout;
 
@@ -504,6 +504,44 @@ async fn partition_order_runs_at_most_the_given_number_of_partitions() {
         .unwrap();
     assert_eq!(rest.len(), 6 * 3 - 4);
     assert_executed_once(&observations, 6);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partitions_from_a_start_function_are_planned_as_they_start() {
+    let planned = Arc::new(Mutex::new(Vec::new()));
+    let (plans, source) = (Arc::clone(&planned), ordered_input(6, 1));
+    let start: PartitionStart = Arc::new(move |partition, context| {
+        plans.lock().unwrap().push(partition);
+        source.execute(partition, context)
+    });
+    let mut stream = LocalQuery::from_partitions(schema(), 6, start, context(), 2, usize::MAX)
+        .execute()
+        .unwrap();
+    let planned_now = || planned.lock().unwrap().clone();
+    timeout(DEADLINE, async {
+        while planned_now().len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the first two partitions were not planned");
+    timeout(DEADLINE, stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    // The third partition is planned only once the first has been delivered.
+    let mut first = planned_now();
+    first.sort_unstable();
+    assert_eq!(first, vec![0, 1]);
+    let rest: Vec<RecordBatch> = timeout(DEADLINE, stream.try_collect())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rest.len(), 5);
+    let mut all = planned_now();
+    all.sort_unstable();
+    assert_eq!(all, (0..6).collect::<Vec<_>>());
 }
 
 /// A first partition that never delivers, and a second one of ten batches.

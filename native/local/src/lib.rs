@@ -17,9 +17,9 @@
 
 //! Query-scoped execution, independent of Spark tasks and JNI.
 //!
-//! A caller supplies a fresh, fully planned graph for each execution and receives one
-//! result stream. The caller owns the Tokio runtime and must keep it running until
-//! cleanup finishes. Spark admission and JNI live outside this crate.
+//! A caller supplies a fresh graph for each execution, or the means to plan each of its
+//! partitions, and receives one result stream. The caller owns the Tokio runtime and must keep
+//! it running until cleanup finishes. Spark admission and JNI live outside this crate.
 
 pub mod handle;
 
@@ -50,9 +50,15 @@ const PARTITION_BUFFER: usize = 2;
 /// How many partitions may run at once as of now.
 pub type RunningLimit = Arc<dyn Fn() -> usize + Send + Sync>;
 
+/// Starts a root partition: its stream, with the query's task context.
+pub type PartitionStart =
+    Arc<dyn Fn(usize, Arc<TaskContext>) -> Result<SendableRecordBatchStream> + Send + Sync>;
+
 /// One execution's graph and resources. Consumed when execution starts; not a plan cache.
 pub struct LocalQuery {
-    plan: Arc<dyn ExecutionPlan>,
+    schema: SchemaRef,
+    partitions: usize,
+    start: PartitionStart,
     context: Arc<TaskContext>,
     max_running: usize,
     running_limit: Option<RunningLimit>,
@@ -85,8 +91,27 @@ impl LocalQuery {
         max_running: usize,
         read_ahead: usize,
     ) -> Self {
+        let (schema, partitions) = (plan.schema(), plan.output_partitioning().partition_count());
+        let start: PartitionStart =
+            Arc::new(move |partition, context| plan.execute(partition, context));
+        Self::from_partitions(schema, partitions, start, context, max_running, read_ahead)
+    }
+
+    /// As [`Self::new`], for a graph whose root partitions `start` plans as each one starts, so
+    /// that only the running partitions hold their operators. Each stream must have `schema`.
+    /// `start` runs on a Tokio worker of the caller's runtime, so it must not block on it.
+    pub fn from_partitions(
+        schema: SchemaRef,
+        partitions: usize,
+        start: PartitionStart,
+        context: Arc<TaskContext>,
+        max_running: usize,
+        read_ahead: usize,
+    ) -> Self {
         Self {
-            plan,
+            schema,
+            partitions,
+            start,
             context,
             max_running: max_running.max(1),
             running_limit: None,
@@ -108,7 +133,7 @@ impl LocalQuery {
         tokio::runtime::Handle::try_current().map_err(|_| {
             DataFusionError::Execution("LocalQuery requires an active Tokio runtime".into())
         })?;
-        let schema = self.plan.schema();
+        let schema = Arc::clone(&self.schema);
         let stream = in_partition_order(&self);
         Ok(LocalQueryStream {
             stream: Some(stream),
@@ -120,7 +145,8 @@ impl LocalQuery {
 
 fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
     let mut order = PartitionOrder {
-        plan: Arc::clone(&query.plan),
+        partitions: query.partitions,
+        start: Arc::clone(&query.start),
         context: Arc::clone(&query.context),
         runtime: tokio::runtime::Handle::current(),
         next: 0,
@@ -134,7 +160,10 @@ fn in_partition_order(query: &LocalQuery) -> SendableRecordBatchStream {
         running: VecDeque::new(),
     };
     order.start_partitions();
-    Box::pin(RecordBatchStreamAdapter::new(query.plan.schema(), order))
+    Box::pin(RecordBatchStreamAdapter::new(
+        Arc::clone(&query.schema),
+        order,
+    ))
 }
 
 /// What the running partitions hold ahead of delivery, shared by them.
@@ -181,11 +210,11 @@ impl Partition {
         let (task_queued, task_ended, polled) =
             (Arc::clone(&queued), Arc::clone(&ended), Arc::clone(&stream));
         let read_ahead = Arc::clone(&order.read_ahead);
-        let (plan, context) = (Arc::clone(&order.plan), Arc::clone(&order.context));
+        let (start, context) = (Arc::clone(&order.start), Arc::clone(&order.context));
         let task = order.runtime.spawn(async move {
             let result = AssertUnwindSafe(async {
-                let started = plan.execute(partition, context);
-                drop(plan);
+                let started = start(partition, context);
+                drop(start);
                 match started {
                     Ok(started) => {
                         let mut slot = lock(&polled);
@@ -272,7 +301,8 @@ impl Drop for Partition {
 /// Spark's `executeTake` evaluates a later partition only when it needs that partition's rows:
 /// a consumer that stops early never sees the failure of a partition it did not reach.
 struct PartitionOrder {
-    plan: Arc<dyn ExecutionPlan>,
+    partitions: usize,
+    start: PartitionStart,
     context: Arc<TaskContext>,
     runtime: tokio::runtime::Handle,
     /// The first partition not started yet.
@@ -286,7 +316,7 @@ struct PartitionOrder {
 
 impl PartitionOrder {
     fn start_partitions(&mut self) {
-        let partitions = self.plan.output_partitioning().partition_count();
+        let partitions = self.partitions;
         if self.next >= partitions {
             return;
         }
