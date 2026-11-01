@@ -2993,6 +2993,63 @@ class CometInMemoryCacheSuite extends CometTestBase {
     assert(zstdSize == plainSize, s"the relation size should not depend on the codec: $sizes")
   }
 
+  test("Comet in-memory cache does not store the bytes before a sliced aggregate output") {
+    // A grouped aggregate emits its groups as batch-size slices of one batch, and a slice of a
+    // string array reaches the JVM with offsets that start past zero and the rows before it still
+    // at the front of its data buffer. Written as it stands, the k-th slice is cached with the
+    // bytes of the k - 1 slices before it, and the relation reports them in its size.
+    val rows = 1000L
+    withTempPath { dir =>
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+        CometConf.COMET_BATCH_SIZE.key -> "100",
+        CometConf.COMET_EXEC_IN_MEMORY_CACHE_ENABLED.key -> "true") {
+        spark.catalog.clearCache()
+        spark
+          .range(0, rows, 1, 1)
+          .selectExpr("concat('key-', lpad(cast(id AS string), 12, '0')) AS k")
+          .write
+          .parquet(dir.getCanonicalPath)
+
+        def cachedSize(name: String, df: DataFrame): (Long, Long) = {
+          df.createOrReplaceTempView(name)
+          spark.catalog.cacheTable(name)
+          assert(spark.table(name).count() == rows)
+          val relation = spark.sharedState.cacheManager
+            .lookupCachedData(spark.table(name))
+            .get
+            .cachedRepresentation
+          val batches = relation.cacheBuilder.cachedColumnBuffers
+          val classes = batches.map(_.getClass.getSimpleName).distinct().collect()
+          assert(classes.sameElements(Array("CometCachedBatch")))
+          (relation.computeStats().sizeInBytes.toLong, batches.count())
+        }
+
+        try {
+          val scanned = spark.read.parquet(dir.getCanonicalPath)
+          val distinct = scanned.distinct()
+          assert(
+            distinct.queryExecution.executedPlan.exists(_.isInstanceOf[CometHashAggregateExec]))
+
+          // The aggregate is cached first, so that it reads the Parquet scan and not a cached copy
+          // of it. It has to emit more than one slice for the bytes before a slice to matter.
+          val (distinctSize, distinctBatches) = cachedSize("distinct_cache", distinct)
+          assert(distinctBatches > 1, s"the aggregate emitted $distinctBatches batches")
+          val (scannedSize, _) = cachedSize("scanned_cache", scanned)
+          // The same rows, so the same bytes of string data. A slice that carried the bytes before
+          // it would make this about 5 times larger, as the 10 slices average 5.5 slices of data.
+          assert(
+            distinctSize < scannedSize * 1.1,
+            s"the aggregate's cache is $distinctSize bytes, a scan's of the same rows $scannedSize")
+          checkAnswer(spark.table("distinct_cache"), scanned)
+        } finally {
+          spark.catalog.clearCache()
+        }
+      }
+    }
+  }
+
   test("Comet in-memory cache scans no columns for a row-count-only query") {
     // SELECT count(*) selects no columns, and the scan must keep it that way. Widening it -- to
     // the whole cache schema, or to a single placeholder column -- makes the emitted batches

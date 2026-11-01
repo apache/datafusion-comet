@@ -224,32 +224,37 @@ private[comet] object CachedBatchIpc {
         root.setRowCount(batch.numRows())
       }
 
-      // Unloaded plain and compressed afterwards rather than by handing the codec to the unloader;
-      // see compressed for why.
-      val fields = vectors.map(_.getField)
-      val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
-      val plainBatch = unloader.getRecordBatch
-      val (sizes, recordBatch) =
+      // A grouped aggregate emits its groups as slices of one batch, which reach the JVM with
+      // offsets that start past zero. Unloaded as they are, each slice would be cached, and
+      // reported by columnSizes, with the bytes of the slices before it.
+      Utils.withRebasedOffsets(root) { written =>
+        // Unloaded plain and compressed afterwards rather than by handing the codec to the
+        // unloader; see compressed for why.
+        val fields = vectors.map(_.getField)
+        val unloader = new VectorUnloader(written, true, NoCompressionCodec.INSTANCE, true)
+        val plainBatch = unloader.getRecordBatch
+        val (sizes, recordBatch) =
+          try {
+            (columnSizes(fields, plainBatch), compressed(plainBatch, codec, allocator))
+          } finally {
+            plainBatch.close()
+          }
         try {
-          (columnSizes(fields, plainBatch), compressed(plainBatch, codec, allocator))
-        } finally {
-          plainBatch.close()
-        }
-      try {
-        // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
-        // own buffers by now, so this does not touch it.
-        root.clear()
+          // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
+          // own buffers by now, and so does the slice, so this does not touch either.
+          root.clear()
 
-        val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
-        try {
-          val channel = new WriteChannel(Channels.newChannel(out))
-          MessageSerializer.serialize(channel, recordBatch)
+          val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+          try {
+            val channel = new WriteChannel(Channels.newChannel(out))
+            MessageSerializer.serialize(channel, recordBatch)
+          } finally {
+            out.close()
+          }
+          (out.toChunkedByteBuffer, sizes)
         } finally {
-          out.close()
+          recordBatch.close()
         }
-        (out.toChunkedByteBuffer, sizes)
-      } finally {
-        recordBatch.close()
       }
     } finally {
       // Only the vectors allocated for this write. The rest belong to the input batch.

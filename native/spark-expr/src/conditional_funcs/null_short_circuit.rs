@@ -268,14 +268,23 @@ impl Arg {
         let Some((projection, projected)) = &self.masked else {
             return self.expr.evaluate(batch);
         };
-        let batch = batch.project(projection)?;
-        match nulls {
-            Some(nulls) => {
-                let rows = BooleanArray::new(nulls.inner().clone(), None);
-                projected.evaluate_selection(&batch, &rows)
-            }
-            None => projected.evaluate(&batch),
-        }
+        let rows = nulls.map(|nulls| BooleanArray::new(nulls.inner().clone(), None));
+        evaluate_projected(projection, projected, batch, rows.as_ref())
+    }
+}
+
+/// Evaluates `projected`, an expression reading the `projection` columns of `batch` from a batch
+/// of just them, for only the rows selected by `rows` if given, returning a value for every row.
+pub(super) fn evaluate_projected(
+    projection: &[usize],
+    projected: &Arc<dyn PhysicalExpr>,
+    batch: &RecordBatch,
+    rows: Option<&BooleanArray>,
+) -> Result<ColumnarValue> {
+    let batch = batch.project(projection)?;
+    match rows {
+        Some(rows) => projected.evaluate_selection(&batch, rows),
+        None => projected.evaluate(&batch),
     }
 }
 
@@ -283,7 +292,7 @@ impl Arg {
 ///
 /// A [`LambdaVariable`] reads a column of the batch its lambda is evaluated on exactly as a
 /// [`Column`] does, so it is projected and re-indexed the same way.
-fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
+pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
     let mut projection = vec![];
     expr.apply(|e| {
         if let Some(column) = e.downcast_ref::<Column>() {
