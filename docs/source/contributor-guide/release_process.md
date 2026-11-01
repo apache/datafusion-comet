@@ -23,21 +23,6 @@ This documentation explains the release process for Apache DataFusion Comet. Som
 performed by any contributor, while certain release tasks can only be performed by a DataFusion Project Management
 Committee (PMC) member.
 
-## Binary license materials
-
-`dev/licenses/LICENSE-binary.txt` supplies `META-INF/LICENSE` in the shaded main and sources JARs.
-It retains the Apache license and adds the lz4_flex 0.14.0 MIT and Zstandard 1.5.7 BSD license texts
-and copyrights. Review these entries against the bundled versions when either dependency changes.
-This fixes those known omissions; it is not a complete native dependency license inventory.
-The existing `NOTICE.txt` is packaged separately.
-
-Maven `verify` checks that each JAR containing `libcomet` has exactly one matching binary LICENSE.
-To check staged main and sources artifacts, run:
-
-```shell
-dev/ensure-jars-have-correct-contents.sh 'path/to/comet.jar;path/to/comet-sources.jar'
-```
-
 ## Release Cycle
 
 Comet targets a minor release every four to six weeks (see
