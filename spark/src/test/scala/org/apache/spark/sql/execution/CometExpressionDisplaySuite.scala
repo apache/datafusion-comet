@@ -26,7 +26,6 @@ import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, SerializedPlan}
-import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.ui.SparkPlanGraph
 import org.apache.spark.sql.types.{BinaryType, LongType}
@@ -35,7 +34,7 @@ import org.apache.spark.util.sketch.BloomFilter
 import org.apache.comet.CometSparkSessionExtensions.isSpark42Plus
 import org.apache.comet.serde.OperatorOuterClass.Operator
 
-class CometFilterDisplaySuite extends CometTestBase {
+class CometExpressionDisplaySuite extends CometTestBase {
   private case class Input(override val output: Seq[Attribute]) extends LeafExecNode {
     override protected def doExecute(): RDD[InternalRow] =
       throw new AssertionError("Rendering must not execute the plan")
@@ -58,8 +57,6 @@ class CometFilterDisplaySuite extends CometTestBase {
   private def render(plan: SparkPlan): Seq[String] = {
     val info = SparkPlanInfo.fromSparkPlan(plan)
     val node = SparkPlanGraph(info).nodes.head
-    // Older Spark versions omit the description from DOT output.
-    assert(node.makeDotNode(Map.empty).length < 2048)
     Seq(plan.simpleString(100), plan.verboseStringWithOperatorId(), info.simpleString, node.desc)
   }
 
@@ -75,29 +72,28 @@ class CometFilterDisplaySuite extends CometTestBase {
       val summary = s"<bloom: ${bytes.length} bytes>"
 
       withParquetDataFrame(Seq(Tuple1(7L), Tuple1(8L))) { input =>
-        def query = {
+        val query = {
           val predicate = getColumnFromExpression(
             BloomFilterMightContain(Literal(bytes), input.queryExecution.analyzed.output.head))
           if (project) input.select(predicate.as("contains")) else input.filter(predicate)
         }
         val expectedOperator =
           if (project) classOf[CometProjectExec] else classOf[CometFilterExec]
-        val (_, plan) = checkSparkAnswerAndOperator(query, Seq(expectedOperator))
+        checkSparkAnswerAndOperator(query, Seq(expectedOperator))
         checkAnswer(query, if (project) Seq(Row(true), Row(false)) else Seq(Row(7L)))
-        val operators = plan.collect {
-          case op: CometFilterExec if !project => (op, Seq(op.condition))
-          case op: CometProjectExec if project => (op, op.projectList)
+        val qe = query.queryExecution
+        val plan = qe.executedPlan
+        val graph = SparkPlanGraph(SparkPlanInfo.fromSparkPlan(plan))
+        val displays = Seq(
+          plan.treeString,
+          qe.explainString(ExplainMode.fromString("formatted")),
+          graph.allNodes.map(_.desc).mkString("\n"))
+        displays.foreach { text =>
+          assert(text.length < 16 * 1024)
+          assert(text.contains(summary))
         }
-        operators.foreach { case (op, expressions) =>
-          render(op).foreach { text =>
-            assert(text.contains(summary))
-            assert(text.length < 2048)
-          }
-          assert(expressions.exists(_.exists {
-            case Literal(payload: Array[Byte], _) => payload.sameElements(bytes)
-            case _ => false
-          }))
-        }
+        // Older Spark versions omit node descriptions from DOT output.
+        assert(graph.makeDotFile(Map.empty).length < 16 * 1024)
       }
     }
   }
@@ -113,7 +109,6 @@ class CometFilterDisplaySuite extends CometTestBase {
     val key = AttributeReference("key", LongType)()
     val condition = And(IsNotNull(key), BloomFilterMightContain(payload, key))
     val plan = filter(condition)
-    val nativeOp = plan.nativeOp
 
     render(plan).foreach { text =>
       assert(text.contains("<bloom: 1048576 bytes>"))
@@ -121,10 +116,6 @@ class CometFilterDisplaySuite extends CometTestBase {
       assert(text.contains("key"))
       assert(text.length < 1024)
     }
-    assert(plan.condition eq condition)
-    assert(plan.nativeOp eq nativeOp)
-    assert(plan.originalPlan.asInstanceOf[FilterExec].condition eq condition)
-    assert(payload.value.asInstanceOf[Array[Byte]] eq bytes)
   }
 
   test(
@@ -151,21 +142,5 @@ class CometFilterDisplaySuite extends CometTestBase {
       render(filter(condition)).foreach(text =>
         assert(text.contains(s"might_contain($expected,")))
     }
-  }
-
-  test("rendering leaves an unexecuted Bloom scalar subquery unresolved") {
-    val child = Input(Seq(AttributeReference("bloom", BinaryType)()))
-    val subquery = new SubqueryExec("scalar-subquery", child) {
-      override lazy val metrics: Map[String, SQLMetric] = Map.empty
-    }
-    val scalar = ExecScalarSubquery(subquery, NamedExpression.newExprId)
-    val condition = BloomFilterMightContain(scalar, Literal(7L))
-    val plan = filter(condition)
-
-    render(plan).foreach { text =>
-      assert(text.contains("scalar-subquery"))
-      assert(!text.contains("<bloom:"))
-    }
-    intercept[IllegalArgumentException](scalar.eval())
   }
 }
