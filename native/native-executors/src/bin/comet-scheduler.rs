@@ -30,6 +30,9 @@
 //!   accepts, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
 //! - `COMET_SCHEDULER_BALLISTA_CONFIG`: Ballista settings for every query, as comma-separated
 //!   `key=value` pairs, such as `ballista.execution.mode=pipelined`
+//! - `COMET_SCHEDULER_EVENT_LOG_DIR`: a directory to write one event log per query to, as
+//!   Ballista's scheduler does: the query's plan, a record for each task, and each stage's rows
+//!   and compute time (default: no event logs)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -67,6 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(seconds) = env_var("COMET_SCHEDULER_RESULT_RETENTION_SECONDS")? {
         config.finished_job_data_clean_up_interval_seconds = seconds;
+    }
+    if let Some(dir) = env_var::<String>("COMET_SCHEDULER_EVENT_LOG_DIR")? {
+        config.event_log_dir = Some(dir);
     }
     let flight_port: u16 = env_var("COMET_SCHEDULER_FLIGHT_PORT")?.unwrap_or(50060);
     let ballista_settings =
