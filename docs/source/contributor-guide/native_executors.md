@@ -102,6 +102,62 @@ the JVM. The plan would stay fully native and scheduling would not change. The c
 executor needs Spark's classpath and enough session state to evaluate the expressions, and that the
 plan must carry those expressions in serialized Spark form.
 
+### Speaking Spark's protocols
+
+Another approach is for `comet-executor` to speak Spark's own protocols, so that Spark tasks and
+native tasks exchange data the way Spark executors do. A Spark executor uses two protocols, and
+they differ in how practical they are to implement.
+
+The control plane runs over Spark's Netty RPC. Its messages, such as `RegisterExecutor`,
+`LaunchTask`, `StatusUpdate` and heartbeats, are Scala case classes in Java serialization. A
+`LaunchTask` carries a serialized `ShuffleMapTask` or `ResultTask`, whose RDD chain and closures
+are JVM code, and the formats change between Spark versions.
+
+The data plane is Spark's block transfer protocol in `network-common` (`OpenBlocks`,
+`FetchShuffleBlocks`, `StreamHandle`, `ChunkFetchRequest` and so on). Its messages have a compact
+binary encoding rather than Java serialization, the protocol has been stable for many releases, and
+the external shuffle service speaks it too. Shuffle data sits in Spark's sort-based layout of a data
+file and an index file per map task. Comet's native shuffle already writes that layout: the data
+comes from Rust and `CometNativeShuffleWriter` commits the index through Spark's
+`IndexShuffleBlockResolver`.
+
+That suggests three options:
+
+- **A fully native Spark executor.** Not practical. Running a Spark task means deserializing Java
+  objects and running JVM closures. Even a task that only wraps a Comet plan would need its plan
+  extracted from a Java-serialized object graph, separately for each Spark version.
+- **A native data plane, with Spark coordinating.** `comet-executor` writes shuffle output in
+  Spark's layout, serves those blocks over the block transfer protocol, and fetches blocks from
+  Spark executors and the external shuffle service. When a native stage finishes, the driver
+  registers its map outputs with Spark's `MapOutputTrackerMaster`, and downstream Spark stages read
+  them as they would any other shuffle. In the other direction, the driver gives a native stage the
+  block locations of the Spark shuffle it reads. This provides a shuffle both engines can read and
+  write without a separate shuffle service. The work includes Spark's authentication and encryption
+  (SASL, or `spark.network.crypto`), which a first version could require to be off, mapping fetch
+  failures onto Spark's `FetchFailed` handling and stage retries, and possibly push-based shuffle
+  later. A native block fetch client would also benefit Comet on Spark, by moving shuffle reads out
+  of the JVM.
+- **An embedded JVM for the control plane.** `comet-executor` hosts a small JVM that runs a cut-down
+  `CoarseGrainedExecutorBackend`. It registers with the driver, deserializes tasks, passes each
+  task's Comet plan to native code, and reports map statuses and accumulators. This works, but the
+  result is a Spark executor with a small heap whose tasks run natively: Comet on Spark with a more
+  native data plane. Spark schedules every task one stage at a time, so the cluster's pipelined
+  execution and lower per-task overhead are lost. An embedded JVM is more useful as an evaluator for
+  expressions that have no native implementation, as described above, where Spark's protocols are
+  not involved.
+
+The data-plane option combines with either way of placing native work. Native executors could join
+a Spark application as executors, which needs the embedded JVM for their control plane, with
+stage-level scheduling sending fully native stages to them through a `ResourceProfile` that asks for
+a resource only native executors offer. Or the driver could keep offloading whole native subgraphs
+to the cluster, which keeps its own scheduling and pipelining, and use Spark-compatible shuffle as
+the boundary between Spark stages and native stages. The second keeps more of what the cluster
+provides.
+
+A first experiment is a Rust client and server for `OpenBlocks` and `FetchShuffleBlocks`, tested
+against a Spark executor and the external shuffle service by reading a shuffle that Comet's native
+shuffle wrote. That shows whether the data plane works independently of any scheduling decision.
+
 ### When splitting pays off
 
 Whichever approach is used, the driver should decide whether to split a query based on cost. If
