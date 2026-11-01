@@ -363,7 +363,7 @@ fn has_timestamp_unit(data_type: &DataType, unit: TimeUnit) -> bool {
 }
 
 // List/map values can include entries outside a slice or beneath a null parent.
-fn repeated_visibility<O: OffsetSizeTrait>(
+pub(crate) fn repeated_visibility<O: OffsetSizeTrait>(
     offsets: &[O],
     len: usize,
     nulls: Option<&NullBuffer>,

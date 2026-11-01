@@ -4552,18 +4552,23 @@ mod tests {
         async fn decorate_batch_rejects_column_count_mismatch() {
             let schema = iceberg_user_schema();
             let target = Arc::new(iceberg::arrow::schema_to_arrow_schema(&schema).unwrap());
-            let arrow_schema = Arc::new(ArrowSchema::new(vec![Field::new(
-                "unknown",
-                DataType::Int32,
-                false,
-            )]));
-            let batch =
-                RecordBatch::try_new(arrow_schema, vec![Arc::new(Int32Array::from(vec![1]))])
-                    .unwrap();
-            let err = UuidAlignment::new(&schema, &target)
-                .convert(batch, &target)
-                .unwrap_err();
-            assert!(format!("{err}").contains("column count mismatch"));
+            for count in [1, 3] {
+                let arrow_schema = Arc::new(ArrowSchema::new(
+                    (0..count)
+                        .map(|i| Field::new(format!("c{i}"), DataType::Int32, false))
+                        .collect::<Vec<_>>(),
+                ));
+                let columns = (0..count)
+                    .map(|_| Arc::new(Int32Array::from(vec![1])) as ArrayRef)
+                    .collect();
+                let batch = RecordBatch::try_new(arrow_schema, columns).unwrap();
+                let err = UuidAlignment::new(&schema, &target)
+                    .convert(batch, &target)
+                    .unwrap_err();
+                assert!(err.to_string().contains(&format!(
+                    "Iceberg write column count mismatch: arrow batch has {count} columns but schema has 2"
+                )));
+            }
         }
 
         /// A spec whose only partition field is a `void` transform, as iceberg-java's

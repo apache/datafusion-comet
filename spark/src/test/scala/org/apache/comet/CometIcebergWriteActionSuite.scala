@@ -4201,7 +4201,7 @@ class CometIcebergWriteActionSuite
                       .flatMap(exceptionChain)
                       .exists(t =>
                         Option(t.getMessage).exists(
-                          _.contains(s"Invalid UUID string in Iceberg field $failingField"))))
+                          _.contains(s"Invalid UUID 'invalid' in Iceberg field $failingField"))))
                 }
               }
               assert(countSnapshots(name) == before)

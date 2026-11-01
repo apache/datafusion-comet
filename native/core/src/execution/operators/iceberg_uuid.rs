@@ -23,11 +23,14 @@ use std::sync::Arc;
 use arrow::array::{
     Array, ArrayRef, AsArray, FixedSizeBinaryBuilder, ListArray, MapArray, StructArray,
 };
+use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, Field, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use datafusion::error::{DataFusionError, Result};
 use iceberg::spec::{PrimitiveType, Schema, Type};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
+
+use crate::parquet::parquet_support::repeated_visibility;
 
 /// Java parses UTF-16 code units, so supplementary-plane digits are deliberately excluded.
 /// This table is pinned against Character.digit(char, 16) on JDK 17 and 21 over the entire BMP.
@@ -118,9 +121,11 @@ impl UuidAlignment {
 
     pub(super) fn convert(&self, batch: RecordBatch, target: &SchemaRef) -> Result<RecordBatch> {
         if batch.num_columns() != self.0.len() {
-            return Err(DataFusionError::Execution(
-                "Iceberg write column count mismatch".into(),
-            ));
+            return Err(DataFusionError::Execution(format!(
+                "Iceberg write column count mismatch: arrow batch has {} columns but schema has {}",
+                batch.num_columns(),
+                self.0.len()
+            )));
         }
         let columns = batch
             .columns()
@@ -172,7 +177,7 @@ impl Conversion {
         &self,
         array: &ArrayRef,
         target: &Field,
-        visible: Option<&[bool]>,
+        visible: Option<&NullBuffer>,
     ) -> Result<ArrayRef> {
         let cast = |ty| {
             arrow::compute::cast_with_options(
@@ -201,16 +206,23 @@ impl Conversion {
                 let strings = strings.as_string::<i32>();
                 let mut out = FixedSizeBinaryBuilder::with_capacity(array.len(), 16);
                 for row in 0..array.len() {
-                    if visible.is_some_and(|v| !v[row]) {
+                    if visible.is_some_and(|v| v.is_null(row)) {
                         // Invisible required children must remain valid Arrow values. They are
                         // never written, and must not cause errors by parsing arbitrary bytes.
                         out.append_value([0; 16])?;
                     } else if strings.is_null(row) {
                         out.append_null();
                     } else {
-                        let bytes = parse_java_uuid(strings.value(row)).ok_or_else(|| {
+                        let value = strings.value(row);
+                        let bytes = parse_java_uuid(value).ok_or_else(|| {
+                            // Bound the input before escaping it, without splitting UTF-8.
+                            let (value, suffix) = match value.char_indices().nth(128) {
+                                Some((end, _)) => (&value[..end], "..."),
+                                None => (value, ""),
+                            };
                             DataFusionError::Execution(format!(
-                                "Invalid UUID string in Iceberg field {} at batch row {row}",
+                                "Invalid UUID '{}{suffix}' in Iceberg field {}",
+                                value.escape_debug(),
                                 target.name()
                             ))
                         })?;
@@ -232,15 +244,13 @@ impl Conversion {
                         "Iceberg struct field count mismatch".into(),
                     ));
                 }
-                let active: Vec<bool> = (0..array.len())
-                    .map(|i| source.is_valid(i) && visible.is_none_or(|v| v[i]))
-                    .collect();
+                let active = parent_visibility(source, visible);
                 let columns = conversions
                     .iter()
                     .zip(source.columns())
                     .zip(fields)
                     .map(|((conversion, column), field)| {
-                        conversion.convert(column, field, Some(&active))
+                        conversion.convert(column, field, active.as_ref())
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Ok(Arc::new(StructArray::try_new(
@@ -257,13 +267,13 @@ impl Conversion {
                 let DataType::List(field) = target.data_type() else {
                     unreachable!()
                 };
-                let active = child_visibility(
-                    array,
-                    visible,
+                let parent = parent_visibility(source, visible);
+                let active = repeated_visibility(
                     source.value_offsets(),
                     source.values().len(),
+                    parent.as_ref(),
                 );
-                let values = element.convert(source.values(), field, Some(&active))?;
+                let values = element.convert(source.values(), field, active.as_ref())?;
                 Ok(Arc::new(ListArray::try_new(
                     Arc::clone(field),
                     source.offsets().clone(),
@@ -279,16 +289,16 @@ impl Conversion {
                 let DataType::Map(field, ordered) = target.data_type() else {
                     unreachable!()
                 };
-                let active = child_visibility(
-                    array,
-                    visible,
+                let parent = parent_visibility(source, visible);
+                let active = repeated_visibility(
                     source.value_offsets(),
                     source.entries().len(),
+                    parent.as_ref(),
                 );
                 let values = entries.convert(
                     &(Arc::new(source.entries().clone()) as ArrayRef),
                     field,
-                    Some(&active),
+                    active.as_ref(),
                 )?;
                 Ok(Arc::new(MapArray::try_new(
                     Arc::clone(field),
@@ -302,19 +312,11 @@ impl Conversion {
     }
 }
 
-fn child_visibility(
-    array: &ArrayRef,
-    visible: Option<&[bool]>,
-    offsets: &[i32],
-    len: usize,
-) -> Vec<bool> {
-    let mut active = vec![false; len];
-    for row in 0..array.len() {
-        if array.is_valid(row) && visible.is_none_or(|v| v[row]) {
-            active[offsets[row] as usize..offsets[row + 1] as usize].fill(true);
-        }
-    }
-    active
+fn parent_visibility(array: &dyn Array, visible: Option<&NullBuffer>) -> Option<NullBuffer> {
+    NullBuffer::union(
+        array.nulls().filter(|nulls| nulls.null_count() != 0),
+        visible.filter(|nulls| nulls.null_count() != 0),
+    )
 }
 
 #[cfg(test)]
@@ -324,7 +326,7 @@ mod tests {
         BinaryArray, DictionaryArray, Int32Array, LargeStringArray, StringArray, StringViewArray,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::{Int32Type, Schema as ArrowSchema};
+    use arrow::datatypes::{Fields, Int32Type, Schema as ArrowSchema};
     use iceberg::spec::{ListType, MapType, NestedField, StructType};
 
     const UUID: &str = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
@@ -351,6 +353,43 @@ mod tests {
     fn check_uuid(array: &ArrayRef, row: usize, value: &str) {
         let array = array.as_fixed_size_binary();
         assert_eq!(array.value(row), parse_java_uuid(value).unwrap());
+    }
+
+    #[test]
+    fn uuid_parent_visibility_skips_valid_masks_and_reuses_ancestor_mask() {
+        let fields: Fields = vec![Field::new("u", DataType::Utf8, true)].into();
+        let strings: ArrayRef = Arc::new(StringArray::from(vec![UUID; 3]));
+        let all_valid = NullBuffer::new_valid(3);
+        let outer = NullBuffer::from(vec![false, true, true]);
+        for nulls in [None, Some(all_valid.clone())] {
+            let source = StructArray::new(fields.clone(), vec![Arc::clone(&strings)], nulls);
+            assert!(parent_visibility(&source, None).is_none());
+            assert!(parent_visibility(&source, Some(&all_valid)).is_none());
+            let active = parent_visibility(&source, Some(&outer)).unwrap();
+            assert_eq!(active, outer);
+            assert_eq!(
+                active.inner().values().as_ptr(),
+                outer.inner().values().as_ptr()
+            );
+        }
+        let source = StructArray::new(
+            fields,
+            vec![strings],
+            Some(NullBuffer::from(vec![true, true, false])),
+        );
+        let active = parent_visibility(&source, Some(&outer)).unwrap();
+        assert_eq!(active, NullBuffer::from(vec![false, true, false]));
+    }
+
+    #[test]
+    fn uuid_repeated_visibility_skips_full_windows_and_masks_hidden_values() {
+        assert!(repeated_visibility(&[0_i32, 1, 3], 3, None).is_none());
+        assert!(repeated_visibility(&[0_i32], 0, None).is_none());
+        let sliced = repeated_visibility(&[1_i32, 3], 4, None).unwrap();
+        assert_eq!(sliced, NullBuffer::from(vec![false, true, true, false]));
+        let parent = NullBuffer::from(vec![false, true]);
+        let active = repeated_visibility(&[0_i32, 1, 3], 3, Some(&parent)).unwrap();
+        assert_eq!(active, NullBuffer::from(vec![false, true, true]));
     }
 
     #[test]
@@ -422,6 +461,47 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Invalid UUID"));
+    }
+
+    #[test]
+    fn uuid_invalid_values_report_bounded_escaped_input() {
+        let ascii_prefix = "x".repeat(128);
+        let unicode_prefix = "界".repeat(127) + "😀";
+        for (input, displayed) in [
+            ("".to_string(), "".to_string()),
+            ("bad-uuid".to_string(), "bad-uuid".to_string()),
+            (
+                "bad'\\\n\r\t\0".to_string(),
+                "bad\\'\\\\\\n\\r\\t\\0".to_string(),
+            ),
+            ("x".repeat(127), "x".repeat(127)),
+            (ascii_prefix.clone(), ascii_prefix.clone()),
+            (format!("{ascii_prefix}y"), format!("{ascii_prefix}...")),
+            ("x".repeat(1_000_000), format!("{ascii_prefix}...")),
+            (unicode_prefix.clone(), unicode_prefix.clone()),
+            (
+                format!("{unicode_prefix}hidden"),
+                format!("{unicode_prefix}..."),
+            ),
+            ("\n".repeat(129), format!("{}...", "\\n".repeat(128))),
+        ] {
+            let schema = Schema::builder()
+                .with_fields(vec![NestedField::optional(12, "u", uuid_type()).into()])
+                .build()
+                .unwrap();
+            let (convert, batch, target) = alignment(
+                schema,
+                vec![Arc::new(StringArray::from(vec![input.as_str()]))],
+            );
+            let error = convert.convert(batch, &target).unwrap_err();
+            let DataFusionError::Execution(message) = error else {
+                panic!("expected an execution error, got {error}");
+            };
+            assert_eq!(
+                message,
+                format!("Invalid UUID '{displayed}' in Iceberg field u")
+            );
+        }
     }
 
     #[test]
