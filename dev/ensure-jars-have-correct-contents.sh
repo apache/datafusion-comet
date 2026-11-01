@@ -18,12 +18,11 @@
 
 # Borrowed from Hadoop
 
-# Usage: $0 [/path/to/some/example.jar;/path/to/another/example/created.jar]
+# Usage: $0 'main.jar;other.jar' [sources.jar] [skip-sources=false]
 #
-# accepts a single command line argument with a colon separated list of
-# paths to jars to check. Iterates through each such passed jar and checks
-# all the contained paths to make sure they follow the below constructed
-# safe list.
+# The first argument is a semicolon-separated list of JARs to check. An optional
+# sources JAR is also checked unless the third argument is true (maven.source.skip).
+# Checks all contained paths against the safe list below.
 
 # We use +=, which is a bash 3.1+ feature
 if [[ -z "${BASH_VERSINFO[0]}" ]] \
@@ -38,6 +37,39 @@ set -o pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 binary_license="${script_dir}/licenses/LICENSE-binary.txt"
+
+locked_version ()
+{
+  # Cargo generates these package/name/version records. Reject absent or ambiguous versions.
+  awk -v wanted="$1" '
+    /^\[\[package\]\]/ { name = "" }
+    $1 == "name" && $2 == "=" { name = $3; gsub(/["\r]/, "", name) }
+    $1 == "version" && $2 == "=" && name == wanted {
+      version = $3; gsub(/["\r]/, "", version); count++
+    }
+    END { if (count != 1) exit 1; print version }
+  ' "${script_dir}/../native/Cargo.lock"
+}
+
+check_native_license_versions ()
+{
+  local lz4_version zstd_sys_version zstd_version
+  if ! lz4_version=$(locked_version lz4_flex) || ! zstd_sys_version=$(locked_version zstd-sys); then
+    echo "[ERROR] Expected one lz4_flex and one zstd-sys version in native/Cargo.lock."
+    return 1
+  fi
+  case "${zstd_sys_version}" in
+    *+zstd.*) zstd_version=${zstd_sys_version##*+zstd.} ;;
+    *) echo "[ERROR] Cannot read the vendored Zstandard version from zstd-sys ${zstd_sys_version}."; return 1 ;;
+  esac
+  if ! tr -d '\r' < "${binary_license}" |
+      grep -Fx "The native Comet library bundles lz4_flex ${lz4_version} (MIT)." > /dev/null ||
+      ! tr -d '\r' < "${binary_license}" |
+      grep -Fx "The native Comet library bundles Zstandard ${zstd_version} (BSD-3-Clause)." > /dev/null; then
+    echo "[ERROR] Update LICENSE-binary.txt for locked lz4_flex ${lz4_version} / Zstandard ${zstd_version}."
+    return 1
+  fi
+}
 
 allowed_expr="(^org/$|^org/apache/$"
 # we have to allow the directories that lead to the org/apache/comet dir
@@ -132,6 +164,19 @@ if [ "${#artifact_list[@]}" -eq 0 ]; then
   exit 1
 fi
 
+if [ -n "${2:-}" ]; then
+  skip_sources=$(printf '%s' "${3:-false}" | tr '[:upper:]' '[:lower:]')
+  if [ "${skip_sources}" = "true" ]; then
+    echo "[INFO] Skipping sources-JAR verification (maven.source.skip=true)."
+  elif [ -f "$2" ]; then
+    artifact_list+=("$2")
+  else
+    echo "[ERROR] Expected sources JAR does not exist: '$2'."
+    echo "[ERROR] Override comet.spark.sources.jar for a custom path, or set maven.source.skip=true for an intentional skip."
+    exit 1
+  fi
+fi
+
 jar_list_failed ()
 {
     echo "[ERROR] Listing jar contents for file '${artifact}' failed."
@@ -160,6 +205,10 @@ for artifact in "${artifact_list[@]}"; do
   # Common/test-only jars without the native library keep their existing legal resources.
   if jar tf "${artifact}" | tr -d '\r' |
       grep -E '^org/apache/comet/[^/]+/[^/]+/(libcomet\.(so|dylib)|comet\.dll)$' > /dev/null; then
+    if ! check_native_license_versions; then
+      bad_artifacts=${bad_artifacts}+1
+      continue
+    fi
     license_count=$(jar tf "${artifact}" | tr -d '\r' | awk '$0 == "META-INF/LICENSE" { n++ } END { print n+0 }')
     if [ "${license_count}" -ne 1 ]; then
       echo "[ERROR] Expected exactly one META-INF/LICENSE in '${artifact}'."
