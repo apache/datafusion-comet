@@ -101,7 +101,7 @@ omitted from the tables below and may be reconsidered based on demand:
 | `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
 | `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                               |
 | `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
-| `CartesianProductExec`        | ✅     | Opt-in (`spark.comet.exec.cartesianProduct.enabled`). Only condition-free products of single-partition inputs, such as after `COALESCE(1)`; never a bare file scan.           |
+| `CartesianProductExec`        | ✅     | Opt-in (`spark.comet.exec.cartesianProduct.enabled`). Only condition-free products of single-partition inputs, such as after `COALESCE(1)`; non-bucketed scans never qualify. |
 
 `ExistenceJoin` (produced when `EXISTS` / `IN` is combined with another predicate via `OR`) runs
 natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-merge joins, residual

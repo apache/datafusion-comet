@@ -379,7 +379,7 @@ object CometConf extends ShimCometConf {
       notes = Some(
         "Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill. Only " +
           "condition-free products of single-partition inputs run natively, such as after " +
-          "COALESCE(1); never a bare file scan"))
+          "COALESCE(1); non-bucketed scans never qualify"))
   val COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
       .category(CATEGORY_EXEC)
