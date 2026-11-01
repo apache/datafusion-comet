@@ -403,9 +403,11 @@ fn extract_s3_config_options(
     s3_configs
 }
 
-/// Mirrors the AWS SDK's `isVirtualHostableS3Bucket`: 3 to 63 lowercase letters, digits and
-/// hyphens that start and end with a letter or digit. Dots only over plain HTTP, since a dotted
-/// host falls outside S3's wildcard certificate, and then no IPv4 shape or adjacent separators.
+/// Mirrors how the AWS SDK's S3 endpoint rules apply `isVirtualHostableS3Bucket`: the check
+/// without dots first, then the dotted one over plain HTTP. A name is 3 to 63 lowercase letters,
+/// digits and hyphens that start and end with a letter or digit, and may contain `--`. Dots are
+/// allowed only over plain HTTP, since a dotted host falls outside S3's wildcard certificate, and
+/// then the name must not look like an IPv4 address or have two separators (`.` or `-`) in a row.
 fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
     let bytes = bucket.as_bytes();
     let edge = |b: &u8| b.is_ascii_lowercase() || b.is_ascii_digit();
@@ -424,7 +426,7 @@ fn is_virtual_hostable_bucket(bucket: &str, allow_dots: bool) -> bool {
     let separators_touch = bytes
         .windows(2)
         .any(|pair| pair.iter().all(|b| *b == b'.' || *b == b'-'));
-    !(allow_dots && (ipv4_shaped || separators_touch))
+    !(bytes.contains(&b'.') && (ipv4_shaped || separators_touch))
 }
 
 /// An endpoint and the addressing mode it was shaped for, so the two never disagree.
@@ -1468,6 +1470,30 @@ mod tests {
         for (bucket, url) in cases {
             actual.push(format!("{bucket}: {}", region_probe_url(bucket)));
             expected.push(format!("{bucket}: {url}"));
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_is_virtual_hostable_bucket() {
+        let cases = [
+            ("a--b", false, true),
+            ("a--b", true, true),
+            ("a-b.c", true, true),
+            ("a.-b", true, false),
+            ("a-.b", true, false),
+            ("a..b", true, false),
+            ("a--b.c", true, false),
+        ];
+        let mut actual = Vec::new();
+        let mut expected = Vec::new();
+        for (bucket, allow_dots, hostable) in cases {
+            let label = format!("{bucket} allow_dots={allow_dots}");
+            actual.push(format!(
+                "{label}: {}",
+                is_virtual_hostable_bucket(bucket, allow_dots)
+            ));
+            expected.push(format!("{label}: {hostable}"));
         }
         assert_eq!(actual, expected);
     }
@@ -2894,6 +2920,11 @@ mod tests {
                 vec![minio, (path_style, "true")],
                 "test-bucket",
                 "http://minio.internal:9000/test-bucket/object",
+            ),
+            (
+                vec![http],
+                "a--b",
+                "http://a--b.storage.example.test/object",
             ),
             // Plain HTTP allows dots, but not an IPv4 shape, `-.` or uppercase
             (
