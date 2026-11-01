@@ -1578,15 +1578,31 @@ class CometIcebergWriteActionSuite
     assumeNativeAcceleration()
     assume(icebergVersionAtLeast(1, 10), "The unknown type requires Iceberg 1.10+")
     withIcebergCatalog { _ =>
-      val t = "unknown_partition_source"
-      createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
-      addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
-      spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD u")
-      spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
-      // The native writer prunes `u`, so its partition calculator could not resolve the source.
-      assertNativeWriteDoesNotEngage(t, Seq(1, 2)) {
+      def createUnknownPartitioned(t: String): Unit = {
+        createTable(t, partitionSpec = "", properties = Some("'format-version'='3'"))
+        addIcebergColumn(loadIcebergTable(spark, catalog, ns, t), "u", icebergUnknownType())
+        spark.sql(s"ALTER TABLE $catalog.$ns.$t ADD PARTITION FIELD u")
+        spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
+      }
+      def insert(t: String): Unit =
         spark.sql(
           s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL), (2, 'eu', 2.0, NULL)")
+      if (icebergVersionAtLeast(1, 11)) {
+        val t = "unknown_partition_source"
+        createUnknownPartitioned(t)
+        // The native writer prunes `u`, so its partition calculator could not resolve the source.
+        assertNativeWriteDoesNotEngage(t, Seq(1, 2))(insert(t))
+      } else {
+        // iceberg-java 1.10 has no comparator for an `unknown` partition, so Spark's own write
+        // fails. The fallback must fail the same way, which it only does in iceberg-java's writer.
+        withNativeEnabled {
+          assertFailsLikeSpark(
+            "unknown_partition_source",
+            expectedMessage = "cannot determine comparator for type: unknown") { t =>
+            createUnknownPartitioned(t)
+            intercept[Exception](insert(t))
+          }
+        }
       }
     }
   }

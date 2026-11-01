@@ -333,7 +333,8 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         .addField("u")
         .commit()
       spark.sql(s"REFRESH TABLE $catalog.$ns.$t")
-      val writeExec = captureWriteExec(t, allowWriteFailure = false) {
+      // iceberg-java 1.10 fails this write too: it has no comparator for an `unknown` partition.
+      val writeExec = captureWriteExec(t, allowWriteFailure = true) {
         spark.sql(s"INSERT INTO $catalog.$ns.$t VALUES (1, 'us', 1.0, NULL)")
       }
       assertUnsupportedContains(
