@@ -32,8 +32,7 @@ import org.apache.comet.udf.codegen.CometScalaUDFCodegen
  * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
  * Native kernels are asserted for supported input shapes, including wide and nested decimals.
- * `sha2` supports both literal and column `numBits` natively. `TimeType` hash inputs fall back to
- * Spark.
+ * `TimeType` hash inputs fall back to Spark. SHA-2 cases live in the hash SQL fixtures.
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -127,61 +126,6 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswerAndFallbackReasons(
           "SELECT xxhash64(to_time(c)) FROM t",
           Set("`TimeType` is not supported"))
-      }
-    }
-  }
-
-  Seq("STRING", "BINARY").foreach { payloadType =>
-    test(s"sha2 - non-foldable numBits stays native with $payloadType payload") {
-      withTable("t") {
-        sql(s"CREATE TABLE t(payload $payloadType, num_bits INT) USING parquet")
-        val payload = if (payloadType == "BINARY") "X'0080FF68656C6C6F'" else "'hello'"
-        val empty = if (payloadType == "BINARY") "X''" else "''"
-        val values = Seq("0", "224", "256", "384", "512", "128", "-1", "NULL")
-          .map(bits => s"($payload, $bits)") ++
-          Seq(s"($empty, 256)", s"($empty, 512)", "(NULL, 256)")
-        sql(s"INSERT INTO t VALUES ${values.mkString(",")}")
-        Seq("true", "false").foreach { enabled =>
-          withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> enabled) {
-            Seq(
-              "SELECT sha2(payload, num_bits) FROM t",
-              "SELECT sha2(payload, num_bits + 0) FROM t",
-              s"SELECT sha2($payload, num_bits) FROM t").foreach(assertNativeHash)
-          }
-        }
-      }
-    }
-  }
-
-  Seq("STRING", "BINARY").foreach { payloadType =>
-    test(s"sha2 - NULL $payloadType payload short-circuits ANSI numBits cast") {
-      withSQLConf("spark.sql.ansi.enabled" -> "true") {
-        withTable("t") {
-          sql(s"CREATE TABLE t(payload $payloadType, bits STRING) USING parquet")
-          val payload = if (payloadType == "BINARY") "X'0080FF'" else "'hello'"
-          sql(
-            s"INSERT INTO t VALUES (NULL, 'invalid'), ($payload, '256'), " +
-              s"($payload, NULL), (NULL, '256')")
-          Seq("true", "false").foreach { enabled =>
-            withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> enabled) {
-              assertNativeHash("SELECT sha2(payload, CAST(bits AS INT)) FROM t")
-            }
-          }
-        }
-      }
-    }
-  }
-
-  test("sha2 - literal numBits stays native") {
-    withTable("t") {
-      sql("CREATE TABLE t(payload STRING) USING parquet")
-      sql("INSERT INTO t VALUES ('hello'), (''), (NULL)")
-      Seq("true", "false").foreach { enabled =>
-        withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> enabled) {
-          Seq("0", "224", "256", "384", "512", "128", "-1", "128 + 128").foreach { bits =>
-            assertNativeHash(s"SELECT sha2(payload, $bits) FROM t")
-          }
-        }
       }
     }
   }
@@ -467,13 +411,5 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
         checkSparkAnswer(s"select $name, hash($name), xxhash64($name) from t1 order by $name")
       }
     }
-  }
-
-  private def assertNativeHash(query: String): Unit = {
-    CometScalaUDFCodegen.resetStats()
-    checkSparkAnswerAndOperator(query)
-    assert(
-      CometScalaUDFCodegen.stats().totalLookups == 0,
-      s"expected native hash execution for $query, got ${CometScalaUDFCodegen.stats()}")
   }
 }
