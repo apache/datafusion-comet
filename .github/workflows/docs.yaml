@@ -27,15 +27,13 @@ jobs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout docs sources
         uses: actions/checkout@v7
-
-      - name: Checkout asf-site branch
-        uses: actions/checkout@v7
         with:
-          ref: asf-site
-          path: asf-site
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -101,6 +99,38 @@ jobs:
         # node, and a green build. This runs before the publish step for that reason.
         run: python3 dev/ci/check-mermaid.py --built docs/build/html
 
+      - name: Prepare site metadata
+        run: |
+          cp .asf.yaml docs/build/html/.asf.yaml
+          touch docs/build/html/.nojekyll
+
+      - name: Upload generated site
+        uses: actions/upload-artifact@v7
+        with:
+          name: comet-docs-site
+          path: docs/build/html/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  deploy-docs:
+    name: Deploy docs
+    needs: build-docs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout asf-site branch
+        uses: actions/checkout@v7
+        with:
+          ref: asf-site
+          path: asf-site
+
+      - name: Download generated site
+        uses: actions/download-artifact@v8
+        with:
+          name: comet-docs-site
+          path: site-output
+
       - name: Copy & push the generated HTML
         run: |
           set -x
@@ -109,9 +139,9 @@ jobs:
             -a \
             --delete \
             --exclude '/.git/' \
-            ../docs/build/html/ \
+            ../site-output/ \
             ./
-          cp ../.asf.yaml .
+          cp ../site-output/.asf.yaml .
           touch .nojekyll
           git status --porcelain
           if [ "$(git status --porcelain)" != "" ]; then

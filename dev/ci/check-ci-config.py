@@ -1928,11 +1928,52 @@ def check_scheduled_workflows_stay_upstream():
     return not failures
 
 
+def check_docs_permission_boundary():
+    """Keep dependency builds away from the site publishing token."""
+    path = WORKFLOWS / "docs.yaml"
+    jobs = job_blocks(path)
+    build = jobs.get("build-docs", "")
+    deploy = jobs.get("deploy-docs", "")
+    caller = job_blocks(CI_WORKFLOW).get("docs", "")
+    failures = []
+    for label, block, permission in (
+        ("caller", caller, "write"),
+        ("build-docs", build, "read"),
+        ("deploy-docs", deploy, "write"),
+    ):
+        if not re.search(rf"^    permissions:\n      contents: {permission}$", block, re.M):
+            failures.append(f"{label} must have contents: {permission}")
+    checkout_steps = re.findall(
+        r"      - name: [^\n]+\n        uses: actions/checkout@[^\n]+(?:\n          [^\n]+|\n        with:)*",
+        build,
+    )
+    checkout_count = len(re.findall(r"uses: actions/checkout@", build))
+    if (not checkout_count or len(checkout_steps) != checkout_count
+            or any("persist-credentials: false" not in step for step in checkout_steps)):
+        failures.append("every build checkout must disable persisted credentials")
+    if not re.search(r"^    needs: build-docs$", deploy, re.M):
+        failures.append("deploy-docs must depend on the build")
+    uses = re.findall(r"^        uses: (\S+)", deploy, re.M)
+    if (len(uses) != 2 or not uses[0].startswith("actions/checkout@")
+            or not uses[1].startswith("actions/download-artifact@")):
+        failures.append("the writer may only check out asf-site and download the site artifact")
+    if len(re.findall(r"^        run:", deploy, re.M)) != 1:
+        failures.append("the writer must have just the static publication script")
+    if ("include-hidden-files: true" not in build
+            or "cp .asf.yaml docs/build/html/.asf.yaml" not in build
+            or "touch docs/build/html/.nojekyll" not in build):
+        failures.append("the site artifact must include the ASF metadata and .nojekyll")
+    for failure in failures:
+        print(f"docs permissions: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
     ok = check_event_env() and ok
     ok = check_docs_deploy_guard() and ok
+    ok = check_docs_permission_boundary() and ok
     ok = check_spark_sql_modules() and ok
     ok = check_linux_test_profiles() and ok
     ok = check_artifact_names() and ok
