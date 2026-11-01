@@ -154,7 +154,7 @@ to the cluster, which keeps its own scheduling and pipelining, and use Spark-com
 the boundary between Spark stages and native stages. The second keeps more of what the cluster
 provides.
 
-A first experiment is a Rust client and server for `OpenBlocks` and `FetchShuffleBlocks`, tested
+A first experiment ([#7384](https://github.com/apache/datafusion-comet/issues/7384)) is a Rust client and server for `OpenBlocks` and `FetchShuffleBlocks`, tested
 against a Spark executor and the external shuffle service by reading a shuffle that Comet's native
 shuffle wrote. That shows whether the data plane works independently of any scheduling decision.
 
