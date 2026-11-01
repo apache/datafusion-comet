@@ -4109,6 +4109,8 @@ class CometIcebergWriteActionSuite
                       leaf.getId.intValue() == table.schema().findField(icebergPath).fieldId())
                     // The pinned iceberg-rust writer does not emit the UUID logical annotation.
                     // Pin that documented physical divergence rather than claiming footer parity.
+                    // A pin including apache/iceberg-rust#2930 should emit it; update this assertion
+                    // and remove the UUID annotation divergence in iceberg.md after verifying it.
                     if (name == native) assert(leaf.getLogicalTypeAnnotation == null)
                     else assert(leaf.getLogicalTypeAnnotation.toString == "UUID")
                   }

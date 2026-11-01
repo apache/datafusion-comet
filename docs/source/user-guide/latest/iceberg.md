@@ -681,6 +681,9 @@ difference below; the remaining differences are cosmetic:
   using the table schema; a standalone Parquet reader relying on the logical annotation sees
   fixed-length binary instead of UUID. Native writes therefore do not provide full UUID footer
   parity ([#6959](https://github.com/apache/datafusion-comet/issues/6959)).
+  [iceberg-rust #2930](https://github.com/apache/iceberg-rust/pull/2930) adds the UUID annotation;
+  when upgrading to a pin that includes it, verify the annotation for top-level and nested UUIDs,
+  update the footer assertions in `CometIcebergWriteActionSuite`, and remove this divergence note.
 - Footer key-value metadata differs: native files carry an `ARROW:schema` entry and no
   `iceberg.schema` entry; iceberg-java files are the opposite.
 - The Parquet root schema element is named `arrow_schema` (iceberg-java: `table`).

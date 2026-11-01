@@ -961,7 +961,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * The native path forwards Arrow batches as-is to the iceberg-rust writer, which expects
    * exactly the Iceberg table's data columns. Without an explicit projection step we end up
    * giving it the wider row (e.g. 6 columns when the schema has 3) and
-   * `decorate_batch_with_field_ids` rejects the batch.
+   * `UuidAlignment::convert` rejects the batch.
    *
    * Plain writes already present only data columns, so no extra projection is needed. For 4.x
    * ReplaceData we splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`,
