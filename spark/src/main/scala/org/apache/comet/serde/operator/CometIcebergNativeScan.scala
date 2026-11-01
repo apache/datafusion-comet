@@ -26,6 +26,7 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
@@ -605,6 +606,50 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             s"${e.getMessage}"
         logError(msg, e)
         throw new RuntimeException(msg, e)
+    }
+  }
+
+  /** Activation key for the `CometS3CredentialProvider` SPI on the native Iceberg path. */
+  private[comet] val IcebergCredentialProviderClassKey = "s3.comet.credential.provider.class"
+
+  /** The provider that refreshes REST-vended credentials (Spark 4.x builds only). */
+  private[comet] val VendedCredentialProviderClass =
+    "org.apache.comet.cloud.s3.IcebergVendedS3CredentialProvider"
+
+  // Iceberg's AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT and REFRESH_CREDENTIALS_ENABLED.
+  private val RefreshCredentialsEndpointKey = "client.refresh-credentials-endpoint"
+  private val RefreshCredentialsEnabledKey = "client.refresh-credentials-enabled"
+
+  // The provider ships in Comet's own jar, so look it up in Comet's loader, not the user's.
+  private lazy val vendedCredentialProviderAvailable: Boolean =
+    // scalastyle:off classforname
+    Try(Class.forName(VendedCredentialProviderClass, false, getClass.getClassLoader)).isSuccess
+  // scalastyle:on classforname
+
+  /**
+   * Names [[VendedCredentialProviderClass]] as the credential provider when the catalog returned
+   * a refresh endpoint and the user named no provider.
+   *
+   * Without a provider, the native FileIO signs with the `s3.*` credentials vended when the
+   * driver loaded the table, and a scan or write that outlives them fails with `ExpiredToken`.
+   * Iceberg's `S3FileIO` refreshes them through the endpoint instead. An explicit provider key,
+   * including an empty one, is left alone so it stays an opt-out. Builds without the provider
+   * class (Spark 3.x) keep the vended credentials as they are.
+   */
+  def withVendedCredentialProvider(properties: Map[String, String]): Map[String, String] =
+    withVendedCredentialProvider(properties, vendedCredentialProviderAvailable)
+
+  private[comet] def withVendedCredentialProvider(
+      properties: Map[String, String],
+      providerAvailable: Boolean): Map[String, String] = {
+    val vendsRefreshEndpoint =
+      properties.get(RefreshCredentialsEndpointKey).exists(_.trim.nonEmpty) &&
+        !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
+    if (vendsRefreshEndpoint && providerAvailable &&
+      !properties.contains(IcebergCredentialProviderClassKey)) {
+      properties + (IcebergCredentialProviderClassKey -> VendedCredentialProviderClass)
+    } else {
+      properties
     }
   }
 

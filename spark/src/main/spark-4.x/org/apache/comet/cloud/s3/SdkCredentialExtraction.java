@@ -34,6 +34,21 @@ final class SdkCredentialExtraction {
   private SdkCredentialExtraction() {}
 
   static CometS3Credentials toCometCredentials(String bucket, AwsCredentials creds) {
+    return toCometCredentials(
+        bucket,
+        creds,
+        "The Comet S3 credential adapters cannot serve anonymous access; opt this bucket out with"
+            + " an empty fs.s3a.bucket."
+            + bucket
+            + ".comet.credential.provider.class so the native reader accesses it unsigned.");
+  }
+
+  /**
+   * As {@link #toCometCredentials(String, AwsCredentials)}, with {@code anonymousHint} telling the
+   * user how to opt out when the provider resolved anonymous or empty credentials.
+   */
+  static CometS3Credentials toCometCredentials(
+      String bucket, AwsCredentials creds, String anonymousHint) {
     String accessKeyId = creds.accessKeyId();
     String secretAccessKey = creds.secretAccessKey();
     if (accessKeyId == null
@@ -43,15 +58,12 @@ final class SdkCredentialExtraction {
       // The chain resolved anonymous or empty credentials (e.g. AnonymousCredentialsProvider, used
       // for public buckets, or a provider that returns blank keys). The SPI has no way to express
       // "anonymous", and the native reader would otherwise sign with blank keys and 403, so fail
-      // with a clear cause instead. To read this bucket anonymously, opt it out with an empty
-      // fs.s3a.bucket.<bucket>.comet.credential.provider.class.
+      // with a clear cause instead.
       throw new IllegalStateException(
           "The credential provider chain resolved anonymous or empty credentials for bucket "
               + bucket
-              + ". The Comet S3 credential adapters cannot serve anonymous access; opt this bucket"
-              + " out with an empty fs.s3a.bucket."
-              + bucket
-              + ".comet.credential.provider.class so the native reader accesses it unsigned.");
+              + ". "
+              + anonymousHint);
     }
     String sessionToken = null;
     long expirationEpochMillis = 0L;
