@@ -303,6 +303,29 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
 
+  /** Own a bounded group of decoded local shuffle batches until export or reader cleanup. */
+  @native def createShuffleBatchCoalescer(maxRows: Int): Long
+
+  /** Decode one frame and return the next output's column count, or -1 for more input. */
+  @native def appendShuffleBatch(
+      handle: Long,
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      numColumns: Int,
+      tracingEnabled: Boolean): Int
+
+  /** Return ready columns, flushing any pending group at EOF. */
+  @native def peekShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
+
+  /** Transfer one ready batch through Arrow FFI, returning its row count. */
+  @native def takeShuffleBatch(
+      handle: Long,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
+
+  @native def closeShuffleBatchCoalescer(handle: Long): Unit
+
   /**
    * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
    * expected schema is serialized as a ShuffleScan protobuf.
