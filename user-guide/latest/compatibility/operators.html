@@ -847,6 +847,26 @@ under the License.
 -->
 <section id="operator-compatibility">
 <h1>Operator Compatibility<a class="headerlink" href="#operator-compatibility" title="Link to this heading">#</a></h1>
+<section id="observations">
+<h2>Observations<a class="headerlink" href="#observations" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">CollectMetricsExec</span></code>, used by <code class="docutils literal notranslate"><span class="pre">DataFrame.observe</span></code>, preserves Spark’s observation counters while
+passing the original Arrow batches between native operators. Metric expressions still execute
+in Spark over row views of each batch; the data is not copied into a row-based pipeline.
+Spark retains ownership of accumulator publication, observation listeners, resets and snapshots.</p>
+<p>This path requires native input and is enabled by <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectMetrics.enabled</span></code>.
+Observations retain Spark execution when a consumer can stop reading mid-batch. This includes
+limits, joins, <code class="docutils literal notranslate"><span class="pre">Dataset.mapPartitions</span></code>, replacement sampling at a nonpositive rate, and external
+actions such as <code class="docutils literal notranslate"><span class="pre">foreachPartition</span></code> or <code class="docutils literal notranslate"><span class="pre">rdd.take</span></code>, which do not introduce a physical-plan node.
+The final row iterator is therefore
+treated as potentially partial, even when the eventual action reads all rows. A local sort or
+aggregate does not remove this restriction: an external consumer may never request its output,
+so Spark may leave its input unread while native stream setup fetches a batch.</p>
+<p>A materializing shuffle or broadcast exchange allows columnar observations in its producer
+subtree, unless another short-circuiting consumer intervenes. This preserves native observation
+in aggregation and shuffle pipelines while keeping counters aligned with Spark’s consumption.
+Direct observations and write pipelines without such an exchange retain Spark collection;
+writer nodes alone do not enable columnar observations.</p>
+</section>
 <section id="empty-relations">
 <h2>Empty Relations<a class="headerlink" href="#empty-relations" title="Link to this heading">#</a></h2>
 <p>On Spark 4.0 and later, Comet supports <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> as a native input. It is enabled by
@@ -1139,6 +1159,7 @@ they will be identical to Spark. Unsorted results may have different row orderin
   </div>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#observations">Observations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#empty-relations">Empty Relations</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#in-memory-cache">In-Memory Cache</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>

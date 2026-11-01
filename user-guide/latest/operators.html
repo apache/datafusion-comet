@@ -958,6 +958,10 @@ omitted from the tables below and may be reconsidered based on demand:</p>
 <td><p>⚠️</p></td>
 <td><p>Sampling without replacement only. See <a class="reference internal" href="compatibility/operators.html"><span class="std std-doc">Operator Compatibility</span></a>.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CollectMetricsExec</span></code></p></td>
+<td><p>✅</p></td>
+<td><p>Spark evaluates observation counters while Comet forwards Arrow batches to native consumers. See <a class="reference internal" href="compatibility/operators.html#observations"><span class="std std-ref">Observations</span></a>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
