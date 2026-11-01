@@ -141,8 +141,9 @@ From that list, `<paths>` below means:
 - `.svg` files under `docs/source`, whose `<title>`, `<desc>`, and `<text>` elements are text readers
   see.
 
-Save that list to a file, one path per line, and pass it to Git as `-- $(cat "$PATHS")` wherever a
-command says `-- <paths>`. Code files are all kept here; step 4 keeps only their doc comments:
+Save that list to a file, one path per line. Commands read it with `tr '\n' '\0' < "$PATHS" | xargs -0 -r`,
+which passes each path as one argument, so a file name with a space stays one path. Code files are
+all kept here; step 4 keeps only their doc comments:
 
 ```bash
 PATHS="${STATE%.env}.paths"
@@ -186,8 +187,9 @@ run the line checks below on this list only. In audit mode, run them on the file
 
 ```bash
 ADDED=$(mktemp "$(git rev-parse --git-dir)/review-added.XXXXXX")
-git -c core.quotePath=false diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 \
-    "$BASE" "$HEAD_SHA" -- <paths> \
+tr '\n' '\0' < "$PATHS" \
+  | xargs -0 -r git -c core.quotePath=false diff --no-ext-diff --src-prefix=a/ --dst-prefix=b/ -U0 \
+    "$BASE" "$HEAD_SHA" -- \
   | awk '/^--- /{h=1; next}
          h && /^\+\+\+ b\//{f=substr($0,7); sub(/\t$/,"",f); h=0; next}
          /^@@/{h=0; split($3,a,/[+,]/); n=a[2]; next}
@@ -207,7 +209,8 @@ matters, because `N3` allows more in the contributor guide:
 ```bash
 P='(?:(?<![A-Za-z0-9])native(?:ly)?(?![A-Za-z0-9])|vectori[sz]ed)'
 perl -ne "print if /^.+?:\d+: .*$P/i" "$ADDED"
-git grep -n -i --untracked -E 'native|vectori[sz]ed' -- $(cat "$PATHS") | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
+tr '\n' '\0' < "$PATHS" | xargs -0 -r git grep -n -i --untracked -E 'native|vectori[sz]ed' -- \
+  | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
 ```
 
 **Config keys.** Every `spark.comet.*` key a page names must exist (`P13`). List the keys the text
@@ -218,7 +221,8 @@ rejects. The second command reads definitions that span two lines, expands
 
 ```bash
 perl -ne 'print "$1\n" while /(spark\.comet\.[\w.<>]*[\w>])/g' "$ADDED" | sort -u
-git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- $(cat "$PATHS") | sort -u  # audit
+tr '\n' '\0' < "$PATHS" \
+  | xargs -0 -r git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- | sort -u  # audit
 git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
   | perl -0777 -ne '
       while (/\b(?:conf|ConfigBuilder)\(\s*s?"([^"]+)"/g) {
@@ -269,27 +273,35 @@ for a class name, `git grep -E` has no `\b`, so end the pattern with `([^A-Za-z0
 **Docs build.** Links, anchors, images, toctrees, and page structure, in Markdown and
 reStructuredText, are checked by building the docs the way the published site is built. This
 catches what a reading of the changed lines cannot, such as a link on an unchanged page that a
-renamed heading breaks, or a page that no toctree includes. Install the docs requirements once, in a
-virtual environment that later calls find at the same path:
+renamed heading breaks, or a page that no toctree includes. Each revision builds with its own
+`docs/requirements.txt`, so a change that updates a Sphinx extension is built with the new version.
+`venv` installs those requirements into a virtual environment named after their hash and prints its
+path, so revisions with the same requirements share one environment. Each tool call may start a new
+shell, so define `venv` and `build` in every call that uses them:
 
 ```bash
-VENV="$(git rev-parse --git-dir)/review-comet-docs-venv"
-PY=$(for p in python3.13 python3.12 python3.11 python3.10 python3; do
-  command -v $p >/dev/null && $p -c 'import sys; sys.exit(sys.version_info < (3, 10))' && { echo $p; break; }
-done)
-[ -x "$VENV/bin/sphinx-build" ] || { [ -n "$PY" ] && "$PY" -m venv --clear "$VENV" &&
-  "$VENV/bin/pip" install -q --disable-pip-version-check -r docs/requirements.txt; } ||
-  { rm -rf "$VENV"; echo "docs build not checked: needs Python 3.10 or later" >&2; }
+venv() {  # $1 = revision, or worktree in audit mode; prints the environment's path
+  if [ "$1" = worktree ]; then req=$(cat docs/requirements.txt) || return 1
+  else req=$(git show "$1:docs/requirements.txt") || return 1; fi
+  V="$(git rev-parse --git-dir)/review-comet-docs-venv-$(printf '%s\n' "$req" | git hash-object --stdin | cut -c1-12)"
+  [ -x "$V/bin/sphinx-build" ] || {
+    PY=$(for p in python3.13 python3.12 python3.11 python3.10 python3; do
+      command -v $p >/dev/null && $p -c 'import sys; sys.exit(sys.version_info < (3, 10))' && { echo $p; break; }
+    done)
+    [ -n "$PY" ] && "$PY" -m venv --clear "$V" >&2 && printf '%s\n' "$req" > "$V.txt" &&
+      "$V/bin/pip" install -q --disable-pip-version-check -r "$V.txt" >&2
+  } || { rm -rf "$V"; echo "docs build not checked: needs Python 3.10 or later" >&2; return 1; }
+  printf '%s\n' "$V"
+}
 ```
 
-Then build the base and the head and compare their warnings. The function copies the expression
-templates into the per-version pages, as `docs/build.sh` does, so links to those pages resolve. It
-returns an error if any step fails, including Sphinx itself, so a failed build is never read as a
-clean one:
+Then build the base and the head and compare their warnings. `build` copies the expression templates
+into the per-version pages, as `docs/build.sh` does, so links to those pages resolve. It returns an
+error if any step fails, including Sphinx itself, so a failed build is never read as a clean one:
 
 ```bash
 build() {  # $1 = revision, or worktree in audit mode; $2 = output directory
-  VENV="$(git rev-parse --git-dir)/review-comet-docs-venv"
+  VENV=$(venv "$1") || return 1
   mkdir -p "$2/src/docs" || return 1
   if [ "$1" = worktree ]; then
     cp -R docs/source "$2/src/docs/" && profiles=$(cat docs/build.sh) || return 1
@@ -318,14 +330,14 @@ the audited pages. If the docs requirements cannot be installed or a build fails
 was not checked, and check that each changed link's target file exists.
 
 Sphinx does not count H1s. Check that each new or changed Markdown page has one H1 with the parser
-the docs build uses, which knows where code blocks start and end. It needs the same virtual
-environment; without it, count the H1s by reading the page and say so:
+the docs build uses, which knows where code blocks start and end. It uses `venv` from above;
+without an environment, count the H1s by reading the page and say so:
 
 ```bash
 H1='import sys; from markdown_it import MarkdownIt
 print(sum(t.type == "heading_open" and t.tag == "h1" for t in MarkdownIt("commonmark").parse(sys.stdin.read())))'
-git show "${HEAD_SHA}:<file>" | "$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c "$H1"
-"$(git rev-parse --git-dir)/review-comet-docs-venv/bin/python" -c "$H1" < <file>  # audit
+git show "${HEAD_SHA}:<file>" | "$(venv "$HEAD_SHA")/bin/python" -c "$H1"
+"$(venv worktree)/bin/python" -c "$H1" < <file>  # audit
 ```
 
 **Other structure checks.** A new file has the ASF header (`P1`). A link to Comet's published docs by
@@ -347,7 +359,8 @@ markers, which break `P7`:
 ```bash
 V='(?:(?:Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(?:TODO|XXX)\b)'
 perl -ne "print if /^.+?:\d+: .*$V/" "$ADDED"
-git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- $(cat "$PATHS") | perl -ne "print if /$V/"  # audit
+tr '\n' '\0' < "$PATHS" | xargs -0 -r git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- \
+  | perl -ne "print if /$V/"  # audit
 ```
 
 CI runs prettier and the Apache RAT license check on PRs, so do not repeat them. If CI has not run
