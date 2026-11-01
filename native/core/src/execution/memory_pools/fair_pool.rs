@@ -341,7 +341,7 @@ mod tests {
     use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering::SeqCst};
     use std::sync::mpsc::{channel, Receiver, Sender};
-    use std::sync::{Arc, Barrier};
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -978,42 +978,50 @@ mod tests {
         let reservations: Vec<_> = (0..THREADS)
             .map(|t| spillable(&format!("consumer-{t}"), &pool))
             .collect();
-        let barrier = Arc::new(Barrier::new(THREADS));
 
         let handles: Vec<_> = reservations
             .into_iter()
             .enumerate()
             .map(|(t, res)| {
                 let pool = Arc::clone(&pool);
-                let barrier = Arc::clone(&barrier);
                 thread::spawn(move || {
-                    for i in 0..ITERS {
-                        let size = 1 + (i * 37 + t * 101) % 509;
-                        // Refusals are expected; only the invariants below must hold.
-                        let _ = res.try_grow(size);
-                        if i % 3 == 0 && res.size() > 0 {
-                            res.shrink(res.size() / 2 + 1);
+                    // Catch a failed invariant so this consumer stays registered, and the fair
+                    // limit of the others fixed, until every thread has been joined.
+                    let outcome = catch_unwind(AssertUnwindSafe(|| {
+                        for i in 0..ITERS {
+                            let size = 1 + (i * 37 + t * 101) % 509;
+                            // Refusals are expected; only the invariants below must hold.
+                            let _ = res.try_grow(size);
+                            if i % 3 == 0 && res.size() > 0 {
+                                res.shrink(res.size() / 2 + 1);
+                            }
+                            // Drains the task's balance to zero under acquires in flight.
+                            if (i + t) % 41 == 0 {
+                                res.free();
+                            }
+                            // One reservation per consumer, so its size is the consumer's share.
+                            assert!(
+                                res.size() <= POOL_SIZE / THREADS,
+                                "consumer exceeded its fair limit"
+                            );
+                            assert!(pool.reserved() <= POOL_SIZE, "pool exceeded its size");
                         }
-                        // Drains the task's balance to zero under acquires in flight.
-                        if (i + t) % 41 == 0 {
-                            res.free();
-                        }
-                        // One reservation per consumer, so its size is the consumer's share.
-                        assert!(
-                            res.size() <= POOL_SIZE / THREADS,
-                            "consumer exceeded its fair limit"
-                        );
-                        assert!(pool.reserved() <= POOL_SIZE, "pool exceeded its size");
-                    }
-                    // Stay registered until every thread stops so the fair limit is fixed.
-                    barrier.wait();
-                    res.free();
+                    }));
+                    (res, outcome)
                 })
             })
             .collect();
 
-        for handle in handles {
-            handle.join().unwrap();
+        // Join every thread before dropping any reservation, then report the first failure.
+        let (reservations, outcomes): (Vec<_>, Vec<_>) = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("worker panicked outside its loop"))
+            .unzip();
+        if let Some(panic) = outcomes.into_iter().find_map(Result::err) {
+            std::panic::resume_unwind(panic);
+        }
+        for res in reservations {
+            res.free();
         }
 
         assert_eq!(pool.reserved(), 0, "pool still tracks bytes after quiesce");
