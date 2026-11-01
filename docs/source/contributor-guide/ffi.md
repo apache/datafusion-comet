@@ -243,13 +243,16 @@ or sliced booleans reach the JVM misaligned
 
 `zero_offsets` leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
 arrays by moving the start of their offsets, so the JVM imports them with offsets that start past zero and with the
-rows before the slice still at the front of the data buffer, or of the child vector for a list or map. Reading values
+rows before the slice still at the front of the data buffer, or of the child vector for a list or map. The first slice
+of an array starts at zero, but a list or map still has the elements of the later slices in its child. Reading values
 through the offsets is correct, but Arrow Java 18.3's `VectorSchemaRootAppender` assumes offsets that start at zero and
 folds those rows into the first value it appends, and `VectorUnloader` writes them into an IPC stream. So
 `Utils.serializeBatches` rebases a broadcast batch's offsets with `VectorSchemaRoot.slice` before
-`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and code that
-appends imported vectors has to rebase them too. The in-memory cache serializer still writes the earlier rows
-([#6995](https://github.com/apache/datafusion-comet/issues/6995)).
+`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and
+`CachedBatchIpc.serialize` does the same before the in-memory cache writes a batch, so that a cached slice neither
+stores nor reports the rows before it ([#6995](https://github.com/apache/datafusion-comet/issues/6995)). The Arrow
+Python runner rebases the same way before it sends a batch to the worker. All three go through
+`Utils.withRebasedOffsets`, and code that appends or writes imported vectors has to use it too.
 
 ### Ownership and Lifecycle
 
