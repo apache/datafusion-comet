@@ -36,6 +36,9 @@ fi
 set -e
 set -o pipefail
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+binary_license="${script_dir}/licenses/LICENSE-binary.txt"
+
 allowed_expr="(^org/$|^org/apache/$"
 # we have to allow the directories that lead to the org/apache/comet dir
 # We allow all the classes under the following packages:
@@ -107,6 +110,11 @@ allowed_expr+="|^org/apache/spark/CometExecutorPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometSource.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
+# Source jars use these filenames for the allowed Spark-private classes above.
+allowed_expr+="|^org/apache/spark/Plugins\.scala$"
+allowed_expr+="|^org/apache/spark/shuffle/sort/RowPartition\.scala$"
+# Shaded dependency sources include their Java module descriptor.
+allowed_expr+="|^module-info\.java$"
 allowed_expr+="|^scala-collection-compat.properties$"
 allowed_expr+="|^scala/$"
 allowed_expr+="|^scala/annotation/"
@@ -147,11 +155,24 @@ for artifact in "${artifact_list[@]}"; do
   else
     echo "[INFO] Artifact looks correct: '$(basename "${artifact}")'"
   fi
+
+  # Check the complete license text in both main and sources jars containing libcomet.
+  # Common/test-only jars without the native library keep their existing legal resources.
+  if jar tf "${artifact}" | tr -d '\r' |
+      grep -E '^org/apache/comet/[^/]+/[^/]+/(libcomet\.(so|dylib)|comet\.dll)$' > /dev/null; then
+    license_count=$(jar tf "${artifact}" | tr -d '\r' | awk '$0 == "META-INF/LICENSE" { n++ } END { print n+0 }')
+    if [ "${license_count}" -ne 1 ]; then
+      echo "[ERROR] Expected exactly one META-INF/LICENSE in '${artifact}'."
+      bad_artifacts=${bad_artifacts}+1
+    elif ! unzip -p "${artifact}" META-INF/LICENSE | cmp -s "${binary_license}" -; then
+      echo "[ERROR] Binary LICENSE differs or is missing native attribution in '${artifact}'."
+      bad_artifacts=${bad_artifacts}+1
+    else
+      echo "[INFO] Binary LICENSE matches: '$(basename "${artifact}")'"
+    fi
+  fi
 done
 
 if [ "${bad_artifacts}" -gt 0 ]; then
   exit 1
 fi
-
-script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-python3 "${script_dir}/release/check-native-licenses.py" "${artifact_list[@]}"

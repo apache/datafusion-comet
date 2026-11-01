@@ -100,7 +100,7 @@ under the License.
                             <requiresOnline>false</requiresOnline>
                             <arguments>
                                 <argument>${project.basedir}/../dev/ensure-jars-have-correct-contents.sh</argument>
-                                <argument>${comet-artifacts}</argument>
+                                <argument>${comet-artifacts};${project.basedir}/../spark/target/comet-spark-spark${spark.version.short}_${scala.binary.version}-${project.version}-sources.jar</argument>
                             </arguments>
                         </configuration>
                     </execution>

@@ -709,34 +709,6 @@ under the License.
   <build>
     <plugins>
       <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-antrun-plugin</artifactId>
-        <version>3.1.0</version>
-        <executions>
-          <execution>
-            <id>assemble-native-legal-materials</id>
-            <phase>prepare-package</phase>
-            <goals>
-              <goal>run</goal>
-            </goals>
-            <configuration>
-              <target>
-                <mkdir dir="${project.build.directory}/native-legal" />
-                <exec executable="python3" failonerror="true">
-                  <arg value="${project.basedir}/../dev/release/check-native-licenses.py" />
-                  <arg value="--assemble" />
-                  <arg value="${project.build.outputDirectory}" />
-                  <arg value="--output" />
-                  <arg value="${project.build.directory}/native-legal" />
-                  <arg value="--base-license" />
-                  <arg value="${project.build.outputDirectory}/META-INF/LICENSE" />
-                </exec>
-              </target>
-            </configuration>
-          </execution>
-        </executions>
-      </plugin>
-      <plugin>
         <groupId>io.github.git-commit-id</groupId>
         <artifactId>git-commit-id-maven-plugin</artifactId>
         <version>${git-commit-id-maven-plugin.version}</version>
@@ -828,11 +800,10 @@ under the License.
                          separately and writes the name twice, failing the build. Excluding the
                          already relocated copy on the way in leaves exactly one. -->
                     <exclude>META-INF/services/${comet.shade.packageName}.arrow.*</exclude>
-                    <!-- Legal materials are assembled below. Also exclude copies from a previous
-                         shaded jar so incremental packaging cannot duplicate these paths. -->
+                    <!-- The transformers below supply the binary LICENSE and project NOTICE.
+                         Exclude input copies, including those from an earlier incremental build. -->
                     <exclude>META-INF/LICENSE</exclude>
                     <exclude>META-INF/NOTICE</exclude>
-                    <exclude>META-INF/licenses/native-dependencies.txt</exclude>
                   </excludes>
                 </filter>
                 <filter>
@@ -886,22 +857,19 @@ under the License.
                      and its contents. -->
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
-                <!-- Keep the project's notices and the transitive native dependency materials in
-                     both shaded artifacts, including their sources jars. -->
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
                   <resource>META-INF/LICENSE</resource>
-                  <file>${project.build.directory}/native-legal/LICENSE</file>
+                  <file>${project.basedir}/../dev/licenses/LICENSE-binary.txt</file>
                 </transformer>
+                <!-- The ASF parent POM generates a META-INF/NOTICE holding only the ASF boilerplate,
+                     and shade kept that one, so the attributions in NOTICE.txt (Apache Gluten) never
+                     reached the jar or the sources jar. Ship NOTICE.txt itself instead, which keeps
+                     the two in step without a second copy to maintain. -->
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
                   <resource>META-INF/NOTICE</resource>
-                  <file>${project.build.directory}/native-legal/NOTICE</file>
-                </transformer>
-                <transformer
-                  implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
-                  <resource>META-INF/licenses/native-dependencies.txt</resource>
-                  <file>${project.build.directory}/native-legal/native-dependencies.txt</file>
+                  <file>${project.basedir}/../NOTICE.txt</file>
                 </transformer>
               </transformers>
             </configuration>
