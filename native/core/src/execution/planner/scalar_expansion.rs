@@ -24,8 +24,9 @@
 //! <https://github.com/apache/datafusion-comet/issues/7247>.
 //!
 //! The bound is enforced right under the operator that evaluates the expressions, with a
-//! [`BatchSplitExec`], because the operators below do not keep the batch size they were handed:
-//! a filter coalesces its output up to its own size and a window emits its whole partition.
+//! [`BatchSplitExec`], because the operators below do not keep the session's batch size: a
+//! filter coalesces its output toward DataFusion's default size and a window emits its whole
+//! partition.
 
 use std::sync::Arc;
 
@@ -36,6 +37,7 @@ use datafusion::logical_expr::{ColumnarValue, Volatility};
 use datafusion::physical_expr::expressions::{Column, InListExpr};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::ExecutionPlan;
+use datafusion::prelude::SessionConfig;
 use datafusion_comet_operators::BatchSplitExec;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
@@ -51,19 +53,19 @@ use super::{PhysicalPlanner, TEST_EXEC_CONTEXT_ID};
 /// vector can hold before its reallocation fails.
 const SCALAR_EXPANSION_BYTES: usize = 1 << 30;
 
-/// The rows per batch under which `scalar_bytes`, expanded to the batch's length, stay within
-/// `SCALAR_EXPANSION_BYTES`.
-fn scalar_batch_rows(scalar_bytes: usize, batch_size: usize) -> usize {
+/// The most rows per batch at which `scalar_bytes`, expanded to the batch's length, stay within
+/// `SCALAR_EXPANSION_BYTES`; unbounded when there is nothing to expand.
+fn scalar_rows_cap(scalar_bytes: usize) -> usize {
     if scalar_bytes == 0 {
-        return batch_size;
+        return usize::MAX;
     }
-    batch_size.min((SCALAR_EXPANSION_BYTES / scalar_bytes).max(1))
+    (SCALAR_EXPANSION_BYTES / scalar_bytes).max(1)
 }
 
 impl PhysicalPlanner {
     /// Wraps `input` so that the batches it emits keep the string and binary scalars in `exprs`,
     /// expanded to a batch's length, within `SCALAR_EXPANSION_BYTES`. Returns `input` as is when
-    /// the session's batch size already does.
+    /// the widest batch it can emit already does.
     pub(crate) fn bound_scalar_expansion<'a>(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -74,10 +76,13 @@ impl PhysicalPlanner {
             .into_iter()
             .map(|expr| self.expanded_scalar_bytes(expr, &schema))
             .sum();
+        let cap = scalar_rows_cap(bytes);
         let batch_size = self.session_ctx.copied_config().batch_size();
-        let rows = scalar_batch_rows(bytes, batch_size);
-        if rows < batch_size {
-            Arc::new(BatchSplitExec::new(input, rows))
+        // A filter below coalesces toward DataFusion's default batch size whatever the session's
+        // is, so a session batch size under the default does not bound what arrives here.
+        let widest_input = batch_size.max(SessionConfig::default().batch_size());
+        if cap < widest_input {
+            Arc::new(BatchSplitExec::new(input, cap.min(batch_size)))
         } else {
             input
         }
@@ -182,13 +187,13 @@ mod tests {
     }
 
     #[test]
-    fn scalar_batch_rows_keeps_the_batch_size_unless_a_scalar_would_overflow_it() {
-        assert_eq!(scalar_batch_rows(0, 8192), 8192);
-        assert_eq!(scalar_batch_rows(1024, 8192), 8192);
+    fn scalar_rows_cap_bounds_the_rows_by_the_expanded_bytes() {
+        assert_eq!(scalar_rows_cap(0), usize::MAX);
+        assert_eq!(scalar_rows_cap(1024), 1024 * 1024);
         // A 256 KiB scalar expanded to 8192 rows needs 2 GiB; 4096 rows keep it at 1 GiB.
-        assert_eq!(scalar_batch_rows(256 * 1024, 8192), 4096);
+        assert_eq!(scalar_rows_cap(256 * 1024), 4096);
         // A scalar past 1 GiB still gets one row per batch.
-        assert_eq!(scalar_batch_rows(2 * 1024 * 1024 * 1024, 8192), 1);
+        assert_eq!(scalar_rows_cap(2 * 1024 * 1024 * 1024), 1);
     }
 
     #[test]
@@ -231,6 +236,23 @@ mod tests {
         assert_eq!(bytes(Arc::clone(&measured)), 0);
         let fresh: Arc<dyn PhysicalExpr> = Arc::new(UuidExpr::new(0));
         assert_eq!(*first_draw(&measured), *first_draw(&fresh));
+    }
+
+    #[test]
+    fn wraps_the_input_when_a_small_session_batch_fits_but_the_filter_default_does_not() {
+        use datafusion::execution::context::SessionContext;
+        use datafusion::physical_plan::empty::EmptyExec;
+        let session = SessionContext::new_with_config(SessionConfig::new().with_batch_size(256));
+        let planner = PhysicalPlanner::new(Arc::new(session), 0);
+        let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
+        // A 256 KiB scalar allows 4096 rows, more than the session's 256, but a filter below
+        // coalesces toward DataFusion's default of 8192 rows whatever the session says.
+        let wide = lit("x".repeat(256 * 1024));
+        let bounded = planner.bound_scalar_expansion(input, [&wide]);
+        let split = bounded
+            .downcast_ref::<BatchSplitExec>()
+            .expect("a split under the expanding operator");
+        assert_eq!(256, split.batch_size());
     }
 
     #[test]
