@@ -84,6 +84,19 @@
 - Spark 4.0.1 (audited 2026-05-27): semantics unchanged.
 - Spark 4.1.1 (audited 2026-05-27): identical to 4.0.1.
 
+## AtLeastNNonNulls (DataFrame API)
+
+- Spark 3.4.3 (audited 2026-09-24): non-nullable Boolean predicate used by `DataFrame.na.drop`. Counts non-null, non-NaN children and stops evaluating a row once the threshold is reached. Non-positive thresholds return true without evaluating children.
+- Spark 3.5.9 (audited 2026-09-24): identical to 3.4.3.
+- Spark 4.0.4 (audited 2026-09-24): identical to 3.4.3.
+- Spark 4.1.3 (audited 2026-09-24): identical to 3.4.3.
+
+Comet uses a native physical expression to preserve per-row short-circuit evaluation. Non-floating types use outer logical nullability; nested nulls and empty collections remain non-null values. Rust tests cover thresholds, sliced and empty batches, dictionary values, literals, and required and skipped child errors. DataFrame tests cover native routing, disabled-expression fallback, complex types and ANSI casts. This internal predicate has no SQL function name.
+
+Native evaluation, like Spark's, may skip the children after the first `n` on a row. When subexpression elimination shares a subexpression with one of those children, Spark evaluates it for every row, so Comet falls back to Spark rather than skip an error Spark would raise. Plain `DataFrame.na.drop` children are columns and stay native.
+
+- The [Criterion benchmark](../../../../native/spark-expr/benches/at_least_n_non_nulls.rs) covers batch sizes around the 64-row bitmap word boundary and NULL/NaN densities.
+
 ## between
 
 - Spark 3.4.3 (audited 2026-05-27): the SQL form `expr BETWEEN low AND high` is rewritten at the parser level to `expr >= low AND expr <= high`. Comet sees only the resulting `And(GreaterThanOrEqual, LessThanOrEqual)` and routes via `CometAnd` + `CometGreaterThanOrEqual` + `CometLessThanOrEqual`.

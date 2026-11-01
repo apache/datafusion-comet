@@ -19,6 +19,28 @@ under the License.
 
 # Operator Compatibility
 
+## Observations
+
+`CollectMetricsExec`, used by `DataFrame.observe`, preserves Spark's observation counters while
+passing the original Arrow batches between native operators. Metric expressions still execute
+in Spark over row views of each batch; the data is not copied into a row-based pipeline.
+Spark retains ownership of accumulator publication, observation listeners, resets and snapshots.
+
+This path requires native input and is enabled by `spark.comet.exec.collectMetrics.enabled`.
+Observations retain Spark execution when a consumer can stop reading mid-batch. This includes
+limits, joins, `Dataset.mapPartitions`, replacement sampling at a nonpositive rate, and external
+actions such as `foreachPartition` or `rdd.take`, which do not introduce a physical-plan node.
+The final row iterator is therefore
+treated as potentially partial, even when the eventual action reads all rows. A local sort or
+aggregate does not remove this restriction: an external consumer may never request its output,
+so Spark may leave its input unread while native stream setup fetches a batch.
+
+A materializing shuffle or broadcast exchange allows columnar observations in its producer
+subtree, unless another short-circuiting consumer intervenes. This preserves native observation
+in aggregation and shuffle pipelines while keeping counters aligned with Spark's consumption.
+Direct observations and write pipelines without such an exchange retain Spark collection;
+writer nodes alone do not enable columnar observations.
+
 ## Empty Relations
 
 On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
@@ -132,12 +154,19 @@ express falls back to Spark and records a fallback reason (see
 [Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
 an operator above the join relies on the order.
 
-Where the order Spark reports might not hold, Comet declares nothing and an outer join can return
-its unmatched rows out of order. The output of a nested loop join
-([#6898](https://github.com/apache/datafusion-comet/issues/6898)) is one such case, and so is a
-cache or checkpoint that one wrote. Comet also declares nothing when it cannot follow the
-order back to its source, as with an RDD checkpoint, and over some caches written by an outer hash
-join whose order does hold ([#6922](https://github.com/apache/datafusion-comet/issues/6922)).
+An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
+reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
+in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+`spark.comet.convert.rdd.enabled=true`, which defaults to `false`. Without that setting the
+checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
+outer hash join whose own probe input was not a scan
+([#6922](https://github.com/apache/datafusion-comet/issues/6922)). The output of a nested loop
+join can already be out of order when it reaches the join
+([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
+
+When the order Comet cannot check comes only from another native hash join in the same plan, the
+join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
+it can see there.
 
 ## Window Functions
 

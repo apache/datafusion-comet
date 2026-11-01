@@ -6,8 +6,6 @@
 .claude/skills
 CLAUDE.md
 native/Cargo.lock
-native/jni-bridge/testdata/backtrace.txt
-native/jni-bridge/testdata/stacktrace.txt
 dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt
