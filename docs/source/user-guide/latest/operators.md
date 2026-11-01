@@ -70,11 +70,12 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Projection and filtering
 
-| Operator      | Status | Notes                                                                                        |
-| ------------- | ------ | -------------------------------------------------------------------------------------------- |
-| `ProjectExec` | ✅     |                                                                                              |
-| `FilterExec`  | ✅     |                                                                                              |
-| `SampleExec`  | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md). |
+| Operator             | Status | Notes                                                                                                                                                     |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProjectExec`        | ✅     |                                                                                                                                                           |
+| `FilterExec`         | ✅     |                                                                                                                                                           |
+| `SampleExec`         | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md).                                                              |
+| `CollectMetricsExec` | ✅     | Spark evaluates observation counters while Comet forwards Arrow batches to native consumers. See [Observations](compatibility/operators.md#observations). |
 
 ## Sorting and limiting
 
