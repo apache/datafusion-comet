@@ -1657,7 +1657,7 @@ class CometNativeReaderSuite extends CometTestBase with AdaptiveSparkPlanHelper 
                 .parquet(path.toString)
                 .createOrReplaceTempView("make_date_residual_filters")
               val df = sql(
-                s"SELECT count(*) FROM make_date_residual_filters " +
+                "SELECT count(*) FROM make_date_residual_filters " +
                   s"WHERE $datePredicate AND length(mask) > 0")
               val scan = find(df.queryExecution.executedPlan)(_.isInstanceOf[CometNativeScanExec])
                 .getOrElse(fail("Expected a native Parquet scan"))
