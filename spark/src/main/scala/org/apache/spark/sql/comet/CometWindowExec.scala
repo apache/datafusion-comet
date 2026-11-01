@@ -75,11 +75,20 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         }
     }
 
+    // Spark plans no sort below the window when its input already reports the order the window
+    // needs. That order is relied on, by declaring it natively or by handing the rows to Spark's
+    // window, only when mayReportFalseOrder trusts it: Spark's window would group the rows of a
+    // false order wrongly, while the native one rejects an input whose order it cannot see.
+    val requiredOrdering = op.requiredChildOrdering.head
+    val trustsInputOrder =
+      SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
+        !CometHashJoinExec.mayReportFalseInputOrder(op.child)
+
     // The native window finds partitions and peers by comparing keys byte by byte, so it would
     // tell apart collated strings that Spark treats as equal, as CometWindowGroupLimitExec notes.
     val collated = (op.partitionSpec ++ op.orderSpec.map(_.child))
       .filter(key => hasNonDefaultStringCollation(key.dataType))
-    if (collated.nonEmpty) {
+    if (collated.nonEmpty && trustsInputOrder) {
       withFallbackReason(
         op,
         collated
@@ -94,16 +103,11 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
 
     if (windowExprProto.forall(_.isDefined) && partitionExprs.forall(_.isDefined)
       && sortOrders.forall(_.isDefined)) {
-      // Spark plans no sort below the window when its input already reports the order the window
-      // needs, but rows from the JVM arrive through a ScanExec that declares none. Send the
-      // partition keys' order, the only one the native window checks, for the planner to declare
-      // (see SortedInputExec). Nothing is sent when that order may be false. Falling back would
-      // not help, since Spark's window trusts the order too.
-      val requiredOrdering = op.requiredChildOrdering.head
+      // Rows from the JVM arrive through a ScanExec that declares no order. Send the partition
+      // keys' order, the only one the native window checks, for the planner to declare (see
+      // SortedInputExec).
       val inputSortOrders =
-        if (op.partitionSpec.nonEmpty &&
-          SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
-          !CometHashJoinExec.mayReportFalseInputOrder(op.child)) {
+        if (op.partitionSpec.nonEmpty && trustsInputOrder) {
           val partitionKeys = requiredOrdering.take(op.partitionSpec.length)
           val orders = partitionKeys.flatMap(exprToProto(_, op.child.output))
           if (orders.length < partitionKeys.length) {

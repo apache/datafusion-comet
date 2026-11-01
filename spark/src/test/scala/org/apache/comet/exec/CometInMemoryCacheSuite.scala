@@ -3860,18 +3860,20 @@ class CometInMemoryCacheSuite extends CometTestBase {
             Row(nullable(k), nullable(k), id, keySums(k) * keyCounts(k))
           },
           Seq(Seq("1 Ascending NullsFirst"), Seq("0 Ascending NullsFirst")))
-        // The residual condition leaves rows of key 0 unmatched among matched ones, so the key
-        // stays together only if the join keeps its unmatched probe rows in place.
+        // The join declares the order of a, which Spark reports in place of k, so the window by k
+        // needs its order declared next to the join's. The residual condition leaves rows of key 0
+        // unmatched among matched ones, so the key stays together only if the join keeps its
+        // unmatched probe rows in place.
         val one = spark.range(1).toDF("j").hint("broadcast")
         checkWindows(
           cached
             .join(one, col("k") === col("j") && col("v") % 2 === 0, "left_outer")
-            .selectExpr("k", "a", "v", "sum(v) OVER (PARTITION BY a) AS s"),
+            .selectExpr("k", "a", "v", "sum(v) OVER (PARTITION BY k) AS s"),
           ids.map { id =>
             val k = key(id)
             Row(nullable(k), nullable(k), id, keySums(k))
           },
-          Seq(Seq("1 Ascending NullsFirst")))
+          Seq(Seq("0 Ascending NullsFirst")))
       } finally {
         spark.catalog.clearCache()
       }
