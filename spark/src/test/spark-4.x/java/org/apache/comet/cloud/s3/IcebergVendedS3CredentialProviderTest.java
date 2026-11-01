@@ -22,6 +22,8 @@ package org.apache.comet.cloud.s3;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
@@ -36,6 +38,7 @@ import com.sun.net.httpserver.HttpServer;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Unit tests for {@link IcebergVendedS3CredentialProvider}. A local HTTP server stands in for the
@@ -130,14 +133,36 @@ public class IcebergVendedS3CredentialProviderTest {
   }
 
   @Test
-  public void usesStaticVendedCredentialsWhenTheCatalogReturnsNoRefreshEndpoint() {
+  public void refreshesThroughARelativeEndpointResolvedAgainstTheCatalogUri() {
+    // REST catalogs usually return the endpoint relative to the catalog uri.
+    Map<String, String> props = vendedProps(System.currentTimeMillis() - 60_000L);
+    props.put("uri", catalogUri());
+    props.put("client.refresh-credentials-endpoint", "/v1/credentials");
+
     IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
-    p.initialize(vendedProps(System.currentTimeMillis() + 3_600_000L));
+    p.initialize(props);
+    CometS3Credentials c = p.getCredentialsForPath(CONTEXT);
+
+    assertEquals("AKIA_REFRESHED", c.getAccessKeyId());
+    assertEquals(refreshedExpiryMillis, c.getExpirationEpochMillis());
+    assertEquals(1, refreshCalls.get());
+  }
+
+  @Test
+  public void usesStaticVendedCredentialsWhenTheCatalogReturnsNoRefreshEndpoint() {
+    long expiresAt = System.currentTimeMillis() + 3_600_000L;
+    Map<String, String> props = vendedProps(expiresAt);
+    props.put("uri", catalogUri());
+
+    IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
+    p.initialize(props);
     CometS3Credentials c = p.getCredentialsForPath(CONTEXT);
 
     assertEquals("AKIA_INITIAL", c.getAccessKeyId());
     assertEquals("secret_INITIAL", c.getSecretAccessKey());
     assertEquals("token_INITIAL", c.getSessionToken());
+    // The vended expiry is reported, so Comet keeps reusing the static credential.
+    assertEquals(expiresAt, c.getExpirationEpochMillis());
     assertEquals(0, refreshCalls.get());
   }
 
@@ -169,6 +194,49 @@ public class IcebergVendedS3CredentialProviderTest {
     assertEquals("AKIA_STATIC", c.getAccessKeyId());
     assertNull(c.getSessionToken());
     assertEquals(0L, c.getExpirationEpochMillis());
+  }
+
+  @Test
+  public void reportsIcebergFailuresWithTheirCause() {
+    // A refresh endpoint with no catalog uri makes Iceberg throw while building the provider.
+    Map<String, String> props = vendedProps(System.currentTimeMillis() + 3_600_000L);
+    props.put("client.refresh-credentials-endpoint", "/v1/credentials");
+
+    IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> p.initialize(props));
+    assertTrue(e.getMessage(), e.getMessage().contains("failed to build a credentials provider"));
+    assertTrue(e.getCause() != null && !(e.getCause() instanceof ReflectiveOperationException));
+  }
+
+  @Test
+  public void reportsMissingIcebergAws() {
+    Thread thread = Thread.currentThread();
+    ClassLoader previous = thread.getContextClassLoader();
+    // A loader with no parent cannot see iceberg-aws.
+    thread.setContextClassLoader(new URLClassLoader(new URL[0], null));
+    try {
+      IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
+      IllegalStateException e =
+          assertThrows(IllegalStateException.class, () -> p.initialize(new HashMap<>()));
+      assertTrue(e.getMessage(), e.getMessage().contains("needs iceberg-aws"));
+    } finally {
+      thread.setContextClassLoader(previous);
+    }
+  }
+
+  @Test
+  public void rejectsAnonymousCredentialsWithAHint() {
+    Map<String, String> props = new HashMap<>();
+    props.put(
+        "client.credentials-provider",
+        "software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider");
+
+    IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
+    p.initialize(props);
+    IllegalStateException e =
+        assertThrows(IllegalStateException.class, () -> p.getCredentialsForPath(CONTEXT));
+    assertTrue(e.getMessage(), e.getMessage().contains("anonymous or empty credentials"));
+    assertTrue(e.getMessage(), e.getMessage().contains("s3.comet.credential.provider.class"));
   }
 
   @Test

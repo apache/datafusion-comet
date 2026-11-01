@@ -34,6 +34,44 @@ import org.apache.comet.iceberg.IcebergReflection
 /** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
+  private val refreshEndpoint =
+    Map("client.refresh-credentials-endpoint" -> "https://catalog/v1/credentials")
+  private val providerKey = CometIcebergNativeScan.IcebergCredentialProviderClassKey
+
+  test("vended refresh endpoint selects the vended credential provider") {
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(refreshEndpoint, providerAvailable = true)
+      .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+  }
+
+  test("an explicit credential provider, even an empty one, is kept") {
+    for (explicit <- Seq("com.example.MyProvider", "")) {
+      CometIcebergNativeScan
+        .withVendedCredentialProvider(
+          refreshEndpoint + (providerKey -> explicit),
+          providerAvailable = true)
+        .get(providerKey) shouldBe Some(explicit)
+    }
+  }
+
+  test("no provider is selected without a usable refresh endpoint") {
+    for (props <- Seq(
+        Map.empty[String, String],
+        Map("client.refresh-credentials-endpoint" -> " "),
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> "FALSE"))) {
+      withClue(props) {
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
+      }
+    }
+  }
+
+  test("no provider is selected when the build lacks the provider class") {
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(refreshEndpoint, providerAvailable = false) shouldBe
+      refreshEndpoint
+  }
+
   test("complex type null residuals are not serialized") {
     // Container predicates stay in the post-scan filter, not the native residual pool.
     for (dataType <- Seq(
