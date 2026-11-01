@@ -23,11 +23,12 @@ import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
 import org.apache.spark.SPARK_VERSION
-import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EvalMode, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, AttributeReference, BinaryComparison, BoundReference, CaseWhen, Cast, Coalesce, Contains, CreateArray, Divide, ElementAt, EmptyRow, EndsWith, EqualTo, EvalMode, Expression, Flatten, GetArrayItem, GreaterThan, HigherOrderFunction, If, In, InSet, IntegralDivide, IsNaN, IsNotNull, IsNull, LambdaFunction, Length, LessThan, Literal, Lower, Multiply, NamedLambdaVariable, Not, Or, Remainder, Reverse, Sequence, Size, Slice, SortArray, StartsWith, Substring, Subtract, Upper, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
@@ -1047,6 +1048,11 @@ object CometArrayFilter
         // operand to be the lambda variable itself, not a captured column (#4830).
         CometArrayCompact.convert(expr, inputs, binding)
       case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
+          if isNotNullInDisguise(body, lambdaVar) =>
+        // `nvl(x, '') != ''` on a numeric array: same native serde, and no cast of every element
+        // to a string.
+        CometArrayCompact.convert(expr, inputs, binding)
+      case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
           if binding && nativeLambdaSupported(expr, body) =>
         // The body is made of expressions Comet evaluates natively, so run the lambda over the
         // flattened elements of the whole batch instead of once per element in the JVM.
@@ -1054,6 +1060,34 @@ object CometArrayFilter
           dispatch(expr, inputs, binding))
       case _ => dispatch(expr, inputs, binding)
     }
+  }
+
+  /**
+   * Whether `body` is `x IS NOT NULL` written the way a rule on a numeric array writes it,
+   * `nvl(x, '') != ''`. Spark plans that on an int, double, decimal, date or timestamp element as
+   * `NOT (coalesce(CAST(x AS STRING), '') = '')`, in either operand order. Such a cast is empty
+   * for no value, so the predicate holds exactly when `x` is not NULL. Evaluating it as written
+   * casts every element to a string. A string element has no cast and is left to the lambda.
+   */
+  private def isNotNullInDisguise(body: Expression, lambdaVar: NamedLambdaVariable): Boolean = {
+    def isEmptyString(e: Expression): Boolean = e match {
+      case Literal(s: UTF8String, _: StringType) => s.numBytes() == 0
+      case _ => false
+    }
+    def isCoalescedCast(e: Expression): Boolean = e match {
+      case Coalesce(Seq(c: Cast, empty)) if isEmptyString(empty) =>
+        c.child match {
+          case v: NamedLambdaVariable => v.exprId == lambdaVar.exprId
+          case _ => false
+        }
+      case _ => false
+    }
+    isFixedWidth(lambdaVar.dataType) && (body match {
+      case Not(EqualTo(l, r)) =>
+        (isCoalescedCast(l) && isEmptyString(r)) ||
+        (isEmptyString(l) && isCoalescedCast(r))
+      case _ => false
+    })
   }
 
   /**

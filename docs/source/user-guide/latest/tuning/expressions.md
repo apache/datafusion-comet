@@ -26,7 +26,7 @@ A higher-order function takes a lambda: `filter(arr, x -> ...)`, `transform`, `e
 
 | Lambda                                                                                                                                                                    | How Comet runs it                                                                                                                                                                |
 | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `filter(arr, x -> x IS NOT NULL)` (what `array_compact` expands to)                                                                                                       | Natively, as `array_compact`.                                                                                                                                                    |
+| `filter(arr, x -> x IS NOT NULL)` (what `array_compact` expands to), and `filter(arr, x -> nvl(x, '') != '')` on an array of numbers, dates or timestamps                 | Natively, as `array_compact`.                                                                                                                                                    |
 | `filter` with a one-parameter lambda whose body uses only natively supported expressions, over an array of primitive, decimal, string, binary, date or timestamp elements | Natively. The lambda runs once over all the elements of a batch, vectorized, instead of once per element.                                                                        |
 | Any other lambda, and every other higher-order function                                                                                                                   | Through the [JVM codegen dispatcher](../scala_java_udfs.md). Spark's interpreter evaluates the lambda for each element inside a Comet kernel, so expect Spark's speed, not more. |
 
@@ -43,7 +43,9 @@ To get the most out of Comet when a query uses lambdas:
   strings with the default collation.
 - **Do not test a numeric array for nulls with a string comparison.** With ANSI mode off, Spark casts every element
   of `filter(int_arr, x -> nvl(x, '') != '')` to a string to compare it with `''`; with ANSI mode on the query does
-  not analyze. Write `x IS NOT NULL`, or call `array_compact`.
+  not analyze. Comet recognizes exactly this form, with either operand first, and runs it as `array_compact`, which
+  never casts. A variation, such as another default value or an extra condition, runs as a general lambda and does
+  cast every element. Write `x IS NOT NULL`, or call `array_compact`.
 - **Keep the lambda body to natively supported expressions.** A body that calls a regular expression function, a
   UDF or another lambda cannot be split from the dispatcher, so the whole lambda runs there. Use
   [`spark.comet.explain.codegen.enabled`](../understanding-comet-plans.md#sparkcometexplaincodegenenabled) to see which
@@ -72,7 +74,6 @@ To get the most out of Comet when a query uses lambdas:
 | ----------------------------------------------------------- | ------ | ----------------------- | -------------- |
 | `filter(strs, x -> nvl(x, '') != '')` (string array)        | 616 ms | 547 ms                  | 307 ms         |
 | `array_remove(array_compact(strs), '')` (same result)       | 587 ms | 252 ms                  | 252 ms         |
-| `filter(ints, x -> nvl(x, '') != '')` (integer array)       | 508 ms | 456 ms                  | 331 ms         |
 | `filter(ints, x -> x IS NOT NULL)`                          | 286 ms | 124 ms                  | 125 ms         |
 | `filter(ints, x -> x > threshold)`, `threshold` is a column | 346 ms | 335 ms                  | 110 ms         |
 
