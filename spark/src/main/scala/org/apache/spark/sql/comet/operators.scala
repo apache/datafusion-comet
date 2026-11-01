@@ -3299,6 +3299,10 @@ case class CometCartesianProductExec(
 
   // Inherits Spark's UnknownPartitioning from originalPlan, so exchange planning is unchanged.
 
+  // Each input must stay one partition. Without this, AQE's ValidateRequirements lets
+  // OptimizeSkewInRebalancePartitions split a REBALANCE(1) input after the product went native.
+  override def requiredChildDistribution: Seq[Distribution] = Seq(AllTuples, AllTuples)
+
   override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
     this.copy(left = newLeft, right = newRight)
 
