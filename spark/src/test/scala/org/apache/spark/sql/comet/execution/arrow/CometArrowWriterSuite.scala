@@ -886,9 +886,12 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
     false
   }
 
-  test("the row path keeps no reference to an unsafe row once it is written") {
-    // Arrays, maps and structs at the top level, inside one another and as array elements. A view
-    // reused across values would keep the last row it read, and the row's memory, reachable.
+  test("the row path keeps no reference to an unsafe row once its batch is finished") {
+    // Arrays, maps and structs at the top level, inside one another and as array elements. The
+    // writers point a reused view at each value, so between rows a view holds the last row it
+    // read: at most one row per nested writer. Finishing or resetting the writer must point every
+    // view away, or those rows, and the memory behind them, would stay reachable. With nulls, the
+    // views of different writers last read different rows.
     val schema = new StructType()
       .add("a", ArrayType(ArrayType(IntegerType)))
       .add("s", new StructType().add("x", StringType).add("y", ArrayType(LongType)))
@@ -896,28 +899,42 @@ class CometArrowWriterSuite extends AnyFunSuite with Matchers {
       .add("as", ArrayType(new StructType().add("w", IntegerType)))
       .add("am", ArrayType(MapType(IntegerType, StringType)))
     val n = 20
-    val rnd = new Random(7)
-    val vectors = schema.fields.map(f => newVector(n, f.dataType, offHeap = false))
-    val allocator = new RootAllocator(Long.MaxValue)
-    val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
-    try {
-      schema.fields.zip(vectors).foreach { case (field, v) =>
-        fill(v, field.dataType, n, rnd, nullFraction = 0.0, reversed = false)
-      }
-      val batch = new ColumnarBatch(vectors.toArray[ColumnVector], n)
-      val project = UnsafeProjection.create(schema)
-      val writer = ArrowWriter.create(root, n)
-      (0 until n).foreach { i =>
-        val row = project(batch.getRow(i)).copy()
-        writer.write(row)
-        withClue(s"row $i: ") {
-          reachable(writer, row.getBaseObject) shouldBe false
+    Seq(0.0, 0.5).foreach { nullFraction =>
+      val rnd = new Random(7)
+      val vectors = schema.fields.map(f => newVector(n, f.dataType, offHeap = false))
+      val allocator = new RootAllocator(Long.MaxValue)
+      val root = VectorSchemaRoot.create(Utils.toArrowSchema(schema, "UTC"), allocator)
+      try {
+        schema.fields.zip(vectors).foreach { case (field, v) =>
+          fill(v, field.dataType, n, rnd, nullFraction, reversed = false)
         }
+        val batch = new ColumnarBatch(vectors.toArray[ColumnVector], n)
+        val project = UnsafeProjection.create(schema)
+        val rows = (0 until n).map(i => project(batch.getRow(i)).copy())
+        Seq("finish", "reset").foreach { end =>
+          val writer = ArrowWriter.create(root, n)
+          rows.foreach { row =>
+            writer.write(row)
+            // A generic row's unsafe values take the writers' generic path into the same views.
+            writer.write(new GenericInternalRow(Array.tabulate[Any](schema.length)(f =>
+              if (row.isNullAt(f)) null else row.get(f, schema(f).dataType))))
+          }
+          val held = rows.count(row => reachable(writer, row.getBaseObject))
+          withClue(s"nulls=$nullFraction, rows held before $end: ") {
+            held should be <= 5 // one per nested writer at most
+          }
+          if (end == "finish") writer.finish() else writer.reset()
+          rows.zipWithIndex.foreach { case (row, i) =>
+            withClue(s"nulls=$nullFraction row $i after $end: ") {
+              reachable(writer, row.getBaseObject) shouldBe false
+            }
+          }
+        }
+      } finally {
+        root.close()
+        allocator.close()
+        vectors.foreach(_.close())
       }
-    } finally {
-      root.close()
-      allocator.close()
-      vectors.foreach(_.close())
     }
   }
 
