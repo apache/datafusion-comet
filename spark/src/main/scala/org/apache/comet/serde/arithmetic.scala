@@ -138,9 +138,10 @@ trait MathBase {
    * `returnType`. Rebalances a flattened chain into an `O(log n)`-depth tree so deep `a + b +
    * ...` chains serialize to a shallow proto instead of a left-deep one that overflows protobuf's
    * recursion limit when the plan is re-parsed. Only safe for exactly-associative chains --
-   * callers gate via [[isAssociativeAndRebalanceable]]. The flattened leaves all share the
-   * chain's type (Spark coerces operands to it, with casts acting as flatten boundaries), so a
-   * single `returnType` / `evalMode` is correct for every inner node.
+   * callers gate via [[isAssociativeAndRebalanceable]]. Spark coerces operands to the chain's
+   * type. Flattening stops at casts and at nested `Add` or `Multiply` expressions with a
+   * different `evalMode`, so every rebuilt inner node can use the chain's `returnType` and
+   * `evalMode`.
    */
   def createBalancedMathExpr(
       operands: Seq[Expression],
