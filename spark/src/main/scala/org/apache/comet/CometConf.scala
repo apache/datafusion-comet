@@ -394,6 +394,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("collectLimit", defaultValue = true)
+  val COMET_EXEC_COLLECT_METRICS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("collectMetrics", defaultValue = true)
   val COMET_EXEC_COALESCE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("coalesce", defaultValue = true)
   val COMET_EXEC_UNION_ENABLED: ConfigEntry[Boolean] =

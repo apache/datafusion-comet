@@ -83,6 +83,27 @@ fn build_stage(
         .plan
         .as_ref()
         .ok_or_else(|| plan_datafusion_err!("The stage has no plan"))?;
+    // Spark places the rows of a bucketed scan by Murmur3 and shuffles only the other side of a
+    // join to match. The hash exchange below would place the other side by DataFusion's hash, so
+    // partition `p` of one side would no longer meet the rows of bucket `p` of the other, and the
+    // join would return wrong rows without an error.
+    if !stage.partition_plans.is_empty()
+        && stage.inputs.iter().any(|input| {
+            !input.broadcast
+                && matches!(
+                    input
+                        .partitioning
+                        .as_ref()
+                        .and_then(|p| p.partitioning_struct.as_ref()),
+                    Some(PartitioningStruct::HashPartition(_))
+                )
+        })
+    {
+        return plan_err!(
+            "A stage that reads files can't also read a hash exchange: Spark's hash places rows \
+             differently from DataFusion's, so the two sides of a bucketed join wouldn't meet"
+        );
+    }
     // A stage that sorts what a range exchange delivers sorts the producer's partitions as they
     // are, and the sorted partitions are merged, as DataFusion plans a global sort.
     let merge = merge_ordering(
@@ -164,8 +185,8 @@ fn build_stage(
 ///
 /// A hash exchange partitions with DataFusion's hash function, not Spark's Murmur3. That is
 /// consistent within a query, which is all joins, aggregates and windows need, but a plan that
-/// relies on Spark's own placement of rows, such as a join with a bucketed table, would be wrong
-/// (https://github.com/apache/datafusion-comet/issues/7368).
+/// relies on Spark's own placement of rows, such as a join with a bucketed table, would be wrong,
+/// which `build_stage` refuses (https://github.com/apache/datafusion-comet/issues/7368).
 ///
 /// A range exchange whose stage merges its sorted partitions is no exchange at all: the stage
 /// reads the producer's partitions as they are. Otherwise it is read as one partition, and the
