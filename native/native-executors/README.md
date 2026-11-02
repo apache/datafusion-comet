@@ -74,6 +74,25 @@ A stage that fails to plan is refused, not run wrongly or loaded with code it na
 - A stage that reads files can't also read a hash exchange. Spark places the rows of a bucketed
   scan with Murmur3, so a join with a side shuffled by DataFusion's hash would return wrong rows.
 
+## Joins whose build side turns out small
+
+Spark plans a join's sides from its estimates, and its estimate of a filtered relation ignores the
+filter, so it shuffles both sides of a join whose build side is far smaller than it thinks. The
+scheduler moves such a join into the stage that produces its probe side, with the build side
+broadcast to it, so the probe side's exchange carries the join's output rather than all of its
+input (`src/adaptive.rs`). It picks the joins Spark's estimates say are worth measuring: an inner
+hash join built on the right, with column keys and no condition, whose build side Spark estimates
+within Ballista's maximum estimate multiple of its broadcast threshold and whose probe side many
+times larger.
+
+- In blocking mode, a rule in Ballista's adaptive planner holds the probe side's stage back until
+  the build side's stage finishes, then moves the join if the build side measured under
+  `ballista.optimizer.broadcast_join_threshold_bytes`, or releases the probe side's stage as it
+  was.
+- In pipelined mode every task is placed before any runs, so the scheduler first runs the build
+  side as a query of its own, and the probe side's stage reads it from memory if it came back under
+  the threshold.
+
 ## Building and running
 
 ```shell
@@ -102,8 +121,9 @@ This workspace builds Comet's native crates by path against Ballista's
 main branch with the enhancements Comet Native Executors need that haven't merged yet
 ([#2682](https://github.com/apache/datafusion-ballista/pull/2682),
 [#2721](https://github.com/apache/datafusion-ballista/pull/2721),
-[#2722](https://github.com/apache/datafusion-ballista/pull/2722) and
-[#2723](https://github.com/apache/datafusion-ballista/pull/2723)), on the same DataFusion major
+[#2722](https://github.com/apache/datafusion-ballista/pull/2722),
+[#2723](https://github.com/apache/datafusion-ballista/pull/2723) and
+[#2743](https://github.com/apache/datafusion-ballista/pull/2743)), on the same DataFusion major
 version. `Cargo.lock` pins the branch's commit. CI builds and tests the workspace in the
 `linux-test-native-executors` job. When Comet moves to a DataFusion major that Ballista hasn't
 caught up with, the upgrade can turn that job off until it does. Dependabot updates this
