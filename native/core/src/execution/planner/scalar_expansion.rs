@@ -24,10 +24,10 @@
 //! <https://github.com/apache/datafusion-comet/issues/7247>.
 //!
 //! The bound is enforced right under the operator that evaluates the expressions, with a
-//! [`BatchSplitExec`], because the operators below do not keep the session's batch size: a
-//! filter coalesces its output toward DataFusion's default size, a window emits its whole
-//! partition and a broadcast arrives as a few wide batches. No width can be assumed, so the
-//! split is installed whenever the operator expands a string or binary scalar at all.
+//! [`BatchSplitExec`], because the operators below do not keep the batch size they were
+//! handed: a filter coalesces its output back up to the session's batch size, a window emits
+//! its whole partition and a broadcast arrives as a few wide batches. No width can be assumed,
+//! so the split is installed whenever the operator expands a string or binary scalar at all.
 
 use std::sync::Arc;
 
@@ -237,15 +237,15 @@ mod tests {
     }
 
     #[test]
-    fn wraps_the_input_when_a_small_session_batch_fits_but_the_filter_default_does_not() {
+    fn wraps_the_input_at_a_session_batch_size_the_scalar_fits() {
         use datafusion::execution::context::SessionContext;
         use datafusion::physical_plan::empty::EmptyExec;
         use datafusion::prelude::SessionConfig;
         let session = SessionContext::new_with_config(SessionConfig::new().with_batch_size(256));
         let planner = PhysicalPlanner::new(Arc::new(session), 0);
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
-        // A 256 KiB scalar allows 4096 rows, more than the session's 256, which a filter below
-        // coalescing toward DataFusion's default of 8192 rows would exceed.
+        // A 256 KiB scalar allows 4096 rows, more than the session's 256, which the operators
+        // below do not keep to.
         let wide = lit("x".repeat(256 * 1024));
         let bounded = planner.bound_scalar_expansion(input, [&wide]);
         let split = bounded

@@ -16,8 +16,8 @@
 -- under the License.
 
 -- The filter case of large_scalar_string.sql with a session batch size that a 256 KiB scalar
--- fits as is. DataFusion's filter coalesces toward its own default of 8192 rows whatever the
--- session says, so the projection above it still needs its input bounded.
+-- fits as is. The projection above the filter still bounds its input, whatever the filter
+-- emits.
 -- See https://github.com/apache/datafusion-comet/issues/7247.
 -- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.comet.batchSize=256
