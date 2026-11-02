@@ -22,6 +22,7 @@ package org.apache.comet.vector
 import java.io.IOException
 import java.nio.charset.StandardCharsets
 
+import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.Using
 
@@ -34,8 +35,9 @@ import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvid
 import org.apache.arrow.vector.types.TimeUnit
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CapturedSQLConf, CometExec}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometExec, CometNativeExec}
 import org.apache.spark.sql.comet.util.Utils
+import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, MapType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
@@ -50,11 +52,13 @@ class NativeUtilSuite extends CometTestBase {
     val allocator = new RootAllocator(Long.MaxValue)
     var allocatedArrays = Array.empty[ArrowArray]
     val nativeUtil = new NativeUtil {
-      override def allocateArrowStructs(numCols: Int): (Array[ArrowArray], Array[ArrowSchema]) = {
+      override protected def allocateArrowArrays(numCols: Int): Array[ArrowArray] = {
         allocatedArrays = Array.fill(numCols)(ArrowArray.allocateNew(allocator))
-        val schemas = Array.fill(numCols)(ArrowSchema.allocateNew(allocator))
-        (allocatedArrays, schemas)
+        allocatedArrays
       }
+
+      override protected def allocateArrowSchemas(numCols: Int): Array[ArrowSchema] =
+        Array.fill(numCols)(ArrowSchema.allocateNew(allocator))
     }
     try check(nativeUtil, allocator, () => allocatedArrays)
     finally {
@@ -308,6 +312,163 @@ class NativeUtilSuite extends CometTestBase {
       assert(actual eq expected)
       assert(actual.getSuppressed.length == 1)
       assert(actual.getSuppressed.head.isInstanceOf[NullPointerException])
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("getNextPlanBatch imports batches sent without a schema with the fields sent last") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val schemaAddrs = mutable.ArrayBuffer.empty[Seq[Long]]
+      def nextBatch(values: Seq[Int], withSchema: Boolean): ColumnarBatch =
+        Using.resource(new IntVector("value", allocator)) { vector =>
+          vector.allocateNew(values.length)
+          values.indices.foreach(i => vector.setSafe(i, values(i)))
+          vector.setValueCount(values.length)
+          nativeUtil
+            .getNextPlanBatch(
+              1,
+              (arrays, schemas) => {
+                schemaAddrs += schemas.toSeq
+                val schema = if (withSchema) ArrowSchema.wrap(schemas(0)) else null
+                Data.exportVector(allocator, vector, null, ArrowArray.wrap(arrays(0)), schema)
+                val rows = values.length.toLong
+                if (withSchema) rows | NativeUtil.OUTPUT_SCHEMA_EXPORTED else rows
+              })
+            .get
+        }
+
+      val imports = NativeUtil.planOutputSchemaImports.sum()
+      val batches = Seq(
+        nextBatch(Seq(1, 2), withSchema = true),
+        nextBatch(Seq(3), withSchema = false),
+        nextBatch(Seq(4, 5, 6), withSchema = false))
+      try {
+        val values = batches.map(batch => (0 until batch.numRows()).map(batch.column(0).getInt))
+        assert(values == Seq(Seq(1, 2), Seq(3), Seq(4, 5, 6)))
+        assert(NativeUtil.planOutputSchemaImports.sum() - imports == 1)
+        // The batches without a schema were passed the same empty schema structs.
+        assert(schemaAddrs(1) == schemaAddrs(2))
+      } finally {
+        batches.foreach(_.close())
+      }
+      // Only the kept schema structs remain, until close() frees them.
+      nativeUtil.close()
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("getNextPlanBatch releases the structs native filled before failing") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      Using.resource(new IntVector("value", allocator)) { vector =>
+        vector.allocateNew(1)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val expected = new IOException("native failed after exporting one column")
+        val actual = intercept[IOException] {
+          nativeUtil.getNextPlanBatch(
+            2,
+            (arrays, schemas) => {
+              Data.exportVector(
+                allocator,
+                vector,
+                null,
+                ArrowArray.wrap(arrays(0)),
+                ArrowSchema.wrap(schemas(0)))
+              throw expected
+            })
+        }
+        assert(actual eq expected)
+      }
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("getNextPlanBatch keeps its schema structs past the end of the output for close()") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      assert(nativeUtil.getNextPlanBatch(2, (_, _) => -1L).isEmpty)
+      assert(allocator.getAllocatedMemory > 0)
+      nativeUtil.close()
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("getNextPlanBatch rejects a batch without a schema before any schema was sent") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      Using.resource(new IntVector("value", allocator)) { vector =>
+        vector.allocateNew(1)
+        vector.setSafe(0, 42)
+        vector.setValueCount(1)
+        val failure = intercept[IllegalStateException] {
+          nativeUtil.getNextPlanBatch(
+            1,
+            (arrays, _) => {
+              Data.exportVector(allocator, vector, null, ArrowArray.wrap(arrays(0)))
+              1L
+            })
+        }
+        assert(failure.getMessage.contains("without a schema"))
+      }
+      nativeUtil.close()
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test("a native plan sends its output schema with its first batch only") {
+    withParquetTable((0 until 1000).map(i => (i.toLong, i.toString, (i, s"v$i"))), "t") {
+      Seq(true, false).foreach { cacheOutputSchema =>
+        withSQLConf(
+          CometConf.COMET_BATCH_SIZE.key -> "100",
+          CometConf.COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED.key -> cacheOutputSchema.toString) {
+          val df = sql("SELECT _1, _2, _3 FROM t")
+          val plan = collectFirst(df.queryExecution.executedPlan) {
+            case native: CometNativeExec =>
+              native
+          }.get
+          val imports = NativeUtil.planOutputSchemaImports.sum()
+          val batchesPerTask = SQLExecution.withNewExecutionId(df.queryExecution) {
+            plan.executeColumnar().mapPartitions(batches => Iterator(batches.size)).collect()
+          }
+          assert(batchesPerTask.sum >= 10)
+          val expected =
+            if (cacheOutputSchema) batchesPerTask.count(_ > 0) else batchesPerTask.sum
+          assert(NativeUtil.planOutputSchemaImports.sum() - imports == expected)
+          checkSparkAnswerAndOperator(df)
+        }
+      }
+    }
+  }
+
+  test("getNextPlanBatch keeps no fields from a batch with a dictionary") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      val indexType = new ArrowType.Int(32, true)
+      val encoding = new DictionaryEncoding(0L, false, indexType)
+      val indexField = new Field("encoded", new FieldType(true, indexType, encoding), null)
+      Using.resources(
+        new VarCharVector("dictionary", allocator),
+        new IntVector(indexField, allocator)) { (values, indices) =>
+        values.allocateNew(1)
+        values.setSafe(0, "a".getBytes(StandardCharsets.UTF_8))
+        values.setValueCount(1)
+        indices.allocateNew(2)
+        indices.setSafe(0, 0)
+        indices.setSafe(1, 0)
+        indices.setValueCount(2)
+        val provider = new MapDictionaryProvider(new Dictionary(values, encoding))
+        def nextBatch(withSchema: Boolean): Option[ColumnarBatch] =
+          nativeUtil.getNextPlanBatch(
+            1,
+            (arrays, schemas) => {
+              val schema = if (withSchema) ArrowSchema.wrap(schemas(0)) else null
+              Data.exportVector(allocator, indices, provider, ArrowArray.wrap(arrays(0)), schema)
+              if (withSchema) 2L | NativeUtil.OUTPUT_SCHEMA_EXPORTED else 2L
+            })
+
+        nextBatch(withSchema = true).get.close()
+        // Native sends the schema of every batch with a dictionary, so one without is an error.
+        val failure = intercept[IllegalStateException](nextBatch(withSchema = false))
+        assert(failure.getMessage.contains("without a schema"))
+      }
+      nativeUtil.close()
       assert(allocator.getAllocatedMemory == 0)
     }
   }
