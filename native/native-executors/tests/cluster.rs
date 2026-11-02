@@ -134,24 +134,15 @@ impl Cluster {
         let info = self.get_flight_info(request).await.unwrap();
         let mut partitions = vec![];
         for endpoint in &info.endpoint {
-            partitions.push(read(endpoint, &self.flight_url).await.unwrap());
+            partitions.push(read(endpoint).await.unwrap());
         }
         partitions
     }
 }
 
-/// Reads a result partition from the executor that holds it, or from the scheduler at
-/// `scheduler_url` for an endpoint with no location, as the scheduler serves a pipelined query's
-/// results itself.
-async fn read(
-    endpoint: &FlightEndpoint,
-    scheduler_url: &str,
-) -> Result<Vec<RecordBatch>, FlightError> {
-    let url = endpoint
-        .location
-        .first()
-        .map_or(scheduler_url, |location| location.uri.as_str());
-    let mut executor = connect(url).await;
+/// Reads a result partition from the executor that holds it.
+async fn read(endpoint: &FlightEndpoint) -> Result<Vec<RecordBatch>, FlightError> {
+    let mut executor = connect(&endpoint.location[0].uri).await;
     let ticket = endpoint.ticket.clone().unwrap();
     within_time_limit(async { executor.do_get(ticket).await?.try_collect().await }).await
 }
@@ -316,64 +307,6 @@ async fn shuffles_the_probe_side_when_the_build_side_measures_large() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn measures_a_build_side_before_a_pipelined_query_and_broadcasts_it() {
-    // A pipelined query places every task before any runs, so the scheduler runs the build side
-    // first. It measures far under the broadcast threshold, so the join runs in the probe side's
-    // stage, reading the build side from memory.
-    let cluster = Cluster::start_with(&[(
-        "COMET_SCHEDULER_BALLISTA_CONFIG",
-        "ballista.execution.mode=pipelined".to_string(),
-    )]);
-    let mut probe = range_stage(10_000, 4);
-    probe.estimated_output_bytes = Some(1 << 40);
-    let mut build = range_stage(100, 2);
-    build.estimated_output_bytes = Some(1 << 30);
-    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
-
-    let partitions = cluster.run(&request).await;
-
-    let rows = partitions.concat();
-    assert_eq!(
-        sorted_values::<Int64Type>(&rows),
-        (0..100).collect::<Vec<_>>()
-    );
-    for batch in &rows {
-        assert_eq!(batch.column(0), batch.column(1));
-    }
-    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
-    assert!(
-        log.contains("before the query: broadcasting it to the probe side's stage"),
-        "{log}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn runs_a_pipelined_query_as_planned_when_the_build_side_measures_large() {
-    let cluster = Cluster::start_with(&[(
-        "COMET_SCHEDULER_BALLISTA_CONFIG",
-        "ballista.execution.mode=pipelined,ballista.optimizer.broadcast_join_threshold_bytes=1"
-            .to_string(),
-    )]);
-    let mut probe = range_stage(10_000, 4);
-    probe.estimated_output_bytes = Some(1 << 40);
-    let mut build = range_stage(100, 2);
-    build.estimated_output_bytes = Some(16);
-    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
-
-    let partitions = cluster.run(&request).await;
-
-    assert_eq!(
-        sorted_values::<Int64Type>(&partitions.concat()),
-        (0..100).collect::<Vec<_>>()
-    );
-    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
-    assert!(
-        log.contains("before the query: shuffling the probe side"),
-        "{log}"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn refuses_a_query_from_another_build() {
     let cluster = Cluster::start();
     let mut request = query(vec![range_stage(10, 1)]);
@@ -413,7 +346,7 @@ async fn endpoints_say_when_their_results_are_deleted() {
     assert!(expires_at <= SystemTime::now() + retention);
 
     // A client that reads one partition and then takes too long finds the other gone.
-    read(&info.endpoint[0], &cluster.flight_url).await.unwrap();
+    read(&info.endpoint[0]).await.unwrap();
     tokio::time::sleep(
         expires_at
             .duration_since(SystemTime::now())
@@ -421,7 +354,7 @@ async fn endpoints_say_when_their_results_are_deleted() {
     )
     .await;
     let deadline = Instant::now() + Duration::from_secs(60);
-    while read(&info.endpoint[1], &cluster.flight_url).await.is_ok() {
+    while read(&info.endpoint[1]).await.is_ok() {
         assert!(
             Instant::now() < deadline,
             "A result partition was still readable a minute after its endpoint expired"

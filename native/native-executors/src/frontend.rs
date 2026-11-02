@@ -56,7 +56,6 @@ use prost::Message;
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status, Streaming};
 
-use crate::adaptive::broadcast_measured_build_sides;
 use crate::assembly::{build_plan, check_version};
 
 /// The Ballista session every query runs in. Every query uses Ballista's default settings, and
@@ -378,17 +377,6 @@ impl FlightService for CometFlightService {
             .map_err(|e| Status::invalid_argument(e.to_string()))?;
         let mut info = FlightInfo::new();
         if pipelined {
-            let config = self.session.ballista_config();
-            let plan = broadcast_measured_build_sides(plan, &config, |build| async move {
-                let (_, result) = run_pipelined(&self.scheduler, &self.session, build)
-                    .await
-                    .map_err(|status| {
-                        datafusion::error::DataFusionError::External(Box::new(status))
-                    })?;
-                Ok(result.partitions.concat())
-            })
-            .await
-            .map_err(|e| Status::internal(format!("Cannot measure a join's build side: {e}")))?;
             let (job_id, result) = run_pipelined(&self.scheduler, &self.session, plan).await?;
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
