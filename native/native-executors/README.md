@@ -89,9 +89,8 @@ times larger.
   the build side's stage finishes, then moves the join if the build side measured under
   `ballista.optimizer.broadcast_join_threshold_bytes`, or releases the probe side's stage as it
   was.
-- In pipelined mode every task is placed before any runs, so the scheduler first runs the build
-  side as a query of its own, and the probe side's stage reads it from memory if it came back under
-  the threshold.
+- In pipelined mode every task is placed before any runs, so a build side cannot be measured first
+  and the join stays as Spark planned it.
 
 ## Building and running
 
