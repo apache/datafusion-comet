@@ -32,6 +32,7 @@
 //! build-side staging it uses Ballista's broadcast threshold, minimum probe ratio and maximum
 //! estimate multiple.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -40,10 +41,13 @@ use ballista_scheduler::state::adaptive::{AdaptiveRule, AdaptiveRules, ExchangeE
 use comet::execution::native_executors::{
     partition_descriptor, partition_plans, CometFragmentExec,
 };
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::arrow::array::RecordBatch;
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{internal_datafusion_err, Result};
 use datafusion::config::ConfigOptions;
+use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::statistics::StatisticsContext;
 use datafusion::physical_plan::{
     ChildrenPropertiesMode, ExecutionPlan, Partitioning, ReplaceChildrenOptions, StatisticsArgs,
@@ -169,6 +173,40 @@ fn hash_exchange(input: &Arc<dyn ExecutionPlan>) -> Option<(&ExchangeExec, &Come
     Some((exchange, producer))
 }
 
+/// The stage that produces a stage input, when the input is a hash shuffle of it: an
+/// [`ExchangeExec`] in adaptive planning, or the `RepartitionExec` the stage graph is built with.
+fn hash_shuffled_stage(input: &Arc<dyn ExecutionPlan>) -> Option<&CometFragmentExec> {
+    if let Some((_, producer)) = hash_exchange(input) {
+        return Some(producer);
+    }
+    let repartition = input.downcast_ref::<RepartitionExec>()?;
+    if !matches!(repartition.partitioning(), Partitioning::Hash(..)) {
+        return None;
+    }
+    repartition.input().downcast_ref::<CometFragmentExec>()
+}
+
+/// Spark's estimates of a join's probe and build sides, when they say measuring the build side
+/// before shuffling the probe side could pay off: the build side within Ballista's maximum
+/// estimate multiple of the broadcast threshold, and the probe side many times larger.
+fn worth_measuring(
+    probe: &CometFragmentExec,
+    build: &CometFragmentExec,
+    config: &BallistaConfig,
+) -> Option<(u64, u64)> {
+    let threshold = config.broadcast_join_threshold_bytes() as u64;
+    if threshold == 0 {
+        return None;
+    }
+    let max_build =
+        threshold.saturating_mul(config.stage_build_side_max_estimate_multiple() as u64);
+    let min_probe_ratio = config.stage_build_side_min_probe_ratio() as u64;
+    let probe_bytes = probe.fragment().estimated_output_bytes?;
+    let build_bytes = build.fragment().estimated_output_bytes?;
+    (build_bytes <= max_build && probe_bytes >= build_bytes.saturating_mul(min_probe_ratio))
+        .then_some((probe_bytes, build_bytes))
+}
+
 fn ballista_config(config: &ConfigOptions) -> BallistaConfig {
     config
         .extensions
@@ -193,13 +231,9 @@ impl PhysicalOptimizerRule for HoldProbeStages {
         config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let config = ballista_config(config);
-        let threshold = config.broadcast_join_threshold_bytes() as u64;
-        if threshold == 0 || !config.adaptive_join_enabled() {
+        if !config.adaptive_join_enabled() {
             return Ok(plan);
         }
-        let max_build =
-            threshold.saturating_mul(config.stage_build_side_max_estimate_multiple() as u64);
-        let min_probe_ratio = config.stage_build_side_min_probe_ratio() as u64;
         Ok(plan
             .transform_up(|node| {
                 let Some(fragment) = node.downcast_ref::<CometFragmentExec>() else {
@@ -221,17 +255,14 @@ impl PhysicalOptimizerRule for HoldProbeStages {
                     ) else {
                         continue;
                     };
-                    let (Some(probe_bytes), Some(build_bytes)) = (
-                        probe_stage.fragment().estimated_output_bytes,
-                        build_stage.fragment().estimated_output_bytes,
-                    ) else {
+                    let Some((probe_bytes, build_bytes)) =
+                        worth_measuring(probe_stage, build_stage, &config)
+                    else {
                         continue;
                     };
                     if probe.shuffle_created()
                         || build.shuffle_created()
                         || probe.is_inactive_stage()
-                        || build_bytes > max_build
-                        || probe_bytes < build_bytes.saturating_mul(min_probe_ratio)
                     {
                         continue;
                     }
@@ -351,7 +382,8 @@ impl BroadcastIntoProbe {
                 }
             );
             let decided = if small {
-                self.broadcast_into_probe(fragment, &block, &join)?
+                let broadcast = build.to_broadcast(self.plan_ids.fetch_add(1, Ordering::Relaxed));
+                move_join_into_probe(fragment, &block, &join, Arc::new(broadcast))?
             } else {
                 let mut children = fragment
                     .children()
@@ -365,120 +397,118 @@ impl BroadcastIntoProbe {
         }
         Ok(None)
     }
+}
 
-    /// `consumer` with `join` moved into the stage that produces its probe side, and its build
-    /// side broadcast to that stage.
-    fn broadcast_into_probe(
-        &self,
-        consumer: &CometFragmentExec,
-        block: &Operator,
-        join: &MovableJoin,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        let inputs = &consumer.children()[1..];
-        let (_, probe_stage) = hash_exchange(inputs[join.probe_input])
-            .ok_or_else(|| internal_datafusion_err!("The join's probe side is not an exchange"))?;
-        let (build, build_stage) = hash_exchange(inputs[join.build_input])
-            .ok_or_else(|| internal_datafusion_err!("The join's build side is not an exchange"))?;
-        let join_op = node_at(block, &join.path);
-        let build_leaf = &join_op.children[1];
+/// `consumer` with `join` moved into the stage that produces its probe side, which reads the
+/// build side as `broadcast`: one partition of the build side's whole output.
+fn move_join_into_probe(
+    consumer: &CometFragmentExec,
+    block: &Operator,
+    join: &MovableJoin,
+    broadcast: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let inputs = &consumer.children()[1..];
+    let probe_stage = hash_shuffled_stage(inputs[join.probe_input])
+        .ok_or_else(|| internal_datafusion_err!("The join's probe side is not a shuffle"))?;
+    let build_stage = hash_shuffled_stage(inputs[join.build_input])
+        .ok_or_else(|| internal_datafusion_err!("The join's build side is not a shuffle"))?;
+    let join_op = node_at(block, &join.path);
+    let build_leaf = &join_op.children[1];
 
-        // The probe side's stage runs the join on its output, reading the build side whole as
-        // its last input. The join becomes the root of the stage's block, so it takes over the
-        // block's pool of SQL texts.
-        let into_probe = |root: Operator| -> Operator {
-            let mut root = root;
-            let mut moved = join_op.clone();
-            moved.sql_text_pool = std::mem::take(&mut root.sql_text_pool);
-            moved.children = vec![root, build_leaf.clone()];
-            moved
-        };
-        let probe_fragment = probe_stage.fragment();
-        let block_of_probe = match block_of(probe_stage)? {
-            Some(root) => into_probe(root).encode_to_vec(),
-            None => vec![],
-        };
-        let descriptor = Arc::clone(probe_stage.children()[0]);
-        let own_plans = partition_plans(&descriptor)?;
-        let descriptor = if own_plans.is_empty() {
-            descriptor
-        } else {
-            let plans = own_plans
-                .iter()
-                .map(|plan| {
-                    let root = Operator::decode(plan.as_slice()).map_err(|e| {
-                        internal_datafusion_err!("Cannot decode a partition's block: {e}")
-                    })?;
-                    Ok(into_probe(root).encode_to_vec())
-                })
-                .collect::<Result<Vec<_>>>()?;
-            partition_descriptor(plans.len(), &plans)?
-        };
-        let mut broadcast = probe_fragment.broadcast.clone();
-        broadcast.push(true);
-        let mut output_schema = probe_fragment.output_schema.clone();
-        output_schema.extend(build_stage.fragment().output_schema.iter().cloned());
-        let joined = Fragment {
-            block: block_of_probe,
-            output_schema,
-            broadcast,
-            conf: probe_fragment.conf.clone(),
-            estimated_output_bytes: None,
-        };
-        let mut children = vec![descriptor];
-        children.extend(
-            probe_stage.children()[1..]
-                .iter()
-                .map(|child| Arc::clone(*child)),
-        );
-        children.push(Arc::new(
-            build.to_broadcast(self.plan_ids.fetch_add(1, Ordering::Relaxed)),
-        ));
-        let joined: Arc<dyn ExecutionPlan> =
-            Arc::new(CometFragmentExec::try_new(Arc::new(joined), children)?);
-        let exchange = with_children(inputs[join.probe_input], vec![joined])?;
-        let exchange = exchange
-            .downcast_ref::<ExchangeExec>()
-            .ok_or_else(|| internal_datafusion_err!("An exchange rebuilt as something else"))?
-            .with_inactive_stage(false);
-
-        // The consumer reads the join's output where it read the join's probe side, and no
-        // longer reads the build side.
-        let mut fields = leaf_fields(&join_op.children[0]).to_vec();
-        fields.extend(leaf_fields(build_leaf).iter().cloned());
-        let leaf = Operator {
-            children: vec![],
-            plan_id: join_op.plan_id,
-            sql_text_pool: if join.path.is_empty() {
-                join_op.sql_text_pool.clone()
-            } else {
-                vec![]
-            },
-            op_struct: Some(OpStruct::ShuffleScan(ShuffleScan {
-                fields,
-                source: "a join moved into the probe side's stage".to_string(),
-            })),
-        };
-        let mut consumer_block = block.clone();
-        replace_at(&mut consumer_block, &join.path, leaf);
-        let mut consumer_broadcast = consumer.fragment().broadcast.clone();
-        consumer_broadcast.remove(join.build_input);
-        let consumer_fragment = Fragment {
-            block: consumer_block.encode_to_vec(),
-            broadcast: consumer_broadcast,
-            ..consumer.fragment().as_ref().clone()
-        };
-        let mut children = consumer
-            .children()
-            .into_iter()
-            .map(Arc::clone)
-            .collect::<Vec<_>>();
-        children[1 + join.probe_input] = Arc::new(exchange);
-        children.remove(1 + join.build_input);
-        Ok(Arc::new(CometFragmentExec::try_new(
-            Arc::new(consumer_fragment),
-            children,
-        )?))
+    // The probe side's stage runs the join on its output, reading the build side whole as
+    // its last input. The join becomes the root of the stage's block, so it takes over the
+    // block's pool of SQL texts.
+    let into_probe = |root: Operator| -> Operator {
+        let mut root = root;
+        let mut moved = join_op.clone();
+        moved.sql_text_pool = std::mem::take(&mut root.sql_text_pool);
+        moved.children = vec![root, build_leaf.clone()];
+        moved
+    };
+    let probe_fragment = probe_stage.fragment();
+    let block_of_probe = match block_of(probe_stage)? {
+        Some(root) => into_probe(root).encode_to_vec(),
+        None => vec![],
+    };
+    let descriptor = Arc::clone(probe_stage.children()[0]);
+    let own_plans = partition_plans(&descriptor)?;
+    let descriptor = if own_plans.is_empty() {
+        descriptor
+    } else {
+        let plans = own_plans
+            .iter()
+            .map(|plan| {
+                let root = Operator::decode(plan.as_slice()).map_err(|e| {
+                    internal_datafusion_err!("Cannot decode a partition's block: {e}")
+                })?;
+                Ok(into_probe(root).encode_to_vec())
+            })
+            .collect::<Result<Vec<_>>>()?;
+        partition_descriptor(plans.len(), &plans)?
+    };
+    let mut broadcast_flags = probe_fragment.broadcast.clone();
+    broadcast_flags.push(true);
+    let mut output_schema = probe_fragment.output_schema.clone();
+    output_schema.extend(build_stage.fragment().output_schema.iter().cloned());
+    let joined = Fragment {
+        block: block_of_probe,
+        output_schema,
+        broadcast: broadcast_flags,
+        conf: probe_fragment.conf.clone(),
+        estimated_output_bytes: None,
+    };
+    let mut children = vec![descriptor];
+    children.extend(
+        probe_stage.children()[1..]
+            .iter()
+            .map(|child| Arc::clone(*child)),
+    );
+    children.push(broadcast);
+    let joined: Arc<dyn ExecutionPlan> =
+        Arc::new(CometFragmentExec::try_new(Arc::new(joined), children)?);
+    // A held stage runs once its join is decided.
+    let mut exchange = with_children(inputs[join.probe_input], vec![joined])?;
+    if let Some(held) = exchange.downcast_ref::<ExchangeExec>() {
+        exchange = Arc::new(held.with_inactive_stage(false));
     }
+
+    // The consumer reads the join's output where it read the join's probe side, and no
+    // longer reads the build side.
+    let mut fields = leaf_fields(&join_op.children[0]).to_vec();
+    fields.extend(leaf_fields(build_leaf).iter().cloned());
+    let leaf = Operator {
+        children: vec![],
+        plan_id: join_op.plan_id,
+        sql_text_pool: if join.path.is_empty() {
+            join_op.sql_text_pool.clone()
+        } else {
+            vec![]
+        },
+        op_struct: Some(OpStruct::ShuffleScan(ShuffleScan {
+            fields,
+            source: "a join moved into the probe side's stage".to_string(),
+        })),
+    };
+    let mut consumer_block = block.clone();
+    replace_at(&mut consumer_block, &join.path, leaf);
+    let mut consumer_broadcast = consumer.fragment().broadcast.clone();
+    consumer_broadcast.remove(join.build_input);
+    let consumer_fragment = Fragment {
+        block: consumer_block.encode_to_vec(),
+        broadcast: consumer_broadcast,
+        ..consumer.fragment().as_ref().clone()
+    };
+    let mut children = consumer
+        .children()
+        .into_iter()
+        .map(Arc::clone)
+        .collect::<Vec<_>>();
+    children[1 + join.probe_input] = exchange;
+    children.remove(1 + join.build_input);
+    Ok(Arc::new(CometFragmentExec::try_new(
+        Arc::new(consumer_fragment),
+        children,
+    )?))
 }
 
 fn replace_at(block: &mut Operator, path: &[usize], replacement: Operator) {
@@ -496,4 +526,128 @@ fn with_children(
         children,
         ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
     )
+}
+
+/// Measures, before a pipelined query runs, the build side of each [`MovableJoin`] that
+/// [`worth_measuring`] picks, and moves the join into its probe side's stage where the build side
+/// comes back under the broadcast threshold.
+///
+/// A pipelined query places every task before any runs, so it can't hold a stage back the way
+/// [`HoldProbeStages`] does. Instead `run` runs the build side's stage as a query of its own and
+/// returns its output, and the probe side's stage reads that output from memory as a broadcast.
+/// A build side that comes back large runs again as part of the query.
+pub async fn broadcast_measured_build_sides<F, Fut>(
+    plan: Arc<dyn ExecutionPlan>,
+    config: &BallistaConfig,
+    run: F,
+) -> Result<Arc<dyn ExecutionPlan>>
+where
+    F: Fn(Arc<dyn ExecutionPlan>) -> Fut,
+    Fut: Future<Output = Result<Vec<RecordBatch>>>,
+{
+    let threshold = config.broadcast_join_threshold_bytes();
+    let mut plan = plan;
+    let mut measured: Vec<Arc<dyn ExecutionPlan>> = vec![];
+    while let Some(build) = next_build_side_to_measure(&plan, config, &measured)? {
+        measured.push(Arc::clone(&build));
+        let batches = run(Arc::clone(&build)).await?;
+        let bytes: usize = batches.iter().map(RecordBatch::get_array_memory_size).sum();
+        let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+        let small = bytes <= threshold;
+        info!(
+            "A join's build side measured {bytes} bytes and {rows} rows before the query: {}",
+            if small {
+                "broadcasting it to the probe side's stage"
+            } else {
+                "shuffling the probe side"
+            }
+        );
+        if small {
+            let source = MemorySourceConfig::try_new_exec(&[batches], build.schema(), None)?;
+            plan = move_join_reading(plan, &build, source)?;
+        }
+    }
+    Ok(plan)
+}
+
+/// The stage of the first build side in `plan` worth measuring that isn't in `measured`.
+fn next_build_side_to_measure(
+    plan: &Arc<dyn ExecutionPlan>,
+    config: &BallistaConfig,
+    measured: &[Arc<dyn ExecutionPlan>],
+) -> Result<Option<Arc<dyn ExecutionPlan>>> {
+    let mut found = None;
+    plan.apply(|node| {
+        let Some(fragment) = node.downcast_ref::<CometFragmentExec>() else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let Some(block) = block_of(fragment)? else {
+            return Ok(TreeNodeRecursion::Continue);
+        };
+        let inputs = &fragment.children()[1..];
+        for join in movable_joins(&block) {
+            let (Some(probe_stage), Some(build_stage)) = (
+                hash_shuffled_stage(inputs[join.probe_input]),
+                hash_shuffled_stage(inputs[join.build_input]),
+            ) else {
+                continue;
+            };
+            let build = inputs[join.build_input].children()[0];
+            if measured.iter().any(|seen| same_node(seen, build)) {
+                continue;
+            }
+            if let Some((probe_bytes, build_bytes)) =
+                worth_measuring(probe_stage, build_stage, config)
+            {
+                info!(
+                    "Measuring a join's build side (estimated {build_bytes} bytes) before its \
+                     probe side (estimated {probe_bytes} bytes) is planned"
+                );
+                found = Some(Arc::clone(build));
+                return Ok(TreeNodeRecursion::Stop);
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(found)
+}
+
+/// `plan` with the join whose build side is the stage `build` moved into its probe side's
+/// stage, reading the build side from `source`.
+fn move_join_reading(
+    plan: Arc<dyn ExecutionPlan>,
+    build: &Arc<dyn ExecutionPlan>,
+    source: Arc<dyn ExecutionPlan>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let mut moved = false;
+    Ok(plan
+        .transform_up(|node| {
+            if moved {
+                return Ok(Transformed::no(node));
+            }
+            let Some(fragment) = node.downcast_ref::<CometFragmentExec>() else {
+                return Ok(Transformed::no(node));
+            };
+            let Some(block) = block_of(fragment)? else {
+                return Ok(Transformed::no(node));
+            };
+            let inputs = &fragment.children()[1..];
+            for join in movable_joins(&block) {
+                if hash_shuffled_stage(inputs[join.probe_input]).is_none()
+                    || hash_shuffled_stage(inputs[join.build_input]).is_none()
+                    || !same_node(inputs[join.build_input].children()[0], build)
+                {
+                    continue;
+                }
+                moved = true;
+                let rewritten = move_join_into_probe(fragment, &block, &join, Arc::clone(&source))?;
+                return Ok(Transformed::yes(rewritten));
+            }
+            Ok(Transformed::no(node))
+        })?
+        .data)
+}
+
+fn same_node(a: &Arc<dyn ExecutionPlan>, b: &Arc<dyn ExecutionPlan>) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
 }
