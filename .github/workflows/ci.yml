@@ -175,6 +175,9 @@ jobs:
       - name: Apache RAT license check
         run: ./dev/release/check-rat.sh HEAD
 
+      - name: Test JAR contents checker
+        run: python3 dev/ci/test-jar-contents.py
+
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:

@@ -142,11 +142,6 @@ allowed_expr+="|^org/apache/spark/CometExecutorPlugin.*$"
 allowed_expr+="|^org/apache/spark/CometSource.*$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.class$"
 allowed_expr+="|^org/apache/spark/CometTaskMemoryManager.*$"
-# Source jars use these filenames for the allowed Spark-private classes above.
-allowed_expr+="|^org/apache/spark/Plugins\.scala$"
-allowed_expr+="|^org/apache/spark/shuffle/sort/RowPartition\.scala$"
-# Shaded dependency sources include their Java module descriptor.
-allowed_expr+="|^module-info\.java$"
 allowed_expr+="|^scala-collection-compat.properties$"
 allowed_expr+="|^scala/$"
 allowed_expr+="|^scala/annotation/"
@@ -154,6 +149,12 @@ allowed_expr+="|^scala/collection/"
 allowed_expr+="|^scala/jdk/"
 allowed_expr+="|^scala/util/"
 
+# Source-only exceptions apply to the optional sources artifact, not the main list.
+sources_allowed_expr="${allowed_expr}"
+sources_allowed_expr+="|^org/apache/spark/Plugins\.scala$"
+sources_allowed_expr+="|^org/apache/spark/shuffle/sort/RowPartition\.scala$"
+sources_allowed_expr+="|^module-info\.java$"
+sources_allowed_expr+=")"
 allowed_expr+=")"
 declare -i bad_artifacts=0
 declare -a bad_contents
@@ -164,11 +165,13 @@ if [ "${#artifact_list[@]}" -eq 0 ]; then
   exit 1
 fi
 
+sources_index=-1
 if [ -n "${2:-}" ]; then
   skip_sources=$(printf '%s' "${3:-false}" | tr '[:upper:]' '[:lower:]')
   if [ "${skip_sources}" = "true" ]; then
     echo "[INFO] Skipping sources-JAR verification (maven.source.skip=true)."
   elif [ -f "$2" ]; then
+    sources_index=${#artifact_list[@]}
     artifact_list+=("$2")
   else
     echo "[ERROR] Expected sources JAR does not exist: '$2'."
@@ -184,10 +187,15 @@ jar_list_failed ()
 }
 trap jar_list_failed SIGUSR1
 
-for artifact in "${artifact_list[@]}"; do
+for artifact_index in "${!artifact_list[@]}"; do
+  artifact="${artifact_list[artifact_index]}"
+  artifact_allowed_expr="${allowed_expr}"
+  if [ "${artifact_index}" -eq "${sources_index}" ]; then
+    artifact_allowed_expr="${sources_allowed_expr}"
+  fi
   bad_contents=()
   # Note: On Windows the output from jar tf may contain \r\n's.  Normalize to \n.
-  while IFS='' read -r line; do bad_contents+=("$line"); done < <( ( jar tf "${artifact}" | sed 's/\\r//' || kill -SIGUSR1 $$ ) | grep -v -E "${allowed_expr}" )
+  while IFS='' read -r line; do bad_contents+=("$line"); done < <( ( jar tf "${artifact}" | sed 's/\\r//' || kill -SIGUSR1 $$ ) | grep -v -E "${artifact_allowed_expr}" )
   if [ ${#bad_contents[@]} -gt 0 ]; then
     echo "[ERROR] Found artifact with unexpected contents: '${artifact}'"
     echo "    Please check the following and either correct the build or update"
