@@ -181,11 +181,16 @@ fn parse_url_component<'a>(
         fragment,
     } = decompose_uri(value);
 
-    if scheme.is_none() {
-        if value.contains("://") {
-            return Err(invalid_url_err(value));
-        }
-        return Ok(None);
+    // A value without a scheme is a relative reference; a leading ':' is an empty
+    // scheme name, which java.net.URI rejects ("Expected scheme name at index 0").
+    if scheme.is_none() && value.starts_with(':') {
+        return Err(invalid_url_err(value));
+    }
+
+    // java.net.URI rejects an empty authority ("//", "http://") unless a path,
+    // query or fragment follows it ("Expected authority").
+    if authority == Some("") && path.is_empty() && query.is_none() && fragment.is_none() {
+        return Err(invalid_url_err(value));
     }
 
     // java.net.URI rejects unbalanced brackets in authority
@@ -794,5 +799,53 @@ mod tests {
         assert!(result.is_err());
         let result = parse_url_component("http://[::1/path", "HOST", None);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_relative_reference() -> Result<()> {
+        // Expected values are from Spark 4.1.1 (java.net.URI).
+        for (url, part, key, expected) in [
+            ("/shop?ref=abc&id=42#top", "PATH", None, Some("/shop")),
+            ("/shop?ref=abc&id=42#top", "QUERY", Some("id"), Some("42")),
+            ("/shop?ref=abc&id=42#top", "REF", None, Some("top")),
+            ("/shop?ref=abc&id=42#top", "HOST", None, None),
+            ("?id=7", "FILE", None, Some("?id=7")),
+            ("notaurl", "PATH", None, Some("notaurl")),
+            ("a/b:c?id=1", "PATH", None, Some("a/b:c")),
+            (
+                "//user:pw@example.com:8080/p",
+                "HOST",
+                None,
+                Some("example.com"),
+            ),
+            (
+                "//user:pw@example.com:8080/p",
+                "USERINFO",
+                None,
+                Some("user:pw"),
+            ),
+            ("///p?id=3", "AUTHORITY", None, None),
+            ("//?id=4", "QUERY", None, Some("id=4")),
+            ("/r?to=http://x.com/a&id=1", "QUERY", Some("id"), Some("1")),
+        ] {
+            assert_eq!(
+                parse_url_component(url, part, key)?,
+                expected,
+                "{url} {part}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_relative_reference() {
+        for url in [":", ":foo", "://missing-scheme", "//", "http://"] {
+            for part in ["HOST", "PATH", "PROTOCOL", "FILE"] {
+                assert!(
+                    parse_url_component(url, part, None).is_err(),
+                    "{url} {part}"
+                );
+            }
+        }
     }
 }

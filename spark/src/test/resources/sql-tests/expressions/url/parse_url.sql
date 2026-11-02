@@ -170,3 +170,33 @@ SELECT parse_url('http://host:abc/', 'AUTHORITY')
 -- unbalanced IPv6 bracket is invalid
 query
 SELECT parse_url('http://[::1/path', 'AUTHORITY')
+
+-- relative references (no scheme) are parsed like java.net.URI
+statement
+CREATE TABLE test_parse_url_relative(url string) USING parquet
+
+statement
+INSERT INTO test_parse_url_relative VALUES
+  ('/'),
+  ('notaurl'),
+  ('a/b:c?id=1'),
+  ('?id=7'),
+  ('#frag'),
+  ('/p#a?id=1'),
+  ('/shop/item/123?ref=abc&id=42#top'),
+  ('/r?to=http://x.com/a&id=1'),
+  ('//example.com'),
+  ('//user:pw@example.com:8080/p?id=1#f'),
+  ('///p?id=3'),
+  ('//#f'),
+  ('//?id=4'),
+  (':foo'),
+  ('//'),
+  ('http://'),
+  ('http://example.com/r?to=https://y.com&id=9')
+
+query
+SELECT url, parse_url(url, 'HOST'), parse_url(url, 'PATH'), parse_url(url, 'QUERY'),
+  parse_url(url, 'REF'), parse_url(url, 'PROTOCOL'), parse_url(url, 'FILE'),
+  parse_url(url, 'AUTHORITY'), parse_url(url, 'USERINFO'), parse_url(url, 'QUERY', 'id')
+FROM test_parse_url_relative

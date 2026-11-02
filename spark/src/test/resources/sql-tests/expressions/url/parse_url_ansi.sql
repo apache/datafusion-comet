@@ -55,3 +55,17 @@ SELECT parse_url('', 'HOST')
 -- unbalanced IPv6 bracket throws in ANSI mode
 query expect_error(http://[::1/path)
 SELECT parse_url('http://[::1/path', 'AUTHORITY')
+
+-- relative references do not throw in ANSI mode
+query
+SELECT parse_url('/shop?ref=abc&id=42', 'QUERY', 'id')
+
+query
+SELECT parse_url('//example.com/p', 'HOST')
+
+-- a leading ':' or an empty authority with nothing after it throws in ANSI mode
+query expect_error(:foo)
+SELECT parse_url(':foo', 'PATH')
+
+query expect_error(http://)
+SELECT parse_url('http://', 'PROTOCOL')
