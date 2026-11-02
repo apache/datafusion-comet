@@ -1125,7 +1125,7 @@ class CometIcebergNativeSuite
             val data = bulk.union(extra)
             val schema = StructType(data.schema.fields.zipWithIndex.map { case (field, index) =>
               field.copy(metadata =
-                new MetadataBuilder().putLong("parquet.field.id", index + 1).build())
+                new MetadataBuilder().putLong("parquet.field.id", (index + 1).toLong).build())
             })
             spark
               .createDataFrame(data.rdd, schema)
