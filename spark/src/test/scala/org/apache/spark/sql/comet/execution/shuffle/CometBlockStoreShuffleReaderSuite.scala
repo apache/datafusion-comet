@@ -41,12 +41,12 @@ class CometBlockStoreShuffleReaderSuite extends AnyFunSuite {
     val again = buffer.prepare(100)
     assert((again eq large) && again.position() == 0 && again.limit() == 100)
     assert(buffer.capacity == 6 * initial)
-    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 2)
+    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 2L)
 
     buffer.release()
     assert(buffer.capacity == 0)
     assert(buffer.prepare(5).capacity() == initial)
-    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 3)
+    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 3L)
   }
 
   test("closing a partially consumed raw stream does not fetch remaining blocks") {

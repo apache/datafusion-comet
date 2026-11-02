@@ -146,14 +146,14 @@ class NativeBatchDecoderIteratorSuite extends CometTestBase {
       mapOutputTracker = null) {
       override protected[shuffle] def fetchIterator: Iterator[(BlockId, InputStream)] =
         blocks.iterator.zipWithIndex.map { case (block, i) =>
-          (ShuffleBlockId(dependency.shuffleId, i, 0), new ByteArrayInputStream(block))
+          (ShuffleBlockId(dependency.shuffleId, i.toLong, 0), new ByteArrayInputStream(block))
         }
     }
     val allocationsBefore = ShuffleReadBuffer.allocations.get()
     try {
       val rows = reader.read().map(_._2.numRows()).sum
       assert(rows == 2 * largeRows + 1)
-      assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 1)
+      assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 1L)
     } finally {
       context.markTaskCompleted(None)
     }
