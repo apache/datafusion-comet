@@ -26,3 +26,15 @@ SELECT s.name, s.age, s.score FROM test_struct
 
 query
 SELECT s.name, s.age + 1, s.score * 2 FROM test_struct
+
+-- A NullType field reads as NULL, also through a null struct, whose nulls are pushed into the
+-- all-null field.
+statement
+CREATE TABLE test_struct_null_field(a int) USING parquet
+
+statement
+INSERT INTO test_struct_null_field VALUES (1), (-1), (NULL)
+
+query
+SELECT s.x, s.n FROM (
+  SELECT IF(a > 0, named_struct('x', a, 'n', null), null) AS s FROM test_struct_null_field)

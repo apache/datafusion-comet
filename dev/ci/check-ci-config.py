@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# Guards seven CI invariants that are silent when broken:
+# Guards nine CI invariants that are silent when broken:
 #
 #   1. Change-filter routing. dev/ci/compute-changes.py decides which heavy
 #      jobs run. A file that a job depends on but that no filter lists makes
@@ -73,8 +73,17 @@
 #      which is how every native build in the queue came to miss its cargo
 #      cache and pay a cold ~26 minute compile.
 #
+#   8. Fork runs. A pull request from a fork runs no PR tier upstream; the
+#      contributor's fork does (ci_fork.yml), and fork_ci_status.yml mirrors it
+#      as an informational check. The caller, the bridge and ci.yml's own push
+#      trigger have to agree, or the PR tier runs twice, or nowhere.
+#
+#   9. Scheduled workflows. A fork that enables scheduled workflows runs them on
+#      its owner's minutes, so each one needs a guard on the repository.
+#
 # Run from the repository root: python3 dev/ci/check-ci-config.py
 
+import ast
 import importlib.util
 import re
 import subprocess
@@ -242,6 +251,27 @@ ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
 DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
+
+# The repository whose queue gates main; check_event_policy asserts this matches
+# UPSTREAM in compute-changes.py.
+UPSTREAM = "apache/datafusion-comet"
+FORK = "contributor/datafusion-comet"
+
+
+def fork_pr(action="synchronize", label=None, labels=(), base="main", repository=UPSTREAM, head=FORK):
+    """A pull_request event for POLICY_CASES, from a fork of UPSTREAM by default."""
+    event = {
+        "name": "pull_request",
+        "action": action,
+        "labels": list(labels),
+        "base": base,
+        "repository": repository,
+        "head_repository": head,
+    }
+    if label:
+        event["label"] = label
+    return event
+
 
 POLICY_CASES = [
     # A manual run may exercise anything.
@@ -511,6 +541,43 @@ POLICY_CASES = [
         },
         PR_TIER,
     ),
+    # A pull request from a fork into main runs no PR tier upstream: the
+    # contributor's fork runs it (ci_fork.yml) and fork_ci_status.yml mirrors it
+    # as the informational `CI (fork)` check. Every opt-in label still works,
+    # because a fork cannot see the labels on the pull request.
+    (fork_pr(), set()),
+    (
+        fork_pr(labels=["run-spark-4.1-tests", "run-delta-tests"]),
+        {"spark_4_1", "spark_4_1_hive"} | DELTA_OPT_IN,
+    ),
+    # The label brings the non-default Spark profiles forward here, while the
+    # fork's run covers the default profile and the lints, so between them every
+    # profile runs. Only the profiles are on, which ci.yml turns into
+    # `profiles: nightly`; the PR tier's default-profile row is the fork's.
+    (fork_pr(labels=["run-all-spark-profiles"]), {"build_linux_all_profiles"}),
+    (
+        fork_pr(action="labeled", label="run-all-spark-profiles", labels=["run-all-spark-profiles"]),
+        {"build_linux_all_profiles"},
+    ),
+    # The exceptions keep the PR tier upstream: a pull request from a branch of
+    # this repository (a committer's, or dependabot's), and one that targets a
+    # release branch, which has no queue or nightly to catch what a fork run
+    # misses.
+    (fork_pr(head=UPSTREAM), PR_TIER),
+    (fork_pr(base="branch-1.1"), QUEUE_TIER | NIGHTLY_TIER),
+    # A push to a fork's branch is the contributor's pull request tier and
+    # nothing more: not main's cache refresh or site deploy (`docs` publishes to
+    # asf-site), and not the queue's or the nightly's suites. That holds for the
+    # fork's default branch too; a push that adds nothing to upstream selects no
+    # file (see dev/ci/fork-push-changed-files.sh).
+    ({"name": "push", "repository": FORK}, PR_TIER),
+    # A pull request opened inside a fork leaves the PR tier to the branch push
+    # that already ran it, so the same commit is not tested twice, but a label
+    # still runs its suite there.
+    (fork_pr(repository=FORK, head=FORK), set()),
+    (fork_pr(repository=FORK, head=FORK, labels=["run-iceberg-tests"]), ICEBERG_OPT_IN),
+    # Upstream, push stays the cache refresh and the site deploy.
+    ({"name": "push", "repository": UPSTREAM}, {"docs", "build_linux", "build_macos"}),
 ]
 
 
@@ -777,6 +844,11 @@ def check_change_filters():
 def check_event_policy():
     module = load_filters()
     failures = []
+    if module.UPSTREAM != UPSTREAM:
+        failures.append(
+            f"UPSTREAM is {module.UPSTREAM!r} in compute-changes.py but {UPSTREAM!r} here; "
+            f"the fork cases below would test the wrong repository"
+        )
     for event, expected in POLICY_CASES:
         actual = {job for job in module.POLICY if module.event_allows(job, event)}
         if actual != expected:
@@ -787,6 +859,10 @@ def check_event_policy():
                 label += f" +{event['label']}"
             if event.get("base"):
                 label += f" base={event['base']}"
+            if event.get("repository"):
+                label += f" in {event['repository']}"
+            if event.get("head_repository"):
+                label += f" from {event['head_repository']}"
             failures.append(
                 f"{label} labels={event.get('labels', [])}: "
                 f"unexpectedly allowed {sorted(actual - expected) or 'nothing'}, "
@@ -831,6 +907,8 @@ EVENT_ENV_SOURCES = {
     "LABEL_NAME": "github.event.label.name",
     "PR_LABELS": "toJSON(github.event.pull_request.labels.*.name)",
     "PR_BASE_REF": "github.event.pull_request.base.ref",
+    "PR_HEAD_REPO": "github.event.pull_request.head.repo.full_name",
+    "REPOSITORY": "github.repository",
 }
 ENV_READ = re.compile(r'os\.environ\.get\("([A-Z_]+)"')
 ENV_SET = re.compile(r"^\s+([A-Z_]+):\s+\$\{\{\s*(.+?)\s*\}\}\s*$")
@@ -1198,6 +1276,36 @@ def ci_triggers():
     return triggers
 
 
+# A job that calls ci.yml as a reusable workflow.
+CALLS_CI = re.compile(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", re.M)
+
+
+def permission_ceiling_failures(caller):
+    """Failures for each ci.yml permission that `caller` does not grant.
+
+    A workflow that calls ci.yml passes it a `permissions:` ceiling, and GitHub
+    refuses to start the run if any job in ci.yml asks for more, even a job the
+    event would skip.
+    """
+    granted = permission_blocks(caller.read_text(encoding="utf-8").splitlines())
+    ceiling = {}
+    for block in granted:
+        for scope, level in block.items():
+            ceiling[scope] = max(ceiling.get(scope, 0), PERMISSION_RANK[level])
+    failures = []
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
+    for block in permission_blocks(ci):
+        for scope, level in block.items():
+            if PERMISSION_RANK[level] > ceiling.get(scope, 0):
+                failures.append(
+                    f"ci.yml requests `{scope}: {level}`, but {caller.name} grants "
+                    f"the call at most `{scope}: "
+                    f"{PERMISSION_NAME[ceiling.get(scope, 0)]}`, so every run it "
+                    f"starts fails at startup. Raise the grant in {caller.name}"
+                )
+    return failures
+
+
 def check_label_runs_separate():
     """`labeled` runs come from ci_label.yml, never from ci.yml's own trigger.
 
@@ -1229,7 +1337,7 @@ def check_label_runs_separate():
         failures.append(f"{label_workflow} is missing; nothing runs on `labeled`")
     else:
         body = label_workflow.read_text(encoding="utf-8")
-        if not re.search(r"^\s+uses:\s*\./\.github/workflows/ci\.yml\s*$", body, re.M):
+        if not CALLS_CI.search(body):
             failures.append(f"{label_workflow} does not call ./.github/workflows/ci.yml")
         if not re.search(r"^\s+types:\s*\[\s*labeled\s*\]\s*$", body, re.M):
             failures.append(
@@ -1242,21 +1350,7 @@ def check_label_runs_separate():
     # even a job the `labeled` event would skip. That is how the `docs` job's
     # `contents: write` stopped every label run on 2026-09-29.
     if label_workflow.exists():
-        granted = permission_blocks(label_workflow.read_text(encoding="utf-8").splitlines())
-        ceiling = {}
-        for block in granted:
-            for scope, level in block.items():
-                ceiling[scope] = max(ceiling.get(scope, 0), PERMISSION_RANK[level])
-        ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8").splitlines()
-        for block in permission_blocks(ci):
-            for scope, level in block.items():
-                if PERMISSION_RANK[level] > ceiling.get(scope, 0):
-                    failures.append(
-                        f"ci.yml requests `{scope}: {level}`, but ci_label.yml grants "
-                        f"the call at most `{scope}: "
-                        f"{PERMISSION_NAME[ceiling.get(scope, 0)]}`, so every label "
-                        f"run fails at startup. Raise the grant in ci_label.yml"
-                    )
+        failures.extend(permission_ceiling_failures(label_workflow))
 
     for failure in failures:
         print(f"label runs: {failure}")
@@ -1560,6 +1654,280 @@ def check_cache_save_scope():
     return not failures
 
 
+# Fork runs. A push to a contributor's fork runs the PR tier there (ci_fork.yml),
+# upstream skips that tier for a fork pull request (compute-changes.py), and
+# fork_ci_status.yml mirrors the fork's run onto the pull request. The pieces
+# are in three files and break silently apart: a caller that also fires upstream
+# runs the PR tier twice, a caller that fires on main runs it twice in a fork, a
+# caller that cannot start leaves a fork pull request with no PR tier anywhere,
+# and a bridge that reads the wrong workflow name reports "no fork CI" on every
+# pull request.
+FORK_WORKFLOW = WORKFLOWS / "ci_fork.yml"
+BRIDGE_WORKFLOW = WORKFLOWS / "fork_ci_status.yml"
+FORK_TEST = Path("dev/ci/test-fork-ci-status.cjs")
+FORK_PUSH_SCRIPT = Path("dev/ci/fork-push-changed-files.sh")
+FORK_PUSH_TEST = Path("dev/ci/test-fork-push-changed-files.py")
+
+
+def workflow_name(path):
+    match = re.search(r"^name:\s*(.+?)\s*$", path.read_text(encoding="utf-8"), re.M)
+    return match.group(1) if match else None
+
+
+def check_fork_runs():
+    failures = []
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+
+    # ci.yml itself must stay a push-to-main trigger: it is what runs on a
+    # fork's main, and a wider one would run the PR tier twice on every push to
+    # a fork's branch and publish skipped `Required Checks` upstream.
+    if not re.search(r"^  push:\n    branches:\n      - main\n", ci, re.M):
+        failures.append(
+            "ci.yml must trigger on `push` to `branches: [main]` only; "
+            "fork branches go through ci_fork.yml"
+        )
+    # Preflight is where a fork run that is not a pull request's tier is dropped,
+    # and with it the whole run, since every other job needs Preflight through
+    # `changes`. ci.yml triggers on push to main, so it fires in a fork for its
+    # `main` as well as ci_fork.yml does; only a push that came through
+    # ci_fork.yml, whose `github.workflow` is its own name, is tested, once.
+    ci_name = workflow_name(WORKFLOWS / "ci.yml")
+    fork_name = workflow_name(FORK_WORKFLOW)
+    failures.extend(
+        condition_failures(
+            WORKFLOWS / "ci.yml",
+            "preflight",
+            [
+                (actions_context("schedule", UPSTREAM, ci_name), True, "the upstream nightly"),
+                (actions_context("schedule", FORK, ci_name), False, "a scheduled run in a fork"),
+                (actions_context("push", UPSTREAM, ci_name), True, "a push to upstream main"),
+                (actions_context("push", FORK, ci_name), False, "ci.yml's own push trigger in a fork"),
+                (actions_context("push", FORK, fork_name), True, "a push through ci_fork.yml"),
+                (actions_context("pull_request", UPSTREAM, ci_name), True, "a pull request"),
+                (actions_context("pull_request", FORK, ci_name), True, "a pull request inside a fork"),
+                (actions_context("merge_group", UPSTREAM, ci_name), True, "the merge queue"),
+                (actions_context("workflow_dispatch", FORK, ci_name), True, "a dispatch in a fork"),
+            ],
+        )
+    )
+    # `needs.preflight.result` is how the aggregator follows Preflight.
+    aggregator = job_condition(job_blocks(WORKFLOWS / "ci.yml").get(AGGREGATOR_JOB, ""))
+    if not aggregator or "needs.preflight.result" not in aggregator:
+        failures.append(
+            f"ci.yml's {AGGREGATOR_JOB} must skip itself when Preflight does "
+            f"(`needs.preflight.result != 'skipped'`), or a fork's skipped run still starts a runner"
+        )
+    for needed in (FORK_TEST.name, FORK_PUSH_SCRIPT.name, FORK_PUSH_TEST.name):
+        if needed not in ci:
+            failures.append(f"ci.yml does not use or run {needed}, so a fork push goes untested")
+
+    if not FORK_WORKFLOW.exists():
+        failures.append(f"{FORK_WORKFLOW} is missing; a fork pull request would run no PR tier anywhere")
+    else:
+        body = FORK_WORKFLOW.read_text(encoding="utf-8")
+        if not CALLS_CI.search(body):
+            failures.append(f"{FORK_WORKFLOW} does not call ./.github/workflows/ci.yml")
+        # The trigger comes first: a branch it ignores never reaches a job's `if:`,
+        # so a condition table alone cannot see an exclusion that is too wide.
+        ignored = re.search(r"^    branches-ignore:\n((?:      .*\n)+)", body, re.M)
+        patterns = re.findall(r"^\s+- (\S+)\s*$", ignored.group(1), re.M) if ignored else []
+        patterns = [p.strip("'\"") for p in patterns]
+        compute = load_filters()
+        for branch, admitted in (
+            ("feature", True), ("main", True), ("Main", True), ("release/1.1", True), ("asf-site", False),
+        ):
+            actual = not any(re.match(compute.glob_to_regex(p), branch) for p in patterns)
+            if actual != admitted:
+                failures.append(
+                    f"{FORK_WORKFLOW}'s `push: branches-ignore` {patterns} "
+                    f"{'admits' if actual else 'ignores'} a push to `{branch}`, and it should "
+                    f"{'ignore' if actual else 'admit'} it; a fork's `main` is an ordinary branch"
+                )
+        cases = [
+            (actions_context("push", UPSTREAM, fork_name, "feature"), False, "an upstream branch push"),
+            (actions_context("push", UPSTREAM, fork_name, "main"), False, "an upstream push to main"),
+            (actions_context("push", FORK, fork_name, "feature"), True, "a fork branch"),
+            (actions_context("push", FORK, fork_name, "main"), True, "a push to a fork's main"),
+        ]
+        for job in ("supersede", "ci"):
+            failures.extend(condition_failures(FORK_WORKFLOW, job, cases))
+        if re.search(r"^concurrency:", body, re.M):
+            failures.append(
+                f"{FORK_WORKFLOW} declares `concurrency`; ci.yml has its own group, and a "
+                f"second group on the caller deadlocks the pair"
+            )
+        if re.search(r"^  (pull_request|pull_request_target|workflow_dispatch|schedule):", body, re.M):
+            failures.append(f"{FORK_WORKFLOW} must trigger on `push` and nothing else")
+        failures.extend(permission_ceiling_failures(FORK_WORKFLOW))
+
+    if not BRIDGE_WORKFLOW.exists():
+        failures.append(f"{BRIDGE_WORKFLOW} is missing; fork pull requests would show no fork result")
+    else:
+        body = BRIDGE_WORKFLOW.read_text(encoding="utf-8")
+        listed = re.search(r"^    workflows:\s*\[(.*?)\]\s*$", body, re.M)
+        ci_name = workflow_name(WORKFLOWS / "ci.yml")
+        if not listed or [w.strip() for w in listed.group(1).split(",")] != [ci_name]:
+            failures.append(
+                f"{BRIDGE_WORKFLOW} must trigger on `workflow_run` of exactly ci.yml's name, "
+                f"{ci_name!r}; a rename there silences the bridge"
+            )
+        if "github.repository == 'apache/datafusion-comet'" not in body:
+            failures.append(f"{BRIDGE_WORKFLOW} has no repository guard, so it would run in every fork")
+        if f"const WORKFLOW = '{FORK_WORKFLOW.name}';" not in body:
+            failures.append(
+                f"{BRIDGE_WORKFLOW} must read runs of {FORK_WORKFLOW.name}; any other name "
+                f"reports \"no fork CI\" on every pull request"
+            )
+        if re.search(r"uses:\s*actions/checkout@", body):
+            failures.append(
+                f"{BRIDGE_WORKFLOW} checks out code. It runs with `checks: write` on data from a "
+                f"fork and must never check out or run anything from the pull request"
+            )
+        # It writes check runs from a trigger a fork can reach, so it starts with no
+        # scopes and the one job asks for exactly what it uses. `checks: write`
+        # creates the check; `pull-requests: read` lists the open pull requests.
+        # Everything it reads from the fork is public.
+        if not re.search(r"^permissions:\s*\{\}\s*$", body, re.M):
+            failures.append(f"{BRIDGE_WORKFLOW} must set `permissions: {{}}` at the top level")
+        scopes = permission_blocks(job_blocks(BRIDGE_WORKFLOW).get("bridge", "").splitlines())
+        if scopes != [{"checks": "write", "pull-requests": "read"}]:
+            failures.append(
+                f"{BRIDGE_WORKFLOW}'s bridge job must ask for exactly `checks: write` and "
+                f"`pull-requests: read`, not {scopes}"
+            )
+
+    for failure in failures:
+        print(f"fork runs: {failure}")
+    return not failures
+
+
+# Job-level `if:` conditions, evaluated for concrete events. A text match on a
+# condition cannot tell the clause that guards an event from one that merely
+# mentions the same repository, so the checks below run the expression instead.
+SCHEDULE_TRIGGER = re.compile(r"^  schedule:\s*$", re.M)
+# A job-level `if:` at four spaces of indent, with its continuation lines when it
+# is a folded block (`if: >-`).
+JOB_CONDITION = re.compile(r"^    if:[^\n]*\n(?:      [^\n]*\n)*", re.M)
+JOB_START = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$", re.M)
+CONTEXT_PROPERTY = re.compile(r"\b(?:github|inputs|needs)(?:\.[A-Za-z_][A-Za-z0-9_-]*)+")
+EXPRESSION_NODES = (
+    ast.Expression, ast.BoolOp, ast.And, ast.Or, ast.Compare, ast.Eq, ast.NotEq,
+    ast.Constant, ast.Call, ast.Name, ast.Load,
+)
+
+
+def job_blocks(path):
+    """{job: the text of its block} for the `jobs:` section of a workflow."""
+    section = path.read_text(encoding="utf-8").split("\njobs:\n", 1)[1]
+    parts = JOB_START.split(section)
+    return dict(zip(parts[1::2], parts[2::2]))
+
+
+def job_condition(block):
+    """The text of a job's `if:` with the YAML scalar markers dropped, or None."""
+    match = JOB_CONDITION.search(block)
+    if not match:
+        return None
+    text = match.group(0).split("if:", 1)[1]
+    return re.sub(r"^\s*[>|][-+]?\s*", "", text)
+
+
+class _Comparisons(ast.NodeTransformer):
+    """Rewrite `a == b` and `a != b` into calls that ignore case, as Actions does."""
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        name = "_eq" if isinstance(node.ops[0], ast.Eq) else "_ne"
+        call = ast.Call(func=ast.Name(id=name, ctx=ast.Load()),
+                        args=[node.left, node.comparators[0]], keywords=[])
+        return ast.copy_location(call, node)
+
+
+def evaluate_condition(text, context):
+    """Evaluate an `if:` made of ==, !=, &&, ||, parentheses, string literals and
+    context properties. A property absent from `context` is the empty string, and
+    strings compare without regard to case, as in Actions: `Main` equals `main`.
+    Anything else, a function call say, is an error: better to say a condition
+    cannot be checked than to pass it."""
+    expression = " ".join(text.split())
+    expression = re.sub(r"^\$\{\{\s*|\s*\}\}$", "", expression)
+    expression = CONTEXT_PROPERTY.sub(lambda m: f"_v('{m.group(0)}')", expression)
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    tree = ast.parse(expression, mode="eval")
+    for node in ast.walk(tree):
+        if not isinstance(node, EXPRESSION_NODES):
+            raise ValueError(f"unsupported syntax {type(node).__name__} in `{text.strip()}`")
+        if isinstance(node, ast.Call) and not (
+            isinstance(node.func, ast.Name) and node.func.id == "_v"
+        ):
+            raise ValueError(f"unsupported call in `{text.strip()}`")
+        if isinstance(node, ast.Compare) and (
+            len(node.ops) != 1 or not isinstance(node.ops[0], (ast.Eq, ast.NotEq))
+        ):
+            raise ValueError(f"unsupported comparison in `{text.strip()}`")
+    tree = ast.fix_missing_locations(_Comparisons().visit(tree))
+    values = {
+        "_v": lambda name: context.get(name, ""),
+        "_eq": lambda a, b: str(a).lower() == str(b).lower(),
+        "_ne": lambda a, b: str(a).lower() != str(b).lower(),
+    }
+    return bool(eval(compile(tree, "<if>", "eval"), {"__builtins__": {}}, values))  # noqa: S307
+
+
+def actions_context(event_name, repository, workflow="", ref_name="feature"):
+    return {
+        "github.event_name": event_name,
+        "github.repository": repository,
+        "github.workflow": workflow,
+        "github.ref_name": ref_name,
+    }
+
+
+def condition_failures(path, job, cases):
+    """Failures for each (context, expected, description) a job's `if:` gets wrong.
+
+    A job with no `if:` always runs.
+    """
+    block = job_blocks(path).get(job)
+    if block is None:
+        return [f"{path} has no job `{job}`"]
+    condition = job_condition(block)
+    failures = []
+    for context, expected, description in cases:
+        try:
+            actual = True if condition is None else evaluate_condition(condition, context)
+        except (ValueError, SyntaxError) as error:
+            return [f"{path} job `{job}`: cannot check its `if:`: {error}"]
+        if actual != expected:
+            failures.append(
+                f"{path} job `{job}` {'runs' if actual else 'is skipped'} for {description}, "
+                f"and it should be {'run' if expected else 'skipped'}"
+            )
+    return failures
+
+
+# Scheduled workflows. GitHub runs `schedule` in any fork that has scheduled
+# workflows enabled, on the fork owner's minutes. With no earlier scheduled run
+# of its own to diff against, a fork's nightly runs the whole nightly tier, and
+# a fork's Miri run costs twenty minutes a day. So every job of a workflow with
+# a `schedule` trigger that does not wait on another must be skipped there.
+def check_scheduled_workflows_stay_upstream():
+    failures = []
+    for path in sorted(WORKFLOWS.glob("*.y*ml")):
+        if not SCHEDULE_TRIGGER.search(path.read_text(encoding="utf-8")):
+            continue
+        fork_schedule = actions_context("schedule", FORK, workflow=workflow_name(path))
+        for job, block in job_blocks(path).items():
+            if re.search(r"^    needs:", block, re.M):
+                continue
+            failures.extend(
+                condition_failures(path, job, [(fork_schedule, False, "a scheduled run in a fork")])
+            )
+    for failure in failures:
+        print(f"scheduled workflows: {failure}")
+    return not failures
+
+
 if __name__ == "__main__":
     ok = check_change_filters()
     ok = check_event_policy() and ok
@@ -1571,6 +1939,8 @@ if __name__ == "__main__":
     ok = check_local_actions_have_checkout() and ok
     ok = check_required_checks() and ok
     ok = check_label_runs_separate() and ok
+    ok = check_fork_runs() and ok
+    ok = check_scheduled_workflows_stay_upstream() and ok
     ok = check_cache_refresh_scope() and ok
     ok = check_nightly_scope() and ok
     ok = check_nightly_base_fallback() and ok

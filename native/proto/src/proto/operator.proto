@@ -157,10 +157,10 @@ message NativeScanCommon {
   bool encryption_enabled = 11;
   string source = 12;
   repeated spark.spark_expression.DataType fields = 13;
-  // SPARK-53535 (Spark 4.1+): when reading a struct whose requested fields are all
-  // missing in the Parquet file, true returns the entire struct as null (legacy
-  // pre-4.1 behavior); false preserves the parent struct's nullness from the file
-  // so non-null parents return a struct of all-null fields.
+  // SPARK-53535 (Spark 4.1+): when none of the requested leaves of a struct, list or
+  // map exist in the Parquet file, true returns the entire value as null (legacy
+  // pre-4.1 behavior); false preserves the parent's nullness from the file, so
+  // non-null parents keep their structure with all-null leaves.
   bool return_null_struct_if_all_fields_missing = 14;
   // True when spark.sql.parquet.fieldId.read.enabled is set and the requested
   // schema actually carries parquet.field.id metadata. When false the native
@@ -210,10 +210,10 @@ message DeltaSparkScanCommon {
   string table_root = 1;
   // Column mapping mode: "none", "name", or "id".
   string column_mapping_mode = 2;
-  // Key for split-mode plan-data injection. Derived from (table root, snapshot
-  // version, scan hash) so two scans of the same table in one plan (self-join,
-  // MERGE) don't collide -- same lesson as IcebergScan's
-  // (metadata_location, scan_hash_code) key.
+  // Key for split-mode plan-data injection: a hash of the table root, required
+  // schema, data filters, projection and fields, prefixed with common.source and
+  // ending with the scan op's plan_id, so two scans of one table in one native
+  // plan get distinct keys. Read only on the JVM side.
   string source_key = 3;
   // Effective datetime rebase read modes (LegacyBehaviorPolicy values of
   // spark.sql.parquet.datetimeRebaseModeInRead / int96RebaseModeInRead, resolved
@@ -1027,7 +1027,7 @@ message ParquetWriter {
   // CometNativeWriteExec (Spark 3.x). Naming and staging are owned by Spark's commit protocol so
   // that task-attempt isolation, speculative execution, and committers that track individual
   // files (S3A magic, streaming manifest) all behave as they do for Spark's own writer. The native
-  // writer uses this path verbatim.
+  // writer uses this path verbatim, and creates the file itself unless `jvm_output_stream` is set.
   string output_path = 1;
   CompressionCodec compression = 2;
   repeated string column_names = 4;
@@ -1045,6 +1045,13 @@ message ParquetWriter {
   // Catalyst's target schema, including top-level nullability and Parquet field IDs.
   // Nested collection field IDs are carried by the corresponding DataType messages.
   repeated SparkStructField output_schema = 9;
+  // Whether the JVM has already created `output_path` through Hadoop's FileSystem API and
+  // registered its output stream with the plan (Native.setOutputStream). The native writer then
+  // writes the file's bytes to that stream instead of opening the path itself, and the JVM closes
+  // the file afterwards. Set per task by CometWriteFilesExec.writeFile, which both write
+  // operators call, for every file that is neither local nor on HDFS. See HadoopFileOutput for
+  // why.
+  bool jvm_output_stream = 10;
 }
 
 enum AggregateMode {
@@ -1141,6 +1148,8 @@ message SortMergeJoin {
   JoinType join_type = 3;
   repeated spark.spark_expression.Expr sort_options = 4;
   optional spark.spark_expression.Expr condition = 5;
+  // Spark sets this for a right sort reading a single integer equality key from a Comet shuffle.
+  bool right_key_reduction_enabled = 6;
 }
 
 message BroadcastNestedLoopJoin {

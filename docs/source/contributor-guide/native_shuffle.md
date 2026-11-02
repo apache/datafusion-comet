@@ -152,7 +152,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `partitioners/single_partition.rs` | `SinglePartitionShufflePartitioner` for the single partition case.                                                               |
 | `writers/shuffle_block_writer.rs`  | `ShuffleBlockWriter` and the `CompressionCodec` enum. Arrow IPC encoding with compression.                                       |
 | `writers/partition_writer.rs`      | The `PartitionWriter` trait. Implemented by `LocalPartitionWriter` (`writers/local/`) and `RssPartitionWriter` (`writers/rss/`). |
-| `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
+| `writers/buf_batch_writer.rs`      | `BufBatchWriter`. Coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` in the single-partition writer only.       |
 | `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
 | `offsets_as_lengths.rs`            | Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the `LENGTHS_TAG_FLAG` codec-tag bit. |
@@ -213,6 +213,14 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
 2. `CometShuffleBlockIterator` hands native one compressed block at a time.
 3. The native `ShuffleScanExec` decodes each block with `read_ipc_compressed` and feeds the
    resulting `RecordBatch` straight into the plan. No Arrow FFI export or import happens.
+
+For a direct local native shuffle feeding a broadcast exchange, the opt-in
+`spark.comet.exec.broadcastExchange.producerCoalesce.enabled` mode uses one decoder across the task's fetched
+blocks. `DecodedBatchCoalescer` groups eligible small decoded batches before FFI export and
+`Utils.serializeBatches`. The read RDD is copied with the same dependency and AQE partition
+specifications, so other consumers of a reused shuffle keep their original reader. Grouping is
+bounded as described in [Memory Management](memory_management.md). Task completion releases
+pending native batches, exported Arrow batches, and the raw stream.
 
 **JVM decode**, used when direct read does not apply:
 
