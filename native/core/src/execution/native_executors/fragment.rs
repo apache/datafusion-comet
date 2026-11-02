@@ -42,7 +42,9 @@ use datafusion_comet_proto::spark_operator::{Operator, SparkStructField};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 
-use crate::execution::jni_api::{comet_runtime_env, comet_session_context};
+use crate::execution::jni_api::{
+    comet_runtime_env, comet_session_context, NATIVE_EXECUTORS_FRAGMENT,
+};
 use crate::execution::planner::{
     align_shuffle_writer_input, convert_spark_types_to_arrow_schema, PhysicalPlanner,
 };
@@ -390,11 +392,13 @@ fn fragment_session(
 ) -> Result<Arc<SessionContext>> {
     let mut runtime = comet_runtime_env(memory_pool);
     runtime.disk_manager = disk_manager;
+    let mut conf = conf.clone();
+    conf.insert(NATIVE_EXECUTORS_FRAGMENT.to_string(), "true".to_string());
     let session = comet_session_context(
         runtime,
         conf.get_usize(COMET_BATCH_SIZE, DEFAULT_BATCH_SIZE),
         1,
-        conf,
+        &conf,
         spark_plan,
     )
     .map_err(|e| DataFusionError::External(Box::new(e)))?;

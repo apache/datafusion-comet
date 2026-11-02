@@ -1034,6 +1034,8 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                         && agg.agg_exprs.iter().all(|expr| {
                             matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
                                 if count.children.len() == 1)
+                                || matches!(&expr.expr_struct, Some(AggExprStruct::Avg(avg))
+                                    if avg.child.is_some())
                         })
                 }
                 // PartialMerge consumes states, not rows.
@@ -1056,6 +1058,9 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
             .skip_partial_aggregation_probe_ratio_threshold = 1.1;
     }
 }
+
+/// Set in the configuration of a Comet Native Executors fragment's session.
+pub(crate) const NATIVE_EXECUTORS_FRAGMENT: &str = "spark.comet.nativeExecutors.fragment";
 
 /// Configure DataFusion session context.
 fn prepare_datafusion_session_context(
@@ -1151,9 +1156,25 @@ pub(crate) fn comet_session_context(
         crate::execution::c_udf::policy::NativeUdfPolicy::from_spark_config(spark_config),
     ));
 
+    // A Comet Native Executors fragment has no ShuffleWriter root, but its output goes to the
+    // cluster's shuffle all the same, so it is checked as if it had one.
+    let fragment_root;
+    let gate_plan = if spark_config
+        .get(NATIVE_EXECUTORS_FRAGMENT)
+        .is_some_and(|value| value == "true")
+    {
+        fragment_root = Operator {
+            op_struct: Some(OpStruct::ShuffleWriter(Default::default())),
+            children: vec![spark_plan.clone()],
+            ..Default::default()
+        };
+        &fragment_root
+    } else {
+        spark_plan
+    };
     configure_skip_partial_aggregation(
         &mut session_config,
-        spark_plan,
+        gate_plan,
         spark_config.get_bool(COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED),
     );
 
@@ -2712,7 +2733,7 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
-    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_expression::{AggExpr, Avg, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
     use std::future::Future;
@@ -2727,6 +2748,13 @@ mod tests {
         };
         let sum = AggExpr {
             expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let avg = |child: Option<Expr>| AggExpr {
+            expr_struct: Some(AggExprStruct::Avg(Avg {
+                child,
+                ..Default::default()
+            })),
             ..Default::default()
         };
         let partial = HashAggregate {
@@ -2774,6 +2802,10 @@ mod tests {
                 ..partial.clone()
             },
             HashAggregate {
+                agg_exprs: vec![count.clone(), avg(Some(Expr::default()))],
+                ..partial.clone()
+            },
+            HashAggregate {
                 agg_exprs: vec![count.clone(), count],
                 ..partial.clone()
             },
@@ -2795,6 +2827,10 @@ mod tests {
             },
             HashAggregate {
                 agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(None)],
                 ..partial.clone()
             },
             HashAggregate {
