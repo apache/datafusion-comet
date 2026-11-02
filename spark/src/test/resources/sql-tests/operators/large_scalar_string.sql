@@ -19,11 +19,13 @@
 -- aggregate, the hash partitioner and string kernels. A 256 KiB string over the default 8192-row
 -- batch needs 2 GiB of value bytes, past Arrow's 32-bit offsets. Spark evaluates row by row.
 -- The ids are written in one task so they arrive in one batch. Constant folding is on so that
--- `repeat('x', 262144)` reaches Comet as the literal it is in a Spark session.
+-- `repeat('x', 262144)` reaches Comet as the literal it is in a Spark session. Null propagation
+-- is off so that the grouped count keeps the literal as its argument instead of `count(1)`.
 -- See https://github.com/apache/datafusion-comet/issues/7247.
 -- Config: spark.sql.adaptive.enabled=false
 -- Config: spark.comet.exec.range.enabled=true
 -- ConstantFolding: enabled
+-- ExcludeRules: org.apache.spark.sql.catalyst.optimizer.NullPropagation
 
 statement
 CREATE TABLE test_large_scalar_wide(s string) USING parquet
@@ -66,6 +68,10 @@ SELECT sum(length(c)) FROM (SELECT concat((SELECT max(s) FROM test_large_scalar_
 -- a window under the aggregate emits its whole partition
 query
 SELECT sum(length(concat(repeat('x', 262144), CAST(tile AS STRING)))) FROM (SELECT ntile(2) OVER (ORDER BY id) AS tile FROM range(0, 8192, 1, 1))
+
+-- a partition wider than the session batch size, with a scalar that fits the session batch size
+query
+SELECT sum(length(concat(repeat('x', 65536), CAST(tile AS STRING)))) FROM (SELECT ntile(2) OVER (ORDER BY id) AS tile FROM range(0, 32768, 1, 1))
 
 -- a scalar built from the subquery result is wider than the result itself
 query

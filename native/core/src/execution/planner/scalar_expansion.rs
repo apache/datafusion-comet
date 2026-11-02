@@ -25,8 +25,9 @@
 //!
 //! The bound is enforced right under the operator that evaluates the expressions, with a
 //! [`BatchSplitExec`], because the operators below do not keep the session's batch size: a
-//! filter coalesces its output toward DataFusion's default size and a window emits its whole
-//! partition.
+//! filter coalesces its output toward DataFusion's default size, a window emits its whole
+//! partition and a broadcast arrives as a few wide batches. No width can be assumed, so the
+//! split is installed whenever the operator expands a string or binary scalar at all.
 
 use std::sync::Arc;
 
@@ -37,7 +38,6 @@ use datafusion::logical_expr::{ColumnarValue, Volatility};
 use datafusion::physical_expr::expressions::{Column, InListExpr};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::ExecutionPlan;
-use datafusion::prelude::SessionConfig;
 use datafusion_comet_operators::BatchSplitExec;
 use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::monotonically_increasing_id::MonotonicallyIncreasingId;
@@ -64,8 +64,8 @@ fn scalar_rows_cap(scalar_bytes: usize) -> usize {
 
 impl PhysicalPlanner {
     /// Wraps `input` so that the batches it emits keep the string and binary scalars in `exprs`,
-    /// expanded to a batch's length, within `SCALAR_EXPANSION_BYTES`. Returns `input` as is when
-    /// the widest batch it can emit already does.
+    /// expanded to a batch's length, within `SCALAR_EXPANSION_BYTES` and the session's batch
+    /// size. Returns `input` as is when `exprs` expand no scalar.
     pub(crate) fn bound_scalar_expansion<'a>(
         &self,
         input: Arc<dyn ExecutionPlan>,
@@ -76,16 +76,14 @@ impl PhysicalPlanner {
             .into_iter()
             .map(|expr| self.expanded_scalar_bytes(expr, &schema))
             .sum();
-        let cap = scalar_rows_cap(bytes);
-        let batch_size = self.session_ctx.copied_config().batch_size();
-        // A filter below coalesces toward DataFusion's default batch size whatever the session's
-        // is, so a session batch size under the default does not bound what arrives here.
-        let widest_input = batch_size.max(SessionConfig::default().batch_size());
-        if cap < widest_input {
-            Arc::new(BatchSplitExec::new(input, cap.min(batch_size)))
-        } else {
-            input
+        if bytes == 0 {
+            return input;
         }
+        let batch_size = self.session_ctx.copied_config().batch_size();
+        Arc::new(BatchSplitExec::new(
+            input,
+            scalar_rows_cap(bytes).min(batch_size),
+        ))
     }
 
     /// The bytes of the string and binary scalars that evaluating `expr` expands to the batch's
@@ -242,11 +240,12 @@ mod tests {
     fn wraps_the_input_when_a_small_session_batch_fits_but_the_filter_default_does_not() {
         use datafusion::execution::context::SessionContext;
         use datafusion::physical_plan::empty::EmptyExec;
+        use datafusion::prelude::SessionConfig;
         let session = SessionContext::new_with_config(SessionConfig::new().with_batch_size(256));
         let planner = PhysicalPlanner::new(Arc::new(session), 0);
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
-        // A 256 KiB scalar allows 4096 rows, more than the session's 256, but a filter below
-        // coalesces toward DataFusion's default of 8192 rows whatever the session says.
+        // A 256 KiB scalar allows 4096 rows, more than the session's 256, which a filter below
+        // coalescing toward DataFusion's default of 8192 rows would exceed.
         let wide = lit("x".repeat(256 * 1024));
         let bounded = planner.bound_scalar_expansion(input, [&wide]);
         let split = bounded
@@ -269,17 +268,22 @@ mod tests {
     }
 
     #[test]
-    fn wraps_the_input_only_when_the_scalars_need_a_smaller_batch() {
+    fn wraps_the_input_at_the_session_batch_size_or_the_scalar_cap() {
         use datafusion::physical_plan::empty::EmptyExec;
         let planner = PhysicalPlanner::default();
         let input: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(schema())));
-        let small = planner.bound_scalar_expansion(Arc::clone(&input), [&lit("abcd")]);
-        assert_eq!("EmptyExec", small.name());
+        let none = planner.bound_scalar_expansion(Arc::clone(&input), [&lit(7)]);
+        assert_eq!("EmptyExec", none.name());
+        let split_at = |exprs: &[Arc<dyn PhysicalExpr>]| {
+            planner
+                .bound_scalar_expansion(Arc::clone(&input), exprs)
+                .downcast_ref::<BatchSplitExec>()
+                .expect("a split under the expanding operator")
+                .batch_size()
+        };
+        // A small scalar is bounded by the session's batch size, whatever arrives from below.
+        assert_eq!(8192, split_at(&[lit("abcd")]));
         let wide = lit("x".repeat(256 * 1024));
-        let bounded = planner.bound_scalar_expansion(input, [&wide, &wide]);
-        let split = bounded
-            .downcast_ref::<BatchSplitExec>()
-            .expect("a split under the expanding operator");
-        assert_eq!(2048, split.batch_size());
+        assert_eq!(2048, split_at(&[Arc::clone(&wide), wide]));
     }
 }
