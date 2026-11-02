@@ -576,6 +576,8 @@ class CometCollectMetricsSuite extends CometTestBase {
 
   for ((consumeRows, sortBeforeConsume) <- Seq((1, false), (0, true))) {
     test(s"public foreachPartition preserves observation row demand, rows=$consumeRows") {
+      // Spark 3.4 runs foreachPartition without a name, so no listener callback reports its plan.
+      assume(isSpark35Plus)
       withSQLConf(
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "true") {
