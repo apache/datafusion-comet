@@ -37,8 +37,8 @@ object ShimFileFormat {
   // through HadoopCodecStreams, which also treats the non-standard `.gzip` and `.zstd` extensions
   // as compressed (CompressionCodecFactory alone misses those). Keep this in lockstep with the
   // Spark version so the native text scan declines exactly the files Spark would decompress.
-  def isCompressedFile(hadoopConf: Configuration, path: Path): Boolean =
-    HadoopCodecStreams.getDecompressionCodec(hadoopConf, path).isDefined
+  def compressedFileCheck(hadoopConf: Configuration): Path => Boolean =
+    path => HadoopCodecStreams.getDecompressionCodec(hadoopConf, path).isDefined
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     ParquetRowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)

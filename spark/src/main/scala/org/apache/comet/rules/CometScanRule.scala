@@ -492,11 +492,11 @@ case class CometScanRule(session: SparkSession)
         // Comet's native plan does not carry a compression codec, so the native reader would feed
         // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension,
         // from the decoded path (`Path(URI)`), so a name like `a b.gz` keeps its suffix. The
-        // version-aware ShimFileFormat.isCompressedFile also catches the non-standard .gzip/.zstd
-        // extensions on Spark 4.1+ that CompressionCodecFactory alone misses.
-        val hasCompressedFile = selectedFiles.exists { file =>
-          ShimFileFormat.isCompressedFile(hadoopConf, new org.apache.hadoop.fs.Path(file.pathUri))
-        }
+        // version-aware ShimFileFormat.compressedFileCheck also catches the non-standard
+        // .gzip/.zstd extensions on Spark 4.1+ that CompressionCodecFactory alone misses.
+        val isCompressed = ShimFileFormat.compressedFileCheck(hadoopConf)
+        val hasCompressedFile =
+          selectedFiles.exists(file => isCompressed(new org.apache.hadoop.fs.Path(file.pathUri)))
         if (hasCompressedFile) {
           fallbackReasons += "Comet does not support compressed text files"
         }

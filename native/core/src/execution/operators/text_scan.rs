@@ -27,6 +27,7 @@ use crate::execution::operators::ExecutionError;
 use arrow::array::StringBuilder;
 use arrow::datatypes::SchemaRef;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use bytes::Bytes;
 use datafusion::common::Result;
 use datafusion::datasource::object_store::ObjectStoreUrl;
 use datafusion::physical_expr::projection::ProjectionExprs;
@@ -235,221 +236,277 @@ impl FileOpener for TextOpener {
             bytes_scanned.add(raw.len());
 
             // Decompress only when the file is actually compressed. On Comet's plan config the file
-            // is always UNCOMPRESSED (CometScanRule falls back for compressed files), so we borrow
-            // the fetched bytes directly and avoid a full-file copy; the decompress arm is a
+            // is always UNCOMPRESSED (CometScanRule falls back for compressed files), so we keep
+            // the fetched bytes as they are and avoid a full-file copy; the decompress arm is a
             // defensive handler should compression ever be plumbed through. A byte range never
             // coexists with decompression (compressed files are non-splittable).
             //
             // NOTE: the whole object is read into memory. CometScanRule restricts native text to
-            // unsplit files (it falls back when Spark splits a file into byte ranges), so in
-            // practice this reads each small file once; the range filter below is a correctness
-            // safety net for any split that still reaches here.
-            let buf: Cow<[u8]> = if file_compression_type.is_compressed() {
+            // unsplit files (it falls back when Spark splits a file into byte ranges) and caps the
+            // file size, so in practice this reads each small file once. Lines are found and
+            // batches built on demand, so only the bytes and the current batch are held.
+            let buf: Bytes = if file_compression_type.is_compressed() {
                 let mut decoder = file_compression_type.convert_read(std::io::Cursor::new(raw))?;
                 let mut decoded = Vec::new();
                 decoder.read_to_end(&mut decoded)?;
-                Cow::Owned(decoded)
+                Bytes::from(decoded)
             } else {
-                Cow::Borrowed(raw.as_ref())
+                raw
             };
 
-            let mut timer = baseline_metrics.elapsed_compute().timer();
             // Spark's line reader (Hadoop LineRecordReader.skipUtfByteOrderMark) strips a leading
-            // UTF-8 BOM from the first record at file offset 0, whatever the separator. It does so
-            // after finding the first record, so split first and then strip. Native reads unsplit
-            // files only. wholetext keeps the BOM.
+            // UTF-8 BOM from the first record at file offset 0, whatever the separator. wholetext
+            // keeps it. Native reads unsplit files only.
             let at_file_start = range.as_ref().map(|r| r.start == 0).unwrap_or(true);
-            let content: &[u8] = &buf;
-            let mut lines = split_lines(content, whole_text, line_sep.as_deref());
-            strip_first_record_bom(&mut lines, content.len(), whole_text, at_file_start);
             // Spark may split an uncompressed file into byte ranges (TextScan.isSplitable). A line
             // belongs to the split whose [start, end) contains the line's start offset -- so each
             // line is emitted by exactly one split, with no duplication or gaps across splits. See
             // DataFusion's CsvOpener for the same rule. wholetext files are never split.
-            if !whole_text {
-                if let Some(range) = range {
-                    lines = filter_lines_by_range(content, lines, range.start, range.end);
-                }
-            }
-            let batches = build_batches(&projected_file_schema, lines, batch_size)?;
-            timer.stop();
+            let byte_range = if whole_text {
+                None
+            } else {
+                range.map(|r| (r.start.max(0) as usize, r.end.max(0) as usize))
+            };
+            let reader = TextBatchReader::new(
+                buf,
+                projected_file_schema,
+                batch_size,
+                TextLayout {
+                    whole_text,
+                    line_sep,
+                    strip_bom: !whole_text && at_file_start,
+                    byte_range,
+                },
+            );
 
-            Ok(futures::stream::iter(batches.into_iter().map(Ok)).boxed())
+            Ok(futures::stream::unfold(
+                (reader, baseline_metrics),
+                |(mut reader, metrics)| async move {
+                    // The timer covers only building this batch, not the wait for the next poll.
+                    let next = {
+                        let _timer = metrics.elapsed_compute().timer();
+                        reader.next_batch()
+                    };
+                    match next {
+                        Ok(Some(batch)) => Some((Ok(batch), (reader, metrics))),
+                        Ok(None) => None,
+                        Err(e) => {
+                            // Report the error once, then end the stream.
+                            reader.finished = true;
+                            Some((Err(e), (reader, metrics)))
+                        }
+                    }
+                },
+            )
+            .boxed())
         }))
     }
 }
 
-/// Strip a leading UTF-8 BOM from the first record the way Hadoop's LineRecordReader does: only
-/// in line mode (not wholetext), only for the split that starts at file offset 0, and from the
-/// first record only. Hadoop reads the first record, then drops the BOM from its text. When that
-/// leaves nothing and the record was not terminated (the file is only the BOM), it counts as end
-/// of input, so the file has no rows. A BOM followed by a separator leaves an empty row. A custom
-/// `lineSep` equal to the BOM never reaches the strip, because the BOM is then the separator and
-/// the first record does not start with it.
-fn strip_first_record_bom<'a>(
-    lines: &mut Vec<&'a [u8]>,
-    file_len: usize,
+/// How the bytes of one file split into rows.
+struct TextLayout {
+    /// One row for the whole file, separators included.
     whole_text: bool,
-    at_file_start: bool,
-) {
-    if whole_text || !at_file_start {
-        return;
-    }
-    if !lines.first().is_some_and(|l| l.starts_with(UTF8_BOM)) {
-        return;
-    }
-    if file_len == UTF8_BOM.len() {
-        lines.clear();
-        return;
-    }
-    let record: &'a [u8] = lines[0];
-    lines[0] = &record[UTF8_BOM.len()..];
+    /// A custom line separator's exact bytes, or `None` for the universal newline set.
+    line_sep: Option<Vec<u8>>,
+    /// Strip a leading UTF-8 BOM from the first record (line mode, split at file offset 0).
+    strip_bom: bool,
+    /// Keep only the lines whose start offset is in `[start, end)`.
+    byte_range: Option<(usize, usize)>,
 }
 
-/// Split a decompressed file buffer into text lines following Spark's semantics.
-fn split_lines<'a>(buf: &'a [u8], whole_text: bool, line_sep: Option<&[u8]>) -> Vec<&'a [u8]> {
-    if whole_text {
-        // One row per file; the whole content (including internal separators) is a single value.
-        return vec![buf];
-    }
-    match line_sep {
-        Some(sep) => split_on_separator(buf, sep),
-        None => split_universal(buf),
-    }
-}
-
-/// Universal-newline splitting: a line ends at `\n`, `\r\n`, or `\r`, and the terminator is
-/// stripped. A trailing terminator does not produce a final empty line (Hadoop LineRecordReader).
-fn split_universal(buf: &[u8]) -> Vec<&[u8]> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < buf.len() {
-        match buf[i] {
-            b'\n' => {
-                lines.push(&buf[start..i]);
-                i += 1;
-                start = i;
-            }
-            b'\r' => {
-                lines.push(&buf[start..i]);
-                i += 1;
-                if i < buf.len() && buf[i] == b'\n' {
-                    i += 1;
-                }
-                start = i;
-            }
-            _ => i += 1,
-        }
-    }
-    if start < buf.len() {
-        lines.push(&buf[start..]);
-    }
-    lines
-}
-
-/// Split on an exact separator byte sequence; the trailing separator does not produce an empty
-/// final line.
-fn split_on_separator<'a>(buf: &'a [u8], sep: &[u8]) -> Vec<&'a [u8]> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i + sep.len() <= buf.len() {
-        if &buf[i..i + sep.len()] == sep {
-            lines.push(&buf[start..i]);
-            i += sep.len();
-            start = i;
-        } else {
-            i += 1;
-        }
-    }
-    if start < buf.len() {
-        lines.push(&buf[start..]);
-    }
-    lines
-}
-
-/// Keep only the lines whose start offset falls in the split's byte range `[start, end)`.
-/// `lines` must be sub-slices of `buf` (they are, as produced by the split helpers), so a line's
-/// start offset is its pointer distance from the buffer start. The split helpers emit lines in
-/// strictly increasing start-offset order, so the qualifying lines are a contiguous run; find its
-/// bounds by binary search and keep that slice in place without a second allocation.
-fn filter_lines_by_range<'a>(
-    buf: &[u8],
-    mut lines: Vec<&'a [u8]>,
-    start: i64,
-    end: i64,
-) -> Vec<&'a [u8]> {
-    let base = buf.as_ptr() as usize;
-    let start = start.max(0) as usize;
-    let end = end.max(0) as usize;
-    let hi = lines.partition_point(|line| (line.as_ptr() as usize - base) < end);
-    let lo = lines
-        .partition_point(|line| (line.as_ptr() as usize - base) < start)
-        .min(hi);
-    lines.truncate(hi);
-    lines.drain(..lo);
-    lines
-}
-
-/// Build record batches from raw line bytes. When `projected_schema` has the `value` column, each
-/// line becomes a string; when it is empty (a projection-less count), only the row count is kept.
+/// Reads a file's bytes as batches of `value` rows, one batch per call.
 ///
-/// Arrow strings must be valid UTF-8, so ill-formed bytes are replaced with U+FFFD via
-/// `decode_utf8_spark_lossy`. Spark's text reader instead stores the raw line bytes and only
-/// substitutes on decode, so a plain read + collect matches, but byte-level operations over
-/// invalid UTF-8 (octet_length, cast to binary, byte-exact predicates) can differ. This is an
-/// inherent limitation of representing text bytes as an Arrow string.
-fn build_batches(
-    projected_schema: &SchemaRef,
-    lines: Vec<&[u8]>,
-    batch_size: usize,
-) -> Result<Vec<RecordBatch>> {
-    let emit_value = !projected_schema.fields().is_empty();
-    let batch_rows = batch_size.max(1);
-    let mut batches = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let batch = if emit_value {
-            // Decode each line once (decode_utf8_spark_lossy borrows for valid UTF-8, allocates only
-            // for ill-formed input) and accumulate against the DECODED size, since a lossy decode can
-            // expand ill-formed bytes up to 3x. Start a new batch before the value buffer would reach
-            // Arrow's 32-bit offset limit. Always take at least one line so progress is guaranteed;
-            // if a single decoded value alone would overflow, fail cleanly rather than panic in Arrow.
-            let mut decoded: Vec<std::borrow::Cow<str>> = Vec::new();
-            let mut data_bytes = 0usize;
-            while i < lines.len() && decoded.len() < batch_rows {
-                let value = decode_utf8_spark_lossy(lines[i]);
-                let len = value.len();
-                if len > i32::MAX as usize {
-                    return Err(datafusion::common::DataFusionError::Execution(format!(
-                        "Text value of {len} bytes exceeds Arrow's 2GB string-offset limit"
-                    )));
-                }
-                if !decoded.is_empty() && data_bytes + len > MAX_BATCH_VALUE_BYTES {
-                    break;
-                }
-                data_bytes += len;
-                decoded.push(value);
-                i += 1;
-            }
-            let mut builder = StringBuilder::with_capacity(decoded.len(), data_bytes);
-            for value in &decoded {
-                builder.append_value(value);
-            }
-            RecordBatch::try_new(
-                Arc::clone(projected_schema),
-                vec![Arc::new(builder.finish())],
-            )?
-        } else {
-            let take = (lines.len() - i).min(batch_rows);
-            let options = RecordBatchOptions::new().with_row_count(Some(take));
-            i += take;
-            RecordBatch::try_new_with_options(Arc::clone(projected_schema), vec![], &options)?
-        };
-        batches.push(batch);
+/// Lines are found by scanning forward from `pos`, so nothing is kept per line: the memory beyond
+/// the file bytes is the batch being built. A file of nothing but newlines would otherwise need a
+/// slice descriptor per byte.
+struct TextBatchReader {
+    buf: Bytes,
+    schema: SchemaRef,
+    batch_rows: usize,
+    layout: TextLayout,
+    /// Offset of the next unread byte in line mode.
+    pos: usize,
+    /// wholetext: the single row has been returned.
+    whole_taken: bool,
+    /// The first-record BOM check has not run yet.
+    first_record: bool,
+    /// A row read but held back because it would have overflowed the current batch.
+    pending: Option<(usize, usize)>,
+    finished: bool,
+}
+
+impl TextBatchReader {
+    fn new(buf: Bytes, schema: SchemaRef, batch_size: usize, layout: TextLayout) -> Self {
+        let first_record = layout.strip_bom;
+        Self {
+            buf,
+            schema,
+            batch_rows: batch_size.max(1),
+            layout,
+            pos: 0,
+            whole_taken: false,
+            first_record,
+            pending: None,
+            finished: false,
+        }
     }
-    Ok(batches)
+
+    /// Offsets `(start, end)` of the next line, terminator excluded, or `None` at the end.
+    ///
+    /// Default separators are `\n`, `\r\n` and `\r`. A custom separator is an exact byte match. A
+    /// trailing terminator does not start another, empty line (Hadoop LineRecordReader).
+    fn scan_line(&mut self) -> Option<(usize, usize)> {
+        let buf = &self.buf[..];
+        if self.layout.whole_text {
+            if self.whole_taken {
+                return None;
+            }
+            self.whole_taken = true;
+            return Some((0, buf.len()));
+        }
+        if self.pos >= buf.len() {
+            return None;
+        }
+        let start = self.pos;
+        match &self.layout.line_sep {
+            None => match buf[start..].iter().position(|&b| b == b'\n' || b == b'\r') {
+                None => {
+                    self.pos = buf.len();
+                    Some((start, buf.len()))
+                }
+                Some(i) => {
+                    let end = start + i;
+                    self.pos = if buf[end] == b'\r' && buf.get(end + 1) == Some(&b'\n') {
+                        end + 2
+                    } else {
+                        end + 1
+                    };
+                    Some((start, end))
+                }
+            },
+            Some(sep) => match find_subslice(&buf[start..], sep) {
+                None => {
+                    self.pos = buf.len();
+                    Some((start, buf.len()))
+                }
+                Some(i) => {
+                    let end = start + i;
+                    self.pos = end + sep.len();
+                    Some((start, end))
+                }
+            },
+        }
+    }
+
+    /// Offsets of the next row to emit, after the first-record BOM and the byte range apply.
+    fn next_row(&mut self) -> Option<(usize, usize)> {
+        if let Some(row) = self.pending.take() {
+            return Some(row);
+        }
+        loop {
+            let (start, end) = self.scan_line()?;
+            let mut row_start = start;
+            // Hadoop reads the first record and then drops the BOM from its text. When that
+            // leaves nothing and the record was not terminated (the file is only the BOM), it
+            // counts as end of input, so the file has no rows. A BOM followed by a separator
+            // leaves an empty row. A custom `lineSep` equal to the BOM never reaches the strip,
+            // because the BOM is then the separator and the first record does not start with it.
+            if self.first_record {
+                self.first_record = false;
+                if self.buf[start..end].starts_with(UTF8_BOM) {
+                    if self.buf.len() == UTF8_BOM.len() {
+                        return None;
+                    }
+                    row_start = start + UTF8_BOM.len();
+                }
+            }
+            if let Some((range_start, range_end)) = self.layout.byte_range {
+                if start >= range_end {
+                    // Lines come in increasing offset order, so the rest are outside the range.
+                    self.pos = self.buf.len();
+                    return None;
+                }
+                if start < range_start {
+                    continue;
+                }
+            }
+            return Some((row_start, end));
+        }
+    }
+
+    /// The next batch of up to `batch_size` rows, or `None` when the file is exhausted.
+    fn next_batch(&mut self) -> Result<Option<RecordBatch>> {
+        if self.finished {
+            return Ok(None);
+        }
+        if self.schema.fields().is_empty() {
+            // The count(*) case: rows with no columns. Count lines without decoding them.
+            let mut rows = 0;
+            while rows < self.batch_rows && self.next_row().is_some() {
+                rows += 1;
+            }
+            if rows == 0 {
+                self.finished = true;
+                return Ok(None);
+            }
+            let options = RecordBatchOptions::new().with_row_count(Some(rows));
+            return Ok(Some(RecordBatch::try_new_with_options(
+                Arc::clone(&self.schema),
+                vec![],
+                &options,
+            )?));
+        }
+
+        // Decode each line once (decode_utf8_spark_lossy borrows for valid UTF-8, allocates only
+        // for ill-formed input) and accumulate against the DECODED size, since a lossy decode can
+        // expand ill-formed bytes up to 3x. Start a new batch before the value buffer would reach
+        // Arrow's 32-bit offset limit. Always take at least one line so progress is guaranteed;
+        // if a single decoded value alone would overflow, fail cleanly rather than panic in Arrow.
+        // A handle to the bytes lets the decoded values borrow them while the reader advances.
+        let buf = self.buf.clone();
+        let mut decoded: Vec<Cow<str>> = Vec::new();
+        let mut data_bytes = 0usize;
+        while decoded.len() < self.batch_rows {
+            let (start, end) = match self.next_row() {
+                Some(row) => row,
+                None => break,
+            };
+            let value = decode_utf8_spark_lossy(&buf[start..end]);
+            let len = value.len();
+            if len > i32::MAX as usize {
+                return Err(datafusion::common::DataFusionError::Execution(format!(
+                    "Text value of {len} bytes exceeds Arrow's 2GB string-offset limit"
+                )));
+            }
+            if !decoded.is_empty() && data_bytes + len > MAX_BATCH_VALUE_BYTES {
+                self.pending = Some((start, end));
+                break;
+            }
+            data_bytes += len;
+            decoded.push(value);
+        }
+        if decoded.is_empty() {
+            self.finished = true;
+            return Ok(None);
+        }
+        let mut builder = StringBuilder::with_capacity(decoded.len(), data_bytes);
+        for value in &decoded {
+            builder.append_value(value);
+        }
+        Ok(Some(RecordBatch::try_new(
+            Arc::clone(&self.schema),
+            vec![Arc::new(builder.finish())],
+        )?))
+    }
+}
+
+/// Offset of the first occurrence of `needle` in `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]
@@ -458,11 +515,58 @@ mod tests {
     use arrow::array::{Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
 
-    fn lines_as_str(buf: &[u8], whole_text: bool, line_sep: Option<&[u8]>) -> Vec<String> {
-        split_lines(buf, whole_text, line_sep)
+    fn value_schema() -> SchemaRef {
+        Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]))
+    }
+
+    /// Read `buf` the way the opener does and return every batch.
+    fn read_batches(
+        buf: &[u8],
+        schema: SchemaRef,
+        batch_size: usize,
+        layout: TextLayout,
+    ) -> Vec<RecordBatch> {
+        let mut reader =
+            TextBatchReader::new(Bytes::copy_from_slice(buf), schema, batch_size, layout);
+        let mut batches = Vec::new();
+        while let Some(batch) = reader.next_batch().unwrap() {
+            batches.push(batch);
+        }
+        batches
+    }
+
+    fn layout(whole_text: bool, line_sep: Option<&[u8]>) -> TextLayout {
+        TextLayout {
+            whole_text,
+            line_sep: line_sep.map(|s| s.to_vec()),
+            strip_bom: false,
+            byte_range: None,
+        }
+    }
+
+    fn values(batches: &[RecordBatch]) -> Vec<String> {
+        batches
             .iter()
-            .map(|l| String::from_utf8_lossy(l).into_owned())
+            .flat_map(|batch| {
+                let col = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                (0..col.len())
+                    .map(|i| col.value(i).to_string())
+                    .collect::<Vec<_>>()
+            })
             .collect()
+    }
+
+    fn lines_as_str(buf: &[u8], whole_text: bool, line_sep: Option<&[u8]>) -> Vec<String> {
+        values(&read_batches(
+            buf,
+            value_schema(),
+            8192,
+            layout(whole_text, line_sep),
+        ))
     }
 
     #[test]
@@ -534,46 +638,71 @@ mod tests {
     }
 
     #[test]
-    fn build_batches_value_column() {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
-        let lines: Vec<&[u8]> = vec![b"x", b"y", b"z"];
-        let batches = build_batches(&schema, lines, 2).unwrap();
+    fn batches_split_rows_by_batch_size() {
+        let batches = read_batches(b"x\ny\nz", value_schema(), 2, layout(false, None));
         // batch_size 2 -> two batches (2 rows, 1 row).
         assert_eq!(batches.len(), 2);
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 3);
-        let col = batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(col.value(0), "x");
-        assert_eq!(col.value(1), "y");
+        assert_eq!(values(&batches), vec!["x", "y", "z"]);
+        assert_eq!(batches[0].num_rows(), 2);
     }
 
     #[test]
-    fn build_batches_empty_projection_keeps_row_count() {
+    fn empty_projection_keeps_row_count() {
         // The count(*) case: an empty projected schema, rows preserved with no columns.
-        let schema = Arc::new(Schema::empty());
-        let lines: Vec<&[u8]> = vec![b"x", b"y", b"z"];
-        let batches = build_batches(&schema, lines, 8192).unwrap();
+        let batches = read_batches(
+            b"x\ny\nz",
+            Arc::new(Schema::empty()),
+            8192,
+            layout(false, None),
+        );
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].num_columns(), 0);
         assert_eq!(batches[0].num_rows(), 3);
     }
 
-    /// Split, then strip the first-record BOM, as the opener does.
+    #[test]
+    fn newline_only_input_counts_rows_in_bounded_batches() {
+        // A file of only newlines has one empty row per byte. Counting must not need a table
+        // that grows with the input: the rows come out in batches of at most batch_size.
+        let buf = vec![b'\n'; 100_000];
+        let batches = read_batches(&buf, Arc::new(Schema::empty()), 8192, layout(false, None));
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 100_000);
+        assert!(batches.iter().all(|b| b.num_rows() <= 8192));
+    }
+
+    #[test]
+    fn reader_returns_one_batch_per_call() {
+        // Batches are built on demand: after the first call the reader still holds the rest.
+        let mut reader = TextBatchReader::new(
+            Bytes::from_static(b"a\nb\nc\nd\ne"),
+            value_schema(),
+            2,
+            layout(false, None),
+        );
+        assert_eq!(
+            values(&[reader.next_batch().unwrap().unwrap()]),
+            vec!["a", "b"]
+        );
+        assert_eq!(
+            values(&[reader.next_batch().unwrap().unwrap()]),
+            vec!["c", "d"]
+        );
+        assert_eq!(values(&[reader.next_batch().unwrap().unwrap()]), vec!["e"]);
+        assert!(reader.next_batch().unwrap().is_none());
+        assert!(reader.next_batch().unwrap().is_none());
+    }
+
+    /// Read with the first-record BOM strip on or off, as the opener sets it.
     fn lines_after_bom(
         buf: &[u8],
         whole_text: bool,
         at_file_start: bool,
         line_sep: Option<&[u8]>,
     ) -> Vec<String> {
-        let mut lines = split_lines(buf, whole_text, line_sep);
-        strip_first_record_bom(&mut lines, buf.len(), whole_text, at_file_start);
-        lines
-            .iter()
-            .map(|l| String::from_utf8_lossy(l).into_owned())
-            .collect()
+        let mut layout = layout(whole_text, line_sep);
+        layout.strip_bom = !whole_text && at_file_start;
+        values(&read_batches(buf, value_schema(), 8192, layout))
     }
 
     #[test]
@@ -636,35 +765,24 @@ mod tests {
     }
 
     #[test]
-    fn build_batches_replaces_invalid_utf8() {
+    fn invalid_utf8_is_replaced() {
         // Ill-formed bytes become U+FFFD (matches Spark's new String(bytes, UTF_8) on collect).
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)]));
         let bad: &[u8] = &[b'a', 0xff, b'b'];
-        let lines: Vec<&[u8]> = vec![bad];
-        let batches = build_batches(&schema, lines, 8192).unwrap();
-        assert_eq!(batches.len(), 1);
-        let col = batches[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(col.value(0), "a\u{FFFD}b");
+        assert_eq!(lines_as_str(bad, false, None), vec!["a\u{FFFD}b"]);
+    }
+
+    fn lines_in_range(buf: &[u8], start: usize, end: usize) -> Vec<String> {
+        let mut layout = layout(false, None);
+        layout.byte_range = Some((start, end));
+        values(&read_batches(buf, value_schema(), 8192, layout))
     }
 
     #[test]
     fn range_split_partitions_lines_without_duplication() {
         // Two contiguous splits over one file must together yield every line exactly once.
         let buf = b"aaa\nbbb\nccc\nddd"; // offsets: aaa=0 bbb=4 ccc=8 ddd=12
-        let lines = split_universal(buf);
-        let first = filter_lines_by_range(buf, lines.clone(), 0, 6);
-        let second = filter_lines_by_range(buf, lines.clone(), 6, 14);
-        let as_str = |v: Vec<&[u8]>| {
-            v.iter()
-                .map(|l| String::from_utf8_lossy(l).into_owned())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(as_str(first), vec!["aaa", "bbb"]);
-        assert_eq!(as_str(second), vec!["ccc", "ddd"]);
+        assert_eq!(lines_in_range(buf, 0, 6), vec!["aaa", "bbb"]);
+        assert_eq!(lines_in_range(buf, 6, 14), vec!["ccc", "ddd"]);
     }
 
     #[test]
@@ -672,15 +790,7 @@ mod tests {
         // A line whose start offset is in the first split but that extends past the split end is
         // read fully by the first split and NOT repeated by the next.
         let buf = b"abcdef\nghij"; // abcdef=0, ghij=7
-        let lines = split_universal(buf);
-        let first = filter_lines_by_range(buf, lines.clone(), 0, 3);
-        let second = filter_lines_by_range(buf, lines.clone(), 3, 11);
-        let as_str = |v: Vec<&[u8]>| {
-            v.iter()
-                .map(|l| String::from_utf8_lossy(l).into_owned())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(as_str(first), vec!["abcdef"]);
-        assert_eq!(as_str(second), vec!["ghij"]);
+        assert_eq!(lines_in_range(buf, 0, 3), vec!["abcdef"]);
+        assert_eq!(lines_in_range(buf, 3, 11), vec!["ghij"]);
     }
 }

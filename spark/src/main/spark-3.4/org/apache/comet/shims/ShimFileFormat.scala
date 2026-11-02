@@ -35,8 +35,12 @@ object ShimFileFormat {
   // Whether Spark's text/line readers would decompress this file. Before Spark 4.1 the codec is
   // resolved purely through CompressionCodecFactory (the non-standard `.gzip`/`.zstd` extensions
   // are read raw on these versions, so they are intentionally not treated as compressed here).
-  def isCompressedFile(hadoopConf: Configuration, path: Path): Boolean =
-    new CompressionCodecFactory(hadoopConf).getCodec(path) != null
+  // Build the checker once per scan: the codec factory reads the codec registry from the
+  // configuration, so a scan over many files should not rebuild it for each path.
+  def compressedFileCheck(hadoopConf: Configuration): Path => Boolean = {
+    val factory = new CompressionCodecFactory(hadoopConf)
+    path => factory.getCodec(path) != null
+  }
 
   def findRowIndexColumnIndexInSchema(sparkSchema: StructType): Int =
     RowIndexUtil.findRowIndexColumnIndexInSchema(sparkSchema)
