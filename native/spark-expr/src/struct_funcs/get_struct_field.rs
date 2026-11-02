@@ -135,6 +135,12 @@ fn single_row_scalar(array: ArrayRef) -> DataFusionResult<ScalarValue> {
         DataType::FixedSizeList(_, _) => {
             ScalarValue::FixedSizeList(Arc::new(array.as_fixed_size_list().clone()))
         }
+        DataType::ListView(_) => {
+            ScalarValue::ListView(Arc::new(array.as_list_view::<i32>().clone()))
+        }
+        DataType::LargeListView(_) => {
+            ScalarValue::LargeListView(Arc::new(array.as_list_view::<i64>().clone()))
+        }
         _ => ScalarValue::try_from_array(&array, 0)?,
     })
 }
@@ -152,8 +158,8 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, ListArray, NullArray};
-    use arrow::buffer::{NullBuffer, OffsetBuffer};
+    use arrow::array::{Int64Array, LargeListViewArray, ListArray, ListViewArray, NullArray};
+    use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
     use arrow::datatypes::Fields;
     use datafusion::physical_expr::expressions::{Column, Literal};
 
@@ -217,18 +223,29 @@ mod tests {
             Arc::new(Field::new("item", DataType::Int64, true).with_metadata(
                 [("ARROW:extension:name".to_string(), "test.ext".to_string())].into(),
             ));
-        let list = ListArray::new(
-            Arc::clone(&item),
-            OffsetBuffer::from_lengths([2]),
-            Arc::new(Int64Array::from(vec![1_i64, 2])),
-            None,
-        );
-        let fields: Fields = Fields::from(vec![Field::new("l", DataType::List(item), true)]);
-        let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
-            fields,
-            vec![Arc::new(list)],
-            None,
-        )));
+        let values: ArrayRef = Arc::new(Int64Array::from(vec![1_i64, 2]));
+        let lists: Vec<ArrayRef> = vec![
+            Arc::new(ListArray::new(
+                Arc::clone(&item),
+                OffsetBuffer::from_lengths([2]),
+                Arc::clone(&values),
+                None,
+            )),
+            Arc::new(ListViewArray::new(
+                Arc::clone(&item),
+                ScalarBuffer::from(vec![0_i32]),
+                ScalarBuffer::from(vec![2_i32]),
+                Arc::clone(&values),
+                None,
+            )),
+            Arc::new(LargeListViewArray::new(
+                Arc::clone(&item),
+                ScalarBuffer::from(vec![0_i64]),
+                ScalarBuffer::from(vec![2_i64]),
+                Arc::clone(&values),
+                None,
+            )),
+        ];
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
         let batch = RecordBatch::try_new(
             Arc::new(schema.clone()),
@@ -236,12 +253,16 @@ mod tests {
         )
         .unwrap();
 
-        let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
-        match expr.evaluate(&batch).unwrap() {
-            ColumnarValue::Scalar(value) => {
-                assert_eq!(value.data_type(), expr.data_type(&schema).unwrap())
+        for list in lists {
+            let fields = Fields::from(vec![Field::new("l", list.data_type().clone(), true)]);
+            let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![list], None)));
+            let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+            match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Scalar(value) => {
+                    assert_eq!(value.data_type(), expr.data_type(&schema).unwrap())
+                }
+                ColumnarValue::Array(array) => panic!("expected a scalar, got array {array:?}"),
             }
-            ColumnarValue::Array(array) => panic!("expected a scalar, got array {array:?}"),
         }
     }
 
