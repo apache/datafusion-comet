@@ -19,13 +19,12 @@
 -- nothing is broadcast. Comet runs it natively only without a condition and when each input
 -- reports exactly one partition. A non-bucketed Parquet scan reports UnknownPartitioning(0), so
 -- each side is coalesced to one partition. Partition coalescing is off so AQE cannot merge the
--- REPARTITION(2) case, and the tiny advisory size makes AQE try to split the REBALANCE(1) case.
+-- REPARTITION(2) case. cartesian_product_aqe.sql covers AQE splitting a REBALANCE(1) input.
 
 -- Config: spark.comet.exec.cartesianProduct.enabled=true
 -- Config: spark.sql.autoBroadcastJoinThreshold=-1
 -- Config: spark.sql.adaptive.autoBroadcastJoinThreshold=-1
 -- Config: spark.sql.adaptive.coalescePartitions.enabled=false
--- Config: spark.sql.adaptive.advisoryPartitionSizeInBytes=1k
 -- ConfigMatrix: spark.sql.adaptive.enabled=true,false
 
 statement
@@ -69,11 +68,6 @@ CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM cp_empty) r
 query
 SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM cp_left) l
 CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM cp_large) r
-
--- Native, AQE must not split the REBALANCE(1) input into several partitions
-query
-SELECT * FROM (SELECT /*+ REBALANCE(1) */ * FROM cp_large) l
-CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM cp_right) r
 
 -- A join condition falls back to Spark
 query expect_fallback(CartesianProduct with a join condition is not supported natively)
