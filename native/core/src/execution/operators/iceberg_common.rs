@@ -149,11 +149,30 @@ impl FileIoCacheKey {
             properties: sorted_properties(catalog_properties),
         })
     }
+
+    /// Whether `other` is a `FileIO` for the same table, access mode and catalog built from
+    /// different properties, which this key's `FileIO` supersedes. A catalog that re-vends
+    /// credentials, or a commit that moves the metadata file, gives a table new properties or a new
+    /// reference path, so the table is compared by its root: the reference path up to `/metadata/`.
+    fn supersedes(&self, other: &Self) -> bool {
+        self.access_mode == other.access_mode
+            && self.catalog_name == other.catalog_name
+            && table_root(&self.reference_path) == table_root(&other.reference_path)
+            && self != other
+    }
+}
+
+/// The table location of a metadata file path, or the path itself when it isn't one.
+fn table_root(reference_path: &str) -> &str {
+    reference_path
+        .rfind("/metadata/")
+        .map_or(reference_path, |i| &reference_path[..i])
 }
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
 
-/// Least recently used entries are evicted first.
+/// Least recently used entries are evicted first. Inserting a table's `FileIO` also evicts the ones
+/// it supersedes, so their S3 credential providers can be released once no reader holds them.
 struct FileIoCache {
     entries: HashMap<FileIoCacheKey, FileIO>,
     order: VecDeque<FileIoCacheKey>,
@@ -178,17 +197,27 @@ impl FileIoCache {
         Some(file_io)
     }
 
-    /// Returns the replaced or evicted `FileIO` so the caller can drop it outside the lock.
-    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Option<FileIO> {
+    /// Returns the replaced or evicted `FileIO`s so the caller can drop them outside the lock.
+    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Vec<FileIO> {
         if let Some(previous) = self.entries.insert(key.clone(), file_io) {
-            return Some(previous);
+            return vec![previous];
         }
+        let mut evicted = Vec::new();
+        self.order.retain(|k| {
+            if key.supersedes(k) {
+                evicted.extend(self.entries.remove(k));
+                false
+            } else {
+                true
+            }
+        });
         self.order.push_back(key);
         if self.entries.len() > self.capacity {
-            let oldest = self.order.pop_front()?;
-            return self.entries.remove(&oldest);
+            if let Some(oldest) = self.order.pop_front() {
+                evicted.extend(self.entries.remove(&oldest));
+            }
         }
-        None
+        evicted
     }
 }
 
@@ -817,15 +846,85 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(cache.insert(key("a"), local_file_io()).is_none());
-        assert!(cache.insert(key("b"), local_file_io()).is_none());
+        assert!(cache.insert(key("a"), local_file_io()).is_empty());
+        assert!(cache.insert(key("b"), local_file_io()).is_empty());
         assert!(cache.get(&key("a")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert!(cache.get(&key("b")).is_none());
         assert!(cache.get(&key("a")).is_some());
         assert!(cache.get(&key("c")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// A catalog that re-vends credentials for a table gives it new properties, and a commit gives
+    /// it a new metadata file. Either way the table's new `FileIO` evicts the old one, so the old
+    /// one's credential provider is released once its readers finish. Other tables, catalogs and
+    /// access modes keep theirs.
+    #[test]
+    fn cache_evicts_the_file_io_a_table_supersedes() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str, catalog: &str, mode: AccessMode| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                catalog,
+                mode,
+            )
+            .unwrap()
+        };
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        let other_table = "s3://b/db/u/metadata/00001-c.metadata.json";
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Read), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", other_table, "cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", v1, "other_cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Write), local_file_io())
+            .is_empty());
+
+        // Re-vended credentials for the same metadata file.
+        assert_eq!(
+            cache
+                .insert(key("t2", v1, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t1", v1, "cat", AccessMode::Read)).is_none());
+
+        // A commit, with credentials vended alongside it.
+        assert_eq!(
+            cache
+                .insert(key("t3", v2, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t2", v1, "cat", AccessMode::Read)).is_none());
+        assert!(cache.get(&key("t3", v2, "cat", AccessMode::Read)).is_some());
+
+        assert!(cache
+            .get(&key("t1", other_table, "cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "other_cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "cat", AccessMode::Write))
+            .is_some());
+        assert_eq!(cache.entries.len(), 4);
+        assert_eq!(cache.order.len(), 4);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {

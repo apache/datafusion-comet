@@ -19,9 +19,14 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -266,5 +271,106 @@ public class CometS3CredentialDispatcherTest {
 
     // Both close() invocations ran even though one (the first to be visited) threw.
     assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  @Test
+  public void releasingTheLastReferenceClosesTheProvider() throws Exception {
+    long h1 = init();
+    long h2 = init();
+    assertEquals(h1, h2);
+
+    CometS3CredentialDispatcher.release(h1);
+    assertEquals(0, TestCometS3CredentialProvider.closeCount.get());
+    CometS3CredentialDispatcher.getCredentialsForPath(h2, "b", "k", READ);
+
+    CometS3CredentialDispatcher.release(h2);
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+    assertEquals(0, CometS3CredentialDispatcher.registeredCount());
+    Exception thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () -> CometS3CredentialDispatcher.getCredentialsForPath(h2, "b", "k", READ));
+    assertTrue(thrown.getMessage().contains("not initialized"));
+  }
+
+  @Test
+  public void aRetiredKeyGetsANewProvider() {
+    long retired = init();
+    CometS3CredentialDispatcher.release(retired);
+
+    long fresh = init();
+
+    assertNotEquals(retired, fresh);
+    assertEquals(2, TestCometS3CredentialProvider.initCount.get());
+    assertEquals(1, CometS3CredentialDispatcher.registeredCount());
+  }
+
+  /** An extra release, or one for a handle closed at shutdown, changes nothing. */
+  @Test
+  public void unknownOrRepeatedReleasesAreIgnored() {
+    CometS3CredentialDispatcher.release(Long.MAX_VALUE);
+    long handle = init();
+    CometS3CredentialDispatcher.release(handle);
+    CometS3CredentialDispatcher.release(handle);
+
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+    long other = init();
+    CometS3CredentialDispatcher.release(handle);
+    assertEquals(1, CometS3CredentialDispatcher.registeredCount());
+    CometS3CredentialDispatcher.release(other);
+    assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  /**
+   * A REST catalog that re-vends credentials for a table changes its FileIO properties, so each
+   * snapshot registers its own provider. Once native code releases a snapshot's handle, that
+   * provider is closed, and only the snapshots still in use stay registered.
+   */
+  @Test
+  public void supersededSnapshotsAreClosedOnceReleased() {
+    long[] handles = new long[3];
+    for (int i = 0; i < handles.length; i++) {
+      Map<String, String> props = new HashMap<>();
+      props.put("s3.session-token", "token-" + i);
+      handles[i] = CometS3CredentialDispatcher.ensureInitialized(TEST_PROVIDER, DK, props);
+    }
+    assertEquals(3, CometS3CredentialDispatcher.registeredCount());
+
+    CometS3CredentialDispatcher.release(handles[0]);
+    CometS3CredentialDispatcher.release(handles[1]);
+
+    assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+    assertEquals(1, CometS3CredentialDispatcher.registeredCount());
+  }
+
+  @Test
+  public void concurrentAcquireAndReleaseNeverUseAClosedProvider() throws Exception {
+    int threads = 8;
+    int rounds = 2000;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        futures.add(
+            pool.submit(
+                () -> {
+                  for (int i = 0; i < rounds; i++) {
+                    long handle = init();
+                    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", READ);
+                    CometS3CredentialDispatcher.release(handle);
+                  }
+                  return null;
+                }));
+      }
+      for (Future<?> f : futures) {
+        f.get();
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    assertEquals(0, CometS3CredentialDispatcher.registeredCount());
+    assertEquals(
+        TestCometS3CredentialProvider.initCount.get(),
+        TestCometS3CredentialProvider.closeCount.get());
   }
 }

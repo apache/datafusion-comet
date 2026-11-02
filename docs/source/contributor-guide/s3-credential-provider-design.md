@@ -169,9 +169,15 @@ Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN,
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).
 
-## Lifecycle: `AutoCloseable` plus a JVM shutdown hook
+## Lifecycle: `AutoCloseable`, reference counts and a JVM shutdown hook
 
-`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`. The dispatcher installs a JVM shutdown hook that iterates every cached instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
+`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`.
+
+Each `ensureInitialized` call takes a reference to the instance it returns. A native `CometS3CredentialBridge` holds that reference, shares it with the bridges it derives (`for_path`, `for_location`), and the last of them to be dropped gives it back with `release`. When an instance's last reference is released, the dispatcher closes it and forgets its key, so a later `ensureInitialized` creates a new instance. A reference count rather than "close when superseded" keeps an instance open while any reader still uses it.
+
+On the Iceberg path, bridges live in the executor's `FileIO` cache. A REST catalog that vends new credentials for a table changes the table's FileIO properties, and so the `(FQCN, dispatchKey, catalogProperties)` key. Inserting the table's new `FileIO` evicts the ones it supersedes: same access mode, catalog and table root (the reference path up to `/metadata/`), different properties. Their providers are closed once the tasks reading through them finish, so a long-lived executor holds one provider per table in use, not one per credential it was ever vended. The cache's 64-entry LRU bound limits the rest. On the Parquet path the object store cache never evicts, so its providers live until shutdown.
+
+The dispatcher also installs a JVM shutdown hook that iterates every remaining instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
 
 ## Iceberg path: error message fidelity caveat
 

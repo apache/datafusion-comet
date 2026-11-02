@@ -24,7 +24,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Test-only provider instantiated by the dispatcher when its FQCN is passed across JNI. State is
- * static because the dispatcher caches one instance per (FQCN, dispatchKey) for the JVM lifetime.
+ * static because the dispatcher keeps one instance per (FQCN, dispatchKey, catalogProperties) until
+ * its last reference is released or the JVM shuts down.
  */
 public class TestCometS3CredentialProvider implements CometS3CredentialProvider {
 
