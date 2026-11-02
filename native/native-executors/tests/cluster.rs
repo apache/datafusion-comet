@@ -21,6 +21,7 @@
 mod common;
 
 use std::future::Future;
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -43,6 +44,8 @@ struct Cluster {
     processes: Vec<Child>,
     work_dir: PathBuf,
     flight_url: String,
+    /// The port of Ballista's gRPC service, for executors.
+    scheduler_port: u16,
 }
 
 /// Held while a cluster starts, so that two tests don't pick the same free port in between.
@@ -67,6 +70,7 @@ impl Cluster {
                 std::process::id()
             )),
             flight_url: format!("http://127.0.0.1:{flight_port}"),
+            scheduler_port,
         };
         let mut env = vec![
             ("COMET_SCHEDULER_BIND_HOST", "127.0.0.1".to_string()),
@@ -166,6 +170,24 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// The HTTP status of a GET of `path` on a local port.
+fn http_status(port: u16, path: &str) -> u16 {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = vec![];
+    stream.read_to_end(&mut response).unwrap();
+    let response = String::from_utf8_lossy(&response);
+    response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|status| status.parse().ok())
+        .unwrap_or_else(|| panic!("Not an HTTP response: {response}"))
+}
+
 fn wait_for(port: u16) {
     let deadline = Instant::now() + Duration::from_secs(60);
     while TcpStream::connect(("127.0.0.1", port)).is_err() {
@@ -262,4 +284,44 @@ async fn endpoints_say_when_their_results_are_deleted() {
         );
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn writes_event_logs_without_serving_the_rest_api() {
+    let log_dir = std::env::temp_dir().join(format!(
+        "comet-native-executors-event-logs-{}-{}",
+        std::process::id(),
+        free_port()
+    ));
+    let cluster = Cluster::start_with(&[(
+        "COMET_SCHEDULER_EVENT_LOG_DIR",
+        log_dir.to_string_lossy().into_owned(),
+    )]);
+    cluster.run(&query(vec![range_stage(100, 2)])).await;
+
+    // The scheduler renames a query's log to `<job id>.eventlog` once it has written all of it.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let log = loop {
+        let finished = std::fs::read_dir(&log_dir).ok().and_then(|entries| {
+            entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .find(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "eventlog")
+                })
+        });
+        if let Some(log) = finished {
+            break log;
+        }
+        assert!(Instant::now() < deadline, "No finished event log");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(!std::fs::read_to_string(&log).unwrap().is_empty());
+
+    // Compiling the event-log writer compiles Ballista's REST API in, which lists and cancels
+    // jobs without authentication on the scheduler's gRPC port. The scheduler doesn't serve it.
+    assert_eq!(http_status(cluster.scheduler_port, "/api/jobs"), 404);
+
+    drop(cluster);
+    let _ = std::fs::remove_dir_all(&log_dir);
 }

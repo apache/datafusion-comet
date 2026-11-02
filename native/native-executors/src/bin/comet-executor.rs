@@ -26,11 +26,17 @@
 //! - `COMET_EXECUTOR_GRPC_PORT` (default `50052`)
 //! - `COMET_SCHEDULER_HOST` (default `localhost`) and `COMET_SCHEDULER_PORT` (default `50050`)
 //! - `COMET_EXECUTOR_TASKS`: concurrent tasks (default: the number of CPUs)
-//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest gRPC message, in bytes, the executor accepts or
-//!   sends, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
-//! - `COMET_EXECUTOR_MEMORY_POOL_SIZE`: the bytes of memory the executor's tasks share (default:
-//!   Ballista's, 70% of the container's memory limit). Memory outside the pool, such as batches
-//!   in flight between stages, comes on top of it.
+//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest message, in bytes, the executor sends or accepts
+//!   on Ballista's gRPC connections with the scheduler, such as a task with many partitions of a
+//!   scan, and on its Flight service (default: Ballista's 16 MiB). Set it on the scheduler as
+//!   well. The executor's reads of other executors' shuffle data keep the limit of the query's
+//!   `ballista.client.grpc_max_message_size` (16 MiB by default), which this does not change.
+//! - `COMET_EXECUTOR_MEMORY_POOL_SIZE`: the executor's memory budget in bytes, `0` for no limit.
+//!   It is not one pool that the tasks share: each task gets its own pool of the budget divided
+//!   by `COMET_EXECUTOR_TASKS`, times the task slots it takes, even when it runs alone. By
+//!   default the budget is 70% of the smaller of the container's memory limit and the host's
+//!   memory, or no limit when neither can be found. Memory outside the pools, such as batches in
+//!   flight between stages, comes on top of it.
 //! - `COMET_EXECUTOR_WORK_DIR`: where shuffle and spill files go (default: a temporary directory)
 
 use std::sync::Arc;

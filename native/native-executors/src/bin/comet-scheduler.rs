@@ -26,11 +26,20 @@
 //! - `COMET_SCHEDULER_FLIGHT_PORT`: the Flight port, for drivers (default `50060`)
 //! - `COMET_SCHEDULER_RESULT_RETENTION_SECONDS`: how long a query's results stay readable after
 //!   the query ends, whether or not a driver has read them (default `300`). `0` keeps them.
-//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest gRPC message, in bytes, the scheduler sends or
-//!   accepts, such as a task with many partitions of a scan (default: Ballista's 16 MiB)
+//! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest message, in bytes, of Ballista's gRPC service
+//!   between the scheduler and its executors, such as a task with many partitions of a scan
+//!   (default: Ballista's 16 MiB). Set it on the executors as well, for their side of the same
+//!   messages. The Flight service for drivers has no limit. Shuffle reads between executors keep
+//!   the limit of the query's `ballista.client.grpc_max_message_size` (16 MiB by default), which
+//!   this does not change.
 //! - `COMET_SCHEDULER_EVENT_LOG_DIR`: a directory to write one event log per query to, as
 //!   Ballista's scheduler does: the query's plan, a record for each task, and each stage's rows
-//!   and compute time (default: no event logs)
+//!   and compute time (default: no event logs). The task records are best effort: when the
+//!   writer falls behind, Ballista drops them, so a log can have fewer records than the query had
+//!   tasks. Logs stay in the directory until something removes them;
+//!   `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` applies to query results, not to logs.
+//!
+//! Ballista's REST API, which lists and cancels jobs without authentication, is not served.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -50,6 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     let mut config = SchedulerConfig {
         override_physical_codec: Some(Arc::new(CometPhysicalCodec::default())),
+        // Compiling the event-log writer compiles the REST API in with it, on the gRPC port.
+        disable_rest_api: true,
         ..Default::default()
     };
     if let Some(host) = env_var("COMET_SCHEDULER_BIND_HOST")? {
