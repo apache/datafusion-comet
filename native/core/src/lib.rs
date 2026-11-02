@@ -191,6 +191,24 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_nativeSupportsPythonUdf(
     cfg!(feature = "python-udf")
 }
 
+/// Stops the Python UDF calls of a killed Spark task; see `execution::python_udf::kill_task`.
+/// Returns the number of calls interrupted.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_killPythonUdfs(
+    _: EnvUnowned,
+    _: JClass,
+    task: jni::sys::jlong,
+    interrupt_running: jni::sys::jboolean,
+) -> jni::sys::jint {
+    #[cfg(feature = "python-udf")]
+    return execution::python_udf::kill_task(task, interrupt_running) as jni::sys::jint;
+    #[cfg(not(feature = "python-udf"))]
+    {
+        let _ = (task, interrupt_running);
+        0
+    }
+}
+
 /// JNI: the `major.minor` version of the embedded Python interpreter, or an empty string when
 /// libcomet was built without the `python-udf` feature. The interpreter is the `libpython` that
 /// libcomet was linked against, so its version is fixed when libcomet is built, while PySpark's
