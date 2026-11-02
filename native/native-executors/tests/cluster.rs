@@ -43,6 +43,8 @@ struct Cluster {
     processes: Vec<Child>,
     work_dir: PathBuf,
     flight_url: String,
+    /// The scheduler's log, with this crate's messages at info level.
+    scheduler_log: PathBuf,
 }
 
 /// Held while a cluster starts, so that two tests don't pick the same free port in between.
@@ -67,6 +69,10 @@ impl Cluster {
                 std::process::id()
             )),
             flight_url: format!("http://127.0.0.1:{flight_port}"),
+            scheduler_log: std::env::temp_dir().join(format!(
+                "comet-scheduler-{}-{flight_port}.log",
+                std::process::id()
+            )),
         };
         let mut env = vec![
             ("COMET_SCHEDULER_BIND_HOST", "127.0.0.1".to_string()),
@@ -74,7 +80,13 @@ impl Cluster {
             ("COMET_SCHEDULER_FLIGHT_PORT", flight_port.to_string()),
         ];
         env.extend_from_slice(scheduler_env);
-        cluster.spawn(env!("CARGO_BIN_EXE_comet-scheduler"), &env);
+        let log = std::fs::File::create(&cluster.scheduler_log).unwrap();
+        cluster.spawn_logging(
+            env!("CARGO_BIN_EXE_comet-scheduler"),
+            &env,
+            "warn,comet_native_executors=info",
+            Stdio::from(log),
+        );
         wait_for(scheduler_port);
         wait_for(flight_port);
         let work_dir = cluster.work_dir.to_string_lossy().into_owned();
@@ -95,10 +107,15 @@ impl Cluster {
     }
 
     fn spawn(&mut self, binary: &str, env: &[(&str, String)]) {
+        self.spawn_logging(binary, env, "warn", Stdio::inherit());
+    }
+
+    fn spawn_logging(&mut self, binary: &str, env: &[(&str, String)], log: &str, stderr: Stdio) {
         let child = Command::new(binary)
             .envs(env.iter().map(|(key, value)| (*key, value.as_str())))
-            .env("RUST_LOG", "warn")
+            .env("RUST_LOG", log)
             .stdout(Stdio::null())
+            .stderr(stderr)
             .spawn()
             .unwrap_or_else(|e| panic!("Cannot start {binary}: {e}"));
         self.processes.push(child);
@@ -138,6 +155,7 @@ impl Drop for Cluster {
             let _ = process.wait();
         }
         let _ = std::fs::remove_dir_all(&self.work_dir);
+        let _ = std::fs::remove_file(&self.scheduler_log);
     }
 }
 
@@ -230,6 +248,62 @@ async fn sorts_across_a_range_exchange_by_merging_sorted_partitions() {
         })
         .collect();
     assert_eq!(values, (0..1000).rev().collect::<Vec<_>>());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn broadcasts_a_build_side_that_measures_small_into_the_probe_side_stage() {
+    // Spark's estimates make the build side worth measuring before the probe side is shuffled:
+    // under Ballista's maximum estimate multiple, and the probe side many times larger. It
+    // measures far under the broadcast threshold, so the join runs in the probe side's stage.
+    let cluster = Cluster::start();
+    let mut probe = range_stage(10_000, 4);
+    probe.estimated_output_bytes = Some(1 << 40);
+    let mut build = range_stage(100, 2);
+    build.estimated_output_bytes = Some(1 << 30);
+    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
+
+    let partitions = cluster.run(&request).await;
+
+    let rows = partitions.concat();
+    assert_eq!(
+        sorted_values::<Int64Type>(&rows),
+        (0..100).collect::<Vec<_>>()
+    );
+    for batch in &rows {
+        assert_eq!(batch.column(0), batch.column(1));
+    }
+    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
+    assert!(log.contains("Holding back a join's probe side"), "{log}");
+    assert!(
+        log.contains("broadcasting it to the probe side's stage"),
+        "{log}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shuffles_the_probe_side_when_the_build_side_measures_large() {
+    // With a broadcast threshold of one byte, a held join's build side always measures too
+    // large, so the probe side's stage is released as it was and the join is shuffled.
+    let cluster = Cluster::start_with(&[(
+        "COMET_SCHEDULER_BALLISTA_CONFIG",
+        "ballista.optimizer.broadcast_join_threshold_bytes=1".to_string(),
+    )]);
+    let mut probe = range_stage(10_000, 4);
+    probe.estimated_output_bytes = Some(1 << 40);
+    let mut build = range_stage(100, 2);
+    build.estimated_output_bytes = Some(16);
+    let request = query(vec![probe, build, joining_stage(0, 1, 3)]);
+
+    let partitions = cluster.run(&request).await;
+
+    let rows = partitions.concat();
+    assert_eq!(
+        sorted_values::<Int64Type>(&rows),
+        (0..100).collect::<Vec<_>>()
+    );
+    let log = std::fs::read_to_string(&cluster.scheduler_log).unwrap();
+    assert!(log.contains("Holding back a join's probe side"), "{log}");
+    assert!(log.contains("shuffling the probe side"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

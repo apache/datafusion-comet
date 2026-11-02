@@ -169,6 +169,7 @@ fn build_stage(
         broadcast: stage.inputs.iter().map(|input| input.broadcast).collect(),
         output_schema: stage.output_schema,
         conf: conf.clone(),
+        estimated_output_bytes: stage.estimated_output_bytes,
     };
     let fragment: Arc<dyn ExecutionPlan> =
         Arc::new(CometFragmentExec::try_new(Arc::new(fragment), children)?);

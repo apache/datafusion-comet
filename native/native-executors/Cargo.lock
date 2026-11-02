@@ -999,7 +999,7 @@ dependencies = [
 [[package]]
 name = "ballista-core"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
+source = "git+https://github.com/andygrove/datafusion-ballista?branch=comet-adaptive-rules#56e2d8a2c6c387f7cbd856950b7814777aa31f51"
 dependencies = [
  "arrow-flight",
  "async-trait",
@@ -1028,7 +1028,7 @@ dependencies = [
 [[package]]
 name = "ballista-executor"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
+source = "git+https://github.com/andygrove/datafusion-ballista?branch=comet-adaptive-rules#56e2d8a2c6c387f7cbd856950b7814777aa31f51"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -1057,7 +1057,7 @@ dependencies = [
 [[package]]
 name = "ballista-scheduler"
 version = "55.0.0"
-source = "git+https://github.com/apache/datafusion-ballista?branch=comet-native#8ab06362af7d74c01be6d9ceb16a8cad8efc8b7c"
+source = "git+https://github.com/andygrove/datafusion-ballista?branch=comet-adaptive-rules#56e2d8a2c6c387f7cbd856950b7814777aa31f51"
 dependencies = [
  "arrow-flight",
  "async-trait",

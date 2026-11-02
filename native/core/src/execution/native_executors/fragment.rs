@@ -24,6 +24,7 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt32Type};
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{internal_datafusion_err, DataFusionError, Result};
 use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::memory_pool::{MemoryPool, UnboundedMemoryPool};
 use datafusion::execution::TaskContext;
@@ -86,6 +87,29 @@ pub fn partition_descriptor(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(MemorySourceConfig::try_new_exec(&partitions, schema, None)?)
+}
+
+/// The partitions' own copies of the block in a fragment's partition `descriptor`, one per
+/// partition, or none when its partitions all run the fragment's block.
+pub fn partition_plans(descriptor: &Arc<dyn ExecutionPlan>) -> Result<Vec<Vec<u8>>> {
+    let memory = descriptor
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|source| source.data_source().downcast_ref::<MemorySourceConfig>())
+        .ok_or_else(|| internal_datafusion_err!("Not a fragment's partition descriptor"))?;
+    let mut plans = Vec::new();
+    for partition in memory.partitions() {
+        let [batch] = partition.as_slice() else {
+            return Err(internal_datafusion_err!(
+                "A fragment's partition descriptor must have one row per partition"
+            ));
+        };
+        let column = batch.column(1).as_binary::<i32>();
+        if column.is_null(0) {
+            return Ok(vec![]);
+        }
+        plans.push(column.value(0).to_vec());
+    }
+    Ok(plans)
 }
 
 /// Runs a Comet native block for each partition of a stage.

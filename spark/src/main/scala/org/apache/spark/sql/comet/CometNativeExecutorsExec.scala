@@ -23,6 +23,7 @@ import java.util.IdentityHashMap
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
+import scala.util.Try
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -443,7 +444,7 @@ object CometNativeExecutors {
       // block's output to it as that writer does.
       val outputSchema = schema2Proto(
         plan.output.map(a => StructField(a.name, a.dataType, a.nullable, a.metadata)))
-      stages += Stage
+      val stage = Stage
         .newBuilder()
         .setPlan(blockPlan)
         .addAllInputs(inputs.asJava)
@@ -451,11 +452,24 @@ object CometNativeExecutors {
         .setNumPartitions(numPartitions)
         .addAllOutputSchema(outputSchema.asJava)
         .addAllOutputOrdering(outputOrdering.asJava)
-        .build()
+      estimatedOutputBytes(plan).foreach(stage.setEstimatedOutputBytes)
+      stages += stage.build()
       val index = stages.length - 1
       stageIndexes.put(plan, index)
       index
     }
+
+    /**
+     * Spark's estimate of the size of `plan`'s output, from the logical plan of the nearest node
+     * in it that has one. The scheduler uses it to decide whether a join's build side is worth
+     * measuring before its probe side is shuffled.
+     */
+    private def estimatedOutputBytes(plan: SparkPlan): Option[Long] =
+      plan
+        .collectFirst { case node if node.logicalLink.isDefined => node.logicalLink.get }
+        .flatMap(logical => Try(logical.stats.sizeInBytes).toOption)
+        .filter(_ >= 0)
+        .map(_.min(Long.MaxValue).toLong)
 
     /**
      * The exchanges that feed `block`, in the order its native plan's input leaves read them:

@@ -41,6 +41,7 @@ use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::cluster::BallistaCluster;
 use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::{create_scheduler, start_grpc_service};
+use comet_native_executors::adaptive::CometAdaptiveRules;
 use comet_native_executors::codec::CometPhysicalCodec;
 use comet_native_executors::frontend::CometFlightService;
 use comet_native_executors::{env_var, init_logging};
@@ -52,6 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     let mut config = SchedulerConfig {
         override_physical_codec: Some(Arc::new(CometPhysicalCodec::default())),
+        adaptive_rules: Some(Arc::new(CometAdaptiveRules)),
         ..Default::default()
     };
     if let Some(host) = env_var("COMET_SCHEDULER_BIND_HOST")? {
