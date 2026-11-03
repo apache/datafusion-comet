@@ -22,10 +22,9 @@ under the License.
 The following benchmarks were performed on an EKS cluster (`r6i` instances with EBS storage) with data stored in S3,
 using Apache Spark 4.2.0 (Scala 2.13), Comet 1.1.0 and Comet 1.2.0. The tables are Parquet files compressed with zstd at
 scale factor 1000 (1 TB), and all three runs read the same files. Each query was run twice and the mean time is reported.
-The Comet 1.1.0 results are from a build of the 1.1 release branch.
 
-Across all 103 queries, Comet 1.2.0 finished in 488 seconds, Comet 1.1.0 in 525 seconds and Spark in 994 seconds,
-so Comet 1.2.0 is 2.0x faster than Spark.
+Across all 103 queries, Comet 1.2.0 finished in 488 seconds, Comet 1.1.0 in 606 seconds and Spark in 994 seconds,
+so Comet 1.2.0 is 2.0x faster than Spark and 1.2x faster than Comet 1.1.0.
 
 ## Benchmark Results
 
@@ -47,7 +46,7 @@ How much Comet 1.2.0 accelerates each query over Spark in absolute terms.
 
 ## Spark 4.1.3
 
-The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13). Comet 1.1.0 here is the 1.1.0 release.
+The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13).
 
 | | Total time (103 queries) | Speedup over Spark |
 |---|---|---|
