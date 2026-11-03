@@ -336,7 +336,9 @@ class CometWindowExecSuite extends CometTestBase {
       "RANK()" -> false,
       "PERCENT_RANK()" -> false,
       "NTILE(2)" -> false,
-      "RANK()" -> true)
+      "RANK()" -> true,
+      "ROW_NUMBER()" -> false,
+      "ROW_NUMBER()" -> true)
   } {
     test(
       s"window: floating partition keys ($partitionColumn, $function, group limit=$groupLimit)") {
@@ -360,6 +362,7 @@ class CometWindowExecSuite extends CometTestBase {
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
         SQLConf.SHUFFLE_PARTITIONS.key -> "1",
         CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "false",
+        CometConf.COMET_BATCH_SIZE.key -> "3",
         CometConf.COMET_EXEC_WINDOW_GROUP_LIMIT_ENABLED.key -> groupLimit.toString) {
         withTempView("floating_window_partitions") {
           data
@@ -367,9 +370,9 @@ class CometWindowExecSuite extends CometTestBase {
             .createOrReplaceTempView("floating_window_partitions")
 
           for (partitionBy <- Seq(partitionColumn, s"secondary, $partitionColumn")) {
-            // Spark normalizes floating partition keys before constructing the child sort.
-            // Native sort and window expressions must still agree on these keys, including
-            // for bounded RANK and non-bounded PERCENT_RANK/NTILE without WindowGroupLimit.
+            // Spark normalises floating partition keys before constructing the child sort.
+            // Native sort and window expressions must still agree across batches, including
+            // streaming ROW_NUMBER, bounded RANK, and non-bounded PERCENT_RANK/NTILE.
             val windowQuery = s"""
                  |SELECT id, $function OVER (PARTITION BY $partitionBy ORDER BY id) AS rnk
                  |FROM floating_window_partitions
@@ -1284,42 +1287,6 @@ class CometWindowExecSuite extends CometTestBase {
         FROM window_test
       """)
       checkSparkAnswerAndOperator(df)
-    }
-  }
-
-  test("window: streaming ROW_NUMBER across input batches") {
-    withTempDir { dir =>
-      (0 until 97)
-        .map(i => (if (i < 9) null else s"key-${i / 13}", i, "payload-" * 32))
-        .toDF("k", "i", "payload")
-        .coalesce(1)
-        .write
-        .mode("overwrite")
-        .parquet(dir.toString)
-      spark.read.parquet(dir.toString).createOrReplaceTempView("streaming_row_number")
-      for (batchSize <- Seq(3, 16, 128); ansi <- Seq("false", "true")) {
-        withSQLConf(
-          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
-          SQLConf.ANSI_ENABLED.key -> ansi) {
-          for (partition <- Seq("", "PARTITION BY k")) {
-            val df = sql(s"""
-              SELECT k, i, payload,
-                ROW_NUMBER() OVER ($partition ORDER BY i) AS first_rank,
-                ROW_NUMBER() OVER ($partition ORDER BY i) AS second_rank
-              FROM streaming_row_number
-            """)
-            checkSparkAnswerAndOperator(df)
-            assertCometWindowExecExists(df.queryExecution.executedPlan)
-          }
-          // A mixed window must retain the generic executor and its frame behaviour.
-          checkSparkAnswerAndOperator(sql("""
-            SELECT k, i,
-              ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS rn,
-              COUNT(*) OVER (PARTITION BY k ORDER BY i) AS n
-            FROM streaming_row_number
-          """))
-        }
-      }
     }
   }
 
