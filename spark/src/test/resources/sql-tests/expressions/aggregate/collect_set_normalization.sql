@@ -64,11 +64,14 @@ query
 SELECT grp, count(DISTINCT id), sort_array(collect_list(f)), sort_array(collect_list(d))
 FROM cs_norm_scalar WHERE grp = 'ordinary' GROUP BY grp
 
+-- Compare after collecting: nested signed zeros are distinct elements before Spark 4.2,
+-- but Spark sorts them as equal, so sorting the nested values has no deterministic tie order.
 query
 SELECT grp, count(DISTINCT id),
-  sort_array(collect_set(named_struct('v', f))),
-  sort_array(collect_set(named_struct('v', d)))
-FROM cs_norm_scalar WHERE grp = 'ordinary' GROUP BY grp
+  sort_array(transform(collect_set(named_struct('v', f)), x -> CAST(x AS STRING))),
+  sort_array(transform(collect_set(named_struct('v', d)), x -> CAST(x AS STRING))),
+  sort_array(transform(collect_set(array(d)), x -> CAST(x AS STRING)))
+FROM cs_norm_scalar GROUP BY grp
 
 -- Exercise the no-GROUP BY aggregate shape while merging partial buffers.
 query

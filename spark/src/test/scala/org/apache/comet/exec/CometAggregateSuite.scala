@@ -28,7 +28,7 @@ import org.apache.spark.{CometListenerBusUtils, SparkConf, SparkThrowable}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Corr, Final, Partial, PartialMerge, RegrR2}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, CollectSet, Corr, Final, Partial, PartialMerge, RegrR2}
 import org.apache.spark.sql.catalyst.optimizer.EliminateSorts
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
 import org.apache.spark.sql.comet.{CometBaseAggregateExec, CometFilterExec, CometHashAggregateExec, CometNativeExec, CometProjectExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec}
@@ -645,6 +645,68 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(!nativeAggregates.exists(_.modes == Seq(Partial)), plan)
         assert(sparkAggregates.nonEmpty, plan)
         assert(sparkAggregates.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
+      }
+    }
+  }
+
+  test("nested float collect_set preserves DISTINCT paths (issue #7203)") {
+    // SQL fixtures check native input. Also consume Spark's serialized complex partial buffers,
+    // and ensure the existing strict-mode fallback is not bypassed by the scalar-only guard.
+    val data = Seq(
+      (1, 1, Some(Double.NaN)),
+      (1, 2, Some(Double.NaN)),
+      (1, 3, Some(-0.0d)),
+      (1, 4, Some(0.0d)),
+      (1, 5, Some(1.0d)),
+      (1, 6, None),
+      (2, 1, None))
+    val local = data.toDF("grp", "id", "d")
+    withTempPath { path =>
+      local.write.parquet(path.getCanonicalPath)
+      for {
+        adaptive <- Seq(false, true)
+        strict <- Seq(false, true)
+        sparkPartial <- Seq(false, true)
+      } {
+        withSQLConf(
+          COMET_EXEC_STRICT_FLOATING_POINT.key -> strict.toString,
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          SQLConf.SHUFFLE_PARTITIONS.key -> "2",
+          CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false") {
+          val input = if (sparkPartial) local else spark.read.parquet(path.getCanonicalPath)
+          val query = input
+            .groupBy("grp")
+            .agg(
+              count_distinct(col("id")),
+              sort_array(collect_set(expr("array(d)"))),
+              sort_array(collect_set(expr("named_struct('v', d)"))))
+          val (_, plan) = checkSparkAnswer(query)
+          val nativeCollect = collect(plan) {
+            case a: CometBaseAggregateExec
+                if a.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[CollectSet]) =>
+              a
+          }
+          val sparkCollect = collect(plan) {
+            case a: BaseAggregateExec
+                if a.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[CollectSet]) =>
+              a
+          }
+          if (strict && !isSpark42Plus) {
+            assert(nativeCollect.isEmpty, plan)
+            assert(
+              sparkCollect.exists(_.aggregateExpressions.exists(_.mode == PartialMerge)),
+              plan)
+          } else {
+            val modes = nativeCollect.flatMap(_.aggregateExpressions.collect {
+              case a if a.aggregateFunction.isInstanceOf[CollectSet] => a.mode
+            })
+            assert(modes.contains(PartialMerge), plan)
+            assert(modes.contains(Final), plan)
+            assert(modes.contains(Partial) == !sparkPartial, plan)
+            assert(sparkCollect.nonEmpty == sparkPartial, plan)
+            assert(sparkCollect.forall(_.aggregateExpressions.forall(_.mode == Partial)), plan)
+          }
+        }
       }
     }
   }

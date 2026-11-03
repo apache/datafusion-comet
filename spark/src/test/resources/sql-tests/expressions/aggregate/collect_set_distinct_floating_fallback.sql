@@ -75,8 +75,13 @@ query
 SELECT grp, count(DISTINCT id), sort_array(collect_list(f)), sort_array(collect_list(d))
 FROM cs_distinct_float WHERE grp = 3 GROUP BY grp
 
+-- Nested elements use a different equality rule from scalar floats before Spark 4.2.
+-- Include NaNs, both zeros and nested NULLs so these controls exercise that boundary.
+-- Compare after collecting: nested signed zeros are distinct elements before Spark 4.2,
+-- but Spark sorts them as equal, so sorting the nested values has no deterministic tie order.
 query
 SELECT grp, count(DISTINCT id),
-  sort_array(collect_set(named_struct('v', f))),
-  sort_array(collect_set(named_struct('v', d)))
-FROM cs_distinct_float WHERE grp = 3 GROUP BY grp
+  sort_array(transform(collect_set(named_struct('v', f)), x -> CAST(x AS STRING))),
+  sort_array(transform(collect_set(named_struct('v', d)), x -> CAST(x AS STRING))),
+  sort_array(transform(collect_set(array(d)), x -> CAST(x AS STRING)))
+FROM cs_distinct_float GROUP BY grp
