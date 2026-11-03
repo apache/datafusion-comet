@@ -18,8 +18,8 @@
 use arrow::array::builder::GenericStringBuilder;
 use arrow::array::cast::as_dictionary_array;
 use arrow::array::types::Int32Type;
-use arrow::array::{make_array, Array, AsArray, DictionaryArray};
-use arrow::array::{ArrayRef, OffsetSizeTrait};
+use arrow::array::{make_array, new_null_array, Array, AsArray, DictionaryArray};
+use arrow::array::{ArrayRef, GenericStringArray, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
@@ -48,6 +48,17 @@ fn spark_read_side_padding2(
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     match args {
+        // Spark's StringRPad/StringLPad are null-intolerant, so a NULL length makes every
+        // row NULL. A scalar subquery that returns no rows produces such a length.
+        [string, ColumnarValue::Scalar(ScalarValue::Int32(None)), ..] => match string {
+            ColumnarValue::Array(array) => Ok(ColumnarValue::Array(new_null_array(
+                array.data_type(),
+                array.len(),
+            ))),
+            ColumnarValue::Scalar(scalar) => Ok(ColumnarValue::Scalar(ScalarValue::try_from(
+                scalar.data_type(),
+            )?)),
+        },
         [ColumnarValue::Array(array), ColumnarValue::Scalar(ScalarValue::Int32(Some(length)))] => {
             match array.data_type() {
                 DataType::Utf8 => spark_read_side_padding_internal::<i32>(
@@ -183,18 +194,51 @@ fn spark_read_side_padding2(
         }
         // The string argument can be a scalar even when it references columns, e.g.
         // `IF(p, (SELECT max(s) FROM t), s)` when every row takes the subquery branch.
-        // Expand it to an array so the arms above handle it.
-        [ColumnarValue::Scalar(string), rest @ ..] => {
-            let num_rows = rest.iter().find_map(|arg| match arg {
+        // Every row reads the one value rather than an expanded copy, which for a wide string
+        // could exceed the 32-bit offsets of the input array.
+        [ColumnarValue::Scalar(string), length, rest @ ..] => {
+            let pad_string = match rest {
+                [] => SPACE,
+                [ColumnarValue::Scalar(ScalarValue::Utf8(Some(pad)))] => pad.as_str(),
+                _ => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unsupported arguments {args:?} for function rpad/lpad/read_side_padding",
+                    )))
+                }
+            };
+            let num_rows = match length {
                 ColumnarValue::Array(array) => Some(array.len()),
                 ColumnarValue::Scalar(_) => None,
-            });
-            let mut expanded = Vec::with_capacity(args.len());
-            expanded.push(ColumnarValue::Array(
-                string.to_array_of_size(num_rows.unwrap_or(1))?,
-            ));
-            expanded.extend_from_slice(rest);
-            let result = spark_read_side_padding2(&expanded, truncate, is_left_pad)?;
+            };
+            let len = num_rows.unwrap_or(1);
+            let result = match string {
+                ScalarValue::Utf8(value) => pad_strings::<i32>(
+                    StringInput::Scalar {
+                        value: value.as_deref(),
+                        len,
+                    },
+                    truncate,
+                    length.clone(),
+                    pad_string,
+                    is_left_pad,
+                )?,
+                ScalarValue::LargeUtf8(value) => pad_strings::<i64>(
+                    StringInput::Scalar {
+                        value: value.as_deref(),
+                        len,
+                    },
+                    truncate,
+                    length.clone(),
+                    pad_string,
+                    is_left_pad,
+                )?,
+                other => {
+                    return Err(DataFusionError::Internal(format!(
+                        "Unsupported data type {:?} for function rpad/lpad/read_side_padding",
+                        other.data_type()
+                    )))
+                }
+            };
             match num_rows {
                 Some(_) => Ok(result),
                 // Every argument was a scalar, so the result is one too.
@@ -217,8 +261,61 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     pad_string: &str,
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
-    let string_array = as_generic_string_array::<T>(array)?;
+    pad_strings(
+        StringInput::Array(as_generic_string_array::<T>(array)?),
+        truncate,
+        pad_type,
+        pad_string,
+        is_left_pad,
+    )
+}
 
+/// The strings to pad: a string array, or one value shared by `len` rows.
+enum StringInput<'a, T: OffsetSizeTrait> {
+    Array(&'a GenericStringArray<T>),
+    Scalar { value: Option<&'a str>, len: usize },
+}
+
+impl<'a, T: OffsetSizeTrait> StringInput<'a, T> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Array(array) => array.len(),
+            Self::Scalar { len, .. } => *len,
+        }
+    }
+
+    fn is_ascii(&self) -> bool {
+        match self {
+            Self::Array(array) => array.is_ascii(),
+            Self::Scalar { value, .. } => value.is_none_or(str::is_ascii),
+        }
+    }
+
+    /// Bytes of input values, used to size the output when rows pass through untruncated. A
+    /// scalar counts once: reserving it for every row could exceed the output's offsets.
+    fn value_bytes(&self) -> usize {
+        match self {
+            Self::Array(array) => array.value_data().len(),
+            Self::Scalar { value, .. } => value.map_or(0, str::len),
+        }
+    }
+
+    #[inline]
+    fn value(&self, i: usize) -> Option<&'a str> {
+        match self {
+            Self::Array(array) => array.is_valid(i).then(|| array.value(i)),
+            Self::Scalar { value, .. } => *value,
+        }
+    }
+}
+
+fn pad_strings<T: OffsetSizeTrait>(
+    strings: StringInput<'_, T>,
+    truncate: bool,
+    pad_type: ColumnarValue,
+    pad_string: &str,
+    is_left_pad: bool,
+) -> Result<ColumnarValue, DataFusionError> {
     match pad_type {
         ColumnarValue::Array(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
@@ -236,18 +333,18 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
                 max_length = max_length.max(length);
             }
             let mut builder = GenericStringBuilder::<T>::with_capacity(
-                string_array.len(),
-                data_capacity.max(string_array.value_data().len()),
+                strings.len(),
+                data_capacity.max(strings.value_bytes()),
             );
             let padder = Padder {
                 pad: PadPattern::new(pad_string, max_length),
-                ascii: string_array.is_ascii(),
+                ascii: strings.is_ascii(),
                 truncate,
                 is_left_pad,
             };
 
-            for (string, length) in string_array.iter().zip(int_pad_array) {
-                match (string, length) {
+            for (i, length) in int_pad_array.iter().enumerate() {
+                match (strings.value(i), length) {
                     (Some(string), Some(length)) => {
                         if length >= 0 {
                             padder.append(&mut builder, string, length as usize);
@@ -266,18 +363,18 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
             let length = 0.max(i32::try_from(const_pad_length)?) as usize;
 
             let mut builder = GenericStringBuilder::<T>::with_capacity(
-                string_array.len(),
-                string_array.len().saturating_mul(length),
+                strings.len(),
+                strings.len().saturating_mul(length),
             );
             let padder = Padder {
                 pad: PadPattern::new(pad_string, length),
-                ascii: string_array.is_ascii(),
+                ascii: strings.is_ascii(),
                 truncate,
                 is_left_pad,
             };
 
-            for string in string_array.iter() {
-                match string {
+            for i in 0..strings.len() {
+                match strings.value(i) {
                     Some(string) => padder.append(&mut builder, string, length),
                     _ => builder.append_null(),
                 }
@@ -702,5 +799,59 @@ mod tests {
         assert_eq!(result_values(spark_rpad(&args).unwrap()), vec![None, None]);
         let args = vec![utf8(&[Some("abc"), Some("")]), len_array(&[None, None])];
         assert_eq!(result_values(spark_lpad(&args).unwrap()), vec![None, None]);
+    }
+
+    // A scalar subquery that returns no rows yields a NULL scalar length (#7452).
+    #[test]
+    fn null_scalar_length_yields_null() {
+        let null_length = ColumnarValue::Scalar(ScalarValue::Int32(None));
+        let strings = utf8(&[Some("abc"), None]);
+        for args in [
+            vec![strings.clone(), null_length.clone()],
+            vec![strings, null_length.clone(), pad_scalar("x")],
+        ] {
+            assert_eq!(result_values(spark_rpad(&args).unwrap()), vec![None, None]);
+            assert_eq!(result_values(spark_lpad(&args).unwrap()), vec![None, None]);
+            assert_eq!(
+                result_values(spark_read_side_padding(&args).unwrap()),
+                vec![None, None]
+            );
+        }
+        let args = vec![utf8_scalar(Some("abc")), null_length, pad_scalar("x")];
+        assert_eq!(
+            scalar_result(spark_lpad(&args).unwrap()),
+            ScalarValue::Utf8(None)
+        );
+    }
+
+    // Expanding a 1 MiB scalar to 4,096 rows would need 4 GiB of input, past the 32-bit
+    // offsets of a Utf8 array, for 4 KiB of output.
+    #[test]
+    fn wide_scalar_string_is_not_expanded() {
+        let wide = "x".repeat(1 << 20);
+        let rows = 4096;
+        let lengths = len_array(&vec![Some(1); rows]);
+        for pad in [spark_lpad, spark_rpad] {
+            let args = vec![utf8_scalar(Some(&wide)), lengths.clone(), pad_scalar("0")];
+            let result = pad(&args).unwrap().to_array(rows).unwrap();
+            let result = result.as_string::<i32>();
+            assert_eq!(result.len(), rows);
+            assert!(result.iter().all(|v| v == Some("x")));
+        }
+    }
+
+    // A dictionary scalar is rejected rather than routed to the dictionary arm.
+    #[test]
+    fn dictionary_scalar_string_is_unsupported() {
+        let string = ScalarValue::Dictionary(
+            Box::new(DataType::Int32),
+            Box::new(ScalarValue::Utf8(Some("ab".to_string()))),
+        );
+        let args = vec![
+            ColumnarValue::Scalar(string),
+            len_array(&[Some(4)]),
+            pad_scalar("x"),
+        ];
+        assert!(spark_rpad(&args).is_err());
     }
 }

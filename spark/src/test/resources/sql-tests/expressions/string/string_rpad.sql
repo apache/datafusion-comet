@@ -83,3 +83,10 @@ SELECT id, rpad(IF(id > 0, (SELECT max(s) FROM test_rpad_scalar_str WHERE id > 1
 -- Only some rows take the subquery branch, so the string argument stays an array.
 query expect_native(rpad)
 SELECT id, rpad(IF(id > 1, (SELECT max(s) FROM test_rpad_scalar_str), s), 5, '0') FROM test_rpad_scalar_str
+
+-- A scalar subquery that returns no rows gives a NULL length (issue #7452).
+query expect_native(rpad)
+SELECT id, rpad(s, (SELECT max(id) FROM test_rpad_scalar_str WHERE id > 100)) FROM test_rpad_scalar_str
+
+query expect_native(rpad)
+SELECT id, rpad(s, (SELECT max(id) FROM test_rpad_scalar_str WHERE id > 100), '0') FROM test_rpad_scalar_str
