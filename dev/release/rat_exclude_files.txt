@@ -6,6 +6,7 @@
 .claude/skills
 CLAUDE.md
 native/Cargo.lock
+native/native-executors/Cargo.lock
 dev/copyright/scala-header.txt
 dev/diffs/iceberg/*.diff
 dev/release/requirements.txt
