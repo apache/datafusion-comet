@@ -907,7 +907,6 @@ under the License.
 <ul class="simple">
 <li><p>Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ slightly from Spark.</p></li>
 <li><p>Errors surface as plain Comet execution errors rather than Spark’s SparkRuntimeException with condition HLL_UNION_DIFFERENT_LG_K / HLL_INVALID_INPUT_SKETCH_BUFFER (sqlState 22000), so the message and error class differ even though both engines fail.</p></li>
-<li><p>An input sketch in the updatable HLL_4 form carrying auxiliary-map entries is rejected with an error, where Spark reads it: the bundled Rust decoder reads the compact auxiliary layout in both forms and would otherwise return a silently wrong estimate. Comet only ever writes HLL_8, so this affects sketch columns produced elsewhere.</p></li>
 </ul>
 <p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
 <ul class="simple">
