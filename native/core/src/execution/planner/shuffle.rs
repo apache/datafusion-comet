@@ -292,7 +292,7 @@ impl OperatorBuilder for ShuffleScanBuilder {
 ///
 /// With `strict_timestamp_labels`, a timestamp labelled with another timezone than declared fails
 /// planning instead of being cast. The child is native, so the label is wrong inside its plan too.
-fn align_shuffle_writer_input(
+pub(crate) fn align_shuffle_writer_input(
     child: Arc<dyn ExecutionPlan>,
     expected_proto: &[spark_operator::SparkStructField],
     strict_timestamp_labels: bool,

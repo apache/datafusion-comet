@@ -75,6 +75,12 @@ including:
 - Scientific notation (e.g. `1.23E+5`) is supported.
 - Special values (`inf`, `infinity`, `nan`) produce `NULL`.
 
+A zero with a large exponent, such as `'0e39'`, casts to `0` on Spark 4.0.5, 4.1.4, 4.2.1 and later
+(SPARK-60118). Earlier releases return `NULL` for it, or raise `NUMERIC_OUT_OF_SUPPORTED_RANGE`
+under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
+reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
+returns `0`.
+
 ## String to Date
 
 Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years
@@ -164,6 +170,24 @@ When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
 notation (e.g. a value of 12300 stored as `Decimal(7,-2)` with unscaled value 123 is rendered
 as `"1.23E+4"`).
+
+## Decimal with Negative Scale to Integer and Timestamp
+
+Casting a `DecimalType` with a negative scale to `ByteType`, `ShortType`, `IntegerType`,
+`LongType` or `TimestampType` has no native implementation, and neither does casting any of the
+integer types to a negative-scale `DecimalType`. Comet reports these as unsupported, which
+routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
+pipeline, so the results match Spark exactly.
+
+The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
+overflows when the scale is negative. See
+[#5013](https://github.com/apache/datafusion-comet/issues/5013).
+
+All other cast directions to and from negative-scale decimals run natively: `FloatType` and
+`DoubleType`, `StringType` in both directions (subject to the config gate described above),
+casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
+Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
+not specific to a negative one.
 
 ## Complex Types
 

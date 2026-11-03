@@ -25,7 +25,7 @@
 -- out in the tiebreaker's order.
 
 -- Strict floating-point mode runs these keys natively too. nested_float_order_keys_strict.sql covers
--- that, along with the null orders and RANGE frames that fall back in every mode.
+-- non-default root null orders that stay native and RANGE frames that still fall back.
 
 statement
 CREATE TABLE nested_float_keys(id INT, g INT, d DOUBLE, f FLOAT, s BOOLEAN) USING parquet
