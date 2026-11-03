@@ -1,0 +1,79 @@
+<!---
+Licensed to the Apache Software Foundation (ASF) under one
+or more contributor license agreements.  See the NOTICE file
+distributed with this work for additional information
+regarding copyright ownership.  The ASF licenses this file
+to you under the Apache License, Version 2.0 (the
+"License"); you may not use this file except in compliance
+with the License.  You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing,
+software distributed under the License is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.  See the License for the
+specific language governing permissions and limitations
+under the License.
+-->
+
+# Math Expressions
+
+<!--BEGIN:EXPR_COMPAT[math]-->
+
+## Abs
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs
+
+## Divide
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Decimal division with negative scale is not supported natively
+
+## Greatest
+
+For applicable cases that are not selected for native execution automatically, `Greatest` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.Greatest.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native greatest compares raw bytes
+
+## IntegralDivide
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Decimal division with negative scale is not supported natively
+
+## Least
+
+For applicable cases that are not selected for native execution automatically, `Least` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `spark.comet.expression.Least.allowIncompatible=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+
+- Spark evaluates non-UTF8_BINARY collated string input under its collation, while Comet's native least compares raw bytes
+
+## Rand
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- The `seed` argument must be a literal value
+
+## Randn
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- The `seed` argument must be a literal value
+
+## Round
+
+The following cases have no native implementation and always run in the JVM using Spark's code-generated implementation (inside the Comet pipeline):
+
+- Float and double inputs. Spark rounds them through a BigDecimal built from `java.lang.Double.toString()` rather than from the exact binary value, and that shortened decimal string can round differently than the value it came from
+- Negative-scale decimal inputs, which are only creatable with spark.sql.legacy.allowNegativeScaleOfDecimal=true
+
+## Signum
+
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- Only `DoubleType` is supported
+
+<!--END:EXPR_COMPAT-->
