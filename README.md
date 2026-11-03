@@ -44,8 +44,8 @@ without requiring any code changes.
 
 **Comet provides a ~2x speedup over Spark 4.2 for TPC-DS @ SF 1000 (1TB), resulting in ~50% cost savings.**
 
-That speedup gives you a choice: finish the same Spark workload in just over half the time on the cluster you already
-have, or match your current Spark performance on just over half the resources. Either way, the gain translates directly into
+That speedup gives you a choice: finish the same Spark workload in half the time on the cluster you already
+have, or match your current Spark performance on half the resources. Either way, the gain translates directly into
 lower cloud bills, reduced on-prem capacity, and lower energy usage, with no changes to your existing Spark SQL,
 DataFrame, or PySpark code. Comet runs on commodity hardware: no GPUs, FPGAs, or other specialized accelerators are
 required, so the savings come from better utilization of the infrastructure you already run on.
