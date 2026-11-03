@@ -152,13 +152,29 @@ impl FileIoCacheKey {
 
     /// Whether `other` is a `FileIO` for the same table, access mode and catalog built from
     /// different properties, which this key's `FileIO` supersedes. A catalog that re-vends
-    /// credentials, or a commit that moves the metadata file, gives a table new properties or a new
-    /// reference path, so the table is compared by its root: the reference path up to `/metadata/`.
+    /// credentials gives a table new properties, and a commit moves its metadata file, so the table
+    /// is compared by its root: the reference path up to `/metadata/`. A commit that keeps the
+    /// properties supersedes nothing, so neighboring snapshots share one provider.
+    ///
+    /// When both carry `s3.session-token-expires-at-ms`, only a later expiry supersedes. Two
+    /// sessions reading one table with different vended tokens then keep both entries instead of
+    /// evicting each other on every insert; the LRU bound retires the older one.
     fn supersedes(&self, other: &Self) -> bool {
         self.access_mode == other.access_mode
             && self.catalog_name == other.catalog_name
             && table_root(&self.reference_path) == table_root(&other.reference_path)
-            && self != other
+            && self.properties != other.properties
+            && match (self.token_expires_at_ms(), other.token_expires_at_ms()) {
+                (Some(new), Some(old)) => new > old,
+                _ => true,
+            }
+    }
+
+    fn token_expires_at_ms(&self) -> Option<u64> {
+        self.properties
+            .iter()
+            .find(|(k, _)| k == "s3.session-token-expires-at-ms")
+            .and_then(|(_, v)| v.parse().ok())
     }
 }
 
@@ -857,10 +873,10 @@ mod tests {
         assert_eq!(cache.entries.len(), 2);
     }
 
-    /// A catalog that re-vends credentials for a table gives it new properties, and a commit gives
-    /// it a new metadata file. Either way the table's new `FileIO` evicts the old one, so the old
-    /// one's credential provider is released once its readers finish. Other tables, catalogs and
-    /// access modes keep theirs.
+    /// A catalog that re-vends credentials for a table gives it new properties, so the table's new
+    /// `FileIO` evicts the old one, and the old one's credential provider is released once its
+    /// readers finish. That holds whether the metadata file moved or not. Other tables, catalogs
+    /// and access modes keep theirs.
     #[test]
     fn cache_evicts_the_file_io_a_table_supersedes() {
         let mut cache = FileIoCache::new(8);
@@ -925,6 +941,59 @@ mod tests {
             .is_some());
         assert_eq!(cache.entries.len(), 4);
         assert_eq!(cache.order.len(), 4);
+    }
+
+    /// A commit that keeps the credentials leaves the previous snapshot's `FileIO` cached, so a
+    /// time-travel self-join or reads of neighboring snapshots don't rebuild it on each task.
+    #[test]
+    fn cache_keeps_the_file_io_of_a_commit_with_unchanged_properties() {
+        let mut cache = FileIoCache::new(8);
+        let properties = HashMap::from([("s3.session-token".to_string(), "t1".to_string())]);
+        let key =
+            |path: &str| FileIoCacheKey::new(&properties, path, "cat", AccessMode::Read).unwrap();
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        assert!(cache.insert(key(v1), local_file_io()).is_empty());
+        assert!(cache.insert(key(v2), local_file_io()).is_empty());
+        assert!(cache.get(&key(v1)).is_some());
+        assert!(cache.get(&key(v2)).is_some());
+    }
+
+    /// Two sessions reading one table with different vended tokens: only the token that expires
+    /// later evicts, so the sessions don't evict each other on every insert.
+    #[test]
+    fn cache_evicts_only_for_a_token_that_expires_later() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([
+                    ("s3.session-token".to_string(), token.to_string()),
+                    (
+                        "s3.session-token-expires-at-ms".to_string(),
+                        expires_at_ms.to_string(),
+                    ),
+                ]),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache
+            .insert(key("later", "2000"), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("earlier", "1000"), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("later", "2000")).is_some());
+        assert!(cache.get(&key("earlier", "1000")).is_some());
+
+        assert_eq!(
+            cache.insert(key("latest", "3000"), local_file_io()).len(),
+            2
+        );
+        assert!(cache.get(&key("latest", "3000")).is_some());
+        assert_eq!(cache.entries.len(), 1);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
