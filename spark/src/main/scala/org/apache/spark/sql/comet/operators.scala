@@ -1939,8 +1939,22 @@ object CometExplodeExec extends CometOperatorSerde[GenerateExec] {
     op.generator match {
       // Spark only accepts an array of structs for `inline`, and `stack` is planned as `inline`;
       // see `stackAsStructArray`.
-      case _: Inline | _: Stack =>
-        Compatible()
+      case inline: Inline =>
+        inline.child.dataType match {
+          case ArrayType(struct: StructType, _) if struct.isEmpty =>
+            // An empty struct carries no columns, so the unnested rows have no data to hold their
+            // count and the batch cannot be built.
+            Unsupported(Some("inline over an array of structs with no fields is not supported"))
+          case _ => Compatible()
+        }
+      case stack: Stack =>
+        // The rewrite builds one struct expression per output row, so keep large row counts on
+        // Spark, which stops generating code for them too.
+        if (stack.supportCodegen) {
+          Compatible()
+        } else {
+          Unsupported(Some("stack with more than 50 rows is not supported"))
+        }
       case explode: ExplodeBase =>
         explode.child.dataType match {
           case _: ArrayType =>
