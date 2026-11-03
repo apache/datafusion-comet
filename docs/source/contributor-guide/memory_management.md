@@ -394,8 +394,8 @@ A consumer that cannot spill takes what Spark grants. The pool refuses it only w
 total plus the request would exceed `pool_size`, which Spark's own limit on the task is at least as
 tight as unless the deprecated fraction is below `1 / N`.
 
-The pool goes by what a consumer declares, with one exception. DataFusion 55.2 registers
-`OrderedFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
+The pool goes by what a consumer declares, with one exception. DataFusion registers
+`ClusteredFinalAggregateStream` (`OrderedFinalAggregateStream` before DataFusion 56) as able to spill even when its input is sorted on every grouping key,
 as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusion/issues/17334), but
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
 over a native sort, a refusal fails the query, so the pool checks its requests only against the

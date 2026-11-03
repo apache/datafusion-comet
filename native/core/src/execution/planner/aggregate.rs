@@ -249,7 +249,7 @@ impl OperatorBuilder for HashAggBuilder {
 
         // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
         // GroupedHashAggregateStream, whose spill can fail against the fair limit (#6880). Final
-        // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
+        // runs a ClusteredFinalAggregateStream there, which spills, and which the fair pool exempts
         // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
         // Final as under Single.
         // Only partially sorted input switches: with fully sorted input Final has no spill path

@@ -18,9 +18,9 @@
 //! Lets a final aggregate read its spill files back past its share of memory (#6254).
 //!
 //! Once one of DataFusion 55's final aggregates has spilled, it merges its sorted spill files and
-//! replays them through an `OrderedFinalAggregateStream` that has no way to spill, so a refused
+//! replays them through an `ClusteredFinalAggregateStream` that has no way to spill, so a refused
 //! memory request there fails the task. `FinalHashAggregateStream` does this, and so does
-//! `OrderedFinalAggregateStream` itself, which DataFusion uses when the input is sorted on some of
+//! `ClusteredFinalAggregateStream` itself, which DataFusion uses when the input is sorted on some of
 //! the grouping keys, and which Comet also runs for a Spark PartialMerge over such input (#6880).
 //! So does `SingleHashAggregateStream`, which Comet runs for other Spark PartialMerges (#6857).
 //! The merge reserves read buffers for as many spill files as fit, and those buffers belong to the
@@ -33,7 +33,7 @@
 //! This relies on the following in DataFusion 55.1, which a DataFusion upgrade has to re-check:
 //!
 //! - The three aggregates name their consumers `FinalHashAggregateStream[{partition}]`,
-//!   `OrderedFinalAggregateStream[{partition}]` and `SingleHashAggregateStream[{partition}]`, and
+//!   `ClusteredFinalAggregateStream[{partition}]` and `SingleHashAggregateStream[{partition}]`, and
 //!   their merge and replay reserve through sibling reservations of that consumer.
 //! - A final aggregate grows one reservation while another of its reservations holds memory only
 //!   during the replay, while the merge holds its read buffers. Before that, the aggregate's table
@@ -43,7 +43,7 @@
 //!   is for memory that already exists.
 //! - The replay emits every finished group after each batch, so it holds about one batch of groups,
 //!   and releasing memory repays the overcommit first.
-//! - `OrderedFinalAggregateStream` registers as able to spill even when its input is sorted on
+//! - `ClusteredFinalAggregateStream` registers as able to spill even when its input is sorted on
 //!   every grouping key, where it has no spill path, to work around apache/datafusion#17334.
 //!   `CometFairMemoryPool` checks its requests only against the pool for that reason (see
 //!   `limited_to_its_share` in `fair_pool.rs`). Drop that exception once #17334 is fixed and the
@@ -181,15 +181,16 @@ pub(super) fn unwrap_spill_replay(pool: &Arc<dyn MemoryPool>) -> Option<&Arc<dyn
         .map(|replay| &replay.inner)
 }
 
-/// The prefix of the name DataFusion gives the consumer of an `OrderedFinalAggregateStream`.
-/// DataFusion 56 renames the stream and its consumer `ClusteredFinalAggregateStream` (#6410).
-pub(super) const ORDERED_FINAL_AGGREGATE: &str = "OrderedFinalAggregateStream[";
+/// The prefix of the name DataFusion gives the consumer of a `ClusteredFinalAggregateStream`, the
+/// final aggregate over input sorted on some or all of its keys. DataFusion 55 called it
+/// `OrderedFinalAggregateStream`.
+pub(super) const CLUSTERED_FINAL_AGGREGATE: &str = "ClusteredFinalAggregateStream[";
 
 /// Whether `consumer` belongs to a final or single aggregate, whose spill replay can't spill.
 fn is_final_aggregate(consumer: &MemoryConsumer) -> bool {
     let name = consumer.name();
     name.starts_with("FinalHashAggregateStream[")
-        || name.starts_with(ORDERED_FINAL_AGGREGATE)
+        || name.starts_with(CLUSTERED_FINAL_AGGREGATE)
         || name.starts_with("SingleHashAggregateStream[")
 }
 
@@ -372,7 +373,7 @@ mod tests {
     fn only_final_aggregates_replay_their_spill_files() {
         for name in [
             "FinalHashAggregateStream[3]",
-            "OrderedFinalAggregateStream[0]",
+            "ClusteredFinalAggregateStream[0]",
             "SingleHashAggregateStream[0]",
         ] {
             assert!(is_final_aggregate(&MemoryConsumer::new(name)), "{name}");
@@ -380,7 +381,7 @@ mod tests {
         // Partial aggregates emit early instead of spilling.
         for name in [
             "PartialHashAggregateStream[0]",
-            "OrderedPartialAggregateStream[0]",
+            "ClusteredPartialAggregateStream[0]",
             "ExternalSorterMerge[0]",
         ] {
             assert!(!is_final_aggregate(&MemoryConsumer::new(name)), "{name}");

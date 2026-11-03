@@ -21,7 +21,7 @@ use std::{
 };
 
 use super::spark_memory::SparkMemory;
-use super::spill_replay::ORDERED_FINAL_AGGREGATE;
+use super::spill_replay::CLUSTERED_FINAL_AGGREGATE;
 use super::task_shared::RunningTasks;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -157,13 +157,13 @@ impl Display for CometFairMemoryPool {
 /// Whether a request from `consumer` is held to its fair limit and the task's share.
 ///
 /// That is the case for every consumer that can spill, with one exception. DataFusion 55.2
-/// registers `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every
+/// registers `ClusteredFinalAggregateStream` as able to spill even when its input is sorted on every
 /// grouping key, to work around apache/datafusion#17334, but it builds a spill path only for
 /// partially sorted input. Fully sorted, as in a `CometSortAggregateExec` over a native sort, a
 /// refused request fails the query. So its requests are checked only against the pool, like those
 /// of a consumer that cannot spill. The partially sorted stream still spills when Spark refuses it.
 ///
-/// The exemption goes by name, so it covers every `OrderedFinalAggregateStream`, including a
+/// The exemption goes by name, so it covers every `ClusteredFinalAggregateStream`, including a
 /// pure `PartialMerge` that the planner runs as `Final` over input sorted on some of its keys
 /// (#6880). That one is not a `CometSortAggregateExec` and its input is only partially sorted, but
 /// it is checked only against the pool as well. The planner does not switch a `PartialMerge` over
@@ -173,7 +173,7 @@ impl Display for CometFairMemoryPool {
 /// else, so it is one of `num_spill` and its bytes are not `unspillable`. A sort below it then
 /// stays limited to its fair share and leaves the aggregate the rest.
 fn limited_to_its_share(consumer: &MemoryConsumer) -> bool {
-    consumer.can_spill() && !consumer.name().starts_with(ORDERED_FINAL_AGGREGATE)
+    consumer.can_spill() && !consumer.name().starts_with(CLUSTERED_FINAL_AGGREGATE)
 }
 
 impl MemoryPool for CometFairMemoryPool {
@@ -489,7 +489,7 @@ mod tests {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 100);
         let sort = spillable("ExternalSorter[0]", &pool);
-        let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
+        let aggregate = spillable("ClusteredFinalAggregateStream[0]", &pool);
 
         // Not held to half of the task's 100 bytes, as a second consumer that can spill would be.
         aggregate.try_grow(60).unwrap();
@@ -505,7 +505,7 @@ mod tests {
         let fake = FakeSpark::with(usize::MAX);
         let pool = pool(&fake, 100);
         let sort = spillable("ExternalSorter[0]", &pool);
-        let aggregate = spillable("OrderedFinalAggregateStream[0]", &pool);
+        let aggregate = spillable("ClusteredFinalAggregateStream[0]", &pool);
 
         // The aggregate counts as a consumer that can spill, so the sort gets half.
         assert!(sort.try_grow(51).is_err());
