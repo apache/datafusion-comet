@@ -19,6 +19,28 @@ under the License.
 
 # Operator Compatibility
 
+## Observations
+
+`CollectMetricsExec`, used by `DataFrame.observe`, preserves Spark's observation counters while
+passing the original Arrow batches between native operators. Metric expressions still execute
+in Spark over row views of each batch; the data is not copied into a row-based pipeline.
+Spark retains ownership of accumulator publication, observation listeners, resets and snapshots.
+
+This path requires native input and is enabled by `spark.comet.exec.collectMetrics.enabled`.
+Observations retain Spark execution when a consumer can stop reading mid-batch. This includes
+limits, joins, `Dataset.mapPartitions`, replacement sampling at a nonpositive rate, and external
+actions such as `foreachPartition` or `rdd.take`, which do not introduce a physical-plan node.
+The final row iterator is therefore
+treated as potentially partial, even when the eventual action reads all rows. A local sort or
+aggregate does not remove this restriction: an external consumer may never request its output,
+so Spark may leave its input unread while native stream setup fetches a batch.
+
+A materializing shuffle or broadcast exchange allows columnar observations in its producer
+subtree, unless another short-circuiting consumer intervenes. This preserves native observation
+in aggregation and shuffle pipelines while keeping counters aligned with Spark's consumption.
+Direct observations and write pipelines without such an exchange retain Spark collection;
+writer nodes alone do not enable columnar observations.
+
 ## Empty Relations
 
 On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
