@@ -32,13 +32,12 @@ To use this version of Comet, see the following section on building from the Git
 
 <!-- IF_RELEASE -->
 
-Official source releases can be downloaded from https://dist.apache.org/repos/dist/release/datafusion/
+Official source releases are available from the [Download](https://datafusion.apache.org/comet/download.html) page,
+together with the signature, checksum and instructions for verifying the download.
 
 ```console
-# Pick the latest version
+# Pick the version you downloaded
 export COMET_VERSION=$COMET_VERSION
-# Download the tarball
-curl -O "https://dist.apache.org/repos/dist/release/datafusion/datafusion-comet-$COMET_VERSION/apache-datafusion-comet-$COMET_VERSION.tar.gz"
 # Unpack
 tar -xzf apache-datafusion-comet-$COMET_VERSION.tar.gz
 cd apache-datafusion-comet-$COMET_VERSION
