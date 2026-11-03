@@ -86,10 +86,16 @@ git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ## 3. Run Iceberg Spark Tests
 
 ```shell
-ENABLE_COMET=true ./gradlew -DsparkVersions=3.5 -DscalaVersion=2.13 -DflinkVersions= -DkafkaVersions= \
+ENABLE_COMET=true COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1 \
+  ./gradlew -DsparkVersions=3.5 -DscalaVersion=2.13 -DflinkVersions= -DkafkaVersions= \
   :iceberg-spark:iceberg-spark-3.5_2.13:test \
   -Pquick=true -x javadoc
 ```
+
+`COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1` is the environment variable behind
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit`, which defaults to 2. Iceberg's tests expect
+file order from queries without an `ORDER BY`, and a limit above 1 returns batches from different files
+in no particular order, so the CI jobs and `dev/local-ci.sh` pin it to 1.
 
 The three Gradle targets tested in CI are:
 

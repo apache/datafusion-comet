@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicLong
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Partial
 import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, ColumnarToRowTransition, SerializeFromObjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.functions.{broadcast, col, max, sum}
 import org.apache.spark.sql.internal.SQLConf
@@ -211,31 +212,37 @@ class CometTypedDatasetSuite extends CometTestBase {
   }
 
   convertTest("a join on wide decimal keys with an input that is not converted") {
-    // The left input converts and the right one, with its interval column, does not, so its
-    // shuffle stays on Spark's. Native shuffle hashes a decimal wider than 18 digits differently
-    // from Spark's partitioner (#5994), so the shuffle above the conversion has to stay on
-    // Comet's columnar shuffle, which hashes as Spark does, or matching keys land in different
-    // partitions and the join loses rows.
+    // The left input converts its output to Arrow for native shuffle; the right input's
+    // interval column keeps it on Spark's shuffle. Both shuffles must place matching wide
+    // decimal keys in the same partitions.
     withSQLConf(
-      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_SHUFFLE_MODE.key -> "auto",
       SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
       SQLConf.SHUFFLE_PARTITIONS.key -> "10") {
-      val left = spark
-        .range(0, 100, 1, 2)
-        .map(i => TypedDsDecimal(new java.math.BigDecimal(i.longValue), i.longValue))
-        .alias("l")
-      val right = spark
-        .range(0, 100, 1, 2)
-        .map(i =>
-          TypedDsDecimalDurations(
-            new java.math.BigDecimal(i.longValue),
-            Duration.ofDays(i.longValue)))
-        .alias("r")
-      val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.d"))
-      val (_, plan) = checkSparkAnswer(df)
-      assert(conversions(plan).nonEmpty, plan)
-      // The left input's shuffle is the only one of Comet's, and it is not native.
-      checkCometExchange(df, 1, native = false)
+      for (adaptive <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+          val left = spark
+            .range(0, 100, 1, 2)
+            .map(i => TypedDsDecimal(new java.math.BigDecimal(i.longValue), i.longValue))
+            .alias("l")
+          val right = spark
+            .range(0, 100, 1, 2)
+            .map(i =>
+              TypedDsDecimalDurations(
+                new java.math.BigDecimal(i.longValue),
+                Duration.ofDays(i.longValue)))
+            .alias("r")
+          val df = left.join(right, col("l.k") === col("r.k")).select(col("l.v"), col("r.d"))
+          val (_, plan) = checkSparkAnswer(df)
+          assert(conversions(plan).nonEmpty, plan)
+          // The left input's shuffle is the only one of Comet's, and it is native.
+          val exchanges = collect(plan) { case e: CometShuffleExchangeExec => e }
+          assert(exchanges.count(_.shuffleType == CometNativeShuffle) == 1, plan.treeString)
+          assert(exchanges.count(_.shuffleType == CometColumnarShuffle) == 0, plan.treeString)
+        }
+      }
     }
   }
 

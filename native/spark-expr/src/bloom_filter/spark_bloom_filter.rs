@@ -278,6 +278,11 @@ impl SparkBloomFilter {
         self.bits.cardinality()
     }
 
+    /// Bytes allocated for the bit array.
+    pub fn heap_size(&self) -> usize {
+        self.bits.heap_size()
+    }
+
     pub fn state_as_bytes(&self) -> Vec<u8> {
         self.spark_serialization()
     }

@@ -169,6 +169,11 @@ Note:
 - The backtrace coverage in DataFusion is still improving. So there is a chance the error still not covered, if so feel free to file a [ticket](https://github.com/apache/arrow-datafusion/issues)
 - The backtrace evaluation comes with performance cost and intended mostly for debugging purposes
 
+A panic in native code is different: it is always logged, with its location and backtrace, to the
+stderr of the executor where it happened, on a line starting with `Comet native panic:`. The
+`CometNativeException` it surfaces as carries the panic message only, because a panic can reach the
+JVM on a different thread than the one that raised it.
+
 ### Native log configuration
 
 By default, Comet emits native-side logs at the `INFO` level to `stderr`.
@@ -257,9 +262,10 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
 the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
 `WindowAggExec` depending on whether every window expression runs with bounded
-memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` as
-`final_plan` and hands `final_plan` to `SparkPlan::new`. To see the raw window
-output, wrap `window_agg` right after it is built, before the cast projection:
+memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` and
+builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
+window output, wrap `window_agg` right after it is built, before the cast
+projection:
 
 ```rust
 let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
@@ -283,14 +289,15 @@ let window_agg: Arc<dyn ExecutionPlan> = {
     Arc::new(DebugExecutionDataStream::new("window-output", window_agg))
 };
 
-// ... `final_plan` is built from `window_agg`, and
-// `SparkPlan::new(spark_plan.plan_id, final_plan, vec![child])` wraps it.
+// ... the casting `ProjectionExec` is built from `window_agg`, and
+// `SparkPlan::new_with_additional(spark_plan.plan_id, projection, vec![child],
+// vec![window_agg])` wraps it. Without a cast, `SparkPlan::new` wraps `window_agg`.
 ```
 
 Wrapping `window_agg` leaves the rest of the builder unchanged. To see the
-output after the cast, wrap `final_plan` the same way just before the
-`SparkPlan::new` call. The `let` rebinding is only compiled in when
-`debug_assertions` is on, so release builds use the original binding.
+output after the cast, wrap `projection` the same way just before the
+`SparkPlan::new_with_additional` call. The `let` rebinding is only compiled in
+when `debug_assertions` is on, so release builds use the original binding.
 
 Rebuild with `make core` and run a window test, for example:
 

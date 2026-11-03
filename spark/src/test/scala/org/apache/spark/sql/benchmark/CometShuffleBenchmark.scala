@@ -57,9 +57,10 @@ object CometShuffleBenchmark extends CometBenchmarkBase {
   /**
    * High partition count for the groups that measure both a low and a high fan-out. This must
    * stay above Spark's `spark.shuffle.sort.bypassMergeThreshold` (200). Below that threshold the
-   * write path switches to `CometBypassMergeSortShuffleWriter`, which holds a page per partition
-   * from a JVM-wide pool, so a lower value both raises the shuffle memory requirement several
-   * fold and hides the JVM shuffle's degradation at high fan-out.
+   * write path switches to `CometBypassMergeSortShuffleWriter`, which writes a separate file per
+   * partition instead of sorting. The high fan-out group is meant to measure the sort-based
+   * writer, so a lower value would measure the bypass writer and hide the sort-based writer's
+   * degradation at high fan-out.
    */
   private val manyPartitions = 201
 

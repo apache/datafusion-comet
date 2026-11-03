@@ -91,6 +91,16 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     spark.createDataFrame(spark.sparkContext.parallelize(data, 4), schema)
   }
 
+  /** Rows with an array and a map column, which `CometSparkToColumnarExec` converts. */
+  private def collectionsDf(rows: Int = 100): DataFrame = {
+    val schema = new StructType()
+      .add("k", IntegerType)
+      .add("xs", ArrayType(IntegerType))
+      .add("m", MapType(IntegerType, IntegerType))
+    val data = (0 until rows).map(i => Row(i % 23, Seq(i, i + 1), Map(i -> (i + 1))))
+    spark.createDataFrame(spark.sparkContext.parallelize(data, 4), schema)
+  }
+
   private def conversions(plan: SparkPlan): Seq[CometSparkToColumnarExec] =
     collectWithSubqueries(plan) { case c: CometSparkToColumnarExec => c }
 
@@ -166,6 +176,26 @@ class CometShuffleInputConversionSuite extends CometTestBase {
       Double.NegativeInfinity),
     DecimalType(18, 2) -> Seq("0.00", "-0.01", "9999999999999999.99", "-9999999999999999.99")
       .map(new java.math.BigDecimal(_)),
+    DecimalType(19, 0) -> Seq(
+      "0",
+      "-1",
+      "9223372036854775806",
+      "9223372036854775807",
+      "9223372036854775808",
+      "9999999999999999999",
+      "-9999999999999999999").map(new java.math.BigDecimal(_)),
+    DecimalType(38, 0) -> Seq(
+      "0",
+      "-1",
+      "9223372036854775808",
+      "-9223372036854775809",
+      "99999999999999999999999999999999999999",
+      "-99999999999999999999999999999999999999").map(new java.math.BigDecimal(_)),
+    DecimalType(38, 18) -> Seq(
+      "0.000000000000000000",
+      "-0.000000000000000001",
+      "99999999999999999999.999999999999999999",
+      "-99999999999999999999.999999999999999999").map(new java.math.BigDecimal(_)),
     DateType -> Seq("1970-01-01", "1969-12-31", "0001-01-01", "9999-12-31").map(Date.valueOf),
     TimestampType -> Seq(
       new Timestamp(0L),
@@ -310,17 +340,29 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
-  convertTest("a shuffle that hashes a wide decimal stays on the JVM columnar shuffle") {
-    // Native shuffle hashes a decimal wider than 18 digits differently from Spark's partitioner
-    // (#5994). The right input, with its NullType column, stays on the JVM columnar shuffle,
-    // so the left one has to as well, or matching keys land in different partitions.
-    withShuffledJoins {
-      val left = rowsDf(100).select(col("k").cast(DecimalType(38, 0)).as("lk"), col("l"))
-      val right = nullsDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("n"))
-      val df = left.join(right, col("lk") === col("rk"))
-      val (_, plan) = checkSparkAnswer(df)
-      assert(conversions(plan).isEmpty, plan)
-      checkCometExchange(df, 2, native = false)
+  Seq("xs", "m").foreach { column =>
+    convertTest(s"a converted wide-decimal shuffle joins the JVM columnar shuffle with $column") {
+      // Native shuffle hashes a decimal wider than 18 digits as Spark does, so a left input that
+      // converts, with an array or map column, joins a right input that stays on the JVM
+      // columnar shuffle, with its NullType column, without losing rows.
+      withShuffledJoins {
+        Seq("true", "false").foreach { aqe =>
+          withSQLConf(
+            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+            SQLConf.SKEW_JOIN_ENABLED.key -> "false") {
+            val left = collectionsDf().select(col("k").cast(DecimalType(38, 0)).as("lk"), col(column))
+            val right = nullsDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("n"))
+            val (_, plan) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
+            assert(convertedShuffles(plan).length == 1, s"AQE $aqe:
+$plan")
+            assert(
+              cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1,
+              s"AQE $aqe:
+$plan")
+          }
+        }
+      }
     }
   }
 

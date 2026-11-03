@@ -128,7 +128,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 | Config                                                  | Default | Description                                                                                                                                          |
 | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                                |
+| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup. Also decides how an AQE cache is built on Spark 4.0+.          |
 | `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd`, `lz4` or `none`. Affects newly cached data only: a batch records the codec it was written with. |
 | `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                       |
 
