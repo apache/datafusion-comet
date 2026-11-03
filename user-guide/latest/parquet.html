@@ -1211,19 +1211,25 @@ and Variant-annotated fields read as a plain struct
 <h3>Writes that differ from Spark<a class="headerlink" href="#writes-that-differ-from-spark" title="Link to this heading">#</a></h3>
 <p>With <code class="docutils literal notranslate"><span class="pre">spark.comet.write.parquet.enabled=true</span></code>:</p>
 <ul class="simple">
-<li><p><strong>The datetime rebase modes are ignored.</strong> On Spark 3.4 and 3.5, whose default rebase mode is
-<code class="docutils literal notranslate"><span class="pre">EXCEPTION</span></code>, the native writer writes dates and timestamps before October 15, 1582 that Spark
-refuses to write, and Spark then fails to read them back under its default read mode. With
-<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInRead=LEGACY</span></code>, Spark reads them shifted by several days, on
-every version. The files lack the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.version</span></code> footer key that tells Spark they need
-no rebasing (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7047">#7047</a>,
-<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3427">#3427</a>).</p></li>
+<li><p><strong>The <code class="docutils literal notranslate"><span class="pre">EXCEPTION</span></code> rebase mode is ignored.</strong> On Spark 3.4 and 3.5, whose default rebase mode is
+<code class="docutils literal notranslate"><span class="pre">EXCEPTION</span></code>, the native writer writes dates before October 15, 1582 and timestamps before
+January 1, 1900 that Spark refuses to write
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7047">#7047</a>). With
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY</span></code> (or
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.int96RebaseModeInWrite=LEGACY</span></code> for a timestamp column) Comet falls back to
+Spark, because the native writer cannot rebase values to the hybrid calendar. Each file the
+native writer does produce carries the <code class="docutils literal notranslate"><span class="pre">org.apache.spark.version</span></code> footer key, so Spark treats it
+as written by Spark 3.0 or later and reads the values back unchanged under every
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.datetimeRebaseModeInRead</span></code> setting. Files written by a Comet build that
+predates that key have no version, and Spark then fails to read their pre-1582 values under its
+default read mode on 3.4 and 3.5, or reads them shifted by several days under <code class="docutils literal notranslate"><span class="pre">LEGACY</span></code>.</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.outputTimestampType</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.writeLegacyFormat</span></code> are
 ignored.</strong> Timestamps are always written as <code class="docutils literal notranslate"><span class="pre">INT64</span></code> microseconds, never as Spark’s default
 <code class="docutils literal notranslate"><span class="pre">INT96</span></code>, so with <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_MILLIS</span></code> they keep the sub-millisecond digits that Spark drops. Spark’s
-schema footer key is not written either, so a path-based read loses column metadata such as
-comments, and with <code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.inferTimestampNTZ.enabled=false</span></code> it reads <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_NTZ</span></code>
-columns as <code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7048">#7048</a>,
+schema footer key, <code class="docutils literal notranslate"><span class="pre">org.apache.spark.sql.parquet.row.metadata</span></code>, is not written either, so a
+path-based read loses column metadata such as comments, and with
+<code class="docutils literal notranslate"><span class="pre">spark.sql.parquet.inferTimestampNTZ.enabled=false</span></code> it reads <code class="docutils literal notranslate"><span class="pre">TIMESTAMP_NTZ</span></code> columns as
+<code class="docutils literal notranslate"><span class="pre">TIMESTAMP</span></code> (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7048">#7048</a>,
 <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3425">#3425</a>).</p></li>
 <li><p><strong>Spark 3.4 and 3.5: <code class="docutils literal notranslate"><span class="pre">INSERT</span> <span class="pre">INTO</span></code> leaves the target stale.</strong> Comet skips the steps Spark runs
 after a write: file index refresh, cache refresh, partition refresh and statistics update. Later
