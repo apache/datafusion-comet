@@ -40,7 +40,7 @@ use datafusion::{
         ExecutionPlan, InputOrderMode,
     },
 };
-use datafusion_comet_operators::{PartitionedRankLimitExec, WindowFnKind};
+use datafusion_comet_operators::{PartitionedRankLimitExec, RowNumberExec, WindowFnKind};
 use datafusion_comet_proto::{
     spark_expression::{
         self, agg_expr::ExprStruct as AggExprStruct, expr::ExprStruct, literal::Value, AggExpr,
@@ -136,12 +136,17 @@ impl OperatorBuilder for WindowBuilder {
         let input =
             planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
-            Arc::new(BoundedWindowAggExec::try_new(
+            let window = BoundedWindowAggExec::try_new(
                 window_expr,
                 input,
                 InputOrderMode::Sorted,
                 !partition_exprs.is_empty(),
-            )?)
+            )?;
+            if RowNumberExec::supports(&window) {
+                Arc::new(RowNumberExec::try_new(window)?)
+            } else {
+                Arc::new(window)
+            }
         } else {
             Arc::new(WindowAggExec::try_new(
                 window_expr,
