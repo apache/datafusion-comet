@@ -243,6 +243,9 @@ jobs:
       - name: Check docs site copy
         run: python3 dev/ci/test-docs-site-copy.py
 
+      - name: Check docs permission boundary
+        run: python3 dev/ci/test-docs-permissions.py
+
       - name: Install actionlint
         # Pure network, and preflight gates every other job, so a single reset
         # connection here would fail the whole run. Download to a file rather

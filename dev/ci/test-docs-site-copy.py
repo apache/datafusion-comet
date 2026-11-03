@@ -44,6 +44,7 @@ with tempfile.TemporaryDirectory() as tmp:
     os.utime(old_asf, (1000000000, 1000000000))
     os.utime(new_asf, (1000000000, 1000000000))
     (output / 'index.html').write_text('new page')
+    (output / '.git').write_text('gitdir: /untrusted')
     (output / '.nojekyll').touch()
     subprocess.run(['bash', '-e', '-c', script], cwd=fixture, check=True)
     assert (site / '.git' / 'sentinel').read_text() == 'git metadata'

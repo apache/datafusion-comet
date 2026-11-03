@@ -1953,12 +1953,15 @@ def check_docs_permission_boundary():
         failures.append("every build checkout must disable persisted credentials")
     if not re.search(r"^    needs: build-docs$", deploy, re.M):
         failures.append("deploy-docs must depend on the build")
-    uses = re.findall(r"^        uses: (\S+)", deploy, re.M)
-    if (len(uses) != 2 or not uses[0].startswith("actions/checkout@")
-            or not uses[1].startswith("actions/download-artifact@")):
+    steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
+    uses = [re.findall(r"^(?:uses:|        uses:) (\S+)", step, re.M) for step in steps]
+    runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
+    if (len(steps) != 3 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
+            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/download-artifact@")
+            or uses[2] or runs[0] or runs[1] or len(runs[2]) != 1
+            or not re.search(r"^          ref: asf-site$", steps[0], re.M)
+            or not re.search(r"^          path: asf-site$", steps[0], re.M)):
         failures.append("the writer may only check out asf-site and download the site artifact")
-    if len(re.findall(r"^        run:", deploy, re.M)) != 1:
-        failures.append("the writer must have just the static publication script")
     if ("include-hidden-files: true" not in build
             or "cp .asf.yaml docs/build/html/.asf.yaml" not in build
             or "touch docs/build/html/.nojekyll" not in build):
