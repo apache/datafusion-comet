@@ -26,6 +26,8 @@ processes, built on [Apache DataFusion Ballista](https://github.com/apache/dataf
 The design is in [issue #7288](https://github.com/apache/datafusion-comet/issues/7288), and
 `native/native-executors/README.md` describes the cluster, how to build it and how to test it.
 
+![A Spark driver with Comet sends each query as a stage graph of native blocks to the comet-scheduler, which schedules its tasks on comet-executors with no JVM. The executors read Parquet directly, pass data to each other between stages, and return the results to the driver as Arrow over Flight.](../_static/images/comet-native-executors.svg)
+
 ## Current limitation: whole queries only
 
 The driver offloads a query only if every operator and expression in it can run natively
