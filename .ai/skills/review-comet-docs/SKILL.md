@@ -209,7 +209,8 @@ matters, because `N3` allows more in the contributor guide:
 ```bash
 P='(?:(?<![A-Za-z0-9])native(?:ly)?(?![A-Za-z0-9])|vectori[sz]ed)'
 perl -ne "print if /^.+?:\d+: .*$P/i" "$ADDED"
-tr '\n' '\0' < "$PATHS" | xargs -0 -r git grep -n -i --untracked -E 'native|vectori[sz]ed' -- \
+tr '\n' '\0' < "$PATHS" \
+  | xargs -0 -r git -c core.quotePath=false grep -n -i --untracked -E 'native|vectori[sz]ed' -- \
   | perl -ne "print if /^.+?:\d+:.*$P/i"  # audit
 ```
 
@@ -222,7 +223,8 @@ rejects. The second command reads definitions that span two lines, expands
 ```bash
 perl -ne 'print "$1\n" while /(spark\.comet\.[\w.<>]*[\w>])/g' "$ADDED" | sort -u
 tr '\n' '\0' < "$PATHS" \
-  | xargs -0 -r git grep -h --untracked -o -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- | sort -u  # audit
+  | xargs -0 -r git -c core.quotePath=false grep -h --untracked -o \
+    -E 'spark\.comet\.[A-Za-z0-9_.<>]*[A-Za-z0-9_>]' -- | sort -u  # audit
 git grep -h -A1 -E '(conf|ConfigBuilder|createExecEnabledConfig)\(' <rev> -- spark/src/main contrib \
   | perl -0777 -ne '
       while (/\b(?:conf|ConfigBuilder)\(\s*s?"([^"]+)"/g) {
@@ -365,7 +367,8 @@ markers, which break `P7`:
 ```bash
 V='(?:(?:Spark|Iceberg) [0-9]\.[0-9x]+\+?|\b(?:TODO|XXX)\b)'
 perl -ne "print if /^.+?:\d+: .*$V/" "$ADDED"
-tr '\n' '\0' < "$PATHS" | xargs -0 -r git grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- \
+tr '\n' '\0' < "$PATHS" \
+  | xargs -0 -r git -c core.quotePath=false grep -n --untracked -E 'Spark [0-9]|Iceberg [0-9]|TODO|XXX' -- \
   | perl -ne "print if /$V/"  # audit
 ```
 
