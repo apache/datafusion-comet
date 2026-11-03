@@ -468,6 +468,7 @@ under the License.
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../spark_configs_support.html">Supported Spark Configurations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../config_conventions.html">Configuration Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../style_guide.html">Documentation Style Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
@@ -561,27 +562,76 @@ under the License.
 -->
 <section id="tpc-ds">
 <h1>TPC-DS<a class="headerlink" href="#tpc-ds" title="Link to this heading">#</a></h1>
-<p>The following benchmarks were performed on an EKS cluster (<code class="docutils literal notranslate"><span class="pre">r6i.24xlarge</span></code> instances with EBS storage) with data stored in S3,
-using Apache Spark 4.2.0 (Scala 2.13) and Comet 1.1.0. Each query was run twice and the mean time is reported.</p>
+<p>The following benchmarks were performed on an EKS cluster (<code class="docutils literal notranslate"><span class="pre">r6i</span></code> instances with EBS storage) with data stored in S3,
+using Apache Spark 4.2.0 (Scala 2.13), Comet 1.1.0 and Comet 1.2.0. The tables are Parquet files compressed with zstd at
+scale factor 1000 (1 TB), and all three runs read the same files. Each query was run twice and the mean time is reported.</p>
+<p>Across all 103 queries, Comet 1.2.0 finished in 488 seconds, Comet 1.1.0 in 601 seconds and Spark in 994 seconds,
+so Comet 1.2.0 is 2.0x faster than Spark and 1.2x faster than Comet 1.1.0.</p>
 <section id="benchmark-results">
 <h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
 <p>Total time to run all queries (lower is better).</p>
 <p><img alt="" src="../../_images/tpcds_allqueries.png" /></p>
 <p>Per-query breakdown showing the relative performance of Spark and Comet.</p>
 <p><img alt="" src="../../_images/tpcds_queries_compare.png" /></p>
-<p>How much Comet accelerates each query in relative terms.</p>
+<p>How much Comet 1.2.0 accelerates each query over Spark in relative terms.</p>
 <p><img alt="" src="../../_images/tpcds_queries_speedup_rel.png" /></p>
-<p>How much Comet accelerates each query in absolute terms.</p>
+<p>How much Comet 1.2.0 accelerates each query over Spark in absolute terms.</p>
 <p><img alt="" src="../../_images/tpcds_queries_speedup_abs.png" /></p>
+</section>
+<section id="spark-4-1-3">
+<h2>Spark 4.1.3<a class="headerlink" href="#spark-4-1-3" title="Link to this heading">#</a></h2>
+<p>The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13).</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p></p></th>
+<th class="head"><p>Total time (103 queries)</p></th>
+<th class="head"><p>Speedup over Spark</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Spark 4.1.3</p></td>
+<td><p>1,336 s</p></td>
+<td><p></p></td>
+</tr>
+<tr class="row-odd"><td><p>Comet 1.1.0</p></td>
+<td><p>613 s</p></td>
+<td><p>2.18x</p></td>
+</tr>
+<tr class="row-even"><td><p>Comet 1.2.0</p></td>
+<td><p>532 s</p></td>
+<td><p>2.51x</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Spark 4.1.3 is slower than Spark 4.2.0 on this cluster (1,336 s vs 994 s), so the speedups are larger than with
+Spark 4.2.0. Most of the difference is the S3 input stream: Spark 4.1.3 (Hadoop 3.4.2) reads with the <code class="docutils literal notranslate"><span class="pre">classic</span></code>
+S3A stream by default, while Spark 4.2.0 (Hadoop 3.5.0) defaults to the S3 Analytics Accelerator. Spark 4.2.0 with
+<code class="docutils literal notranslate"><span class="pre">spark.hadoop.fs.s3a.input.stream.type=classic</span></code> took 1,294 s. See
+<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7451">#7451</a> for the investigation.</p>
+<p>Total time to run all queries (lower is better).</p>
+<p><img alt="" src="../../_images/tpcds_allqueries1.png" /></p>
+<p>How much Comet 1.2.0 accelerates each query over Spark 4.1.3 in relative terms.</p>
+<p><img alt="" src="../../_images/tpcds_queries_speedup_rel1.png" /></p>
 </section>
 <section id="configuration">
 <h2>Configuration<a class="headerlink" href="#configuration" title="Link to this heading">#</a></h2>
+<p>Only settings that differ from the defaults are listed. Comet 1.1.0 and Comet 1.2.0 used the same settings.</p>
 <p>Common:</p>
-<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.executor.instances</span><span class="o">=</span><span class="s">32</span>
+<div class="highlight-properties notranslate"><div class="highlight"><pre><span></span><span class="na">spark.driver.memory</span><span class="o">=</span><span class="s">128G</span>
+<span class="na">spark.driver.maxResultSize</span><span class="o">=</span><span class="s">16g</span>
+<span class="na">spark.executor.instances</span><span class="o">=</span><span class="s">32</span>
 <span class="na">spark.executor.cores</span><span class="o">=</span><span class="s">16</span>
-<span class="na">spark.memory.fraction</span><span class="o">=</span><span class="s">0.6</span>
 <span class="na">spark.memory.storageFraction</span><span class="o">=</span><span class="s">0.2</span>
+<span class="na">spark.sql.shuffle.partitions</span><span class="o">=</span><span class="s">512</span>
+<span class="na">spark.sql.broadcastTimeout</span><span class="o">=</span><span class="s">900</span>
+<span class="na">spark.sql.sources.ignoreDataLocality</span><span class="o">=</span><span class="s">true</span>
+<span class="na">spark.hadoop.parquet.io.stats.enabled</span><span class="o">=</span><span class="s">false</span>
+<span class="na">spark.hadoop.fs.s3a.connection.maximum</span><span class="o">=</span><span class="s">5000</span>
+<span class="na">spark.hadoop.fs.s3a.threads.max</span><span class="o">=</span><span class="s">20</span>
 <span class="c1"># Kubernetes CPU constraints</span>
+<span class="na">spark.kubernetes.driver.request.cores</span><span class="o">=</span><span class="s">32</span>
+<span class="na">spark.kubernetes.driver.limit.cores</span><span class="o">=</span><span class="s">32</span>
 <span class="na">spark.kubernetes.executor.request.cores</span><span class="o">=</span><span class="s">8</span>
 <span class="na">spark.kubernetes.executor.limit.cores</span><span class="o">=</span><span class="s">8</span>
 </pre></div>
@@ -596,6 +646,9 @@ using Apache Spark 4.2.0 (Scala 2.13) and Comet 1.1.0. Each query was run twice 
 <span class="na">spark.executor.memoryOverhead</span><span class="o">=</span><span class="s">10G</span>
 <span class="na">spark.memory.offHeap.enabled</span><span class="o">=</span><span class="s">true</span>
 <span class="na">spark.memory.offHeap.size</span><span class="o">=</span><span class="s">32G</span>
+<span class="na">spark.plugins</span><span class="o">=</span><span class="s">org.apache.spark.CometPlugin</span>
+<span class="na">spark.shuffle.manager</span><span class="o">=</span><span class="s">org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager</span>
+<span class="na">spark.sql.extensions</span><span class="o">=</span><span class="s">org.apache.comet.CometSparkSessionExtensions</span>
 <span class="na">spark.comet.exec.memoryPool.fraction</span><span class="o">=</span><span class="s">0.8</span>
 </pre></div>
 </div>
@@ -650,6 +703,7 @@ using Apache Spark 4.2.0 (Scala 2.13) and Comet 1.1.0. Each query was run twice 
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#spark-4-1-3">Spark 4.1.3</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#configuration">Configuration</a></li>
 </ul>
   </nav></div>

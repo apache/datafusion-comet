@@ -468,6 +468,7 @@ under the License.
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="style_guide.html">Documentation Style Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
@@ -584,7 +585,7 @@ and skips the remaining steps. Otherwise it:</p>
 <li><p>Appends <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> to <code class="docutils literal notranslate"><span class="pre">spark.sql.extensions</span></code>, unless it is already listed.</p></li>
 <li><p>Sets <code class="docutils literal notranslate"><span class="pre">spark.sql.cache.serializer</span></code> to Comet’s <code class="docutils literal notranslate"><span class="pre">ArrowCachedBatchSerializer</span></code> when
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.inMemoryCache.enabled=true</span></code>, unless the application has chosen a different serializer.
-It leaves Spark’s serializer in place where Comet could not scan its format natively or Kryo would
+It leaves Spark’s serializer in place where Comet could not scan its format in the Comet pipeline or Kryo would
 reject it; see <a class="reference internal" href="../user-guide/latest/in-memory-cache.html"><span class="std std-doc">In-Memory Cache</span></a>.</p></li>
 <li><p>Registers <code class="docutils literal notranslate"><span class="pre">CometSource</span></code> with Spark’s metrics system and adds <code class="docutils literal notranslate"><span class="pre">CometMetricsListener</span></code> to
 <code class="docutils literal notranslate"><span class="pre">spark.sql.queryExecutionListeners</span></code> when <code class="docutils literal notranslate"><span class="pre">spark.comet.metrics.enabled=true</span></code>.</p></li>
@@ -592,7 +593,7 @@ reject it; see <a class="reference internal" href="../user-guide/latest/in-memor
 </ul>
 <p>The plugin does not change any executor memory setting. The <a class="reference internal" href="../user-guide/latest/tuning/memory.html"><span class="std std-doc">Memory Tuning</span></a> guide covers how
 to size them.</p>
-<p>When the driver or an executor stops, the plugin shuts down Comet’s native tokio runtime in that JVM.</p>
+<p>When the driver or an executor stops, the plugin shuts down Comet’s tokio runtime in that JVM.</p>
 <p>When <code class="docutils literal notranslate"><span class="pre">spark.eventLog.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, the executor plugin also carries each sample of the executor’s native memory
 usage log to the driver plugin. For each executor, the driver plugin keeps the sample with the most untracked memory
 and the last sample of every minute, and posts them to Spark’s listener bus as <code class="docutils literal notranslate"><span class="pre">CometExecutorMemoryUsage</span></code> events so
@@ -607,9 +608,14 @@ none of the driver plugin’s steps run for them.</p>
 </section>
 <section id="cometsparksessionextensions">
 <h2>CometSparkSessionExtensions<a class="headerlink" href="#cometsparksessionextensions" title="Link to this heading">#</a></h2>
-<p>On initialization, this class registers one physical plan optimization rule with Spark: <code class="docutils literal notranslate"><span class="pre">CometRule</span></code>. It runs whenever
-a query stage is being planned during Adaptive Query Execution, and runs once for the entire plan when Adaptive Query
-Execution is disabled.</p>
+<p>On initialization, this class registers Comet’s rules with Spark. The main one is <code class="docutils literal notranslate"><span class="pre">CometRule</span></code>, which converts the
+plan. When Adaptive Query Execution is disabled, it runs once for the entire plan, before Spark inserts columnar
+transitions. When Adaptive Query Execution is enabled, it runs as a query stage preparation rule, and again on
+each new query stage before Spark inserts that stage’s transitions.
+The class also registers rules that run after the transitions are inserted, such as
+<code class="docutils literal notranslate"><span class="pre">RevertNativeForTransitionHeavyStages</span></code> and <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code>, Adaptive Query Execution stage optimizer
+rules on Spark 3.5 and later, and the <code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code> planner strategy. The comment on
+<code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> describes where each rule runs.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometRule</span></code> is two phases, applied in order: scan conversion (<code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>), then operator conversion
 (<code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>). The order matters, because operator conversion builds its native plan up from the nodes that scan
 conversion produces. Each phase is described below.</p>
@@ -633,16 +639,25 @@ in the contributor guide to see a list of currently supported data types.</p>
 For example, a <code class="docutils literal notranslate"><span class="pre">ProjectExec</span></code> will be replaced by <code class="docutils literal notranslate"><span class="pre">CometProjectExec</span></code>.</p>
 <p>When replacing a node, various checks are performed to determine if Comet can support the operator and its expressions.
 If an operator, expression, or data type is not supported by Comet then the reason will be stored in a tag on the
-underlying Spark node and the plan will not be converted.</p>
-<p>Comet does not support partially replacing subsets of the plan within a query stage because this would involve adding
-transitions to convert between row-based and columnar data between Spark operators and Comet operators and the overhead
-of this could outweigh the benefits of running parts of the query stage natively in Comet.</p>
+underlying Spark node and that operator will not be converted.</p>
+<p>Comet can replace part of a query stage. After <code class="docutils literal notranslate"><span class="pre">CometRule</span></code> runs, Spark inserts a <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code> where a
+row-based operator reads columnar output, and Comet’s post-transition rules then run in order. First, when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.enabled=true</span></code>, <code class="docutils literal notranslate"><span class="pre">RevertNativeForTransitionHeavyStages</span></code> reverts a query stage to Spark
+if it has more columnar-to-row transitions than <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.transitionRevert.maxTransitions</span></code>, because the overhead
+of the transitions can outweigh the benefits of running part of the stage in Comet. It keeps the stage in Comet when
+reverting it is not safe, for example when Spark and Comet would have to exchange aggregate state. Then
+<code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> removes transitions that are not needed and replaces the rest that read Comet output
+with <code class="docutils literal notranslate"><span class="pre">CometColumnarToRowExec</span></code>. It uses the Rust-implemented <code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRowExec</span></code> instead when
+<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled=true</span></code> (off by default) and that converter supports the schema. A schema
+that contains <code class="docutils literal notranslate"><span class="pre">VariantType</span></code> keeps Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code>.</p>
 </section>
 </section>
 <section id="query-execution">
 <h2>Query Execution<a class="headerlink" href="#query-execution" title="Link to this heading">#</a></h2>
-<p>Once the plan has been transformed, any consecutive native Comet operators are combined into a <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> which contains
-a protocol buffer serialized version of the plan (the serialization code can be found in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>).</p>
+<p>Once the plan has been transformed, consecutive <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> operators are combined into a single block, which contains
+a protocol buffer serialized version of the plan (the serialization code can be found in <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde</span></code>). The write
+operators are the exception: the child of <code class="docutils literal notranslate"><span class="pre">CometWriteFilesExec</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeWriteExec</span></code>, or <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code>
+starts a block of its own.</p>
 <p>Spark serializes the physical plan and sends it to the executors when executing tasks. The executors deserialize the
 plan and invoke it.</p>
 <p>When <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> is invoked, it will pass the serialized protobuf plan into
@@ -650,10 +665,26 @@ plan and invoke it.</p>
 <p>In the native code there is a <code class="docutils literal notranslate"><span class="pre">PhysicalPlanner</span></code> struct (in <code class="docutils literal notranslate"><span class="pre">planner.rs</span></code>) which converts the deserialized plan into an
 Apache DataFusion <code class="docutils literal notranslate"><span class="pre">ExecutionPlan</span></code>. In some cases, Comet provides specialized physical operators and expressions to
 override the DataFusion versions to ensure compatibility with Apache Spark.</p>
-<p>The leaf nodes in the physical plan are always <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>. Each JVM-sourced input is exported once as an
+<p>Not every expression in a Rust plan runs in Rust. When an expression has no Rust implementation, or its Rust
+implementation does not match Spark for the given input, its serde can route it through the JVM codegen dispatcher
+instead of falling back to Spark (see the
+<a class="reference internal" href="../user-guide/latest/expressions.html#implementation-legend"><span class="std std-ref">Implementation legend</span></a>). The Rust plan then evaluates the
+expression with <code class="docutils literal notranslate"><span class="pre">JvmScalarUdfExpr</span></code>, which passes each batch’s input columns through JNI and the Arrow C Data Interface
+to <code class="docutils literal notranslate"><span class="pre">CometUdfBridge</span></code>, which hands them to <code class="docutils literal notranslate"><span class="pre">CometScalaUDFCodegen</span></code> on the JVM. There, Spark’s own generated code for the expression, compiled into a batch
+kernel by <code class="docutils literal notranslate"><span class="pre">CometBatchKernelCodegen</span></code>, runs over the Arrow vectors and returns an Arrow column. Scala and Java UDFs take
+the same path. The operator around the expression stays Rust-implemented, so this JVM code runs inside the Comet
+pipeline. <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled</span></code>, which is on by default, turns the dispatcher on. When it is off,
+these expressions fall back to Spark.</p>
+<p>A leaf node in the physical plan that takes Arrow batches from the JVM is a <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>. Each such input is exported once as an
 <a class="reference external" href="https://arrow.apache.org/docs/format/CStreamInterface.html">Arrow C Stream</a> (<code class="docutils literal notranslate"><span class="pre">org.apache.arrow.c.ArrowArrayStream</span></code>),
 and <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code> pulls each input batch through a single C callback rather than making a JNI call per batch. The
-input could be a Comet native Parquet scan, a Spark exchange, or another native plan.</p>
+input could be a broadcast, a shuffle read decoded through JNI and imported into the JVM, the output of
+<code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>, or the output of an earlier Rust plan. A shuffle input is a <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> instead
+only when it is serialized as a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> leaf: direct shuffle read is enabled, Adaptive Query Execution has made
+the Comet shuffle a query stage, and Comet supports its output types. <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> pulls compressed Arrow IPC
+blocks from the JVM and decodes them in Rust (see <a class="reference internal" href="#shuffle-reads">Shuffle Reads</a>). Otherwise, including without
+Adaptive Query Execution and for operators that run their own Rust plans such as <code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code>, the
+shuffle is read as batches through <code class="docutils literal notranslate"><span class="pre">ScanExec</span></code>. The Parquet, Iceberg, and CSV scans read their files in Rust.</p>
 <p><code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> creates a <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> and applies this iterator to the input RDD
 partitions. Each call to <code class="docutils literal notranslate"><span class="pre">CometExecIterator.next()</span></code> will invoke <code class="docutils literal notranslate"><span class="pre">Native.executePlan</span></code>. Once the plan finishes
 executing, the resulting Arrow batches are imported into the JVM using Arrow FFI.</p>
@@ -673,7 +704,7 @@ requests a <code class="docutils literal notranslate"><span class="pre">ShuffleW
 <p>Comet has two shuffle implementations, native shuffle and JVM columnar shuffle.
 <a class="reference internal" href="native_shuffle.html#when-native-shuffle-is-used"><span class="std std-ref">When Native Shuffle is Used</span></a> describes how Comet chooses between them.</p>
 <p>For native shuffle, <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleWriter</span></code> runs one native plan per task, with a <code class="docutils literal notranslate"><span class="pre">ShuffleWriter</span></code> operator at the
-root. When the exchange’s child is a native Comet subtree, that subtree becomes the writer’s child, so the operators
+root. When the exchange’s child is a <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> subtree, that subtree becomes the writer’s child, so the operators
 that produce the shuffle input and the writer run in the same native plan, and no batch crosses into the JVM between
 them. Otherwise, for example when the exchange’s child is <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>, the writer’s child is a scan that
 reads batches from the JVM. The writer partitions the batches and writes them in Arrow IPC format. See
@@ -686,10 +717,11 @@ IPC. See <a class="reference internal" href="jvm_shuffle.html"><span class="std 
 <h3>Shuffle Reads<a class="headerlink" href="#shuffle-reads" title="Link to this heading">#</a></h3>
 <p>For shuffle reads, <code class="docutils literal notranslate"><span class="pre">CometShuffledBatchRDD</span></code> requests a <code class="docutils literal notranslate"><span class="pre">ShuffleReader</span></code> from the shuffle manager and gets a
 <code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader</span></code>, which fetches blocks with Spark’s <code class="docutils literal notranslate"><span class="pre">ShuffleBlockFetcherIterator</span></code>. Both shuffle
-implementations write the same Arrow IPC block format, so the same reader serves both. When a native plan consumes the
-shuffle output and <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, the default, the compressed blocks are passed
-to that plan, which decodes them itself. Otherwise <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code> decodes each block in native
-code through JNI, and Arrow FFI imports the result into the JVM as a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>. See
+implementations write the same Arrow IPC block format, so the same reader serves both. When a Rust plan reads the
+shuffle output as a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> input (see <a class="reference internal" href="#query-execution">Query Execution</a>) and
+<code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, the default, the compressed IPC blocks go to that plan,
+which decodes them. Otherwise <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code> decodes each block in native code through JNI, and Arrow
+FFI imports the result into the JVM as a <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>. See
 <a class="reference internal" href="native_shuffle.html#read-path"><span class="std std-ref">Read Path</span></a> for details.</p>
 </section>
 </section>

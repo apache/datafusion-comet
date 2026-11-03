@@ -486,7 +486,7 @@ between them. This document is likely biased because the Comet community maintai
 <section id="architecture">
 <h2>Architecture<a class="headerlink" href="#architecture" title="Link to this heading">#</a></h2>
 <p>Comet and Gluten have very similar architectures. Both are Spark plugins that translate Spark physical plans to
-a serialized representation and pass the serialized plan to native code for execution.</p>
+a serialized representation and pass the serialized plan to an engine written in Rust or C++ for execution.</p>
 <p>Gluten serializes the plans using the Substrait format and has an extensible architecture that supports execution
 against multiple engines. Gluten 1.7.0 supports Velox and ClickHouse. A third backend, Bolt, a C++ engine from
 ByteDance that is derived from Velox, has been added to Gluten’s main branch but is not yet in a release. The rest of
@@ -496,7 +496,7 @@ does not plan to support multiple engines, but rather focus on a tight integrati
 </section>
 <section id="underlying-execution-engine-datafusion-vs-velox">
 <h2>Underlying Execution Engine: DataFusion vs Velox<a class="headerlink" href="#underlying-execution-engine-datafusion-vs-velox" title="Link to this heading">#</a></h2>
-<p>One of the main differences between Comet and Gluten is the choice of native execution engine.</p>
+<p>One of the main differences between Comet and Gluten is the choice of execution engine.</p>
 <p>Gluten uses Velox, which is an open-source C++ vectorized query engine created by Meta.</p>
 <p>Comet uses Apache DataFusion, which is an open-source vectorized query engine implemented in Rust and is governed by the
 Apache Software Foundation.</p>
@@ -510,13 +510,13 @@ time, eliminating entire classes of bugs such as use-after-free, buffer overflow
 must guard against manually at runtime. For a component that runs inside every Spark executor and processes
 untrusted data, this reduces the risk of memory-corruption crashes and security vulnerabilities. DataFusion achieves
 this safety without a garbage collector, so there is no additional runtime overhead compared to C++.</p>
-<p>If users are just interested in speeding up their existing Spark jobs and do not need to implement UDFs in native
-code, then we suggest benchmarking with both solutions and choosing the fastest one for your use case.</p>
+<p>If you want to speed up your existing Spark jobs and do not need to implement UDFs in Rust or C++,
+benchmark both and choose the faster one for your workload.</p>
 </section>
 <section id="community-and-governance">
 <h2>Community and Governance<a class="headerlink" href="#community-and-governance" title="Link to this heading">#</a></h2>
-<p>Comet is developed within the Apache DataFusion project, and its native execution is built directly on the
-DataFusion query engine. DataFusion is a broad, vendor-neutral community governed by the Apache Software Foundation
+<p>Comet is developed within the Apache DataFusion project, and its Rust-implemented operators are built directly on
+the DataFusion query engine. DataFusion is a broad, vendor-neutral community governed by the Apache Software Foundation
 and used by many downstream projects beyond Comet. This means that engine-level improvements such as new operators,
 optimizer rules, and performance work are shared across the whole DataFusion ecosystem: work done for other
 DataFusion users benefits Comet, and work done for Comet benefits them in turn.</p>
@@ -538,15 +538,15 @@ the community behind each engine alongside the technical differences.</p>
 <h2>ANSI Mode<a class="headerlink" href="#ansi-mode" title="Link to this heading">#</a></h2>
 <p>Spark 4.0 enables ANSI SQL semantics by default, which changes how arithmetic overflow, invalid casts, division by
 zero, and similar error conditions are handled. This is one area where the two projects currently differ.</p>
-<p>Comet implements ANSI semantics for the expressions it supports natively, including arithmetic overflow checks,
+<p>Comet implements ANSI semantics for the expressions it supports, including arithmetic overflow checks,
 ANSI cast behavior, and <code class="docutils literal notranslate"><span class="pre">try_*</span></code> variants. Queries running with <code class="docutils literal notranslate"><span class="pre">spark.sql.ansi.enabled=true</span></code> continue to be accelerated.
-See the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a> for details on which expressions have full ANSI coverage.</p>
+See the <a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for details on which expressions have full ANSI coverage.</p>
 <p>The Gluten Velox backend documents that ANSI mode is not supported: by default, any query executed with ANSI enabled
 falls back to vanilla Spark. Setting <code class="docutils literal notranslate"><span class="pre">spark.gluten.sql.ansiFallback.enabled=false</span></code> makes Gluten attempt to run such
-queries natively, but Gluten’s developer documentation notes that the results do not yet match Spark. See the
-<a class="reference external" href="https://apache.github.io/gluten/velox-backend-limitations.html">Gluten Velox limitations</a> page for the current status.</p>
+queries in Velox, but Gluten’s developer documentation notes that the results do not yet match Spark. See the
+<a class="reference external" href="https://github.com/apache/gluten/blob/v1.7.0/docs/velox-backend-limitations.md">Gluten Velox limitations</a> page for the current status.</p>
 <p>For users adopting Spark 4.0 without disabling ANSI mode, this difference can have a significant impact on the
-fraction of a workload that runs natively.</p>
+fraction of a workload that each project accelerates.</p>
 </section>
 <section id="table-format-support">
 <h2>Table Format Support<a class="headerlink" href="#table-format-support" title="Link to this heading">#</a></h2>
@@ -555,44 +555,45 @@ covers a broader set of table formats overall.</p>
 <p>Comet provides a native Iceberg scan built on iceberg-rust. It has been tested with Iceberg 1.5 and 1.8 through 1.11
 and supports Iceberg spec v1, v2, and v3, schema evolution, time travel and branch reads, positional and equality
 deletes and deletion vectors, encrypted v3 tables, REST catalogs, and S3-compatible object storage. For Iceberg
-writes, Comet can write the data files of eligible writes natively through iceberg-rust, an opt-in feature, and
-iceberg-java writes the rest and commits every write (see <a class="reference internal" href="../user-guide/latest/iceberg.html#writes"><span class="std std-ref">Comet Iceberg writes</span></a>). Comet does not currently provide
-native integrations for Delta Lake, Hudi, or Paimon. See the <a class="reference internal" href="../user-guide/latest/iceberg.html"><span class="std std-doc">Comet Iceberg guide</span></a> for the full list of supported
-features and known limitations.</p>
+writes, Comet can write the data files of eligible writes in Rust through iceberg-rust, an opt-in feature, and
+iceberg-java writes the rest and commits every write (see <a class="reference internal" href="../user-guide/latest/iceberg.html#writes"><span class="std std-ref">Comet Iceberg writes</span></a>). For Delta Lake, Comet has an
+experimental, opt-in scan in a separate contrib module that no release publishes yet and that is off by default (see
+<a class="reference internal" href="../user-guide/latest/delta.html"><span class="std std-doc">Comet Delta Lake guide</span></a>). Comet does not currently provide integrations for Hudi or Paimon. See the
+<a class="reference internal" href="../user-guide/latest/iceberg.html"><span class="std std-doc">Comet Iceberg guide</span></a> for the full list of supported features and known limitations.</p>
 <p>Gluten ships dedicated modules for Iceberg, Delta Lake (2.3 through 4.1, depending on the Spark version), Hudi, and
 Paimon. Its <a class="reference external" href="https://github.com/apache/gluten/blob/v1.7.0/docs/get-started/VeloxIceberg.md">Iceberg documentation</a> says that reads of unpartitioned tables are offloaded, including tables with
 position deletes, while reads of partitioned tables mostly fall back to Spark, as do equality deletes and all writes.
-Users who need native acceleration for Delta, Hudi, or Paimon will find broader coverage in Gluten today.</p>
+If you need acceleration for Delta, Hudi, or Paimon, Gluten covers more today.</p>
 </section>
 <section id="compatibility">
 <h2>Compatibility<a class="headerlink" href="#compatibility" title="Link to this heading">#</a></h2>
 <p>Comet relies on the full Spark SQL test suite (consisting of more than 24,000 tests) as well its own unit and
 integration tests to ensure compatibility with Spark. Features that are known to have compatibility differences with
-Spark are disabled by default, but users can opt in. See the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a> for more information.</p>
+Spark are disabled by default, but users can opt in. See the <a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for more information.</p>
 <p>Gluten also aims to provide compatibility with Spark, and includes a subset of the Spark SQL tests in its own test
-suite. See the Gluten <a class="reference external" href="https://apache.github.io/gluten/velox-backend-limitations.html">Velox backend limitations</a> page for known gaps, such as differences in the regular expression
+suite. See the Gluten <a class="reference external" href="https://github.com/apache/gluten/blob/v1.7.0/docs/velox-backend-limitations.md">Velox backend limitations</a> page for known gaps, such as differences in the regular expression
 dialect (RE2 vs <code class="docutils literal notranslate"><span class="pre">java.util.regex</span></code>).</p>
 </section>
 <section id="codegen-dispatch">
 <h2>Codegen Dispatch<a class="headerlink" href="#codegen-dispatch" title="Link to this heading">#</a></h2>
-<p>When an expression has a native implementation with known semantic differences from Spark, or has no native
-implementation at all, Comet can run Spark’s own generated code for that expression inside the native pipeline. Data
-is passed to the JVM in Arrow format, evaluated using Spark’s byte-exact logic, and returned to the native pipeline for
+<p>When an expression has a Rust implementation with known semantic differences from Spark, or has no Rust
+implementation at all, Comet can run Spark’s own generated code for that expression inside the Comet pipeline. Data
+is passed to the JVM in Arrow format, evaluated using Spark’s byte-exact logic, and returned to Rust for
 the rest of the query. Comet calls this the codegen dispatcher.</p>
 <p>This matters for two reasons:</p>
 <ul class="simple">
 <li><p><strong>Correctness by default.</strong> Expressions that are only partially compatible with Spark (for example, regular
 expressions, JSON functions, and some datetime and array functions) route through the codegen dispatcher by
-default, so they produce results that match Spark exactly. The faster native path is opt-in per expression for
+default, so they produce results that match Spark exactly. The faster Rust path is opt-in per expression for
 users who accept its differences.</p></li>
-<li><p><strong>Fewer fallbacks.</strong> Because the dispatcher keeps evaluation inside the native pipeline, a single unsupported or
+<li><p><strong>Fewer fallbacks.</strong> Because the dispatcher keeps evaluation inside the Comet pipeline, a single unsupported or
 incompatible scalar expression does not force its operator back onto vanilla Spark.</p></li>
 </ul>
 <p>Gluten’s closest equivalent is partial projection, which has been enabled by default since Gluten 1.3.0. When a
 projection contains expressions that the backend cannot run, including Scala and Hive UDFs, Gluten splits the
-projection so that vanilla Spark evaluates only those expressions and the rest of the projection runs natively.
+projection so that vanilla Spark evaluates only those expressions and the rest of the projection runs in Velox.
 Partial projection applies only to projections, so, for example, a filter that contains an unsupported expression
-still falls back to Spark. See the <a class="reference external" href="https://datafusion.apache.org/comet/user-guide/latest/compatibility/index.html">Comet Compatibility Guide</a> for more detail on how the codegen dispatcher works and
+still falls back to Spark. See the <a class="reference internal" href="../user-guide/latest/compatibility/index.html"><span class="std std-doc">Comet Compatibility Guide</span></a> for more detail on how the codegen dispatcher works and
 which expressions use it.</p>
 </section>
 <section id="regular-expression-compatibility">
@@ -606,23 +607,23 @@ faster native Rust regex engine as an opt-in per expression for users who can ac
 <p>Gluten’s Velox backend evaluates regular expressions using the C++ RE2 engine, which uses a different dialect from
 <code class="docutils literal notranslate"><span class="pre">java.util.regex</span></code> and deliberately omits features such as backreferences and lookaround. Gluten falls back to Spark
 for patterns that RE2 cannot compile, so those return correct results without acceleration. Patterns that RE2 accepts
-run natively and can differ from Spark in edge cases: for example, <code class="docutils literal notranslate"><span class="pre">\s</span></code> does not match the vertical tab character.
+run in Velox and can differ from Spark in edge cases: for example, <code class="docutils literal notranslate"><span class="pre">\s</span></code> does not match the vertical tab character.
 Setting <code class="docutils literal notranslate"><span class="pre">spark.gluten.sql.fallbackRegexpExpressions=true</span></code> sends every regular expression function to Spark. See the
-<a class="reference external" href="https://apache.github.io/gluten/velox-backend-limitations.html">Gluten Velox limitations</a> page for details. Comet’s codegen dispatcher avoids this trade-off by running Spark’s own
-regex engine inside the native pipeline.</p>
+<a class="reference external" href="https://github.com/apache/gluten/blob/v1.7.0/docs/velox-backend-limitations.md">Gluten Velox limitations</a> page for details. Comet’s codegen dispatcher avoids this trade-off by running Spark’s own
+regex engine inside the Comet pipeline.</p>
 </section>
 <section id="scala-and-java-udf-support">
 <h2>Scala and Java UDF Support<a class="headerlink" href="#scala-and-java-udf-support" title="Link to this heading">#</a></h2>
-<p>The same codegen dispatcher lets Comet run Spark’s existing Scala and Java scalar UDFs inside the native pipeline
-without any rewrite. A UDF’s compiled code executes on Arrow data passed from the native pipeline, and, crucially,
-the presence of a UDF does not force the enclosing operator back to vanilla Spark: the surrounding native operators
-keep running natively while only the UDF itself is evaluated on the JVM. This covers functions registered via
+<p>The same codegen dispatcher lets Comet run Spark’s existing Scala and Java scalar UDFs inside the Comet pipeline
+without any rewrite. A UDF’s compiled code executes on Arrow data passed from Rust, and, crucially,
+the presence of a UDF does not force the enclosing operator back to vanilla Spark: the surrounding operators
+stay in the Comet pipeline while only the UDF itself is evaluated on the JVM. This covers functions registered via
 <code class="docutils literal notranslate"><span class="pre">udf(...)</span></code>, <code class="docutils literal notranslate"><span class="pre">spark.udf.register(...)</span></code>, and SQL <code class="docutils literal notranslate"><span class="pre">CREATE</span> <span class="pre">FUNCTION</span> <span class="pre">...</span> <span class="pre">AS</span> <span class="pre">'com.example.MyUDF'</span></code>, including UDFs over
 complex nested types and UDFs composed with other Catalyst expressions and higher-order functions.</p>
 <p>This means users can adopt Comet without giving up their existing Scala and Java UDFs, and without rewriting them in
-the engine’s native language. Hive UDFs are not covered and still fall back to Spark. Gluten’s Velox backend supports
-native C++ UDFs, and its partial projection (see <a class="reference internal" href="#codegen-dispatch">Codegen Dispatch</a>) evaluates Scala and Hive UDFs
-in a projection with vanilla Spark while the rest of the projection runs natively. A UDF in a filter makes the filter
+Rust. Hive UDFs are not covered and still fall back to Spark. Gluten’s Velox backend supports
+C++ UDFs, and its partial projection (see <a class="reference internal" href="#codegen-dispatch">Codegen Dispatch</a>) evaluates Scala and Hive UDFs
+in a projection with vanilla Spark while the rest of the projection runs in Velox. A UDF in a filter makes the filter
 fall back to Spark. See the <a class="reference internal" href="../user-guide/latest/scala_java_udfs.html"><span class="std std-doc">Comet Scala and Java UDF guide</span></a> for the full list of supported and unsupported cases.</p>
 </section>
 <section id="performance">
@@ -652,8 +653,8 @@ management capabilities vs the complexities around installing C++ dependencies.<
 <p>Comet and Gluten are both good solutions for accelerating Spark jobs, and independent benchmarking shows they
 deliver similar overall performance. Comet currently has an edge for users on Spark 4.0 with ANSI mode enabled, for
 Iceberg workloads, and through its codegen dispatcher, which runs partially compatible or unsupported expressions with
-Spark’s exact semantics inside the native pipeline. Gluten holds a small performance lead in the AWS Labs TPC-DS
-benchmarks and offers broader native integration with Delta Lake, Hudi, and Paimon, plus a second backend in
+Spark’s exact semantics inside the Comet pipeline. Gluten holds a small performance lead in the AWS Labs TPC-DS
+benchmarks and offers broader integration with Delta Lake, Hudi, and Paimon, plus a second backend in
 ClickHouse. We recommend trying both to see which is the best fit for your needs.</p>
 </section>
 </section>

@@ -912,7 +912,7 @@ inspect that behavior.</p>
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
 <p>When Comet is enabled, the <code class="docutils literal notranslate"><span class="pre">CometSparkSessionExtensions</span></code> rules walk the
 physical plan bottom-up and replace Spark operators with Comet equivalents
-where possible. Consecutive Rust-implemented operators are combined into a
+where possible. Consecutive Rust-implemented operators are usually combined into a
 single block that is serialized as protobuf and executed by DataFusion on the
 executor.
 Operators that Comet does not support remain as their original Spark form.</p>
@@ -968,7 +968,7 @@ incompatibility details.</p>
 </section>
 <section id="configs-for-inspecting-plans-and-fallback">
 <h2>Configs for Inspecting Plans and Fallback<a class="headerlink" href="#configs-for-inspecting-plans-and-fallback" title="Link to this heading">#</a></h2>
-<p>Comet provides five configs for understanding what is happening in a plan.
+<p>Comet provides seven configs for understanding what is happening in a plan.
 They serve different purposes and produce output in different places.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
@@ -998,6 +998,14 @@ They serve different purposes and produce output in different places.</p>
 <td><p>Executor logs, per task</p></td>
 <td><p>The DataFusion plan with metrics, useful for inspecting Rust execution.</p></td>
 </tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.planOnly.enabled</span></code></p></td>
+<td><p>Driver log</p></td>
+<td><p>The Comet plan and coverage summary, prefixed <code class="docutils literal notranslate"><span class="pre">[Comet</span> <span class="pre">plan-only]</span></code>, while Spark runs the original plan.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.explain.rules</span></code></p></td>
+<td><p>Driver log</p></td>
+<td><p>The plan before and after <code class="docutils literal notranslate"><span class="pre">CometScanRule</span></code>, <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code>, and <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code>. For stage reverts, use <code class="docutils literal notranslate"><span class="pre">spark.comet.explain.fallback.log.enabled</span></code>.</p></td>
+</tr>
 </tbody>
 </table>
 </div>
@@ -1023,12 +1031,12 @@ operator (<code class="docutils literal notranslate"><span class="pre">CometProj
 every expression on that operator that was routed through the JVM codegen
 dispatcher (Spark’s own <code class="docutils literal notranslate"><span class="pre">doGenCode</span></code> running inside a Comet kernel), gated by
 <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.scalaUDF.codegen.enabled=true</span></code>. The projection stays
-Comet-native — this is informational only, useful for distinguishing “runs
-natively in DataFusion” from “runs Spark’s generated code inside a Comet
+in the Comet pipeline — this is informational only, useful for distinguishing “runs
+in Rust via DataFusion” from “runs Spark’s generated code inside a Comet
 kernel”. The annotation only appears for expressions Comet actually routed
-through the dispatcher on this plan — either because no native DataFusion
+through the dispatcher on this plan — either because no Rust
 implementation exists (<code class="docutils literal notranslate"><span class="pre">CometCodegenDispatch</span></code> serdes such as <code class="docutils literal notranslate"><span class="pre">hypot</span></code>,
-<code class="docutils literal notranslate"><span class="pre">pmod</span></code>, <code class="docutils literal notranslate"><span class="pre">months_between</span></code>), or because a native path exists but declined this
+<code class="docutils literal notranslate"><span class="pre">pmod</span></code>, <code class="docutils literal notranslate"><span class="pre">months_between</span></code>), or because a Rust path exists but declined this
 specific input (<code class="docutils literal notranslate"><span class="pre">CodegenDispatchFallback</span></code> mixins). It is not a general “this
 expression ran here” marker.</p>
 <p>Example:</p>
@@ -1066,7 +1074,7 @@ The format is controlled by <code class="docutils literal notranslate"><span cla
 <li><p><code class="docutils literal notranslate"><span class="pre">verbose</span></code> (default): the full plan annotated with fallback reasons, plus a
 summary of how much of the plan is accelerated. The summary reports operator
 coverage, the number of Spark/Comet transitions, and how many distinct
-expressions Comet accelerated - split into those lowered to native DataFusion
+expressions Comet accelerated - split into those lowered to Rust (DataFusion)
 expressions and those routed through the JVM codegen dispatcher. Expression
 names are counted once per plan, and structural nodes (attribute references,
 literals, aliases) are excluded.</p></li>
@@ -1119,7 +1127,7 @@ Requires <code class="docutils literal notranslate"><span class="pre">spark.come
 contains them, so each gets its own report alongside the outer query’s. The outer report
 also counts its subqueries, so do not add the reports together.</p></li>
 <li><p>Only the JVM side of planning runs. Anything that would fail when DataFusion builds the
-native plan still counts as accelerated, so treat the percentage as an upper bound.</p></li>
+Rust plan still counts as accelerated, so treat the percentage as an upper bound.</p></li>
 <li><p>Comet’s split Iceberg V2 write (<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code>) is declined in
 plan-only mode, so such writes run on, and are reported as, Spark.</p></li>
 <li><p>Under AQE the report describes the plan before any adaptive re-planning, so coverage of the
@@ -1159,7 +1167,7 @@ it works on any Spark version because it does not rely on the Spark 4.0
 <span class="kd">val</span><span class="w"> </span><span class="n">formatted</span><span class="p">:</span><span class="w"> </span><span class="nc">String</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">info</span><span class="p">.</span><span class="n">generateExtendedInfo</span><span class="p">(</span><span class="n">plan</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>A name can appear in both lists: the same function may be lowered natively for
+<p>A name can appear in both lists: the same function may be lowered to Rust for
 one set of arguments and routed through the dispatcher for another elsewhere in
 the same plan.</p>
 <p>Example:</p>
@@ -1211,10 +1219,10 @@ by role. Names match what is shown in the plan output.</p>
 <td><p>JVM-side scan of a <code class="docutils literal notranslate"><span class="pre">LocalTableScanExec</span></code> (disabled by default).</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometEmptyRelation</span></code></p></td>
-<td><p>Empty native input that replaces <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> (Spark 4.0 and later).</p></td>
+<td><p>Empty input to a Rust plan that replaces <code class="docutils literal notranslate"><span class="pre">EmptyRelationExec</span></code> (Spark 4.0 and later).</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometRange</span></code></p></td>
-<td><p>Generates the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in native code, replacing <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code> (disabled by default).</p></td>
+<td><p>Generates the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in Rust, replacing <code class="docutils literal notranslate"><span class="pre">RangeExec</span></code> (disabled by default).</p></td>
 </tr>
 </tbody>
 </table>
@@ -1224,8 +1232,10 @@ by role. Names match what is shown in the plan output.</p>
 <h3>Native Rust Operators<a class="headerlink" href="#native-rust-operators" title="Link to this heading">#</a></h3>
 <p>These are implemented in Rust and run in DataFusion. When several appear
 consecutively in a plan, they execute as a single fused block. The write operators
-(<code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>) are the exception: each runs as its
-own native plan over its child’s output.</p>
+(<code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code> and <code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code>) are exceptions: each runs as its
+own Rust plan over its child’s output. <code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProject</span></code> is another: it runs its own final
+Rust plan, and when its input has several partitions, it first gathers the top rows of each partition
+through a single-partition Comet shuffle.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Node</p></th>
@@ -1285,10 +1295,10 @@ own native plan over its child’s output.</p>
 <td><p><code class="docutils literal notranslate"><span class="pre">TakeOrderedAndProjectExec</span></code></p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometWriteFiles</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> (Spark 4.0 and later, experimental native Parquet writes)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">WriteFilesExec</span></code> (Spark 4.0 and later, experimental Rust Parquet writer)</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeWrite</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental native Parquet writes)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code> (Spark 3.x, experimental Rust Parquet writer)</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometIcebergWrite</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">IcebergWrite</span></code> (native Iceberg data-file writes, opt-in)</p></td>
@@ -1299,7 +1309,8 @@ own native plan over its child’s output.</p>
 </section>
 <section id="jvm-side-operators">
 <h3>JVM-Side Operators<a class="headerlink" href="#jvm-side-operators" title="Link to this heading">#</a></h3>
-<p>These keep their data on the JVM but participate in the Comet pipeline.</p>
+<p>These do their own work on the JVM and participate in the Comet pipeline. Some of them also run
+Rust plans, as their rows say.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Node</p></th>
@@ -1314,7 +1325,7 @@ own native plan over its child’s output.</p>
 <td><p>JVM-side partition coalesce.</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometCollectLimit</span></code></p></td>
-<td><p>JVM-side collect limit, equivalent to <code class="docutils literal notranslate"><span class="pre">CollectLimitExec</span></code>.</p></td>
+<td><p>Collect limit (<code class="docutils literal notranslate"><span class="pre">CollectLimitExec</span></code>). <code class="docutils literal notranslate"><span class="pre">collect</span></code>, <code class="docutils literal notranslate"><span class="pre">show</span></code>, and <code class="docutils literal notranslate"><span class="pre">take</span></code> take rows from its child on the JVM; other reads run Rust limit plans.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometBroadcastExchange</span></code></p></td>
 <td><p>Broadcast exchange producing serialized Arrow batches that the consumer can decode.</p></td>
@@ -1354,14 +1365,14 @@ either Spark row-based input or Comet columnar input, which makes it the
 fallback when the child is not a Comet operator or when a hash/range key
 type is not supported by native shuffle (for example, a struct or array
 hash key while nested hash keys are disabled). It is still preferred over
-Spark’s native shuffle when Comet shuffle is enabled. Keys with a
+Spark’s built-in shuffle when Comet shuffle is enabled. Keys with a
 non-default string collation are supported by neither path and use Spark’s
 shuffle.</p></li>
 </ul>
 <p>Both paths support the same set of partitioning schemes
 (<code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code>, <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code>,
-<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>) and both can carry complex types in data columns. Native
-round-robin partitioning is disabled by default; see
+<code class="docutils literal notranslate"><span class="pre">SinglePartition</span></code>) and both can carry complex types in data columns. Round-robin
+partitioning in native shuffle is disabled by default; see
 <a class="reference internal" href="compatibility/operators.html#round-robin-partitioning"><span class="std std-ref">Round-Robin Partitioning</span></a>.</p>
 <p>The choice between the two is automatic. See the
 <a class="reference internal" href="tuning/shuffle.html"><span class="std std-doc">shuffle tuning guide</span></a> for how to enable Comet

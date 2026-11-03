@@ -468,6 +468,7 @@ under the License.
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="spark_configs_support.html">Supported Spark Configurations</a></li>
 <li class="toctree-l1"><a class="reference internal" href="config_conventions.html">Configuration Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="style_guide.html">Documentation Style Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Mechanics</span></p>
 <ul class="nav bd-sidenav">
@@ -563,29 +564,35 @@ shuffle operations entirely in Rust code for maximum performance. For the JVM-ba
 see <a class="reference internal" href="jvm_shuffle.html"><span class="std std-doc">JVM Shuffle</span></a>.</p>
 <section id="overview">
 <h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">#</a></h2>
-<p>Native shuffle takes columnar input directly from Comet native operators and performs partitioning,
+<p>Native shuffle takes Arrow batches directly from Comet operators and performs partitioning,
 encoding, and writing in native Rust code. This avoids the columnar-to-row-to-columnar conversion
 overhead that JVM shuffle incurs.</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet Native (columnar) → Native Shuffle → Arrow IPC → columnar
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet operator (Arrow batches) → Native Shuffle → Arrow IPC → columnar
 </pre></div>
 </div>
 <p>Compare this to JVM shuffle’s data path:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet Native (columnar) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span>Comet operator (Arrow batches) → ColumnarToRowExec → rows → JVM Shuffle → Arrow IPC → columnar
 </pre></div>
 </div>
 <p>When <code class="docutils literal notranslate"><span class="pre">RevertNativeForTransitionHeavyStages</span></code> restores the map stage to Spark execution, the
-native exchange stays in place. Its input still needs Arrow-backed Comet vectors, even if the
-restored Spark operator supports columnar output. The rule adds <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> to
-convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
-them. Spark’s <code class="docutils literal notranslate"><span class="pre">RowToColumnarExec</span></code> alone does not satisfy this input contract.</p>
+native shuffle exchange usually stays in place. Its input still needs Arrow-backed Comet vectors,
+even if the restored Spark operator supports columnar output. The rule adds <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>
+to convert either Spark rows or Spark columnar batches to Arrow before the native shuffle consumes
+them. Spark’s <code class="docutils literal notranslate"><span class="pre">RowToColumnarExec</span></code> alone does not satisfy this input contract. The exception is a
+native shuffle whose input was converted by <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.shuffleInput.enabled</span></code>: the rule
+switches it back to JVM columnar shuffle, which reads the restored stage’s rows.</p>
 </section>
 <section id="when-native-shuffle-is-used">
 <h2>When Native Shuffle is Used<a class="headerlink" href="#when-native-shuffle-is-used" title="Link to this heading">#</a></h2>
 <p>Native shuffle (<code class="docutils literal notranslate"><span class="pre">CometExchange</span></code>) is selected when all of the following conditions are met:</p>
 <ol class="arabic simple">
-<li><p><strong>Shuffle mode allows native</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
-<li><p><strong>Child plan is a Comet native operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
-columnar output. Row-based Spark operators require JVM shuffle, unless
+<li><p><strong>Shuffle mode allows native shuffle</strong>: <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> is <code class="docutils literal notranslate"><span class="pre">native</span></code> or <code class="docutils literal notranslate"><span class="pre">auto</span></code>.</p></li>
+<li><p><strong>Child plan is a Comet operator</strong>: The child must be a <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that produces
+columnar output. With the Celeborn shuffle manager, <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.mode</span></code> must be <code class="docutils literal notranslate"><span class="pre">native</span></code>,
+the child must be a <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">CometCelebornShuffleManager.nativeShuffleFallbackReason</span></code> must accept the configuration.
+Otherwise Spark’s shuffle is used, because Celeborn has no JVM columnar shuffle to fall back to.
+Row-based Spark operators require JVM shuffle, unless
 <code class="docutils literal notranslate"><span class="pre">spark.comet.convert.shuffleInput.enabled</span></code> is set. Then a shuffle that JVM shuffle would take
 uses native shuffle instead, provided native shuffle supports the partitioning and the
 columns, and a <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code> converts the child’s rows to Arrow for it. A shuffle
@@ -606,12 +613,11 @@ assignment puts unsorted rows in different partitions than Spark does</p></li>
 columns. Complex types are fully supported as data columns in native shuffle.</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> keys must be primitive. <code class="docutils literal notranslate"><span class="pre">supportedRangePartitioningDataType</span></code> rejects every
-nested type, because native cannot sort them, and rejects collated strings, because Comet
-compares raw bytes. Scalar float and double are supported, including when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code> is enabled, because the native range partitioner
-normalizes its comparison keys and its sampled boundary rows the same way the native sort
-does. The native sort normalizes floating-point values nested in arrays and structs as well,
-but those keys are rejected as range keys for being nested.</p></li>
+nested type. It also rejects collated strings, because Comet compares raw bytes. Scalar float
+and double are supported, including when <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint</span></code> is enabled,
+because the Rust range partitioner normalizes its comparison keys and its sampled boundary
+rows the same way the Rust sort does. The Rust sort normalizes floating-point values nested
+in arrays and structs as well, but those keys are rejected as range keys for being nested.</p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> keys must be primitive <strong>by default</strong>. Setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code> to <code class="docutils literal notranslate"><span class="pre">true</span></code> admits structs and
 arrays as keys, checked recursively to their leaves, and maps on Spark 4.0 and later, where
@@ -698,7 +704,7 @@ nested hashing paths, so by default a complex hash key falls back to JVM shuffle
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">.../shuffle/NativeBatchDecoderIterator.scala</span></code></p></td>
-<td><p>Reads compressed Arrow IPC from input stream. Calls native decode via JNI.</p></td>
+<td><p>Reads compressed Arrow IPC from input stream. Calls the Rust decoder via JNI.</p></td>
 </tr>
 </tbody>
 </table>
@@ -763,16 +769,16 @@ one of two shapes:</p>
 <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code> subtree. The upstream operators run inside the same <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code>
 as the writer, with no JVM-to-native batch boundary between them.</p></li>
 <li><p>A synthetic <code class="docutils literal notranslate"><span class="pre">Scan(&quot;ShuffleWriterInput&quot;)</span></code> placeholder, when the exchange’s child is a
-non-native <code class="docutils literal notranslate"><span class="pre">CometPlan</span></code>, and for the dependencies that <code class="docutils literal notranslate"><span class="pre">CometCollectLimitExec</span></code> and
-<code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code> build. Native code reads the input through the Arrow C
-Stream Interface. A <code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code> child, such as <code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>,
-exports its own Arrow stream from <code class="docutils literal notranslate"><span class="pre">doExecuteAsArrowStream()</span></code>, which
-<code class="docutils literal notranslate"><span class="pre">prepareArrowStreamShuffleDependency</span></code> hands to native. Any other input is an
+<code class="docutils literal notranslate"><span class="pre">CometPlan</span></code> that is not a <code class="docutils literal notranslate"><span class="pre">CometNativeExec</span></code>, and for the dependencies that
+<code class="docutils literal notranslate"><span class="pre">CometCollectLimitExec</span></code> and <code class="docutils literal notranslate"><span class="pre">CometTakeOrderedAndProjectExec</span></code> build. Native code reads the
+input through the Arrow C Stream Interface. A <code class="docutils literal notranslate"><span class="pre">CometNativeArrowSource</span></code> child, such as
+<code class="docutils literal notranslate"><span class="pre">CometSparkToColumnarExec</span></code>, exports its own Arrow stream from <code class="docutils literal notranslate"><span class="pre">doExecuteAsArrowStream()</span></code>, which
+<code class="docutils literal notranslate"><span class="pre">prepareArrowStreamShuffleDependency</span></code> hands to the Rust side. Any other input is an
 <code class="docutils literal notranslate"><span class="pre">RDD[ColumnarBatch]</span></code>, which the convenience <code class="docutils literal notranslate"><span class="pre">prepareShuffleDependency(rdd,</span> <span class="pre">...)</span></code> overload
 wraps in a stream.</p></li>
 </ul>
 </li>
-<li><p><strong>Native execution</strong>: A single <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> per partition runs the unified plan.</p></li>
+<li><p><strong>Plan execution</strong>: A single <code class="docutils literal notranslate"><span class="pre">CometExecIterator</span></code> per partition runs the unified plan in Rust.</p></li>
 <li><p><strong>Partitioning</strong>: <code class="docutils literal notranslate"><span class="pre">ShuffleWriterExec</span></code> receives batches and routes to the appropriate partitioner:</p>
 <ul class="simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">MultiPartitionShuffleRepartitioner</span></code>: For hash/range/round-robin partitioning</p></li>
@@ -807,8 +813,8 @@ read time. See <a class="reference internal" href="#direct-read-shufflescan">Dir
 <ol class="arabic simple">
 <li><p><code class="docutils literal notranslate"><span class="pre">CometBlockStoreShuffleReader.readAsRawStream()</span></code> concatenates the fetched block streams and
 skips decoding entirely.</p></li>
-<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code> hands native one compressed block at a time.</p></li>
-<li><p>The native <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> decodes each block with <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and feeds the
+<li><p><code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code> hands the Rust side one compressed block at a time.</p></li>
+<li><p>The Rust <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> decodes each block with <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> and feeds the
 resulting <code class="docutils literal notranslate"><span class="pre">RecordBatch</span></code> straight into the plan. No Arrow FFI export or import happens.</p></li>
 </ol>
 <p>For a direct local native shuffle feeding a broadcast exchange, the opt-in
@@ -836,10 +842,10 @@ pending native batches, exported Arrow batches, and the raw stream.</p>
 </section>
 <section id="direct-read-shufflescan">
 <h2>Direct Read (ShuffleScan)<a class="headerlink" href="#direct-read-shufflescan" title="Link to this heading">#</a></h2>
-<p>Direct read lets a native operator consume shuffle output without the batch ever being decoded in
-the JVM or crossing Arrow FFI. It is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code>, which
-defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> and requires <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code>. It applies to both native shuffle and
-JVM columnar shuffle, because both write the same Arrow IPC block format.</p>
+<p>Direct read lets a Rust-implemented operator consume shuffle output without the batch ever being
+decoded in the JVM or crossing Arrow FFI. It is controlled by <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code>,
+which defaults to <code class="docutils literal notranslate"><span class="pre">true</span></code> and requires <code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.enabled</span></code>. It applies to both native shuffle
+and JVM columnar shuffle, because both write the same Arrow IPC block format.</p>
 <section id="how-the-path-is-selected">
 <h3>How the path is selected<a class="headerlink" href="#how-the-path-is-selected" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometExchangeSink.shouldUseShuffleScan</span></code> (<code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/serde/operator/CometSink.scala</span></code>)
@@ -850,21 +856,21 @@ through to the base <code class="docutils literal notranslate"><span class="pre"
 of a two-phase aggregate, comes back from re-planning as the node already planned, whose input was
 serialized as a <code class="docutils literal notranslate"><span class="pre">Scan</span></code> before the stage existed. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> refreshes such a node: once its input
 is a sink that emits a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>, that <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> replaces the stale <code class="docutils literal notranslate"><span class="pre">Scan</span></code> leaf.</p>
-<p>The two are not alternatives on failure. If any output type fails <code class="docutils literal notranslate"><span class="pre">supportedSinkDataType</span></code>,
+<p>The two are not alternatives on failure. If any output type fails <code class="docutils literal notranslate"><span class="pre">QueryPlanSerde.supportedDataType</span></code>,
 <code class="docutils literal notranslate"><span class="pre">convertToShuffleScan</span></code> records the fallback reason <code class="docutils literal notranslate"><span class="pre">Unsupported</span> <span class="pre">data</span> <span class="pre">type</span> <span class="pre">for</span> <span class="pre">shuffle</span> <span class="pre">direct</span> <span class="pre">read</span></code>
 and returns <code class="docutils literal notranslate"><span class="pre">None</span></code>. It does not retry as a regular <code class="docutils literal notranslate"><span class="pre">Scan</span></code>, and retrying would not help, because
-<code class="docutils literal notranslate"><span class="pre">CometSink.convert</span></code> gates on the same <code class="docutils literal notranslate"><span class="pre">supportedSinkDataType</span></code>. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> calls this as
-<code class="docutils literal notranslate"><span class="pre">convertToComet(s,</span> <span class="pre">CometExchangeSink).getOrElse(s)</span></code>, so <code class="docutils literal notranslate"><span class="pre">None</span></code> leaves the original Spark shuffle stage
-in the plan. An unsupported output type therefore means the stage is not converted natively at all,
-not that it is served over the FFI read path instead.</p>
+<code class="docutils literal notranslate"><span class="pre">CometSink.convert</span></code> gates on the same <code class="docutils literal notranslate"><span class="pre">supportedDataType</span></code> check. <code class="docutils literal notranslate"><span class="pre">CometExecRule</span></code> calls this as
+<code class="docutils literal notranslate"><span class="pre">convertToComet(s,</span> <span class="pre">CometExchangeSink).getOrElse(s)</span></code>, so <code class="docutils literal notranslate"><span class="pre">None</span></code> leaves the shuffle stage as it is, and the
+operators that read it cannot join a Rust plan. An unsupported output type therefore means those operators do not
+run in Rust, not that the stage is served over the FFI read path instead.</p>
 <p><strong>The protobuf is the source of truth for which slots are direct read, not the config.</strong>
 <code class="docutils literal notranslate"><span class="pre">findShuffleScanIndices</span></code> (<code class="docutils literal notranslate"><span class="pre">operators.scala</span></code>) walks the serialized plan, counting scan slots in order
 and collecting the indices that carry a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code>. JVM-side input dispatch reads that set rather
 than re-checking the config, so the two cannot disagree. Anything changing the serde condition has to
 leave that walk consistent with it.</p>
 </section>
-<section id="how-blocks-reach-native">
-<h3>How blocks reach native<a class="headerlink" href="#how-blocks-reach-native" title="Link to this heading">#</a></h3>
+<section id="how-blocks-reach-the-rust-side">
+<h3>How blocks reach the Rust side<a class="headerlink" href="#how-blocks-reach-the-rust-side" title="Link to this heading">#</a></h3>
 <p><code class="docutils literal notranslate"><span class="pre">CometExecRDD.resolveInputObjects</span></code> fills one input slot per scan input, in scan-input order:</p>
 <ul class="simple">
 <li><p>A slot in <code class="docutils literal notranslate"><span class="pre">shuffleScanIndices</span></code> gets a <code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator</span></code>, obtained from
@@ -877,7 +883,7 @@ includes the field count but not itself, followed by an 8-byte field count that 
 the schema comes from the <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> protobuf fields. The 4-byte codec tag after it is read only by
 native code; the high bit of its first byte marks a block whose offsets buffers hold lengths. The
 compressed body is read into a reused <code class="docutils literal notranslate"><span class="pre">DirectByteBuffer</span></code>, <strong>valid only until the next <code class="docutils literal notranslate"><span class="pre">hasNext()</span></code>
-call</strong>. Native must fully consume it
+call</strong>. <code class="docutils literal notranslate"><span class="pre">ShuffleScanExec</span></code> must fully consume it
 before pulling the next block, which <code class="docutils literal notranslate"><span class="pre">read_ipc_compressed</span></code> satisfies because it allocates fresh
 native memory for the decoded data.</p>
 </section>
@@ -894,7 +900,7 @@ the plan sees matches the declared <code class="docutils literal notranslate"><s
 </ul>
 <p>Blocks are validated before decoding when <code class="docutils literal notranslate"><span class="pre">CometShuffleBlockIterator.requiresValidation()</span></code> is true,
 which happens when the underlying stream implements <code class="docutils literal notranslate"><span class="pre">CometShuffleReadFailureHandler</span></code> so a corrupt
-block can be reported back as a shuffle read failure rather than a native decode panic.</p>
+block can be reported back as a shuffle read failure rather than a panic in the Rust decoder.</p>
 <p>Celeborn reuses the same expected-schema contract from the JVM side. <code class="docutils literal notranslate"><span class="pre">CometCelebornShuffleReader</span></code>
 builds a <code class="docutils literal notranslate"><span class="pre">ShuffleScan</span></code> message from the dependency’s output attributes and passes it to
 <code class="docutils literal notranslate"><span class="pre">NativeBatchDecoderIterator</span></code>, so remote logical types are validated before Arrow import and an
@@ -1028,8 +1034,8 @@ same rows, and once any consumer has fetched the output that attempt replaces, t
 silently gets some rows twice and others not at all. Comet establishes the condition in two places:</p>
 <ul class="simple">
 <li><p><strong>In the plan, which is the gate that matters.</strong> <code class="docutils literal notranslate"><span class="pre">CometShuffleExchangeExec.replaysRowsInOrder</span></code>
-walks the native subtree fused into the writer, which the RDD graph cannot see because the whole
-subtree collapses into one <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleInputRDD</span></code>. It is a short allowlist, not a
+walks the Rust-implemented subtree fused into the writer, which the RDD graph cannot see because
+the whole subtree collapses into one <code class="docutils literal notranslate"><span class="pre">CometNativeShuffleInputRDD</span></code>. It is a short allowlist, not a
 denylist: a native scan under nothing but projections and filters whose expressions are all
 deterministic. A native scan replays its partition because its file splits are fixed on the
 driver. A nondeterministic expression, such as a UDF marked <code class="docutils literal notranslate"><span class="pre">asNondeterministic</span></code>, is out even
@@ -1135,7 +1141,7 @@ independently compressed, allowing parallel decompression during reads.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.directRead.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
-<td><p>Decode shuffle blocks in native code, bypassing Arrow FFI</p></td>
+<td><p>Decode shuffle blocks inside the Rust plan, bypassing Arrow FFI</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.compression.codec</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">lz4</span></code></p></td>
@@ -1159,7 +1165,7 @@ independently compressed, allowing parallel decompression during reads.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
-<td><p>Allow <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> on the native path</p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">HashPartitioning</span></code> in native shuffle</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.hash.nested.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
@@ -1167,11 +1173,11 @@ independently compressed, allowing parallel decompression during reads.</p>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.range.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
-<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> on the native path</p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RangePartitioning</span></code> in native shuffle</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> on the native path</p></td>
+<td><p>Allow <code class="docutils literal notranslate"><span class="pre">RoundRobinPartitioning</span></code> in native shuffle</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.shuffle.native.partitioning.roundrobin.maxHashColumns</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">0</span></code></p></td>
@@ -1296,7 +1302,7 @@ independently compressed, allowing parallel decompression during reads.</p>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#direct-read-shufflescan">Direct Read (ShuffleScan)</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-the-path-is-selected">How the path is selected</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-blocks-reach-native">How blocks reach native</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#how-blocks-reach-the-rust-side">How blocks reach the Rust side</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#native-side">Native side</a></li>
 </ul>
 </li>
