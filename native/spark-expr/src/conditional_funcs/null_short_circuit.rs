@@ -16,6 +16,7 @@
 // under the License.
 
 use super::case_when::cannot_fail;
+use super::lazy_logical::is_deterministic;
 use arrow::array::{new_null_array, Array, BooleanArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
@@ -28,6 +29,7 @@ use datafusion::physical_expr::utils::collect_columns;
 use datafusion::physical_expr::PhysicalExpr;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Evaluates a function's arguments the way Spark evaluates those of a null-intolerant
@@ -42,9 +44,11 @@ use std::sync::Arc;
 /// them.
 ///
 /// The function still sees every row, with NULL for each argument skipped there, so it has to
-/// return NULL wherever an argument other than the last is NULL. Its arguments have to be its
-/// children, in the order Spark evaluates them, and it has to compute its result from them alone.
-/// `ArrayInsert` evaluates its own arguments the same way.
+/// return NULL wherever an argument other than the last one evaluated is NULL. Its arguments have
+/// to be its children, and it has to compute its result from them alone. They are evaluated in
+/// the order of the children unless [`NullShortCircuit::wrap_in_order`] gives another, as it does
+/// for a division, whose divisor Spark evaluates first. `ArrayInsert` evaluates its own arguments
+/// the same way.
 #[derive(Debug)]
 pub struct NullShortCircuit {
     /// The function over its arguments
@@ -52,7 +56,10 @@ pub struct NullShortCircuit {
     /// The function over the evaluated arguments, reading each one that is not a literal from a
     /// column of the batch that holds them
     body: Arc<dyn PhysicalExpr>,
+    /// The arguments, in the order of the children of `inner`
     args: Vec<Arg>,
+    /// The indices into `args` in the order Spark evaluates them
+    order: Vec<usize>,
 }
 
 impl NullShortCircuit {
@@ -62,12 +69,30 @@ impl NullShortCircuit {
         inner: Arc<dyn PhysicalExpr>,
         input_schema: &Schema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        let masked = inner
-            .children()
-            .iter()
-            .enumerate()
-            .map(|(i, arg)| i > 0 && !cannot_fail(arg, input_schema))
-            .collect::<Vec<_>>();
+        let order = (0..inner.children().len()).collect::<Vec<_>>();
+        Self::wrap_in_order(inner, &order, input_schema)
+    }
+
+    /// Like [`NullShortCircuit::wrap`], but evaluates the arguments in `order`, the indices of the
+    /// children of `inner` in the order Spark evaluates them.
+    pub fn wrap_in_order(
+        inner: Arc<dyn PhysicalExpr>,
+        order: &[usize],
+        input_schema: &Schema,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        let children = inner.children();
+        let mut sorted = order.to_vec();
+        sorted.sort_unstable();
+        if !sorted.iter().copied().eq(0..children.len()) {
+            return internal_err!(
+                "NullShortCircuit order {order:?} is not a permutation of {} arguments",
+                children.len()
+            );
+        }
+        let mut masked = vec![false; children.len()];
+        for &i in order.iter().skip(1) {
+            masked[i] = !cannot_fail(children[i], input_schema);
+        }
         if !masked.contains(&true) {
             return Ok(inner);
         }
@@ -87,11 +112,15 @@ impl NullShortCircuit {
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(Self::try_new(inner, plans)?))
+        Ok(Arc::new(Self::try_new(inner, plans, order.to_vec())?))
     }
 
     /// `plans` holds each argument's [`Arg::field`] and whether it is masked.
-    fn try_new(inner: Arc<dyn PhysicalExpr>, plans: Vec<(Option<FieldRef>, bool)>) -> Result<Self> {
+    fn try_new(
+        inner: Arc<dyn PhysicalExpr>,
+        plans: Vec<(Option<FieldRef>, bool)>,
+        order: Vec<usize>,
+    ) -> Result<Self> {
         let children = inner.children();
         if children.len() != plans.len() {
             return internal_err!(
@@ -116,19 +145,25 @@ impl NullShortCircuit {
             }
         }
         let body = Arc::clone(&inner).with_new_children(body_children)?;
-        Ok(Self { inner, body, args })
+        Ok(Self {
+            inner,
+            body,
+            args,
+            order,
+        })
     }
 }
 
 impl Hash for NullShortCircuit {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.inner.hash(state);
+        self.order.hash(state);
     }
 }
 
 impl PartialEq for NullShortCircuit {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.eq(&other.inner)
+        self.inner.eq(&other.inner) && self.order == other.order
     }
 }
 
@@ -157,12 +192,12 @@ impl PhysicalExpr for NullShortCircuit {
         let num_rows = batch.num_rows();
         // The rows where an argument evaluated so far is NULL, or `None` while there are none
         let mut nulls: Option<NullBuffer> = None;
-        let mut fields = vec![];
-        let mut columns = vec![];
-        let last = self.args.len() - 1;
-        for (i, arg) in self.args.iter().enumerate() {
+        let mut values = vec![None; self.args.len()];
+        let last = self.order.len() - 1;
+        for (position, &i) in self.order.iter().enumerate() {
+            let arg = &self.args[i];
             let value = arg.evaluate(batch, nulls.as_ref())?;
-            if i < last {
+            if position < last {
                 let value_nulls = match &value {
                     ColumnarValue::Array(array) if array.len() != num_rows => {
                         return internal_err!(
@@ -185,7 +220,14 @@ impl PhysicalExpr for NullShortCircuit {
                     return Ok(ColumnarValue::Array(new_null_array(&data_type, num_rows)));
                 }
             }
+            values[i] = Some(value);
+        }
+        let mut fields = vec![];
+        let mut columns = vec![];
+        for (arg, value) in self.args.iter().zip(values) {
             if let Some(field) = &arg.field {
+                let value = value
+                    .ok_or_else(|| internal_datafusion_err!("{} was not evaluated", arg.expr))?;
                 let column = value.into_array(num_rows)?;
                 // The batch is checked against the types the arguments have at run time, which
                 // can differ from their planned types in the names and nullability of nested fields
@@ -222,7 +264,7 @@ impl PhysicalExpr for NullShortCircuit {
             .iter()
             .map(|arg| (arg.field.clone(), arg.masked.is_some()))
             .collect();
-        Ok(Arc::new(Self::try_new(inner, plans)?))
+        Ok(Arc::new(Self::try_new(inner, plans, self.order.clone())?))
     }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -247,6 +289,12 @@ struct Arg {
     /// batch, even one with no NULL, because rebuilding the argument gave it its own copy of any
     /// state kept across batches, such as the random generator of `shuffle`
     masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
+    /// Whether a masked argument is first tried over the whole batch, as it would be without
+    /// masking, which is no slower than selecting the rows that need it unless nearly none do.
+    /// Whatever it returns for a skipped row is ignored, so it only matters if it fails there,
+    /// and it requires an argument that returns the same for a row whichever rows it sees. If it
+    /// fails, the rows are selected instead, here and for the batches after it.
+    speculate: AtomicBool,
 }
 
 impl Arg {
@@ -256,10 +304,12 @@ impl Arg {
         masked: bool,
     ) -> Result<Self> {
         let masked = masked.then(|| project(expr)).transpose()?;
+        let speculate = AtomicBool::new(masked.is_some() && is_deterministic(expr));
         Ok(Self {
             expr: Arc::clone(expr),
             field,
             masked,
+            speculate,
         })
     }
 
@@ -269,6 +319,12 @@ impl Arg {
         let Some((projection, projected)) = &self.masked else {
             return self.expr.evaluate(batch);
         };
+        if nulls.is_some() && self.speculate.load(Ordering::Relaxed) {
+            if let Ok(value) = evaluate_projected(projection, projected, batch, None) {
+                return Ok(value);
+            }
+            self.speculate.store(false, Ordering::Relaxed);
+        }
         let rows = nulls.map(|nulls| BooleanArray::new(nulls.inner().clone(), None));
         evaluate_projected(projection, projected, batch, rows.as_ref())
     }
@@ -626,6 +682,127 @@ mod tests {
             None,
         ]));
         assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    /// `CAST(s AS BIGINT) / d`, with an ANSI cast of `s`, and a batch where `s` is malformed
+    /// only on a row whose `d` is NULL, or, with `bad_divisor`, `d` is malformed on a row whose
+    /// `s` is NULL.
+    fn division(bad_divisor: bool) -> (Arc<dyn PhysicalExpr>, RecordBatch) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let (dividends, divisors) = if bad_divisor {
+            (vec![None, Some("6")], vec![Some("bad"), Some("3")])
+        } else {
+            (vec![Some("bad"), Some("6")], vec![None, Some("3")])
+        };
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(dividends)),
+                Arc::new(StringArray::from(divisors)),
+            ],
+        )
+        .unwrap();
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        (divide, batch)
+    }
+
+    #[test]
+    fn divisor_is_evaluated_first() {
+        let (divide, batch) = division(false);
+        let schema = batch.schema();
+        // In the order of the children, the dividend comes first and fails on "bad"
+        let in_order = NullShortCircuit::wrap(Arc::clone(&divide), &schema).unwrap();
+        let error = evaluate(&in_order, &batch).unwrap_err().to_string();
+        assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
+
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let actual = evaluate(&guarded, &batch).unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, Some(2)]));
+        assert_eq!(actual.as_ref(), expected.as_ref());
+        // The order survives rebuilding the children
+        let children = guarded.children().into_iter().cloned().collect();
+        let rebuilt = Arc::clone(&guarded).with_new_children(children).unwrap();
+        assert_eq!(
+            evaluate(&rebuilt, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(rebuilt.eq(&guarded));
+    }
+
+    #[test]
+    fn divisor_still_fails_where_the_dividend_is_null() {
+        let (divide, batch) = division(true);
+        let schema = batch.schema();
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let error = evaluate(&guarded, &batch).unwrap_err().to_string();
+        assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
+    }
+
+    #[test]
+    fn speculative_evaluation_falls_back_to_selected_rows() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let batch = |dividends: Vec<&str>| {
+            let divisors = vec![None, Some("3"), Some("3"), Some("3")];
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(StringArray::from(dividends)),
+                    Arc::new(StringArray::from(divisors)),
+                ],
+            )
+            .unwrap()
+        };
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let speculating = || {
+            guarded.downcast_ref::<NullShortCircuit>().unwrap().args[0]
+                .speculate
+                .load(Ordering::Relaxed)
+        };
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, Some(2), Some(1), Some(3)]));
+        // The dividend is tried over the whole batch first, and succeeds
+        let valid = batch(vec!["0", "6", "3", "9"]);
+        assert_eq!(
+            evaluate(&guarded, &valid).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(speculating());
+        // It fails on the row whose divisor is NULL, so that row is skipped
+        let failing = batch(vec!["bad", "6", "3", "9"]);
+        assert_eq!(
+            evaluate(&guarded, &failing).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(!speculating());
+        assert_eq!(
+            evaluate(&guarded, &valid).unwrap().as_ref(),
+            expected.as_ref()
+        );
+    }
+
+    #[test]
+    fn order_must_be_a_permutation_of_the_arguments() {
+        let (divide, batch) = division(false);
+        let schema = batch.schema();
+        for order in [&[0, 0][..], &[1][..], &[0, 2][..]] {
+            assert!(NullShortCircuit::wrap_in_order(Arc::clone(&divide), order, &schema).is_err());
+        }
     }
 
     #[test]

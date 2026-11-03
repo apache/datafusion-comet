@@ -36,13 +36,17 @@ macro_rules! arithmetic_expr_builder {
                 let expr = $crate::extract_expr!(spark_expr, $expr_type);
                 let eval_mode =
                     $crate::execution::planner::from_protobuf_eval_mode(expr.eval_mode)?;
-                planner.create_binary_expr(
+                planner.create_binary_expr_with_options(
                     spark_expr, // Pass the full spark_expr for query_context lookup
                     expr.left.as_ref().unwrap(),
                     expr.right.as_ref().unwrap(),
                     expr.return_type.as_ref(),
                     $operator,
                     input_schema,
+                    $crate::execution::planner::BinaryExprOptions {
+                        null_short_circuit: expr.null_short_circuit,
+                        ..Default::default()
+                    },
                     eval_mode,
                 )
             }
@@ -56,7 +60,9 @@ use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
+use datafusion_comet_spark_expr::{
+    create_modulo_expr_with_null_short_circuit, create_negate_expr, EvalMode,
+};
 
 use crate::execution::{
     expressions::extract_expr,
@@ -105,6 +111,7 @@ impl ExpressionBuilder for IntegralDivideBuilder {
             BinaryExprOptions {
                 is_integral_div: true,
                 check_divide_overflow: expr.check_divide_overflow,
+                null_short_circuit: expr.null_short_circuit,
             },
             eval_mode,
         )
@@ -126,7 +133,7 @@ impl ExpressionBuilder for RemainderBuilder {
         let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
         let right = planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
 
-        let result = create_modulo_expr(
+        let result = create_modulo_expr_with_null_short_circuit(
             left,
             right,
             expr.return_type
@@ -135,6 +142,7 @@ impl ExpressionBuilder for RemainderBuilder {
                 .unwrap(),
             input_schema,
             eval_mode == EvalMode::Ansi,
+            expr.null_short_circuit,
             &planner.session_ctx().state(),
         );
         result.map_err(|e| ExecutionError::GeneralError(e.to_string()))

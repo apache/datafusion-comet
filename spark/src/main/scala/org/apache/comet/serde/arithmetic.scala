@@ -25,10 +25,19 @@ import org.apache.spark.sql.catalyst.expressions.{Add, Attribute, BinaryArithmet
 import org.apache.spark.sql.types.{ByteType, DataType, DecimalType, DoubleType, FloatType, IntegerType, LongType, ShortType}
 
 import org.apache.comet.expressions.{CometCast, CometEvalMode}
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{canSkipEvaluation, evalModeToProto, exprToProtoInternal, flattenAssociative, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 import org.apache.comet.shims.CometEvalModeUtil
 
 trait MathBase {
+
+  /**
+   * Creates the `MathExpr` of `left` and `right`. `skippable` is the operand that Spark evaluates
+   * second, and only for the rows where the other one is not NULL: the right operand of an add,
+   * subtract or multiply, and the dividend of a division, whose divisor Spark evaluates first.
+   * Native execution skips it on the same rows unless `canSkipEvaluation` rules it out, so that
+   * an operand that can fail, such as an ANSI cast of a malformed string, does not fail on a row
+   * that Spark returns NULL for (https://github.com/apache/datafusion-comet/issues/7246).
+   */
   def createMathExpression(
       left: Expression,
       right: Expression,
@@ -37,7 +46,8 @@ trait MathBase {
       dataType: DataType,
       evalMode: EvalMode.Value,
       f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
-      checkDivideOverflow: Boolean = false): Option[ExprOuterClass.Expr] = {
+      checkDivideOverflow: Boolean = false,
+      skippable: Option[Expression] = None): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -48,6 +58,7 @@ trait MathBase {
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
       builder.setCheckDivideOverflow(checkDivideOverflow)
+      builder.setNullShortCircuit(skippable.exists(e => canSkipEvaluation(Seq(e))))
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -208,7 +219,8 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         binding,
         expr.dataType,
         expr.evalMode,
-        (builder, mathExpr) => builder.setAdd(mathExpr))
+        (builder, mathExpr) => builder.setAdd(mathExpr),
+        skippable = Some(expr.right))
     }
   }
 }
@@ -229,7 +241,8 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       binding,
       expr.dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setSubtract(mathExpr))
+      (builder, mathExpr) => builder.setSubtract(mathExpr),
+      skippable = Some(expr.right))
   }
 }
 
@@ -264,7 +277,8 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         binding,
         expr.dataType,
         expr.evalMode,
-        (builder, mathExpr) => builder.setMultiply(mathExpr))
+        (builder, mathExpr) => builder.setMultiply(mathExpr),
+        skippable = Some(expr.right))
     }
   }
 }
@@ -302,7 +316,8 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       binding,
       expr.dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setDivide(mathExpr))
+      (builder, mathExpr) => builder.setDivide(mathExpr),
+      skippable = Some(expr.left))
   }
 }
 
@@ -348,7 +363,8 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       (builder, mathExpr) => builder.setIntegralDivide(mathExpr),
       // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
       // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
-      checkDivideOverflow = expr.checkDivideOverflow)
+      checkDivideOverflow = expr.checkDivideOverflow,
+      skippable = Some(expr.left))
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -390,7 +406,8 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       binding,
       expr.dataType,
       expr.evalMode,
-      (builder, mathExpr) => builder.setRemainder(mathExpr))
+      (builder, mathExpr) => builder.setRemainder(mathExpr),
+      skippable = Some(expr.left))
   }
 }
 

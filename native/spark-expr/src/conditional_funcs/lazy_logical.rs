@@ -175,7 +175,7 @@ fn balanced_or(terms: &[Arc<dyn PhysicalExpr>], schema: &Schema) -> Result<Arc<d
 
 /// Whether `expr` returns the same for a row whichever rows it has been evaluated for. That holds
 /// for the expressions that Comet plans from deterministic ones, and is not assumed of any other.
-fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
+pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
     let node_is_deterministic = expr.is::<Column>()
         || expr.is::<Literal>()
         || expr.is::<Cast>()
