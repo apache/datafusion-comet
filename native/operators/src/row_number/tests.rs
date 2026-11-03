@@ -51,24 +51,41 @@ fn batch(keys: ArrayRef) -> RecordBatch {
 }
 
 fn window(batches: &[RecordBatch], partitioned: bool, functions: &[&str]) -> BoundedWindowAggExec {
+    window_with_order_mode(
+        batches,
+        if partitioned { &["k"] } else { &[] },
+        functions,
+        InputOrderMode::Sorted,
+    )
+}
+
+fn window_with_order_mode(
+    batches: &[RecordBatch],
+    partition_columns: &[&str],
+    functions: &[&str],
+    input_order_mode: InputOrderMode,
+) -> BoundedWindowAggExec {
     let schema = batches[0].schema();
     let sort = |name| PhysicalSortExpr::new(col(name, &schema).unwrap(), SortOptions::default());
-    let ordering = if partitioned {
-        vec![sort("k"), sort("i")]
-    } else {
-        vec![sort("i")]
+    let mut ordering: Vec<_> = match &input_order_mode {
+        InputOrderMode::Sorted => partition_columns.iter().map(|&name| sort(name)).collect(),
+        InputOrderMode::PartiallySorted(indices) => indices
+            .iter()
+            .map(|&index| sort(partition_columns[index]))
+            .collect(),
+        InputOrderMode::Linear => vec![],
     };
+    ordering.push(sort("i"));
     let source = MemorySourceConfig::try_new(&[batches.to_vec()], Arc::clone(&schema), None)
         .unwrap()
         .try_with_sort_information(vec![LexOrdering::new(ordering).unwrap()])
         .unwrap();
     let input = DataSourceExec::from_data_source(source);
     let ctx = SessionContext::new();
-    let keys = if partitioned {
-        vec![col("k", &schema).unwrap()]
-    } else {
-        vec![]
-    };
+    let keys = partition_columns
+        .iter()
+        .map(|&name| col(name, &schema).unwrap())
+        .collect::<Vec<_>>();
     let frame = Arc::new(WindowFrame::new_bounds(
         WindowFrameUnits::Rows,
         WindowFrameBound::Preceding(ScalarValue::UInt64(None)),
@@ -93,7 +110,13 @@ fn window(batches: &[RecordBatch], partitioned: bool, functions: &[&str]) -> Bou
             .unwrap()
         })
         .collect();
-    BoundedWindowAggExec::try_new(expressions, input, InputOrderMode::Sorted, partitioned).unwrap()
+    BoundedWindowAggExec::try_new(
+        expressions,
+        input,
+        input_order_mode,
+        !partition_columns.is_empty(),
+    )
+    .unwrap()
 }
 
 async fn compare(
@@ -246,6 +269,53 @@ async fn nested_keys_and_nullable_children_match_generic_windows() {
         &["row_number"],
     )
     .await;
+}
+
+#[tokio::test]
+async fn interleaved_partitions_require_the_generic_executor() {
+    let input = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("prefix", DataType::Int64, false),
+            Field::new("k", DataType::Int64, false),
+            Field::new("i", DataType::Int64, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 0, 0, 1, 1, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 2, 1, 2, 1, 2])),
+            Arc::new(Int64Array::from_iter_values(0..6)),
+        ],
+    )
+    .unwrap();
+    let ctx = SessionContext::new();
+    for mode in [
+        InputOrderMode::Linear,
+        InputOrderMode::PartiallySorted(vec![0]),
+    ] {
+        for batch_size in [1, 2, input.num_rows()] {
+            let batches = (0..input.num_rows())
+                .step_by(batch_size)
+                .map(|start| input.slice(start, batch_size.min(input.num_rows() - start)))
+                .collect::<Vec<_>>();
+            // Only the prefix is grouped. The complete partition keys recur within each prefix.
+            let generic =
+                window_with_order_mode(&batches, &["prefix", "k"], &["row_number"], mode.clone());
+            let mut columns = input.columns().to_vec();
+            columns.push(Arc::new(UInt64Array::from(vec![1, 1, 2, 1, 1, 2])));
+            let expected = RecordBatch::try_new(generic.schema(), columns).unwrap();
+            let actual = collect(Arc::new(generic.clone()), ctx.task_ctx())
+                .await
+                .unwrap();
+            assert_eq!(
+                concat_batches(&expected.schema(), &actual).unwrap(),
+                expected
+            );
+            assert!(
+                !RowNumberExec::supports(&generic),
+                "{mode:?} with batch size {batch_size} must retain the generic executor"
+            );
+            assert!(RowNumberExec::try_new(generic).is_err());
+        }
+    }
 }
 
 #[test]

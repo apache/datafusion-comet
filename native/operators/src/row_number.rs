@@ -41,14 +41,15 @@ use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::windows::{BoundedWindowAggExec, WindowUDFExpr};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, Distribution, ExecutionPlan, InputDistributionRequirements,
-    PlanProperties, SendableRecordBatchStream,
+    InputOrderMode, PlanProperties, SendableRecordBatchStream,
 };
 use futures::StreamExt;
 
 /// Generates every ROW_NUMBER result in one pass over each input batch.
 ///
 /// The unexecuted window supplies the schema, ordering, distribution and statistics contracts.
-/// Its expressions must all be the built-in ROW_NUMBER over the same partition and sort keys.
+/// Input must use `InputOrderMode::Sorted` so each partition is contiguous. Its expressions must
+/// all be the built-in ROW_NUMBER over the same partition and sort keys.
 /// The caller must normalise floating-point partition keys before building the window, just as
 /// it does for ordinary native windows. Other window functions keep their existing executor.
 #[derive(Debug)]
@@ -59,6 +60,9 @@ pub struct RowNumberExec {
 
 impl RowNumberExec {
     pub fn supports(window: &BoundedWindowAggExec) -> bool {
+        if window.input_order_mode != InputOrderMode::Sorted {
+            return false;
+        }
         let Some(first) = window.window_expr().first() else {
             return false;
         };
@@ -83,7 +87,8 @@ impl RowNumberExec {
     pub fn try_new(window: BoundedWindowAggExec) -> Result<Self> {
         if !Self::supports(&window) {
             return plan_err!(
-                "RowNumberExec requires only built-in ROW_NUMBER expressions with matching keys"
+                "RowNumberExec requires InputOrderMode::Sorted and only built-in ROW_NUMBER \
+                 expressions with matching keys"
             );
         }
         Ok(Self {
