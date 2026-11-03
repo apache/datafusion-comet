@@ -33,6 +33,7 @@ mod metric_owning;
 mod projection;
 mod range;
 mod rank_limit;
+mod row_number;
 mod sample;
 
 pub use expand::ExpandExec;
@@ -42,4 +43,5 @@ pub use membership_key_reduction::MembershipKeyReductionExec;
 pub use projection::CometProjectionExec;
 pub use range::{range_exec, range_sort_expr};
 pub use rank_limit::{PartitionedRankLimitExec, WindowFnKind};
+pub use row_number::RowNumberExec;
 pub use sample::SampleExec;
