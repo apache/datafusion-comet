@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -1392,6 +1393,37 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
         DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
       }
     }
+  }
+
+  /**
+   * Whether `expr` cannot raise an error for any row, so native execution may evaluate it for
+   * rows that Spark skips. Like the native `cannot_fail`, it is conservative: columns, literals,
+   * and comparisons, boolean logic, null checks, conditionals, numeric arithmetic, negation and
+   * absolute value outside ANSI mode and casts that cannot fail over them. Anything else is
+   * treated as able to fail.
+   */
+  def cannotFail(expr: Expression): Boolean = {
+    def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
+    def nonAnsiNumeric(evalMode: EvalMode.Value): Boolean = evalMode != EvalMode.ANSI && numeric
+    val nodeCannotFail = expr match {
+      case _: Attribute | _: BoundReference | _: Literal => true
+      case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
+      case _: If | _: CaseWhen | _: Coalesce => true
+      case _: KnownFloatingPointNormalized | _: NormalizeNaNAndZero => true
+      case c: Cast => CometCast.cannotFail(c)
+      case _: UnaryPositive => true
+      case u: UnaryMinus => !u.failOnError && numeric
+      case a: Abs => !a.failOnError && numeric
+      case a: Add => nonAnsiNumeric(a.evalMode)
+      case s: Subtract => nonAnsiNumeric(s.evalMode)
+      case m: Multiply => nonAnsiNumeric(m.evalMode)
+      case d: Divide => nonAnsiNumeric(d.evalMode)
+      case d: IntegralDivide => nonAnsiNumeric(d.evalMode)
+      case r: Remainder => nonAnsiNumeric(r.evalMode)
+      case p: Pmod => nonAnsiNumeric(p.evalMode)
+      case _ => false
+    }
+    nodeCannotFail && expr.children.forall(cannotFail)
   }
 
   /**

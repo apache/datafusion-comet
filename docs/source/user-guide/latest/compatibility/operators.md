@@ -94,6 +94,14 @@ TopK, and ranking window order keys run natively under both default and nondefau
 searches boundaries over a nullable nested key still runs on Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
+Spark's TopK (`TakeOrderedAndProject`, an `ORDER BY` with a `LIMIT`) evaluates a sort key after
+the first only for the rows whose earlier keys tie. Comet evaluates every key over the whole batch,
+so under `spark.sql.ansi.enabled=true` a later key such as `b + 1` could raise
+`ARITHMETIC_OVERFLOW` on a row that Spark never evaluates it for. A TopK whose later sort key can
+fail therefore runs on Spark, unless
+`spark.comet.operator.TakeOrderedAndProjectExec.allowIncompatible=true`
+([#7246](https://github.com/apache/datafusion-comet/issues/7246)).
+
 ## Hash Aggregation
 
 Ungrouped `AVG` and `TRY_AVG` on `DECIMAL(p, s)` fall back to Spark when the intermediate sum

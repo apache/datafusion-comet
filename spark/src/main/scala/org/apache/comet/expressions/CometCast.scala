@@ -24,7 +24,7 @@ import scala.util.Try
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
@@ -571,6 +571,28 @@ object CometCast
    */
   private[comet] def canProduceNullMapKey(cast: Cast): Boolean =
     evalMode(cast) == CometEvalMode.TRY && mayNullMapKey(cast.child.dataType, cast.dataType)
+
+  /**
+   * Whether `cast` cannot raise an error for any value. A TRY cast returns NULL for a value it
+   * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
+   * cannot fail only where the conversion is always exact, such as a widening one.
+   */
+  private[comet] def cannotFail(cast: Cast): Boolean = {
+    val from = cast.child.dataType
+    val to = cast.dataType
+    evalMode(cast) match {
+      case CometEvalMode.TRY => true
+      case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
+      case _ => keyCastCannotFail(from, to)
+    }
+  }
+
+  private def isAtomicCastType(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | DataTypes.BooleanType | DataTypes.BinaryType |
+        DataTypes.DateType | DataTypes.TimestampType | _: TimestampNTZType =>
+      true
+    case _ => false
+  }
 
   private def mayNullMapKey(fromType: DataType, toType: DataType): Boolean =
     (fromType, toType) match {
