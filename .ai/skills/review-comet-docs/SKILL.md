@@ -108,7 +108,7 @@ in it; only the judgment checks in step 5 are capped:
 
 ```bash
 PATHS="${STATE%.env}.paths"
-git ls-files --cached --others --exclude-standard -- <path> > "$PATHS"
+git -c core.quotePath=false ls-files --cached --others --exclude-standard -- <path> > "$PATHS"
 ```
 
 ## 2. Read the Style Guide
@@ -325,9 +325,15 @@ build worktree "$WORK/head" && cat "$WORK/head/warnings.txt"  # audit
 ```
 
 Every warning that only the head build has is a finding: a broken link, anchor, or image, a page
-missing from a toctree (`P6`), or a heading problem (`P2`). In audit mode, report the warnings for
-the audited pages. If the docs requirements cannot be installed or a build fails, say that the build
-was not checked, and check that each changed link's target file exists.
+missing from a toctree (`P6`), or a heading problem (`P2`). One exception: the published per-version
+pages under `compatibility/expressions/spark-*/` also get a `## <Expression>` heading from
+`GenerateDocs` for each expression whose serde returns compatibility notes, incompatible reasons, or
+unsupported reasons (`renderExpressionCompatNotes`). This build copies only the templates, so a link
+to one of those anchors warns here even when the published page has it. Check that the serde for
+that Spark expression class returns one of those notes, and report the link as checked by hand. In
+audit mode, report the warnings for the audited pages. If the docs requirements cannot be installed
+or a build fails, say that the build was not checked, and check that each changed link's target file
+exists.
 
 Sphinx does not count H1s. Check that each new or changed Markdown page has one H1 with the parser
 the docs build uses, which knows where code blocks start and end. It uses `venv` from above;
