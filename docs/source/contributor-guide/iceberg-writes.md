@@ -123,7 +123,7 @@ conversion by calling `convertToComet`. The converted node keeps the `IcebergWri
 `CometIcebergNativeWrite.requiresNativeChildren` is `true`. The native writer consumes Arrow
 batches from its child over FFI, so the conversion is declined unless the child is already a Comet
 native operator. This is why a write fed by a `LocalTableScanExec` (`INSERT ... VALUES`, a local
-DataFrame) stays on the JVM writer unless `spark.comet.exec.localTableScan.enabled` is also set.
+DataFrame) stays on the JVM writer when `spark.comet.exec.localTableScan.enabled` is set to `false`.
 
 `CometIcebergWriteExec` is row-based (it emits the commit message row) over a columnar child, so
 Spark inserts a columnar-to-row transition beneath it. `EliminateRedundantTransitions` removes that
