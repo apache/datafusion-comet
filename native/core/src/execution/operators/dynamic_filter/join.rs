@@ -30,11 +30,14 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{JoinType, NullEquality, Result, Statistics};
+use datafusion::common::{internal_datafusion_err, JoinType, NullEquality, Result, Statistics};
 use datafusion::execution::TaskContext;
 use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
+use datafusion::physical_plan::filter_pushdown::{
+    ChildPushdownResult, FilterPushdownPhase, PushedDownPredicate,
+};
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricsSet};
 use datafusion::physical_plan::statistics::{ChildStats, StatisticsArgs};
@@ -129,11 +132,7 @@ impl DynamicFilterJoinExec {
             .reset_state()
             .with_new_children(vec![Arc::clone(self.template.left()), consumer])?
             .build()?;
-        // DataFusion 56 deprecates this setter without a replacement. Upstream installs a join's
-        // dynamic filter only from `handle_child_pushdown_result`, which this runtime wiring
-        // bypasses.
-        #[allow(deprecated)]
-        let join = join.with_dynamic_filter_expr(predicate)?;
+        let join = install_probe_filter(&join, predicate, &self.config)?;
         Ok(RuntimeDynamicFilterJoin {
             join,
             reader_filter_attached,
@@ -294,6 +293,33 @@ impl ExecutionPlan for DynamicFilterJoinExec {
     ) -> Result<Arc<Statistics>> {
         self.template.statistics_from_inputs(input_stats, args)
     }
+}
+
+/// Have `join` produce `predicate` for its probe side, which already holds the consumer.
+///
+/// Comet does not run DataFusion's `FilterPushdown` rule, so this reports the result that rule
+/// would: the join's probe-side self filter was pushed down. `HashJoinExec` then installs
+/// `predicate` itself, after checking that a node in its probe subtree holds it.
+fn install_probe_filter(
+    join: &HashJoinExec,
+    predicate: Arc<DynamicFilterPhysicalExpr>,
+    config: &ConfigOptions,
+) -> Result<HashJoinExec> {
+    let pushdown = ChildPushdownResult {
+        parent_filters: vec![],
+        self_filters: vec![vec![], vec![PushedDownPredicate::supported(predicate)]],
+    };
+    let updated = join
+        .handle_child_pushdown_result(FilterPushdownPhase::Post, pushdown, config)?
+        .updated_node
+        .ok_or_else(|| {
+            internal_datafusion_err!("HashJoinExec did not find its dynamic filter's consumer")
+        })?;
+    updated
+        .downcast_ref::<HashJoinExec>()
+        .ok_or_else(|| internal_datafusion_err!("HashJoinExec pushdown returned another node"))?
+        .builder()
+        .build()
 }
 
 fn ineligible_reason(join: &HashJoinExec, config: &ConfigOptions) -> Result<Option<&'static str>> {

@@ -23,9 +23,9 @@ use std::sync::Arc;
 use arrow::datatypes::DataType;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_err, Result, Statistics};
+use datafusion::common::{internal_datafusion_err, internal_err, Result, Statistics};
 use datafusion::execution::TaskContext;
-use datafusion::physical_expr::expressions::{lit, Column, DynamicFilterPhysicalExpr};
+use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr};
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_plan::distribution_requirements::InputDistributionRequirements;
 use datafusion::physical_plan::execution_plan::CardinalityEffect;
@@ -95,21 +95,23 @@ impl TopKReaderFilterExec {
     }
 
     fn build_runtime_sort(&self) -> Result<RuntimeTopK> {
-        let predicate = Arc::new(DynamicFilterPhysicalExpr::new(
-            vec![Arc::clone(&self.template.expr()[0].expr)],
-            lit(true),
-        ));
-        let reader = try_attach_topk_reader_filter(
-            self.template.input(),
-            Arc::clone(&predicate),
-            &self.config,
-        )?;
+        // A fresh `SortExec` with a fetch creates its own TopK filter. Hand that filter to the
+        // Parquet reader below it rather than installing one from outside.
+        let sort = Self::fresh_sort(&self.template, Arc::clone(self.template.input()));
+        let predicate = produced_topk_filter(&sort)?;
+        let reader = try_attach_topk_reader_filter(self.template.input(), predicate, &self.config)?;
         let reader_filter_attached = reader.is_some();
-        let input = reader.unwrap_or_else(|| Arc::clone(self.template.input()));
-        // DataFusion 56 deprecates this setter without a replacement; `SortExec` only restores its
-        // dynamic filter from a serialized plan, which this runtime wiring does not go through.
-        #[allow(deprecated)]
-        let sort = Self::fresh_sort(&self.template, input).with_dynamic_filter_expr(predicate)?;
+        let sort = match reader {
+            Some(reader) => Arc::new(sort)
+                .replace_children(
+                    vec![reader],
+                    ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+                )?
+                .downcast_ref::<SortExec>()
+                .ok_or_else(|| internal_datafusion_err!("SortExec rebuilt as another node"))?
+                .clone(),
+            None => sort,
+        };
         Ok(RuntimeTopK {
             sort,
             reader_filter_attached,
@@ -258,3 +260,15 @@ impl ExecutionPlan for TopKReaderFilterExec {
 
 #[cfg(test)]
 mod tests;
+
+/// The TopK dynamic filter `sort` produces. Comet's TopK path always has a fetch, so there is one.
+fn produced_topk_filter(sort: &SortExec) -> Result<Arc<DynamicFilterPhysicalExpr>> {
+    sort.dynamic_expressions_produced()
+        .into_iter()
+        .find_map(|expr| {
+            (expr as Arc<dyn std::any::Any + Send + Sync>)
+                .downcast::<DynamicFilterPhysicalExpr>()
+                .ok()
+        })
+        .ok_or_else(|| internal_datafusion_err!("SortExec with a fetch produced no TopK filter"))
+}
