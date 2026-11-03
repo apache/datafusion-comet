@@ -219,6 +219,9 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
+- Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation (e.g.
+  `UTF8_LCASE`). The native window finds partitions and peers by comparing keys byte by byte, which splits values
+  that the collation ties.
 
 A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the

@@ -1082,6 +1082,20 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     visit(plan, requiresRowConsumption = true)
   }
 
+  /**
+   * Sorts the input of a window that runs in Spark when its order may be false. Spark plans no
+   * sort below a window whose child reports the order it needs, and its window trusts that order.
+   * A Comet operator that may not keep the order it reports, such as a native nested loop join
+   * (#6898), then hands the window rows out of order, and it groups them wrongly.
+   */
+  private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
+    case window: WindowExec
+        if window.requiredChildOrdering.head.nonEmpty &&
+          CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
+      window.withNewChildren(
+        Seq(SortExec(window.requiredChildOrdering.head, global = false, child = window.child)))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1133,7 +1147,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       if (clearWastedBuildSideBridges(transformed)) {
         transformed = transform(planWithJoinRewritten)
       }
-      var newPlan = revertUnsafePartialAggregates(transformed)
+      var newPlan = sortDoubtedWindowInputs(revertUnsafePartialAggregates(transformed))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)

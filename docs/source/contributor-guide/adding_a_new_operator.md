@@ -373,9 +373,10 @@ by returning `true` from `maintains_input_order` for that child, as DataFusion's
 projection do. The planner declares the order through an operator only when the operator says it
 keeps it. An operator that cannot keep the order natively must not report it, or has to be added to
 `mayReportFalseOrder` in `operators.scala`. The hash join and window serdes then send no order over
-it, and an outer hash join above it that has to keep that order falls back to Spark. Comet's hash
-joins are the exception within one native plan: an outer hash join over one of them stays native,
-even over one that declared no order, since DataFusion keeps the order it can see there.
+it, an outer hash join above it that has to keep that order falls back to Spark, and a window that
+runs in Spark above it gets its input sorted again. Comet's hash joins are the exception within one
+native plan: an outer hash join over one of them stays native, even over one that declared no order,
+since DataFusion keeps the order it can see there.
 
 A leaf that reports an ordering is where the order starts, so the planner has to know that the
 native operator produces its rows in that order. It knows that of an input from the JVM and of a

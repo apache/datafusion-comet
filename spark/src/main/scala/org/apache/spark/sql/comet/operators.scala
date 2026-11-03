@@ -3033,8 +3033,9 @@ trait CometHashJoin {
     }
   }
 
-  // mayReportFalseOrder for a window's input, checked before CometWindowExec sends its order.
-  private[comet] def mayReportFalseInputOrder(plan: SparkPlan): Boolean =
+  // mayReportFalseOrder for a window's input, checked by CometWindowExec before it relies on that
+  // order and by CometExecRule before a window that stays in Spark does.
+  private[apache] def mayReportFalseInputOrder(plan: SparkPlan): Boolean =
     mayReportFalseOrder(plan, countInPlan = true)
 
   // Whether the order that `plan` reports may be false, because something that feeds it with no

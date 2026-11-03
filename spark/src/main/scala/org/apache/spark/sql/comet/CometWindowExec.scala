@@ -76,9 +76,9 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     }
 
     // Spark plans no sort below the window when its input already reports the order the window
-    // needs. That order is relied on, by declaring it natively or by handing the rows to Spark's
-    // window, only when mayReportFalseOrder trusts it: Spark's window would group the rows of a
-    // false order wrongly, while the native one rejects an input whose order it cannot see.
+    // needs. The native window relies on that order only when mayReportFalseOrder trusts it. A
+    // window that runs in Spark over a doubted order gets its input sorted again by
+    // CometExecRule, since Spark's window would trust that order too.
     val requiredOrdering = op.requiredChildOrdering.head
     val trustsInputOrder =
       SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
@@ -88,12 +88,22 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     // tell apart collated strings that Spark treats as equal, as CometWindowGroupLimitExec notes.
     val collated = (op.partitionSpec ++ op.orderSpec.map(_.child))
       .filter(key => hasNonDefaultStringCollation(key.dataType))
-    if (collated.nonEmpty && trustsInputOrder) {
+    if (collated.nonEmpty) {
       withFallbackReason(
         op,
         collated
           .map(_.sql)
           .mkString("Window: non-default string collation on key(s): ", ", ", ""))
+      return None
+    }
+
+    // Without partition keys the native window checks no order at all, so over a doubted order it
+    // would compute over rows that may be out of order. With partition keys it rejects an input
+    // whose order it cannot see.
+    if (op.partitionSpec.isEmpty && op.orderSpec.nonEmpty && !trustsInputOrder) {
+      withFallbackReason(
+        op,
+        "the order of the window's input, which Spark relies on, may be false")
       return None
     }
 
