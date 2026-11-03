@@ -325,3 +325,43 @@ async fn writes_event_logs_without_serving_the_rest_api() {
     drop(cluster);
     let _ = std::fs::remove_dir_all(&log_dir);
 }
+
+#[test]
+fn refuses_an_event_log_dir_it_cannot_write() {
+    // No one can create a directory inside a file, not even root, as in CI's container.
+    let file = std::env::temp_dir().join(format!(
+        "comet-native-executors-not-a-dir-{}-{}",
+        std::process::id(),
+        free_port()
+    ));
+    std::fs::write(&file, "").unwrap();
+    let mut scheduler = Command::new(env!("CARGO_BIN_EXE_comet-scheduler"))
+        .env("COMET_SCHEDULER_PORT", free_port().to_string())
+        .env("COMET_SCHEDULER_FLIGHT_PORT", free_port().to_string())
+        .env("COMET_SCHEDULER_EVENT_LOG_DIR", file.join("logs"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = scheduler.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = scheduler.kill();
+            panic!("The scheduler started with an event-log directory it can't write to");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut stderr = String::new();
+    scheduler
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    let _ = std::fs::remove_file(&file);
+    assert!(!status.success());
+    assert!(stderr.contains("COMET_SCHEDULER_EVENT_LOG_DIR"), "{stderr}");
+}

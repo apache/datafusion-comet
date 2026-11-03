@@ -33,15 +33,22 @@
 //!   the limit of the query's `ballista.client.grpc_max_message_size` (16 MiB by default), which
 //!   this does not change.
 //! - `COMET_SCHEDULER_EVENT_LOG_DIR`: a directory to write one event log per query to, as
-//!   Ballista's scheduler does: the query's plan, a record for each task, and each stage's rows
-//!   and compute time (default: no event logs). The task records are best effort: when the
-//!   writer falls behind, Ballista drops them, so a log can have fewer records than the query had
-//!   tasks. Logs stay in the directory until something removes them;
-//!   `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` applies to query results, not to logs.
+//!   Ballista's scheduler does (default: no event logs). The scheduler creates it if needed and
+//!   doesn't start if it can't write there. A log has the query's plan and a record for each
+//!   stage and task, with the task's times and the rows it wrote. Ballista sees a stage's Comet
+//!   block as one operator with no metrics, so the plan shows a block only by its size, input
+//!   rows count only the rows a stage reads from other stages (not those it reads from files),
+//!   and a task's compute time covers only that reading. A task's start and end times give how
+//!   long it ran.
+//!   The task records are best effort: when the writer falls behind, Ballista drops them, so a
+//!   log can have fewer records than the query had tasks. Logs stay in the directory until
+//!   something removes them; `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` applies to query
+//!   results, not to logs.
 //!
 //! Ballista's REST API, which lists and cancels jobs without authentication, is not served.
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
@@ -81,6 +88,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.finished_job_data_clean_up_interval_seconds = seconds;
     }
     if let Some(dir) = env_var::<String>("COMET_SCHEDULER_EVENT_LOG_DIR")? {
+        // Ballista creates the directory on a background task, and when it can't write there it
+        // only logs warnings. Fail at startup instead, as for a malformed setting.
+        check_writable(Path::new(&dir)).map_err(|e| {
+            format!("Cannot write event logs to COMET_SCHEDULER_EVENT_LOG_DIR {dir:?}: {e}")
+        })?;
         config.event_log_dir = Some(dir);
     }
     let flight_port: u16 = env_var("COMET_SCHEDULER_FLIGHT_PORT")?.unwrap_or(50060);
@@ -107,4 +119,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = flight => result?,
     }
     Ok(())
+}
+
+/// Creates `dir` if it doesn't exist, and checks that the scheduler can create files in it: a
+/// directory that already exists, such as a volume mounted with another owner, may not allow it.
+fn check_writable(dir: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let probe = dir.join(format!(".comet-scheduler-{}", std::process::id()));
+    std::fs::File::create(&probe)?;
+    std::fs::remove_file(probe)
 }
