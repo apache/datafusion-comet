@@ -218,6 +218,40 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_PARQUET_REUSE_FOOTER_READ_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.parquet.reuseFooterRead.enabled")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "When enabled, a native Parquet scan keeps the bytes that its footer read fetched from " +
+          "the end of each file, and serves the data pages inside them from memory instead " +
+          "of requesting them again. A file smaller than the footer read (512 KiB) is then " +
+          "read with one request instead of two.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_PARQUET_WHOLE_FILE_READ_THRESHOLD: ConfigEntry[Long] =
+    conf("spark.comet.parquet.wholeFileReadThreshold")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "A native Parquet scan reads a file of at most this size whole with its footer read, " +
+          "and serves the file's data from those bytes, so the file costs one request. This " +
+          "saves a round trip per file on high-latency storage such as S3, but also reads " +
+          "columns the query does not need. Has no effect unless " +
+          "spark.comet.parquet.reuseFooterRead.enabled is true. 0 disables it.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(0L)
+
+  val COMET_PARQUET_RANGE_REQUEST_SPLIT_SIZE: ConfigEntry[Long] =
+    conf("spark.comet.parquet.rangeRequestSplitSize")
+      .category(CATEGORY_PARQUET)
+      .doc(
+        "A native Parquet scan reading from a remote object store such as S3 fetches a merged " +
+          "byte range longer than this as several requests of at most this size, sent in " +
+          "parallel. One request is limited by the throughput of a single connection. " +
+          "0 disables it.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefault(0L)
+
   val COMET_CONVERT_FROM_PARQUET_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.parquet.enabled")
       .category(CATEGORY_EXEC)

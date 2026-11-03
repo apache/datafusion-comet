@@ -26,6 +26,12 @@ pub(crate) const COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED: &str =
     "spark.comet.parquet.rowFilterPushdown.enabled";
 pub(crate) const COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED: &str =
     "spark.comet.parquet.prefetchNextFileMetadata.enabled";
+pub(crate) const COMET_PARQUET_REUSE_FOOTER_READ_ENABLED: &str =
+    "spark.comet.parquet.reuseFooterRead.enabled";
+pub(crate) const COMET_PARQUET_WHOLE_FILE_READ_THRESHOLD: &str =
+    "spark.comet.parquet.wholeFileReadThreshold";
+pub(crate) const COMET_PARQUET_RANGE_REQUEST_SPLIT_SIZE: &str =
+    "spark.comet.parquet.rangeRequestSplitSize";
 pub(crate) const COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: &str =
     "spark.comet.exec.aggregate.skipPartial.enabled";
 pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
