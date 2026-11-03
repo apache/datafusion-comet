@@ -47,6 +47,10 @@ SELECT a, b FROM topk ORDER BY a, b LIMIT 2
 query
 SELECT a, b FROM topk ORDER BY a, b IS NULL, CAST(b AS BIGINT), try_add(b, 1) LIMIT 2
 
+query
+SELECT a, b FROM topk ORDER BY a, substr(CAST(b AS STRING), 1, 3), upper(CAST(b AS STRING)),
+  length(lower(CAST(b AS STRING))) LIMIT 2
+
 -- The first key is evaluated for every row in Spark too
 query
 SELECT a, b FROM topk ORDER BY a + 1, b LIMIT 2

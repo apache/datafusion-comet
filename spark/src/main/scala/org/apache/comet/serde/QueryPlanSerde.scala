@@ -1398,9 +1398,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether `expr` cannot raise an error for any row, so native execution may evaluate it for
    * rows that Spark skips. Like the native `cannot_fail`, it is conservative: columns, literals,
-   * and comparisons, boolean logic, null checks, conditionals, numeric arithmetic, negation and
-   * absolute value outside ANSI mode and casts that cannot fail over them. Anything else is
-   * treated as able to fail.
+   * and comparisons, boolean logic, null checks, conditionals, substrings, case conversion and
+   * length, numeric arithmetic, negation and absolute value outside ANSI mode and casts that
+   * cannot fail over them. Anything else is treated as able to fail.
    */
   def cannotFail(expr: Expression): Boolean = {
     def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
@@ -1410,6 +1410,7 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
       case _: If | _: CaseWhen | _: Coalesce => true
       case _: KnownFloatingPointNormalized | _: NormalizeNaNAndZero => true
+      case _: Substring | _: Upper | _: Lower | _: Length => true
       case c: Cast => CometCast.cannotFail(c)
       case _: UnaryPositive => true
       case u: UnaryMinus => !u.failOnError && numeric
