@@ -3095,13 +3095,13 @@ class CometCodegenSuite
     }
   }
 
-  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+  test("divide-by-zero through dispatched ScalaUDF surfaces SparkArithmeticException") {
     // Native arithmetic on the result of a dispatched ScalaUDF must surface the same Spark
     // exception and error class as Spark, not CometNativeException.
     checkDispatchedUdfError("SELECT 1 / identity_int(a) FROM t", "DIVIDE_BY_ZERO")
   }
 
-  test("integer overflow through dispatched ScalaUDF surfaces SparkArithmeticException (#4517)") {
+  test("integer overflow through dispatched ScalaUDF surfaces SparkArithmeticException") {
     // A second SparkError variant through the same path.
     checkDispatchedUdfError("SELECT identity_int(a) + 2147483647 FROM t", "ARITHMETIC_OVERFLOW")
   }
