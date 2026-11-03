@@ -26,7 +26,8 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.arrow.c.CDataDictionaryProvider
 import org.apache.arrow.memory.BufferAllocator
-import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, IntVector, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector}
+import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BitVectorHelper, FieldVector, IntVector, LargeVarBinaryVector, LargeVarCharVector, ValueVector, VarBinaryVector, VarCharVector, VariableWidthFieldVector, VectorSchemaRoot, VectorUnloader}
+import org.apache.arrow.vector.complex.{ListVector, StructVector}
 import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
 import org.apache.arrow.vector.ipc.message.ArrowFieldNode
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
@@ -102,6 +103,41 @@ class UtilsSuite extends CometTestBase {
     // in a vector of their own.
     val fresh = serialize(skips.map(skip => strings(values.drop(skip))))
     assert(sliced.map(_.size) == fresh.map(_.size))
+  }
+
+  test("withRebasedOffsets writes a sliced list as its own values") {
+    // A native slice of a list array has the offsets of the list and a child that both still hold
+    // the rows around the slice. The first slice starts at zero, so only the child shows that it
+    // is a slice: it holds the elements of every later one. Written as it stands, a slice carries
+    // those elements too.
+    val values: Seq[Seq[String]] = (0 until 24).map { i =>
+      if (i % 5 == 0) null else (0 until i % 4).map(j => s"element-$i-$j")
+    }
+    val allocator = CometArrowAllocator.newChildAllocator("sliced-lists", 0, Long.MaxValue)
+    try {
+      Seq((0, 8), (8, 8), (8, 16), (16, 8)).foreach { case (skip, take) =>
+        val sliced = slicedLists(values, skip, take, allocator)
+        val fresh = lists(values.slice(skip, skip + take), allocator)
+        try {
+          val offsets = sliced.getOffsetBuffer
+          assert(
+            offsets.getInt(0) > 0 || offsets.getInt(
+              take * 4L) < sliced.getDataVector.getValueCount,
+            s"the test needs a slice: skip=$skip, take=$take")
+          val (slicedBytes, slicedValues) = writtenBytesAndValues(sliced)
+          val (freshBytes, freshValues) = writtenBytesAndValues(fresh)
+          assert(slicedValues == freshValues, s"values of skip=$skip, take=$take")
+          assert(slicedBytes == freshBytes, s"bytes of skip=$skip, take=$take")
+        } finally {
+          fresh.close()
+          sliced.close()
+        }
+      }
+      // The slice withRebasedOffsets made is released with the rest.
+      assert(allocator.getAllocatedMemory == 0)
+    } finally {
+      allocator.close()
+    }
   }
 
   test("serializeBatches closes the slice it writes when the write fails") {
@@ -343,6 +379,47 @@ class UtilsSuite extends CometTestBase {
     }
   }
 
+  test("coalesceBroadcastBatches starts a new batch before a string vector passes the cap") {
+    // VectorAppender cannot grow a string or binary vector past 1 GiB of values (#7192), so a
+    // batch that would take one past the cap starts the next coalesced batch. A small cap shows
+    // it, and only the strings nested in the struct reach it.
+    val numBatches = 4
+    val vectors = (0 until numBatches).map { b =>
+      (
+        fill(new VarCharVector("s", CometArrowAllocator), Seq(s"$b", null)),
+        structOfStrings("st", Seq(s"abc$b", s"def$b")))
+    }
+    try {
+      val batches = vectors.map { case (s, st) =>
+        new ColumnarBatch(Array(cometVector(s), cometVector(st)), 2)
+      }
+      val bufs = Utils.serializeBatches(batches.iterator).map(_._2).toSeq.iterator
+      // Each batch holds 8 bytes of nested values, so two fit under the cap and a third does not.
+      val (coalesced, batchCount, totalRows) =
+        Utils.coalesceBroadcastBatches(bufs, maxValueBytes = 20L)
+      assert(batchCount == numBatches)
+      assert(totalRows == 2L * numBatches)
+
+      val decoded = coalesced.toSeq.map { buf =>
+        val it = Utils.decodeBatches(buf, "test")
+        val out = it.next()
+        val values = (
+          stringValues(out.column(0), out.numRows()),
+          stringValues(out.column(1).getChild(0), out.numRows()))
+        assert(!it.hasNext)
+        values
+      }
+      assert(decoded.map(_._1.length) == Seq(4, 4))
+      assert(decoded.flatMap(_._1) == (0 until numBatches).flatMap(b => Seq(s"$b", null)))
+      assert(decoded.flatMap(_._2) == (0 until numBatches).flatMap(b => Seq(s"abc$b", s"def$b")))
+    } finally {
+      vectors.foreach { case (s, st) =>
+        s.close()
+        st.close()
+      }
+    }
+  }
+
   test("serializeBatches releases the vectors it made when a later column fails") {
     // A materialized constant and a 32-bit copy of a large-offset column are both made before the
     // last column is refused. Nothing outside serializeBatches ever holds them, so it has to
@@ -416,6 +493,18 @@ class UtilsSuite extends CometTestBase {
     }
     vector.setValueCount(values.length)
     vector
+  }
+
+  /** A struct column `name` whose one child, `c`, holds `values`. */
+  private def structOfStrings(name: String, values: Seq[String]): StructVector = {
+    val struct = StructVector.empty(name, CometArrowAllocator)
+    val child =
+      struct.addOrGet("c", FieldType.nullable(ArrowType.Utf8.INSTANCE), classOf[VarCharVector])
+    struct.allocateNew()
+    fill(child, values)
+    values.indices.foreach(struct.setIndexDefined)
+    struct.setValueCount(values.length)
+    struct
   }
 
   /**
@@ -507,6 +596,80 @@ class UtilsSuite extends CometTestBase {
     }
     vector.setValueCount(values.length)
     vector
+  }
+
+  private def lists(values: Seq[Seq[String]], allocator: BufferAllocator): ListVector = {
+    val list = ListVector.empty("l", allocator)
+    val child = list
+      .addOrGetVector[VarCharVector](FieldType.nullable(ArrowType.Utf8.INSTANCE))
+      .getVector
+    child.allocateNew()
+    var position = 0
+    values.zipWithIndex.foreach { case (elements, i) =>
+      if (elements == null) {
+        list.setNull(i)
+      } else {
+        list.startNewValue(i)
+        elements.foreach { e =>
+          child.setSafe(position, e.getBytes(StandardCharsets.UTF_8))
+          position += 1
+        }
+        list.endValue(i, elements.length)
+      }
+    }
+    child.setValueCount(position)
+    list.setValueCount(values.length)
+    list
+  }
+
+  /**
+   * `values.slice(skip, skip + take)` in the shape the C Data import gives a slice of a native
+   * list array: the offsets are the original ones from `skip` on, over a child that still holds
+   * the elements of every list. `skip` is a multiple of 8, so the validity bitmap slices on a
+   * byte boundary.
+   */
+  private def slicedLists(
+      values: Seq[Seq[String]],
+      skip: Int,
+      take: Int,
+      allocator: BufferAllocator): ListVector = {
+    val full = lists(values, allocator)
+    try {
+      val sliced =
+        new ListVector("l", allocator, FieldType.nullable(ArrowType.List.INSTANCE), null)
+      sliced.initializeChildrenFromFields(full.getField.getChildren)
+      sliced.loadFieldBuffers(
+        new ArrowFieldNode(take.toLong, values.slice(skip, skip + take).count(_ == null).toLong),
+        Seq(
+          full.getValidityBuffer.slice(skip / 8L, (take + 7) / 8L),
+          full.getOffsetBuffer.slice(skip * 4L, (take + 1) * 4L)).asJava)
+      val child = full.getDataVector
+      sliced.getDataVector.loadFieldBuffers(
+        new ArrowFieldNode(child.getValueCount.toLong, child.getNullCount.toLong),
+        child.getFieldBuffers)
+      sliced
+    } finally {
+      full.close()
+    }
+  }
+
+  /**
+   * The size of the body `vector` is written with after `withRebasedOffsets`, and the values that
+   * body holds.
+   */
+  private def writtenBytesAndValues(vector: FieldVector): (Long, Seq[String]) = {
+    val root =
+      new VectorSchemaRoot(Seq(vector.getField).asJava, Seq(vector).asJava, vector.getValueCount)
+    Utils.withRebasedOffsets(root) { written =>
+      val batch = new VectorUnloader(written).getRecordBatch
+      try {
+        val column = written.getVector(0)
+        val values = (0 until column.getValueCount).map(i => String.valueOf(column.getObject(i)))
+        (batch.computeBodyLength(), values)
+      } finally {
+        batch.close()
+      }
+    }
   }
 
   /**

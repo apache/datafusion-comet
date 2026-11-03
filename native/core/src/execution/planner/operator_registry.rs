@@ -246,5 +246,6 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         // so the supports-mixed-codegen check skips it.
         OpStruct::ContribScan(_) => None,
         OpStruct::WindowGroupLimit(_) => Some(OperatorType::WindowGroupLimit),
+        OpStruct::ArrowPythonUdf(_) => None, // Built by the planner behind the python-udf feature
     }
 }

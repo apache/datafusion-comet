@@ -160,10 +160,6 @@ abstract class CometTestBase
     // The label never changes the values, so result comparisons cannot catch it, and the casts
     // at scans and shuffle writes would otherwise repair it without a trace.
     conf.set(CometConf.COMET_STRICT_TIMESTAMP_LABELS.key, "true")
-    // SortOrder is incompatible for mixed zero and negative zero floating point values, but
-    // this is an edge case, and we expect most users to allow sorts on floating point, so we
-    // enable this for the tests
-    conf.set(CometConf.getExprAllowIncompatConfigKey("SortOrder"), "true")
     // For spark 4.0 tests, we need limit the thread threshold to avoid OOM, see:
     //  https://github.com/apache/datafusion-comet/issues/2965
     conf.set(

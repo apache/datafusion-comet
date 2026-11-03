@@ -46,13 +46,15 @@ use crate::execution::operators::init_csv_datasource_exec;
 use crate::execution::operators::IcebergScanExec;
 use crate::execution::operators::SortedInputExec;
 use crate::execution::operators::TopKReaderFilterExec;
+#[cfg(feature = "python-udf")]
+use crate::execution::operators::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 use crate::execution::{
     operators::{ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
 };
-use crate::jvm_bridge::{jni_call, JVMClasses, ShufflePartitionPusher};
+use crate::jvm_bridge::{jni_call, JVMClasses, OutputStreamSink, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
@@ -113,18 +115,18 @@ use datafusion_comet_proto::{
     spark_operator::{self, operator::OpStruct, Operator},
 };
 use datafusion_comet_spark_expr::{
-    coerce_to_common_type, create_case_when, create_if_expr, jvm_udf::JvmScalarUdfExpr,
-    spark_in_list, ArrayInsert, Cast, CheckOverflow, CreateNamedStruct,
-    DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields, GetStructField, IfExpr,
-    ListExtract, NormalizeNaNAndZero, NormalizeNestedFloats, NullShortCircuit, SparkCastOptions,
-    ToJson, UnboundColumn, WideDecimalBinaryExpr, WideDecimalOp,
+    coerce_to_common_type, create_case_when, create_if_expr, decimal128_add_sub_width,
+    jvm_udf::JvmScalarUdfExpr, spark_in_list, ArrayInsert, AtLeastNNonNulls, Cast, CheckOverflow,
+    CreateNamedStruct, DecimalRescaleCheckOverflow, FloatOperands, GetArrayStructFields,
+    GetStructField, IfExpr, ListExtract, MakeDateExpr, NormalizeNaNAndZero, NormalizeNestedFloats,
+    NullShortCircuit, SparkCastOptions, ToJson, UnboundColumn, WideDecimalBinaryExpr,
+    WideDecimalOp,
 };
 use itertools::Itertools;
 use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::cmp::max;
 use std::{collections::HashMap, sync::Arc};
 
 pub type PlanCreationResult =
@@ -195,6 +197,10 @@ pub struct PhysicalPlanner {
     /// Task-owned destination for remote shuffle blocks, registered on the driving Spark task
     /// thread before native planning. Only explicit RSS destinations may use it.
     shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file the plan's Parquet writer writes, when the JVM created that
+    /// file, registered on the driving Spark task thread before native planning. Only a writer
+    /// planned to write through the JVM may use it.
+    output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// How comparisons treat floating-point operands. `Raw` only while planning a scan's data
     /// filters; see [`Self::create_data_filter`].
     float_operands: FloatOperands,
@@ -220,6 +226,7 @@ impl PhysicalPlanner {
             task_context: None,
             class_loader: None,
             shuffle_partition_pusher: None,
+            output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
         }
@@ -340,6 +347,15 @@ impl PhysicalPlanner {
         shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
     ) -> Self {
         self.shuffle_partition_pusher = shuffle_partition_pusher;
+        self
+    }
+
+    /// Attach the output stream of the file the plan's Parquet writer writes, for a file the
+    /// Spark task that created this plan created through the JVM.
+    ///
+    /// Only a writer planned to write through the JVM takes it, and such a writer requires it.
+    pub fn with_output_stream(mut self, output_stream: Option<Arc<dyn OutputStreamSink>>) -> Self {
+        self.output_stream = output_stream;
         self
     }
 
@@ -588,6 +604,11 @@ impl PhysicalPlanner {
             let url = normalized.url;
             let path = Path::from_url_path(url.path()).map_err(|e| GeneralError(e.to_string()))?;
             partitioned_file.object_meta.location = path;
+            partitioned_file
+                .extensions
+                .insert(crate::parquet::file_error_context::SparkFilePath(
+                    Arc::from(file.file_path.as_str()),
+                ));
 
             // Process partition values
             let partition_values: Result<Vec<_>, _> = file
@@ -769,14 +790,16 @@ impl PhysicalPlanner {
                     registry.get(expr_id)
                 });
 
+                let mut cast_options = SparkCastOptions::new_with_version(
+                    eval_mode,
+                    &expr.timezone,
+                    expr.is_spark4_plus,
+                );
+                cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
-                    SparkCastOptions::new_with_version(
-                        eval_mode,
-                        &expr.timezone,
-                        expr.is_spark4_plus,
-                    ),
+                    cast_options,
                     spark_expr.expr_id,
                     query_context,
                 )))
@@ -1079,6 +1102,14 @@ impl PhysicalPlanner {
                     csv_write_options,
                 )))
             }
+            ExprStruct::AtLeastNNonNulls(expr) => {
+                let children = expr
+                    .children
+                    .iter()
+                    .map(|child| self.create_expr(child, Arc::clone(&input_schema)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Arc::new(AtLeastNNonNulls::new(expr.n, children)))
+            }
             ExprStruct::ArraysZip(expr) => {
                 if expr.values.is_empty() {
                     return Err(GeneralError(
@@ -1133,6 +1164,20 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|e| self.create_expr(e, Arc::clone(&input_schema)))
                     .collect::<Result<Vec<_>, _>>()?;
+
+                // The driver checked this when the function was registered, but the path arrives
+                // in the plan, so this side applies the policy too.
+                let policy = self
+                    .session_ctx
+                    .state_ref()
+                    .read()
+                    .config()
+                    .get_extension::<crate::execution::c_udf::policy::NativeUdfPolicy>();
+                if let Some(policy) = policy {
+                    policy
+                        .check(&call.library_path)
+                        .map_err(|e| GeneralError(e.to_string()))?;
+                }
 
                 let lib = crate::execution::c_udf::cache::get_or_load(&call.library_path).map_err(
                     |e| GeneralError(format!("native UDF load '{}': {e}", call.library_path)),
@@ -1356,14 +1401,16 @@ impl PhysicalPlanner {
             left.data_type(&input_schema),
             right.data_type(&input_schema),
         ) {
+            // `decimal128_add_sub_width` computes the width in `i16`; see its doc comment for
+            // why a `u8` computation panicked on a negative scale in a debug build.
             (
                 DataFusionOperator::Plus | DataFusionOperator::Minus | DataFusionOperator::Multiply,
                 Ok(DataType::Decimal128(p1, s1)),
                 Ok(DataType::Decimal128(p2, s2)),
             ) if ((op == DataFusionOperator::Plus || op == DataFusionOperator::Minus)
-                && max(s1, s2) as u8 + max(p1 - s1 as u8, p2 - s2 as u8)
-                    >= DECIMAL128_MAX_PRECISION)
-                || (op == DataFusionOperator::Multiply && p1 + p2 >= DECIMAL128_MAX_PRECISION) =>
+                && decimal128_add_sub_width(p1, s1, p2, s2) >= DECIMAL128_MAX_PRECISION as i16)
+                || (op == DataFusionOperator::Multiply
+                    && p1 as i16 + p2 as i16 >= DECIMAL128_MAX_PRECISION as i16) =>
             {
                 let data_type = required_return_type()?;
                 let (p_out, s_out) = match &data_type {
@@ -1600,6 +1647,57 @@ impl PhysicalPlanner {
         // Fall back to the original monolithic match for other operators
         let children = &spark_plan.children;
         match spark_plan.op_struct.as_ref().unwrap() {
+            #[cfg(feature = "python-udf")]
+            OpStruct::ArrowPythonUdf(udf) => {
+                if children.len() != 1 {
+                    return Err(ExecutionError::GeneralError(
+                        "ArrowPythonUdf requires one child".to_string(),
+                    ));
+                }
+                let (scans, shuffle_scans, child) =
+                    self.create_plan(&children[0], inputs, partition_count)?;
+                let specs = udf
+                    .functions
+                    .iter()
+                    .map(|function| {
+                        let args = function
+                            .args
+                            .iter()
+                            .map(|arg| self.create_expr(arg, child.schema()))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let return_type = to_arrow_datatype(function.return_type.as_ref().ok_or_else(|| {
+                            ExecutionError::GeneralError(
+                                "ArrowPythonUdf missing return type".to_string(),
+                            )
+                        })?);
+                        Ok(ArrowPythonUdfSpec {
+                            command: function.command.clone(),
+                            args,
+                            arg_names: function.arg_names.clone(),
+                            return_type,
+                            return_name: function.return_name.clone(),
+                            python_version: function.python_version.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ExecutionError>>()?;
+                let native_plan = Arc::new(ArrowPythonUdfExec::try_new(
+                    Arc::clone(&child.native_plan),
+                    specs,
+                    udf.max_records_per_batch,
+                    udf.max_bytes_per_batch,
+                    udf.accept_array_like_results,
+                )?);
+                Ok((
+                    scans,
+                    shuffle_scans,
+                    Arc::new(SparkPlan::new(spark_plan.plan_id, native_plan, vec![child])),
+                ))
+            }
+            #[cfg(not(feature = "python-udf"))]
+            OpStruct::ArrowPythonUdf(_) => Err(ExecutionError::GeneralError(
+                "Native Arrow Python UDF support was not compiled in; rebuild with --features python-udf"
+                    .to_string(),
+            )),
             OpStruct::Filter(filter) => {
                 assert_eq!(children.len(), 1);
                 let (scans, shuffle_scans, child) =
@@ -2105,6 +2203,11 @@ impl PhysicalPlanner {
         ));
         let scalar_expr = if expr.null_short_circuit {
             NullShortCircuit::wrap(scalar_expr, &input_schema)?
+        } else {
+            scalar_expr
+        };
+        let scalar_expr = if fun_name == "make_date" {
+            Arc::new(MakeDateExpr::new(scalar_expr)) as Arc<dyn PhysicalExpr>
         } else {
             scalar_expr
         };
@@ -2655,7 +2758,11 @@ fn parse_file_scan_tasks_from_common(
                 .with_partition_spec(partition_spec)
                 .with_name_mapping(name_mapping)
                 .with_unified_partition_type(unified_partition_type_for_task)
-                .with_case_sensitive(false)
+                // The only consumer is the binding of an equality delete's predicate, whose
+                // column names iceberg-rust takes from the task schema. They match it exactly,
+                // and a case-insensitive binding rejects a schema with two names that differ
+                // only by case.
+                .with_case_sensitive(true)
                 // Plaintext StandardKeyMetadata forwarded verbatim from the JVM; decoded by
                 // iceberg-rust with no KMS unwrap. None for unencrypted data files.
                 .with_key_metadata(proto_task.key_metadata.clone().map(Vec::into_boxed_slice))
@@ -3012,6 +3119,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 mod tests {
     mod empty_native_scan;
     mod multi_store_scan;
+    mod semi_join_reduction;
 
     use futures::{poll, StreamExt};
     use std::{
@@ -3037,6 +3145,7 @@ mod tests {
         FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
     };
     use datafusion::error::DataFusionError;
+    use datafusion::execution::SendableRecordBatchStream;
     use datafusion::logical_expr::ScalarUDF;
     use datafusion::logical_expr::{AggregateUDF, EmitTo};
     use datafusion::physical_expr::expressions::Column;
@@ -3052,7 +3161,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
-    use crate::execution::{operators::InputBatch, planner::PhysicalPlanner};
+    use crate::execution::{
+        operators::{InputBatch, ScanExec},
+        planner::PhysicalPlanner,
+    };
 
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
@@ -3791,6 +3903,7 @@ mod tests {
             children: vec![child_op],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(expr),
+                ..Default::default()
             })),
         }
     }
@@ -4226,27 +4339,9 @@ mod tests {
                         .collect::<Vec<_>>()
                         .into_iter()
                 });
-                let mut stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
-                let mut output_rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() {
-                        for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
-                            if scan.batch.try_lock().unwrap().is_none() {
-                                if let Some(batch) = input.next() {
-                                    scan.set_input_batch(batch);
-                                    cx.waker().wake_by_ref();
-                                }
-                            }
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    output_rows += batch.unwrap().num_rows();
-                }
-                assert_eq!(output_rows, 4);
+                let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+                let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+                assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 4);
                 let metrics = to_native_metric_node(&planned).unwrap();
                 assert_eq!(metrics.children.len(), 2);
                 assert_eq!(metrics.metrics["output_rows"], 4);
@@ -4264,6 +4359,102 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn window_cast_projection_reports_window_time() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+        use spark_operator::{
+            lower_window_frame_bound::LowerFrameBoundStruct,
+            upper_window_frame_bound::UpperFrameBoundStruct, CurrentRow, LowerWindowFrameBound,
+            UnboundedPreceding, UpperWindowFrameBound, WindowExpr, WindowFrame, WindowFrameType,
+            WindowSpecDefinition,
+        };
+
+        let session = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
+        // casting projection above the window.
+        let row_number = WindowExpr {
+            built_in_window_function: Some(Expr {
+                expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
+                    func: "row_number".to_string(),
+                    ..Default::default()
+                })),
+                query_context: None,
+                expr_id: None,
+            }),
+            spec: Some(WindowSpecDefinition {
+                frame_specification: Some(WindowFrame {
+                    frame_type: WindowFrameType::Rows as i32,
+                    lower_bound: Some(LowerWindowFrameBound {
+                        lower_frame_bound_struct: Some(LowerFrameBoundStruct::UnboundedPreceding(
+                            UnboundedPreceding {},
+                        )),
+                    }),
+                    upper_bound: Some(UpperWindowFrameBound {
+                        upper_frame_bound_struct: Some(UpperFrameBoundStruct::CurrentRow(
+                            CurrentRow {},
+                        )),
+                    }),
+                }),
+                ..Default::default()
+            }),
+            result_type: Some(create_proto_datatype()),
+            ..Default::default()
+        };
+        let operator = Operator {
+            children: vec![create_scan()],
+            op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                window_expr: vec![row_number],
+                order_by_list: vec![Expr {
+                    expr_struct: Some(SortOrder(Box::new(spark_expression::SortOrder {
+                        child: Some(Box::new(create_bound_reference(0))),
+                        direction: 0,
+                        null_ordering: 0,
+                    }))),
+                    query_context: None,
+                    expr_id: None,
+                }],
+                ..Default::default()
+            }))),
+            ..Default::default()
+        };
+        let (mut scans, _, planned) = planner.create_plan(&operator, &mut vec![], 1).unwrap();
+        assert_eq!(planned.additional_native_plans.len(), 1);
+
+        let rows = 100;
+        let mut inputs = [vec![
+            InputBatch::Batch(
+                vec![Arc::new(Int32Array::from((0..rows).collect::<Vec<_>>())) as ArrayRef],
+                rows as usize,
+            ),
+            InputBatch::EOF,
+        ]
+        .into_iter()];
+        let stream = planned.native_plan.execute(0, session.task_ctx()).unwrap();
+        let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+        assert_eq!(
+            batches.iter().map(|b| b.num_rows()).sum::<usize>(),
+            rows as usize
+        );
+
+        let elapsed = |plan: &Arc<dyn ExecutionPlan>| {
+            plan.metrics()
+                .and_then(|m| m.elapsed_compute())
+                .unwrap_or(0) as i64
+        };
+        let window_time = elapsed(&planned.additional_native_plans[0]);
+        let projection_time = elapsed(&planned.native_plan);
+        assert!(window_time > 0);
+
+        let metrics = to_native_metric_node(&planned).unwrap();
+        // Output rows come from the projection only, and the time covers both operators.
+        assert_eq!(metrics.metrics["output_rows"], rows as i64);
+        assert_eq!(
+            metrics.metrics["elapsed_compute"],
+            window_time + projection_time
+        );
     }
 
     #[test]
@@ -4311,7 +4502,6 @@ mod tests {
     #[tokio::test]
     async fn keyless_aggregate_without_functions_emits_one_empty_row() {
         use arrow::array::RecordBatchOptions;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
 
         let scan = Operator {
             op_struct: Some(OpStruct::Scan(spark_operator::Scan {
@@ -4357,22 +4547,7 @@ mod tests {
             assert_eq!("ScanExec", planned.children[0].native_plan.name());
 
             for batches in [vec![rows(3), rows(2)], vec![]] {
-                let input: Arc<dyn ExecutionPlan> =
-                    MemorySourceConfig::try_new_exec(&[batches], Arc::clone(&schema), None)
-                        .unwrap();
-                let native_plan = Arc::clone(&planned.native_plan)
-                    .transform_up(|node| {
-                        Ok(if node.name() == "ScanExec" {
-                            Transformed::yes(Arc::clone(&input))
-                        } else {
-                            Transformed::no(node)
-                        })
-                    })
-                    .unwrap()
-                    .data;
-                let results = collect(native_plan.execute(0, Arc::clone(&task_ctx)).unwrap())
-                    .await
-                    .unwrap();
+                let results = collect_over_batches(&planned, batches, Arc::clone(&task_ctx)).await;
                 assert_eq!(1, results.iter().map(RecordBatch::num_rows).sum::<usize>());
             }
         }
@@ -4381,7 +4556,6 @@ mod tests {
     #[tokio::test]
     async fn sort_aggregate_output_is_ordered_by_grouping_keys() {
         use arrow::datatypes::Int32Type;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use spark_expression::data_type::{data_type_info::DatatypeStruct, DataTypeInfo, ListInfo};
 
         let array_type = spark_expression::DataType {
@@ -4461,21 +4635,7 @@ mod tests {
         ])) as ArrayRef;
         let batch =
             RecordBatch::try_new(planned.children[0].schema(), vec![Arc::clone(&keys)]).unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         let output = arrow::compute::concat_batches(&results[0].schema(), &results).unwrap();
         assert_eq!(keys.as_ref(), output.column(0).as_ref());
     }
@@ -4535,27 +4695,17 @@ mod tests {
     async fn partial_merge_runs_as_single_and_emits_merged_states() {
         use arrow::array::{BooleanArray, Int64Array};
         use datafusion::assert_batches_sorted_eq;
-        use datafusion::common::tree_node::{Transformed, TreeNode};
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
         // A Spark PartialMerge of max(v), count(v) and first(v) grouped by k, over k and their
         // states. DataFusion's first has no GroupsAccumulator without an ordering.
-        let int64 = spark_expression::DataType {
-            type_id: 4,
-            type_info: None,
-        };
+        let int64 = create_int64_datatype();
         let boolean = spark_expression::DataType {
             type_id: 0,
             type_info: None,
         };
-        let v = Expr {
-            expr_struct: Some(Unbound(spark_expression::UnboundReference {
-                name: "v".to_string(),
-                datatype: Some(int64.clone()),
-            })),
-            ..Default::default()
-        };
+        let v = create_unbound_int64("v");
         let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
         let aggregate = |mode: i32| Operator {
             plan_id: 1,
@@ -4581,19 +4731,8 @@ mod tests {
                     ..Default::default()
                 }],
                 agg_exprs: vec![
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Max(spark_expression::Max {
-                            child: Some(v.clone()),
-                            datatype: Some(int64.clone()),
-                        })),
-                        ..Default::default()
-                    },
-                    spark_expression::AggExpr {
-                        expr_struct: Some(AggExprStruct::Count(spark_expression::Count {
-                            children: vec![v.clone()],
-                        })),
-                        ..Default::default()
-                    },
+                    create_max_agg(&v),
+                    create_count_agg(&v),
                     spark_expression::AggExpr {
                         expr_struct: Some(AggExprStruct::First(spark_expression::First {
                             child: Some(v.clone()),
@@ -4658,21 +4797,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let input: Arc<dyn ExecutionPlan> =
-            MemorySourceConfig::try_new_exec(&[vec![batch.clone()]], batch.schema(), None).unwrap();
-        let native_plan = Arc::clone(&planned.native_plan)
-            .transform_up(|node| {
-                Ok(if node.name() == "ScanExec" {
-                    Transformed::yes(Arc::clone(&input))
-                } else {
-                    Transformed::no(node)
-                })
-            })
-            .unwrap()
-            .data;
-        let results = collect(native_plan.execute(0, task_ctx).unwrap())
-            .await
-            .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], task_ctx).await;
         assert_batches_sorted_eq!(
             [
                 "+-------+------------+--------------+--------------------+---------------------------+",
@@ -4685,6 +4810,169 @@ mod tests {
             ],
             &results
         );
+    }
+
+    #[tokio::test]
+    async fn partial_merge_over_sorted_input_runs_as_final() {
+        use arrow::array::Int64Array;
+        use datafusion::assert_batches_sorted_eq;
+        use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
+        use datafusion::physical_plan::InputOrderMode;
+        use spark_expression::agg_expr::ExprStruct as AggExprStruct;
+
+        // A Spark PartialMerge grouped by (g, k) over a native sort on g, which DataFusion 55's
+        // Single would run with a GroupedHashAggregateStream that can fail to spill (#6880).
+        let int64 = create_int64_datatype();
+        let v = create_unbound_int64("v");
+        let key = |index: i32| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(int64.clone()),
+            })),
+            ..Default::default()
+        };
+        let partial_merge = spark_operator::AggregateMode::PartialMerge as i32;
+        let aggregate = |sort_keys: &[i32],
+                         state_fields: Vec<spark_expression::DataType>,
+                         agg_exprs: Vec<spark_expression::AggExpr>| {
+            Operator {
+                plan_id: 1,
+                children: vec![Operator {
+                    children: vec![Operator {
+                        op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                            fields: [vec![int64.clone(), int64.clone()], state_fields].concat(),
+                            source: String::new(),
+                        })),
+                        ..Default::default()
+                    }],
+                    op_struct: Some(OpStruct::Sort(spark_operator::Sort {
+                        sort_orders: sort_keys
+                            .iter()
+                            .map(|&index| create_sort_order(index, 4, false, true))
+                            .collect(),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }],
+                op_struct: Some(OpStruct::HashAgg(spark_operator::HashAggregate {
+                    grouping_exprs: vec![key(0), key(1)],
+                    expr_modes: vec![partial_merge; agg_exprs.len()],
+                    agg_exprs,
+                    mode: partial_merge,
+                    initial_input_buffer_offset: 2,
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+        };
+        let ctx = SessionContext::new();
+        let task_ctx = ctx.task_ctx();
+        let planner = PhysicalPlanner::new(Arc::new(ctx), 0);
+
+        // Over native max and count states, DataFusion's Final runs an ordered aggregate that
+        // spills, and the projection above it unpacks the states as it does above Single.
+        let max_count = |sort_keys: &[i32]| {
+            aggregate(
+                sort_keys,
+                vec![int64.clone(), int64.clone()],
+                vec![create_max_agg(&v), create_count_agg(&v)],
+            )
+        };
+        let (_, _, planned) = planner
+            .create_plan(&max_count(&[0]), &mut vec![], 1)
+            .unwrap();
+        assert_eq!("ProjectionExec", planned.native_plan.name());
+        let final_agg = planned.additional_native_plans[0]
+            .downcast_ref::<AggregateExec>()
+            .unwrap();
+        assert_eq!(&AggregateMode::Final, final_agg.mode());
+        assert_eq!(
+            &InputOrderMode::PartiallySorted(vec![0]),
+            final_agg.input_order_mode()
+        );
+
+        let input_schema = planned.children[0].schema();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&input_schema),
+            vec![
+                Arc::new(Int64Array::from(vec![2, 1, 1, 2, 1])),
+                Arc::new(Int64Array::from(vec![1, 2, 1, 1, 2])),
+                Arc::new(Int64Array::from(vec![
+                    Some(4),
+                    Some(10),
+                    None,
+                    Some(9),
+                    Some(3),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 0, 3, 4])),
+            ],
+        )
+        .unwrap();
+        let results = collect_over_batches(&planned, vec![batch], Arc::clone(&task_ctx)).await;
+        assert_batches_sorted_eq!(
+            [
+                "+-------+-------+------------+--------------+",
+                "| col_0 | col_1 | max[value] | count[count] |",
+                "+-------+-------+------------+--------------+",
+                "| 1     | 1     |            | 0            |",
+                "| 1     | 2     | 10         | 6            |",
+                "| 2     | 1     | 9          | 4            |",
+                "+-------+-------+------------+--------------+",
+            ],
+            &results
+        );
+
+        // Final reads the keys from the leading columns and each state from the columns after
+        // them, so a PartialMerge whose input is laid out any other way stays Single. So does one
+        // over input sorted on every key, where Final has no spill path to offer.
+        let with_hash_agg =
+            |mut op: Operator, edit: &dyn Fn(&mut spark_operator::HashAggregate)| {
+                if let Some(OpStruct::HashAgg(agg)) = op.op_struct.as_mut() {
+                    edit(agg);
+                }
+                op
+            };
+        // Spark's partial collect_list hands over its buffers as binary, which Final would spill
+        // as list states into binary columns.
+        let collect_list = aggregate(
+            &[0],
+            vec![spark_expression::DataType {
+                type_id: 8,
+                type_info: None,
+            }],
+            vec![spark_expression::AggExpr {
+                expr_struct: Some(AggExprStruct::CollectList(spark_expression::CollectList {
+                    child: Some(v.clone()),
+                    datatype: Some(int64.clone()),
+                })),
+                ..Default::default()
+            }],
+        );
+        let swapped_keys = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.grouping_exprs = vec![key(1), key(0)];
+        });
+        let states_after_one_key = with_hash_agg(max_count(&[0]), &|agg| {
+            agg.initial_input_buffer_offset = 1;
+        });
+        let extra_column = aggregate(
+            &[0],
+            vec![int64.clone(), int64.clone(), int64.clone()],
+            vec![create_max_agg(&v), create_count_agg(&v)],
+        );
+        for (case, op) in [
+            ("collect_list buffers", collect_list),
+            ("swapped keys", swapped_keys),
+            ("states after one key", states_after_one_key),
+            ("a column after the states", extra_column),
+            ("sorted on every key", max_count(&[0, 1])),
+        ] {
+            let (_, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+            let single = planned.additional_native_plans[0]
+                .downcast_ref::<AggregateExec>()
+                .unwrap();
+            assert_eq!(&AggregateMode::Single, single.mode(), "{case}");
+            assert_ne!(&InputOrderMode::Linear, single.input_order_mode(), "{case}");
+        }
     }
 
     #[tokio::test]
@@ -4738,30 +5026,18 @@ mod tests {
                     Arc::new(Int32Array::from(vec![20, 21, 22])) as ArrayRef,
                     Arc::new(Int32Array::from(vec![30, 31, 32])) as ArrayRef,
                 ];
-                let mut input = vec![
+                let mut inputs = [vec![
                     InputBatch::Batch(columns.clone(), 3),
                     InputBatch::Batch(columns, 3),
                     InputBatch::EOF,
                 ]
-                .into_iter();
-                let mut stream = planned
+                .into_iter()];
+                let stream = planned
                     .native_plan
                     .execute(0, SessionContext::new().task_ctx())
                     .unwrap();
                 let mut rows = 0;
-                while let Some(batch) = futures::future::poll_fn(|cx| {
-                    let result = stream.poll_next_unpin(cx);
-                    if result.is_pending() && scans[0].batch.try_lock().unwrap().is_none() {
-                        if let Some(batch) = input.next() {
-                            scans[0].set_input_batch(batch);
-                            cx.waker().wake_by_ref();
-                        }
-                    }
-                    result
-                })
-                .await
-                {
-                    let batch = batch.unwrap();
+                for batch in collect_with_inputs(stream, &mut scans, &mut inputs).await {
                     assert_eq!(batch.num_columns(), indices.len());
                     for row in 0..batch.num_rows() {
                         for (column, &source) in indices.iter().enumerate() {
@@ -4810,6 +5086,35 @@ mod tests {
         }
     }
 
+    /// Drives `stream` to completion, feeding each scan its next input batch whenever the stream
+    /// is pending and that scan has none, and returns the output batches.
+    async fn collect_with_inputs(
+        mut stream: SendableRecordBatchStream,
+        scans: &mut [ScanExec],
+        inputs: &mut [std::vec::IntoIter<InputBatch>],
+    ) -> Vec<RecordBatch> {
+        let mut batches = vec![];
+        while let Some(batch) = futures::future::poll_fn(|cx| {
+            let result = stream.poll_next_unpin(cx);
+            if result.is_pending() {
+                for (scan, input) in scans.iter_mut().zip(inputs.iter_mut()) {
+                    if scan.batch.try_lock().unwrap().is_none() {
+                        if let Some(batch) = input.next() {
+                            scan.set_input_batch(batch);
+                            cx.waker().wake_by_ref();
+                        }
+                    }
+                }
+            }
+            result
+        })
+        .await
+        {
+            batches.push(batch.unwrap());
+        }
+        batches
+    }
+
     fn create_scan() -> Operator {
         Operator {
             plan_id: 0,
@@ -4827,6 +5132,74 @@ mod tests {
             type_id: 3,
             type_info: None,
         }
+    }
+
+    fn create_int64_datatype() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: 4,
+            type_info: None,
+        }
+    }
+
+    /// An unbound reference to the Int64 column `name`, as a Spark aggregate function's child.
+    fn create_unbound_int64(name: &str) -> Expr {
+        Expr {
+            expr_struct: Some(Unbound(spark_expression::UnboundReference {
+                name: name.to_string(),
+                datatype: Some(create_int64_datatype()),
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn create_max_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Max(
+                spark_expression::Max {
+                    child: Some(child.clone()),
+                    datatype: Some(create_int64_datatype()),
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    fn create_count_agg(child: &Expr) -> spark_expression::AggExpr {
+        spark_expression::AggExpr {
+            expr_struct: Some(spark_expression::agg_expr::ExprStruct::Count(
+                spark_expression::Count {
+                    children: vec![child.clone()],
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    /// Runs `planned` with `batches` standing in for its single `ScanExec` and returns the
+    /// output batches.
+    async fn collect_over_batches(
+        planned: &crate::execution::spark_plan::SparkPlan,
+        batches: Vec<RecordBatch>,
+        task_ctx: Arc<datafusion::execution::TaskContext>,
+    ) -> Vec<RecordBatch> {
+        use datafusion::common::tree_node::{Transformed, TreeNode};
+
+        let input: Arc<dyn ExecutionPlan> =
+            MemorySourceConfig::try_new_exec(&[batches], planned.children[0].schema(), None)
+                .unwrap();
+        let native_plan = Arc::clone(&planned.native_plan)
+            .transform_up(|node| {
+                Ok(if node.name() == "ScanExec" {
+                    Transformed::yes(Arc::clone(&input))
+                } else {
+                    Transformed::no(node)
+                })
+            })
+            .unwrap()
+            .data;
+        collect(native_plan.execute(0, task_ctx).unwrap())
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -6701,5 +7074,61 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
         let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
         assert_eq!(out.data_type(), &promised);
+    }
+
+    /// The executor applies the native UDF policy to the library path in the plan, whatever the
+    /// driver that built the plan did.
+    #[test]
+    fn native_scalar_udf_load_follows_the_session_policy() {
+        use crate::execution::c_udf::policy::NativeUdfPolicy;
+        use crate::execution::c_udf::test_support::{test_udfs_path, BUILD_HINT};
+
+        let int64 = || spark_expression::DataType {
+            type_id: 4, // INT64
+            type_info: None,
+        };
+        let library = test_udfs_path();
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "add_one_c".to_string(),
+                library_path: library.to_string_lossy().into_owned(),
+                args: vec![Expr {
+                    expr_struct: Some(Bound(spark_expression::BoundReference {
+                        index: 0,
+                        datatype: Some(int64()),
+                    })),
+                    ..Default::default()
+                }],
+                return_type: Some(int64()),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        let plan_with = |policy: NativeUdfPolicy| {
+            let config = SessionConfig::new().with_extension(Arc::new(policy));
+            PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0)
+                .create_expr(&call, Arc::clone(&schema))
+        };
+
+        plan_with(NativeUdfPolicy::default()).expect(BUILD_HINT);
+
+        let err = plan_with(NativeUdfPolicy::new(false, "")).unwrap_err();
+        assert!(err.to_string().contains("disabled"), "unexpected: {err}");
+
+        let elsewhere = tempfile::tempdir().unwrap();
+        let err = plan_with(NativeUdfPolicy::new(
+            true,
+            elsewhere.path().to_str().unwrap(),
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("spark.comet.nativeUdf.allowedPaths"),
+            "unexpected: {err}"
+        );
+
+        let allowed = library.parent().unwrap().to_str().unwrap().to_string();
+        plan_with(NativeUdfPolicy::new(true, &allowed)).expect(BUILD_HINT);
     }
 }

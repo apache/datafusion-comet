@@ -56,9 +56,9 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
    `spark.comet.convert.shuffleInput.enabled` is set. Then a shuffle that JVM shuffle would take
    uses native shuffle instead, provided native shuffle supports the partitioning and the
    columns, and a `CometSparkToColumnarExec` converts the child's rows to Arrow for it. A shuffle
-   that hashes a string, a value computed from a string, or a decimal wider than 18 digits stays
-   on JVM shuffle, because native shuffle would not put every row in the partition Spark's
-   partitioner does (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
+   that hashes a string or a value computed from a string stays on JVM shuffle, because native
+   shuffle would not put every row in the partition Spark's partitioner does
+   (`CometShuffleExchangeExec.convertsInputForNativeShuffle`).
 
 3. **Supported partitioning type**: Native shuffle supports:
    - `HashPartitioning`
@@ -83,9 +83,6 @@ Native shuffle (`CometExchange`) is selected when all of the following condition
      Spark's `mapsort` normalization makes physical entry order irrelevant. A collated string at any
      depth still disqualifies the key. The config defaults to `false` pending measurement of the
      nested hashing paths, so by default a complex hash key falls back to JVM shuffle.
-     Decimal leaves with precision greater than 18 also disqualify a hash key when there is more
-     than one output partition: native decimal hashing differs from Spark's. A one-partition hash
-     exchange stays native because the writer serializes it as `SinglePartition` without hashing.
 
 ## Architecture
 
@@ -155,7 +152,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `partitioners/single_partition.rs` | `SinglePartitionShufflePartitioner` for the single partition case.                                                               |
 | `writers/shuffle_block_writer.rs`  | `ShuffleBlockWriter` and the `CompressionCodec` enum. Arrow IPC encoding with compression.                                       |
 | `writers/partition_writer.rs`      | The `PartitionWriter` trait. Implemented by `LocalPartitionWriter` (`writers/local/`) and `RssPartitionWriter` (`writers/rss/`). |
-| `writers/buf_batch_writer.rs`      | `BufBatchWriter`, which coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` before serializing.                  |
+| `writers/buf_batch_writer.rs`      | `BufBatchWriter`. Coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` in the single-partition writer only.       |
 | `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
 | `offsets_as_lengths.rs`            | Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the `LENGTHS_TAG_FLAG` codec-tag bit. |

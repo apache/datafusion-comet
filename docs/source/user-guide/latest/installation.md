@@ -150,6 +150,32 @@ source releases, or from the latest code in the GitHub repository.
 
 [Building from source]: source.md
 
+## Native library extraction directory
+
+Comet extracts its bundled native library into a private `0700` directory under the JVM's
+`java.io.tmpdir`, creates the library exclusively, and makes the completed file owner-readable
+only before loading it. This keeps extraction within Spark's configured temporary storage,
+including YARN container directories and Kubernetes `emptyDir` volumes.
+
+If that storage is mounted `noexec`, set the JVM system property `comet.native.workdir` to an
+existing writable directory on an executable filesystem. Configure it for both driver and executor
+JVMs, for example:
+
+```shell
+--conf 'spark.driver.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp' \
+--conf 'spark.executor.extraJavaOptions=-Dcomet.native.workdir=/path/to/comet-tmp'
+```
+
+The chosen directory and its parents must be controlled by the application or trusted administrators.
+The loader relies on this deployment boundary rather than rejecting managed directories based on
+ancestor ownership or sticky-bit permissions. It does not silently switch to other temporary roots
+if the configured location cannot be used.
+
+Failed extractions are removed immediately, and successful extractions are removed when the JVM
+exits normally. Forced termination such as `SIGKILL` cannot run JVM cleanup. The container manager
+or deployment temporary-file cleanup policy must then remove leftover directories, including any
+custom work directory, after the owning JVMs have stopped.
+
 ## Deploying to Kubernetes
 
 See the [Comet Kubernetes Guide](kubernetes.md) guide.

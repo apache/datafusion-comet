@@ -62,7 +62,7 @@ while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
 `spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
 `spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
 fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
-whenever more than one task is running, and the `greedy_unified` pool ignores it.
+unless the fraction is below one over the number of running tasks, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -79,11 +79,16 @@ Both pool types are shared by all the native plans in the same Spark task. A tas
 one native plan at a time, for example the native operators on either side of a union or a
 coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
-The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
-native plans). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.
+The `fair_unified` pool keeps memory for the operators that cannot spill, such as the final merge of a sort or the
+build side of a hash join. Spark limits each task to an even share of `spark.memory.offHeap.size` among the tasks
+using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running native plans. Within
+a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
+task's share, counting the operators of all of the task's native plans. The operators that cannot spill take what
+Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
+for the task's other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
+batch it has not yet reserved, so it then fails with "Not enough memory to continue external sort". Give the
+executors more off-heap memory, lower `spark.comet.batchSize`, or use `greedy_unified`, which leaves every limit to
+Spark.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
@@ -143,8 +148,10 @@ one line every 10 seconds for the whole executor:
 Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools); JVM Arrow allocated 310.4 MiB, 96.2 MiB of it imported from native
 ```
 
-- `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
-  a pool tracks it.
+- `allocated` is the memory allocated through Comet's Rust global allocator and not yet freed,
+  whether or not a pool tracks it. It excludes allocations made by native libraries outside that
+  allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
+  enabled.
 - `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
   charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
   sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
@@ -175,7 +182,11 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd.
+   libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
+   PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
+   result buffer later imported into the JVM can appear in the `imported from native` figure that
+   the estimate subtracts, even though Rust's `allocated` does not count it. Use the executor's
+   peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead

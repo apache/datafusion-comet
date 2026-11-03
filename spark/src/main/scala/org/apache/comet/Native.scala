@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param memoryLimit
+   *   the most that the task's native memory pool may reserve, see
+   *   `CometExecIterator.getMemoryConfig`.
+   * @param offHeapSize
+   *   `spark.memory.offHeap.size`, which the `fair_unified` pool shares among the tasks running
+   *   native plans.
    * @param taskContext
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
@@ -72,6 +78,7 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
@@ -91,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -246,14 +267,23 @@ class Native extends NativeBase {
   // scalastyle:on
 
   /**
-   * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
+   * Sorts the packed record pointers of Spark unsafe rows in place by partition id, keeping the
+   * order of the pointers within a partition. Used by Comet shuffle external sorter.
    *
    * @param addr
-   *   the address of the array of compacted partition ids.
+   *   the address of the array of packed record pointers.
    * @param size
-   *   the size of the array.
+   *   the number of records, at the start of the array.
+   * @param capacity
+   *   the length of the array in longs. The sort uses the `size` longs after the records as
+   *   scratch space, so it must be at least `2 * size`, which `ShuffleInMemorySorter` keeps free
+   *   when it sorts with radix sort.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
+  @native def sortRowPartitionsNative(
+      addr: Long,
+      size: Long,
+      capacity: Long,
+      tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.
