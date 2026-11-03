@@ -80,7 +80,6 @@ spark.driver.memory=128G
 spark.driver.maxResultSize=16g
 spark.executor.instances=32
 spark.executor.cores=16
-spark.memory.fraction=0.6
 spark.memory.storageFraction=0.2
 spark.sql.shuffle.partitions=512
 spark.sql.broadcastTimeout=900
@@ -88,8 +87,6 @@ spark.sql.sources.ignoreDataLocality=true
 spark.hadoop.parquet.io.stats.enabled=false
 spark.hadoop.fs.s3a.connection.maximum=5000
 spark.hadoop.fs.s3a.threads.max=20
-spark.hadoop.fs.s3a.vectored.read.min.seek.size=128K
-spark.hadoop.fs.s3a.vectored.read.max.merged.size=2M
 # Kubernetes CPU constraints
 spark.kubernetes.driver.request.cores=32
 spark.kubernetes.driver.limit.cores=32
