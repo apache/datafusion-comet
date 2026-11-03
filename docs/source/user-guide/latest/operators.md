@@ -125,12 +125,12 @@ combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinEx
 
 ## Generators and set operations
 
-| Operator       | Status | Notes                                                                                                                                                 |
-| -------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays, `inline`, `inline_outer`, and `stack`. Other generators fall back. |
-| `ExpandExec`   | ✅     |                                                                                                                                                       |
-| `UnionExec`    | ✅     |                                                                                                                                                       |
-| `CoalesceExec` | ✅     |                                                                                                                                                       |
+| Operator       | Status | Notes                                                                                                                                                                                                                                    |
+| -------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GenerateExec` | ✅     | Supports `explode`, `explode_outer`, `posexplode`, `posexplode_outer` over arrays, `inline`, `inline_outer`, and `stack`. `inline` over structs with no fields and `stack` with more than 50 rows fall back. Other generators fall back. |
+| `ExpandExec`   | ✅     |                                                                                                                                                                                                                                          |
+| `UnionExec`    | ✅     |                                                                                                                                                                                                                                          |
+| `CoalesceExec` | ✅     |                                                                                                                                                                                                                                          |
 
 ## Writes
 

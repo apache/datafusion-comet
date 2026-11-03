@@ -339,18 +339,20 @@ The type-name conversion functions (`bigint`, `binary`, `boolean`, `date`, `deci
 `explode`, `explode_outer`, `posexplode`, `posexplode_outer`, `inline`, `inline_outer`, and
 `stack` are supported via `CometExplodeExec` (operator-level, not expression-level). `explode` and
 `posexplode` support array input; map input falls back to Spark
-([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enabled by default via
+([#2837](https://github.com/apache/datafusion-comet/issues/2837)). `inline` and `inline_outer`
+over an array of structs with no fields fall back to Spark. `stack` with more than 50 rows falls
+back to Spark, the same limit Spark uses for code generation. Enabled by default via
 `spark.comet.exec.explode.enabled`.
 
 | Function | Status | Implementation | Notes |
 | --- | --- | --- | --- |
 | `explode` | ✅ | — | via `CometExplodeExec` |
 | `explode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#explode_outer)) |
-| `inline` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline)) |
-| `inline_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline_outer)) |
+| `inline` | ✅ | — | via `CometExplodeExec`; structs with no fields fall back ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline)) |
+| `inline_outer` | ✅ | — | via `CometExplodeExec`; structs with no fields fall back ([audit](../../contributor-guide/expression-audits/generator_funcs.md#inline_outer)) |
 | `posexplode` | ✅ | — | via `CometExplodeExec` |
 | `posexplode_outer` | ✅ | — | via `CometExplodeExec` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#posexplode_outer)) |
-| `stack` | ✅ | — | via `CometExplodeExec`, planned as `inline` ([audit](../../contributor-guide/expression-audits/generator_funcs.md#stack)) |
+| `stack` | ✅ | — | via `CometExplodeExec`, planned as `inline`; more than 50 rows falls back ([audit](../../contributor-guide/expression-audits/generator_funcs.md#stack)) |
 
 ---
 

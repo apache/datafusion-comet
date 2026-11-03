@@ -40,6 +40,7 @@
 ## inline
 
 - Same `CometExplodeExec` path as `explode`, with the unnested struct flattened into one column per field. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation: a NULL struct element yields a row of NULLs, which the native flattening reproduces by folding the struct's validity into each field. Every generated column is reported nullable.
+- An array whose element struct has no fields falls back to Spark. Flattening it would produce a batch with no columns, and such an array carries no data, so the fallback costs nothing.
 
 ## inline_outer
 
@@ -48,5 +49,6 @@
 ## stack
 
 - Planned as `inline` over an array holding one struct per output row, so `stack(n, v1, ..., vk)` evaluates each argument once per input row, as Spark does, and pads the last row with NULLs. Spark 3.4.3, 3.5.8, 4.0.1, and 4.1.1 share one implementation. An argument that cannot run natively falls back with that argument's own reason.
+- A `stack` with more than 50 rows falls back to Spark. This is the bound at which Spark's `Stack.supportCodegen` turns false in every supported version. Above it, the rewrite would build one struct expression per row on the driver and materialize `batch_size * n` structs per input batch before unnesting.
 
 [Spark Expression Support]: ../../user-guide/latest/expressions.md
