@@ -51,6 +51,55 @@ query
 SELECT a, b FROM topk ORDER BY a, substr(CAST(b AS STRING), 1, 3), upper(CAST(b AS STRING)),
   length(lower(CAST(b AS STRING))) LIMIT 2
 
+-- A later key that can fail falls back even when an allowed expression wraps it
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, b FROM topk ORDER BY a, coalesce(b + 1, 0) LIMIT 2
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, b FROM topk ORDER BY a, IF(a > 3, b + 1, 0) LIMIT 2
+
+-- Rounding an integer overflows under ANSI mode
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, b FROM topk ORDER BY a, round(b, -1) LIMIT 2
+
+query
+SELECT a, b FROM topk ORDER BY a, try_cast(CAST(b AS STRING) AS INT) LIMIT 2
+
+statement
+CREATE TABLE topk_types(a int, b int, l bigint, d double, s string, dt date, ts timestamp)
+USING parquet
+
+statement
+INSERT INTO topk_types SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, 2147483647, 9223372036854775807, double('NaN'), ' x ', date'2024-01-31',
+    timestamp'2024-01-31 23:59:59'),
+  (2, NULL, NULL, -0.0D, NULL, NULL, NULL),
+  (3, -2147483648, -9223372036854775808, 0.0D, 'abc', date'1970-01-01',
+    timestamp'1970-01-01 00:00:00'),
+  (4, 7, 7, 1.5D, 'Spark', date'2000-02-29', timestamp'2000-02-29 12:30:45'),
+  (5, 0, 0, -1.0E308D, '', date'9999-12-31', timestamp'9999-12-31 23:59:59')
+  AS t(a, b, l, d, s, dt, ts)
+
+-- Later keys built from functions that cannot fail stay native
+query
+SELECT a, s FROM topk_types ORDER BY a, trim(s), ltrim(s), rtrim(s), replace(s, 'a', 'b'),
+  reverse(s), octet_length(s), bit_length(s), concat(s, 'x'), concat_ws('-', s, s) LIMIT 3
+
+query
+SELECT a, dt FROM topk_types ORDER BY a, year(dt), quarter(dt), month(dt), dayofmonth(dt),
+  dayofweek(dt), weekday(dt), dayofyear(dt), hour(ts), minute(ts), second(ts) LIMIT 3
+
+query
+SELECT a, d FROM topk_types ORDER BY a, floor(d), ceil(d), sqrt(d), exp(d), ln(d), signum(d),
+  isnan(d), nanvl(d, 0D), round(d, 1), greatest(b, 0), least(l, 0), b IN (1, 2) LIMIT 3
+
+query
+SELECT a, s FROM topk_types ORDER BY a, hash(b, s), xxhash64(s), md5(s), sha1(s), sha2(s, 256),
+  crc32(s) LIMIT 3
+
+query
+SELECT a, s FROM topk_types ORDER BY a, initcap(s) LIMIT 3
+
 -- The first key is evaluated for every row in Spark too
 query
 SELECT a, b FROM topk ORDER BY a + 1, b LIMIT 2
@@ -78,3 +127,9 @@ SELECT a, b FROM topk_ties ORDER BY a, b + 1 LIMIT 2
 
 query
 SELECT a, b FROM topk_ties ORDER BY a, -b, abs(b) LIMIT 2
+
+query
+SELECT a, b FROM topk ORDER BY a, round(b, -1), CAST(CAST(b AS STRING) AS INT) LIMIT 2
+
+query
+SELECT a, b FROM topk_types ORDER BY a, b / 0, b % 0, b DIV 0, l + 1, l * 2 LIMIT 3
