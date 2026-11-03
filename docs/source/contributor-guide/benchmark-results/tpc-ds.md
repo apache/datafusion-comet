@@ -20,11 +20,11 @@ under the License.
 # TPC-DS
 
 The following benchmarks were performed on an EKS cluster (`r6i` instances with EBS storage) with data stored in S3,
-using Apache Spark 4.1.3 (Scala 2.13), Comet 1.2.0, and Apache Iceberg 1.11.0 tables (Parquet data files compressed with zstd,
-Hadoop catalog). Both engines read the same scale factor 1000 (1 TB) tables. Each query was run twice and the mean time is
-reported. Comet reads the Iceberg tables with its native Iceberg scan, and Spark reads them with the Iceberg Spark runtime.
+using Apache Spark 4.1.3 (Scala 2.13), Comet 1.1.0 and Comet 1.2.0. The tables are Parquet files compressed with zstd at
+scale factor 1000 (1 TB), and all three runs read the same files. Each query was run twice and the mean time is reported.
 
-Across all 103 queries, Comet finished in 827 seconds compared with 1,460 seconds for Spark, a 1.8x speedup.
+Across all 103 queries, Comet 1.2.0 finished in 532 seconds, Comet 1.1.0 in 613 seconds and Spark in 1,336 seconds,
+so Comet 1.2.0 is 2.5x faster than Spark.
 
 ## Benchmark Results
 
@@ -36,17 +36,17 @@ Per-query breakdown showing the relative performance of Spark and Comet.
 
 ![](../../_static/images/benchmark-results/1.2.0/tpcds_queries_compare.png)
 
-How much Comet accelerates each query in relative terms.
+How much Comet 1.2.0 accelerates each query over Spark in relative terms.
 
 ![](../../_static/images/benchmark-results/1.2.0/tpcds_queries_speedup_rel.png)
 
-How much Comet accelerates each query in absolute terms.
+How much Comet 1.2.0 accelerates each query over Spark in absolute terms.
 
 ![](../../_static/images/benchmark-results/1.2.0/tpcds_queries_speedup_abs.png)
 
 ## Configuration
 
-Only settings that differ from the defaults are listed.
+Only settings that differ from the defaults are listed. Comet 1.1.0 and Comet 1.2.0 used the same settings.
 
 Common:
 
@@ -61,9 +61,10 @@ spark.sql.shuffle.partitions=512
 spark.sql.broadcastTimeout=900
 spark.sql.sources.ignoreDataLocality=true
 spark.hadoop.parquet.io.stats.enabled=false
-spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions
-spark.sql.catalog.iceberg=org.apache.iceberg.spark.SparkCatalog
-spark.sql.catalog.iceberg.type=hadoop
+spark.hadoop.fs.s3a.connection.maximum=5000
+spark.hadoop.fs.s3a.threads.max=20
+spark.hadoop.fs.s3a.vectored.read.min.seek.size=128K
+spark.hadoop.fs.s3a.vectored.read.max.merged.size=2M
 # Kubernetes CPU constraints
 spark.kubernetes.driver.request.cores=32
 spark.kubernetes.driver.limit.cores=32
@@ -87,7 +88,6 @@ spark.memory.offHeap.enabled=true
 spark.memory.offHeap.size=32G
 spark.plugins=org.apache.spark.CometPlugin
 spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
-spark.sql.extensions=org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions,org.apache.comet.CometSparkSessionExtensions
+spark.sql.extensions=org.apache.comet.CometSparkSessionExtensions
 spark.comet.exec.memoryPool.fraction=0.8
-spark.comet.scan.icebergNative.dataFileConcurrencyLimit=4
 ```

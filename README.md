@@ -42,7 +42,7 @@ pipeline, operators and expressions execute as Rust code (via the [Apache DataFu
 or as JVM code that operates directly on Arrow batches. Comet integrates with the Spark ecosystem
 without requiring any code changes.
 
-**Comet provides a ~1.8x speedup over Spark 4.1 for TPC-DS @ SF 1000 (1TB), resulting in ~43% cost savings.**
+**Comet provides a ~2.5x speedup over Spark 4.1 for TPC-DS @ SF 1000 (1TB), resulting in ~60% cost savings.**
 
 That speedup gives you a choice: finish the same Spark workload in just over half the time on the cluster you already
 have, or match your current Spark performance on just over half the resources. Either way, the gain translates directly into

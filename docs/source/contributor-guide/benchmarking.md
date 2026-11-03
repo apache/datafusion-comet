@@ -27,7 +27,7 @@ Data generation scripts are available in the [DataFusion Benchmarks](https://git
 
 ## Current Benchmark Results
 
-- [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds): Comet 1.2.0 vs. Spark 4.1.3 on Iceberg 1.11.0 tables at SF 1000
+- [Benchmarks derived from TPC-DS](benchmark-results/tpc-ds): Comet 1.1.0 and 1.2.0 vs. Spark 4.1.3 on Parquet tables at SF 1000
 
 ## Benchmarking Guides
 
