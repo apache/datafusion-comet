@@ -841,6 +841,7 @@ mod tests {
     /// Spark's string type as those types, not as `Binary`. A malformed value must still decode
     /// to U+FFFD.
     #[tokio::test]
+    #[ignore = "DataFusion 56 coerces nested BINARY to unvalidated Utf8: https://github.com/apache/datafusion-comet/issues/7469"]
     async fn nested_arrow_binary_types_read_as_string_decode_invalid_utf8() {
         use arrow::array::{Array, AsArray, BinaryArray, ListArray};
         use arrow::buffer::OffsetBuffer;
