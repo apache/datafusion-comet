@@ -65,7 +65,7 @@ The following differences from Spark are always present and do not require any a
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
-- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.
+- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and maps. A struct is supported only if all of its fields are of supported types other than float and double, since Comet orders -0.0 and NaN with the sign bit set differently from Spark inside a struct.
 - A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.
 
 ## MaxBy
@@ -82,7 +82,7 @@ The following cases are not supported by Comet and always fall back to Spark, re
 
 The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
 
-- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and structs.
+- Input of a type other than boolean, integral, floating-point, decimal, date, timestamp, string or binary, such as timestamp without time zone, intervals, arrays and maps. A struct is supported only if all of its fields are of supported types other than float and double, since Comet orders -0.0 and NaN with the sign bit set differently from Spark inside a struct.
 - A string with a non-default collation (Spark 4.0+), which Spark orders by its collation while Comet compares raw bytes.
 
 ## MinBy
