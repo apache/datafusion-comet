@@ -55,8 +55,10 @@ The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13).
 | Comet 1.1.0 | 613 s                    | 2.18x              |
 | Comet 1.2.0 | 532 s                    | 2.51x              |
 
-Spark 4.1.3 is slower than Spark 4.2.0 on this cluster (1,336 s vs 994 s), so the speedups are larger than with Spark 4.2.0.
-Comet 1.2.0's time differs by about 10% between the two Spark versions (532 s vs 488 s). See
+Spark 4.1.3 is slower than Spark 4.2.0 on this cluster (1,336 s vs 994 s), so the speedups are larger than with
+Spark 4.2.0. Most of the difference is the S3 input stream: Spark 4.1.3 (Hadoop 3.4.2) reads with the `classic`
+S3A stream by default, while Spark 4.2.0 (Hadoop 3.5.0) defaults to the S3 Analytics Accelerator. Spark 4.2.0 with
+`spark.hadoop.fs.s3a.input.stream.type=classic` took 1,294 s. See
 [#7451](https://github.com/apache/datafusion-comet/issues/7451) for the investigation.
 
 Total time to run all queries (lower is better).
