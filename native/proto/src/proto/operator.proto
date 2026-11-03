@@ -1073,6 +1073,11 @@ message ParquetWriter {
   // operators call, for every file that is neither local nor on HDFS. See HadoopFileOutput for
   // why.
   bool jvm_output_stream = 10;
+  // The Spark version (`SPARK_VERSION_SHORT`) written into the footer's key-value metadata as
+  // `org.apache.spark.version`, as Spark's own ParquetWriteSupport does. Spark's datetime rebase
+  // logic reads it back to tell files written by Spark 3.0+ from older ones. Optional so native
+  // callers such as tests can omit it; when absent or empty the key is not written.
+  optional string spark_version = 11;
 }
 
 enum AggregateMode {
