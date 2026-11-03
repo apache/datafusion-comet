@@ -377,6 +377,40 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  // parquet-mr writes and reads brotli pages with Hadoop's BrotliCodec, which neither Spark nor
+  // Iceberg ships. Without it iceberg-java fails the write, and a native write would commit files
+  // that no JVM reader can read (#6960). The writes are planned, not run, so that iceberg-java
+  // never tries to load the class.
+  test("fall-back: brotli compression without Hadoop's BrotliCodec on the classpath") {
+    withDetectionCatalog { _ =>
+      createTable(
+        "brotli_table",
+        partitionSpec = "",
+        properties = Some("'write.parquet.compression-codec'='brotli'"))
+      createTable("brotli_session", partitionSpec = "")
+      val tableWrite = planInsertWriteExec(s"$catalog.$ns.brotli_table")
+      // The session setting reaches the gate through SparkWrite.writeProperties. withSQLConf
+      // returns Unit on Spark 3.4/3.5, hence the var.
+      var sessionWrite: IcebergWriteExec = null
+      withSQLConf("spark.sql.iceberg.compression-codec" -> "brotli") {
+        sessionWrite = planInsertWriteExec(s"$catalog.$ns.brotli_session")
+      }
+      Seq("brotli_table" -> tableWrite, "brotli_session" -> sessionWrite).foreach {
+        case (table, writeExec) =>
+          assertUnsupportedContains(
+            writeExec,
+            table,
+            "write.parquet.compression-codec=brotli",
+            CometIcebergNativeWrite.BrotliCodecClass)
+          // With a brotli codec jar on the classpath, the write is native again.
+          withContextClassLoaderResolving(CometIcebergNativeWrite.BrotliCodecClass) {
+            val support = CometIcebergNativeWrite.getSupportLevel(writeExec)
+            assert(support.isInstanceOf[Compatible], s"expected Compatible for $table: $support")
+          }
+      }
+    }
+  }
+
   test("fall-back: write.parquet.bloom-filter-max-bytes set") {
     withDetectionCatalog { _ =>
       createTable(
@@ -1784,6 +1818,22 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       case other =>
         fail(s"expected Unsupported for $tableName, got $other")
     }
+  }
+
+  /**
+   * Runs `f` with a context class loader that resolves `className`, as one with the class's jar
+   * on it would. The gate asks only whether the name resolves, so an unrelated class stands in.
+   */
+  private def withContextClassLoaderResolving[T](className: String)(f: => T): T = {
+    val thread = Thread.currentThread()
+    val original = thread.getContextClassLoader
+    thread.setContextClassLoader(new ClassLoader(original) {
+      override protected def loadClass(name: String, resolve: Boolean): Class[_] =
+        if (name == className) classOf[org.apache.hadoop.io.compress.GzipCodec]
+        else super.loadClass(name, resolve)
+    })
+    try f
+    finally thread.setContextClassLoader(original)
   }
 
   /**

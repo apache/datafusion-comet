@@ -35,6 +35,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, Compatible, OperatorOuterClass, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.exprToProto
+import org.apache.comet.util.ClassLoaders
 
 object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
 
@@ -99,6 +100,8 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val ParquetMrPropertyPrefix = "parquet."
   private val CometS3CredentialProviderClassProperty =
     "s3.comet.credential.provider.class"
+  // The codec parquet-mr loads for brotli. No Spark or Iceberg distribution ships it.
+  private[comet] val BrotliCodecClass = "org.apache.hadoop.io.compress.BrotliCodec"
 
   // Hadoop S3A settings are not forwarded wholesale. Keep this allow-list in lockstep with
   // NativeConfig.s3aSuffixToIcebergGlobalKey: every admitted setting must be translated into the
@@ -423,6 +426,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireParquetPageVersionDefault,
     requireShredVariantsDisabled,
     requireNativeSupportedCompressionLevel,
+    requireLoadableBrotliCodec,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -593,6 +597,31 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // fall back. Range logic lives beside the codec resolution in IcebergWriteProtoTranslation.
   private val requireNativeSupportedCompressionLevel: TriggerRule = ctx =>
     IcebergWriteProtoTranslation.compressionLevelRejection(ctx.properties)
+
+  // parquet-mr compresses brotli pages, and decompresses them for every JVM reader, with Hadoop's
+  // `BrotliCodec`, which it loads by name. Neither Spark nor Iceberg ships that class. Without a
+  // brotli codec jar, iceberg-java fails the write, and parquet-rs would write files that only a
+  // native reader can read, so decline and let the write fail the way iceberg-java fails it.
+  // https://github.com/apache/datafusion-comet/issues/6960
+  private val requireLoadableBrotliCodec: TriggerRule = ctx =>
+    if (IcebergWriteProtoTranslation.compressesWithBrotli(ctx.properties) &&
+      !isLoadable(BrotliCodecClass)) {
+      Some(
+        s"${PropertyKeys.ParquetCompressionCodec}=brotli needs $BrotliCodecClass, which is not " +
+          "on the classpath (iceberg-java fails the write and JVM readers cannot read the files)")
+    } else {
+      None
+    }
+
+  // Through the context class loader, which Spark adds application jars to, and without
+  // initializing the class, so the check runs none of the codec's code.
+  private def isLoadable(className: String): Boolean =
+    try {
+      ClassLoaders.contextOrDefault(getClass.getClassLoader).loadClass(className)
+      true
+    } catch {
+      case _: ClassNotFoundException | _: LinkageError => false
+    }
 
   private val requireOnlyVettedParquetWriteProperties: TriggerRule = ctx =>
     ctx.properties
