@@ -4515,6 +4515,9 @@ mod tests {
         };
         let (mut scans, _, planned) = planner.create_plan(&operator, &mut vec![], 1).unwrap();
         assert_eq!(planned.additional_native_plans.len(), 1);
+        assert!(planned.additional_native_plans[0]
+            .downcast_ref::<datafusion_comet_operators::RowNumberExec>()
+            .is_some());
 
         let rows = 100;
         let mut inputs = [vec![
@@ -4552,11 +4555,12 @@ mod tests {
 
     #[test]
     fn window_declares_input_order_on_a_scan() {
-        // Both window operators need their partition keys' order, which a `ScanExec` declares
-        // only through the order Spark sent. `percent_rank` runs in `WindowAggExec`.
+        // Window operators need their partition keys' order, which a `ScanExec` declares
+        // only through the order Spark sent.
         let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
         for (func, operator) in [
-            ("row_number", "BoundedWindowAggExec"),
+            ("row_number", "CometRowNumberExec"),
+            ("rank", "BoundedWindowAggExec"),
             ("percent_rank", "WindowAggExec"),
         ] {
             let window_input = |input_sort_orders| {

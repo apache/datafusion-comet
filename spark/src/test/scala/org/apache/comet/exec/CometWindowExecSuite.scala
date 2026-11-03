@@ -1287,6 +1287,41 @@ class CometWindowExecSuite extends CometTestBase {
     }
   }
 
+  test("window: streaming ROW_NUMBER across input batches") {
+    withTempDir { dir =>
+      (0 until 97)
+        .map(i => (if (i < 9) null else s"key-${i / 13}", i, "payload-" * 32))
+        .toDF("k", "i", "payload")
+        .coalesce(1)
+        .write
+        .parquet(dir.toString)
+      spark.read.parquet(dir.toString).createOrReplaceTempView("streaming_row_number")
+      for (batchSize <- Seq(3, 16, 128); ansi <- Seq("false", "true")) {
+        withSQLConf(
+          CometConf.COMET_BATCH_SIZE.key -> batchSize.toString,
+          SQLConf.ANSI_ENABLED.key -> ansi) {
+          for (partition <- Seq("", "PARTITION BY k")) {
+            val df = sql(s"""
+              SELECT k, i, payload,
+                ROW_NUMBER() OVER ($partition ORDER BY i) AS first_rank,
+                ROW_NUMBER() OVER ($partition ORDER BY i) AS second_rank
+              FROM streaming_row_number
+            """)
+            checkSparkAnswerAndOperator(df)
+            assertCometWindowExecExists(df.queryExecution.executedPlan)
+          }
+          // A mixed window must retain the generic executor and its frame behaviour.
+          checkSparkAnswerAndOperator(sql("""
+            SELECT k, i,
+              ROW_NUMBER() OVER (PARTITION BY k ORDER BY i) AS rn,
+              COUNT(*) OVER (PARTITION BY k ORDER BY i) AS n
+            FROM streaming_row_number
+          """))
+        }
+      }
+    }
+  }
+
   test("window: RANK with PARTITION BY and ORDER BY") {
     withTempDir { dir =>
       (0 until 30)
