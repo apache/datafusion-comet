@@ -24,7 +24,7 @@ use arrow::array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow::compute::{partition, take, SortOptions};
 use arrow::datatypes::{DataType, SchemaRef};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_err, plan_err, Result, ScalarValue, Statistics};
+use datafusion::common::{exec_err, internal_err, plan_err, Result, ScalarValue, Statistics};
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::TaskContext;
 use datafusion::functions_window::row_number::RowNumber;
@@ -184,11 +184,15 @@ impl ExecutionPlan for RowNumberExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        let partition_by = self.window.window_expr()[0].partition_by();
+        if self.window.partition_by_sort_keys()?.len() != partition_by.len() {
+            return exec_err!("All partition by columns should have an ordering in Sorted mode.");
+        }
         let input = self
             .window
             .input()
             .execute(partition, Arc::clone(&context))?;
-        let partition_by = self.window.window_expr()[0].partition_by().to_vec();
+        let partition_by = partition_by.to_vec();
         let output_count = self.window.window_expr().len();
         let schema = self.schema();
         let state = RowNumberState {

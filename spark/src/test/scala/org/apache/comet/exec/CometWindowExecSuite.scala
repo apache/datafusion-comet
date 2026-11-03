@@ -1294,6 +1294,7 @@ class CometWindowExecSuite extends CometTestBase {
         .toDF("k", "i", "payload")
         .coalesce(1)
         .write
+        .mode("overwrite")
         .parquet(dir.toString)
       spark.read.parquet(dir.toString).createOrReplaceTempView("streaming_row_number")
       for (batchSize <- Seq(3, 16, 128); ansi <- Seq("false", "true")) {
