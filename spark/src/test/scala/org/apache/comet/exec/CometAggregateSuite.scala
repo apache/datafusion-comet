@@ -678,9 +678,19 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
             .groupBy("grp")
             .agg(
               count_distinct(col("id")),
-              sort_array(collect_set(expr("array(d)"))),
-              sort_array(collect_set(expr("named_struct('v', d)"))))
-          val (_, plan) = checkSparkAnswer(query)
+              expr("sort_array(transform(collect_set(array(d)), x -> CAST(x AS STRING)))"),
+              expr("sort_array(transform(collect_set(named_struct('v', d)), " +
+                "x -> CAST(x AS STRING)))"))
+          val (_, plan) = if (strict && !isSpark42Plus) {
+            checkSparkAnswerAndFallbackReason(query, "not fully compatible with Spark")
+          } else {
+            checkSparkAnswerAndOperator(
+              query,
+              Seq(classOf[CometBaseAggregateExec]),
+              classOf[ObjectHashAggregateExec],
+              classOf[SortAggregateExec],
+              classOf[LocalTableScanExec])
+          }
           val nativeCollect = collect(plan) {
             case a: CometBaseAggregateExec
                 if a.aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[CollectSet]) =>
