@@ -612,7 +612,7 @@ diverge for several structural reasons:
 - **Native caches that outlive their task.** The native Parquet scan's cache of decoded footers and
   page indexes is not reserved from the pool. With
   `spark.comet.parquet.metadataCache.sharedWithinStage.enabled`, the default, the tasks of a stage
-  share one cache per executor, which holds up to 50 MiB for each of its running tasks. The two
+  share one cache per executor, which holds up to 50 MiB for each of the most tasks it has run at once. The two
   most recently used caches are kept after their tasks finish, for the next task of their stage,
   and shrink to 50 MiB each, so up to 100 MiB stays resident with no task running. An executor is
   not told when a stage ends, so a kept cache is freed once no task of its stage has run for 10

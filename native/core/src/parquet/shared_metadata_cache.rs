@@ -43,14 +43,17 @@
 //! theirs, or when the plugin shuts down and [`clear_shared_metadata_caches`] runs, whichever comes
 //! first. An executor that goes idle after a query frees them within the timeout.
 //!
-//! A stage's cache holds DataFusion's per-task limit for each of its tasks that is running, and one
-//! task's limit once none is, so that sharing does not shrink the room each task had with a cache
-//! of its own: tasks that read different files would otherwise evict each other's entries, among
-//! them the footers the Delta deletion vector planning loads before the scan opens them. Each task
-//! takes its share when it asks for the cache and gives it back when its `RuntimeEnv` drops it, so
-//! the limit follows the tasks that actually run, whatever the executor's configured cores say.
-//! Shared entries are stored once, so the tasks of a stage hold no more than they did, and a
-//! retained cache holds no more than one task's.
+//! A stage's cache holds DataFusion's per-task limit for each of the tasks that have run at once
+//! since the stage was last idle, and one task's limit once none is running, so that sharing does
+//! not shrink the room each task had with a cache of its own: tasks that read different files would
+//! otherwise evict each other's entries, among them the footers the Delta deletion vector planning
+//! loads before the scan opens them. The limit stays up while a task finishes and others run on,
+//! because the cache evicts the least recently used entry whoever loaded it, so lowering it would
+//! take those footers from a running task as readily as the finished task's. Each task takes its
+//! share when it asks for the cache and gives it back when its `RuntimeEnv` drops it, so the limit
+//! follows the tasks that actually run, whatever the executor's configured cores say. Shared
+//! entries are stored once, so the tasks of a stage hold no more than they did, and a retained
+//! cache holds no more than one task's.
 //!
 //! The stage scopes the cache; it does not identify the files in it. DataFusion keys an entry by
 //! the file's path within its object store, which drops the bucket, so [`scope_to_store`] gives
@@ -88,10 +91,12 @@ pub(crate) struct StageKey {
     pub stage_attempt: i32,
 }
 
-/// How many tasks of a stage are running, and since when none has been.
+/// How many tasks of a stage are running, the most that have been at once since none was, and
+/// since when none has been.
 #[derive(Default)]
 struct Running {
     tasks: usize,
+    peak: usize,
     idle_since: Option<Instant>,
 }
 
@@ -112,14 +117,21 @@ impl StageCache {
         }
     }
 
-    /// Counts a task in or out, and sizes the cache for the tasks left running. Lowering the limit
-    /// evicts the least recently used entries down to it.
+    /// Counts a task in or out, and sizes the cache for the most tasks that have run at once since
+    /// the stage was last idle. The limit falls only when no task is left, so that a task finishing
+    /// does not evict the entries of the tasks still running, which the cache cannot tell apart
+    /// from its own. Lowering the limit evicts the least recently used entries down to it.
     fn update_running(&self, update: impl FnOnce(usize) -> usize) {
         let mut running = self.running.lock().unwrap();
         running.tasks = update(running.tasks);
+        running.peak = if running.tasks == 0 {
+            0
+        } else {
+            running.peak.max(running.tasks)
+        };
         running.idle_since = (running.tasks == 0).then(Instant::now);
         self.cache
-            .update_cache_limit(DEFAULT_METADATA_CACHE_LIMIT.saturating_mul(running.tasks.max(1)));
+            .update_cache_limit(DEFAULT_METADATA_CACHE_LIMIT.saturating_mul(running.peak.max(1)));
     }
 
     /// When the cache has gone unused for `timeout`, or `None` while a task of the stage runs.
@@ -301,10 +313,13 @@ impl SharedMetadataCaches {
     }
 
     /// Forgets every stage, freeing the retained caches. Running tasks keep the caches they hold.
+    ///
+    /// It also resets `expiring`. The task that frees idle caches runs on the native runtime, which
+    /// is shut down along with the caches, so a task that died with it would leave the flag set and
+    /// `expire_idle_on` would never start another one in a context started later in the same JVM.
     fn clear(&self) {
         let dropped = std::mem::take(&mut *self.registry.lock().unwrap());
         drop(dropped);
-        // The runtime that ran the expiring task is shut down along with the caches.
         self.expiring.store(false, Ordering::Release);
     }
 
@@ -571,11 +586,16 @@ mod tests {
         let idle = Arc::downgrade(&CACHES.cache_for(key(1, 0)).stage);
         let timeout = Duration::from_millis(50);
         CACHES.expire_idle_on(runtime.handle(), timeout);
-        runtime.block_on(async {
-            while CACHES.expiring.load(Ordering::Acquire) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        });
+        runtime
+            .block_on(async {
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    while CACHES.expiring.load(Ordering::Acquire) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+            })
+            .expect("the timer should stop once it has freed the idle cache");
         assert!(idle.upgrade().is_none());
         assert_eq!(CACHES.len(), 0);
     }
@@ -635,9 +655,13 @@ mod tests {
     }
 
     #[test]
-    fn a_stage_cache_holds_one_task_limit_per_running_task() {
+    fn a_stage_cache_holds_one_task_limit_per_task_running_at_once() {
         let caches = SharedMetadataCaches::default();
-        let tasks: Vec<_> = (0..3).map(|_| caches.cache_for(key(1, 0))).collect();
+        let mut tasks: Vec<_> = (0..3).map(|_| caches.cache_for(key(1, 0))).collect();
+        assert_eq!(tasks[0].cache_limit(), 3 * DEFAULT_METADATA_CACHE_LIMIT);
+        // A finishing task does not lower the limit, which would evict the entries of the tasks
+        // still running as readily as its own.
+        tasks.pop();
         assert_eq!(tasks[0].cache_limit(), 3 * DEFAULT_METADATA_CACHE_LIMIT);
         // The limit a task's CacheManager sets does not apply to the shared cache.
         tasks[0].update_cache_limit(DEFAULT_METADATA_CACHE_LIMIT / 2);
@@ -667,7 +691,8 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(task.cache_limit(), 2 * DEFAULT_METADATA_CACHE_LIMIT);
+        // A task finishing does not take room from the one still running.
         drop(other);
-        assert_eq!(task.cache_limit(), DEFAULT_METADATA_CACHE_LIMIT);
+        assert_eq!(task.cache_limit(), 2 * DEFAULT_METADATA_CACHE_LIMIT);
     }
 }

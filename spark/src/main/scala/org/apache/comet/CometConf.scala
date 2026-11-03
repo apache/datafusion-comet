@@ -200,12 +200,12 @@ object CometConf extends ShimCometConf {
           "of once per task. Tasks that start together each fetch it, so the saving grows " +
           "with the number of splits per file. The cache is never shared between stages or " +
           "stage attempts, so a query always reads the footers of its files afresh. A stage's " +
-          "cache holds up to 50 MiB of decoded footers and page indexes for each of its " +
-          "running tasks, outside Spark's memory accounting. Up to two caches are kept after " +
-          "their tasks finish, for the next task of their stage, and each of those holds up " +
-          "to 50 MiB until no task of its stage has run for 10 seconds, tasks of two other " +
-          "stages run on the executor, or the executor shuts down. When disabled, each task " +
-          "keeps its own 50 MiB cache, which is freed when the task ends.")
+          "cache holds up to 50 MiB of decoded footers and page indexes for each of the most " +
+          "tasks it has run at once, outside Spark's memory accounting. Up to two caches are " +
+          "kept after their tasks finish, for the next task of their stage, and each of " +
+          "those holds up to 50 MiB until no task of its stage has run for 10 seconds, " +
+          "tasks of two other stages run on the executor, or the executor shuts down. When " +
+          "disabled, each task keeps its own 50 MiB cache, which is freed when the task ends.")
       .booleanConf
       .createWithDefault(true)
 
