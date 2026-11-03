@@ -19,7 +19,6 @@
 
 package org.apache.comet.rules
 
-import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.DynamicPruningExpression
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -100,10 +99,7 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
  * @see
  *   CometPlanAdaptiveDynamicPruningFilters (Spark 3.5+ equivalent via queryStageOptimizerRule)
  */
-case object CometSpark34AqeDppFallbackRule
-    extends Rule[SparkPlan]
-    with AdaptiveSparkPlanHelper
-    with Logging {
+case object CometSpark34AqeDppFallbackRule extends Rule[SparkPlan] with AdaptiveSparkPlanHelper {
 
   override def apply(plan: SparkPlan): SparkPlan = {
     // Registered only on Spark < 3.5 via injectPreSpark35QueryStagePrepRuleShim. If the
