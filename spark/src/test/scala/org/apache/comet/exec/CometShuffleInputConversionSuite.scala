@@ -351,15 +351,14 @@ class CometShuffleInputConversionSuite extends CometTestBase {
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
             SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
             SQLConf.SKEW_JOIN_ENABLED.key -> "false") {
-            val left = collectionsDf().select(col("k").cast(DecimalType(38, 0)).as("lk"), col(column))
+            val left =
+              collectionsDf().select(col("k").cast(DecimalType(38, 0)).as("lk"), col(column))
             val right = nullsDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("n"))
             val (_, plan) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
-            assert(convertedShuffles(plan).length == 1, s"AQE $aqe:
-$plan")
+            assert(convertedShuffles(plan).length == 1, s"AQE $aqe:\n$plan")
             assert(
               cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1,
-              s"AQE $aqe:
-$plan")
+              s"AQE $aqe:\n$plan")
           }
         }
       }
