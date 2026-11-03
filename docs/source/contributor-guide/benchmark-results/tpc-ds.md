@@ -45,6 +45,28 @@ How much Comet 1.2.0 accelerates each query over Spark in absolute terms.
 
 ![](../../_static/images/benchmark-results/1.2.0/tpcds_queries_speedup_abs.png)
 
+## Spark 4.1.3
+
+The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13). Comet 1.1.0 here is the 1.1.0 release.
+
+| | Total time (103 queries) | Speedup over Spark |
+|---|---|---|
+| Spark 4.1.3 | 1,336 s | |
+| Comet 1.1.0 | 613 s | 2.18x |
+| Comet 1.2.0 | 532 s | 2.51x |
+
+Spark 4.1.3 is slower than Spark 4.2.0 on this cluster (1,336 s vs 994 s), so the speedups are larger than with Spark 4.2.0.
+Comet's own times are within about 10% across the two Spark versions. See
+[#7451](https://github.com/apache/datafusion-comet/issues/7451) for the investigation.
+
+Total time to run all queries (lower is better).
+
+![](../../_static/images/benchmark-results/1.2.0/spark-4.1.3/tpcds_allqueries.png)
+
+How much Comet 1.2.0 accelerates each query over Spark 4.1.3 in relative terms.
+
+![](../../_static/images/benchmark-results/1.2.0/spark-4.1.3/tpcds_queries_speedup_rel.png)
+
 ## Configuration
 
 Only settings that differ from the defaults are listed. Comet 1.1.0 and Comet 1.2.0 used the same settings.
