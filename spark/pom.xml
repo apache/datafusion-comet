@@ -112,6 +112,10 @@ under the License.
       <classifier>tests</classifier>
     </dependency>
     <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
+    </dependency>
+    <dependency>
       <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
            create encrypted tables (only Hive wires the KMS-backed EncryptionManager). Version and
            scope come from the parent pom's dependencyManagement. -->

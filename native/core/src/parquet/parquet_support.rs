@@ -19,10 +19,11 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::field_resolver::FieldResolver;
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
-    make_array, FixedSizeBinaryArray, GenericListViewArray, MapArray, OffsetSizeTrait, StringArray,
+    make_array, BooleanBufferBuilder, FixedSizeBinaryArray, GenericListViewArray, MapArray,
+    OffsetSizeTrait, StringArray,
 };
 use arrow::buffer::NullBuffer;
-use arrow::compute::can_cast_types;
+use arrow::compute::{can_cast_types, take};
 use arrow::datatypes::{FieldRef, Fields};
 use arrow::{
     array::{
@@ -41,7 +42,7 @@ use datafusion::execution::object_store::{
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::physical_plan::ColumnarValue;
 use datafusion_comet_common::SparkError;
-use datafusion_comet_spark_expr::EvalMode;
+use datafusion_comet_spark_expr::{spark_cast, EvalMode, SparkCastOptions};
 use log::debug;
 use object_store::path::Path;
 use object_store::{parse_url, ObjectStore, ObjectStoreScheme};
@@ -207,16 +208,19 @@ fn parquet_convert_array(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
 ) -> DataFusionResult<ArrayRef> {
-    parquet_convert_array_impl(array, to_type, parquet_options, None).map(|(array, _)| array)
+    parquet_convert_array_impl(array, to_type, parquet_options, None, false).map(|(array, _)| array)
 }
 
 // The boolean records whether any requested leaf exists in the file schema, independent
 // of the values' nullness. Spark propagates missing children through nested containers.
+// `in_map_key` is set below a map's key field, where a BINARY value read as a string keeps its
+// bytes instead of being decoded; see the `Binary` arm.
 fn parquet_convert_array_impl(
     array: ArrayRef,
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
     parent_nulls: Option<&NullBuffer>,
+    in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     use DataType::*;
     let from_type = array.data_type();
@@ -239,6 +243,7 @@ fn parquet_convert_array_impl(
             to_type,
             parquet_options,
             visible.as_ref(),
+            in_map_key,
         ),
         (
             List(_) | LargeList(_) | FixedSizeList(_, _) | ListView(_) | LargeListView(_),
@@ -256,6 +261,7 @@ fn parquet_convert_array_impl(
                 to_inner_type.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
+                in_map_key,
             )?;
             if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
                 return Ok((new_null_array(to_type, array.len()), false));
@@ -318,7 +324,7 @@ fn parquet_convert_array_impl(
             ))
         }
         (Map(_, ordered_from), Map(_, ordered_to)) if ordered_from == ordered_to =>
-            return parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow)
+            return parquet_convert_map_to_map(array.as_map(), to_type, parquet_options, *ordered_to, visible.as_ref(), checked_timestamp_overflow, in_map_key)
             ,
         // Iceberg stores UUIDs as 16-byte fixed binary but Spark expects string representation.
         // Arrow doesn't support casting FixedSizeBinary to Utf8, so we handle it manually.
@@ -341,6 +347,60 @@ fn parquet_convert_array_impl(
                 .collect();
 
             Ok(Arc::new(string_array))
+        }
+        // Unannotated BINARY read as a string. Spark's cast replaces malformed UTF-8 with
+        // U+FFFD, where Arrow's safe cast below would return NULL. Top-level columns don't
+        // reach this arm (#7032). The reader keeps a file's ARROW:schema types, so an Arrow
+        // writer's `LargeBinary` or `BinaryView` arrives as is; Spark's cast takes only
+        // `Binary`, and converting `LargeBinary` reuses its value buffer.
+        (Binary | LargeBinary | BinaryView, Utf8) => {
+            let array = match from_type {
+                Binary => array,
+                _ => cast_with_options(&array, &Binary, &PARQUET_OPTIONS)?,
+            };
+            if in_map_key {
+                // Spark tells map keys apart by their bytes. Decoding turns the keys `FF` and
+                // `EF BF BD` into the same U+FFFD, so a lookup of one returns the other's value
+                // and `map_from_entries` fails with DUPLICATED_MAP_KEY. A key keeps its bytes
+                // instead, unchecked, as a top-level value does (#7032).
+                let (offsets, values, nulls) = array.as_binary::<i32>().clone().into_parts();
+                let keys = unsafe { StringArray::new_unchecked(offsets, values, nulls) };
+                return Ok((Arc::new(keys), true));
+            }
+            // Binary to Utf8 reads only the binary output style, which a scan leaves unset, and
+            // whether the reader owns the input's buffers, which lets valid values share them.
+            let mut cast_options = SparkCastOptions::new_without_timezone(EvalMode::Legacy);
+            cast_options.is_adapting_schema = true;
+            let len = array.len();
+            spark_cast(ColumnarValue::Array(array), to_type, &cast_options)?.into_array(len)
+        }
+        // The same schema can dictionary-encode such a value. Decode each dictionary value once
+        // through the arm above, then expand the keys, as Arrow's cast would. Expanding flattens
+        // the batch into one string array with 32-bit offsets, so a batch whose rows reference
+        // wide entries many times can decode past `i32::MAX` bytes and fail where Spark, which
+        // keeps the dictionary, succeeds (#7254).
+        (Dictionary(_, value_type), Utf8) if matches!(value_type.as_ref(), Binary | LargeBinary) => {
+            let dictionary = array.as_any_dictionary();
+            let keys = dictionary.normalized_keys();
+            let key_nulls = dictionary.keys().nulls();
+            let (values, _) = parquet_convert_array_impl(
+                referenced_dictionary_values(dictionary.values(), &keys, key_nulls)?,
+                to_type,
+                parquet_options,
+                None,
+                in_map_key,
+            )?;
+            let decoded_bytes =
+                decoded_bytes(values.as_string::<i32>().value_offsets(), &keys, key_nulls);
+            if decoded_bytes > i32::MAX as usize {
+                return Err(DataFusionError::Execution(format!(
+                    "Decoding the dictionary-encoded BINARY values of one batch as strings \
+                     takes {decoded_bytes} bytes, more than the {} a string column holds. \
+                     Lower spark.comet.batchSize so that a batch holds fewer rows.",
+                    i32::MAX
+                )));
+            }
+            Ok(take(values.as_ref(), dictionary.keys(), None)?)
         }
         // If Arrow cast supports the cast, delegate the cast to Arrow
         _ if can_cast_types(from_type, to_type) => {
@@ -487,6 +547,7 @@ fn parquet_convert_struct_to_struct(
     to_type: &DataType,
     parquet_options: &SparkParquetOptions,
     parent_nulls: Option<&NullBuffer>,
+    in_map_key: bool,
 ) -> DataFusionResult<(ArrayRef, bool)> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
@@ -501,6 +562,7 @@ fn parquet_convert_struct_to_struct(
                         to_field.data_type(),
                         parquet_options,
                         parent_nulls,
+                        in_map_key,
                     )?;
                     cast_fields.push(converted);
                     field_overlap |= child_overlap;
@@ -541,6 +603,7 @@ fn parquet_convert_map_to_map(
     to_ordered: bool,
     parent_nulls: Option<&NullBuffer>,
     checked_timestamp_overflow: bool,
+    in_map_key: bool,
 ) -> Result<(ArrayRef, bool), DataFusionError> {
     match to_data_type {
         DataType::Map(entries_field, _) => {
@@ -561,12 +624,14 @@ fn parquet_convert_map_to_map(
                 key_field.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
+                true,
             )?;
             let (value_array, value_overlap) = parquet_convert_array_impl(
                 Arc::clone(from.values()),
                 value_field.data_type(),
                 parquet_options,
                 child_visibility.as_ref(),
+                in_map_key,
             )?;
             let field_overlap = key_overlap || value_overlap;
             if !field_overlap && parquet_options.return_null_struct_if_all_fields_missing {
@@ -592,6 +657,47 @@ fn parquet_convert_map_to_map(
             "Expected MapType. Got: {dt}"
         ))),
     }
+}
+
+/// Hides the dictionary entries that no key of the batch references behind a null, so that
+/// decoding the values touches only the entries the batch uses. A row group's dictionary backs
+/// every batch read from the row group, so a wide ill-formed entry that one batch uses would
+/// otherwise be decoded again for each of the others. A dictionary of up to 64 KiB is returned as
+/// is: decoding it costs less than finding the referenced entries.
+fn referenced_dictionary_values(
+    values: &ArrayRef,
+    keys: &[usize],
+    key_nulls: Option<&NullBuffer>,
+) -> DataFusionResult<ArrayRef> {
+    const SMALL_DICTIONARY_BYTES: usize = 64 * 1024;
+    if values.get_buffer_memory_size() <= SMALL_DICTIONARY_BYTES {
+        return Ok(Arc::clone(values));
+    }
+    let mut referenced = BooleanBufferBuilder::new(values.len());
+    referenced.append_n(values.len(), false);
+    for (row, key) in keys.iter().enumerate() {
+        if key_nulls.is_none_or(|nulls| nulls.is_valid(row)) {
+            referenced.set_bit(*key, true);
+        }
+    }
+    let referenced = referenced.finish();
+    if referenced.count_set_bits() == values.len() {
+        return Ok(Arc::clone(values));
+    }
+    let nulls = NullBuffer::union(values.nulls(), Some(&NullBuffer::new(referenced)));
+    Ok(make_array(
+        values.to_data().into_builder().nulls(nulls).build()?,
+    ))
+}
+
+/// The bytes that expanding the dictionary `values` (given by their `offsets`) through `keys`
+/// writes, counting the rows that `key_nulls` keeps.
+fn decoded_bytes(offsets: &[i32], keys: &[usize], key_nulls: Option<&NullBuffer>) -> usize {
+    keys.iter()
+        .enumerate()
+        .filter(|(row, _)| key_nulls.is_none_or(|nulls| nulls.is_valid(*row)))
+        .map(|(_, key)| (offsets[key + 1] - offsets[*key]) as usize)
+        .sum()
 }
 
 /// Gets the key field from the entries of a map.  For all other types returns None.
@@ -1108,6 +1214,195 @@ mod tests {
                 "{path} with aliases {aliases:?} and libhdfs {libhdfs:?}"
             );
         }
+    }
+
+    #[test]
+    fn nested_binary_to_string_decodes_invalid_utf8_like_spark() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{ArrayRef, AsArray, BinaryArray, ListArray};
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let values = BinaryArray::from(vec![Some(b"one".as_slice()), Some(&[0xff])]);
+        let input: ArrayRef = Arc::new(ListArray::new(
+            Arc::new(Field::new("element", DataType::Binary, true)),
+            OffsetBuffer::new(vec![0, 2].into()),
+            Arc::new(values),
+            None,
+        ));
+        let to_type = DataType::List(Arc::new(Field::new("element", DataType::Utf8, true)));
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+
+        let result = parquet_convert_array(input, &to_type, &options).unwrap();
+        let strings = result.as_list::<i32>().values().as_string::<i32>();
+        assert_eq!(strings.value(0), "one");
+        assert_eq!(strings.value(1), "\u{fffd}");
+    }
+
+    /// A map key keeps its bytes, also inside a struct key, so that keys that differ only in
+    /// ill-formed bytes stay distinct, as in Spark. The map's values are decoded.
+    #[test]
+    fn nested_binary_to_string_keeps_map_key_bytes() {
+        use super::{parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{
+            ArrayRef, AsArray, BinaryArray, DictionaryArray, Int32Array, MapArray, StructArray,
+        };
+        use arrow::buffer::OffsetBuffer;
+        use arrow::datatypes::{DataType, Field, Fields, Int32Type};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let ff: &[u8] = &[0xFF];
+        let replacement = "\u{fffd}".as_bytes();
+        let key_bytes = BinaryArray::from(vec![ff, replacement]);
+        // The same keys dictionary-encoded, in an order `take` has to follow, past an entry no
+        // key references.
+        let dictionary_keys = DictionaryArray::<Int32Type>::new(
+            Int32Array::from(vec![2, 1]),
+            Arc::new(BinaryArray::from(vec![b"zzz".as_slice(), replacement, ff])),
+        );
+        let struct_keys = StructArray::from(vec![(
+            Arc::new(Field::new("s", DataType::Binary, true)),
+            Arc::new(key_bytes.clone()) as ArrayRef,
+        )]);
+        let values = BinaryArray::from(vec![ff, b"two".as_slice()]);
+        let map_type = |key_type: DataType, value_type: DataType| {
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("key", key_type, false),
+                        Field::new("value", value_type, true),
+                    ])),
+                    false,
+                )),
+                false,
+            )
+        };
+        let struct_type =
+            |inner: DataType| DataType::Struct(Fields::from(vec![Field::new("s", inner, true)]));
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+
+        for (keys, from_key_type, to_key_type) in [
+            (
+                Arc::new(key_bytes.clone()) as ArrayRef,
+                DataType::Binary,
+                DataType::Utf8,
+            ),
+            (
+                Arc::new(struct_keys) as ArrayRef,
+                struct_type(DataType::Binary),
+                struct_type(DataType::Utf8),
+            ),
+            (
+                Arc::new(dictionary_keys) as ArrayRef,
+                DataType::Dictionary(Box::new(DataType::Int32), Box::new(DataType::Binary)),
+                DataType::Utf8,
+            ),
+        ] {
+            let from_type = map_type(from_key_type.clone(), DataType::Binary);
+            let DataType::Map(entries, _) = &from_type else {
+                unreachable!()
+            };
+            let DataType::Struct(entry_fields) = entries.data_type() else {
+                unreachable!()
+            };
+            let input: ArrayRef = Arc::new(MapArray::new(
+                Arc::clone(entries),
+                OffsetBuffer::new(vec![0, 2].into()),
+                StructArray::new(
+                    entry_fields.clone(),
+                    vec![keys, Arc::new(values.clone())],
+                    None,
+                ),
+                None,
+                false,
+            ));
+            let to_type = map_type(to_key_type.clone(), DataType::Utf8);
+
+            let result = parquet_convert_array(input, &to_type, &options).unwrap();
+            let map = result.as_map();
+            let key_strings = match to_key_type {
+                DataType::Utf8 => map.keys().as_string::<i32>(),
+                _ => map.keys().as_struct().column(0).as_string::<i32>(),
+            };
+            // The keys hold their original bytes, unchecked, so read them as bytes.
+            assert_eq!(key_strings.value_offsets(), &[0, 1, 4]);
+            assert_eq!(key_strings.value_data(), [ff, replacement].concat());
+            let value_strings = map.values().as_string::<i32>();
+            assert_eq!(value_strings.value(0), "\u{fffd}");
+            assert_eq!(value_strings.value(1), "two");
+        }
+    }
+
+    /// Decoding a dictionary touches only the entries the batch references, and the wide
+    /// ill-formed entry another batch uses stays hidden behind a null.
+    #[test]
+    fn referenced_dictionary_values_hides_unreferenced_entries() {
+        use super::referenced_dictionary_values;
+        use arrow::array::{Array, ArrayRef, BinaryArray};
+        use arrow::buffer::NullBuffer;
+        use std::sync::Arc;
+
+        let wide = vec![0xFF; 86_016];
+        let values: ArrayRef = Arc::new(BinaryArray::from(vec![
+            b"normal".as_slice(),
+            wide.as_slice(),
+            b"other".as_slice(),
+        ]));
+        let hidden = referenced_dictionary_values(&values, &[0, 2, 0], None).unwrap();
+        assert!(hidden.is_valid(0));
+        assert!(hidden.is_null(1));
+        assert!(hidden.is_valid(2));
+
+        // A null key's entry doesn't count as referenced.
+        let nulls = NullBuffer::from(vec![true, false, true]);
+        let hidden = referenced_dictionary_values(&values, &[0, 1, 0], Some(&nulls)).unwrap();
+        assert!(hidden.is_null(1));
+
+        // Every entry referenced, or a small dictionary: the values are returned as they are.
+        let all = referenced_dictionary_values(&values, &[0, 1, 2], None).unwrap();
+        assert!(Arc::ptr_eq(&all, &values));
+        let small: ArrayRef = Arc::new(BinaryArray::from(vec![b"a".as_slice(), b"b"]));
+        let same = referenced_dictionary_values(&small, &[0], None).unwrap();
+        assert!(Arc::ptr_eq(&same, &small));
+    }
+
+    /// The bytes a batch's keys expand a decoded dictionary to are counted from the decoded
+    /// values, so that a batch past what a string column holds is reported before `take`
+    /// overflows the offsets. The error itself needs a 2 GiB batch and is not exercised here.
+    #[test]
+    fn nested_dictionary_binary_to_string_counts_decoded_bytes() {
+        use super::{decoded_bytes, parquet_convert_array, SparkParquetOptions};
+        use arrow::array::{Array, ArrayRef, AsArray, BinaryArray, DictionaryArray, Int32Array};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Int32Type};
+        use datafusion_comet_spark_expr::EvalMode;
+        use std::sync::Arc;
+
+        let offsets = [0, 1 << 30, (1 << 30) + 5];
+        assert_eq!(decoded_bytes(&offsets, &[0, 0, 0], None), 3 << 30);
+        let nulls = NullBuffer::from(vec![true, false, true]);
+        assert_eq!(
+            decoded_bytes(&offsets, &[0, 0, 1], Some(&nulls)),
+            (1 << 30) + 5
+        );
+
+        // The expanded, decoded size is checked, not the input's: 8 keys that reference one
+        // 1 KiB entry decode to 24 KiB, which fits.
+        let wide = vec![0xFF; 1024];
+        let values = BinaryArray::from(vec![b"one".as_slice(), wide.as_slice()]);
+        let input: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::new(
+            Int32Array::from(vec![1; 8]),
+            Arc::new(values),
+        ));
+        let options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+        let result = parquet_convert_array(input, &DataType::Utf8, &options).unwrap();
+        let strings = result.as_string::<i32>();
+        assert_eq!(strings.len(), 8);
+        assert_eq!(strings.value(7).len(), 3 * 1024);
     }
 
     /// Checks parser-backed I/O labels without constructing stores, including libhdfs overrides
