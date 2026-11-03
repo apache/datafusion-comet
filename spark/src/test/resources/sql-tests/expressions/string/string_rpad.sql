@@ -61,32 +61,30 @@ query expect_dispatch(rpad)
 SELECT rpad('hi', 5, 'xy') FROM test_rpad
 
 -- The string argument references a column but is a scalar for the whole batch when
--- every row takes the subquery branch (issue #7245).
-statement
-CREATE TABLE test_rpad_scalar_str(id int, s string) USING parquet
-
-statement
-INSERT INTO test_rpad_scalar_str VALUES (1, 'ab'), (2, 'cd')
+-- every row takes the subquery branch (issue #7245). max(s) is 'é', which is not ASCII,
+-- and the predicate holds for every row without being folded.
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), len, 'xy') FROM test_rpad
 
 query expect_native(rpad)
-SELECT id, rpad(IF(id > 0, (SELECT max(s) FROM test_rpad_scalar_str), s), 5, '0') FROM test_rpad_scalar_str
+SELECT rpad(CASE WHEN coalesce(len, 0) > -1000 THEN (SELECT max(s) FROM test_rpad) ELSE s END, len, 'xy') FROM test_rpad
 
 query expect_native(rpad)
-SELECT id, rpad(CASE WHEN id > 0 THEN (SELECT max(s) FROM test_rpad_scalar_str) ELSE s END, 5, '0') FROM test_rpad_scalar_str
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), len) FROM test_rpad
 
 query expect_native(rpad)
-SELECT id, rpad(IF(id > 0, (SELECT max(s) FROM test_rpad_scalar_str), s), 1) FROM test_rpad_scalar_str
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), 3, 'x') FROM test_rpad
 
 query expect_native(rpad)
-SELECT id, rpad(IF(id > 0, (SELECT max(s) FROM test_rpad_scalar_str WHERE id > 100), s), 5, '0') FROM test_rpad_scalar_str
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad WHERE len > 100), s), len, 'x') FROM test_rpad
 
 -- Only some rows take the subquery branch, so the string argument stays an array.
 query expect_native(rpad)
-SELECT id, rpad(IF(id > 1, (SELECT max(s) FROM test_rpad_scalar_str), s), 5, '0') FROM test_rpad_scalar_str
+SELECT rpad(IF(len > 3, (SELECT max(s) FROM test_rpad), s), len, 'x') FROM test_rpad
 
 -- A scalar subquery that returns no rows gives a NULL length (issue #7452).
 query expect_native(rpad)
-SELECT id, rpad(s, (SELECT max(id) FROM test_rpad_scalar_str WHERE id > 100)) FROM test_rpad_scalar_str
+SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100)) FROM test_rpad
 
 query expect_native(rpad)
-SELECT id, rpad(s, (SELECT max(id) FROM test_rpad_scalar_str WHERE id > 100), '0') FROM test_rpad_scalar_str
+SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100), 'x') FROM test_rpad

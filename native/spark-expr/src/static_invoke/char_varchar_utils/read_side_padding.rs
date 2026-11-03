@@ -19,7 +19,7 @@ use arrow::array::builder::GenericStringBuilder;
 use arrow::array::cast::as_dictionary_array;
 use arrow::array::types::Int32Type;
 use arrow::array::{make_array, new_null_array, Array, AsArray, DictionaryArray};
-use arrow::array::{ArrayRef, GenericStringArray, OffsetSizeTrait};
+use arrow::array::{ArrayRef, OffsetSizeTrait};
 use arrow::datatypes::DataType;
 use datafusion::common::{cast::as_generic_string_array, DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
@@ -212,26 +212,34 @@ fn spark_read_side_padding2(
             };
             let len = num_rows.unwrap_or(1);
             let result = match string {
-                ScalarValue::Utf8(value) => pad_strings::<i32>(
-                    StringInput::Scalar {
-                        value: value.as_deref(),
-                        len,
-                    },
-                    truncate,
-                    length.clone(),
-                    pad_string,
-                    is_left_pad,
-                )?,
-                ScalarValue::LargeUtf8(value) => pad_strings::<i64>(
-                    StringInput::Scalar {
-                        value: value.as_deref(),
-                        len,
-                    },
-                    truncate,
-                    length.clone(),
-                    pad_string,
-                    is_left_pad,
-                )?,
+                ScalarValue::Utf8(value) | ScalarValue::LargeUtf8(value) => {
+                    let value = value.as_deref();
+                    // A scalar contributes no capacity floor: reserving its bytes for every
+                    // row could exceed the 32-bit offsets of the output.
+                    let strings = std::iter::repeat_n(value, len);
+                    let ascii = value.is_none_or(str::is_ascii);
+                    if matches!(string, ScalarValue::Utf8(_)) {
+                        pad_strings::<i32, _>(
+                            strings,
+                            ascii,
+                            0,
+                            truncate,
+                            length.clone(),
+                            pad_string,
+                            is_left_pad,
+                        )?
+                    } else {
+                        pad_strings::<i64, _>(
+                            strings,
+                            ascii,
+                            0,
+                            truncate,
+                            length.clone(),
+                            pad_string,
+                            is_left_pad,
+                        )?
+                    }
+                }
                 other => {
                     return Err(DataFusionError::Internal(format!(
                         "Unsupported data type {:?} for function rpad/lpad/read_side_padding",
@@ -261,8 +269,11 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     pad_string: &str,
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
-    pad_strings(
-        StringInput::Array(as_generic_string_array::<T>(array)?),
+    let string_array = as_generic_string_array::<T>(array)?;
+    pad_strings::<T, _>(
+        string_array.iter(),
+        string_array.is_ascii(),
+        string_array.value_data().len(),
         truncate,
         pad_type,
         pad_string,
@@ -270,47 +281,12 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     )
 }
 
-/// The strings to pad: a string array, or one value shared by `len` rows.
-enum StringInput<'a, T: OffsetSizeTrait> {
-    Array(&'a GenericStringArray<T>),
-    Scalar { value: Option<&'a str>, len: usize },
-}
-
-impl<'a, T: OffsetSizeTrait> StringInput<'a, T> {
-    fn len(&self) -> usize {
-        match self {
-            Self::Array(array) => array.len(),
-            Self::Scalar { len, .. } => *len,
-        }
-    }
-
-    fn is_ascii(&self) -> bool {
-        match self {
-            Self::Array(array) => array.is_ascii(),
-            Self::Scalar { value, .. } => value.is_none_or(str::is_ascii),
-        }
-    }
-
-    /// Bytes of input values, used to size the output when rows pass through untruncated. A
-    /// scalar counts once: reserving it for every row could exceed the output's offsets.
-    fn value_bytes(&self) -> usize {
-        match self {
-            Self::Array(array) => array.value_data().len(),
-            Self::Scalar { value, .. } => value.map_or(0, str::len),
-        }
-    }
-
-    #[inline]
-    fn value(&self, i: usize) -> Option<&'a str> {
-        match self {
-            Self::Array(array) => array.is_valid(i).then(|| array.value(i)),
-            Self::Scalar { value, .. } => *value,
-        }
-    }
-}
-
-fn pad_strings<T: OffsetSizeTrait>(
-    strings: StringInput<'_, T>,
+/// Pads each of `strings`. `ascii` says every string is ASCII, and `min_capacity` is a floor
+/// for the output's data buffer, covering rows that pass through untruncated.
+fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a str>>>(
+    strings: I,
+    ascii: bool,
+    min_capacity: usize,
     truncate: bool,
     pad_type: ColumnarValue,
     pad_string: &str,
@@ -334,17 +310,17 @@ fn pad_strings<T: OffsetSizeTrait>(
             }
             let mut builder = GenericStringBuilder::<T>::with_capacity(
                 strings.len(),
-                data_capacity.max(strings.value_bytes()),
+                data_capacity.max(min_capacity),
             );
             let padder = Padder {
                 pad: PadPattern::new(pad_string, max_length),
-                ascii: strings.is_ascii(),
+                ascii,
                 truncate,
                 is_left_pad,
             };
 
-            for (i, length) in int_pad_array.iter().enumerate() {
-                match (strings.value(i), length) {
+            for (string, length) in strings.zip(int_pad_array) {
+                match (string, length) {
                     (Some(string), Some(length)) => {
                         if length >= 0 {
                             padder.append(&mut builder, string, length as usize);
@@ -368,13 +344,13 @@ fn pad_strings<T: OffsetSizeTrait>(
             );
             let padder = Padder {
                 pad: PadPattern::new(pad_string, length),
-                ascii: strings.is_ascii(),
+                ascii,
                 truncate,
                 is_left_pad,
             };
 
-            for i in 0..strings.len() {
-                match strings.value(i) {
+            for string in strings {
+                match string {
                     Some(string) => padder.append(&mut builder, string, length),
                     _ => builder.append_null(),
                 }
@@ -838,6 +814,24 @@ mod tests {
             assert_eq!(result.len(), rows);
             assert!(result.iter().all(|v| v == Some("x")));
         }
+    }
+
+    #[test]
+    fn non_ascii_scalar_string_with_array_length() {
+        let args = vec![
+            utf8_scalar(Some("é")),
+            len_array(&[Some(3), Some(1), Some(0), None]),
+            pad_scalar("中"),
+        ];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![
+                Some("中中é".to_string()),
+                Some("é".to_string()),
+                Some("".to_string()),
+                None
+            ]
+        );
     }
 
     // A dictionary scalar is rejected rather than routed to the dictionary arm.
