@@ -19,7 +19,7 @@ use crate::{errors::CometError, execution::planner::TEST_EXEC_CONTEXT_ID};
 use arrow::array::{ArrayRef, RecordBatch, RecordBatchOptions};
 use arrow::compute::{cast_with_options, CastOptions};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use arrow::ffi_stream::ArrowArrayStreamReader;
+use arrow::ffi_stream::RecordBatchStreamReader;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{arrow_datafusion_err, DataFusionError, Result as DataFusionResult};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
@@ -50,7 +50,7 @@ pub struct ScanExec {
     pub exec_context_id: i64,
     /// The C Stream Interface reader. `None` only in unit tests that seed input via
     /// `set_input_batch`.
-    pub input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
+    pub input_source: Option<Arc<Mutex<RecordBatchStreamReader>>>,
     pub input_source_description: String,
     pub data_types: Vec<DataType>,
     pub schema: SchemaRef,
@@ -70,7 +70,7 @@ pub struct ScanExec {
 impl ScanExec {
     pub fn new(
         exec_context_id: i64,
-        input_source: Option<Arc<Mutex<ArrowArrayStreamReader>>>,
+        input_source: Option<Arc<Mutex<RecordBatchStreamReader>>>,
         input_source_description: &str,
         data_types: Vec<DataType>,
     ) -> Result<Self, CometError> {
@@ -126,7 +126,7 @@ impl ScanExec {
         self.waker.wake();
     }
 
-    /// Pulls the next input batch from the upstream `ArrowArrayStreamReader` unless one is
+    /// Pulls the next input batch from the upstream `RecordBatchStreamReader` unless one is
     /// already buffered, then wakes the stream waiting for it.
     pub fn get_next_batch(&mut self) -> Result<(), CometError> {
         if self.input_source.is_none() {
@@ -153,7 +153,7 @@ impl ScanExec {
     /// Pull the next `RecordBatch` from the stream and convert it to an `InputBatch`.
     fn pull_next(
         exec_context_id: i64,
-        reader: &Arc<Mutex<ArrowArrayStreamReader>>,
+        reader: &Arc<Mutex<RecordBatchStreamReader>>,
     ) -> Result<InputBatch, CometError> {
         if exec_context_id == TEST_EXEC_CONTEXT_ID {
             // Unit test path; input batches are seeded directly.
@@ -165,7 +165,7 @@ impl ScanExec {
         // `get_next_batch`, so a contended `try_lock` here would signal a caller bug, not races.
         let mut reader = reader
             .try_lock()
-            .map_err(|_| CometError::Internal("ArrowArrayStreamReader contended".to_string()))?;
+            .map_err(|_| CometError::Internal("RecordBatchStreamReader contended".to_string()))?;
 
         let next = reader.next();
         match next {
@@ -444,7 +444,7 @@ mod import_tests {
     /// Comet counterpart to arrow-rs#10030's `test_decimal128_under_aligned_round_trip`. A JVM
     /// producer (arrow-java's `NettyAllocationManager`) only guarantees the C Data Interface's
     /// recommended 8-byte alignment, so it can hand us a `Decimal128` buffer that is not 16-byte
-    /// aligned (apache/arrow-rs#10028). `ArrowArrayStreamReader`, which `ScanExec` reads from,
+    /// aligned (apache/arrow-rs#10028). `RecordBatchStreamReader`, which `ScanExec` reads from,
     /// imports each batch with `from_ffi_and_data_type`, which realigns such buffers since arrow
     /// 59. Arrow 58 passed them through untouched, so building the typed `Decimal128Array`
     /// panicked in `ScalarBuffer::<i128>::from`. This test guards against an arrow downgrade
@@ -476,7 +476,7 @@ mod import_tests {
         };
         let array = FFI_ArrowArray::new(&struct_data);
 
-        // The same import `ArrowArrayStreamReader::next` performs. (Arrow 60 made the
+        // The same import `RecordBatchStreamReader::next` performs. (Arrow 60 made the
         // `FFI_ArrowArrayStream` callbacks private, so a hand-rolled stream is no longer possible.)
         // SAFETY: `array` was exported above from data whose layout matches the struct type.
         let data = unsafe { from_ffi_and_data_type(array, DataType::Struct(fields)) }.unwrap();

@@ -78,7 +78,7 @@ aws-credential-types = { workspace = true }
 aws-sdk-sts = { workspace = true }
 # Only for the `SharedHttpClient` type in `build_provider`'s test seam; already in the graph.
 aws-smithy-runtime-api = "1.16.0"
-parking_lot = "0.12.5"
+parking_lot = "0.13.0"
 # Optional Delta Lake contrib (enabled by the `contrib-delta` feature). Source lives
 # under `contrib/delta/native/` so non-Delta committers can ignore it.
 comet-contrib-delta = { path = "../../contrib/delta/native", optional = true }
@@ -116,7 +116,7 @@ jni = { workspace = true, features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "350ca76505c9513d16e7dd9910bcd9bde2c911ed" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b" }
 comet-test-udfs = { path = "../comet-test-udfs" }
 # Test-only helpers for a hand-rolled in-memory HTTP client that exercises the web-identity STS
 # retry path without a socket, plus reqsign's SigV4 signer for the signing round-trip test. Already

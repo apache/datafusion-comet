@@ -223,7 +223,7 @@ object CometArrowStream extends Logging {
    * task-completion cleanup. Returns a single-element iterator so this composes with
    * `RDD.mapPartitionsInternal`.
    *
-   * Close ordering: when native drops its `ArrowArrayStreamReader`, the C release callback fires
+   * Close ordering: when native drops its `RecordBatchStreamReader`, the C release callback fires
    * synchronously into `ExportedArrayStreamPrivateData.close` -> `reader.close` -> the VSR's
    * buffers are released. The task-completion listener registered here runs strictly after that
    * (Spark fires listeners in reverse registration order, and the listener that drops the native

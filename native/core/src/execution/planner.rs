@@ -59,7 +59,7 @@ use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
-use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::ffi_stream::{FFI_ArrowArrayStream, RecordBatchStreamReader};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     config::ConfigOptions,
@@ -1907,7 +1907,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
+                // struct; native takes ownership via `RecordBatchStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1919,7 +1919,7 @@ impl PhysicalPlanner {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        ArrowArrayStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                        RecordBatchStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
