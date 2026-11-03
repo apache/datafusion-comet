@@ -20,7 +20,7 @@
 package org.apache.comet.exec
 
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.CometExplodeExec
+import org.apache.spark.sql.comet.{CometExplodeExec, CometTestGenerators}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
 import org.apache.spark.sql.functions.col
@@ -788,18 +788,21 @@ class CometGenerateExecSuite extends CometTestBase {
 
   test("Hive UDTF runs natively and emits its terminate rows") {
     CometHiveUDTFs.register(spark, "counting_udtf", classOf[CountingUDTF])
-    withGeneratorTable {
-      // The row `close` emits carries the last input row's `id`, as in Spark.
-      checkSparkAnswerAndOperator(sql("SELECT id, counting_udtf(s) FROM t"))
-      checkSparkAnswerAndOperator(
-        sql("SELECT id, value, n FROM t LATERAL VIEW OUTER counting_udtf(s) u AS value, n"))
-      // With no input rows only the `close` row remains.
-      checkSparkAnswerAndOperator(sql("SELECT counting_udtf(s) FROM t WHERE id > 10"))
-      // Two identical UDTFs in one plan each keep their own count.
-      checkSparkAnswerAndOperator(sql("""
+    // Two rows per batch, so the running count and the `close` total cross a batch boundary.
+    withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+      withGeneratorTable {
+        // The row `close` emits carries the last input row's `id`, as in Spark.
+        checkSparkAnswerAndOperator(sql("SELECT id, counting_udtf(s) FROM t"))
+        checkSparkAnswerAndOperator(
+          sql("SELECT id, value, n FROM t LATERAL VIEW OUTER counting_udtf(s) u AS value, n"))
+        // With no input rows only the `close` row remains.
+        checkSparkAnswerAndOperator(sql("SELECT counting_udtf(s) FROM t WHERE id > 10"))
+        // Two identical UDTFs in one plan each keep their own count.
+        checkSparkAnswerAndOperator(sql("""
           |SELECT id, a.value, a.n, b.value, b.n FROM t
           |LATERAL VIEW counting_udtf(s) a AS value, n
           |LATERAL VIEW counting_udtf(s) b AS value, n""".stripMargin))
+      }
     }
   }
 
@@ -807,7 +810,8 @@ class CometGenerateExecSuite extends CometTestBase {
     CometHiveUDTFs.register(spark, "counting_udtf", classOf[CountingUDTF])
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-      SQLConf.SHUFFLE_PARTITIONS.key -> "3") {
+      SQLConf.SHUFFLE_PARTITIONS.key -> "3",
+      CometConf.COMET_BATCH_SIZE.key -> "1") {
       withGeneratorTable {
         // Each partition ends with one `close` row holding its own count, so the counts add up
         // to the input rows whichever partition each row lands in.
@@ -815,6 +819,30 @@ class CometGenerateExecSuite extends CometTestBase {
             |SELECT count(*), sum(n) FROM (
             |  SELECT counting_udtf(s) FROM (SELECT * FROM t DISTRIBUTE BY id))
             |WHERE value = 'total'""".stripMargin))
+      }
+    }
+  }
+
+  test("generator rows that share a reused buffer are kept apart") {
+    CometTestGenerators.registerReusedBuffer(spark, "reused_buffer")
+    withGeneratorTable {
+      checkSparkAnswerWithNativeGenerate(
+        sql("SELECT id, reused_buffer(encode(s, 'UTF-8')) FROM t"))
+      checkSparkAnswerWithNativeGenerate(
+        sql("SELECT id, b FROM t LATERAL VIEW OUTER reused_buffer(encode(s, 'UTF-8')) r AS b"))
+    }
+  }
+
+  test("terminate with no rows over a non-nullable carried column adds nothing") {
+    // `k` is never null, so the column that stands in for a last input row cannot hold the nulls
+    // a partition with no input would give it, and `json_tuple` has no `terminate` rows to emit.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withGeneratorTable {
+        val df = sql("""
+            |SELECT k, json_tuple(js, 'a') FROM (
+            |  SELECT 1 AS k, js FROM t WHERE id > 10)""".stripMargin)
+        checkSparkAnswerWithNativeGenerate(df)
+        assert(df.collect().isEmpty)
       }
     }
   }
@@ -827,10 +855,30 @@ class CometGenerateExecSuite extends CometTestBase {
     }
   }
 
-  test("EXCEPT ALL replicates rows through a JVM generator") {
+  test("EXCEPT ALL replicates rows with array_repeat, not a JVM generator") {
     withGeneratorTable {
-      checkSparkAnswerWithNativeGenerate(
-        sql("SELECT s FROM t UNION ALL SELECT s FROM t EXCEPT ALL SELECT 'a'"))
+      val (_, cometPlan) =
+        checkSparkAnswer(sql("SELECT s FROM t UNION ALL SELECT s FROM t EXCEPT ALL SELECT 'a'"))
+      val generate = collectFirst(cometPlan) { case generate: CometExplodeExec => generate }
+      assert(generate.isDefined, s"Expected a native generator in\n$cometPlan")
+      assert(!generate.get.nativeOp.getExplode.getChild.hasJvmScalarUdf)
+    }
+  }
+
+  test("EXCEPT ALL repeats rows by a count of zero, one and many") {
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withTempView("l", "r") {
+        Seq(("a", 1), ("b", 1), ("b", 1), ("b", 1), ("c", 1), (null, 1), (null, 1))
+          .toDF("k", "v")
+          .createOrReplaceTempView("l")
+        Seq(("a", 1), ("b", 1), ("c", 1), ("c", 1), (null, 1))
+          .toDF("k", "v")
+          .createOrReplaceTempView("r")
+        checkSparkAnswerWithNativeGenerate(
+          sql("SELECT k, v FROM l EXCEPT ALL SELECT k, v FROM r"))
+        checkSparkAnswerWithNativeGenerate(
+          sql("SELECT k, v FROM l INTERSECT ALL SELECT k, v FROM r"))
+      }
     }
   }
 

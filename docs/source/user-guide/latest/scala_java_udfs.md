@@ -44,18 +44,21 @@ This feature is enabled by default. Set `spark.comet.exec.scalaUDF.codegen.enabl
 - Aggregate UDFs (`ScalaAggregator`, `TypedImperativeAggregate`, the legacy `UserDefinedAggregateFunction`).
 - Python UDTFs (`@udtf`).
 - Python `@udf` and Pandas `@pandas_udf`.
-
-## Generators
-
-A deterministic generator that Comet has no native implementation of, such as a Hive `GenericUDTF` registered with `CREATE FUNCTION` or Spark's `json_tuple`, runs inside Comet's native generate operator. The operator calls the generator on the JVM for each batch and keeps one generator instance per partition, so state the generator holds carries across batches. Once a partition's input ends, the rows of the generator's `terminate()` (a Hive UDTF's `close()`) follow, carrying the partition's last input row, as in Spark.
-
-Set `spark.comet.exec.jvmGenerator.enabled` to `false` to run such a generator in Spark instead.
-
 - Hive `GenericUDF` and `SimpleUDF`.
 - `NullType` and `UserDefinedType` arguments and return types. UDT-typed columns fall back to Spark; to keep execution in the Comet pipeline, store and read the underlying representation directly (e.g. write MLlib `Vector` outputs as `Struct<type: Byte, size: Int, indices: Array<Int>, values: Array<Double>>` rather than `VectorUDT`).
 - Trees whose total nested-field count (output plus all input columns the UDF tree references) exceeds `spark.sql.codegen.maxFields` (default 100). Comet refuses these at plan time and the operator falls back to Spark.
 
 When a UDF is rejected, the reason surfaces through Comet's standard fallback diagnostics; the query still runs on Spark.
+
+## Generators
+
+A deterministic generator that Comet has no native implementation of, such as a Hive `GenericUDTF` registered with `CREATE FUNCTION` or Spark's `json_tuple`, runs inside Comet's native generate operator. The operator calls the generator on the JVM for each batch and keeps one generator instance per partition, so state the generator holds carries across batches. Once a partition's input ends, the rows of the generator's `terminate()` (a Hive UDTF's `close()`) follow, carrying the partition's last input row, as in Spark.
+
+The operator works a batch at a time rather than a row at a time. It evaluates the generator for every row of a batch, and holds all the rows one input row generates, before it passes any of them on. A `LIMIT` above the generator does not stop evaluation partway through a batch, so a generator that raises an error on a later row can fail a query Spark would have satisfied from earlier rows, and a generator that emits a very large number of rows for one input row needs memory for all of them.
+
+Spark's `EXCEPT ALL` and `INTERSECT ALL` use an internal generator, `ReplicateRows`. Comet runs it natively as `inline` over `array_repeat`, without the JVM.
+
+Set `spark.comet.exec.jvmGenerator.enabled` to `false` to run such a generator in Spark instead.
 
 ## Behavior
 

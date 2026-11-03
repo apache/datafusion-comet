@@ -31,7 +31,7 @@ import org.apache.arrow.vector.{BitVector, ValueVector, VarBinaryVector}
 import org.apache.arrow.vector.types.pojo.Field
 import org.apache.spark.SparkEnv
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Generator, GenericInternalRow, Literal, Nondeterministic, Unevaluable}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, AttributeSeq, BindReferences, Expression, Generator, GenericInternalRow, Literal, Unevaluable, UnsafeProjection}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.comet.execution.arrow.ArrowWriter
 import org.apache.spark.sql.execution.ExecSubqueryExpression
@@ -84,15 +84,17 @@ class CometGeneratorUDF extends CometUDF {
     val digest = ByteBuffer.wrap(binaryScalar(inputs(0)))
     val bound = generators.getOrElseUpdate(
       (digest, planId),
-      BoundGenerator(deserialize(binaryScalar(inputs(1))), partitionIndex))
+      new BoundGenerator(deserialize(binaryScalar(inputs(1)))))
 
     val output = CometBatchKernelCodegen.allocateOutput(bound.outputField, numRows, 0)
     try {
       val writer = ArrowWriter.createFieldWriter(output)
       val outputRow = new GenericInternalRow(1)
       def writeRows(rows: Any): Unit = {
+        // A generator may reuse a row's buffers from one `next` to the next, which
+        // `GenericInternalRow.copy` shares rather than copies.
         val copies = new ArrayBuffer[Any]
-        iteratorOf(rows).foreach(row => copies += row.copy())
+        iteratorOf(rows).foreach(row => copies += bound.snapshot(row))
         outputRow.update(0, new GenericArrayData(copies.toArray))
         writer.write(outputRow, 0)
       }
@@ -217,16 +219,13 @@ object CometGeneratorUDF {
   /**
    * A generator ready to run in one native plan, and the Arrow field its output is exported as.
    */
-  private case class BoundGenerator(generator: Generator, outputField: Field)
+  private class BoundGenerator(val generator: Generator) {
+    val outputField: Field = CometGeneratorUDF.outputField(generator)
 
-  private object BoundGenerator {
-    def apply(generator: Generator, partitionIndex: Int): BoundGenerator = {
-      generator.foreach {
-        case n: Nondeterministic => n.initialize(partitionIndex)
-        case _ =>
-      }
-      BoundGenerator(generator, outputField(generator))
-    }
+    private val projection = UnsafeProjection.create(generator.elementSchema)
+
+    /** A copy of `row` that owns its bytes, so it survives the generator reusing its buffers. */
+    def snapshot(row: InternalRow): InternalRow = projection(row).copy()
   }
 
   /** The type of each element of the output: the rows one input row generates. */

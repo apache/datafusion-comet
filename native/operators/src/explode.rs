@@ -524,7 +524,23 @@ impl ExplodeStream {
             RecordBatch::try_new_with_options(Arc::new(Schema::empty()), vec![], &options)?;
         let rows = terminate.evaluate(&no_columns)?.into_array(1)?;
 
-        let input_schema = self.input.schema();
+        // Nothing to emit, so there is no need to build the placeholder row below. That row's
+        // columns are null when no input row arrived, which a non-nullable column rejects.
+        let list = rows.as_list::<i32>();
+        if list.is_null(0) || list.value_length(0) == 0 {
+            return Ok(None);
+        }
+
+        // The output schema marks every column terminate may null as nullable (see the planner),
+        // so the placeholder batch has to as well.
+        let input_schema = Arc::new(Schema::new(
+            self.input
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone().with_nullable(true))
+                .collect::<Vec<_>>(),
+        ));
         let mut columns = match self.last_row.take() {
             Some(row) => row.columns().to_vec(),
             None => input_schema
@@ -2063,6 +2079,60 @@ mod tests {
             explode_with_terminate(input, vec![], NullHandling::PreserveAndExpandEmpty).await,
             [(Some(1), None)]
         );
+    }
+
+    /// `terminate` over an empty input whose carried column is non-nullable, with the nullable
+    /// output column the planner declares for it.
+    async fn terminate_over_empty_non_nullable_input(terminate: Vec<i32>) -> usize {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("l", DataType::new_list(DataType::Int32, true), true),
+        ]));
+        let source = MemorySourceConfig::try_new_exec(
+            &[vec![RecordBatch::new_empty(Arc::clone(&input_schema))]],
+            input_schema,
+            None,
+        )
+        .unwrap();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, true),
+            Field::new("l", DataType::Int32, true),
+        ]));
+        let rows = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![Some(
+            terminate.into_iter().map(Some).collect::<Vec<_>>(),
+        )]);
+        let terminate = Arc::new(datafusion::physical_expr::expressions::Literal::new(
+            datafusion::common::ScalarValue::List(Arc::new(rows)),
+        ));
+        let explode = ExplodeExec::new(
+            source,
+            vec![ListUnnest {
+                index_in_input_schema: 1,
+                depth: 1,
+            }],
+            vec![],
+            output_schema,
+            UnnestOptions::new().with_null_handling(NullHandling::Drop),
+        )
+        .unwrap()
+        .with_terminate(terminate)
+        .unwrap();
+        datafusion::physical_plan::common::collect(explode.execute(0, Arc::default()).unwrap())
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum()
+    }
+
+    #[tokio::test]
+    async fn empty_terminate_over_empty_non_nullable_input_adds_nothing() {
+        assert_eq!(terminate_over_empty_non_nullable_input(vec![]).await, 0);
+    }
+
+    #[tokio::test]
+    async fn terminate_over_empty_non_nullable_input_emits_null_carried_column() {
+        assert_eq!(terminate_over_empty_non_nullable_input(vec![7, 8]).await, 2);
     }
 
     #[test]

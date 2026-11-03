@@ -139,8 +139,16 @@ impl OperatorBuilder for ExplodeBuilder {
         let mut output_fields: Vec<Field> = Vec::new();
 
         // Add all projection columns (non-array columns)
+        // The rows `terminate` yields carry the last input row's columns, which are all null when
+        // the input is empty, so those columns are nullable whatever the input says.
+        let carried_nullable = explode.terminate.is_some();
         for i in 0..projections.len() {
-            output_fields.push(project_schema.field(i).clone());
+            let field = project_schema.field(i).clone();
+            output_fields.push(if carried_nullable {
+                field.with_nullable(true)
+            } else {
+                field
+            });
         }
 
         let array_input_index = if explode.position {
