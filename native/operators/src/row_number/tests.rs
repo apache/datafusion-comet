@@ -23,7 +23,7 @@ use arrow::array::{
 };
 use arrow::buffer::NullBuffer;
 use arrow::compute::concat_batches;
-use arrow::datatypes::{DataType, Field, Int64Type, Schema};
+use arrow::datatypes::{DataType, Field, Int64Type, Int8Type, Schema};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
@@ -39,13 +39,20 @@ use datafusion::physical_plan::{collect, ExecutionPlanProperties, InputOrderMode
 use datafusion::prelude::SessionContext;
 
 fn batch(keys: ArrayRef) -> RecordBatch {
+    batch_with_offset(keys, 0)
+}
+
+fn batch_with_offset(keys: ArrayRef, offset: i64) -> RecordBatch {
     let rows = keys.len();
     RecordBatch::try_new(
         Arc::new(Schema::new(vec![
             Field::new("k", keys.data_type().clone(), true),
             Field::new("i", DataType::Int64, false),
         ])),
-        vec![keys, Arc::new(Int64Array::from_iter_values(0..rows as i64))],
+        vec![
+            keys,
+            Arc::new(Int64Array::from_iter_values(offset..offset + rows as i64)),
+        ],
     )
     .unwrap()
 }
@@ -80,7 +87,22 @@ fn window_with_order_mode(
         .unwrap()
         .try_with_sort_information(vec![LexOrdering::new(ordering).unwrap()])
         .unwrap();
-    let input = DataSourceExec::from_data_source(source);
+    window_on_input(
+        DataSourceExec::from_data_source(source),
+        partition_columns,
+        functions,
+        input_order_mode,
+    )
+}
+
+fn window_on_input(
+    input: Arc<dyn ExecutionPlan>,
+    partition_columns: &[&str],
+    functions: &[&str],
+    input_order_mode: InputOrderMode,
+) -> BoundedWindowAggExec {
+    let schema = input.schema();
+    let sort = |name| PhysicalSortExpr::new(col(name, &schema).unwrap(), SortOptions::default());
     let ctx = SessionContext::new();
     let keys = partition_columns
         .iter()
@@ -143,6 +165,147 @@ async fn compare(
             .collect::<Vec<_>>()
     );
     actual
+}
+
+fn row_numbers(batches: &[RecordBatch]) -> Vec<u64> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .column(2)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap()
+                .values()
+                .iter()
+                .copied()
+        })
+        .collect()
+}
+
+fn assert_ordering_rejected(generic: BoundedWindowAggExec, message: &str) {
+    let streaming = RowNumberExec::try_new(generic.clone()).unwrap();
+    let context = Arc::new(TaskContext::default());
+    for plan in [
+        &generic as &dyn ExecutionPlan,
+        &streaming as &dyn ExecutionPlan,
+    ] {
+        let error = plan
+            .execute(0, Arc::clone(&context))
+            .err()
+            .expect("window must reject missing partition ordering");
+        assert!(matches!(
+            &error,
+            datafusion::common::DataFusionError::Execution(_)
+        ));
+        assert!(error.to_string().contains(message), "{error}");
+    }
+}
+
+#[test]
+fn missing_partition_order_is_rejected() {
+    for (keys, partition_columns, declared_columns) in [
+        (vec![1, 2, 1, 2], vec!["k"], vec![]),
+        (vec![1, 1, 2, 2], vec!["k"], vec![]),
+        (vec![1, 1, 2, 2], vec!["k", "i"], vec!["k"]),
+    ] {
+        let input = batch(Arc::new(Int64Array::from(keys)));
+        let schema = input.schema();
+        let ordering = declared_columns
+            .iter()
+            .map(|name| PhysicalSortExpr::new_default(col(name, &schema).unwrap()))
+            .collect::<Vec<_>>();
+        let source = MemorySourceConfig::try_new(&[vec![input]], schema, None)
+            .unwrap()
+            .try_with_sort_information(LexOrdering::new(ordering).into_iter().collect())
+            .unwrap();
+        let generic = window_on_input(
+            DataSourceExec::from_data_source(source),
+            &partition_columns,
+            &["row_number"],
+            InputOrderMode::Sorted,
+        );
+        assert_ordering_rejected(generic, "Expects PARTITION BY expression to be ordered");
+    }
+}
+
+#[test]
+fn sorted_mode_requires_all_cached_partition_keys() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2])));
+    let mut generic =
+        window_with_order_mode(&[input], &["k"], &["row_number"], InputOrderMode::Linear);
+    // The mode is public, but changing it does not rebuild the cached partition-key indices.
+    generic.input_order_mode = InputOrderMode::Sorted;
+    assert_ordering_rejected(
+        generic,
+        "All partition by columns should have an ordering in Sorted mode",
+    );
+}
+
+#[tokio::test]
+async fn global_window_needs_no_declared_partition_order() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 2, 1, 2])));
+    let source =
+        MemorySourceConfig::try_new_exec(&[vec![input.clone()]], input.schema(), None).unwrap();
+    let generic = window_on_input(source, &[], &["row_number"], InputOrderMode::Sorted);
+    let streaming = Arc::new(RowNumberExec::try_new(generic.clone()).unwrap());
+    let ctx = SessionContext::new();
+    let expected = collect(Arc::new(generic), ctx.task_ctx()).await.unwrap();
+    let actual = collect(Arc::clone(&streaming) as _, ctx.task_ctx())
+        .await
+        .unwrap();
+    assert_eq!(
+        concat_batches(&streaming.schema(), &actual).unwrap(),
+        concat_batches(&streaming.schema(), &expected).unwrap()
+    );
+    assert_eq!(row_numbers(&actual), vec![1, 2, 3, 4]);
+}
+
+#[tokio::test]
+async fn partitions_reset_at_batch_boundaries() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2])));
+    let actual = compare(
+        &[input.slice(0, 2), input.slice(2, 2)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2]);
+}
+
+#[tokio::test]
+async fn dictionary_partitions_reset_at_batch_boundaries() {
+    let dictionary = |value: &str| -> ArrayRef {
+        Arc::new(
+            DictionaryArray::<Int8Type>::try_new(
+                Int8Array::from(vec![0, 0]),
+                Arc::new(StringArray::from(vec![value])),
+            )
+            .unwrap(),
+        )
+    };
+    let actual = compare(
+        &[
+            batch_with_offset(dictionary("a"), 0),
+            batch_with_offset(dictionary("b"), 2),
+        ],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2]);
+}
+
+#[tokio::test]
+async fn mixed_batch_retains_its_final_partition_key() {
+    let input = batch(Arc::new(Int64Array::from(vec![1, 1, 2, 2, 3, 3])));
+    let actual = compare(
+        &[input.slice(0, 1), input.slice(1, 4), input.slice(5, 1)],
+        true,
+        &["row_number"],
+    )
+    .await;
+    assert_eq!(row_numbers(&actual), vec![1, 2, 1, 2, 1, 2]);
 }
 
 #[tokio::test]
@@ -211,7 +374,6 @@ async fn empty_input_preserves_schema() {
 
 #[tokio::test]
 async fn dictionary_keys_compare_values_across_different_codebooks() {
-    use arrow::datatypes::Int8Type;
     let first = Arc::new(
         DictionaryArray::<Int8Type>::try_new(
             Int8Array::from(vec![None, Some(0), Some(1), Some(1)]),
@@ -226,7 +388,12 @@ async fn dictionary_keys_compare_values_across_different_codebooks() {
         )
         .unwrap(),
     );
-    let output = compare(&[batch(first), batch(second)], true, &["row_number"]).await;
+    let output = compare(
+        &[batch(first), batch_with_offset(second, 4)],
+        true,
+        &["row_number"],
+    )
+    .await;
     let ranks = output[1]
         .column(2)
         .as_any()
@@ -448,7 +615,6 @@ async fn completion_and_cancellation_release_the_boundary_key() {
 
 #[test]
 fn a_dictionary_boundary_does_not_retain_unused_values() {
-    use arrow::datatypes::Int8Type;
     let values: ArrayRef = Arc::new(StringArray::from(vec![
         "small",
         &"unused".repeat(64 * 1024),
