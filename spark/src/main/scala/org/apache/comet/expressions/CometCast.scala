@@ -576,17 +576,19 @@ object CometCast
    * Whether `cast` cannot raise an error for any value. A TRY cast returns NULL for a value it
    * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
    * cannot fail only where the conversion is always exact, such as a widening one or a string to
-   * its bytes.
+   * its bytes. A cast to or from a timestamp is excluded in every mode: the native kernels go
+   * through chrono, which rejects years Spark accepts, and raise even for TRY.
    */
   private[comet] def cannotFail(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
-    evalMode(cast) match {
+    def isTimestamp(t: DataType) = t == TimestampType || t == TimestampNTZType
+    !isTimestamp(from) && !isTimestamp(to) && (evalMode(cast) match {
       case CometEvalMode.TRY => true
       case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
       case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
       case _ => keyCastCannotFail(from, to)
-    }
+    })
   }
 
   private def isAtomicCastType(dataType: DataType): Boolean = dataType match {

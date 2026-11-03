@@ -100,6 +100,16 @@ SELECT a, s FROM topk_types ORDER BY a, hash(b, s), xxhash64(s), md5(s), sha1(s)
 query
 SELECT a, s FROM topk_types ORDER BY a, initcap(s) LIMIT 3
 
+-- Native timestamp casts reject years that Spark accepts, even for TRY
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, ts FROM topk_types ORDER BY a, CAST(ts AS STRING) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, ts FROM topk_types ORDER BY a, try_cast(ts AS DATE) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, dt FROM topk_types ORDER BY a, try_cast(dt AS TIMESTAMP) LIMIT 3
+
 -- The first key is evaluated for every row in Spark too
 query
 SELECT a, b FROM topk ORDER BY a + 1, b LIMIT 2
