@@ -59,3 +59,27 @@ SELECT lpad('hi', 5, 'x'), lpad('hello', 3, 'x'), lpad('', 3, 'a'), lpad(NULL, 5
 
 query expect_dispatch(lpad)
 SELECT lpad('hi', 5, 'xy') FROM test_lpad
+
+-- The string argument references a column but is a scalar for the whole batch when
+-- every row takes the subquery branch (issue #7245).
+statement
+CREATE TABLE test_lpad_scalar_str(id int, s string) USING parquet
+
+statement
+INSERT INTO test_lpad_scalar_str VALUES (1, 'ab'), (2, 'cd')
+
+query expect_native(lpad)
+SELECT id, lpad(IF(id > 0, (SELECT max(s) FROM test_lpad_scalar_str), s), 5, '0') FROM test_lpad_scalar_str
+
+query expect_native(lpad)
+SELECT id, lpad(CASE WHEN id > 0 THEN (SELECT max(s) FROM test_lpad_scalar_str) ELSE s END, 5, '0') FROM test_lpad_scalar_str
+
+query expect_native(lpad)
+SELECT id, lpad(IF(id > 0, (SELECT max(s) FROM test_lpad_scalar_str), s), 1) FROM test_lpad_scalar_str
+
+query expect_native(lpad)
+SELECT id, lpad(IF(id > 0, (SELECT max(s) FROM test_lpad_scalar_str WHERE id > 100), s), 5, '0') FROM test_lpad_scalar_str
+
+-- Only some rows take the subquery branch, so the string argument stays an array.
+query expect_native(lpad)
+SELECT id, lpad(IF(id > 1, (SELECT max(s) FROM test_lpad_scalar_str), s), 5, '0') FROM test_lpad_scalar_str

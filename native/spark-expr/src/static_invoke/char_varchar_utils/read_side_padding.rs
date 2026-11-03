@@ -181,6 +181,29 @@ fn spark_read_side_padding2(
                 ))),
             }
         }
+        // The string argument can be a scalar even when it references columns, e.g.
+        // `IF(p, (SELECT max(s) FROM t), s)` when every row takes the subquery branch.
+        // Expand it to an array so the arms above handle it.
+        [ColumnarValue::Scalar(string), rest @ ..] => {
+            let num_rows = rest.iter().find_map(|arg| match arg {
+                ColumnarValue::Array(array) => Some(array.len()),
+                ColumnarValue::Scalar(_) => None,
+            });
+            let mut expanded = Vec::with_capacity(args.len());
+            expanded.push(ColumnarValue::Array(
+                string.to_array_of_size(num_rows.unwrap_or(1))?,
+            ));
+            expanded.extend_from_slice(rest);
+            let result = spark_read_side_padding2(&expanded, truncate, is_left_pad)?;
+            match num_rows {
+                Some(_) => Ok(result),
+                // Every argument was a scalar, so the result is one too.
+                None => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+                    &result.to_array(1)?,
+                    0,
+                )?)),
+            }
+        }
         other => Err(DataFusionError::Internal(format!(
             "Unsupported arguments {other:?} for function rpad/lpad/read_side_padding",
         ))),
@@ -582,6 +605,94 @@ mod tests {
         assert_eq!(
             result_values(spark_lpad(&args).unwrap()),
             vec![None, None, None]
+        );
+    }
+
+    fn utf8_scalar(value: Option<&str>) -> ColumnarValue {
+        ColumnarValue::Scalar(ScalarValue::Utf8(value.map(str::to_string)))
+    }
+
+    fn scalar_result(col: ColumnarValue) -> ScalarValue {
+        match col {
+            ColumnarValue::Scalar(value) => value,
+            ColumnarValue::Array(array) => panic!("expected a scalar, got {array:?}"),
+        }
+    }
+
+    // A conditional such as `IF(p, (SELECT max(s) FROM t), s)` evaluates to a
+    // scalar when every row in the batch takes the subquery branch (#7245).
+    #[test]
+    fn scalar_string_with_scalar_length() {
+        let args = vec![utf8_scalar(Some("cd")), len_scalar(5), pad_scalar("0")];
+        assert_eq!(
+            scalar_result(spark_lpad(&args).unwrap()),
+            ScalarValue::Utf8(Some("000cd".to_string()))
+        );
+        assert_eq!(
+            scalar_result(spark_rpad(&args).unwrap()),
+            ScalarValue::Utf8(Some("cd000".to_string()))
+        );
+        let args = vec![utf8_scalar(Some("abcdef")), len_scalar(3)];
+        assert_eq!(
+            scalar_result(spark_rpad(&args).unwrap()),
+            ScalarValue::Utf8(Some("abc".to_string()))
+        );
+        assert_eq!(
+            scalar_result(spark_read_side_padding(&args).unwrap()),
+            ScalarValue::Utf8(Some("abcdef".to_string()))
+        );
+    }
+
+    #[test]
+    fn scalar_string_with_array_length() {
+        let lengths = [Some(3), None, Some(1), Some(-1)];
+        let args = vec![utf8_scalar(Some("ab")), len_array(&lengths)];
+        assert_eq!(
+            result_values(spark_rpad(&args).unwrap()),
+            vec![
+                Some("ab ".to_string()),
+                None,
+                Some("a".to_string()),
+                Some("".to_string()),
+            ]
+        );
+        let args = vec![
+            utf8_scalar(Some("ab")),
+            len_array(&lengths),
+            pad_scalar("x"),
+        ];
+        assert_eq!(
+            result_values(spark_lpad(&args).unwrap()),
+            vec![
+                Some("xab".to_string()),
+                None,
+                Some("a".to_string()),
+                Some("".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn null_scalar_string_yields_null() {
+        let args = vec![utf8_scalar(None), len_scalar(5), pad_scalar("0")];
+        assert_eq!(
+            scalar_result(spark_lpad(&args).unwrap()),
+            ScalarValue::Utf8(None)
+        );
+        let args = vec![utf8_scalar(None), len_array(&[Some(2), None])];
+        assert_eq!(result_values(spark_rpad(&args).unwrap()), vec![None, None]);
+    }
+
+    #[test]
+    fn large_utf8_scalar_string() {
+        let args = vec![
+            ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some("x".to_string()))),
+            len_scalar(3),
+            pad_scalar("ab"),
+        ];
+        assert_eq!(
+            scalar_result(spark_lpad(&args).unwrap()),
+            ScalarValue::LargeUtf8(Some("abx".to_string()))
         );
     }
 
