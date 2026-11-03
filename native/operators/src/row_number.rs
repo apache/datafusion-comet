@@ -203,9 +203,8 @@ impl ExecutionPlan for RowNumberExec {
         };
         let metrics = BaselineMetrics::new(&self.metrics, partition);
         let stream = futures::stream::try_unfold(
-            (input, state, metrics),
-            move |(mut input, mut state, metrics)| {
-                let partition_by = partition_by.clone();
+            (input, state, metrics, partition_by),
+            move |(mut input, mut state, metrics, partition_by)| {
                 let schema = Arc::clone(&schema);
                 async move {
                     let Some(batch) = input.next().await else {
@@ -217,7 +216,7 @@ impl ExecutionPlan for RowNumberExec {
                         state.evaluate(batch, &partition_by, schema, output_count)?
                     };
                     (&output).record_output(&metrics);
-                    Ok(Some((output, (input, state, metrics))))
+                    Ok(Some((output, (input, state, metrics, partition_by))))
                 }
             },
         );
