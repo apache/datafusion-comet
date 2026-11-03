@@ -346,6 +346,24 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
+  test("native text read - self-overlapping lineSep that straddles the input buffer falls back") {
+    withTempDir { dir =>
+      val file = new File(dir, "straddle.txt")
+      // `aab` is found by Hadoop's reader and by an exact search at different places when it
+      // falls on a read-buffer boundary, so the native scan must stay off. With a 4096-byte buffer
+      // Spark reads this file as one row; an exact search would split it into two.
+      val content = "x" * 4092 + "aaaaabTAIL"
+      Files.write(file.toPath, content.getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        val df = spark.read
+          .option("lineSep", "aab")
+          .option("io.file.buffer.size", "4096")
+          .text(file.getAbsolutePath)
+        checkSparkAnswerAndFallbackReason(df, "self-overlapping line separator")
+      }
+    }
+  }
+
   test("native text read - BOM-only file matches Spark for default and BOM separators") {
     withTempDir { dir =>
       val f = new File(dir, "bom-only.txt")
