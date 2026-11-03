@@ -17,6 +17,8 @@
 
 use super::*;
 
+use std::sync::Mutex;
+
 use arrow::array::{
     Array, DictionaryArray, Int64Array, Int8Array, ListArray, StringArray, StringViewArray,
     StructArray,
@@ -27,7 +29,8 @@ use arrow::datatypes::{DataType, Field, Int64Type, Int8Type, Schema};
 use datafusion::common::ScalarValue;
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
-use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool};
+use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryLimit, MemoryPool};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::FunctionRegistry;
 use datafusion::logical_expr::{
     WindowFrame, WindowFrameBound, WindowFrameUnits, WindowFunctionDefinition,
@@ -563,6 +566,197 @@ fn retained_view_buffers_are_charged_and_a_continuing_key_is_reused() {
     assert_eq!(pool.reserved(), 0);
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum PoolCall {
+    Grow(usize),
+    TryGrow(usize),
+    Shrink(usize),
+}
+
+#[derive(Debug)]
+struct RecordingMemoryPool {
+    inner: GreedyMemoryPool,
+    calls: Mutex<Vec<PoolCall>>,
+}
+
+impl RecordingMemoryPool {
+    fn new(limit: usize) -> Self {
+        Self {
+            inner: GreedyMemoryPool::new(limit),
+            calls: Mutex::new(vec![]),
+        }
+    }
+
+    fn take_calls(&self) -> Vec<PoolCall> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+}
+
+impl std::fmt::Display for RecordingMemoryPool {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RecordingMemoryPool({})", self.inner)
+    }
+}
+
+impl MemoryPool for RecordingMemoryPool {
+    fn name(&self) -> &str {
+        "RecordingMemoryPool"
+    }
+
+    fn register(&self, consumer: &MemoryConsumer) {
+        self.inner.register(consumer);
+    }
+
+    fn unregister(&self, consumer: &MemoryConsumer) {
+        self.inner.unregister(consumer);
+    }
+
+    fn grow(&self, reservation: &MemoryReservation, additional: usize) {
+        self.calls.lock().unwrap().push(PoolCall::Grow(additional));
+        self.inner.grow(reservation, additional);
+    }
+
+    fn try_grow(&self, reservation: &MemoryReservation, additional: usize) -> Result<()> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(PoolCall::TryGrow(additional));
+        self.inner.try_grow(reservation, additional)
+    }
+
+    fn shrink(&self, reservation: &MemoryReservation, size: usize) {
+        self.calls.lock().unwrap().push(PoolCall::Shrink(size));
+        self.inner.shrink(reservation, size);
+    }
+
+    fn reserved(&self) -> usize {
+        self.inner.reserved()
+    }
+
+    fn memory_limit(&self) -> MemoryLimit {
+        self.inner.memory_limit()
+    }
+}
+
+fn task_context_with_pool(pool: Arc<dyn MemoryPool>) -> Arc<TaskContext> {
+    Arc::new(
+        TaskContext::default().with_runtime(
+            RuntimeEnvBuilder::new()
+                .with_memory_pool(pool)
+                .build_arc()
+                .unwrap(),
+        ),
+    )
+}
+
+#[tokio::test]
+async fn changing_keys_reuse_the_boundary_reservation() {
+    let batches = [
+        batch_with_offset(Arc::new(Int64Array::from(vec![1, 1])), 0),
+        batch_with_offset(Arc::new(Int64Array::from(vec![2, 2])), 2),
+    ];
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let retained = pool.reserved();
+    assert!(retained > 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(retained)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    assert_eq!(pool.reserved(), retained);
+    assert!(pool.take_calls().is_empty());
+    assert!(stream.next().await.is_none());
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(retained)]);
+}
+
+#[tokio::test]
+async fn boundary_reservations_follow_key_size_changes() {
+    let batches = ["a".repeat(32), "b".repeat(8192), "c".repeat(32)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            batch_with_offset(Arc::new(StringArray::from(vec![key; 2])), index as i64 * 2)
+        })
+        .collect::<Vec<_>>();
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(64 * 1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let small = pool.reserved();
+    assert!(small > 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(small)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let large = pool.reserved();
+    assert!(large > small);
+    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(large - small)]);
+
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    assert_eq!(pool.reserved(), small);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(large - small)]);
+    drop(stream);
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(small)]);
+}
+
+#[tokio::test]
+async fn refused_replacement_releases_the_boundary_reservation() {
+    let batches = ["a".repeat(32), "b".repeat(8192)]
+        .into_iter()
+        .enumerate()
+        .map(|(index, key)| {
+            batch_with_offset(Arc::new(StringArray::from(vec![key; 2])), index as i64 * 2)
+        })
+        .collect::<Vec<_>>();
+    let plan = RowNumberExec::try_new(window(&batches, true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1024));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let retained = pool.reserved();
+    assert!(retained > 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(retained)]);
+
+    let error = stream.next().await.unwrap().unwrap_err();
+    assert!(matches!(
+        error,
+        datafusion::common::DataFusionError::ResourcesExhausted(_)
+    ));
+    assert_eq!(pool.reserved(), 0);
+    assert!(matches!(
+        pool.take_calls().as_slice(),
+        [PoolCall::TryGrow(additional), PoolCall::Shrink(released)]
+            if *additional > 1024 && *released == retained
+    ));
+    drop(stream);
+    assert!(pool.take_calls().is_empty());
+}
+
 #[test]
 fn refused_boundary_reservations_are_released() {
     let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1));
@@ -587,7 +781,6 @@ fn refused_boundary_reservations_are_released() {
 
 #[tokio::test]
 async fn completion_and_cancellation_release_the_boundary_key() {
-    use datafusion::execution::runtime_env::RuntimeEnvBuilder;
     let input = batch(Arc::new(Int64Array::from(vec![1, 1, 1, 2])));
     let plan = RowNumberExec::try_new(window(
         &[input.slice(0, 2), input.slice(2, 2)],

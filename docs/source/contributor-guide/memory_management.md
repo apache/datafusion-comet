@@ -498,6 +498,11 @@ views and dictionaries are rebuilt from the selected value so unrelated source b
 Nested values may retain shared buffers, which are included in the reservation. A continuing
 partition reuses its key. Completion, cancellation, and errors release the reservation.
 
+Replacement keys reuse the reservation, so only a change in retained bytes adjusts the pool.
+The operator cannot spill its key. If the pool refuses the initial reservation or later growth,
+the task fails and releases the state. This can fail a task that the generic bounded window
+executor would run with unreserved state.
+
 The reservation covers retained key state. Per-batch comparison, key-copy workspace, and emitted
 rank arrays follow the allocation model described in [The accounting gap](#the-accounting-gap).
 Other window functions keep their existing DataFusion executors and memory behaviour.

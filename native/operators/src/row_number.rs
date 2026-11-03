@@ -52,6 +52,10 @@ use futures::StreamExt;
 /// all be the built-in ROW_NUMBER over the same partition and sort keys.
 /// The caller must normalise floating-point partition keys before building the window, just as
 /// it does for ordinary native windows. Other window functions keep their existing executor.
+///
+/// This avoids the per-partition overhead tracked in
+/// <https://github.com/apache/datafusion/issues/26541>. Reassess this executor when upstream
+/// changes provide equivalent results, memory accounting and performance.
 #[derive(Debug)]
 pub struct RowNumberExec {
     window: BoundedWindowAggExec,
@@ -288,10 +292,9 @@ impl RowNumberState {
             }
             self.rank = *ranks.last().unwrap();
             if !keys.is_empty() && (!continues || ranges.len() != 1) {
-                // The old boundary key is no longer needed. Do not keep both copies alive
-                // when a wide key changes. A continued partition needs no new key copy.
+                // Drop the old key before copying its replacement, but retain the reservation
+                // so only the change in retained bytes adjusts the pool.
                 self.key = vec![];
-                self.reservation.free();
                 let index = UInt64Array::from(vec![(rows - 1) as u64]);
                 let key = keys
                     .iter()
