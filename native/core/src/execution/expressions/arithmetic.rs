@@ -60,9 +60,7 @@ use arrow::datatypes::SchemaRef;
 use datafusion::logical_expr::Operator as DataFusionOperator;
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion_comet_proto::spark_expression::Expr;
-use datafusion_comet_spark_expr::{
-    create_modulo_expr_with_null_short_circuit, create_negate_expr, EvalMode,
-};
+use datafusion_comet_spark_expr::{create_modulo_expr, create_negate_expr, EvalMode};
 
 use crate::execution::{
     expressions::extract_expr,
@@ -133,7 +131,7 @@ impl ExpressionBuilder for RemainderBuilder {
         let left = planner.create_expr(expr.left.as_ref().unwrap(), Arc::clone(&input_schema))?;
         let right = planner.create_expr(expr.right.as_ref().unwrap(), Arc::clone(&input_schema))?;
 
-        let result = create_modulo_expr_with_null_short_circuit(
+        let result = create_modulo_expr(
             left,
             right,
             expr.return_type

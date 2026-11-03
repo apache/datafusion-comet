@@ -829,8 +829,8 @@ impl PhysicalPlanner {
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
-                // expression with query context is wrapped in CheckedBinaryExpr, so look
-                // through any such wrappers.
+                // expression with query context is wrapped in CheckedBinaryExpr, and one that
+                // skips its right operand in NullShortCircuit, so look through those wrappers.
                 let is_wide_decimal = unwrap_checked(&child)
                     .downcast_ref::<WideDecimalBinaryExpr>()
                     .is_some();
@@ -2264,14 +2264,20 @@ impl PhysicalPlanner {
     }
 }
 
-/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
-/// they decorate, however many context-wrapping layers the planner emitted.
+/// Strip any [`CheckedBinaryExpr`] and [`NullShortCircuit`] wrappers so callers can inspect the
+/// expression they decorate, however many layers the planner emitted. Neither changes the type or
+/// the values of the expression it wraps.
 fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
     let mut current = expr;
-    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
-        current = checked.child();
+    loop {
+        if let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+            current = checked.child();
+        } else if let Some(wrapper) = current.downcast_ref::<NullShortCircuit>() {
+            current = wrapper.inner();
+        } else {
+            return current;
+        }
     }
-    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
@@ -6299,6 +6305,88 @@ mod tests {
                 Ok(expr) => panic!("expected an error for {op:?} on {arrow_type}, got {expr:?}"),
             }
         }
+    }
+
+    /// `CheckOverflow` over a wide decimal add is dropped, since `WideDecimalBinaryExpr` checks
+    /// overflow itself, also when the add skips its right operand where the left one is NULL.
+    #[test]
+    fn test_check_overflow_skipped_over_short_circuited_wide_decimal() {
+        use super::unwrap_checked;
+        use arrow::array::{AsArray, Decimal128Array};
+        use arrow::datatypes::Decimal128Type;
+        use datafusion_comet_spark_expr::{NullShortCircuit, WideDecimalBinaryExpr};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Decimal128(38, 0), true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        let bound = |index, datatype| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(datatype),
+            })),
+            expr_id: None,
+            query_context: None,
+        };
+        let string_type = spark_expression::DataType {
+            type_id: 7, // STRING
+            type_info: None,
+        };
+        let ansi = spark_expression::EvalMode::Ansi as i32;
+        // CAST(s AS DECIMAL(38, 0)), which fails for "bad" under ANSI
+        let cast = Expr {
+            expr_struct: Some(ExprStruct::Cast(Box::new(spark_expression::Cast {
+                child: Some(Box::new(bound(1, string_type))),
+                datatype: Some(decimal_proto_type(38, 0)),
+                timezone: "UTC".to_string(),
+                eval_mode: ansi,
+                ..Default::default()
+            }))),
+            expr_id: None,
+            query_context: None,
+        };
+        let add = Expr {
+            expr_struct: Some(ExprStruct::Add(Box::new(spark_expression::MathExpr {
+                left: Some(Box::new(bound(0, decimal_proto_type(38, 0)))),
+                right: Some(Box::new(cast)),
+                return_type: Some(decimal_proto_type(38, 0)),
+                eval_mode: ansi,
+                check_divide_overflow: false,
+                null_short_circuit: true,
+            }))),
+            expr_id: None,
+            query_context: None,
+        };
+        let check_overflow = Expr {
+            expr_struct: Some(ExprStruct::CheckOverflow(Box::new(
+                spark_expression::CheckOverflow {
+                    child: Some(Box::new(add)),
+                    datatype: Some(decimal_proto_type(38, 0)),
+                    fail_on_error: true,
+                },
+            ))),
+            expr_id: None,
+            query_context: None,
+        };
+
+        let expr = PhysicalPlanner::default()
+            .create_expr(&check_overflow, Arc::clone(&schema))
+            .unwrap();
+        assert!(expr.is::<NullShortCircuit>(), "{expr}");
+        assert!(
+            unwrap_checked(&expr).is::<WideDecimalBinaryExpr>(),
+            "{expr}"
+        );
+
+        let a = Decimal128Array::from(vec![None, Some(2)])
+            .with_precision_and_scale(38, 0)
+            .unwrap();
+        let s = StringArray::from(vec!["bad", "3"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(a), Arc::new(s)]).unwrap();
+        let result = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
+        let result = result.as_primitive::<Decimal128Type>();
+        assert!(result.is_null(0));
+        assert_eq!(result.value(1), 5);
     }
 
     /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error

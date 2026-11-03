@@ -43,8 +43,10 @@ use std::sync::Arc;
 /// Spark. An argument that can be evaluated for any row, such as a column, is evaluated for all of
 /// them.
 ///
-/// The function still sees every row, with NULL for each argument skipped there, so it has to
-/// return NULL wherever an argument other than the last one evaluated is NULL. Its arguments have
+/// The function still sees every row. For an argument skipped there it sees NULL, or, when the
+/// argument is first tried over the whole batch, whatever that returned, so it has to return NULL
+/// wherever an argument other than the last one evaluated is NULL, without first checking the
+/// later ones, which may hold any value. Its arguments have
 /// to be its children, and it has to compute its result from them alone. They are evaluated in
 /// the order of the children unless [`NullShortCircuit::wrap_in_order`] gives another, as it does
 /// for a division, whose divisor Spark evaluates first. `ArrayInsert` evaluates its own arguments
@@ -113,6 +115,11 @@ impl NullShortCircuit {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self::try_new(inner, plans, order.to_vec())?))
+    }
+
+    /// The function over its arguments
+    pub fn inner(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.inner
     }
 
     /// `plans` holds each argument's [`Arg::field`] and whether it is masked.
@@ -290,7 +297,10 @@ struct Arg {
     /// state kept across batches, such as the random generator of `shuffle`
     masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
     /// Whether a masked argument is first tried over the whole batch, as it would be without
-    /// masking, which is no slower than selecting the rows that need it unless nearly none do.
+    /// masking, for a batch where at least half the rows need it. Selecting the rows costs more
+    /// than evaluating the skipped ones when they are few, and less when they are many, and the
+    /// crossover moves with the cost of the argument, so half is where neither choice is much
+    /// slower than the other for the arguments measured in `benches/null_short_circuit.rs`.
     /// Whatever it returns for a skipped row is ignored, so it only matters if it fails there,
     /// and it requires an argument that returns the same for a row whichever rows it sees. If it
     /// fails, the rows are selected instead, here and for the batches after it.
@@ -319,7 +329,8 @@ impl Arg {
         let Some((projection, projected)) = &self.masked else {
             return self.expr.evaluate(batch);
         };
-        if nulls.is_some() && self.speculate.load(Ordering::Relaxed) {
+        let mostly_needed = nulls.is_some_and(|nulls| nulls.null_count() * 2 <= nulls.len());
+        if mostly_needed && self.speculate.load(Ordering::Relaxed) {
             if let Ok(value) = evaluate_projected(projection, projected, batch, None) {
                 return Ok(value);
             }
@@ -794,6 +805,85 @@ mod tests {
             evaluate(&guarded, &valid).unwrap().as_ref(),
             expected.as_ref()
         );
+    }
+
+    #[test]
+    fn mostly_skipped_arguments_are_not_speculated() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["bad", "bad", "bad", "6"])),
+                Arc::new(StringArray::from(vec![None, None, None, Some("3")])),
+            ],
+        )
+        .unwrap();
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, Some(2)]));
+        assert_eq!(
+            evaluate(&guarded, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        // Only one row in four needs the dividend, so it was never tried over the whole batch,
+        // which would have failed and stopped speculation for later batches
+        let arg = &guarded.downcast_ref::<NullShortCircuit>().unwrap().args[0];
+        assert!(arg.speculate.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn decimal_and_nested_short_circuited_arguments_are_speculated() {
+        use crate::CheckOverflow;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::BinaryExpr;
+
+        let decimal = DataType::Decimal128(10, 2);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", decimal.clone(), true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        // a * CheckOverflow(CAST(s AS DECIMAL(10, 2)) - a), as Comet plans a decimal multiply
+        let difference = Arc::new(BinaryExpr::new(
+            ansi_cast(col("s", &schema).unwrap(), decimal.clone()),
+            Operator::Minus,
+            col("a", &schema).unwrap(),
+        ));
+        let difference_type = difference.data_type(&schema).unwrap();
+        let checked = Arc::new(CheckOverflow::new(
+            difference,
+            difference_type,
+            true,
+            None,
+            None,
+        ));
+        let nested = NullShortCircuit::wrap(
+            Arc::new(BinaryExpr::new(
+                col("a", &schema).unwrap(),
+                Operator::Minus,
+                ansi_cast(col("s", &schema).unwrap(), decimal),
+            )),
+            &schema,
+        )
+        .unwrap();
+        assert!(nested.is::<NullShortCircuit>());
+        for operand in [checked as Arc<dyn PhysicalExpr>, nested] {
+            let product = Arc::new(BinaryExpr::new(
+                col("a", &schema).unwrap(),
+                Operator::Multiply,
+                operand,
+            ));
+            let guarded = NullShortCircuit::wrap(product, &schema).unwrap();
+            let guarded = guarded.downcast_ref::<NullShortCircuit>().unwrap();
+            assert!(guarded.args[1].speculate.load(Ordering::Relaxed));
+        }
     }
 
     #[test]

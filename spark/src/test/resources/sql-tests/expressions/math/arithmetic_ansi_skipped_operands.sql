@@ -47,6 +47,20 @@ CREATE TABLE filled(id int, n int, txt string) USING parquet
 statement
 INSERT INTO filled SELECT /*+ REPARTITION(1) */ * FROM VALUES (1, 1, 'bad'), (2, 2, '2') AS t(id, n, txt)
 
+-- The divisor `n` is zero on every row
+statement
+CREATE TABLE zero(id int, n int, txt string) USING parquet
+
+statement
+INSERT INTO zero SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, 0, CAST(NULL AS STRING)), (2, 0, CAST(NULL AS STRING)) AS t(id, n, txt)
+
+statement
+CREATE TABLE zero_bad(id int, n int, txt string) USING parquet
+
+statement
+INSERT INTO zero_bad SELECT /*+ REPARTITION(1) */ * FROM VALUES (1, 0, 'bad') AS t(id, n, txt)
+
 -- Add, subtract and multiply evaluate the right operand only where the left one is not NULL
 
 query
@@ -60,6 +74,25 @@ SELECT id, n * CAST(txt AS INT) FROM skipped
 
 query
 SELECT id, CAST(n AS BIGINT) + CAST(txt AS BIGINT) FROM skipped
+
+query
+SELECT id, CAST(n AS TINYINT) + CAST(txt AS TINYINT) FROM skipped
+
+query
+SELECT id, CAST(n AS SMALLINT) * CAST(txt AS SMALLINT) FROM skipped
+
+query
+SELECT id, CAST(n AS DOUBLE) + CAST(txt AS DOUBLE) FROM skipped
+
+query
+SELECT id, CAST(n AS DOUBLE) - CAST(txt AS DOUBLE) FROM skipped
+
+query
+SELECT id, CAST(n AS DOUBLE) * CAST(txt AS DOUBLE) FROM skipped
+
+-- TRY arithmetic
+query
+SELECT id, try_add(n, CAST(txt AS INT)) FROM skipped
 
 query
 SELECT id, CAST(n AS DECIMAL(10, 2)) * CAST(txt AS DECIMAL(10, 2)) FROM skipped
@@ -84,6 +117,15 @@ query
 SELECT id, CAST(txt AS INT) % n FROM skipped
 
 query
+SELECT id, CAST(txt AS SMALLINT) DIV CAST(n AS SMALLINT) FROM skipped
+
+query
+SELECT id, CAST(txt AS TINYINT) % CAST(n AS TINYINT) FROM skipped
+
+query
+SELECT id, try_divide(CAST(txt AS INT), n) FROM skipped
+
+query
 SELECT id, CAST(txt AS DECIMAL(10, 2)) / CAST(n AS DECIMAL(10, 2)) FROM skipped
 
 query
@@ -92,6 +134,17 @@ SELECT id, CAST(txt AS DECIMAL(10, 2)) DIV CAST(n AS DECIMAL(10, 2)) FROM skippe
 -- A remainder that needs more than 38 digits
 query
 SELECT id, CAST(txt AS DECIMAL(38, 10)) % CAST(n AS DECIMAL(38, 0)) FROM skipped
+
+-- A zero divisor is not NULL, so the dividend is evaluated, and a NULL dividend gives NULL
+
+query
+SELECT id, CAST(txt AS INT) DIV n FROM zero
+
+query
+SELECT id, CAST(txt AS INT) % n FROM zero
+
+query
+SELECT id, CAST(txt AS INT) / n FROM zero
 
 -- No row evaluates the second operand
 
@@ -111,6 +164,13 @@ SELECT id, CAST(txt AS INT) DIV n FROM filled
 
 query expect_error_class(CAST_INVALID_INPUT)
 SELECT id, CAST(txt AS DECIMAL(38, 10)) % CAST(n AS DECIMAL(38, 0)) FROM filled
+
+-- Spark evaluates the dividend before it checks the divisor for zero
+query expect_error_class(CAST_INVALID_INPUT)
+SELECT id, CAST(txt AS INT) DIV n FROM zero_bad
+
+query expect_error_class(CAST_INVALID_INPUT)
+SELECT id, try_add(n, CAST(txt AS INT)) FROM filled
 
 -- The left operand of an add comes first, so it fails even where the right one is NULL
 query expect_error_class(CAST_INVALID_INPUT)

@@ -148,28 +148,10 @@ pub fn decimal128_add_sub_width(p1: u8, s1: i8, p2: u8, s2: i8) -> i16 {
     max(s1 as i16, s2 as i16) + max(p1 as i16 - s1 as i16, p2 as i16 - s2 as i16)
 }
 
+/// Creates Spark's remainder of `left` by `right`. With `null_short_circuit` it evaluates the
+/// dividend only for the rows where the divisor, which Spark evaluates first, is not NULL. See
+/// [`NullShortCircuit`].
 pub fn create_modulo_expr(
-    left: Arc<dyn PhysicalExpr>,
-    right: Arc<dyn PhysicalExpr>,
-    data_type: DataType,
-    input_schema: SchemaRef,
-    fail_on_error: bool,
-    registry: &dyn FunctionRegistry,
-) -> Result<Arc<dyn PhysicalExpr>, DataFusionError> {
-    create_modulo_expr_with_null_short_circuit(
-        left,
-        right,
-        data_type,
-        input_schema,
-        fail_on_error,
-        false,
-        registry,
-    )
-}
-
-/// Like [`create_modulo_expr`], but with `null_short_circuit` evaluates the dividend only for the
-/// rows where the divisor, which Spark evaluates first, is not NULL. See [`NullShortCircuit`].
-pub fn create_modulo_expr_with_null_short_circuit(
     left: Arc<dyn PhysicalExpr>,
     right: Arc<dyn PhysicalExpr>,
     data_type: DataType,
@@ -428,6 +410,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -475,63 +458,13 @@ mod tests {
             DataType::Decimal128(10, -1),
             Arc::clone(&schema),
             false,
+            false,
             &SessionContext::new().state(),
         )
         .unwrap();
         let result = expr.evaluate(&batch).unwrap().into_array(1).unwrap();
         let result = result.as_primitive::<Decimal128Type>();
         assert_eq!(result.value(0), 10);
-    }
-
-    #[test]
-    fn null_short_circuit_skips_the_dividend_where_the_divisor_is_null() {
-        // CAST(s AS DECIMAL(38, 10)) % b, which takes the Decimal256 path, where the dividend
-        // "bad" fails an ANSI cast on the row whose divisor is NULL
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("s", DataType::Utf8, true),
-            Field::new("b", DataType::Decimal128(38, 0), true),
-        ]));
-        let divisors = Decimal128Array::from(vec![None, Some(4)])
-            .with_precision_and_scale(38, 0)
-            .unwrap();
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(arrow::array::StringArray::from(vec!["bad", "6"])),
-                Arc::new(divisors),
-            ],
-        )
-        .unwrap();
-        let modulo = |null_short_circuit| {
-            let dividend = Arc::new(Cast::new(
-                Arc::new(Column::new("s", 0)),
-                DataType::Decimal128(38, 10),
-                SparkCastOptions::new_without_timezone(EvalMode::Ansi),
-                None,
-                None,
-            ));
-            create_modulo_expr_with_null_short_circuit(
-                dividend,
-                Arc::new(Column::new("b", 1)),
-                DataType::Decimal128(38, 10),
-                Arc::clone(&schema),
-                true,
-                null_short_circuit,
-                &SessionContext::new().state(),
-            )
-            .unwrap()
-        };
-        let error = modulo(false).evaluate(&batch).unwrap_err().to_string();
-        assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
-
-        let result = modulo(true)
-            .evaluate(&batch)
-            .unwrap()
-            .into_array(2)
-            .unwrap();
-        let result = result.as_primitive::<Decimal128Type>();
-        assert!(result.is_null(0));
-        assert_eq!(result.value(1), 2 * 10i128.pow(10));
     }
 
     #[test]
@@ -566,6 +499,7 @@ mod tests {
                 DataType::Decimal128(18, 4),
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -602,6 +536,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -646,6 +581,7 @@ mod tests {
                 DataType::Int32,
                 schema,
                 fail_on_error,
+                false,
                 &session_ctx.state(),
             )
             .unwrap();
@@ -677,6 +613,7 @@ mod tests {
             data_type,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -772,6 +709,7 @@ mod tests {
             DataType::Float32,
             schema,
             false,
+            false,
             &SessionContext::new().state(),
         )
         .unwrap();
@@ -854,6 +792,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -929,6 +868,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -980,6 +920,7 @@ mod tests {
             DataType::Float64,
             schema,
             true,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -1004,6 +945,7 @@ mod tests {
             DataType::Float64,
             schema,
             true,
+            false,
             &session_ctx.state(),
         )
         .unwrap();
@@ -1059,6 +1001,7 @@ mod tests {
             DataType::Float64,
             schema,
             fail_on_error,
+            false,
             &session_ctx.state(),
         )
         .unwrap();

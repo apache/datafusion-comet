@@ -18,8 +18,9 @@
 use super::case_when::{cannot_fail, is_infallible};
 use super::null_short_circuit::{evaluate_projected, project};
 use crate::{
-    spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckedBinaryExpr, FloatOperands, IfExpr,
-    NormalizeNaNAndZero, SparkComparison, WideDecimalBinaryExpr,
+    spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckOverflow, CheckedBinaryExpr,
+    FloatOperands, IfExpr, NormalizeNaNAndZero, NullShortCircuit, SparkComparison,
+    WideDecimalBinaryExpr,
 };
 use arrow::array::{Array, BooleanArray};
 use arrow::compute::{and_kleene, or_kleene};
@@ -182,6 +183,7 @@ pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
         || expr.is::<BinaryExpr>()
         || expr.is::<SparkComparison>()
         || expr.is::<CheckedBinaryExpr>()
+        || expr.is::<CheckOverflow>()
         || expr.is::<WideDecimalBinaryExpr>()
         || expr.is::<NormalizeNaNAndZero>()
         || expr.is::<NotExpr>()
@@ -191,7 +193,11 @@ pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
         || expr.is::<IfExpr>()
         || expr
             .downcast_ref::<ScalarFunctionExpr>()
-            .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable);
+            .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable)
+        // Its children are those of the function it wraps
+        || expr
+            .downcast_ref::<NullShortCircuit>()
+            .is_some_and(|n| is_deterministic(n.inner()));
     node_is_deterministic && expr.children().into_iter().all(is_deterministic)
 }
 

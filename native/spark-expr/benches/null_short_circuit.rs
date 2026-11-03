@@ -21,16 +21,19 @@
 //! not NULL. The data is valid in every row, so both forms succeed, and the difference is the cost
 //! of skipping the rows Spark skips.
 
-use arrow::array::{ArrayRef, Int64Array, StringArray};
+use arrow::array::{ArrayRef, Decimal128Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use datafusion::common::ScalarValue;
 use datafusion::config::ConfigOptions;
-use datafusion::physical_expr::expressions::Column;
+use datafusion::logical_expr::Operator;
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::{
-    create_comet_physical_fun_with_eval_mode, Cast, EvalMode, NullShortCircuit, SparkCastOptions,
+    create_comet_physical_fun_with_eval_mode, Cast, CheckOverflow, EvalMode, NullShortCircuit,
+    SparkCastOptions,
 };
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
@@ -39,13 +42,15 @@ use std::sync::Arc;
 
 const NUM_ROWS: usize = 8192;
 
+const DECIMAL: DataType = DataType::Decimal128(12, 2);
+
 type Expr = Arc<dyn PhysicalExpr>;
 
 /// An expression: its name, and how to build it
 type Shape = (&'static str, fn() -> Expr);
 
-/// `a` a long with `null_density` of it NULL, and `b`, `c` and `s`, a long written as a string,
-/// never NULL.
+/// `a` a long with `null_density` of it NULL, `p` the same as a decimal, and `b`, `c`, `s`, a long
+/// written as a string, and `d`, a decimal, never NULL.
 fn make_batch(null_density: f32) -> RecordBatch {
     let mut rng = StdRng::seed_from_u64(42);
     let a: Int64Array = (0..NUM_ROWS)
@@ -60,7 +65,23 @@ fn make_batch(null_density: f32) -> RecordBatch {
     let s: StringArray = (0..NUM_ROWS)
         .map(|_| Some(rng.random_range(0..1_000_000).to_string()))
         .collect();
-    let columns: Vec<ArrayRef> = vec![Arc::new(a), Arc::new(b), Arc::new(c), Arc::new(s)];
+    let p = a
+        .iter()
+        .map(|v| v.map(i128::from))
+        .collect::<Decimal128Array>()
+        .with_data_type(DECIMAL);
+    let d = (0..NUM_ROWS)
+        .map(|_| Some(rng.random_range(0..100)))
+        .collect::<Decimal128Array>()
+        .with_data_type(DECIMAL);
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(a),
+        Arc::new(b),
+        Arc::new(c),
+        Arc::new(s),
+        Arc::new(p),
+        Arc::new(d),
+    ];
     RecordBatch::try_new(Arc::new(schema()), columns).unwrap()
 }
 
@@ -70,6 +91,8 @@ fn schema() -> Schema {
         Field::new("b", DataType::Int64, false),
         Field::new("c", DataType::Int64, false),
         Field::new("s", DataType::Utf8, false),
+        Field::new("p", DECIMAL, true),
+        Field::new("d", DECIMAL, false),
     ])
 }
 
@@ -115,17 +138,28 @@ fn mul_nested_sub() -> Expr {
     checked("checked_mul", column("a", 0), sub)
 }
 
+/// `p * (1 - d)` over decimals, as in TPC-H Q1, whose right operand Comet plans as a
+/// `CheckOverflow` that fails under ANSI if the subtraction overflows
+fn decimal_mul_nested_sub() -> Expr {
+    let one = Arc::new(Literal::new(ScalarValue::Decimal128(Some(100), 12, 2)));
+    let sub: Expr = Arc::new(BinaryExpr::new(one, Operator::Minus, column("d", 5)));
+    let sub_type = sub.data_type(&schema()).unwrap();
+    let checked = Arc::new(CheckOverflow::new(sub, sub_type, true, None, None));
+    Arc::new(BinaryExpr::new(column("p", 4), Operator::Multiply, checked))
+}
+
 fn bench_arithmetic(c: &mut Criterion) {
     let schema = schema();
     let mut group = c.benchmark_group("null_short_circuit");
     group.throughput(Throughput::Elements(NUM_ROWS as u64));
 
-    let shapes: [Shape; 2] = [
+    let shapes: [Shape; 3] = [
         ("add_parsing_cast", add_parsing_cast),
         ("mul_nested_sub", mul_nested_sub),
+        ("decimal_mul_nested_sub", decimal_mul_nested_sub),
     ];
     for (name, shape) in shapes {
-        for null_percent in [0, 10, 50] {
+        for null_percent in [0, 10, 50, 70, 90] {
             let batch = make_batch(null_percent as f32 / 100.0);
             let lazy = NullShortCircuit::wrap(shape(), &schema).unwrap();
             assert!(lazy.is::<NullShortCircuit>());
