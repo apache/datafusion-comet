@@ -294,8 +294,10 @@ message CsvOptions {
 
 // Native Text scan, mirroring Spark's `text` data source (a single `value: string` column).
 message TextScan {
+  // Partition columns are not supported by the native Text scan, so there is no partition schema.
+  reserved 2;
+  reserved "partition_schema";
   repeated SparkStructField data_schema = 1;
-  repeated SparkStructField partition_schema = 2;
   repeated int32 projection_vector = 3;
   repeated SparkFilePartition file_partitions = 4;
   map<string, string> object_store_options = 5;

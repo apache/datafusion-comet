@@ -451,30 +451,6 @@ case class CometScanRule(session: SparkSession)
         if (scan.readPartitionSchema.nonEmpty) {
           fallbackReasons += "Comet does not support partition columns in native Text scans"
         }
-        // The native reader loads each file whole. Spark splits a large uncompressed text file
-        // into byte-range partitions (TextScan.isSplitable), and each split would then re-read and
-        // buffer the whole file with no memory-pool reservation. Restrict native execution to
-        // unsplit files (the small build-side lookups this targets); Spark handles large files.
-        val hasSplitFile = scanExec.inputPartitions.exists {
-          case fp: FilePartition => fp.files.exists(_.start != 0)
-          case _ => false
-        }
-        if (hasSplitFile) {
-          fallbackReasons += "Comet native Text scan does not support files split into byte " +
-            "ranges (large files)"
-        }
-        // The native reader loads each file whole and does not reserve the buffer against the
-        // memory pool, so bound the per-file size; larger files fall back to Spark. This keeps the
-        // feature to the small lookup tables it targets regardless of maxPartitionBytes.
-        val maxTextFileSize = COMET_SCAN_TEXT_MAX_FILE_SIZE.get()
-        val hasOversizedFile = scanExec.inputPartitions.exists {
-          case fp: FilePartition => fp.files.exists(_.length > maxTextFileSize)
-          case _ => false
-        }
-        if (hasOversizedFile) {
-          fallbackReasons += "Comet native Text scan does not read files larger than " +
-            s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxTextFileSize bytes)"
-        }
         // Build the Hadoop conf from the scan's read options with their case preserved, like
         // Spark's TextScan.createReaderFactory (Hadoop keys are case sensitive, but the scan's
         // option map lowercases them).
@@ -485,9 +461,30 @@ case class CometScanRule(session: SparkSession)
             scan.options.asScala.toMap)
         // The files this scan reads. `fileIndex.inputFiles` also lists files that partition
         // pruning dropped, so the per-file checks below use the selected partitions instead.
-        val selectedFiles = scanExec.inputPartitions.flatMap {
-          case fp: FilePartition => fp.files.toSeq
-          case _ => Seq.empty
+        val selectedFiles =
+          scanExec.inputPartitions.flatMap(_.asInstanceOf[FilePartition].files.toSeq)
+        // The native reader loads each file whole. Spark splits a large uncompressed text file
+        // into byte-range partitions (TextScan.isSplitable), and each split would then re-read and
+        // buffer the whole file with no memory-pool reservation. Restrict native execution to
+        // unsplit files (the small build-side lookups this targets); Spark handles large files.
+        if (selectedFiles.exists(_.start != 0)) {
+          fallbackReasons += "Comet native Text scan does not support files split into byte " +
+            "ranges (large files)"
+        }
+        // The native reader loads each file whole and does not reserve the buffer against the
+        // memory pool, so bound the per-file size; larger files fall back to Spark. This keeps the
+        // feature to the small lookup tables it targets, whatever maxPartitionBytes says. A
+        // wholetext file becomes one Arrow string value, and a lossy UTF-8 decode can expand
+        // ill-formed bytes up to 3x, so cap it at Int.MaxValue/3 to keep the decoded value under
+        // Arrow's 2GB 32-bit string-offset limit (the native reader also fails cleanly if a value
+        // still overflows).
+        val maxTextFileSize = COMET_SCAN_TEXT_MAX_FILE_SIZE.get()
+        val maxFileBytes =
+          if (textOptions.wholeText) math.min(maxTextFileSize, Int.MaxValue.toLong / 3)
+          else maxTextFileSize
+        if (selectedFiles.exists(_.length > maxFileBytes)) {
+          fallbackReasons += "Comet native Text scan does not read files larger than " +
+            s"${COMET_SCAN_TEXT_MAX_FILE_SIZE.key} ($maxFileBytes bytes)"
         }
         // Comet's native plan does not carry a compression codec, so the native reader would feed
         // raw compressed bytes to the line splitter. Spark auto-detects a codec by file extension,
@@ -555,24 +552,6 @@ case class CometScanRule(session: SparkSession)
               fallbackReasons += "Comet native Text scan does not support a self-overlapping " +
                 "line separator (Spark's line reader can split it differently)"
             }
-          }
-        }
-        // A wholetext file is never split (TextScan.isSplitable is false for wholeText), so the
-        // split-file guard above does not bound it. Reading a very large file whole is unbounded
-        // memory, and the whole file becomes one Arrow string value. Because a lossy UTF-8 decode
-        // can expand ill-formed bytes up to 3x, cap the raw file size at Int.MaxValue/3 so the
-        // decoded value stays under Arrow's 2GB 32-bit string-offset limit; fall back above that.
-        // (The native reader also fails cleanly rather than panicking if a value still overflows.)
-        if (textOptions.wholeText) {
-          val maxWholeTextBytes =
-            math.min(session.sessionState.conf.filesMaxPartitionBytes, Int.MaxValue.toLong / 3)
-          val hasLargeWholeTextFile = scanExec.inputPartitions.exists {
-            case fp: FilePartition => fp.files.exists(_.length > maxWholeTextBytes)
-            case _ => false
-          }
-          if (hasLargeWholeTextFile) {
-            fallbackReasons += "Comet native Text scan does not support large wholetext files " +
-              s"(over ${SQLConf.FILES_MAX_PARTITION_BYTES.key}, capped below 2GB)"
           }
         }
         // Comet's native reader opens files through object_store, which only understands a fixed

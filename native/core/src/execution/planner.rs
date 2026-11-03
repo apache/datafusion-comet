@@ -386,6 +386,32 @@ impl PhysicalPlanner {
         Ok((url, backend))
     }
 
+    /// The object store and file group one CSV or Text scan task reads: this task's own partition,
+    /// with the store taken from its first file, because partitions can differ in store.
+    fn scan_task_files(
+        &self,
+        scan_name: &str,
+        file_partitions: &[SparkFilePartition],
+        object_store_options: &HashMap<String, String>,
+    ) -> Result<(ObjectStoreUrl, Vec<Vec<PartitionedFile>>), ExecutionError> {
+        let partition = usize::try_from(self.partition)
+            .ok()
+            .and_then(|p| file_partitions.get(p))
+            .ok_or_else(|| {
+                GeneralError(format!(
+                    "{scan_name} has no file partition {} ({} partitions)",
+                    self.partition,
+                    file_partitions.len()
+                ))
+            })?;
+        let object_store_url = match partition.partitioned_file.first() {
+            Some(file) => self.scan_store(&file.file_path, object_store_options)?.0,
+            None => ObjectStoreUrl::local_filesystem(),
+        };
+        let files = self.get_partitioned_files(partition, object_store_options)?;
+        Ok((object_store_url, vec![files]))
+    }
+
     /// Plans `spark_plan` as the next native input when it is an input leaf and the planner has
     /// native inputs. `None` otherwise.
     fn native_input_leaf(
@@ -1891,24 +1917,11 @@ impl PhysicalPlanner {
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
-                let partition = usize::try_from(self.partition)
-                    .ok()
-                    .and_then(|p| scan.file_partitions.get(p))
-                    .ok_or_else(|| {
-                        GeneralError(format!(
-                            "CsvScan has no file partition {} ({} partitions)",
-                            self.partition,
-                            scan.file_partitions.len()
-                        ))
-                    })?;
-                // Build the store from this partition's files; other partitions may read
-                // from a different one.
-                let object_store_url = match partition.partitioned_file.first() {
-                    Some(file) => self.scan_store(&file.file_path, &object_store_options)?.0,
-                    None => ObjectStoreUrl::local_filesystem(),
-                };
-                let files = self.get_partitioned_files(partition, &object_store_options)?;
-                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let (object_store_url, file_groups) = self.scan_task_files(
+                    "CsvScan",
+                    &scan.file_partitions,
+                    &object_store_options,
+                )?;
                 let scan = init_csv_datasource_exec(
                     object_store_url,
                     file_groups,
@@ -1925,42 +1938,19 @@ impl PhysicalPlanner {
             }
             OpStruct::TextScan(scan) => {
                 let data_schema = convert_spark_types_to_arrow_schema(scan.data_schema.as_slice());
-                let partition_schema =
-                    convert_spark_types_to_arrow_schema(scan.partition_schema.as_slice());
                 let projection_vector: Vec<usize> =
                     scan.projection_vector.iter().map(|i| *i as usize).collect();
                 let object_store_options: HashMap<String, String> =
                     scan.object_store_options.clone();
-                let partition = usize::try_from(self.partition)
-                    .ok()
-                    .and_then(|p| scan.file_partitions.get(p))
-                    .ok_or_else(|| {
-                        GeneralError(format!(
-                            "TextScan has no file partition {} ({} partitions)",
-                            self.partition,
-                            scan.file_partitions.len()
-                        ))
-                    })?;
-                // Build the store from this partition's files; other partitions may read
-                // from a different one.
-                let object_store_url = match partition.partitioned_file.first() {
-                    Some(file) => {
-                        prepare_object_store_with_configs(
-                            self.session_ctx.runtime_env(),
-                            file.file_path.clone(),
-                            &object_store_options,
-                        )?
-                        .0
-                    }
-                    None => ObjectStoreUrl::local_filesystem(),
-                };
-                let files = self.get_partitioned_files(partition, &object_store_options)?;
-                let file_groups: Vec<Vec<PartitionedFile>> = vec![files];
+                let (object_store_url, file_groups) = self.scan_task_files(
+                    "TextScan",
+                    &scan.file_partitions,
+                    &object_store_options,
+                )?;
                 let scan = init_text_datasource_exec(
                     object_store_url,
                     file_groups,
                     data_schema,
-                    partition_schema,
                     projection_vector,
                     scan.text_options
                         .as_ref()

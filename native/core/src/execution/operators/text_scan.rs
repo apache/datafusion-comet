@@ -36,7 +36,6 @@ use datafusion::physical_plan::DisplayFormatType;
 use datafusion_comet_common::decode_utf8_spark_lossy;
 use datafusion_comet_proto::spark_operator::TextOptions;
 use datafusion_datasource::file::FileSource;
-use datafusion_datasource::file_compression_type::FileCompressionType;
 use datafusion_datasource::file_groups::FileGroup;
 use datafusion_datasource::file_scan_config::{FileScanConfig, FileScanConfigBuilder};
 use datafusion_datasource::file_stream::{FileOpenFuture, FileOpener};
@@ -45,9 +44,7 @@ use datafusion_datasource::source::DataSourceExec;
 use datafusion_datasource::{as_file_source, PartitionedFile, TableSchema};
 use futures::StreamExt;
 use object_store::{ObjectStore, ObjectStoreExt};
-use std::borrow::Cow;
 use std::fmt;
-use std::io::Read;
 use std::sync::Arc;
 
 /// Batch size used when the execution framework does not set one before opening the file.
@@ -65,7 +62,6 @@ pub fn init_text_datasource_exec(
     object_store_url: ObjectStoreUrl,
     file_groups: Vec<Vec<PartitionedFile>>,
     data_schema: SchemaRef,
-    _partition_schema: SchemaRef,
     projection_vector: Vec<usize>,
     text_options: &TextOptions,
 ) -> Result<Arc<DataSourceExec>, ExecutionError> {
@@ -123,7 +119,7 @@ impl FileSource for TextSource {
     fn create_file_opener(
         &self,
         object_store: Arc<dyn ObjectStore>,
-        base_config: &FileScanConfig,
+        _base_config: &FileScanConfig,
         partition_index: usize,
     ) -> Result<Arc<dyn FileOpener>> {
         // The inner opener must emit batches whose schema is the file schema projected by
@@ -133,7 +129,6 @@ impl FileSource for TextSource {
         let projected_file_schema = Arc::new(file_schema.project(&self.projection.file_indices)?);
         let opener = Arc::new(TextOpener {
             projected_file_schema,
-            file_compression_type: base_config.file_compression_type,
             object_store,
             partition_index,
             batch_size: self.batch_size.unwrap_or(DEFAULT_TEXT_BATCH_SIZE),
@@ -207,7 +202,6 @@ struct TextOpener {
     // The file schema projected by `file_indices`: the single `value` column, or an empty schema
     // for a projection-less count.
     projected_file_schema: SchemaRef,
-    file_compression_type: FileCompressionType,
     object_store: Arc<dyn ObjectStore>,
     partition_index: usize,
     batch_size: usize,
@@ -220,7 +214,6 @@ impl FileOpener for TextOpener {
     fn open(&self, partitioned_file: PartitionedFile) -> Result<FileOpenFuture> {
         let store = Arc::clone(&self.object_store);
         let projected_file_schema = Arc::clone(&self.projected_file_schema);
-        let file_compression_type = self.file_compression_type;
         let batch_size = self.batch_size;
         let whole_text = self.whole_text;
         let line_sep = self.line_sep.clone();
@@ -230,43 +223,17 @@ impl FileOpener for TextOpener {
             MetricBuilder::new(&self.metrics).counter("bytes_scanned", self.partition_index);
 
         Ok(Box::pin(async move {
-            let range = partitioned_file.range.clone();
             let location = partitioned_file.object_meta.location;
-            let raw = store.get(&location).await?.bytes().await?;
-            bytes_scanned.add(raw.len());
+            let buf: Bytes = store.get(&location).await?.bytes().await?;
+            bytes_scanned.add(buf.len());
 
-            // Decompress only when the file is actually compressed. On Comet's plan config the file
-            // is always UNCOMPRESSED (CometScanRule falls back for compressed files), so we keep
-            // the fetched bytes as they are and avoid a full-file copy; the decompress arm is a
-            // defensive handler should compression ever be plumbed through. A byte range never
-            // coexists with decompression (compressed files are non-splittable).
+            // NOTE: the whole object is read into memory. CometScanRule only admits unsplit,
+            // uncompressed files under a size cap, so in practice this reads each small file once.
+            // Lines are found and batches built on demand, so only the bytes and the current
+            // batch are held.
             //
-            // NOTE: the whole object is read into memory. CometScanRule restricts native text to
-            // unsplit files (it falls back when Spark splits a file into byte ranges) and caps the
-            // file size, so in practice this reads each small file once. Lines are found and
-            // batches built on demand, so only the bytes and the current batch are held.
-            let buf: Bytes = if file_compression_type.is_compressed() {
-                let mut decoder = file_compression_type.convert_read(std::io::Cursor::new(raw))?;
-                let mut decoded = Vec::new();
-                decoder.read_to_end(&mut decoded)?;
-                Bytes::from(decoded)
-            } else {
-                raw
-            };
-
             // Spark's line reader (Hadoop LineRecordReader.skipUtfByteOrderMark) strips a leading
-            // UTF-8 BOM from the first record at file offset 0, whatever the separator. wholetext
-            // keeps it. Native reads unsplit files only.
-            let at_file_start = range.as_ref().map(|r| r.start == 0).unwrap_or(true);
-            // Spark may split an uncompressed file into byte ranges (TextScan.isSplitable). A line
-            // belongs to the split whose [start, end) contains the line's start offset -- so each
-            // line is emitted by exactly one split, with no duplication or gaps across splits. See
-            // DataFusion's CsvOpener for the same rule. wholetext files are never split.
-            let byte_range = if whole_text {
-                None
-            } else {
-                range.map(|r| (r.start.max(0) as usize, r.end.max(0) as usize))
-            };
+            // UTF-8 BOM from the first record, whatever the separator. wholetext keeps it.
             let reader = TextBatchReader::new(
                 buf,
                 projected_file_schema,
@@ -274,8 +241,7 @@ impl FileOpener for TextOpener {
                 TextLayout {
                     whole_text,
                     line_sep,
-                    strip_bom: !whole_text && at_file_start,
-                    byte_range,
+                    strip_bom: !whole_text,
                 },
             );
 
@@ -309,10 +275,8 @@ struct TextLayout {
     whole_text: bool,
     /// A custom line separator's exact bytes, or `None` for the universal newline set.
     line_sep: Option<Vec<u8>>,
-    /// Strip a leading UTF-8 BOM from the first record (line mode, split at file offset 0).
+    /// Strip a leading UTF-8 BOM from the first record (line mode).
     strip_bom: bool,
-    /// Keep only the lines whose start offset is in `[start, end)`.
-    byte_range: Option<(usize, usize)>,
 }
 
 /// Reads a file's bytes as batches of `value` rows, one batch per call.
@@ -399,40 +363,28 @@ impl TextBatchReader {
         }
     }
 
-    /// Offsets of the next row to emit, after the first-record BOM and the byte range apply.
+    /// Offsets of the next row to emit, after the first-record BOM strip.
     fn next_row(&mut self) -> Option<(usize, usize)> {
         if let Some(row) = self.pending.take() {
             return Some(row);
         }
-        loop {
-            let (start, end) = self.scan_line()?;
-            let mut row_start = start;
-            // Hadoop reads the first record and then drops the BOM from its text. When that
-            // leaves nothing and the record was not terminated (the file is only the BOM), it
-            // counts as end of input, so the file has no rows. A BOM followed by a separator
-            // leaves an empty row. A custom `lineSep` equal to the BOM never reaches the strip,
-            // because the BOM is then the separator and the first record does not start with it.
-            if self.first_record {
-                self.first_record = false;
-                if self.buf[start..end].starts_with(UTF8_BOM) {
-                    if self.buf.len() == UTF8_BOM.len() {
-                        return None;
-                    }
-                    row_start = start + UTF8_BOM.len();
-                }
-            }
-            if let Some((range_start, range_end)) = self.layout.byte_range {
-                if start >= range_end {
-                    // Lines come in increasing offset order, so the rest are outside the range.
-                    self.pos = self.buf.len();
+        let (start, end) = self.scan_line()?;
+        let mut row_start = start;
+        // Hadoop reads the first record and then drops the BOM from its text. When that leaves
+        // nothing and the record was not terminated (the file is only the BOM), it counts as end
+        // of input, so the file has no rows. A BOM followed by a separator leaves an empty row. A
+        // custom `lineSep` equal to the BOM never reaches the strip, because the BOM is then the
+        // separator and the first record does not start with it.
+        if self.first_record {
+            self.first_record = false;
+            if self.buf[start..end].starts_with(UTF8_BOM) {
+                if self.buf.len() == UTF8_BOM.len() {
                     return None;
                 }
-                if start < range_start {
-                    continue;
-                }
+                row_start = start + UTF8_BOM.len();
             }
-            return Some((row_start, end));
         }
+        Some((row_start, end))
     }
 
     /// The next batch of up to `batch_size` rows, or `None` when the file is exhausted.
@@ -459,15 +411,17 @@ impl TextBatchReader {
         }
 
         // Decode each line once (decode_utf8_spark_lossy borrows for valid UTF-8, allocates only
-        // for ill-formed input) and accumulate against the DECODED size, since a lossy decode can
-        // expand ill-formed bytes up to 3x. Start a new batch before the value buffer would reach
-        // Arrow's 32-bit offset limit. Always take at least one line so progress is guaranteed;
-        // if a single decoded value alone would overflow, fail cleanly rather than panic in Arrow.
-        // A handle to the bytes lets the decoded values borrow them while the reader advances.
+        // for ill-formed input) and append it straight to the builder. Count the DECODED size,
+        // since a lossy decode can expand ill-formed bytes up to 3x, and start a new batch before
+        // the value buffer would reach Arrow's 32-bit offset limit. Always take at least one line
+        // so progress is guaranteed; if a single decoded value alone would overflow, fail cleanly
+        // rather than panic in Arrow. A handle to the bytes lets the decoded value borrow them
+        // while the reader advances.
         let buf = self.buf.clone();
-        let mut decoded: Vec<Cow<str>> = Vec::new();
+        let mut builder = StringBuilder::with_capacity(self.batch_rows.min(buf.len().max(1)), 0);
+        let mut rows = 0usize;
         let mut data_bytes = 0usize;
-        while decoded.len() < self.batch_rows {
+        while rows < self.batch_rows {
             let (start, end) = match self.next_row() {
                 Some(row) => row,
                 None => break,
@@ -479,20 +433,17 @@ impl TextBatchReader {
                     "Text value of {len} bytes exceeds Arrow's 2GB string-offset limit"
                 )));
             }
-            if !decoded.is_empty() && data_bytes + len > MAX_BATCH_VALUE_BYTES {
+            if rows > 0 && data_bytes + len > MAX_BATCH_VALUE_BYTES {
                 self.pending = Some((start, end));
                 break;
             }
             data_bytes += len;
-            decoded.push(value);
+            builder.append_value(value);
+            rows += 1;
         }
-        if decoded.is_empty() {
+        if rows == 0 {
             self.finished = true;
             return Ok(None);
-        }
-        let mut builder = StringBuilder::with_capacity(decoded.len(), data_bytes);
-        for value in &decoded {
-            builder.append_value(value);
         }
         Ok(Some(RecordBatch::try_new(
             Arc::clone(&self.schema),
@@ -540,7 +491,6 @@ mod tests {
             whole_text,
             line_sep: line_sep.map(|s| s.to_vec()),
             strip_bom: false,
-            byte_range: None,
         }
     }
 
@@ -693,15 +643,10 @@ mod tests {
         assert!(reader.next_batch().unwrap().is_none());
     }
 
-    /// Read with the first-record BOM strip on or off, as the opener sets it.
-    fn lines_after_bom(
-        buf: &[u8],
-        whole_text: bool,
-        at_file_start: bool,
-        line_sep: Option<&[u8]>,
-    ) -> Vec<String> {
+    /// Read with the first-record BOM strip, as the opener sets it (line mode only).
+    fn lines_after_bom(buf: &[u8], whole_text: bool, line_sep: Option<&[u8]>) -> Vec<String> {
         let mut layout = layout(whole_text, line_sep);
-        layout.strip_bom = !whole_text && at_file_start;
+        layout.strip_bom = !whole_text;
         values(&read_batches(buf, value_schema(), 8192, layout))
     }
 
@@ -710,58 +655,41 @@ mod tests {
         let bom = [0xEFu8, 0xBB, 0xBF];
         let with_hello = [&bom[..], b"hello"].concat();
         // Default separator at file start: the BOM is stripped.
-        assert_eq!(
-            lines_after_bom(&with_hello, false, true, None),
-            vec!["hello"]
-        );
+        assert_eq!(lines_after_bom(&with_hello, false, None), vec!["hello"]);
         // BOM then newline -> ["", "hello"].
         let bom_nl = [&bom[..], b"\nhello"].concat();
-        assert_eq!(
-            lines_after_bom(&bom_nl, false, true, None),
-            vec!["", "hello"]
-        );
+        assert_eq!(lines_after_bom(&bom_nl, false, None), vec!["", "hello"]);
         // BOM-only file, default separator -> no rows.
-        assert!(lines_after_bom(&bom, false, true, None).is_empty());
+        assert!(lines_after_bom(&bom, false, None).is_empty());
         // BOM only plus its terminator -> one empty row.
         let bom_only_nl = [&bom[..], b"\n"].concat();
-        assert_eq!(lines_after_bom(&bom_only_nl, false, true, None), vec![""]);
+        assert_eq!(lines_after_bom(&bom_only_nl, false, None), vec![""]);
         // Custom separator: the BOM is still stripped from the first record.
         let bom_a_b = [&bom[..], b"a|b"].concat();
-        assert_eq!(
-            lines_after_bom(&bom_a_b, false, true, Some(b"|")),
-            vec!["a", "b"]
-        );
+        assert_eq!(lines_after_bom(&bom_a_b, false, Some(b"|")), vec!["a", "b"]);
         // BOM-only file with a custom separator -> no rows.
-        assert!(lines_after_bom(&bom, false, true, Some(b"|")).is_empty());
+        assert!(lines_after_bom(&bom, false, Some(b"|")).is_empty());
         // BOM then separator -> an empty row, then the rest.
         let bom_sep_x = [&bom[..], b"|x"].concat();
         assert_eq!(
-            lines_after_bom(&bom_sep_x, false, true, Some(b"|")),
+            lines_after_bom(&bom_sep_x, false, Some(b"|")),
             vec!["", "x"]
         );
         // lineSep equal to the BOM: the BOM is the separator, so the first record does not start
         // with it and nothing is stripped. `BOM a BOM b` -> ["", "a", "b"].
         let bom_a_bom_b = [&bom[..], b"a", &bom[..], b"b"].concat();
         assert_eq!(
-            lines_after_bom(&bom_a_bom_b, false, true, Some(&bom)),
+            lines_after_bom(&bom_a_bom_b, false, Some(&bom)),
             vec!["", "a", "b"]
         );
         // BOM-only file with lineSep=BOM -> one empty record (trailing separator dropped).
-        assert_eq!(lines_after_bom(&bom, false, true, Some(&bom)), vec![""]);
-        // Not stripped: wholetext, a split that does not start at offset 0, or no BOM present.
+        assert_eq!(lines_after_bom(&bom, false, Some(&bom)), vec![""]);
+        // Not stripped: wholetext keeps the BOM, and a file with no BOM is unchanged.
         assert_eq!(
-            lines_after_bom(&with_hello, true, true, None)
-                .concat()
-                .as_bytes(),
+            lines_after_bom(&with_hello, true, None).concat().as_bytes(),
             &with_hello[..]
         );
-        assert_eq!(
-            lines_after_bom(&with_hello, false, false, None)
-                .concat()
-                .as_bytes(),
-            &with_hello[..]
-        );
-        assert_eq!(lines_after_bom(b"hello", false, true, None), vec!["hello"]);
+        assert_eq!(lines_after_bom(b"hello", false, None), vec!["hello"]);
     }
 
     #[test]
@@ -769,28 +697,5 @@ mod tests {
         // Ill-formed bytes become U+FFFD (matches Spark's new String(bytes, UTF_8) on collect).
         let bad: &[u8] = &[b'a', 0xff, b'b'];
         assert_eq!(lines_as_str(bad, false, None), vec!["a\u{FFFD}b"]);
-    }
-
-    fn lines_in_range(buf: &[u8], start: usize, end: usize) -> Vec<String> {
-        let mut layout = layout(false, None);
-        layout.byte_range = Some((start, end));
-        values(&read_batches(buf, value_schema(), 8192, layout))
-    }
-
-    #[test]
-    fn range_split_partitions_lines_without_duplication() {
-        // Two contiguous splits over one file must together yield every line exactly once.
-        let buf = b"aaa\nbbb\nccc\nddd"; // offsets: aaa=0 bbb=4 ccc=8 ddd=12
-        assert_eq!(lines_in_range(buf, 0, 6), vec!["aaa", "bbb"]);
-        assert_eq!(lines_in_range(buf, 6, 14), vec!["ccc", "ddd"]);
-    }
-
-    #[test]
-    fn range_split_line_straddling_boundary_belongs_to_first_split() {
-        // A line whose start offset is in the first split but that extends past the split end is
-        // read fully by the first split and NOT repeated by the next.
-        let buf = b"abcdef\nghij"; // abcdef=0, ghij=7
-        assert_eq!(lines_in_range(buf, 0, 3), vec!["abcdef"]);
-        assert_eq!(lines_in_range(buf, 3, 11), vec!["ghij"]);
     }
 }

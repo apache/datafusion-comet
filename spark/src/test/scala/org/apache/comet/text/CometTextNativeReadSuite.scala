@@ -238,19 +238,31 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
-  test("native text read - falls back for large wholetext files") {
+  test("native text read - wholetext falls back above the file size ceiling") {
     withTempDir { dir =>
       val file = new File(dir, "big-wholetext.txt")
       Files.write(file.toPath, ("x" * 100).getBytes(StandardCharsets.UTF_8))
-      withSQLConf(
-        CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
-        SQLConf.USE_V1_SOURCE_LIST.key -> "",
-        // Tiny limit so the 100-byte wholetext file exceeds the size cap.
-        SQLConf.FILES_MAX_PARTITION_BYTES.key -> "16") {
-        val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
-        checkSparkAnswerAndFallbackReason(
-          df,
-          "Comet native Text scan does not support large wholetext files")
+      withTextConf {
+        // The same ceiling that bounds line mode applies to a wholetext file.
+        withSQLConf(CometConf.COMET_SCAN_TEXT_MAX_FILE_SIZE.key -> "16") {
+          val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
+          checkSparkAnswerAndFallbackReason(df, "does not read files larger than")
+        }
+      }
+    }
+  }
+
+  test("native text read - maxPartitionBytes does not limit wholetext") {
+    withTempDir { dir =>
+      val file = new File(dir, "wholetext-small-partitions.txt")
+      Files.write(file.toPath, ("x" * 100).getBytes(StandardCharsets.UTF_8))
+      withTextConf {
+        // maxPartitionBytes only splits line-mode files. Lowering it for parallelism must not
+        // take a wholetext file under the size ceiling off the native path.
+        withSQLConf(SQLConf.FILES_MAX_PARTITION_BYTES.key -> "16") {
+          val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
+          checkSparkAnswerAndOperator(df, Seq(classOf[CometTextNativeScanExec]))
+        }
       }
     }
   }

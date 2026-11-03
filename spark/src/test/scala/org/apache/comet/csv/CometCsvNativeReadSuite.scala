@@ -197,4 +197,25 @@ class CometCsvNativeReadSuite extends CometTestBase {
       }
     }
   }
+
+  test("Native csv read - scans of the same file compare equal") {
+    withTempPath { dir =>
+      spark.range(5).write.csv(dir.toString)
+      withSQLConf(
+        CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true",
+        SQLConf.USE_V1_SOURCE_LIST.key -> "",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        def scan: CometCsvNativeScanExec =
+          spark.read
+            .schema("id LONG")
+            .csv(dir.toString)
+            .queryExecution
+            .executedPlan
+            .collect { case s: CometCsvNativeScanExec => s }
+            .head
+        // Equal canonical forms let Spark reuse the exchanges and stages of a repeated scan.
+        assert(scan.sameResult(scan))
+      }
+    }
+  }
 }
