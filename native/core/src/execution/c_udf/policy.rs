@@ -45,8 +45,7 @@ impl Default for NativeUdfPolicy {
     }
 }
 
-/// Why a library may not be loaded. The wording of these messages is matched by
-/// `CometNativeUDF.classifyNativeError` on the JVM, so keep the two in step.
+/// Why a library may not be loaded.
 #[derive(Debug, PartialEq, Eq)]
 pub enum PolicyError {
     Disabled,

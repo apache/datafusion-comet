@@ -1628,8 +1628,12 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       values: String = "(1, 'us', 1.0)"): IcebergWriteExec = {
     val plan =
       spark.sessionState.sqlParser.parsePlan(s"INSERT INTO $qualifiedTable VALUES $values")
-    findWriteExecOrFail(
-      spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan)
+    // withSQLConf returns Unit on Spark 3.4/3.5, hence the var.
+    var executed: SparkPlan = null
+    withSplitWrite {
+      executed = spark.sessionState.executePlan(plan, CommandExecutionMode.SKIP).executedPlan
+    }
+    findWriteExecOrFail(executed)
   }
 
   private def dfWriteExec(tableName: String, options: (String, String)*): IcebergWriteExec =
@@ -1645,7 +1649,11 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
   private def captureWriteExec(tableName: String, allowWriteFailure: Boolean)(
       trigger: => Unit): IcebergWriteExec =
-    findWriteExecOrFail(captureWritePlan(tableName, allowWriteFailure)(trigger))
+    findWriteExecOrFail(captureWritePlan(tableName, allowWriteFailure)(withSplitWrite(trigger)))
+
+  // A LocalTableScan input run by Comet makes the whole write native, leaving no IcebergWriteExec.
+  private def withSplitWrite(f: => Unit): Unit =
+    withSQLConf(CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "false")(f)
 
   private def captureWritePlan(tableName: String, allowWriteFailure: Boolean)(
       trigger: => Unit): org.apache.spark.sql.execution.SparkPlan = {

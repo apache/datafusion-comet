@@ -39,6 +39,36 @@ set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a n
 threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
 limit, or to a non-positive value to convert every eligible join regardless of size.
 
+### Left-semi sort-merge joins
+
+A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle. With the
+`fair_unified` memory pool, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.
+
+The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+
+Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.
+
+### Broadcast Joins
+
+Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
+decodes before building its hash table. By default, the tasks of an executor that read a broadcast at the same time
+share one decoded copy of it. The first of them decodes the broadcast, and the others wait for that decode and read the
+same buffers. The copy is freed when the last of these tasks completes, so a task that starts after that decodes the
+broadcast again. Each task still builds its own hash table.
+
+Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
+itself.
+
 ### Join Runtime Filters
 
 Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime

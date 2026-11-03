@@ -264,6 +264,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_CONVERT_FROM_TEXT_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.convert.text.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "When enabled, data from Spark (non-native) Text v1 and v2 scans will be converted to " +
+          "Arrow format. Arrow strings must be valid UTF-8, so Comet replaces bytes that are " +
+          "not valid UTF-8, for example in a Latin-1 file, with U+FFFD, and results that " +
+          "depend on the original bytes can differ from Spark. Enable this only for Text " +
+          "sources that are UTF-8. See the compatibility guide.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_CONVERT_FROM_RANGE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.range.enabled")
       .category(CATEGORY_EXEC)
@@ -348,6 +360,17 @@ object CometConf extends ShimCometConf {
     .booleanConf
     .createWithDefault(true)
 
+  val COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.makeDate.operatorFallback.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Keep affected make_date operators in Spark when native batching can evaluate rows " +
+          "that Spark skips. When false, allow native operators even if make_date can raise " +
+          "an error on a row Spark would not evaluate. This does not disable expression-level " +
+          "evaluation safeguards or change make_date's invalid-date handling.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_PROJECT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("project", defaultValue = true)
   val COMET_EXEC_FILTER_ENABLED: ConfigEntry[Boolean] =
@@ -368,6 +391,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Reduce duplicate keys when an unfiltered left-semi sort-merge join reads its single " +
+          s"integer equality key directly from a Comet shuffle. $TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
   val COMET_EXEC_EXISTENCE_JOIN_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)
@@ -382,6 +413,8 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("aggregate", defaultValue = true)
   val COMET_EXEC_COLLECT_LIMIT_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("collectLimit", defaultValue = true)
+  val COMET_EXEC_COLLECT_METRICS_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig("collectMetrics", defaultValue = true)
   val COMET_EXEC_COALESCE_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("coalesce", defaultValue = true)
   val COMET_EXEC_UNION_ENABLED: ConfigEntry[Boolean] =
@@ -425,9 +458,12 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. On Spark 3.4, AQE cannot coalesce the shuffle " +
-          "partitions of a union that Comet runs with a cached relation in one branch. At " +
-          "startup, this setting also decides " +
+          "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
+          "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
+          "Comet writes the rows straight into Arrow batches for the cache instead of " +
+          "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
+          "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
+          "At startup, this setting also decides " +
           "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
           "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
           "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
@@ -550,6 +586,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  val COMET_NATIVE_ARROW_PYTHON_UDF_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.nativeArrowPythonUDF.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental: execute Spark 4.1+ scalar @arrow_udf functions inside the Comet native " +
+          "pipeline via PyO3. Requires a native library built with the python-udf Cargo feature " +
+          "and a compatible Python/PyArrow installation on every executor.")
+      .booleanConf
+      .createWithDefault(false)
+
   val COMET_TRACING_ENABLED: ConfigEntry[Boolean] = conf("spark.comet.tracing.enabled")
     .category(CATEGORY_TUNING)
     .doc(s"Enable fine-grained tracing of events and memory usage. $TRACING_GUIDE.")
@@ -625,6 +671,29 @@ object CometConf extends ShimCometConf {
           "Comet extension. But for unit tests, we need this feature to force enabling it " +
           "for invalid cases. So this config is only used for unit test.")
       .internal()
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_EXEC_BROADCAST_SHARE_DECODED_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcastExchange.shareDecoded.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether the tasks of an executor that read a Comet broadcast at the same time share " +
+          "one decoded copy of it. The first of them decodes the broadcast, and the others " +
+          "wait for it instead of decoding it themselves. The copy is freed when the last of " +
+          "them completes. When disabled, every task decodes the whole broadcast for itself. " +
+          s"$TUNING_GUIDE.")
+      .booleanConf
+      .createWithDefault(true)
+
+  val COMET_BROADCAST_PRODUCER_COALESCE_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.broadcastExchange.producerCoalesce.enabled")
+      .category(CATEGORY_EXEC)
+      .doc("Experimental batching for direct local native shuffle reads feeding a broadcast " +
+        "exchange. Combines small INT, BIGINT, BOOLEAN, STRING and BINARY batches before " +
+        "Arrow export and serialization. Large batches pass through without copying. " +
+        "Measure the setting on your workload before enabling it, particularly for wide rows. " +
+        s"$TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1276,9 +1345,10 @@ object CometConf extends ShimCometConf {
           "leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
           "pools do not track, because Spark hands out the whole off-heap pool whatever this " +
           "is set to. Size spark.executor.memoryOverhead for that memory instead. Only applies " +
-          "to off-heap mode, where the fair_unified pool limits each memory consumer in a task " +
-          "to this fraction of the off-heap size divided by the task's consumers, and the " +
-          s"greedy_unified pool ignores it. $TUNING_GUIDE.")
+          "to off-heap mode, where the fair_unified pool limits each task to this fraction " +
+          "of the off-heap size, which is tighter than Spark's own limit of an even share of " +
+          "the pool per running task only when it is below one over the number of running " +
+          s"tasks, and the greedy_unified pool ignores it. $TUNING_GUIDE.")
       .doubleConf
       .createWithDefault(1.0)
 
@@ -1339,10 +1409,11 @@ object CometConf extends ShimCometConf {
           s"`${COMET_SPARK_TO_ARROW_ENABLED.key}` is true, each named by its Spark class name " +
           "without the `Exec` suffix. It is for operators that have no `spark.comet.convert` " +
           "config of their own, such as `BatchScan` for a Data Source V2 connector, or " +
-          "`FileSourceScan` for file formats other than Parquet, JSON and CSV. Naming `Range`, " +
-          "`InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan` is " +
-          "deprecated and will stop working in a future major release. Use their " +
-          "`spark.comet.convert` configs instead.")
+          "`FileSourceScan` for file formats other than Parquet, JSON, CSV and Text. Naming " +
+          "`Range`, `InMemoryTableScan`, `RDDScan`, `OneRowRelation` or `RowDataSourceScan`, " +
+          "or naming `FileSourceScan` or `BatchScan` to convert a Text scan, is deprecated " +
+          "and will stop working in a future major release. Use their `spark.comet.convert` " +
+          "configs instead.")
       .stringConf
       .toSequence
       .createWithDefault(Nil)
@@ -1351,13 +1422,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.broadcastBuildSide.enabled")
       .category(CATEGORY_EXEC)
       .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
-        "example a Text source) to Arrow when that scan feeds a broadcast join's build side and " +
+        "example an ORC source) to Arrow when that scan feeds a broadcast join's build side and " +
         "every scan on the probe side is already native, so the broadcast join runs natively " +
         "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
         "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
         "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
         "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Set this to false to keep such build sides on Spark.")
+        "subquery. Parquet, JSON, CSV and Text scans are converted only by their own " +
+        "`spark.comet.convert` configs. Set this to false to keep such build sides on Spark.")
       .booleanConf
       .createWithDefault(true)
 

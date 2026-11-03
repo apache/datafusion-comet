@@ -99,7 +99,7 @@ case class CometNativeColumnarToRowExec(child: SparkPlan)
         val batchSize = CometConf.COMET_BATCH_SIZE.get()
         val broadcastColumnar = child.executeBroadcast[Any]()
         val serializedBatches =
-          broadcastColumnar.value.asInstanceOf[Array[org.apache.spark.util.io.ChunkedByteBuffer]]
+          broadcastColumnar.value.asInstanceOf[CometBroadcastValue].chunks
 
         // Use native converter to convert columnar data to rows
         val converter = new NativeColumnarToRowConverter(localSchema, batchSize)
