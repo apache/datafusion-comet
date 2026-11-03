@@ -1,0 +1,61 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Comet Native Executors: the comet-scheduler and comet-executor binaries, built on Apache
+# DataFusion Ballista. See https://github.com/apache/datafusion-comet/issues/7288.
+#
+# This is its own workspace, with its own lockfile, so that the main Comet build never depends
+# on Ballista. It builds Comet's native crates by path together with the Ballista release on the
+# same DataFusion major version.
+[workspace]
+
+[package]
+name = "comet-native-executors"
+homepage = "https://datafusion.apache.org/comet"
+repository = "https://github.com/apache/datafusion-comet"
+authors = ["Apache DataFusion <dev@datafusion.apache.org>"]
+description = "Apache DataFusion Comet: native executors and scheduler built on Apache DataFusion Ballista"
+license = "Apache-2.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+arrow-flight = "59.2.0"
+ballista-core = "55.0.0"
+ballista-executor = { version = "55.0.0", default-features = false, features = ["arrow-ipc-optimizations"] }
+ballista-scheduler = { version = "55.0.0", default-features = false }
+datafusion = { version = "55.2.0", default-features = false }
+# Comet's core crate, under the name of its library. Without the default hdfs-opendal feature,
+# which links libjvm through libhdfs.
+comet = { package = "datafusion-comet", path = "../core", default-features = false }
+datafusion-comet-proto = { path = "../proto" }
+datafusion-proto = "55.2.0"
+env_logger = "0.11"
+futures = "0.3"
+log = "0.4"
+prost = "0.14.3"
+prost-types = "0.14.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
+tonic = "0.14"
+
+[[bin]]
+name = "comet-scheduler"
+path = "src/bin/comet-scheduler.rs"
+
+[[bin]]
+name = "comet-executor"
+path = "src/bin/comet-executor.rs"
