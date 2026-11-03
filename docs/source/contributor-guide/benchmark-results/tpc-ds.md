@@ -56,7 +56,7 @@ The same tables and settings were also run with Apache Spark 4.1.3 (Scala 2.13).
 | Comet 1.2.0 | 532 s | 2.51x |
 
 Spark 4.1.3 is slower than Spark 4.2.0 on this cluster (1,336 s vs 994 s), so the speedups are larger than with Spark 4.2.0.
-Comet's own times are within about 10% across the two Spark versions. See
+Comet 1.2.0's time differs by about 10% between the two Spark versions (532 s vs 488 s). See
 [#7451](https://github.com/apache/datafusion-comet/issues/7451) for the investigation.
 
 Total time to run all queries (lower is better).
