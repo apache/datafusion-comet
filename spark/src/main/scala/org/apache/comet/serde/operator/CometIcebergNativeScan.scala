@@ -47,6 +47,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.util.ClassLoaders
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -620,21 +621,50 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private val RefreshCredentialsEndpointKey = "client.refresh-credentials-endpoint"
   private val RefreshCredentialsEnabledKey = "client.refresh-credentials-enabled"
 
-  // The provider ships in Comet's own jar, so look it up in Comet's loader, not the user's.
-  private lazy val vendedCredentialProviderAvailable: Boolean =
+  // Iceberg's CatalogProperties.URI, which a relative refresh endpoint resolves against.
+  private val CatalogUriKey = "uri"
+
+  /**
+   * Whether the provider can initialize in this JVM. It ships in Comet's jar, so it and the AWS
+   * SDK interface it implements come from Comet's loader. It builds its delegate through
+   * `AwsClientProperties` from the context loader and casts the result to that interface, so both
+   * loaders must see one copy of the SDK. A provider that fails to initialize falls back to the
+   * default chain on every task, so the check runs once here instead.
+   */
+  private lazy val vendedCredentialProviderAvailable: Boolean = {
+    val cometLoader = getClass.getClassLoader
     // scalastyle:off classforname
-    Try(Class.forName(VendedCredentialProviderClass, false, getClass.getClassLoader)).isSuccess
-  // scalastyle:on classforname
+    val usable = Try {
+      Class.forName(VendedCredentialProviderClass, false, cometLoader)
+      val sdkProvider = Class.forName(AwsCredentialsProviderClass, false, cometLoader)
+      val clientProperties =
+        Class.forName(AwsClientPropertiesClass, false, ClassLoaders.contextOrDefault(cometLoader))
+      Class.forName(AwsCredentialsProviderClass, false, clientProperties.getClassLoader) eq
+        sdkProvider
+    }.getOrElse(false)
+    // scalastyle:on classforname
+    if (!usable) {
+      logInfo(
+        s"$VendedCredentialProviderClass is not usable in this JVM, so native Iceberg scans " +
+          "keep the credentials vended at table load and are not refreshed")
+    }
+    usable
+  }
+
+  private val AwsCredentialsProviderClass =
+    "software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"
+  private val AwsClientPropertiesClass = "org.apache.iceberg.aws.AwsClientProperties"
 
   /**
    * Names [[VendedCredentialProviderClass]] as the credential provider when the catalog returned
    * a refresh endpoint and the user named no provider.
    *
    * Without a provider, the native FileIO signs with the `s3.*` credentials vended when the
-   * driver loaded the table, and a scan or write that outlives them fails with `ExpiredToken`.
-   * Iceberg's `S3FileIO` refreshes them through the endpoint instead. An explicit provider key,
-   * including an empty one, is left alone so it stays an opt-out. Builds without the provider
-   * class (Spark 3.x) keep the vended credentials as they are.
+   * driver loaded the table, and a scan that outlives them fails with `ExpiredToken`. Iceberg's
+   * `S3FileIO` refreshes them through the endpoint instead. An explicit provider key, including
+   * an empty one, is left alone so it stays an opt-out. Builds without the provider class (Spark
+   * 3.x) keep the vended credentials as they are, and so does a relative endpoint with no catalog
+   * `uri` to resolve it against, which Iceberg rejects.
    */
   def withVendedCredentialProvider(properties: Map[String, String]): Map[String, String] =
     withVendedCredentialProvider(properties, vendedCredentialProviderAvailable)
@@ -642,9 +672,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private[comet] def withVendedCredentialProvider(
       properties: Map[String, String],
       providerAvailable: Boolean): Map[String, String] = {
-    val vendsRefreshEndpoint =
-      properties.get(RefreshCredentialsEndpointKey).exists(_.trim.nonEmpty) &&
-        !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
+    val endpoint = properties.get(RefreshCredentialsEndpointKey).map(_.trim).filter(_.nonEmpty)
+    val endpointResolves = endpoint.exists { e =>
+      e.contains("://") || properties.get(CatalogUriKey).exists(_.trim.nonEmpty)
+    }
+    val vendsRefreshEndpoint = endpointResolves &&
+      !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
     if (vendsRefreshEndpoint && providerAvailable &&
       !properties.contains(IcebergCredentialProviderClassKey)) {
       properties + (IcebergCredentialProviderClassKey -> VendedCredentialProviderClass)

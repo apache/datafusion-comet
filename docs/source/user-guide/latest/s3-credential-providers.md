@@ -77,19 +77,26 @@ spark.hadoop.fs.s3a.bucket.<bucket>.comet.credential.adapter.class=<FQCN>
 
 Use `HadoopS3ACredentialProviderAdapter` unless you have a plain SDK provider not wired through S3A. Both class names are the same on every Comet build; each build automatically uses the AWS SDK its Hadoop line ships (v1 on the Spark 3.4/3.5 builds, v2 on 4.0+), so you configure one name and get the right implementation.
 
-### `IcebergVendedS3CredentialProvider` (native Iceberg reads and writes, Spark 4.x)
+### `IcebergVendedS3CredentialProvider` (native Iceberg reads, Spark 4.x)
 
-Without a provider, the native Iceberg scan and writer sign every request with the `s3.*` credentials the REST catalog vended when the driver loaded the table. Vended credentials are short-lived, so a scan that runs past their expiry fails with `ExpiredToken`. Iceberg's `S3FileIO`, which Spark's own Iceberg reads use, refreshes them through `client.refresh-credentials-endpoint` when the catalog returns one.
+Without a provider, the native Iceberg scan signs every request with the `s3.*` credentials the REST catalog vended when the driver loaded the table. Vended credentials are short-lived, so a scan that runs past their expiry fails with `ExpiredToken`. Iceberg's `S3FileIO`, which Spark's own Iceberg reads use, refreshes them through `client.refresh-credentials-endpoint` when the catalog returns one.
 
 This provider resolves credentials the way `S3FileIO` does, through Iceberg's `AwsClientProperties`. It refreshes through the catalog's endpoint when one is returned, and otherwise uses the static vended keys and reports their vended expiry. Iceberg is loaded by reflection from the thread context class loader, so `iceberg-aws` can sit on the user-jar loader. The AWS SDK v2 must be visible from Comet's loader, as for the adapters above.
 
-Comet selects this provider automatically when the FileIO properties carry `client.refresh-credentials-endpoint`, `client.refresh-credentials-enabled` is not `false`, and no provider is configured for the catalog. An explicit setting takes precedence. An empty value turns the provider off for that catalog:
+Comet selects this provider automatically for native Iceberg scans when all of these hold:
+
+- The FileIO properties carry `client.refresh-credentials-endpoint`, and `client.refresh-credentials-enabled` is not `false`.
+- The endpoint is absolute, or the properties carry the catalog `uri` it is relative to.
+- No provider is configured for the catalog.
+- On the driver, Comet's class loader and the thread context class loader see the same AWS SDK v2. Comet logs at `INFO` when they don't.
+
+An explicit setting takes precedence. An empty value turns the provider off for that catalog:
 
 ```
 spark.sql.catalog.<catalog>.s3.comet.credential.provider.class=
 ```
 
-Spark 3.x builds do not include this provider. On Spark 3.x, a native Iceberg scan that outlives its vended credentials fails with `ExpiredToken` unless you configure a provider of your own.
+Spark 3.x builds do not include this provider. On Spark 3.x, a native Iceberg scan that outlives its vended credentials fails with `ExpiredToken` unless you configure a provider of your own. The native Iceberg writer does not select it automatically: a catalog that returns `client.refresh-credentials-endpoint` makes the write fall back to Spark.
 
 ## Enabling a bridge
 

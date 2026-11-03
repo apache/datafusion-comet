@@ -29,6 +29,7 @@ import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
@@ -64,6 +65,25 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
           .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
       }
     }
+  }
+
+  test("the public overload selects the provider this build ships") {
+    // Spark 4.x builds ship the provider and the AWS SDK v2 it needs; Spark 3.x builds don't.
+    val expected =
+      if (isSpark40Plus) Some(CometIcebergNativeScan.VendedCredentialProviderClass) else None
+    CometIcebergNativeScan.withVendedCredentialProvider(refreshEndpoint).get(providerKey) shouldBe
+      expected
+  }
+
+  test("a relative refresh endpoint selects the provider only with a catalog uri") {
+    val relative = Map("client.refresh-credentials-endpoint" -> "/v1/credentials")
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(relative, providerAvailable = true) shouldBe relative
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(
+        relative + ("uri" -> "https://catalog"),
+        providerAvailable = true)
+      .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
   }
 
   test("no provider is selected when the build lacks the provider class") {
