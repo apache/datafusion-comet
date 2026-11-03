@@ -40,19 +40,22 @@ use std::sync::Arc;
 ///
 /// # Float keys
 ///
-/// Spark keys the frequency map on the boxed input value and compares keys with
-/// `OpenHashSet`'s `_data(pos) equals k` (`core/.../util/collection/OpenHashSet.scala:122`), i.e.
-/// `java.lang.Double.equals`, which is defined via `doubleToLongBits`. That collapses every `NaN`
-/// bit pattern to one key but keeps `-0.0` and `0.0` apart. Note that
+/// From Spark 3.5.2 and 4.0.0 (SPARK-45599), Spark keys the frequency map on the boxed input value
+/// and compares keys with `OpenHashSet`'s `_data(pos) equals k`
+/// (`core/.../util/collection/OpenHashSet.scala:122`), i.e. `java.lang.Double.equals`, which is
+/// defined via `doubleToLongBits`. That collapses every `NaN` bit pattern to one key but keeps
+/// `-0.0` and `0.0` apart. Earlier releases match keys with `==`, so no two NaNs match and each
+/// NaN counts as a key of its own, which this function does not reproduce: the Scala side does not
+/// run `mode` on `FLOAT` or `DOUBLE` input before 3.5.2. Note that
 /// `NormalizeFloatingNumbers` does *not* apply here: its `apply` only rewrites `WINDOW` and
 /// `JOIN` patterns, so an aggregate's argument reaches `Mode` un-normalized.
 ///
 /// Spark 4.2.0 changed this. SPARK-57329 ("mode() returns incorrect result when input contains
 /// both -0.0 and 0.0") treats the split `-0.0`/`0.0` counts as a bug and normalizes the key at
 /// update time, so from 4.2.0 on the two fold into a single key. `normalize_neg_zero` therefore
-/// tracks the Spark version Comet is running against: it is `false` for Spark 3.4 through 4.1 and
-/// `true` for 4.2.0+. `NaN` canonicalization is unconditional because every supported version
-/// collapses `NaN` via `doubleToLongBits`.
+/// tracks the Spark version Comet is running against: it is `false` for Spark 3.5.2 through 4.1 and
+/// `true` for 4.2.0+. `NaN` canonicalization is unconditional because every version that reaches
+/// this function collapses `NaN` via `doubleToLongBits`.
 ///
 /// Do not "simplify" this to always normalize: `max_by`/`min_by` need the opposite treatment,
 /// because they compare the ordering column with `SQLOrderingUtil.compareDoubles`, which ties
