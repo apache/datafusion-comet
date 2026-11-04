@@ -106,7 +106,8 @@ partitions, so a wrong label disappears at the next stage boundary. `CASE`, `COA
 cast a branch whose Arrow type differs from the others to a common type (`coerce_branch` in
 `native/spark-expr/src/conditional_funcs/case_when.rs`). For a timestamp that cast only changes the
 label, so a mislabelled branch does not fail there either. A test that only projects the result
-passes. The label only matters when the result is compared or feeds another native expression.
+passes. The label only matters when the result is compared or feeds another Rust-implemented
+expression.
 
 ## How the session timezone reaches native code
 
@@ -141,8 +142,9 @@ timezone and then return the result labelled `"UTC"`. That applies both to the d
 DataFusion's own datetime functions take their timezone from the argument's label, or from
 `datafusion.execution.time_zone`, which Comet leaves unset. Wiring one of them in for a
 timezone-aware Spark expression therefore evaluates it in UTC, unless the session timezone is
-passed explicitly. For example, `to_char` formats in the input's label, which is why `date_format`
-runs natively only in UTC sessions.
+passed explicitly. For example, `to_char` formats in the input's label, which is why Comet uses it
+for `date_format` only in UTC sessions, unless
+`spark.comet.expression.DateFormatClass.allowIncompatible=true`.
 
 ### Parsing timezone IDs
 
@@ -154,8 +156,8 @@ such as `America/Los_Angeles` and fixed offsets written as `+HH`, `+HHMM` or `+H
 `CometTimeZone.nativeId` in `spark/src/main/scala/org/apache/comet/serde/CometTimeZone.scala`
 bridges the two. It normalizes the zone first, so an ID whose offset never changes becomes `UTC`
 for a zero offset, which covers `Z`, `GMT` and `Etc/UTC`, or `+HH:MM` otherwise. A short ID becomes
-its region. An offset with seconds, such as `+05:45:30`, has no native spelling, so `nativeId`
-returns `None`. The serde then reports the expression as unsupported through
+its region. An offset with seconds, such as `+05:45:30`, has no spelling that `Tz::from_str`
+accepts, so `nativeId` returns `None`. The serde then reports the expression as unsupported through
 `CometTimeZone.supportLevel`, and it runs in the codegen dispatcher or falls back to Spark.
 
 Code that takes a fast path for UTC should still compare the ID against a fixed list of UTC
@@ -168,9 +170,9 @@ Spark converts between instants and local time using the JVM's timezone rules (`
 code uses chrono-tz, which compiles its own copy of the IANA database into libcomet
 (`chrono_tz::IANA_TZDB_VERSION`), and its precomputed DST transitions end around 2100. The two can
 disagree, both for zones whose rules changed between the two database versions and for far-future
-timestamps. When the library loads, `NativeBase` compares the native version (`getTzdataVersion`)
-with the JVM's and logs a warning if they differ. The user guide describes the effect under
-"Timezone Database Versions" on the datetime
+timestamps. When the library loads, `NativeBase` compares the native library's IANA database
+version (`getTzdataVersion`) with the JVM's and logs a warning if they differ. The user guide
+describes the effect under "Timezone Database Versions" on the datetime
 [expression compatibility](../user-guide/latest/compatibility/expressions/index.md) page.
 
 ## Scans
@@ -195,7 +197,7 @@ The timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
 between `TimestampType` and `TimestampNTZType` would apply the session timezone, and the Parquet
 reader does not.
 
-Two Spark settings are not handled natively:
+Comet does not handle two Spark settings:
 
 - Comet disables itself for a session with `spark.sql.parquet.int96TimestampConversion=true`,
   which shifts `INT96` values written by Impala.
@@ -216,9 +218,9 @@ not UTC.
 
 Several timezone-dependent expressions have no native implementation that is compatible in every
 session, including `date_trunc`, `date_format`, `from_unixtime`, `from_utc_timestamp`,
-`to_utc_timestamp`, `make_timestamp` and `to_timestamp`. Their serdes route the cases the native
-path cannot handle through the JVM codegen dispatcher, as they do for a session timezone that
-`CometTimeZone.nativeId` cannot express. The dispatcher runs Spark's generated code with the
+`to_utc_timestamp`, `make_timestamp` and `to_timestamp`. Their serdes route the cases their Rust
+implementation cannot handle through the JVM codegen dispatcher, as they do for a session timezone
+that `CometTimeZone.nativeId` cannot express. The dispatcher runs Spark's generated code with the
 `timeZoneId` stamped on the expression, so the results match Spark, and its Arrow output is
 labelled `"UTC"` like everything else.
 
@@ -232,7 +234,7 @@ labelled `"UTC"` like everything else.
 - Never label a `TimestampType` value with the session timezone, and never return
   `Timestamp(_, None)` for a `TimestampType` result.
 - Don't assume `"UTC"` is the only UTC session timezone. `Etc/UTC` is the common default, and a
-  native path gated on "the session is UTC" must still return `"UTC"`-labelled output there.
+  Rust fast path gated on "the session is UTC" must still return `"UTC"`-labelled output there.
 - Don't apply a timezone to a `TimestampNTZType` value, except when converting it to
   `TimestampType`.
 
@@ -255,7 +257,7 @@ labelled `"UTC"` like everything else.
 - When collecting timestamps in Scala tests, set `spark.sql.datetime.java8API.enabled=true`, or
   cast to strings. `java.sql.Timestamp` conversion goes through the JVM's default timezone and the
   hybrid calendar.
-- Check that the expression ran natively, not only that the plan has Comet operators. The codegen
+- Check that the expression ran in Rust, not only that the plan has Comet operators. The codegen
   dispatcher returns Spark's answer from inside a Comet operator, and a dispatched expression takes
   its whole subtree with it, including children that have a native implementation. `expect_native`
   in SQL file tests and `checkSparkAnswerAndImpl` in Scala tests check which one ran.
