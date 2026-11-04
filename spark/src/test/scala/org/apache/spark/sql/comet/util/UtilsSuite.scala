@@ -729,4 +729,22 @@ class UtilsSuite extends CometTestBase {
       full.close()
     }
   }
+
+  test("majorMinorPatchVersion parses Spark version strings like Spark's VersionUtils") {
+    // Comet parses these itself rather than calling org.apache.spark.util.VersionUtils, which is
+    // private[spark]; each expectation is what Spark's VersionUtils returns for the same string.
+    Seq(
+      "3.5.8" -> Some((3, 5, 8)),
+      "3.5.10" -> Some((3, 5, 10)),
+      "4.2.0-SNAPSHOT" -> Some((4, 2, 0)),
+      "4.1.3-amzn-1" -> Some((4, 1, 3)),
+      "3.5.8.7.3.2.30000-15" -> Some((3, 5, 8)),
+      "3.5" -> Some((3, 5, 0)),
+      "3" -> Some((3, 0, 0)),
+      "3.5.8x" -> None,
+      "v3.5.9" -> None,
+      "" -> None).foreach { case (version, expected) =>
+      assert(Utils.majorMinorPatchVersion(version) == expected, version)
+    }
+  }
 }

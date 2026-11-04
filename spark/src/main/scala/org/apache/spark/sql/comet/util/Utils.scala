@@ -53,8 +53,22 @@ import org.apache.comet.vector.CometVector
 object Utils extends CometTypeShim with Logging {
   private val VariantExtensionName = "arrow.parquet.variant"
 
+  // The same pattern as Spark's VersionUtils.majorMinorPatchVersion, kept here because that
+  // object is private[spark] and vendor builds of Spark have changed its signature.
+  private val majorMinorPatchRegex = """^(\d+)(?:\.(\d+)(?:\.(\d+)(?:[.-].*)?)?)?$""".r
+
+  /**
+   * Parses the leading major, minor and patch numbers of a Spark version string, matching Spark's
+   * own VersionUtils: a missing minor or patch reads as 0, and anything after the patch that
+   * starts with `.` or `-` (such as `-SNAPSHOT` or a vendor build number) is ignored.
+   */
   def majorMinorPatchVersion(version: String): Option[(Int, Int, Int)] =
-    org.apache.spark.util.VersionUtils.majorMinorPatchVersion(version)
+    majorMinorPatchRegex.findFirstMatchIn(version).map { m =>
+      val major = m.group(1).toInt
+      val minor = Option(m.group(2)).map(_.toInt).getOrElse(0)
+      val patch = Option(m.group(3)).map(_.toInt).getOrElse(0)
+      (major, minor, patch)
+    }
 
   def getConfPath(confFileName: String): String = {
     sys.env
