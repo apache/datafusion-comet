@@ -487,7 +487,7 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
   less, as overcommit (see [The unified pools](#the-unified-pools)).
 - `shrink(n)` returns bytes to the pool.
 
-An operator that never reserves memory is invisible to the pool no matter how much memory it uses.
+An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
 
 ### ROW_NUMBER windows
 
