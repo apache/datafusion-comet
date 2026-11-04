@@ -267,8 +267,11 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
   def toFfiArrowField(name: String, dataType: DataType, nullable: Boolean): Field =
     CometBatchKernelCodegenOutput.toFfiArrowField(name, dataType, nullable)
 
-  def compile(boundExpr: Expression, inputSchema: Seq[ArrowColumnSpec]): CompiledKernel = {
-    val src = generateSource(boundExpr, inputSchema)
+  def compile(
+      boundExpr: Expression,
+      inputSchema: Seq[ArrowColumnSpec],
+      subexpressionElimination: Boolean = true): CompiledKernel = {
+    val src = generateSource(boundExpr, inputSchema, subexpressionElimination)
     val (clazz, _) =
       try {
         CodeGenerator.compile(src.code)
@@ -291,7 +294,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
     // own copy. The closure regenerates the references array per call so the dispatcher can hand
     // a fresh array to every kernel it allocates from this `CompiledKernel`.
     val freshReferences: () => Array[Any] = () =>
-      generateSource(boundExpr, inputSchema).references
+      generateSource(boundExpr, inputSchema, subexpressionElimination).references
     CompiledKernel(clazz, freshReferences)
   }
 
@@ -299,10 +302,15 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
    * Generate the Java source without compiling it. Tests assert on emitted source (null short-
    * circuit present, non-nullable `isNullAt` returns literal `false`, etc.) without paying for
    * Janino.
+   *
+   * `subexpressionElimination = false` compiles without subexpression elimination whatever
+   * `spark.sql.subexpressionElimination.enabled` says, for a tree Spark itself evaluates without
+   * it, such as a filter predicate (see [[WithoutSubexpressionElimination]]).
    */
   def generateSource(
       boundExpr: Expression,
-      inputSchema: Seq[ArrowColumnSpec]): GeneratedSource = {
+      inputSchema: Seq[ArrowColumnSpec],
+      subexpressionElimination: Boolean = true): GeneratedSource = {
     canHandle(boundExpr).foreach(reason =>
       throw new IllegalArgumentException(s"CometBatchKernelCodegen.generateSource: $reason"))
     val expr = withoutBoxedPrimitiveEncoders(boundExpr)
@@ -335,7 +343,7 @@ object CometBatchKernelCodegen extends Logging with CometExprTraitShim with Come
       // results into `addMutableState` fields. The returned `ExprCode` references those fields.
       // `subexprFunctionsCode` is the concatenated helper invocation block, spliced into the
       // per-row body by `defaultBody`.
-      val ev = if (SQLConf.get.subexpressionEliminationEnabled) {
+      val ev = if (subexpressionElimination && SQLConf.get.subexpressionEliminationEnabled) {
         ctx.generateExpressions(Seq(expr), doSubexpressionElimination = true).head
       } else {
         expr.genCode(ctx)
