@@ -54,6 +54,7 @@ The status column uses these values:
   - Default: `false`
   - Status: Partial (see notes)
   - Affected operator: native Parquet scan
+  - Spark versions checked: 3.4.3, 3.5.9, 4.0.4, 4.1.3, 4.2.0
   - Date: 2026-10-21
 
 ## Audit Notes
@@ -161,7 +162,9 @@ the Comet pipeline. Tests for expressions with known fallback paths continue to 
 
 **Source.** When enabled, Spark infers unannotated Parquet `BINARY` columns as
 `StringType`. Parquet files written by Spark carry Spark schema metadata, so this
-configuration does not change the types inferred for those files.
+configuration does not change the types inferred for those files. The inference in
+`ParquetToSparkSchemaConverter` and the `BINARY` cases of `ParquetFilters` are the same in every
+Spark version listed above.
 
 **Comet status.** Comet honors the configuration in the native Parquet scan. When it is
 enabled, the scan reads every top-level string column as Arrow `Binary` and decodes it to valid
