@@ -348,6 +348,16 @@ object CometExplainInfo {
     }
   }
 
+  /**
+   * Forget the fallback reasons recorded on `node`, in the current conversion's journal and in
+   * its tag. For a conversion that recorded reasons on a tree and then converted it another way,
+   * such as `CometJvmDetour`.
+   */
+  private[comet] def clearFallbackReasons(node: Expression): Unit = {
+    Option(fallbackJournal.get()).foreach(_.remove(node))
+    node.unsetTagValue(FALLBACK_REASONS)
+  }
+
   private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
     Option(fallbackJournal.get())
       .flatMap(journal => Option(journal.get(node)))

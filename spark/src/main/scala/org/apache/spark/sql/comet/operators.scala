@@ -62,7 +62,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometRuntimeException, Co
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isSpark35Plus, withFallbackReason}
 import org.apache.comet.parquet.{CometParquetUtils, HadoopFileOutput}
 import org.apache.comet.rules.CometExecRule
-import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
+import org.apache.comet.serde.{CometCollectBuffer, CometJvmDetour, CometOperatorSerde, Compatible, OperatorOuterClass, QueryContextInterner, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
@@ -1454,8 +1454,7 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs =
-      QueryPlanSerde.withJvmDetour(op.projectList.map(exprToProto(_, op.child.output)))
+    val exprs = op.projectList.map(CometJvmDetour.exprToProtoOrDetour(_, op.child.output))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
       val projectBuilder = OperatorOuterClass.Projection
@@ -1514,7 +1513,7 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       op: FilterExec,
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
-    val cond = QueryPlanSerde.withJvmDetour(exprToProto(op.condition, op.child.output))
+    val cond = CometJvmDetour.exprToProtoOrDetour(op.condition, op.child.output)
 
     if (cond.isDefined && childOp.nonEmpty) {
       val filterBuilder = OperatorOuterClass.Filter

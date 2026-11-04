@@ -21,32 +21,30 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Sentences}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Alias, AttributeReference}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.types.{ArrayType, StringType}
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.IntegerType
 
-import org.apache.comet.serde.QueryPlanSerde
+import org.apache.comet.serde.{CometJvmDetour, QueryPlanSerde}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
- * Tests for the partial project fallback (JVM expression detour). When a projection or filter
- * contains an expression with no native translation, [[CometConf.COMET_EXEC_JVM_DETOUR_ENABLED]]
- * routes just that subtree through the Arrow-direct codegen dispatcher instead of falling the
- * whole operator back to Spark.
+ * Tests for the JVM expression detour (partial project fallback). When a projection item or a
+ * filter condition has no Comet translation, [[CometConf.COMET_EXEC_JVM_DETOUR_ENABLED]] sends
+ * the whole item to the codegen dispatcher instead of falling the operator back to Spark. The
+ * detour is applied only at the root of an item, never to a node below it; see
+ * [[CometJvmDetour]].
  *
- * Two ways of producing an "unsupported" expression are used:
- *   - `sentences(str)`, which Comet has no native serde for (so it exercises the `case _ =>`
- *     fallthrough the hook backstops), is deterministic, and is a `CodegenFallback` returning
- *     `array<array<string>>` (interpreted eval + a nested-complex result across the FFI
- *     boundary).
- *   - a registered built-in whose per-expression serde is disabled
- *     (`spark.comet.expression.<Class>.enabled=false`), which routes a genuinely-supported
- *     expression through the same fallthrough. This lets the parity tests below ship a chosen
- *     input type (decimal, timestamp, array, map, a subquery, a nondeterministic child) across
- *     the FFI boundary through the hook while staying cheap and stable as native coverage
- *     evolves.
+ * An expression reaches the detour by being named in
+ * [[CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS]], which makes Comet treat a supported
+ * expression as having no translation while leaving it eligible for the detour. That keeps the
+ * tests stable as Comet's coverage changes (`sentences`, for example, has no serde, but on Spark
+ * 4.x it is replaced by a `StaticInvoke` that Comet already dispatches) and lets a test choose
+ * the input types that cross to the JVM. Disabling an expression with
+ * `spark.comet.expression.<Name>.enabled=false` would not do: that must make it fall back.
  */
 class CometPartialProjectFallbackSuite
     extends CometTestBase
@@ -57,40 +55,40 @@ class CometPartialProjectFallbackSuite
     super.sparkConf
       .set(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key, "true")
 
-  private def withStringCol(values: String*)(f: => Unit): Unit = {
+  /**
+   * Enable the detour and make Comet treat the named supported expressions as having no
+   * translation, so they reach the detour.
+   */
+  private def withDetouredSerdes(unsupported: String*)(f: => Unit): Unit =
+    withSQLConf(
+      CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true",
+      CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> unsupported.mkString(","))(f)
+
+  private def withIntTable(f: => Unit): Unit =
     withTable("t") {
-      sql("CREATE TABLE t (s STRING) USING parquet")
-      val rows = values
-        .map(v => if (v == null) "(NULL)" else s"('${v.replace("'", "''")}')")
-        .mkString(", ")
-      if (values.nonEmpty) sql(s"INSERT INTO t VALUES $rows")
+      sql("CREATE TABLE t (x INT, s STRING) USING parquet")
+      sql("INSERT INTO t VALUES (-1, 'Hello'), (2, ''), (NULL, NULL), (-7, 'abc')")
       f
     }
-  }
 
-  private def withDetour[T](enabled: Boolean)(f: => T): T = {
-    // Capture the block's result explicitly rather than returning `withSQLConf`'s value:
-    // Spark 3.4/3.5 (Scala 2.12) type `withSQLConf(...)(f)` as `Unit`, so returning it directly
-    // fails to unify with `T`. Spark 4.x infers it, but this form compiles on all versions.
-    var result: Option[T] = None
-    withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> enabled.toString) {
-      result = Some(f)
-    }
-    result.get
-  }
-
-  /** Whether the (already-executed) DataFrame's plan kept a native `CometProjectExec`. */
+  /** Whether the (already-executed) DataFrame's plan kept a `CometProjectExec`. */
   private def hasCometProject(df: DataFrame): Boolean =
     collect(stripAQEPlan(df.queryExecution.executedPlan)) { case p: CometProjectExec =>
       p
     }.nonEmpty
 
-  test("unsupported projection expression stays native with the detour enabled") {
-    withStringCol("Hello World. Foo bar.", "One sentence here.", null) {
-      withDetour(enabled = true) {
+  private def fallbackReasons(df: DataFrame): Seq[String] =
+    new ExtendedExplainInfo().getFallbackReasons(stripAQEPlan(df.queryExecution.executedPlan))
+
+  private def nativeExprs(plan: SparkPlan): Seq[String] =
+    new ExtendedExplainInfo().getNativeExpressions(plan)
+
+  test("unsupported projection expression stays in the Comet pipeline with the detour enabled") {
+    withIntTable {
+      withDetouredSerdes("Abs") {
         assertCodegenRan {
           checkSparkAnswerAndOperator(
-            sql("SELECT sentences(s) FROM t"),
+            sql("SELECT abs(x) FROM t"),
             includeClasses = Seq(classOf[CometProjectExec]))
         }
       }
@@ -98,12 +96,10 @@ class CometPartialProjectFallbackSuite
   }
 
   test("same expression falls the operator back to Spark with the detour disabled (default)") {
-    withStringCol("Hello World. Foo bar.", null) {
-      withDetour(enabled = false) {
+    withIntTable {
+      withSQLConf(CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs") {
         CometScalaUDFCodegen.resetStats()
-        // Results still match Spark (the projection just runs on the JVM Spark path), but the
-        // project operator is NOT accelerated and the dispatcher never fires.
-        val df = sql("SELECT sentences(s) FROM t")
+        val df = sql("SELECT abs(x) FROM t")
         checkSparkAnswer(df)
         assert(
           !hasCometProject(df),
@@ -116,60 +112,257 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("detour fires at the outermost unsupported node, keeping supported ancestors native") {
-    // `size(sentences(s))`: `size` has a native translation, only `sentences` does not. The hook
-    // must detour `sentences` alone and let the native `size` reference its output. Proof: a
-    // compiled kernel exists whose signature is `sentences`'s — one `VarCharVector` input and an
-    // `array<array<string>>` output. If the detour granularity were the whole top-level
-    // expression, the only kernel would have an IntegerType output (`size`'s) and this signature
-    // would be absent. Presence is a robust check against the append-only JVM-wide signature set.
-    withStringCol("Hello World. Foo bar.", "Solo.", null) {
-      withDetour(enabled = true) {
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(
-            sql("SELECT size(sentences(s)) FROM t"),
+  // ---------------------------------------------------------------------------------------------
+  // Root-only detour. These pin that the detour never leaves a Rust-implemented ancestor over a
+  // detoured node, which is what keeps it sound (see `CometJvmDetour`).
+  // ---------------------------------------------------------------------------------------------
+
+  test("the detour takes the whole projection item, not just the unsupported node") {
+    // `concat` and `upper` have Comet translations, and `upper` converts before the conversion
+    // reaches `length` and fails. The whole item must still run in one kernel, and `upper` must
+    // not be reported as Rust-implemented from that abandoned attempt.
+    withIntTable {
+      withDetouredSerdes("Length") {
+        assertOneKernelForSubtree {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql("SELECT concat(upper(s), cast(length(s) AS STRING)) FROM t"),
             includeClasses = Seq(classOf[CometProjectExec]))
+          assertExpressionImpl(
+            cometPlan,
+            native = Seq.empty,
+            dispatched = Seq("concat", "length"))
+          assert(
+            !nativeExprs(cometPlan).contains("upper"),
+            s"expected upper in the kernel, native=${nativeExprs(cometPlan)}")
         }
-        // Structural match on the signature (ignoring `containsNull` flags, which vary by
-        // context): one VarCharVector input, output `array<array<string>>` — the sentences subtree.
-        val sigs = CometScalaUDFCodegen.snapshotCompiledSignatures()
-        val present = sigs.exists {
-          case (inputs, ArrayType(ArrayType(StringType, _), _)) =>
-            inputs.map(_.getSimpleName) == IndexedSeq("VarCharVector")
-          case _ => false
-        }
-        assert(
-          present,
-          "expected a kernel (VarCharVector -> array<array<string>>) for the sentences subtree " +
-            s"only; cache had ${sigs.map { case (c, d) => (c.map(_.getSimpleName), d) }}")
       }
     }
   }
 
-  test("unsupported expression in a filter predicate keeps the filter native") {
-    // The detour gate is set around `CometFilterExec.convert` as well. `size(sentences(s)) > 0`
-    // has an unsupported `sentences` leaf under an otherwise-native predicate.
-    withStringCol("Hello World. Foo bar.", "", "Solo.", null) {
-      withDetour(enabled = true) {
+  test("the detour takes the whole filter condition") {
+    withIntTable {
+      withDetouredSerdes("Length") {
         assertCodegenRan {
-          checkSparkAnswerAndOperator(
-            sql("SELECT s FROM t WHERE size(sentences(s)) > 0"),
+          val (_, cometPlan) = checkSparkAnswerAndOperator(
+            sql("SELECT s FROM t WHERE upper(s) <> 'X' AND length(s) > 0"),
             includeClasses = Seq(classOf[CometFilterExec]))
+          assertExpressionImpl(cometPlan, native = Seq.empty, dispatched = Seq("length"))
+          val native = nativeExprs(cometPlan)
+          assert(
+            !native.contains("upper") && !native.contains("and"),
+            s"expected the whole condition in the kernel, native=$native")
         }
       }
+    }
+  }
+
+  test("a conditional keeps Spark's short-circuit evaluation in a projection") {
+    // `10 div x` raises under ANSI for x = 0, and Spark never evaluates it for that row because
+    // the CASE takes the first branch. The detour takes the whole CASE, so Spark's own code makes
+    // that choice. (A detour of `abs(10 div x)` alone under the Rust CASE also passes today,
+    // because DataFusion evaluates a branch only on the rows that reach it; this pins the result
+    // without relying on that.)
+    withTable("t") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      sql("INSERT INTO t VALUES (0), (2), (NULL), (5)")
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withDetouredSerdes("Abs") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql("SELECT CASE WHEN x = 0 THEN -1L ELSE abs(10 div x) END FROM t"),
+              includeClasses = Seq(classOf[CometProjectExec]))
+          }
+        }
+      }
+    }
+  }
+
+  test("a conjunction keeps Spark's short-circuit evaluation in a filter") {
+    withTable("t") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      sql("INSERT INTO t VALUES (0), (2), (NULL), (5)")
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withDetouredSerdes("Abs") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql("SELECT x FROM t WHERE x <> 0 AND abs(10 div x) > 1"),
+              includeClasses = Seq(classOf[CometFilterExec]))
+          }
+        }
+      }
+    }
+  }
+
+  test("ancestor compatibility: array_contains over a declined element_at matches Spark") {
+    // The reproducer from the review of apache/datafusion-comet#4827. Spark returns true:
+    // `array_contains` treats -0.0 and 0.0 as equal. A node-local rescue of `element_at` left
+    // `map_keys` and `array_contains` in Rust over its result and returned false. Making
+    // `element_at` decline reproduces that shape whatever Comet's coverage of the literal is.
+    withTable("t") {
+      sql("CREATE TABLE t (k INT) USING parquet")
+      sql("INSERT INTO t VALUES (1), (1), (NULL)")
+      val queries = Seq(
+        "SELECT array_contains(map_keys(element_at(map(1, map(0.0D, 7)), k)), -0.0D) FROM t",
+        "SELECT map_contains_key(element_at(map(1, map(0.0D, 7)), k), -0.0D) FROM t")
+      for (query <- queries) {
+        withClue(s"$query: ") {
+          withDetouredSerdes("ElementAt") {
+            assertCodegenRan {
+              val (_, cometPlan) = checkSparkAnswerAndOperator(
+                sql(query),
+                includeClasses = Seq(classOf[CometProjectExec]))
+              assertExpressionImpl(cometPlan, native = Seq.empty, dispatched = Seq("element_at"))
+              val native = nativeExprs(cometPlan)
+              assert(
+                !native.contains("array_contains") && !native.contains("map_keys"),
+                s"expected no Rust-implemented ancestor of the declined element_at, got $native")
+            }
+          }
+          // Without the forced decline, whatever path Comet takes must match Spark too.
+          withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true") {
+            checkSparkAnswer(sql(query))
+          }
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // `spark.comet.expression.<Name>.enabled=false` must still fall back to Spark.
+  // ---------------------------------------------------------------------------------------------
+
+  test("a disabled expression falls back to Spark even with the detour enabled") {
+    withIntTable {
+      // A Rust-implemented serde, a codegen-dispatch serde, and a disabled node below an
+      // expression without a translation. In the third, `abs` stands in for that expression, so
+      // the conversion stops there and never reaches the disabled `upper`.
+      val cases = Seq(
+        "Abs" -> "SELECT abs(x) FROM t",
+        "RLike" -> "SELECT s rlike 'a.*' FROM t",
+        "Upper" -> "SELECT abs(length(upper(s))) FROM t")
+      for ((name, query) <- cases) {
+        withClue(s"$name: $query: ") {
+          withSQLConf(
+            CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true",
+            CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs",
+            CometConf.getExprEnabledConfigKey(name) -> "false") {
+            CometScalaUDFCodegen.resetStats()
+            val df = sql(query)
+            checkSparkAnswer(df)
+            assert(!hasCometProject(df), "expected the projection to fall back to Spark")
+            val stats = CometScalaUDFCodegen.stats()
+            assert(
+              stats.compileCount == 0 && stats.cacheHitCount == 0,
+              s"expected no dispatcher activity, got $stats")
+            assert(
+              fallbackReasons(df).exists(_.contains(CometConf.getExprEnabledConfigKey(name))),
+              s"expected a reason naming the disabled config, got ${fallbackReasons(df)}")
+          }
+        }
+      }
+    }
+  }
+
+  test("a detoured item's reasons are not reported when its operator falls back for another") {
+    // `abs(x)` detours and `upper(s)` is disabled, so the projection falls back. Only the
+    // disabled `upper` explains that: the abandoned reason for `abs` must be cleared.
+    withIntTable {
+      withSQLConf(
+        CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true",
+        CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs",
+        CometConf.getExprEnabledConfigKey("Upper") -> "false") {
+        val df = sql("SELECT abs(x) AS a, upper(s) AS b FROM t")
+        checkSparkAnswer(df)
+        assert(!hasCometProject(df), "expected the projection to fall back to Spark")
+        val reasons = fallbackReasons(df)
+        assert(
+          reasons.exists(_.contains(CometConf.getExprEnabledConfigKey("Upper"))),
+          s"expected the disabled upper to be reported, got $reasons")
+        assert(
+          !reasons.exists(_.contains(CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key)),
+          s"expected no reason for the detoured abs, got $reasons")
+      }
+    }
+  }
+
+  test("a detoured item is not reported as a fallback when the operator stays in Comet") {
+    withIntTable {
+      withDetouredSerdes("Abs") {
+        val df = sql("SELECT abs(x) FROM t")
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+        assert(
+          fallbackReasons(df).isEmpty,
+          s"expected no fallback reasons, got ${fallbackReasons(df)}")
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Dispatcher-level hazards raised in review.
+  // ---------------------------------------------------------------------------------------------
+
+  test("identical nondeterministic items keep independent state") {
+    // Spark gives each `rand(42)` its own generator, so both columns are equal. The two items
+    // serialize to the same tree; each must still get its own kernel state.
+    withTempPath { dir =>
+      spark.range(0, 64, 1, numPartitions = 2).write.parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("Abs") {
+        assertCodegenRan {
+          val df = sql("SELECT abs(rand(42)) AS a, abs(rand(42)) AS b FROM t")
+          checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+          val rows = df.collect()
+          assert(rows.forall(r => r.getDouble(0) == r.getDouble(1)), "expected a == b per row")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("identical seeded uuid items keep independent state (Spark 4.0+)") {
+    assume(CometSparkSessionExtensions.isSpark40Plus, "uuid(seed) needs Spark 4.0+")
+    withTempPath { dir =>
+      spark.range(0, 3, 1, numPartitions = 1).write.parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("Uuid") {
+        assertCodegenRan {
+          val df = sql("SELECT uuid(42) AS a, uuid(42) AS b FROM t")
+          checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometProjectExec]))
+          val rows = df.collect()
+          assert(rows.forall(r => r.getString(0) == r.getString(1)), "expected a == b per row")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("year-month interval output of one detour feeds another") {
+    // The nondeterministic `rand` keeps Spark from collapsing the two projections, so the upper
+    // detour reads the interval column the lower one wrote.
+    withTempPath { dir =>
+      spark.range(0, 32, 1, numPartitions = 1).write.parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("MakeYMInterval", "Abs") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            sql(
+              "SELECT abs(ym) FROM " +
+                "(SELECT make_ym_interval(CAST(rand(42) * 10 AS INT)) AS ym FROM t)"),
+            includeClasses = Seq(classOf[CometProjectExec]))
+        }
+      }
+      spark.catalog.dropTempView("t")
     }
   }
 
   test("detour refused by canHandle still falls back cleanly") {
-    // Force `CometBatchKernelCodegen.canHandle` to reject the tree at plan time via the
-    // `spark.sql.codegen.maxFields` gate. `sentences(s)` has 2 nested fields (the string input +
-    // the array<array<string>> output collapses to 1), so maxFields=1 refuses it. The detour hook
-    // must surface that as a clean whole-operator fallback, not a mid-execution Janino failure.
-    withStringCol("Hello World.", null) {
-      withDetour(enabled = true) {
+    // `spark.sql.codegen.maxFields=1` makes `CometBatchKernelCodegen.canHandle` refuse the tree,
+    // which counts the input and the output field.
+    withIntTable {
+      withDetouredSerdes("Abs") {
         withSQLConf("spark.sql.codegen.maxFields" -> "1") {
           CometScalaUDFCodegen.resetStats()
-          val df = sql("SELECT sentences(s) FROM t")
+          val df = sql("SELECT abs(x) FROM t")
           checkSparkAnswer(df)
           assert(
             !hasCometProject(df),
@@ -183,55 +376,68 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("the detour gate is scoped: it does not fire outside a projection or filter context") {
-    // Serde-level assertion of the `DynamicVariable` scoping. `exprToProto` on an unsupported
-    // expression returns None on its own, and only returns a `JvmScalarUdf` proto when the call is
-    // wrapped in `withJvmDetour` (which `CometProjectExec` / `CometFilterExec` do) AND the feature
-    // is enabled. This is what keeps the detour out of join keys, sort keys, and aggregate
-    // expressions in v1 without threading a flag through every serde method.
-    val attr = AttributeReference("s", StringType)()
-    val expr = Sentences(attr)
+  test("the detour applies only to roots passed to exprToProtoOrDetour") {
+    // `exprToProto` never detours, so join keys, sort keys, aggregate and partitioning
+    // expressions are unaffected. Only the projection and filter serdes call
+    // `exprToProtoOrDetour`.
+    val attr = AttributeReference("x", IntegerType)()
+    val expr = Alias(Abs(attr), "a")()
     val inputs = Seq(attr)
 
-    withDetour(enabled = true) {
-      // Outside a detour-eligible context: no detour, even though the feature is enabled.
-      assert(
-        QueryPlanSerde.exprToProto(expr, inputs).isEmpty,
-        "expected no detour outside withJvmDetour")
-
-      // Inside a detour-eligible context: the hook fires and emits a JvmScalarUdf proto.
-      val detoured = QueryPlanSerde.withJvmDetour(QueryPlanSerde.exprToProto(expr, inputs))
-      assert(detoured.isDefined, "expected a detour proto inside withJvmDetour")
+    withDetouredSerdes("Abs") {
+      assert(QueryPlanSerde.exprToProto(expr, inputs).isEmpty, "expected no detour")
+      val detoured = CometJvmDetour.exprToProtoOrDetour(expr, inputs)
+      assert(detoured.isDefined, "expected a detour proto")
       assert(detoured.get.hasJvmScalarUdf, s"expected a JvmScalarUdf proto, got ${detoured.get}")
     }
 
-    withDetour(enabled = false) {
-      // Feature disabled: even inside a detour-eligible context, no detour.
+    withSQLConf(CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs") {
       assert(
-        QueryPlanSerde.withJvmDetour(QueryPlanSerde.exprToProto(expr, inputs)).isEmpty,
+        CometJvmDetour.exprToProtoOrDetour(expr, inputs).isEmpty,
         "expected no detour when the feature flag is disabled")
     }
   }
 
-  // ---------------------------------------------------------------------------------------------
-  // Parity suites: a supported built-in routed through the hook (by disabling its serde) ships a
-  // chosen input type across the FFI boundary. Results run through Spark's own `doGenCode` inside
-  // the kernel, so parity with Spark is the invariant. Each asserts the operator stays native.
-  // ---------------------------------------------------------------------------------------------
-
-  /**
-   * Enable the detour + dispatcher and disable the given built-in serdes so they route through
-   * it.
-   */
-  private def withDetouredSerdes(disabled: String*)(f: => Unit): Unit = {
-    val confs = Seq(
-      CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true",
-      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") ++
-      disabled.map(c => CometConf.getExprEnabledConfigKey(c) -> "false")
-    withSQLConf(confs: _*)(f)
+  test("a subquery inside the detoured item falls back cleanly, not to a kernel failure") {
+    withTable("t", "t2") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+      sql("CREATE TABLE t2 (v INT) USING parquet")
+      sql("INSERT INTO t2 VALUES (10), (20)")
+      withDetouredSerdes("Abs") {
+        // The detoured tree is closure-serialized at plan time, before the operator's
+        // `waitForSubqueries` populates the `ScalarSubquery` result, so `canHandle` refuses it.
+        val df = sql("SELECT abs(x - (SELECT max(v) FROM t2)) FROM t")
+        checkSparkAnswer(df)
+        assert(
+          !hasCometProject(df),
+          "expected the projection to fall back when the detoured tree contains a subquery")
+      }
+    }
   }
 
-  test("parity: NULL-heavy input through the detour hook") {
+  test("a subquery in a sibling projection item stays in the Comet pipeline") {
+    withTable("t", "t2") {
+      sql("CREATE TABLE t (x INT) USING parquet")
+      sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
+      sql("CREATE TABLE t2 (v INT) USING parquet")
+      sql("INSERT INTO t2 VALUES (10), (20)")
+      withDetouredSerdes("Abs") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(
+            sql("SELECT abs(x) AS a, x + (SELECT max(v) FROM t2) AS b FROM t"),
+            includeClasses = Seq(classOf[CometProjectExec]))
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Parity: a supported expression sent through the detour ships a chosen input type across the
+  // FFI boundary. The kernel runs Spark's own code, so the results must match Spark.
+  // ---------------------------------------------------------------------------------------------
+
+  test("parity: NULL-heavy input through the detour") {
     withTable("t") {
       sql("CREATE TABLE t (x INT) USING parquet")
       val rows = (0 until 300)
@@ -248,12 +454,11 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("parity: empty input keeps the detour native") {
+  test("parity: empty input keeps the detour in the Comet pipeline") {
     withTable("t") {
       sql("CREATE TABLE t (x INT) USING parquet") // no rows: exercises the empty-batch path
       withDetouredSerdes("Abs") {
-        // No assertCodegenRan: with zero rows the kernel never compiles. We only assert the plan
-        // stays native and produces the same (empty) result as Spark.
+        // No assertCodegenRan: with zero rows the kernel never compiles.
         checkSparkAnswerAndOperator(
           sql("SELECT abs(x) FROM t"),
           includeClasses = Seq(classOf[CometProjectExec]))
@@ -261,7 +466,7 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("parity: decimals cross the FFI boundary through the detour hook") {
+  test("parity: decimals cross the FFI boundary through the detour") {
     withTable("t") {
       sql("CREATE TABLE t (d DECIMAL(18,6), e DECIMAL(38,10)) USING parquet")
       sql(
@@ -277,7 +482,7 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("parity: timestamps cross the FFI boundary through the detour hook") {
+  test("parity: timestamps cross the FFI boundary through the detour") {
     withTable("t") {
       sql("CREATE TABLE t (ts TIMESTAMP) USING parquet")
       sql(
@@ -293,7 +498,7 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("parity: nested array/map types cross the FFI boundary through the detour hook") {
+  test("parity: nested array/map types cross the FFI boundary through the detour") {
     withTable("t") {
       sql("CREATE TABLE t (arr ARRAY<INT>, m MAP<STRING, INT>) USING parquet")
       sql(
@@ -309,70 +514,9 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("a subquery inside the detoured subtree falls back cleanly, not to a kernel failure") {
-    withTable("t", "t2") {
-      sql("CREATE TABLE t (x INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
-      sql("CREATE TABLE t2 (v INT) USING parquet")
-      sql("INSERT INTO t2 VALUES (10), (20)")
-      withDetouredSerdes("Abs") {
-        // The detoured tree is closure-serialized at plan time, before the operator's
-        // `waitForSubqueries` populates the `ScalarSubquery` result, so evaluating it in the
-        // kernel would throw "Subquery ... has not finished". The detour refuses a subquery-bearing
-        // tree, so the projection falls back to Spark and results still match. (A subquery that is
-        // a *sibling* of the detoured node is unaffected; it stays native.)
-        val df = sql("SELECT abs(x - (SELECT max(v) FROM t2)) FROM t")
-        checkSparkAnswer(df)
-        assert(
-          !hasCometProject(df),
-          "expected the projection to fall back when the detoured tree contains a subquery")
-      }
-    }
-  }
-
-  test("a subquery that is a sibling of the detoured node stays native") {
-    // With `Abs` disabled, `abs(x)` detours (no subquery inside its tree) while the sibling
-    // `ScalarSubquery` under the native `+` is evaluated natively (Comet populates it via
-    // `waitForSubqueries`). The whole projection therefore stays native. This pins the
-    // sibling-subquery behavior the subquery guard's comment relies on.
-    withTable("t", "t2") {
-      sql("CREATE TABLE t (x INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3), (4), (5)")
-      sql("CREATE TABLE t2 (v INT) USING parquet")
-      sql("INSERT INTO t2 VALUES (10), (20)")
-      withDetouredSerdes("Abs") {
-        assertCodegenRan {
-          checkSparkAnswerAndOperator(
-            sql("SELECT abs(x) + (SELECT max(v) FROM t2) FROM t"),
-            includeClasses = Seq(classOf[CometProjectExec]))
-        }
-      }
-    }
-  }
-
-  test("a mixed projection falls back whole when one sibling cannot detour") {
-    // `abs(x)` detours, but `make_interval(x)` returns CalendarInterval, which `canHandle` rejects
-    // (unsupported output type) and which Comet has no serde for, so it cannot be detoured. The
-    // per-expression detour of `abs(x)` succeeds, yet `exprs.forall(_.isDefined)` is false, so the
-    // whole projection falls back to a Spark `ProjectExec`. Results must still match Spark (the
-    // detour never changes results, only whether an operator stays native).
-    withTable("t") {
-      sql("CREATE TABLE t (x INT) USING parquet")
-      sql("INSERT INTO t VALUES (1), (2), (3)")
-      withDetouredSerdes("Abs") {
-        val df = sql("SELECT abs(x) AS a, make_interval(x) AS b FROM t")
-        checkSparkAnswer(df)
-        assert(
-          !hasCometProject(df),
-          "expected the whole projection to fall back when a sibling cannot detour")
-      }
-    }
-  }
-
-  test("parity: nondeterministic detoured tree stays native with per-partition seeding") {
+  test("parity: nondeterministic detoured tree with per-partition seeding") {
     withTempPath { dir =>
-      // Four partitions so per-partition `Rand` seeding (kernel `init(partitionIndex)`) matters:
-      // matching Spark on a fixed seed proves the seed advances per partition, not from 0 each time.
+      // Four partitions so per-partition `Rand` seeding (kernel `init(partitionIndex)`) matters.
       spark.range(0, 4096, 1, numPartitions = 4).write.parquet(dir.getAbsolutePath)
       spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
       withDetouredSerdes("Abs") {
@@ -386,10 +530,7 @@ class CometPartialProjectFallbackSuite
     }
   }
 
-  test("island preservation: the projection stays native with no row transition below it") {
-    // Match every columnar->row transition kind by simple name (Spark's `ColumnarToRowExec` plus
-    // Comet's `CometColumnarToRowExec` / `CometNativeColumnarToRowExec`) so the check does not
-    // depend on which one Comet inserts.
+  test("island preservation: the projection stays in Comet with no row transition below it") {
     def isRowTransition(p: SparkPlan): Boolean = p.getClass.getSimpleName match {
       case "ColumnarToRowExec" | "CometColumnarToRowExec" | "CometNativeColumnarToRowExec" => true
       case _ => false
@@ -398,11 +539,9 @@ class CometPartialProjectFallbackSuite
       sql("CREATE TABLE t (x INT) USING parquet")
       sql("INSERT INTO t VALUES (1), (2), (3)")
 
-      // Detour off: the projection falls back to a Spark `ProjectExec`, so a columnar->row
-      // transition feeds it and the native island above the scan is broken.
-      withSQLConf(
-        CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "false",
-        CometConf.getExprEnabledConfigKey("Abs") -> "false") {
+      // Detour off: the projection falls back to a Spark `ProjectExec` fed by a columnar->row
+      // transition.
+      withSQLConf(CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Abs") {
         val offPlan = stripAQEPlan(sql("SELECT abs(x) FROM t").queryExecution.executedPlan)
         assert(
           collect(offPlan) { case p: ProjectExec => p }.nonEmpty,
@@ -412,18 +551,17 @@ class CometPartialProjectFallbackSuite
           "expected a columnar->row transition feeding the fallback project")
       }
 
-      // Detour on: the projection stays native and no columnar->row transition appears anywhere in
-      // its subtree, so the island above the scan is preserved end to end.
+      // Detour on: the projection stays in Comet and no columnar->row transition appears below.
       withDetouredSerdes("Abs") {
         val onPlan = stripAQEPlan(sql("SELECT abs(x) FROM t").queryExecution.executedPlan)
         val proj = collect(onPlan) { case p: CometProjectExec => p }
-        assert(proj.nonEmpty, "expected the projection to stay native with the detour on")
+        assert(proj.nonEmpty, "expected the projection to stay in Comet with the detour on")
         assert(
           collect(onPlan) { case p: ProjectExec => p }.isEmpty,
           "expected no Spark ProjectExec with the detour on")
         assert(
           proj.forall(p => collect(p) { case c if isRowTransition(c) => c }.isEmpty),
-          "expected no columnar->row transition below the native projection (island preserved)")
+          "expected no columnar->row transition below the projection")
       }
     }
   }
