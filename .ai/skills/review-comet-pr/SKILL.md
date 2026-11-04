@@ -244,9 +244,8 @@ config, not a testing one, to turn it off before merge (#6466).
   implementation such as iceberg-rust instead of the Iceberg Java that Spark runs, can agree on the
   wrong answer (#6423, #6426).
 - Each new concrete suite needs exactly one test-group tag (`@ScansGroup`, `@ShuffleGroup`,
-  `@ExecGroup` or `@ExpressionsGroup`), and a listing under that group in both
-  `.github/workflows/pr_build_linux.yml` and `pr_build_macos.yml`. `dev/ci/check-suites.py`
-  enforces both; the group should match the area the suite covers.
+  `@ExecGroup` or `@ExpressionsGroup`), or it runs in no CI job. `dev/ci/check-suites.py` enforces
+  this; the group should match the area the suite covers.
 
 For a change on a default path, look for tests with the inputs that broke earlier changes:
 

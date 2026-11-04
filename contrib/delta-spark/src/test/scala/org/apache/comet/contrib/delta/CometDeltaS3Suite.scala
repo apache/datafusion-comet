@@ -41,12 +41,12 @@ import org.apache.comet.CometS3TestBase
  *
  * Manual/opt-in, same as [[org.apache.comet.parquet.ParquetReadFromS3Suite]] in the spark module
  * -- but gated differently out of necessity. That suite is invisible to every PR workflow simply
- * because `.github/workflows/pr_build_linux.yml` / `pr_build_macos.yml` enumerate test classes by
- * name and never name it (`dev/ci/check-suites.py` exempts it via `ignore_list` instead of
- * requiring it be listed). The contrib module has no such allowlist: `delta_contrib_test.yml`
- * runs `mvn ... test -pl contrib/delta-spark`, which discovers and runs every suite on the
- * module's test classpath, and `check-suites.py` does not enforce anything under `contrib/` at
- * all (see its `path.parts[0] == "contrib"` skip), so there is no file to omit this suite from.
+ * because the PR build runs suites by test-group tag and it carries none
+ * (`dev/ci/check-suites.py` exempts it via `IGNORE_LIST` instead of requiring a tag). The contrib
+ * module has no such groups: `delta_contrib_test.yml` runs `mvn ... test -pl contrib/delta-spark`,
+ * which discovers and runs every suite on the module's test classpath, and `check-suites.py` does
+ * not enforce anything under `contrib/` at all (it only scans `spark/src/test`), so there is no
+ * tag to leave off this suite.
  * Every test therefore starts with `assume(dockerAvailable, ...)`: when no Docker daemon is
  * reachable, ScalaTest reports the test CANCELED rather than failed or run, which
  * `scalatest-maven-plugin` does not treat as a build failure -- the practical equivalent of

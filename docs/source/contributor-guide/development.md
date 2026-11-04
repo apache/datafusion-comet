@@ -708,14 +708,10 @@ make test-rust
 make test-jvm
 ```
 
-### 6. Register New Test Suites in CI
+### 6. Put New Test Suites in a Test Group
 
-CI runs Comet's Scala test suites in four groups, each as its own parallel job. A new suite joins a
-group in two places: its class carries the group's ScalaTest tag, and its fully qualified class name
-is listed under the group in the `suite` matrix of **both** workflow files:
-
-- `.github/workflows/pr_build_linux.yml`
-- `.github/workflows/pr_build_macos.yml`
+CI runs Comet's Scala test suites in four groups, each as its own parallel job. A suite joins a
+group through a ScalaTest tag on its class, so a new suite needs one of these tags:
 
 | Tag                 | Group         | Covers                                                         |
 | ------------------- | ------------- | -------------------------------------------------------------- |
@@ -733,26 +729,18 @@ import org.apache.comet.tags.ExpressionsGroup
 class YourNewExpressionSuite extends CometTestBase {
 ```
 
-```yaml
-- name: "expressions"
-  value: |
-    org.apache.comet.CometExpressionSuite
-    # ... existing suites ...
-    org.apache.comet.YourNewExpressionSuite  # <-- add here
-```
-
 Tag each concrete suite class. A tag on an abstract base class or a trait does not reach the suites
 that extend it. A suite that has a copy in more than one Spark version source set, such as
 `spark-3.5` and `spark-4.0`, needs the tag in each copy.
 
 The `preflight` job in `.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull
-request. It fails when a concrete suite has no group tag or more than one, or when either workflow
-file does not list it under the group its tag names.
+request. It fails when a concrete suite has no group tag, because that suite would run in no CI
+job, or has more than one.
 
 #### Test Groups
 
-`dev/ci/run-comet-tests.sh` runs one group locally: the suites that carry its tag, which
-`dev/ci/check-suites.py` keeps the same as the group's CI job.
+`dev/ci/run-comet-tests.sh` runs one group the way CI does. CI and other build systems call the
+same script, so a group that passes locally runs the same suites in CI:
 
 ```sh
 make
@@ -760,8 +748,8 @@ dev/ci/run-comet-tests.sh expressions          # the default Spark profile
 dev/ci/run-comet-tests.sh exec -Pspark-4.0     # arguments after the group go to Maven
 ```
 
-The script runs `mvnw test` by default. Pass `--goal install` to also run the `spark-integration`
-checks, and `-Prelease` to use the library that `make release` builds.
+The script runs `mvnw test` by default. CI passes `--goal install` and `-Prelease`, which uses the
+library that `make release` builds.
 
 The group tag does not select an integration suite, one marked `@IntegrationTestSuite` such as
 `ParquetEncryptionITCase`. The ScalaTest plugin excludes those, and Maven runs them under

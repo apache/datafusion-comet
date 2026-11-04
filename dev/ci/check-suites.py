@@ -16,12 +16,11 @@
 # under the License.
 """Check that every Comet test suite belongs to exactly one CI test group.
 
-CI runs the Comet test suites in groups, one job per group. Each concrete suite
-carries the ScalaTest tag of its group (see
-spark/src/test/java/org/apache/comet/tags/*Group.java), and the CI workflows
-list it in the group of the same name. This fails on a suite with no group tag,
-which would run in no job, on one with two, and on a suite whose workflow
-listing does not match its tag. Suites deliberately left out of CI are listed
+CI runs the Comet test suites in groups, one job per group, and
+selects a group's suites by the ScalaTest tag they carry (see
+spark/src/test/java/org/apache/comet/tags/*Group.java). A concrete suite with
+no group tag would run in no job, so this fails on one, and on a suite with
+two tags, which would run twice. Suites deliberately left out of CI are listed
 in IGNORE_LIST and must carry no group tag, so that no group picks them up.
 """
 
@@ -85,26 +84,6 @@ def declarations(text):
         yield match.group("name"), concrete, annotations, number + 1
 
 
-# The linux-test and macOS test matrices list each group's suites by name.
-WORKFLOWS = [".github/workflows/pr_build_linux.yml", ".github/workflows/pr_build_macos.yml"]
-MATRIX_GROUP = re.compile(r'^\s+- name: "(\w+)"\n\s+value: \|\n((?:\s+[\w.]+\n)+)', re.M)
-
-
-def workflow_groups(workflow):
-    """Map each suite a workflow's test matrix lists to the group it is listed in."""
-    text = (REPO_ROOT / workflow).read_text(encoding="utf-8")
-    return {
-        suite: group
-        for group, suites in MATRIX_GROUP.findall(text)
-        for suite in suites.split()
-    }
-
-
-def group_name(tag):
-    """ExecGroup -> exec"""
-    return tag[: -len("Group")].lower()
-
-
 def main():
     failures = []
     members = {tag: set() for tag in GROUP_TAGS}
@@ -142,17 +121,6 @@ def main():
 
     for fqn in sorted(set(IGNORE_LIST) - seen_ignored):
         failures.append(f"IGNORE_LIST names {fqn}, which no longer exists")
-
-    tagged = {fqn: group_name(tag) for tag, suites in members.items() for fqn in suites}
-    for workflow in WORKFLOWS:
-        listed = workflow_groups(workflow)
-        for fqn, group in sorted(tagged.items()):
-            if fqn not in listed:
-                failures.append(f"{workflow} does not list {fqn}, which its tag puts in {group}")
-            elif listed[fqn] != group:
-                failures.append(f"{workflow} lists {fqn} in {listed[fqn]}, but its tag puts it in {group}")
-        for fqn in sorted(set(listed) - set(tagged)):
-            failures.append(f"{workflow} lists {fqn}, which is not a tagged concrete suite")
 
     if failures:
         for failure in failures:

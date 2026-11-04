@@ -524,11 +524,11 @@ python3 dev/ci/check-ci-config.py
 actionlint --shellcheck=off
 ```
 
-A new test suite needs a group tag and a listing in the workflow files; see
-[Register New Test Suites in CI](development.md#6-register-new-test-suites-in-ci). A new job in
-`ci.yml` needs an entry in both `FILTERS` and `POLICY` in `dev/ci/compute-changes.py`, a case in
-`dev/ci/check-ci-config.py`, and a line in `required_checks.needs`. The check will tell you which
-of those is missing.
+A new test suite needs a test-group tag; see
+[Put New Test Suites in a Test Group](development.md#6-put-new-test-suites-in-a-test-group). A new
+job in `ci.yml` needs an entry in both `FILTERS` and `POLICY` in `dev/ci/compute-changes.py`, a
+case in `dev/ci/check-ci-config.py`, and a line in `required_checks.needs`. The check will tell you
+which of those is missing.
 
 Moving a suite between tiers is a one-line change to `POLICY` plus the matching test case, but it
 is a change to what every contributor sees on their pull requests, so raise it on the dev mailing
