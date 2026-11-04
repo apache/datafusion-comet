@@ -30,6 +30,10 @@ mutations = [
                      '      - run: bash site-output/build.sh\n      - name: Copy & push the generated HTML'),
     original.replace('          ref: asf-site', '          ref: main'),
     original.replace('          path: asf-site', '          path: elsewhere', 1),
+    original.replace('      contents: read\n', '      contents: read\n      id-token: write\n', 1),
+    original.replace('          cd asf-site/\n', '          cd asf-site/\n          bash ../site-output/x.sh\n'),
+    original.replace('          sparse-checkout: .asf.yaml', '          sparse-checkout: docs'),
+    original.replace("            --exclude '/.asf.yaml' \\", "            --exclude '/other' \\")
 ]
 with tempfile.TemporaryDirectory() as tmp:
     checker.WORKFLOWS = Path(tmp)

@@ -17,7 +17,6 @@
 
 """Exercise the docs deploy copy without checking out or pushing the site."""
 
-import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -31,25 +30,24 @@ with tempfile.TemporaryDirectory() as tmp:
     fixture = Path(tmp)
     site = fixture / 'asf-site'
     output = fixture / 'site-output'
+    trusted = fixture / 'trusted'
     (site / '.git').mkdir(parents=True)
     output.mkdir()
+    trusted.mkdir()
     (site / '.git' / 'sentinel').write_text('git metadata')
     (site / 'old-page').write_text('stale')
     old_asf = site / '.asf.yaml'
-    new_asf = output / '.asf.yaml'
     old_asf.write_text('old metadata')
-    new_asf.write_text('new metadata')
-    # rsync's quick check can otherwise miss different, same-sized files with
-    # identical mtimes. The explicit cp must still update the ASF metadata.
-    os.utime(old_asf, (1000000000, 1000000000))
-    os.utime(new_asf, (1000000000, 1000000000))
+    (trusted / '.asf.yaml').write_text('trusted metadata')
+    (output / '.asf.yaml').write_text('artifact metadata')
     (output / 'index.html').write_text('new page')
     (output / '.git').write_text('gitdir: /untrusted')
-    (output / '.nojekyll').touch()
+    (output / '.nojekyll').write_text('artifact marker')
     subprocess.run(['bash', '-e', '-c', script], cwd=fixture, check=True)
     assert (site / '.git' / 'sentinel').read_text() == 'git metadata'
-    assert old_asf.read_text() == 'new metadata'
-    assert (site / '.nojekyll').exists()
+    assert old_asf.read_text() == 'trusted metadata'
+    assert (site / '.nojekyll').is_file() and not (site / '.nojekyll').is_symlink()
+    assert (site / '.nojekyll').read_bytes() == b''
     assert (site / 'index.html').read_text() == 'new page'
     assert not (site / 'old-page').exists()
 

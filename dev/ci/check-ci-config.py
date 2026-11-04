@@ -1941,8 +1941,8 @@ def check_docs_permission_boundary():
         ("build-docs", build, "read"),
         ("deploy-docs", deploy, "write"),
     ):
-        if not re.search(rf"^    permissions:\n      contents: {permission}$", block, re.M):
-            failures.append(f"{label} must have contents: {permission}")
+        if not re.search(rf"^    permissions:\n      contents: {permission}\n(?=    \S|\Z)", block, re.M):
+            failures.append(f"{label} must grant only contents: {permission}")
     checkout_steps = re.findall(
         r"      - name: [^\n]+\n        uses: actions/checkout@[^\n]+(?:\n          [^\n]+|\n        with:)*",
         build,
@@ -1956,16 +1956,25 @@ def check_docs_permission_boundary():
     steps = re.split(r"^      - ", deploy, flags=re.M)[1:]
     uses = [re.findall(r"^(?:uses:|        uses:) (\S+)", step, re.M) for step in steps]
     runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
-    if (len(steps) != 3 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
-            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/download-artifact@")
-            or uses[2] or runs[0] or runs[1] or len(runs[2]) != 1
+    if (len(steps) != 4 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
+            or len(uses[1]) != 1 or not uses[1][0].startswith("actions/checkout@")
+            or len(uses[2]) != 1 or not uses[2][0].startswith("actions/download-artifact@")
+            or uses[3] or runs[0] or runs[1] or runs[2] or len(runs[3]) != 1
             or not re.search(r"^          ref: asf-site$", steps[0], re.M)
-            or not re.search(r"^          path: asf-site$", steps[0], re.M)):
-        failures.append("the writer may only check out asf-site and download the site artifact")
-    if ("include-hidden-files: true" not in build
-            or "cp .asf.yaml docs/build/html/.asf.yaml" not in build
-            or "touch docs/build/html/.nojekyll" not in build):
-        failures.append("the site artifact must include the ASF metadata and .nojekyll")
+            or not re.search(r"^          path: asf-site$", steps[0], re.M)
+            or not re.search(r"^          ref: \$\{\{ github.sha \}\}$", steps[1], re.M)
+            or not re.search(r"^          path: trusted$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout: \.asf.yaml$", steps[1], re.M)
+            or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
+        failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
+    if len(steps) == 4:
+        artifact_refs = [line.strip() for line in steps[3].splitlines() if "site-output" in line]
+        if artifact_refs != ["../site-output/ \\"]:
+            failures.append("the writer may use site-output only as the rsync source")
+        for required in ("--exclude '/.git'", "--exclude '/.asf.yaml'", "--exclude '/.nojekyll'",
+                         "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll"):
+            if required not in steps[3]:
+                failures.append(f"the writer must protect metadata: {required}")
     for failure in failures:
         print(f"docs permissions: {failure}")
     return not failures

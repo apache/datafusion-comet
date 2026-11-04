@@ -99,17 +99,12 @@ jobs:
         # node, and a green build. This runs before the publish step for that reason.
         run: python3 dev/ci/check-mermaid.py --built docs/build/html
 
-      - name: Prepare site metadata
-        run: |
-          cp .asf.yaml docs/build/html/.asf.yaml
-          touch docs/build/html/.nojekyll
-
       - name: Upload generated site
         uses: ./.github/actions/upload-artifact-retry
         with:
           name: comet-docs-site
           path: docs/build/html/
-          include-hidden-files: true
+          retention-days: 1
           if-no-files-found: error
 
   deploy-docs:
@@ -125,6 +120,14 @@ jobs:
           ref: asf-site
           path: asf-site
 
+      - name: Checkout trusted site metadata
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          sparse-checkout: .asf.yaml
+          persist-credentials: false
+
       - name: Download generated site
         uses: actions/download-artifact@v8
         with:
@@ -139,9 +142,12 @@ jobs:
             -a \
             --delete \
             --exclude '/.git' \
+            --exclude '/.asf.yaml' \
+            --exclude '/.nojekyll' \
             ../site-output/ \
             ./
-          cp ../site-output/.asf.yaml .
+          rm -f .asf.yaml .nojekyll
+          cp ../trusted/.asf.yaml .
           touch .nojekyll
           git status --porcelain
           if [ "$(git status --porcelain)" != "" ]; then
