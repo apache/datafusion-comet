@@ -825,10 +825,11 @@ object CometConf extends ShimCometConf {
           "every row of the batch, while Spark can skip rows: for example a projection item " +
           "for rows that a filter or join above it in the same stage drops, or rows past a " +
           "`LIMIT`. Spark also eliminates common subexpressions across the items of a " +
-          "projection, and its filter orders the conjuncts of a condition its own way. Under " +
-          "`spark.sql.ansi.enabled=true` an expression that " +
-          "raises an error can therefore raise it where Spark does not, or not raise it where " +
-          "Spark does. The detour does not take a nondeterministic filter condition, or a " +
+          "projection, and its filter orders the conjuncts of a condition its own way. An " +
+          "expression that can raise an error (for example under " +
+          "`spark.sql.ansi.enabled=true`, or `raise_error` / `assert_true`) can therefore " +
+          "raise it where Spark does not, or not raise it where Spark does. The detour does " +
+          "not take a nondeterministic filter condition, or a " +
           "projection item that contains a nondeterministic expression Spark does not see as " +
           "such. It does not take an item that contains an expression disabled with " +
           "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +

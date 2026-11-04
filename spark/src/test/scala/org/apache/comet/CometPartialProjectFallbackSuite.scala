@@ -470,8 +470,9 @@ class CometPartialProjectFallbackSuite
 
   test("a detoured filter condition is compiled without subexpression elimination") {
     // Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate
-    // (without whole-stage codegen it does, and raises here too). With it, the kernel would compute `abs(10 div x)` once before the AND, so for x = 0 the division would
-    // run, and raise under ANSI, although `x <> 0` is false. A projection keeps subexpression
+    // (without whole-stage codegen it does, and raises here too). With it, the kernel would
+    // compute `abs(10 div x)` once before the AND, so for x = 0 the division would run, and
+    // raise under ANSI, although `x <> 0` is false. A projection keeps subexpression
     // elimination, as `ProjectExec` does: there both Spark and the detour raise.
     withTempPath { dir =>
       sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
@@ -622,6 +623,68 @@ class CometPartialProjectFallbackSuite
         }
       }
       spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a deferred projection item can raise without ANSI mode") {
+    // This pins current behavior, which differs from whole-stage Spark. Spark never evaluates `d`
+    // for the rows the filter drops, and `rand(1) > 2` drops every row, so `raise_error` never
+    // runs. The kernel evaluates `d` for every row and raises, with ANSI mode off, as Spark
+    // without whole-stage codegen does. The compatibility guide documents this.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT d FROM (SELECT CASE WHEN x = 0 THEN raise_error('zero') " +
+        "ELSE abs(x) END AS d, rand(1) AS r FROM t) WHERE r > 2"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+        // A var, because Spark 3.x (Scala 2.12) types `withSQLConf(...)(f)` as `Unit`.
+        var sparkRows: Int = -1
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkRows = sql(query).collect().length
+        }
+        assert(sparkRows == 0, s"expected no rows from Spark, got $sparkRows")
+        withDetouredSerdes("Abs") {
+          val detoured = scala.util.Try(sql(query).collect().length)
+          assert(
+            detoured.failed.toOption.exists(_.getMessage.contains("zero")),
+            s"expected the detour to raise raise_error's message, got $detoured")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("explain output names the JVM detour on the detoured operators") {
+    // The compatibility guide quotes this message, so keep the two in sync.
+    val message = "Expression evaluated in the JVM by the codegen dispatcher (JVM detour)"
+    def infos(df: DataFrame): Seq[Set[String]] =
+      collect(stripAQEPlan(df.queryExecution.executedPlan)) {
+        case p: CometProjectExec => p.getTagValue(CometExplainInfo.EXTENSION_INFO)
+        case f: CometFilterExec => f.getTagValue(CometExplainInfo.EXTENSION_INFO)
+      }.flatten
+    withIntTable {
+      withDetouredSerdes("Abs") {
+        val project = sql("SELECT abs(x) AS a FROM t")
+        project.collect()
+        assert(
+          collect(stripAQEPlan(project.queryExecution.executedPlan)) { case p: CometProjectExec =>
+            p.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.contains(message))
+          }.contains(true),
+          s"expected the CometProject to carry the detour message, got ${infos(project)}")
+        val filter = sql("SELECT x FROM t WHERE abs(x) > 1")
+        filter.collect()
+        assert(
+          collect(stripAQEPlan(filter.queryExecution.executedPlan)) { case f: CometFilterExec =>
+            f.getTagValue(CometExplainInfo.EXTENSION_INFO).exists(_.contains(message))
+          }.contains(true),
+          s"expected the CometFilter to carry the detour message, got ${infos(filter)}")
+        val verbose = new ExtendedExplainInfo().generateVerboseInfo(
+          stripAQEPlan(filter.queryExecution.executedPlan))
+        assert(verbose.contains(message), s"expected the message in verbose explain:\n$verbose")
+      }
     }
   }
 

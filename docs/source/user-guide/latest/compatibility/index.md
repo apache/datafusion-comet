@@ -182,8 +182,19 @@ for it, including the parts Comet could translate. In verbose extended explain, 
 `Expression evaluated in the JVM by the codegen dispatcher (JVM detour)`.
 
 Where neither raises an error, the item's values for a row match Spark's. What can differ is which
-rows, and which parts of an item, get evaluated, which matters under `spark.sql.ansi.enabled=true`
-for an expression that can raise an error:
+rows, and which parts of an item, get evaluated. That matters for an expression that can raise an
+error, for example arithmetic under `spark.sql.ansi.enabled=true`, or `raise_error` and
+`assert_true` with ANSI mode on or off. For example, with ANSI mode off this query returns no rows
+in Spark, whose whole-stage code never evaluates `d` for the rows the filter drops (all of them),
+but it can raise with the detour, for the reason in the first item below:
+
+```sql
+SELECT d FROM (
+  SELECT CASE WHEN x = 0 THEN raise_error('zero') ELSE abs(x) END AS d, rand(1) AS r FROM t
+) WHERE r > 2
+```
+
+The other examples use ANSI division:
 
 - Comet evaluates the item for every row of the batch. Spark's whole-stage code evaluates a
   deterministic projection item only when an operator above it in the same stage reads it, so it
