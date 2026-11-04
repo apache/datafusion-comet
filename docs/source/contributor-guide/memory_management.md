@@ -487,7 +487,7 @@ Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservat
   less, as overcommit (see [The unified pools](#the-unified-pools)).
 - `shrink(n)` returns bytes to the pool.
 
-An operator that never calls `try_grow` is invisible to the pool no matter how much memory it uses.
+An operator that never reserves memory is invisible to the pool no matter how much memory it uses.
 
 ### ROW_NUMBER windows
 
@@ -499,9 +499,10 @@ Nested values may retain shared buffers, which are included in the reservation. 
 partition reuses its key. Completion, cancellation, and errors release the reservation.
 
 Replacement keys reuse the reservation, so only a change in retained bytes adjusts the pool.
-The operator cannot spill its key. If the pool refuses the initial reservation or later growth,
-the task fails and releases the state. This can fail a task that the generic bounded window
-executor would run with unreserved state.
+The key has already been allocated and cannot spill, so its reservation uses `resize`.
+Comet's unified pools carry any bytes Spark does not grant as overcommit. This avoids
+failing the task solely because the pool cannot admit the key, but retained keys can
+exceed the pool budget.
 
 The reservation covers retained key state. Per-batch comparison, key-copy workspace, and emitted
 rank arrays follow the allocation model described in [The accounting gap](#the-accounting-gap).
