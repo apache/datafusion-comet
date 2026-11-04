@@ -112,6 +112,6 @@ query
 SELECT id, k_string,
        ROW_NUMBER() OVER (PARTITION BY k_string ORDER BY id) AS rn,
        COUNT(*) OVER (PARTITION BY k_string ORDER BY id
-                      ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS n
+                      ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) AS n
 FROM streaming_row_number_keys
 ORDER BY id
