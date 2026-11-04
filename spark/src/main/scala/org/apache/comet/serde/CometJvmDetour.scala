@@ -72,12 +72,13 @@ object CometJvmDetour {
       root: Expression,
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] =
-    CometExplainInfo.withExpressionFallbackReasonScope {
-      val beforeConversion = ExplainState.of(root)
-      QueryPlanSerde.exprToProto(root, inputs, binding).orElse {
-        if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
-          None
-        } else {
+    if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
+      // With the detour off this is exactly the conversion the operators did before it existed.
+      QueryPlanSerde.exprToProto(root, inputs, binding)
+    } else {
+      CometExplainInfo.withExpressionFallbackReasonScope {
+        val beforeConversion = ExplainState.of(root)
+        QueryPlanSerde.exprToProto(root, inputs, binding).orElse {
           val afterConversion = ExplainState.of(root)
           beforeConversion.restore()
           val detoured = detour(root, inputs, binding)
