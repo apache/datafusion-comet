@@ -469,8 +469,8 @@ class CometPartialProjectFallbackSuite
   }
 
   test("a detoured filter condition is compiled without subexpression elimination") {
-    // Spark's `FilterExec` does not eliminate common subexpressions in its predicate. With it,
-    // the kernel would compute `abs(10 div x)` once before the AND, so for x = 0 the division would
+    // Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate
+    // (without whole-stage codegen it does, and raises here too). With it, the kernel would compute `abs(10 div x)` once before the AND, so for x = 0 the division would
     // run, and raise under ANSI, although `x <> 0` is false. A projection keeps subexpression
     // elimination, as `ProjectExec` does: there both Spark and the detour raise.
     withTempPath { dir =>
@@ -528,6 +528,64 @@ class CometPartialProjectFallbackSuite
           assert(
             collect(plan) { case f: CometFilterExec => f }.nonEmpty,
             "expected the filter to be detoured")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a projection item that hides nondeterminism from Spark is not detoured (Spark 4.0+)") {
+    // `make_valid_utf8` is an `Invoke`, whose `deterministic` ignores the `rand(1)` in its target,
+    // so Spark treats `d` as deterministic and its whole-stage projection evaluates it only for
+    // the rows the filter on `r` keeps. The kernel would evaluate it for every row, and `rand(1)`
+    // would advance differently, giving different values with no error involved.
+    assume(CometSparkSessionExtensions.isSpark40Plus, "make_valid_utf8 needs Spark 4.0+")
+    withTempPath { dir =>
+      spark.range(0, 200, 1, numPartitions = 1).write.parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("Abs") {
+        val df = sql(
+          "SELECT d FROM (SELECT abs(ascii(substr(make_valid_utf8(cast(rand(1) AS string)), " +
+            "3, 1)) - 48) AS d, rand(2) AS r FROM t) WHERE r > 0.5")
+        checkSparkAnswer(df)
+        assert(
+          fallbackReasons(df).exists(
+            _.contains("contains a nondeterministic expression that Spark does not see")),
+          s"expected the hidden-nondeterminism reason, got ${fallbackReasons(df)}")
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a deterministic filter can raise an ANSI error that whole-stage Spark skips") {
+    // The other direction of the IsNotNull ordering, also pinned as current behavior. Whole-stage
+    // Spark evaluates `x IS NOT NULL` before the first conjunct, which reads `x`, so it drops the
+    // NULL row before dividing. The kernel evaluates the condition left to right, as Spark
+    // without whole-stage codegen does, and both raise DIVIDE_BY_ZERO. The compatibility guide
+    // documents this.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (1), (NULL), (2) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE abs(10 div coalesce(x, 0)) > 0 AND x IS NOT NULL"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        // A var, because Spark 3.x (Scala 2.12) types `withSQLConf(...)(f)` as `Unit`.
+        var withoutWholeStage: scala.util.Try[Seq[Int]] = null
+        withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+          withoutWholeStage = scala.util.Try(sql(query).collect().map(_.getInt(0)).toSeq)
+        }
+        assert(
+          withoutWholeStage.failed.toOption.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+          s"expected Spark without whole-stage codegen to raise, got $withoutWholeStage")
+        withDetouredSerdes("Abs") {
+          val detoured = scala.util.Try(sql(query).collect().map(_.getInt(0)).toSeq)
+          assert(
+            detoured.failed.toOption.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+            s"expected the detour to raise, got $detoured")
         }
       }
       spark.catalog.dropTempView("t")

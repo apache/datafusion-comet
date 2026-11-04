@@ -826,8 +826,9 @@ object CometConf extends ShimCometConf {
           "above it drops, or rows past a `LIMIT`. Spark's filter also orders the conjuncts of " +
           "a condition its own way. Under `spark.sql.ansi.enabled=true` an expression that " +
           "raises an error can therefore raise it where Spark does not, or not raise it where " +
-          "Spark does. The detour does not take a nondeterministic filter condition. It does " +
-          "not take an item that contains an expression disabled with " +
+          "Spark does. The detour does not take a nondeterministic filter condition, or a " +
+          "projection item that contains a nondeterministic expression Spark does not see as " +
+          "such. It does not take an item that contains an expression disabled with " +
           "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
           "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
           "`java_method`. See 'JVM expression detour' in the Comet Compatibility Guide. " +
