@@ -767,8 +767,10 @@ The group tag does not select an integration suite, one marked `@IntegrationTest
 `ParquetEncryptionITCase`. The ScalaTest plugin excludes those, and Maven runs them under
 `maven-failsafe-plugin` by their `*ITCase` name, which ignores the tag. The default `test` goal
 therefore never runs them, and `--goal install` runs every one of them whichever group you name.
-Such a suite still carries a tag and a workflow listing so that the checks above hold, but until CI
-runs them for one group only, the listing does not decide where they run.
+
+CI still selects suites by the lists in the workflow files, not by tag, and runs `install`. An
+integration suite is excluded from that selection too, so it runs in every group's job whichever
+group the list names it under.
 
 A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
 does not have or because running them there is not worth the cost. These are listed in
