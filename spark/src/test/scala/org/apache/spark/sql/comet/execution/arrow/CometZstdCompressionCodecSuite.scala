@@ -31,6 +31,9 @@ import org.apache.arrow.compression.ZstdCompressionCodec
 import org.apache.arrow.memory.{AllocationListener, AllocationReservation, ArrowBuf, BufferAllocator, BufferManager, ForeignAllocation, RootAllocator}
 import org.apache.arrow.memory.rounding.RoundingPolicy
 import org.apache.arrow.vector.compression.CompressionUtil
+import org.apache.spark.SparkException
+
+import com.github.luben.zstd.Zstd
 
 /**
  * Checks that the zstd codec never writes past the buffer it allocates for its output.
@@ -129,6 +132,19 @@ class CometZstdCompressionCodecSuite extends AnyFunSuite with Matchers {
       // that really compressed.
       raw should be > 0
       packed should be > 0
+    }
+  }
+
+  test("a zstd error releases the output buffer and surfaces as an internal error") {
+    withAllocators { (root, _) =>
+      val compressed = root.buffer(16)
+      // zstd reports an error as the negated error code.
+      val e = intercept[SparkException] {
+        CometZstdCompressionCodec.checkWritten(-Zstd.errDstSizeTooSmall(), compressed)
+      }
+      e.getMessage should include("zstd failed to compress a cached batch")
+      e.getMessage should include("INTERNAL_ERROR")
+      root.getAllocatedMemory shouldBe 0
     }
   }
 }

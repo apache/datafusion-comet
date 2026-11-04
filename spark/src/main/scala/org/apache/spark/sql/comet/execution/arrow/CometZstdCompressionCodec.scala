@@ -55,12 +55,24 @@ private[comet] class CometZstdCompressionCodec(level: Int) extends ZstdCompressi
       uncompressed.memoryAddress(),
       uncompressed.writerIndex(),
       level)
-    if (Zstd.isError(written)) {
-      compressed.close()
-      throw new SparkException(
-        s"zstd failed to compress a cached batch: ${Zstd.getErrorName(written)}")
-    }
+    CometZstdCompressionCodec.checkWritten(written, compressed)
     compressed.writerIndex(CompressionUtil.SIZE_OF_UNCOMPRESSED_LENGTH + written)
     compressed
+  }
+}
+
+private[comet] object CometZstdCompressionCodec {
+
+  /**
+   * Releases `compressed` and throws if `written`, the value zstd returned, is an error code.
+   * With `compressBound(n)` as the capacity zstd can only fail here by running out of memory, so
+   * this is an internal error.
+   */
+  def checkWritten(written: Long, compressed: ArrowBuf): Unit = {
+    if (Zstd.isError(written)) {
+      compressed.close()
+      throw SparkException.internalError(
+        s"zstd failed to compress a cached batch: ${Zstd.getErrorName(written)}")
+    }
   }
 }
