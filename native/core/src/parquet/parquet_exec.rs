@@ -19,7 +19,7 @@ use crate::execution::operators::ExecutionError;
 use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::file_error_context::ParquetErrorContext;
-use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
+use crate::parquet::name_fold::fold_schema_names;
 use crate::parquet::parquet_support::{
     object_store_authority, ObjectStoreBackend, SparkParquetOptions,
 };
@@ -47,7 +47,7 @@ use datafusion_comet_spark_expr::jvm_udf::JvmScalarUdfExpr;
 use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
 use datafusion_datasource::TableSchema;
 use parquet::variant::VariantType;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -100,18 +100,19 @@ fn is_binary_as_string_read(data_type: &DataType) -> bool {
     data_type == &DataType::Utf8
 }
 
-/// Whether `expr` references a column whose folded name is in `folded_names`.
-fn references_any_column(
-    expr: &Arc<dyn PhysicalExpr>,
-    folded_names: &HashSet<String>,
-    case_sensitive: bool,
-) -> Result<bool, ExecutionError> {
-    for column in collect_columns(expr) {
-        if folded_names.contains(&fold_name(column.name(), case_sensitive)?) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+/// Whether `column`, bound against the required columns followed by the partition columns the
+/// way the planner binds data filters, is a string column that `binary_as_string_read_schema`
+/// reads as Binary.
+fn reads_binary(column: &Column, required_schema: &Schema) -> bool {
+    column.index() < required_schema.fields().len()
+        && is_binary_as_string_read(required_schema.field(column.index()).data_type())
+}
+
+/// Whether `expr` references a column `binary_as_string_read_schema` reads as Binary.
+fn references_binary_read_column(expr: &Arc<dyn PhysicalExpr>, required_schema: &Schema) -> bool {
+    collect_columns(expr)
+        .iter()
+        .any(|column| reads_binary(column, required_schema))
 }
 
 /// Rewrites a data filter for a scan that reads string columns as Binary (see
@@ -128,28 +129,18 @@ fn references_any_column(
 /// keep every row the original keeps. That's why an `AND` keeps whichever side can be pushed.
 fn binary_as_string_pushdown_filter(
     filter: &Arc<dyn PhysicalExpr>,
-    binary_read_columns: &HashSet<String>,
-    case_sensitive: bool,
+    required_schema: &Schema,
     filter_read_schema: &Schema,
 ) -> Result<Option<Arc<dyn PhysicalExpr>>, ExecutionError> {
-    if !references_any_column(filter, binary_read_columns, case_sensitive)? {
+    if !references_binary_read_column(filter, required_schema) {
         return Ok(Some(Arc::clone(filter)));
     }
-    let reads_binary = |expr: &Arc<dyn PhysicalExpr>| -> Result<bool, ExecutionError> {
-        match expr.downcast_ref::<Column>() {
-            Some(column) => {
-                Ok(binary_read_columns.contains(&fold_name(column.name(), case_sensitive)?))
-            }
-            None => Ok(false),
-        }
+    let reads_binary = |expr: &Arc<dyn PhysicalExpr>| {
+        expr.downcast_ref::<Column>()
+            .is_some_and(|column| reads_binary(column, required_schema))
     };
     let pushdown = |expr: &Arc<dyn PhysicalExpr>| {
-        binary_as_string_pushdown_filter(
-            expr,
-            binary_read_columns,
-            case_sensitive,
-            filter_read_schema,
-        )
+        binary_as_string_pushdown_filter(expr, required_schema, filter_read_schema)
     };
 
     if let Some(binary) = filter.downcast_ref::<BinaryExpr>() {
@@ -172,13 +163,13 @@ fn binary_as_string_pushdown_filter(
                 });
             }
             Operator::Eq => {
-                if reads_binary(left)? {
+                if reads_binary(left) {
                     if let Some(literal) = binary_literal(right) {
                         let eq = BinaryExpr::new(Arc::clone(left), Operator::Eq, literal);
                         return Ok(Some(Arc::new(eq)));
                     }
                 }
-                if reads_binary(right)? {
+                if reads_binary(right) {
                     if let Some(literal) = binary_literal(left) {
                         let eq = BinaryExpr::new(literal, Operator::Eq, Arc::clone(right));
                         return Ok(Some(Arc::new(eq)));
@@ -188,18 +179,18 @@ fn binary_as_string_pushdown_filter(
             _ => {}
         }
     } else if let Some(list) = filter.downcast_ref::<InListExpr>() {
-        if !list.negated() && reads_binary(list.expr())? {
+        if !list.negated() && reads_binary(list.expr()) {
             if let Some(values) = list.list().iter().map(binary_literal).collect() {
                 let expr = Arc::clone(list.expr());
                 return Ok(Some(in_list(expr, values, &false, filter_read_schema)?));
             }
         }
     } else if let Some(is_null) = filter.downcast_ref::<IsNullExpr>() {
-        if reads_binary(is_null.arg())? {
+        if reads_binary(is_null.arg()) {
             return Ok(Some(Arc::clone(filter)));
         }
     } else if let Some(is_not_null) = filter.downcast_ref::<IsNotNullExpr>() {
-        if reads_binary(is_not_null.arg())? {
+        if reads_binary(is_not_null.arg()) {
             return Ok(Some(Arc::clone(filter)));
         }
     }
@@ -388,6 +379,13 @@ pub(crate) fn init_datasource_exec(
     let output_table_schema = TableSchema::builder(Arc::clone(&base_schema))
         .with_table_partition_cols(partition_fields.clone())
         .build();
+    // A scan that projects no string column has nothing to read as Binary, so it keeps the
+    // projection-indices path below.
+    let binary_as_string = binary_as_string
+        && required_schema
+            .fields()
+            .iter()
+            .any(|field| is_binary_as_string_read(field.data_type()));
     let read_base_schema = if binary_as_string {
         binary_as_string_read_schema(&base_schema)
     } else {
@@ -396,20 +394,6 @@ pub(crate) fn init_datasource_exec(
     let table_schema = TableSchema::builder(read_base_schema)
         .with_table_partition_cols(partition_fields.clone())
         .build();
-
-    // Folded names of the columns read as binary. Filters that reference one are rewritten for
-    // the binary read below, or kept out of the scan.
-    let binary_read_columns: HashSet<String> = if binary_as_string {
-        let names: Vec<&str> = base_schema
-            .fields()
-            .iter()
-            .filter(|field| is_binary_as_string_read(field.data_type()))
-            .map(|field| field.name().as_str())
-            .collect();
-        fold_names(&names, case_sensitive)?.into_iter().collect()
-    } else {
-        HashSet::new()
-    };
 
     let binary_projection = binary_as_string.then(|| {
         binary_as_string_projection(
@@ -520,9 +504,9 @@ pub(crate) fn init_datasource_exec(
     // reads the string columns as Binary. Rewrite the filters on those columns that can compare
     // raw bytes, and keep the rest out of the scan. Filters on other columns are pushed as is.
     let data_filters = match data_filters {
-        Some(filters) if !binary_read_columns.is_empty() => {
+        Some(filters) if binary_as_string => {
             // The planner binds data filters against the required columns followed by the
-            // partition columns.
+            // partition columns, so a column's index says which field it reads.
             let filter_read_schema = Schema::new(
                 required_schema
                     .fields()
@@ -535,8 +519,7 @@ pub(crate) fn init_datasource_exec(
             for filter in filters {
                 if let Some(filter) = binary_as_string_pushdown_filter(
                     &filter,
-                    &binary_read_columns,
-                    case_sensitive,
+                    &required_schema,
                     &filter_read_schema,
                 )? {
                     pushable.push(filter);
@@ -728,7 +711,7 @@ mod tests {
     use datafusion::logical_expr::Operator;
     use datafusion::physical_expr::expressions::{BinaryExpr, Literal};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
-    use datafusion::physical_plan::ExecutionPlan;
+    use datafusion::physical_plan::{displayable, ExecutionPlan};
     use datafusion::prelude::SessionConfig;
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
     use futures::StreamExt;
@@ -915,6 +898,52 @@ mod tests {
             .iter()
             .map(|value| (value.map(str::to_string), 500))
             .collect()
+    }
+
+    /// A `binaryAsString` scan that projects no string column has nothing to read as Binary, so
+    /// it builds the same plan as with the setting off, with the projection as indices.
+    #[test]
+    fn binary_as_string_leaves_scan_without_string_columns_unchanged() {
+        let file = write_binary_as_string_fixture(DataType::Binary, [Some(b"one"), None, None]);
+        let required_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let session_ctx = binary_as_string_session(false);
+        let plan = |binary_as_string: bool| {
+            let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("a", 0)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(1)))),
+            ));
+            let scan = init_datasource_exec(
+                Arc::clone(&required_schema),
+                Some(binary_as_string_required_schema()),
+                None,
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+                vec![vec![file.clone()]],
+                Some(vec![0]),
+                Some(vec![filter]),
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                binary_as_string,
+                &session_ctx,
+                false,
+                false,
+                false,
+                false,
+                "",
+                "",
+            )
+            .unwrap();
+            let plan = displayable(scan.as_ref()).indent(true).to_string();
+            plan
+        };
+        let plan_off = plan(false);
+        assert!(plan_off.contains("projection=[a]"), "{plan_off}");
+        assert_eq!(plan(true), plan_off);
     }
 
     /// An unannotated BINARY column read as a string prunes on `=`, `IN` and `IS [NOT] NULL`
