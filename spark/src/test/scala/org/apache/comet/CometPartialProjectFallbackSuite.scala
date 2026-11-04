@@ -410,6 +410,61 @@ class CometPartialProjectFallbackSuite
     }
   }
 
+  test("a nondeterministic filter condition is not detoured") {
+    // Spark's whole-stage code for `FilterExec` evaluates `y IS NOT NULL` only just before the
+    // first conjunct that reads `y`, so `rand(42)` runs for every row, including the rows with a
+    // NULL `y`, and its stream advances for them. The kernel would evaluate the condition as one
+    // short-circuiting AND, skipping those rows, and keep different rows (62 instead of 56 here,
+    // which is what Spark itself returns without whole-stage codegen).
+    withTempPath { dir =>
+      spark
+        .range(0, 200, 1, numPartitions = 1)
+        .selectExpr("CAST(id AS INT) AS id", "IF(id % 3 = 0, NULL, CAST(id AS INT)) AS y")
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("Abs") {
+        val df = sql("SELECT id FROM t WHERE y IS NOT NULL AND abs(rand(42)) < 0.5")
+        checkSparkAnswer(df)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case f: CometFilterExec => f }.isEmpty,
+          "expected the filter to fall back to Spark")
+        assert(
+          fallbackReasons(df).exists(_.contains("the filter condition is nondeterministic")),
+          s"expected the nondeterministic-filter reason, got ${fallbackReasons(df)}")
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a detoured item drops the abandoned conversion's info messages") {
+    // With `spark.comet.caseConversion.enabled` off (the default), converting `upper` records a
+    // hint that a native implementation can be enabled. Here the conversion then fails at
+    // `length` and the whole item runs in the kernel, where that switch changes nothing.
+    def hints(df: DataFrame): Set[String] =
+      collect(stripAQEPlan(df.queryExecution.executedPlan)) { case p: CometProjectExec =>
+        p.getTagValue(CometExplainInfo.EXTENSION_INFO).getOrElse(Set.empty[String])
+      }.flatten.toSet
+    def upperHint(msgs: Set[String]): Boolean =
+      msgs.exists(_.toLowerCase(java.util.Locale.ROOT).contains("native implementation of upper"))
+    withIntTable {
+      withDetouredSerdes("Length") {
+        val plain = sql("SELECT upper(s) FROM t")
+        checkSparkAnswer(plain)
+        assert(
+          upperHint(hints(plain)),
+          s"expected the hint on a plain upper, got ${hints(plain)}")
+
+        val detoured = sql("SELECT concat(upper(s), cast(length(s) AS STRING)) FROM t")
+        checkSparkAnswerAndOperator(detoured, includeClasses = Seq(classOf[CometProjectExec]))
+        assert(
+          !upperHint(hints(detoured)),
+          s"expected no hint for the upper inside the detoured item, got ${hints(detoured)}")
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // Dispatcher-level hazards raised in review.
   // ---------------------------------------------------------------------------------------------
@@ -525,6 +580,15 @@ class CometPartialProjectFallbackSuite
         assert(
           !hasCometProject(df),
           "expected the projection to fall back when the detoured tree contains a subquery")
+        val reasons = fallbackReasons(df)
+        assert(
+          reasons.exists(
+            _.contains("JVM detour not attempted: the expression contains the " +
+              "subquery")),
+          s"expected the subquery reason, got $reasons")
+        assert(
+          !reasons.exists(_.contains("not a Spark Catalyst expression")),
+          s"expected no package reason for the subquery, got $reasons")
       }
     }
   }

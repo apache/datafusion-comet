@@ -819,16 +819,19 @@ object CometConf extends ShimCometConf {
         "expression that Comet cannot translate, run that whole item with codegen dispatch " +
         "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
         "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
-        "columns the item reads cross to the JVM. The whole item runs in Spark's code, " +
-        "including the parts Comet could translate, so each row gets the value Spark computes " +
-        "for it, and conditional expressions in the item keep Spark's per-row evaluation. " +
-        "Like other Comet expressions, the item is evaluated for every row of the batch, " +
-        "including rows that Spark would not evaluate, such as rows past a `LIMIT`. Under " +
+        "columns the item reads cross to the JVM. The whole item runs in Spark's generated " +
+        "code for it, including the parts Comet could translate, and conditional expressions " +
+        "in the item evaluate their branches row by row as that code does. Like other Comet " +
+        "expressions, the item is evaluated for every row of the batch, including rows that " +
+        "Spark would not evaluate, such as rows past a `LIMIT`. Under " +
         "`spark.sql.ansi.enabled=true` an expression that raises an error can therefore raise " +
         "it for such a row; see 'ANSI errors from rows skipped by LIMIT' in the Comet " +
-        "Compatibility Guide. The detour does not take an item that contains an expression " +
-        "disabled with `spark.comet.expression.<Name>.enabled=false`, a Hive UDF or another " +
-        "expression from outside Spark, or `reflect` / `java_method`. Requires " +
+        "Compatibility Guide. The detour does not take a nondeterministic filter condition, " +
+        "because Spark's filter evaluates the conjuncts of a condition in its own order. It " +
+        "does not take an item that contains an expression disabled with " +
+        "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
+        "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
+        "`java_method`. Requires " +
         COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
