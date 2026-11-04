@@ -815,16 +815,20 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_JVM_DETOUR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.jvmDetour.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Experimental. When an item of a projection, or a filter condition, contains an " +
-          "expression that Comet cannot translate, run that whole item with codegen dispatch " +
-          "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
-          "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
-          "columns the item reads cross to the JVM. The whole item runs in Spark's code, " +
-          "including the parts Comet could translate, so it gives Spark's results, and " +
-          "conditional expressions keep Spark's per-row evaluation. An item that contains an " +
-          "expression disabled with `spark.comet.expression.<Name>.enabled=false` still falls " +
-          "back to Spark. Requires " + COMET_SCALA_UDF_CODEGEN_ENABLED.key + "=true.")
+      .doc("Experimental. When an item of a projection, or a filter condition, contains an " +
+        "expression that Comet cannot translate, run that whole item with codegen dispatch " +
+        "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
+        "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
+        "columns the item reads cross to the JVM. The whole item runs in Spark's code, " +
+        "including the parts Comet could translate, so each row gets the value Spark computes " +
+        "for it, and conditional expressions in the item keep Spark's per-row evaluation. " +
+        "Like other Comet expressions, the item is evaluated for every row of the batch, " +
+        "including rows that Spark would not evaluate, such as rows past a `LIMIT`. Under " +
+        "`spark.sql.ansi.enabled=true` an expression that raises an error can therefore raise " +
+        "it for such a row; see 'ANSI errors from rows skipped by LIMIT' in the Comet " +
+        "Compatibility Guide. An item that contains an expression disabled with " +
+        "`spark.comet.expression.<Name>.enabled=false` still falls back to Spark. Requires " +
+        COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 
