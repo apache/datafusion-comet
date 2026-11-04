@@ -258,7 +258,7 @@ impl OperatorBuilder for HashAggBuilder {
         // after the keys, so the input must be the keys followed by native states (Spark's binary
         // collect buffers keep Single, and arrive unordered anyway).
         // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
-        // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
+        // (apache/datafusion#24697), and update the name prefix in `fair_pool.rs` (#6410).
         let mode = if proto_mode == ProtoAggregateMode::PartialMerge
             && input_is_keys_then_states(agg, &aggr_expr, &schema)?
             && {

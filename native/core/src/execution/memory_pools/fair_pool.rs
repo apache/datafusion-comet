@@ -21,7 +21,6 @@ use std::{
 };
 
 use super::spark_memory::SparkMemory;
-use super::spill_replay::CLUSTERED_FINAL_AGGREGATE;
 use super::task_shared::RunningTasks;
 use datafusion::common::resources_err;
 use datafusion::execution::memory_pool::MemoryConsumer;
@@ -154,9 +153,13 @@ impl Display for CometFairMemoryPool {
     }
 }
 
+/// The prefix of the name DataFusion gives the consumer of a `ClusteredFinalAggregateStream`, the
+/// final aggregate over input sorted on some or all of its keys.
+const CLUSTERED_FINAL_AGGREGATE: &str = "ClusteredFinalAggregateStream[";
+
 /// Whether a request from `consumer` is held to its fair limit and the task's share.
 ///
-/// That is the case for every consumer that can spill, with one exception. DataFusion 55.2
+/// That is the case for every consumer that can spill, with one exception. DataFusion
 /// registers `ClusteredFinalAggregateStream` as able to spill even when its input is sorted on every
 /// grouping key, to work around apache/datafusion#17334, but it builds a spill path only for
 /// partially sorted input. Fully sorted, as in a `CometSortAggregateExec` over a native sort, a
