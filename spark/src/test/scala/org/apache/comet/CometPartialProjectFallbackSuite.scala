@@ -564,6 +564,79 @@ class CometPartialProjectFallbackSuite
     }
   }
 
+  test("projection items follow Spark's subexpression form under NO_CODEGEN") {
+    // From Spark 3.5, `spark.sql.codegen.factoryMode=NO_CODEGEN` also turns whole-stage codegen
+    // off, and `ProjectExec` then evaluates items with `InterpretedUnsafeProjection`, which
+    // evaluates a common subexpression on first use, so the AND short-circuits and Spark returns
+    // rows. The kernel must not hoist `abs(10 div x)` either. In Spark 3.4 the projection still
+    // runs in whole-stage code, which eliminates it up front, and both raise.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x <> 0 AND abs(10 div x) + abs(10 div x) > 1 AS b FROM t"
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.CODEGEN_FACTORY_MODE.key -> "NO_CODEGEN") {
+        withDetouredSerdes("Abs") {
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+          if (CometSparkSessionExtensions.isSpark35Plus) {
+            assert(
+              sparkError.isEmpty && cometError.isEmpty,
+              s"expected both to return rows, got spark=$sparkError comet=$cometError")
+          } else {
+            assert(
+              sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
+                cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+              s"expected both to raise, got spark=$sparkError comet=$cometError")
+          }
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a run-time whole-stage fallback in Spark is not seen by the detour") {
+    // This pins current behavior, which differs from Spark. Spark plans this filter in
+    // whole-stage code, so the detour compiles it without subexpression elimination. With
+    // `spark.sql.codegen.hugeMethodLimit=1`, Spark's whole-stage code falls back to
+    // `FilterExec.doExecute` at run time, which eliminates `abs(10 div x)` and raises for x = 0.
+    // The detour cannot see that at planning time and returns rows. The compatibility guide
+    // documents this.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_HUGE_METHOD_LIMIT.key -> "1") {
+        // A var, because Spark 3.x (Scala 2.12) types `withSQLConf(...)(f)` as `Unit`.
+        var sparkResult: scala.util.Try[Int] = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkResult = scala.util.Try(sql(query).collect().length)
+        }
+        assert(
+          sparkResult.failed.toOption.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+          s"expected Spark to raise, got $sparkResult")
+        withDetouredSerdes("Abs") {
+          val df = sql(query)
+          assert(df.collect().length == 3, "expected the detour to return the other rows")
+          assert(
+            collect(stripAQEPlan(df.queryExecution.executedPlan)) { case f: CometFilterExec =>
+              f
+            }.nonEmpty,
+            "expected the filter to be detoured")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
   test("a deterministic filter can skip an ANSI error that whole-stage Spark raises") {
     // This pins current behavior, which differs from Spark with whole-stage codegen. Spark's
     // `FilterExec` evaluates `y IS NOT NULL` at the end when no other conjunct reads `y`, so
@@ -889,7 +962,8 @@ class CometPartialProjectFallbackSuite
       sql("INSERT INTO t2 VALUES (10), (20)")
       withDetouredSerdes("Abs") {
         // The detoured tree is closure-serialized at plan time, before the operator's
-        // `waitForSubqueries` populates the `ScalarSubquery` result, so `canHandle` refuses it.
+        // `waitForSubqueries` populates the `ScalarSubquery` result. The detour's subquery check
+        // refuses it first (`canHandle` would too), and the reason names the subquery.
         val df = sql("SELECT abs(x - (SELECT max(v) FROM t2)) FROM t")
         checkSparkAnswer(df)
         assert(

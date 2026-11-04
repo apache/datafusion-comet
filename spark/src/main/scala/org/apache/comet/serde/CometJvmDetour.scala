@@ -26,7 +26,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CallMethodViaReflection, CodegenObjectFactoryMode, Expression, LeafExpression, PlanExpression}
 import org.apache.spark.sql.catalyst.expressions.codegen.CodegenFallback
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
-import org.apache.spark.sql.execution.{FilterExec, WholeStageCodegenExec}
+import org.apache.spark.sql.execution.{CodegenSupport, FilterExec, ProjectExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometExplainInfo}
@@ -85,12 +85,13 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  *     filter out of whole-stage codegen when its condition has a non-leaf `CodegenFallback` (a
  *     higher-order function, say), when it has too many fields, or when whole-stage codegen is
  *     off. So a filter condition is compiled with or without subexpression elimination to match
- *     the form Spark would use for that filter (see [[filterSubexpressionElimination]]).
- *     Projection items keep it, within each item. `ProjectExec` also eliminates common
- *     subexpressions across items and evaluates them up front, including ones on the right of an
- *     `AND`. The kernel is compiled per item, so it cannot. So Spark can raise an error that the
- *     detour skips, as Comet's Rust projection does: `x <> 0 AND abs(10 div x) > 1` and `x <> 0
- *     AND abs(10 div x) > 2` as two items.
+ *     the form Spark plans for that filter (see [[filterSubexpressionElimination]]). Projection
+ *     items keep it within each item where Spark's form for the projection has it (see
+ *     [[projectSubexpressionElimination]]). `ProjectExec` also eliminates common subexpressions
+ *     across items and evaluates them up front, including ones on the right of an `AND`. The
+ *     kernel is compiled per item, so it cannot. So Spark can raise an error that the detour
+ *     skips, as Comet's Rust projection does: `x <> 0 AND abs(10 div x) > 1` and `x <> 0 AND
+ *     abs(10 div x) > 2` as two items.
  *
  * The detour is not attempted when the tree contains an expression the user disabled with
  * `spark.comet.expression.<Name>.enabled=false`, because that switch is documented to make the
@@ -121,7 +122,8 @@ object CometJvmDetour {
       root: Expression,
       inputs: Seq[Attribute],
       binding: Boolean = true,
-      filter: Option[FilterExec] = None): Option[Expr] =
+      filter: Option[FilterExec] = None,
+      project: Option[ProjectExec] = None): Option[Expr] =
     if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
       // With the detour off this is exactly the conversion the operators did before it existed.
       QueryPlanSerde.exprToProto(root, inputs, binding)
@@ -131,7 +133,7 @@ object CometJvmDetour {
         QueryPlanSerde.exprToProto(root, inputs, binding).orElse {
           val afterConversion = ExplainState.of(root)
           beforeConversion.restore()
-          val detoured = detour(root, inputs, binding, filter)
+          val detoured = detour(root, inputs, binding, filter, project)
           if (detoured.isEmpty) {
             afterConversion.mergeInto()
           }
@@ -150,7 +152,8 @@ object CometJvmDetour {
       root: Expression,
       inputs: Seq[Attribute],
       binding: Boolean,
-      filter: Option[FilterExec]): Option[Expr] = {
+      filter: Option[FilterExec],
+      project: Option[ProjectExec] = None): Option[Expr] = {
     val filterCondition = filter.isDefined
     if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
       return None
@@ -171,7 +174,10 @@ object CometJvmDetour {
             target,
             inputs,
             binding,
-            subexpressionElimination = filter.forall(filterSubexpressionElimination))
+            subexpressionElimination = filter
+              .map(filterSubexpressionElimination)
+              .orElse(project.map(projectSubexpressionElimination))
+              .getOrElse(true))
           .map { proto =>
             withInfo(
               target,
@@ -183,7 +189,7 @@ object CometJvmDetour {
 
   /**
    * Whether to eliminate common subexpressions in the kernel for `filter`'s condition, to match
-   * the form Spark evaluates that condition in:
+   * the form Spark plans for it:
    *
    *   - In whole-stage code, `FilterExec.doConsume` does not eliminate them. So no.
    *   - Outside whole-stage code, `FilterExec.doExecute` builds the predicate with
@@ -194,29 +200,65 @@ object CometJvmDetour {
    *     `InterpretedPredicate`, which evaluates a common subexpression on first use rather than
    *     up front. That evaluates the same subexpressions as no elimination does. So no.
    *
-   * Whether Spark runs `filter` in whole-stage code mirrors `CollapseCodegenStages`, which is the
-   * same in Spark 3.4.3, 3.5.8, 4.0.1 and 4.1.3 (`WholeStageCodegenExec.scala`):
+   * This follows what Spark plans. If Spark's whole-stage code falls back to `child.execute()` at
+   * run time, because the generated method exceeds `spark.sql.codegen.hugeMethodLimit` or fails
+   * to compile with `spark.sql.codegen.fallback` on, `FilterExec` runs outside whole-stage code
+   * after all, and its error behavior can differ from the kernel's. That cannot be known at
+   * planning time.
+   */
+  private[comet] def filterSubexpressionElimination(filter: FilterExec): Boolean =
+    !runsInWholeStageCodegen(filter) && !noCodegenFactory(filter.conf) &&
+      filter.conf.subexpressionEliminationEnabled
+
+  /**
+   * Whether to eliminate common subexpressions in the kernel for an item of `project`, to match
+   * the form Spark plans for it:
+   *
+   *   - In whole-stage code, `ProjectExec.doConsume` eliminates them when
+   *     `spark.sql.subexpressionElimination.enabled` is on, evaluated up front. So the setting
+   *     decides. (Spark does this across items; the kernel can only do it within one.)
+   *   - Outside whole-stage code, `ProjectExec` builds an `UnsafeProjection`. With generated code
+   *     that is `GenerateUnsafeProjection.generate(_,
+   *     spark.sql.subexpressionElimination.enabled)`, which also evaluates them up front. So the
+   *     setting decides.
+   *   - With `spark.sql.codegen.factoryMode=NO_CODEGEN` and outside whole-stage code, it is an
+   *     `InterpretedUnsafeProjection`, which evaluates a common subexpression on first use, as no
+   *     elimination does. So no. From Spark 3.5 (SPARK-44236) `NO_CODEGEN` also turns whole-stage
+   *     codegen off, so this applies to every projection; in 3.4 a projection that Spark runs in
+   *     whole-stage code still eliminates them.
+   *
+   * The same run-time caveat as for [[filterSubexpressionElimination]] applies.
+   */
+  private[comet] def projectSubexpressionElimination(project: ProjectExec): Boolean =
+    project.conf.subexpressionEliminationEnabled &&
+      (runsInWholeStageCodegen(project) || !noCodegenFactory(project.conf))
+
+  /** Whether `spark.sql.codegen.factoryMode` is `NO_CODEGEN`. */
+  private def noCodegenFactory(conf: SQLConf): Boolean =
+    conf
+      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
+      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
+
+  /**
+   * Whether Spark plans `plan` in whole-stage code. This mirrors `CollapseCodegenStages`, which
+   * is the same in Spark 3.4.3, 3.5.8, 4.0.1, 4.1.3 and 4.2.1 (`WholeStageCodegenExec.scala`):
    * `spark.sql.codegen.wholeStage` is on (from 3.5, SPARK-44236, also the factory mode is not
    * `NO_CODEGEN`); the operator `supportCodegen`; no non-leaf `CodegenFallback` in its
    * expressions; and neither its output nor its child's exceeds `spark.sql.codegen.maxFields`
    * (`WholeStageCodegenExec.isTooManyFields`).
    */
-  private[comet] def filterSubexpressionElimination(filter: FilterExec): Boolean = {
-    val conf = filter.conf
-    val noCodegenFactory = conf
-      .getConfString(SQLConf.CODEGEN_FACTORY_MODE.key)
-      .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
-    val wholeStage = conf.wholeStageEnabled &&
-      !(isSpark35Plus && noCodegenFactory) &&
-      filter.supportCodegen &&
-      !filter.expressions.exists(_.exists {
-        case _: LeafExpression => false
-        case _: CodegenFallback => true
-        case _ => false
-      }) &&
-      !WholeStageCodegenExec.isTooManyFields(conf, filter.schema) &&
-      !filter.children.exists(child => WholeStageCodegenExec.isTooManyFields(conf, child.schema))
-    !wholeStage && !noCodegenFactory && conf.subexpressionEliminationEnabled
+  private def runsInWholeStageCodegen(plan: SparkPlan with CodegenSupport): Boolean = {
+    val conf = plan.conf
+    conf.wholeStageEnabled &&
+    !(isSpark35Plus && noCodegenFactory(conf)) &&
+    plan.supportCodegen &&
+    !plan.expressions.exists(_.exists {
+      case _: LeafExpression => false
+      case _: CodegenFallback => true
+      case _ => false
+    }) &&
+    !WholeStageCodegenExec.isTooManyFields(conf, plan.schema) &&
+    !plan.children.exists(child => WholeStageCodegenExec.isTooManyFields(conf, child.schema))
   }
 
   /**

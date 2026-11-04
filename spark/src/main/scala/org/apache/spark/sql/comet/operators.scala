@@ -1454,7 +1454,9 @@ object CometProjectExec extends CometOperatorSerde[ProjectExec] {
       op: ProjectExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val exprs = op.projectList.map(CometJvmDetour.exprToProtoOrDetour(_, op.child.output))
+    val exprs =
+      op.projectList.map(
+        CometJvmDetour.exprToProtoOrDetour(_, op.child.output, project = Some(op)))
 
     if (exprs.forall(_.isDefined) && childOp.nonEmpty) {
       val projectBuilder = OperatorOuterClass.Projection

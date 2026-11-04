@@ -227,8 +227,14 @@ Spark eliminates common subexpressions in a filter condition only when it runs t
 whole-stage codegen. It does that when `spark.sql.codegen.wholeStage` is off, when the condition
 contains an expression without code generation of its own, such as a higher-order function, or
 when the filter has more fields than `spark.sql.codegen.maxFields`, and then only when
-`spark.sql.subexpressionElimination.enabled` is on. Comet compiles a detoured filter condition with
-or without subexpression elimination to match the form Spark would use for that filter.
+`spark.sql.subexpressionElimination.enabled` is on. For a projection, Spark eliminates them when
+that setting is on, except with `spark.sql.codegen.factoryMode=NO_CODEGEN` for a projection it runs
+without whole-stage codegen (from Spark 3.5 that is every projection), where it evaluates a common
+subexpression only when first needed. Comet compiles each detoured filter condition and projection
+item with or without subexpression elimination to match the form Spark plans for that operator. If
+Spark's whole-stage code falls back at run time, because the generated method is larger than
+`spark.sql.codegen.hugeMethodLimit` or fails to compile, Spark runs the operator without
+whole-stage codegen after all, and the error behavior can differ.
 
 The detour does not take a nondeterministic filter condition, because that ordering changes which
 rows it keeps. For the same reason it does not take a projection item that Spark sees as
