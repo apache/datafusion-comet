@@ -39,14 +39,16 @@ package org.apache.comet;
  * </pre>
  *
  * <p>The offsets array provides the byte offset from memoryAddress where each row starts. The
- * lengths array provides the total byte length of each row.
+ * offsets are longs because a batch's rows can take more than 2 GiB even when every column fits
+ * Arrow's 32-bit offsets; a single row is limited to what an UnsafeRow can hold. The lengths array
+ * provides the total byte length of each row.
  */
 public class NativeColumnarToRowInfo {
   /** The memory address of the buffer containing all converted rows. */
   public final long memoryAddress;
 
   /** The byte offset from memoryAddress where each row starts. */
-  public final int[] offsets;
+  public final long[] offsets;
 
   /** The total byte length of each row. */
   public final int[] lengths;
@@ -58,7 +60,7 @@ public class NativeColumnarToRowInfo {
    * @param offsets The byte offset for each row from the base memory address.
    * @param lengths The byte length of each row.
    */
-  public NativeColumnarToRowInfo(long memoryAddress, int[] offsets, int[] lengths) {
+  public NativeColumnarToRowInfo(long memoryAddress, long[] offsets, int[] lengths) {
     this.memoryAddress = memoryAddress;
     this.offsets = offsets;
     this.lengths = lengths;

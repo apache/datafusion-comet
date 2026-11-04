@@ -2590,8 +2590,9 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
         let (buffer_ptr, offsets, lengths) =
             unsafe { columnar_to_row_convert(ctx, &array_addrs, &schema_addrs, num_rows)? };
 
-        // Create Java int arrays for offsets and lengths
-        let offsets_array = env.new_int_array(offsets.len())?;
+        // Create a Java long array for the offsets (a batch's rows can take more than 2 GiB)
+        // and an int array for the lengths
+        let offsets_array = env.new_long_array(offsets.len())?;
         offsets_array.set_region(env, 0, offsets)?;
 
         let lengths_array = env.new_int_array(lengths.len())?;
@@ -2602,7 +2603,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
             env.find_class(jni::jni_str!("org/apache/comet/NativeColumnarToRowInfo"))?;
         let info_obj = env.new_object(
             info_class,
-            jni::jni_sig!("(J[I[I)V"),
+            jni::jni_sig!("(J[J[I)V"),
             &[
                 jni::objects::JValue::Long(buffer_ptr as jlong),
                 jni::objects::JValue::Object(&offsets_array),
@@ -2627,7 +2628,7 @@ unsafe fn columnar_to_row_convert<'a>(
     array_addrs: &[i64],
     schema_addrs: &[i64],
     num_rows: i32,
-) -> CometResult<(*const u8, &'a [i32], &'a [i32])> {
+) -> CometResult<(*const u8, &'a [i64], &'a [i32])> {
     if schema_addrs.len() != array_addrs.len() {
         return Err(CometError::Internal(format!(
             "{} schema addresses for {} array addresses",
@@ -4311,7 +4312,7 @@ mod tests {
     fn convert_exported(
         columns: &[ArrayRef],
         num_rows: i32,
-    ) -> CometResult<(Vec<i32>, Vec<i32>, Vec<u8>)> {
+    ) -> CometResult<(Vec<i64>, Vec<i32>, Vec<u8>)> {
         let mut ffi_arrays: Vec<Box<FFI_ArrowArray>> = columns
             .iter()
             .map(|column| Box::new(FFI_ArrowArray::new(&column.to_data())))
@@ -4341,7 +4342,7 @@ mod tests {
         let total = offsets
             .iter()
             .zip(lengths)
-            .map(|(offset, length)| (offset + length) as usize)
+            .map(|(offset, length)| (offset + *length as i64) as usize)
             .max()
             .unwrap_or(0);
         let rows = unsafe { std::slice::from_raw_parts(buffer, total) }.to_vec();

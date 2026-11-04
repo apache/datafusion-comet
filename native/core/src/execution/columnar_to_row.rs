@@ -49,6 +49,11 @@ use std::sync::Arc;
 /// Maximum digits for decimal that can fit in a long (8 bytes).
 const MAX_LONG_DIGITS: u8 = 18;
 
+/// The largest row the conversion produces: Spark's `ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH`,
+/// the same limit the JVM's `DirectColumnarToRowConverter` applies. A row's variable-length
+/// fields store their offset within the row in 32 bits, so a larger row could not be read anyway.
+const MAX_ROW_SIZE: usize = i32::MAX as usize - 15;
+
 /// Helper macro for downcasting arrays with consistent error messages.
 macro_rules! downcast_array {
     ($array:expr, $array_type:ty) => {
@@ -872,8 +877,9 @@ pub struct ColumnarToRowContext {
     /// The output buffer containing converted rows.
     /// Layout: [Row0][Row1]...[RowN] where each row is an UnsafeRow.
     buffer: Vec<u8>,
-    /// Byte offset where each row starts in the buffer.
-    offsets: Vec<i32>,
+    /// Byte offset where each row starts in the buffer. 64-bit because a batch's rows can take
+    /// more than 2 GiB even when every column fits Arrow's 32-bit offsets.
+    offsets: Vec<i64>,
     /// Byte length of each row.
     lengths: Vec<i32>,
     /// Pre-calculated null bitset width in bytes.
@@ -933,6 +939,18 @@ impl ColumnarToRowContext {
         value.div_ceil(8) * 8
     }
 
+    /// Returns a row's length as the JVM reads it, or an error for a row larger than
+    /// [`MAX_ROW_SIZE`].
+    fn checked_row_length(row_len: usize) -> CometResult<i32> {
+        if row_len > MAX_ROW_SIZE {
+            return Err(CometError::Internal(format!(
+                "Row too large for UnsafeRow conversion: {row_len} bytes, more than the \
+                 maximum of {MAX_ROW_SIZE}"
+            )));
+        }
+        Ok(row_len as i32)
+    }
+
     /// Converts Arrow arrays to Spark UnsafeRow format.
     ///
     /// # Arguments
@@ -950,7 +968,7 @@ impl ColumnarToRowContext {
         &mut self,
         arrays: &[ArrayRef],
         num_rows: usize,
-    ) -> CometResult<(*const u8, &[i32], &[i32])> {
+    ) -> CometResult<(*const u8, &[i64], &[i32])> {
         if arrays.len() != self.schema.len() {
             return Err(CometError::Internal(format!(
                 "Column count mismatch: expected {}, got {}",
@@ -1000,13 +1018,14 @@ impl ColumnarToRowContext {
         // Process each row (general path for variable-length data)
         for row_idx in 0..num_rows {
             let row_start = self.buffer.len();
-            self.offsets.push(row_start as i32);
+            self.offsets.push(row_start as i64);
 
             // Write fixed-width portion (null bitset + field values)
             self.write_row_typed(&typed_arrays, &var_len_indices, row_idx)?;
 
             let row_end = self.buffer.len();
-            self.lengths.push((row_end - row_start) as i32);
+            self.lengths
+                .push(Self::checked_row_length(row_end - row_start)?);
         }
 
         Ok((self.buffer.as_ptr(), &self.offsets, &self.lengths))
@@ -1098,7 +1117,7 @@ impl ColumnarToRowContext {
         &mut self,
         arrays: &[ArrayRef],
         num_rows: usize,
-    ) -> CometResult<(*const u8, &[i32], &[i32])> {
+    ) -> CometResult<(*const u8, &[i64], &[i32])> {
         let row_size = self.fixed_width_size;
         let total_size = row_size * num_rows;
         let null_bitset_width = self.null_bitset_width;
@@ -1107,10 +1126,10 @@ impl ColumnarToRowContext {
         self.buffer.resize(total_size, 0);
 
         // Pre-fill offsets and lengths (constant for fixed-width)
-        let row_size_i32 = row_size as i32;
+        let row_length = Self::checked_row_length(row_size)?;
         for row_idx in 0..num_rows {
-            self.offsets.push((row_idx * row_size) as i32);
-            self.lengths.push(row_size_i32);
+            self.offsets.push((row_idx * row_size) as i64);
+            self.lengths.push(row_length);
         }
 
         // Process column by column for better cache locality
@@ -2722,5 +2741,59 @@ mod tests {
             assert_eq!(i64::from_le_bytes(row2[0..8].try_into().unwrap()) & 1, 0);
             assert_eq!(i64::from_le_bytes(row2[8..16].try_into().unwrap()), -300);
         }
+    }
+
+    #[test]
+    fn test_checked_row_length() {
+        assert_eq!(
+            ColumnarToRowContext::checked_row_length(MAX_ROW_SIZE).unwrap(),
+            MAX_ROW_SIZE as i32
+        );
+        for too_large in [MAX_ROW_SIZE + 1, 1 << 31, (1 << 32) + 24] {
+            let error = ColumnarToRowContext::checked_row_length(too_large)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("Row too large for UnsafeRow conversion"),
+                "{error}"
+            );
+        }
+    }
+
+    /// A batch whose rows take more than 2 GiB while every column is valid Arrow. With 32-bit
+    /// offsets the third row's offset wrapped negative, and the JVM read it from before the buffer.
+    #[test]
+    #[ignore = "needs about 4 GB of memory"]
+    fn test_row_offsets_past_2_gib() {
+        use arrow::buffer::{Buffer, OffsetBuffer};
+
+        // Eight columns share one array: two 140 MiB values, then "y". Each of the first two rows
+        // takes about 1.1 GiB, so the third row starts past i32::MAX.
+        let wide = 140 * 1024 * 1024;
+        let mut values = vec![b'x'; 2 * wide];
+        values.push(b'y');
+        let column: ArrayRef = Arc::new(StringArray::new(
+            OffsetBuffer::from_lengths([wide, wide, 1]),
+            Buffer::from_vec(values),
+            None,
+        ));
+        let num_columns = 8;
+        let mut ctx = ColumnarToRowContext::new(vec![DataType::Utf8; num_columns], 3);
+        let (ptr, offsets, lengths) = ctx.convert(&vec![column; num_columns], 3).unwrap();
+
+        let fixed_width = 8 + num_columns * 8;
+        let wide_row = (fixed_width + num_columns * wide) as i64;
+        let narrow_row = (fixed_width + num_columns * 8) as i32;
+        assert_eq!(offsets, [0, wide_row, 2 * wide_row]);
+        assert!(offsets[2] > i32::MAX as i64);
+        assert_eq!(lengths, [wide_row as i32, wide_row as i32, narrow_row]);
+
+        // The third row's first field points at its "y", relative to the row's own start.
+        let row2 = unsafe {
+            std::slice::from_raw_parts(ptr.add(offsets[2] as usize), lengths[2] as usize)
+        };
+        let offset_and_len = i64::from_le_bytes(row2[8..16].try_into().unwrap());
+        assert_eq!(offset_and_len, ((fixed_width as i64) << 32) | 1);
+        assert_eq!(row2[fixed_width], b'y');
     }
 }
