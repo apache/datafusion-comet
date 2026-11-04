@@ -53,15 +53,16 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  *
  *   - The kernel evaluates every item for every row of the batch. Spark's whole-stage
  *     `ProjectExec` defers a deterministic item until an operator above it in the stage reads it,
- *     so it never evaluates the item for a row that a filter above drops, or for rows past a
- *     `LIMIT`. Under ANSI the kernel can then raise an error that Spark does not. An item that
- *     Spark sees as nondeterministic is evaluated eagerly for every row by Spark too, and each
- *     keeps its own state, so its values match. But Spark decides that from the item's own
- *     `deterministic`, which an `Invoke` computes without its `targetObject`: Spark 4's
- *     `make_valid_utf8(cast(rand(1) AS string))` reports itself deterministic, so Spark defers it
- *     like any deterministic item and its `rand` advances only for the rows Spark evaluates. The
- *     kernel's would advance for every row and give different values, so such an item, one that
- *     reports itself deterministic but contains a nondeterministic node, is not detoured.
+ *     so it never evaluates the item for a row that an operator above drops, such as a filter or
+ *     a join in the same stage, or for rows past a `LIMIT`. Under ANSI the kernel can then raise
+ *     an error that Spark does not. An item that Spark sees as nondeterministic is evaluated
+ *     eagerly for every row by Spark too, and each keeps its own state, so its values match. But
+ *     Spark decides that from the item's own `deterministic`, which an `Invoke` computes without
+ *     its `targetObject`: Spark 4's `make_valid_utf8(cast(rand(1) AS string))` reports itself
+ *     deterministic, so Spark defers it like any deterministic item and its `rand` advances only
+ *     for the rows Spark evaluates. The kernel's would advance for every row and give different
+ *     values, so such an item, one that reports itself deterministic but contains a
+ *     nondeterministic node, is not detoured.
  *   - Spark's whole-stage `FilterExec` splits the conjuncts of the condition and evaluates each
  *     `IsNotNull` only just before the first conjunct that reads its column, or at the end if
  *     none does. The kernel evaluates the condition as one short-circuiting `AND`, left to right,
@@ -77,7 +78,11 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  *     so a filter condition is compiled without subexpression elimination, which could otherwise
  *     move a repeated subexpression out of an `AND`'s short circuit. (`FilterExec` without
  *     whole-stage codegen does eliminate them, through `GeneratePredicate`, so that form of Spark
- *     can differ from the detour here.) Projection items keep it, as `ProjectExec` does.
+ *     can differ from the detour here.) Projection items keep it, within each item. `ProjectExec`
+ *     also eliminates common subexpressions across items and evaluates them up front, including
+ *     ones on the right of an `AND`. The kernel is compiled per item, so it cannot. So Spark can
+ *     raise an ANSI error that the detour skips, as Comet's Rust projection does: `x <> 0 AND
+ *     abs(10 div x) > 1` and `x <> 0 AND abs(10 div x) > 2` as two items.
  *
  * The detour is not attempted when the tree contains an expression the user disabled with
  * `spark.comet.expression.<Name>.enabled=false`, because that switch is documented to make the

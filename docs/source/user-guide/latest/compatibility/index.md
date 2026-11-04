@@ -177,18 +177,27 @@ evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 when an item of a projection, or a filter condition, contains an expression that Comet cannot
 translate. Instead of falling the operator back to Spark, Comet runs that whole item with codegen
 dispatch, so the operator stays in the Comet pipeline. The item runs in Spark's own generated code
-for it, including the parts Comet could translate. Verbose extended explain shows such an operator
-with `[COMET-INFO: Expression evaluated in the JVM by the codegen dispatcher (JVM detour)]`.
+for it, including the parts Comet could translate. In verbose extended explain, the operator's
+`[COMET-INFO: ...]` segment contains
+`Expression evaluated in the JVM by the codegen dispatcher (JVM detour)`.
 
-For a row that both evaluate, the item computes what Spark's generated code computes. What can
-differ is which rows the item is evaluated for, which matters under `spark.sql.ansi.enabled=true`
+Where neither raises an error, the item's values for a row match Spark's. What can differ is which
+rows, and which parts of an item, get evaluated, which matters under `spark.sql.ansi.enabled=true`
 for an expression that can raise an error:
 
 - Comet evaluates the item for every row of the batch. Spark's whole-stage code evaluates a
   deterministic projection item only when an operator above it in the same stage reads it, so it
-  skips the item for rows that a filter above drops, and for rows past a `LIMIT`. For example,
+  skips the item for rows that those operators drop. Examples are a filter above, a join in the
+  same stage such as a broadcast hash join, and a `LIMIT`. So
   `SELECT d FROM (SELECT abs(10 div x) AS d, rand(1) AS r FROM t) WHERE r > 2` returns no rows in
-  Spark, and can raise `DIVIDE_BY_ZERO` with the detour.
+  Spark, and `SELECT t.d FROM (SELECT x, abs(10 div x) AS d FROM t) t JOIN u ON t.x = u.x` returns
+  rows in Spark when `u` has no row with `x` = 0. With the detour, both can raise
+  `DIVIDE_BY_ZERO`.
+- Spark eliminates common subexpressions across all the items of a projection and evaluates them
+  up front, including ones that sit on the right of an `AND`. Comet eliminates them only within
+  one item. So `SELECT x <> 0 AND abs(10 div x) > 1 AS a, x <> 0 AND abs(10 div x) > 2 AS b FROM t`
+  with a row where `x` is 0 raises `DIVIDE_BY_ZERO` in Spark, with or without whole-stage codegen,
+  and returns rows with the detour, as Comet's Rust-implemented projection does.
 - Spark's whole-stage code for a filter evaluates each `IS NOT NULL` conjunct only just before the
   first conjunct that reads its column, or at the end if none does. Comet evaluates the condition as
   one expression, conjunct by conjunct from left to right, as Spark without whole-stage codegen
@@ -204,10 +213,10 @@ The detour does not take a nondeterministic filter condition, because that order
 rows it keeps. For the same reason it does not take a projection item that Spark sees as
 deterministic but that contains a nondeterministic expression, as Spark 4's
 `make_valid_utf8(cast(rand(1) AS string))` does: Spark evaluates such an item only for the rows an
-operator above reads, so the item's random values would differ. It also does not take an item that contains an expression disabled with
-`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from outside
-Spark's Catalyst packages (such as a Hive UDF), or `reflect` / `java_method`. Those operators fall
-back to Spark as they do with the option off.
+operator above reads, so the item's random values would differ. It also does not take an item that
+contains an expression disabled with `spark.comet.expression.<Name>.enabled=false`, a subquery, an
+expression class from outside Spark's Catalyst packages (such as a Hive UDF), or
+`reflect` / `java_method`. Those operators fall back to Spark as they do with the option off.
 
 ## ANSI-mode error classes and messages
 

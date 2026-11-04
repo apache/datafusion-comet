@@ -822,9 +822,11 @@ object CometConf extends ShimCometConf {
           "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
           "columns the item reads cross to the JVM. The whole item runs in Spark's generated " +
           "code for it, including the parts Comet could translate. The item is evaluated for " +
-          "every row of the batch, while Spark can skip rows: a projection item that a filter " +
-          "above it drops, or rows past a `LIMIT`. Spark's filter also orders the conjuncts of " +
-          "a condition its own way. Under `spark.sql.ansi.enabled=true` an expression that " +
+          "every row of the batch, while Spark can skip rows: for example a projection item " +
+          "for rows that a filter or join above it in the same stage drops, or rows past a " +
+          "`LIMIT`. Spark also eliminates common subexpressions across the items of a " +
+          "projection, and its filter orders the conjuncts of a condition its own way. Under " +
+          "`spark.sql.ansi.enabled=true` an expression that " +
           "raises an error can therefore raise it where Spark does not, or not raise it where " +
           "Spark does. The detour does not take a nondeterministic filter condition, or a " +
           "projection item that contains a nondeterministic expression Spark does not see as " +

@@ -592,6 +592,39 @@ class CometPartialProjectFallbackSuite
     }
   }
 
+  test("projection items do not share subexpressions across items") {
+    // This pins current behavior, which differs from Spark. Spark's projection eliminates
+    // `abs(10 div x)` across both items and evaluates it up front, before either AND, so it
+    // raises DIVIDE_BY_ZERO for x = 0. Each detoured item is its own kernel and keeps its AND's
+    // short circuit, so the detour returns rows, as Comet's Rust projection does. The
+    // compatibility guide documents this.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query =
+        "SELECT x <> 0 AND abs(10 div x) > 1 AS a, x <> 0 AND abs(10 div x) > 2 AS b FROM t"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        // A var, because Spark 3.x (Scala 2.12) types `withSQLConf(...)(f)` as `Unit`.
+        var sparkResult: scala.util.Try[Int] = null
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          sparkResult = scala.util.Try(sql(query).collect().length)
+        }
+        assert(
+          sparkResult.failed.toOption.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+          s"expected Spark to raise, got $sparkResult")
+        withDetouredSerdes("Abs") {
+          val df = sql(query)
+          assert(df.collect().length == 4, "expected the detour to return all rows")
+          assert(hasCometProject(df), "expected the projection to be detoured")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
   test("a detoured item drops the abandoned conversion's info messages") {
     // With `spark.comet.caseConversion.enabled` off (the default), converting `upper` records a
     // hint that a native implementation can be enabled. Here the conversion then fails at
