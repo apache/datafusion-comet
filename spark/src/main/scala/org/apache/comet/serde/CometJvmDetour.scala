@@ -32,6 +32,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, withFallbackReason, withInfo}
 import org.apache.comet.serde.ExprOuterClass.Expr
+import org.apache.comet.shims.ShimFilterCse
 
 /**
  * The JVM expression detour (partial project fallback), gated by
@@ -79,19 +80,21 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  *     the kept rows differ: a conjunct such as `rand(42) < 0.5` runs, and advances its state, for
  *     rows that a later `IsNotNull` drops. So a nondeterministic filter condition is not
  *     detoured.
- *   - Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate,
- *     which could otherwise move a repeated subexpression out of an `AND`'s short circuit.
- *     `FilterExec` without whole-stage codegen does, through `GeneratePredicate`. Spark leaves a
- *     filter out of whole-stage codegen when its condition has a non-leaf `CodegenFallback` (a
- *     higher-order function, say), when it has too many fields, or when whole-stage codegen is
- *     off. So a filter condition is compiled with or without subexpression elimination to match
- *     the form Spark plans for that filter (see [[filterSubexpressionElimination]]). Projection
- *     items keep it within each item where Spark's form for the projection has it (see
- *     [[projectSubexpressionElimination]]). `ProjectExec` also eliminates common subexpressions
- *     across items and evaluates them up front, including ones on the right of an `AND`. The
- *     kernel is compiled per item, so it cannot. So Spark can raise an error that the detour
- *     skips, as Comet's Rust projection does: `x <> 0 AND abs(10 div x) > 1` and `x <> 0 AND
- *     abs(10 div x) > 2` as two items.
+ *   - Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate
+ *     before Spark 4.2, which could otherwise move a repeated subexpression out of an `AND`'s
+ *     short circuit. Spark 4.2 eliminates them there, evaluating each just before the first
+ *     conjunct that reads it, which the kernel cannot reproduce, so such a condition is not
+ *     detoured on 4.2 (see `ShimFilterCse`). `FilterExec` without whole-stage codegen does,
+ *     through `GeneratePredicate`. Spark leaves a filter out of whole-stage codegen when its
+ *     condition has a non-leaf `CodegenFallback` (a higher-order function, say), when it has too
+ *     many fields, or when whole-stage codegen is off. So a filter condition is compiled with or
+ *     without subexpression elimination to match the form Spark plans for that filter (see
+ *     [[filterSubexpressionElimination]]). Projection items keep it within each item where
+ *     Spark's form for the projection has it (see [[projectSubexpressionElimination]]).
+ *     `ProjectExec` also eliminates common subexpressions across items and evaluates them up
+ *     front, including ones on the right of an `AND`. The kernel is compiled per item, so it
+ *     cannot. So Spark can raise an error that the detour skips, as Comet's Rust projection does:
+ *     `x <> 0 AND abs(10 div x) > 1` and `x <> 0 AND abs(10 div x) > 2` as two items.
  *
  * The detour is not attempted when the tree contains an expression the user disabled with
  * `spark.comet.expression.<Name>.enabled=false`, because that switch is documented to make the
@@ -164,7 +167,7 @@ object CometJvmDetour {
       case a: Alias => a.child
       case other => other
     }
-    declineReason(target, filterCondition) match {
+    declineReason(target, filter) match {
       case Some(reason) =>
         withFallbackReason(root, s"JVM detour not attempted: $reason")
         None
@@ -191,7 +194,9 @@ object CometJvmDetour {
    * Whether to eliminate common subexpressions in the kernel for `filter`'s condition, to match
    * the form Spark plans for it:
    *
-   *   - In whole-stage code, `FilterExec.doConsume` does not eliminate them. So no.
+   *   - In whole-stage code, `FilterExec.doConsume` does not eliminate them before Spark 4.2. So
+   *     no. (Spark 4.2 can, interleaved with the conjuncts; [[declineReason]] refuses those
+   *     conditions, so this is only reached when 4.2 would not eliminate any either.)
    *   - Outside whole-stage code, `FilterExec.doExecute` builds the predicate with
    *     `Predicate.create`. With generated code that is `GeneratePredicate.generate(_,
    *     spark.sql.subexpressionElimination.enabled)`, which eliminates them as the kernel does.
@@ -240,8 +245,10 @@ object CometJvmDetour {
       .equalsIgnoreCase(CodegenObjectFactoryMode.NO_CODEGEN.toString)
 
   /**
-   * Whether Spark plans `plan` in whole-stage code. This mirrors `CollapseCodegenStages`, which
-   * is the same in Spark 3.4.3, 3.5.8, 4.0.1, 4.1.3 and 4.2.1 (`WholeStageCodegenExec.scala`):
+   * Whether Spark plans `plan` in whole-stage code. This mirrors `CollapseCodegenStages` in
+   * `WholeStageCodegenExec.scala` (checked against Spark 3.4.3, 3.5.8, 4.0.1, 4.1.3 and 4.2.1).
+   * It says only where Spark places the operator; what whole-stage `FilterExec` does with the
+   * condition changed in 4.2 (see `ShimFilterCse`). The conditions are:
    * `spark.sql.codegen.wholeStage` is on (from 3.5, SPARK-44236, also the factory mode is not
    * `NO_CODEGEN`); the operator `supportCodegen`; no non-leaf `CodegenFallback` in its
    * expressions; and neither its output nor its child's exceeds `spark.sql.codegen.maxFields`
@@ -280,10 +287,14 @@ object CometJvmDetour {
 
   /**
    * Why the detour must not take `target`, or `None`. Checked in this order: a nondeterministic
-   * filter condition, or a projection item that hides a nondeterministic node from Spark; an
+   * filter condition, or a projection item that hides a nondeterministic node from Spark; a
+   * filter condition whose common subexpressions Spark's whole-stage filter eliminates; an
    * expression the user disabled; a subquery; and code that is not Spark's.
    */
-  private[comet] def declineReason(target: Expression, filterCondition: Boolean): Option[String] =
+  private[comet] def declineReason(
+      target: Expression,
+      filter: Option[FilterExec]): Option[String] = {
+    val filterCondition = filter.isDefined
     // Walks the tree, because `deterministic` is not transitive everywhere: `Invoke` ignores its
     // `targetObject`, which is where Spark 4's `make_valid_utf8` puts its input.
     if (filterCondition && target.exists(!_.deterministic)) {
@@ -296,6 +307,16 @@ object CometJvmDetour {
         "the item contains a nondeterministic expression that Spark does not see, as under an " +
           "Invoke, so Spark's projection may evaluate it for fewer rows than the dispatcher " +
           "would and its values would differ")
+    } else if (filter.exists(f =>
+        runsInWholeStageCodegen(f) && ShimFilterCse.wholeStageEliminatesCommonSubexpressions(
+          f))) {
+      // Spark 4.2+: whole-stage `FilterExec` evaluates each common subexpression just before the
+      // first conjunct that reads it. The kernel either eliminates them up front or not at all,
+      // and neither matches, so the error behavior could differ.
+      Some(
+        "Spark's whole-stage filter eliminates the common subexpressions of this condition, " +
+          "evaluating each just before the first conjunct that reads it, which the dispatcher " +
+          "does not reproduce")
     } else {
       disabledExpression(target)
         .map { name =>
@@ -305,6 +326,7 @@ object CometJvmDetour {
         .orElse(subqueryReason(target))
         .orElse(nonSparkCodeReason(target))
     }
+  }
 
   /**
    * Why `tree` holds a subquery, or `None`. The dispatcher serializes the tree at planning time,

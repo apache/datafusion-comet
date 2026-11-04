@@ -79,6 +79,9 @@ class CometPartialProjectFallbackSuite
       p
     }.nonEmpty
 
+  private val filterCseReason =
+    "Spark's whole-stage filter eliminates the common subexpressions of this condition"
+
   private def fallbackReasons(df: DataFrame): Seq[String] =
     new ExtendedExplainInfo().getFallbackReasons(stripAQEPlan(df.queryExecution.executedPlan))
 
@@ -469,11 +472,13 @@ class CometPartialProjectFallbackSuite
   }
 
   test("a detoured filter condition is compiled without subexpression elimination") {
-    // Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate
-    // (without whole-stage codegen it does, and raises here too). With it, the kernel would
-    // compute `abs(10 div x)` once before the AND, so for x = 0 the division would run, and
-    // raise under ANSI, although `x <> 0` is false. A projection keeps subexpression
-    // elimination, as `ProjectExec` does: there both Spark and the detour raise.
+    // Before Spark 4.2, whole-stage `FilterExec` does not eliminate common subexpressions in its
+    // predicate (without whole-stage codegen it does, and raises here too). With it, the kernel
+    // would compute `abs(10 div x)` once before the AND, so for x = 0 the division would run,
+    // and raise under ANSI, although `x <> 0` is false. Spark 4.2's whole-stage `FilterExec`
+    // eliminates it just before the second conjunct, which the kernel cannot reproduce, so there
+    // the filter is not detoured. A projection keeps subexpression elimination, as
+    // `ProjectExec` does: there both Spark and the detour raise.
     withTempPath { dir =>
       sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
         .coalesce(1)
@@ -482,10 +487,19 @@ class CometPartialProjectFallbackSuite
       spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
         withDetouredSerdes("Abs") {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(
-              sql("SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"),
-              includeClasses = Seq(classOf[CometFilterExec]))
+          val filterQuery = "SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"
+          if (CometSparkSessionExtensions.isSpark42Plus) {
+            val df = sql(filterQuery)
+            checkSparkAnswer(df)
+            assert(
+              fallbackReasons(df).exists(_.contains(filterCseReason)),
+              s"expected the filter-CSE reason, got ${fallbackReasons(df)}")
+          } else {
+            assertCodegenRan {
+              checkSparkAnswerAndOperator(
+                sql(filterQuery),
+                includeClasses = Seq(classOf[CometFilterExec]))
+            }
           }
           val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
             sql("SELECT x <> 0 AND abs(10 div x) + abs(10 div x) > 1 AS b FROM t"))
@@ -493,6 +507,45 @@ class CometPartialProjectFallbackSuite
             sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
               cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
             s"expected both to raise DIVIDE_BY_ZERO, got spark=$sparkError comet=$cometError")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a filter whose common subexpressions Spark 4.2 eliminates is not detoured") {
+    // Spark 4.2's whole-stage `FilterExec` eliminates `abs(10 div x)` and evaluates it just before
+    // the conjunct that reads it, which here is the whole OR, so it raises DIVIDE_BY_ZERO for
+    // x = 0. Before 4.2 it does not, and the OR short-circuits for x = 0, so Spark and the
+    // detour both return every row.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE x = 0 OR abs(10 div x) + abs(10 div x) > 1"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withDetouredSerdes("Abs") {
+          val df = sql(query)
+          val detoured =
+            collect(stripAQEPlan(df.queryExecution.executedPlan)) { case f: CometFilterExec =>
+              f
+            }.nonEmpty
+          if (CometSparkSessionExtensions.isSpark42Plus) {
+            assert(!detoured, "expected the filter to fall back to Spark")
+            assert(
+              fallbackReasons(df).exists(_.contains(filterCseReason)),
+              s"expected the filter-CSE reason, got ${fallbackReasons(df)}")
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+            assert(
+              sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
+                cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+              s"expected both to raise DIVIDE_BY_ZERO, got spark=$sparkError comet=$cometError")
+          } else {
+            assert(detoured, "expected the filter to be detoured")
+            checkSparkAnswer(sql(query))
+          }
         }
       }
       spark.catalog.dropTempView("t")
@@ -599,6 +652,8 @@ class CometPartialProjectFallbackSuite
   }
 
   test("a run-time whole-stage fallback in Spark is not seen by the detour") {
+    // On Spark 4.2 this condition is not detoured at all (see the filter-CSE test above).
+    assume(!CometSparkSessionExtensions.isSpark42Plus, "the filter is not detoured on Spark 4.2")
     // This pins current behavior, which differs from Spark. Spark plans this filter in
     // whole-stage code, so the detour compiles it without subexpression elimination. With
     // `spark.sql.codegen.hugeMethodLimit=1`, Spark's whole-stage code falls back to

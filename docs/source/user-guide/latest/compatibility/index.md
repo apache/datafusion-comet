@@ -223,10 +223,11 @@ The other examples use ANSI division:
     Spark drops the row before dividing and returns the other rows, and Comet raises
     `DIVIDE_BY_ZERO`.
 
-Spark eliminates common subexpressions in a filter condition only when it runs the filter without
-whole-stage codegen. It does that when `spark.sql.codegen.wholeStage` is off, when the condition
-contains an expression without code generation of its own, such as a higher-order function, or
-when the filter has more fields than `spark.sql.codegen.maxFields`, and then only when
+Before Spark 4.2, Spark eliminates common subexpressions in a filter condition only when it runs
+the filter without whole-stage codegen. It does that when `spark.sql.codegen.wholeStage` is off,
+when the condition contains an expression without code generation of its own, such as a
+higher-order function, or when the filter has more fields than `spark.sql.codegen.maxFields`, and
+then only when
 `spark.sql.subexpressionElimination.enabled` is on. For a projection, Spark eliminates them when
 that setting is on, except with `spark.sql.codegen.factoryMode=NO_CODEGEN` for a projection it runs
 without whole-stage codegen (from Spark 3.5 that is every projection), where it evaluates a common
@@ -235,6 +236,15 @@ item with or without subexpression elimination to match the form Spark plans for
 Spark's whole-stage code falls back at run time, because the generated method is larger than
 `spark.sql.codegen.hugeMethodLimit` or fails to compile, Spark runs the operator without
 whole-stage codegen after all, and the error behavior can differ.
+
+Spark 4.2 also eliminates common subexpressions in a filter that runs in whole-stage code, when
+`spark.sql.subexpressionElimination.enabled` and
+`spark.sql.subexpressionElimination.filterExec.enabled` are on and the condition repeats a
+subexpression that is more than a column or field read. It evaluates each one just before the first
+conjunct that reads it, which Comet does not reproduce, so on Spark 4.2 the detour does not take
+such a filter condition and the filter falls back to Spark. For example, with ANSI mode on,
+`WHERE x = 0 OR abs(10 div x) + abs(10 div x) > 1` raises `DIVIDE_BY_ZERO` in Spark 4.2 for a row
+where `x` is 0.
 
 The detour does not take a nondeterministic filter condition, because that ordering changes which
 rows it keeps. For the same reason it does not take a projection item that Spark sees as
