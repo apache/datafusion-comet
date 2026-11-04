@@ -157,7 +157,6 @@ object CometJvmDetour {
       binding: Boolean,
       filter: Option[FilterExec],
       project: Option[ProjectExec] = None): Option[Expr] = {
-    val filterCondition = filter.isDefined
     if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
       return None
     }
@@ -411,7 +410,7 @@ object CometJvmDetour {
       val seen = new IdentityHashMap[Expression, NodeExplainState]()
       root.foreach { e =>
         if (!seen.containsKey(e)) {
-          seen.put(
+          val _ = seen.put(
             e,
             NodeExplainState(
               e,

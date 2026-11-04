@@ -111,7 +111,7 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val rows = 16 * 1024 * 1024
+    val rows = 16L * 1024 * 1024
 
     withTempPath { dir =>
       withTempTable("t") {
