@@ -31,11 +31,13 @@ import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ExecGroup
 
 /**
  * Because we need to modify some methods of Spark `TPCDSQueryTestSuite` but they are private, we
  * copy Spark `TPCDSQueryTestSuite`.
  */
+@ExecGroup
 class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQueryTestHelper {
 
   val tpcdsExtendedQueries: Seq[String] = Seq("q72")

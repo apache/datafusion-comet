@@ -23,6 +23,8 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+import org.apache.comet.tags.ExpressionsGroup
+
 /**
  * Higher-order function regression coverage for the codegen dispatcher.
  *
@@ -41,6 +43,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * the per-task instance, not the companion, so concurrent partitions cannot race on a shared
  * `NamedLambdaVariable.value`. The two-collects test below regresses this.
  */
+@ExpressionsGroup
 class CometCodegenHOFSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

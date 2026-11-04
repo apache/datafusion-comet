@@ -27,8 +27,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
+import org.apache.comet.tags.ScansGroup
 
 /** Run Spark's unchanged reconstruction assertions in Comet's regular Spark 4 CI jobs. */
+@ScansGroup
 class CometVariantShreddingSuite extends VariantShreddingSuite {
   override protected def sparkConf: SparkConf = super.sparkConf
     .set(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key, "false")

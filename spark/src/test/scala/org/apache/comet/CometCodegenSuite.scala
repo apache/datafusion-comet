@@ -45,6 +45,7 @@ import org.apache.comet.codegen.{CometBatchKernelCodegen, DispatchOccurrence}
 import org.apache.comet.codegen.CometBatchKernelCodegen.ArrowColumnSpec
 import org.apache.comet.serde.{CometInvokeTargets, CometScalaUDF, QueryPlanSerde}
 import org.apache.comet.serde.ExprOuterClass.Expr.ExprStructCase
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.udf.CometUdfBridge
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 import org.apache.comet.vector.CometVector
@@ -58,6 +59,7 @@ import org.apache.comet.vector.CometVector
  * rather than `checkSparkAnswerAndOperator` because ScalaUDF has no Comet-native path. Under
  * fallback the project runs on the JVM Spark path.
  */
+@ExpressionsGroup
 class CometCodegenSuite
     extends CometTestBase
     with AdaptiveSparkPlanHelper

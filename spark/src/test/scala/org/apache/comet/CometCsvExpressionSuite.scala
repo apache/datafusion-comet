@@ -29,8 +29,10 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.StringType
 
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
+@ExpressionsGroup
 class CometCsvExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("to_csv - default options") {

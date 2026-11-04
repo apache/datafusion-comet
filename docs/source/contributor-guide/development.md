@@ -708,51 +708,59 @@ make test-rust
 make test-jvm
 ```
 
-### 6. Register New Test Suites in CI
+### 6. Put New Test Suites in a Test Group
 
-Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
-in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
-jobs. This reduces overall CI time.
+CI runs Comet's Scala test suites in four groups, each as its own parallel job. A suite joins a
+group through a ScalaTest tag on its class, so a new suite needs one of these tags:
 
-If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
+| Tag                 | Group         | Covers                                                         |
+| ------------------- | ------------- | -------------------------------------------------------------- |
+| `@ScansGroup`       | `scans`       | Parquet, CSV and Iceberg reads and writes, and the fuzz suites |
+| `@ShuffleGroup`     | `shuffle`     | Native and columnar shuffle, and the Celeborn integration      |
+| `@ExecGroup`        | `exec`        | Operators, plan rules, plugins, memory, and TPC queries        |
+| `@ExpressionsGroup` | `expressions` | Expression evaluation, casts, codegen, and the SQL file tests  |
 
-- `.github/workflows/pr_build_linux.yml`
-- `.github/workflows/pr_build_macos.yml`
+For example, a new expression suite goes in the `expressions` group:
 
-Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
-`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
-appropriate group. For example, if you add a new expression test suite, add it to the
-`expressions` group:
+```scala
+import org.apache.comet.tags.ExpressionsGroup
 
-```yaml
-- name: "expressions"
-  value: |
-    org.apache.comet.CometExpressionSuite
-    # ... existing suites ...
-    org.apache.comet.YourNewExpressionSuite  # <-- add here
+@ExpressionsGroup
+class YourNewExpressionSuite extends CometTestBase {
 ```
 
-Choose the group that best matches the area your test covers:
+Tag each concrete suite class. A tag on an abstract base class or a trait does not reach the suites
+that extend it. A suite that has a copy in more than one Spark version source set, such as
+`spark-3.5` and `spark-4.0`, needs the tag in each copy.
 
-| Group         | Covers                                                     |
-| ------------- | ---------------------------------------------------------- |
-| `fuzz`        | Fuzz testing and data generation                           |
-| `shuffle`     | Shuffle operators and related exchange behavior            |
-| `parquet`     | Parquet read/write and native reader tests                 |
-| `csv`         | CSV native read tests                                      |
-| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
-| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
-| `sql`         | SQL-level behavior tests                                   |
+The `preflight` job in `.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull
+request. It fails when a concrete suite has no group tag, because that suite would run in no CI
+job, or has more than one.
 
-**Important:** The suite lists in both workflow files must stay in sync. The `preflight` job in
-`.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull request. It scans for all
-`*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
-If any suite is missing, this check will fail and block the PR.
+#### Test Groups
+
+`dev/ci/run-comet-tests.sh` runs one group the way CI does. CI and other build systems call the
+same script, so a group that passes locally runs the same suites in CI:
+
+```sh
+make
+dev/ci/run-comet-tests.sh expressions          # the default Spark profile
+dev/ci/run-comet-tests.sh exec -Pspark-4.0     # arguments after the group go to Maven
+```
+
+The script runs `mvnw test` by default. CI passes `--goal install` and `-Prelease`, which uses the
+library that `make release` builds.
+
+An integration suite, one marked `@IntegrationTestSuite` such as `ParquetEncryptionITCase`, is not
+run by the ScalaTest plugin. Maven runs it under `maven-failsafe-plugin` by its `*ITCase` name,
+which ignores the tag, so the script passes failsafe the integration suites that carry the group's
+tag. They run only with a goal that reaches failsafe, such as `install`, which is what CI uses; the
+default `test` goal never runs them.
 
 A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
-does not have or because running them there is not worth the cost. These are listed in the
-`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
-excluded and how to run it. Run a manual suite with:
+does not have or because running them there is not worth the cost. These are listed in
+`IGNORE_LIST` in `dev/ci/check-suites.py` and carry no group tag. Each one documents in its own
+scaladoc why it is excluded and how to run it. Run a manual suite with:
 
 ```sh
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"

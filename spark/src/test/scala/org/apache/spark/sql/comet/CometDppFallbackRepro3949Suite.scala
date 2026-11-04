@@ -32,6 +32,7 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.tags.ExecGroup
 
 /**
  * Attempts an end-to-end reproduction of issue #3949.
@@ -61,6 +62,7 @@ import org.apache.comet.{CometConf, CometExplainInfo}
  * shuffle whose child subtree (descending through `QueryStageExec.plan`) still contains a DPP
  * scan -- i.e. an inconsistency that the bug would produce.
  */
+@ExecGroup
 class CometDppFallbackRepro3949Suite extends CometTestBase {
 
   // ----------------------------------------------------------------------

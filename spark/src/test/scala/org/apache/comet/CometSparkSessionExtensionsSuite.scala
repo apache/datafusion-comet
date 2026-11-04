@@ -30,7 +30,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.LongType
 
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometSparkSessionExtensionsSuite extends CometTestBase {
 
   import CometSparkSessionExtensions._

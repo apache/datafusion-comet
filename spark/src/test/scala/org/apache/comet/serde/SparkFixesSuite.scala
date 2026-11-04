@@ -21,6 +21,9 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
+import org.apache.comet.tags.ExpressionsGroup
+
+@ExpressionsGroup
 class SparkFixesSuite extends AnyFunSuite {
 
   test("fixes by Spark version") {

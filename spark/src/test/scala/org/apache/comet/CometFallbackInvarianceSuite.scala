@@ -26,6 +26,8 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 
+import org.apache.comet.tags.ExpressionsGroup
+
 /**
  * Checks that forcing an expression from Comet's native path back to Spark does not change the
  * outcome of a query.
@@ -50,6 +52,7 @@ import org.apache.spark.sql.internal.SQLConf
  * everything and the gate above would be inoperative. Row order is canonicalised in the
  * comparator instead.
  */
+@ExpressionsGroup
 class CometFallbackInvarianceSuite extends CometFuzzTestBase {
 
   /**

@@ -38,10 +38,12 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.shuffle.{CelebornShufflePusherFactory, RecordingCelebornPushClient, ResolvedCelebornShufflePusher}
+import org.apache.comet.tags.ShuffleGroup
 
 /**
  * Real Spark stage recovery and local Comet I/O; only the optional Celeborn client is replaced.
  */
+@ShuffleGroup
 class CometCelebornShuffleFallbackSuite extends CometTestBase {
 
   import testImplicits._

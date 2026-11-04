@@ -22,11 +22,13 @@ package org.apache.comet.serde.operator
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.serde.OperatorOuterClass.{CompressionCodec, IcebergWriterMode}
+import org.apache.comet.tags.ScansGroup
 
 /**
  * Unit tests for the protobuf translation. Iceberg must be on the classpath because the property
  * keys / numeric defaults are looked up reflectively from `org.apache.iceberg.TableProperties`.
  */
+@ScansGroup
 class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
 
   import IcebergWriteProtoTranslation._

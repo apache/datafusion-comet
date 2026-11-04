@@ -49,8 +49,10 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{Incompatible, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.{schema2Proto, CometDataWritingCommand, NativeWriteUtils}
+import org.apache.comet.tags.ScansGroup
 
 /** Exercises the retained Spark 3.x writer, including both terminal execution entry points. */
+@ScansGroup
 class CometNativeWriteSuite extends CometTestBase {
   import NativeWriteCommitProtocol._
 

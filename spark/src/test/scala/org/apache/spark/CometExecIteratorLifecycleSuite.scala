@@ -47,6 +47,7 @@ import org.apache.spark.util.JsonProtocol
 import org.apache.comet.{CometArrowAllocator, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ExecGroup
 import org.apache.comet.vector.CometPlainVector
 
 /**
@@ -54,6 +55,7 @@ import org.apache.comet.vector.CometPlainVector
  * one release of the native execution context and of its task-shared memory pool reference, even
  * when a step of the lifecycle fails partway through. See issue #5212 (positions 2, 3 and 8).
  */
+@ExecGroup
 class CometExecIteratorLifecycleSuite extends CometTestBase {
 
   private def withTaskContext[T](taskAttemptId: Long)(f: => T): T = {

@@ -27,6 +27,9 @@ import org.apache.spark.SparkConf
 import org.apache.spark.memory.{SparkOutOfMemoryError, TaskMemoryManager, TestMemoryManager}
 import org.apache.spark.unsafe.memory.MemoryBlock
 
+import org.apache.comet.tags.ShuffleGroup
+
+@ShuffleGroup
 class CometUnboundedShuffleMemoryAllocatorSuite extends AnyFunSuite {
   private val pageSize = 4096L
 

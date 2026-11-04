@@ -23,7 +23,9 @@ import org.apache.spark.sql.{CometTestBase, SparkSessionExtensions}
 
 import org.apache.comet.CometSparkSessionExtensions
 import org.apache.comet.rules.CometRule
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometSessionExtensionsSuite extends CometTestBase {
 
   private def countCometRules(extensions: SparkSessionExtensions): (Int, Int) = {

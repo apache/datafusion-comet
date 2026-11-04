@@ -24,12 +24,14 @@ import org.apache.spark.sql.comet.CometColumnarToRowExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ShuffleGroup
 
 /**
  * End-to-end tests for `spark.comet.exec.columnarToRow.direct.enabled`, which routes
  * `CometColumnarToRowExec`'s non-codegen conversion through `DirectColumnarToRowConverter`.
  * Whole-stage codegen is disabled so the operator's `doExecute` conversion path runs.
  */
+@ShuffleGroup
 class CometDirectColumnarToRowSuite extends CometTestBase {
 
   private def withDirectConverter(minBatchSize: Int = 0)(f: => Unit): Unit = {

@@ -28,6 +28,7 @@ import org.apache.spark.sql.comet.CometProjectExec
 import org.apache.spark.sql.functions.{col, expr, struct}
 import org.apache.spark.sql.types._
 
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNativeUdfLoadException, CometNativeUdfNotAllowedException}
 
 /**
@@ -46,6 +47,7 @@ import org.apache.comet.udf.{CometNativeUDF, CometNativeUdfAbiException, CometNa
  *   ./mvnw test -Dsuites="org.apache.comet.CometNativeUdfSuite" -Dtest=none
  * }}}
  */
+@ExpressionsGroup
 class CometNativeUdfSuite extends CometTestBase {
 
   private lazy val libPath: String = {

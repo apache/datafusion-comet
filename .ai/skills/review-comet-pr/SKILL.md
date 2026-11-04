@@ -243,8 +243,9 @@ config, not a testing one, to turn it off before merge (#6466).
 - Do the tests compare against Spark? A comparison with Comet's own accumulator, or with a second
   implementation such as iceberg-rust instead of the Iceberg Java that Spark runs, can agree on the
   wrong answer (#6423, #6426).
-- New suites must be registered in both `.github/workflows/pr_build_linux.yml` and
-  `pr_build_macos.yml`.
+- Each new concrete suite needs exactly one test-group tag (`@ScansGroup`, `@ShuffleGroup`,
+  `@ExecGroup` or `@ExpressionsGroup`), or it runs in no CI job. `dev/ci/check-suites.py` enforces
+  this; the group should match the area the suite covers.
 
 For a change on a default path, look for tests with the inputs that broke earlier changes:
 

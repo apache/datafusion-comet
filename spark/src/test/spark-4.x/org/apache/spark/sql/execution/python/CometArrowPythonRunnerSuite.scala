@@ -52,8 +52,10 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.DirectByteBufferOutputStream
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.tags.ExecGroup
 import org.apache.comet.vector.{CometDecodedVector, CometDictionary, CometDictionaryVector, CometPlainVector, CometStructVector}
 
+@ExecGroup
 class CometArrowPythonRunnerSuite extends AnyFunSuite with Matchers {
 
   /**

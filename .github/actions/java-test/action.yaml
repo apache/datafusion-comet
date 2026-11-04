@@ -21,10 +21,9 @@ inputs:
   artifact_name:
     description: "Unique name for uploaded artifacts for this run"
     required: true
-  suites:
-    description: 'Which Scalatest test suites to run'
-    required: false
-    default: ''
+  group:
+    description: 'The test group to run, as dev/ci/run-comet-tests.sh takes it'
+    required: true
   maven_opts:
     description: 'Maven options passed to the mvn command'
     required: false
@@ -81,24 +80,9 @@ runs:
     # cache) by setup-builder / setup-macos-builder via maven-bootstrap, which
     # every caller of this action runs first.
 
-    - name: Run all tests
+    - name: Run tests
       shell: bash
-      if: ${{ inputs.suites == '' }}
-      env:
-        SPARK_LOCAL_HOSTNAME: "localhost"
-        SPARK_LOCAL_IP: "127.0.0.1"
-      run: |
-        MAVEN_OPTS="-Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
-    - name: Run specified tests
-      shell: bash
-      if: ${{ inputs.suites != '' }}
-      env:
-        SPARK_LOCAL_HOSTNAME: "localhost"
-        SPARK_LOCAL_IP: "127.0.0.1"
-      run: |
-        MAVEN_SUITES="$(echo "${{ inputs.suites }}" | paste -sd, -)"
-        echo "Running with MAVEN_SUITES=$MAVEN_SUITES"
-        MAVEN_OPTS="-Xmx4G -Xms2G -DwildcardSuites=$MAVEN_SUITES -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log" SPARK_HOME=`pwd` ./mvnw -B -Prelease install ${{ inputs.maven_opts }}
+      run: dev/ci/run-comet-tests.sh --goal install "${{ inputs.group }}" -Prelease ${{ inputs.maven_opts }}
     - name: Upload crash logs
       if: failure()
       # These three stay on the plain action rather than
