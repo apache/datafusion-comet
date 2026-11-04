@@ -15,14 +15,15 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- The native scan ships each partition value, delete file and residual with every Spark
--- partition whose tasks use it (see IcebergScanPools). Grouping the read by partition key makes
--- every partition value and delete file belong to one Spark partition. Without grouping, the tiny
--- split size puts each data file in its own Spark partition, so the two data files of a partition
--- both get its value and its delete file. The matrix runs both layouts against Spark. Identity
--- partition values become column constants in the native scan, so a value resolved from the
--- wrong pool entry shows up in the results. CometIcebergNativeSuite checks what each partition
--- ships.
+-- The native scan ships a partition value, delete file or residual once in the common block when
+-- every Spark partition uses it, and otherwise with each Spark partition whose tasks use it (see
+-- IcebergScanPools). Grouping the read by partition key makes every partition value and delete
+-- file belong to one Spark partition. Without grouping, the tiny split size puts each data file
+-- in its own Spark partition, so the two data files of a partition both get its value and its
+-- delete file. The matrix runs both layouts against Spark, with and without a coalesce, which
+-- puts several partitions' plan data in one task. Identity partition values become column
+-- constants in the native scan, so a value resolved from the wrong pool entry shows up in the
+-- results. CometIcebergNativeSuite checks what each partition ships.
 
 -- No Iceberg spark-runtime is published for Spark 4.2 yet, and the 4.0 runtime the build reuses
 -- is binary-incompatible with it. See https://github.com/apache/datafusion-comet/issues/4969.
@@ -140,6 +141,15 @@ ORDER BY id
 query
 SELECT id, payload FROM test_cat.db.mor_partition_layout
 WHERE region IS NULL
+ORDER BY id
+
+-- A coalesce without a shuffle runs several partitions in one task.
+query
+SELECT /*+ COALESCE(1) */ * FROM test_cat.db.mor_partition_layout ORDER BY id
+
+query
+SELECT /*+ COALESCE(2) */ id, _partition FROM test_cat.db.mor_partition_layout
+WHERE region = '東京' OR id > 25
 ORDER BY id
 
 statement

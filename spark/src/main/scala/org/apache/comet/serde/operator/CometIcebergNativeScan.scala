@@ -1272,7 +1272,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // The per-file pool entries ship with each partition that uses them, so the common block
     // every task deserializes doesn't grow with the number of files.
     val original = commonBuilder.build()
-    val common = IcebergScanPools.commonBlock(original)
+    // Entries every partition uses stay in the common block once; the rest ship per partition.
+    val layout =
+      IcebergScanPools.Layout(new IcebergScanPools.MessagePools(original), perPartitionBuilders)
+    val common = IcebergScanPools.commonBlock(original, layout)
 
     // Per-pool byte sizes of the whole scan, to diagnose large plan data. Sizes sum as Long because
     // a single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
@@ -1337,7 +1340,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       s"${taskBytes.length}, task bytes total=${taskBytes.iterator.map(_.length.toLong).sum}, " +
       s"max=${if (taskBytes.isEmpty) 0 else taskBytes.iterator.map(_.length).max}")
 
-    (commonBytes, new IcebergPartitionPlanData(original, taskBytes))
+    // Keep the full pools as bytes, not as the parsed message, which takes several times the heap.
+    val pools = new IcebergScanPools.SerializedPools(original.toByteArray)
+    (commonBytes, new IcebergPartitionPlanData(pools, layout, taskBytes))
   }
 
   override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
@@ -1364,29 +1369,30 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
  * plus the per-file pool entries they use (see IcebergScanPools.partitionPayload).
  */
 private[operator] final class IcebergPartitionPlanData(
-    private val original: OperatorOuterClass.IcebergScanCommon,
+    private val pools: IcebergScanPools.SerializedPools,
+    layout: IcebergScanPools.Layout,
     private val taskBytes: Array[Array[Byte]])
     extends PartitionPlanData {
 
   override def length: Int = taskBytes.length
 
   // Same table state read into the same partitions, compared without building any partition.
+  // The layout follows from the pools and the tasks.
   override def sameAs(other: PartitionPlanData): Boolean = other match {
     case that: IcebergPartitionPlanData =>
-      that.original == original && that.taskBytes.length == taskBytes.length &&
+      java.util.Arrays.equals(that.pools.bytes, pools.bytes) &&
+      that.taskBytes.length == taskBytes.length &&
       taskBytes.indices.forall(i => java.util.Arrays.equals(taskBytes(i), that.taskBytes(i)))
     case _ => false
   }
 
-  // With no per-file entries in the scan, the stored task bytes already are each message.
-  private val hasFileEntries = IcebergScanPools.hasFileEntries(original)
-
   override def apply(i: Int): Array[Byte] =
-    if (!hasFileEntries) {
+    if (pools.isEmpty) {
+      // With no per-file entries in the scan, the stored task bytes already are each message.
       taskBytes(i)
     } else {
       IcebergScanPools
-        .partitionPayload(original, OperatorOuterClass.IcebergScan.parseFrom(taskBytes(i)))
+        .partitionPayload(pools, layout, OperatorOuterClass.IcebergScan.parseFrom(taskBytes(i)))
         .toByteArray
     }
 }

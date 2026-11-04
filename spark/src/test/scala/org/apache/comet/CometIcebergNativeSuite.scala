@@ -818,10 +818,13 @@ class CometIcebergNativeSuite
             .buildAllPartitionDataForTesting()
             .toSeq
             .map(countByteOccurrences(_, pathPool.head.getBytes(UTF_8)))
+        // The path ships once in the common block when every partition uses it, otherwise once
+        // in each partition that does.
+        val inCommon = countByteOccurrences(scan.commonData, pathPool.head.getBytes(UTF_8))
         assert(
-          occurrences.forall(_ <= 1) &&
-            countByteOccurrences(scan.commonData, pathPool.head.getBytes(UTF_8)) == 0,
-          s"Puffin path ${pathPool.head} serialized more than once in a partition: $occurrences")
+          inCommon <= 1 && occurrences.forall(_ <= 1) && (inCommon == 0 || occurrences.sum == 0),
+          s"Puffin path ${pathPool.head} serialized more than once: common $inCommon, " +
+            s"partitions $occurrences")
 
         spark.sql("DROP TABLE test_cat.db.dv_shared_puffin")
       }
@@ -1367,9 +1370,9 @@ class CometIcebergNativeSuite
     table.newRowDelta().addDeletes(deleteFile).commit()
   }
 
-  // An unpartitioned equality delete applies to every data file, so with each data file in its
-  // own Spark partition every partition ships it. The rows must still match Spark.
-  test("a global equality delete ships with every partition and reads the right rows") {
+  // An unpartitioned equality delete applies to every data file, so every partition uses it and it
+  // ships once in the common block instead of in each task. The rows must still match Spark.
+  test("a global equality delete ships once in the common block and reads the right rows") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(
       icebergVersionAtLeast(1, 8),
@@ -1422,10 +1425,12 @@ class CometIcebergNativeSuite
           s"expected one partition per data file: ${own.length}")
         assert(
           own.forall(
-            _.getDeleteFilePoolList.asScala.exists(_.getContentType == "EQUALITY_DELETES")),
-          "expected every partition to ship the equality delete")
+            !_.getDeleteFilePoolList.asScala.exists(_.getContentType == "EQUALITY_DELETES")),
+          "a partition ships the equality delete itself")
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
-        assert(common.getDeleteFilePoolCount == 0, "the common block holds the delete file")
+        assert(
+          common.getDeleteFilePoolList.asScala.count(_.getContentType == "EQUALITY_DELETES") == 1,
+          s"expected the equality delete once in the common block: $common")
 
         spark.sql("DROP TABLE test_cat.db.global_eq_delete")
       }
@@ -5304,10 +5309,11 @@ class CometIcebergNativeSuite
           tasksWithResidualPerPartition.exists(_ > 1),
           s"expected a partition with several tasks carrying a residual: " +
             tasksWithResidualPerPartition)
-        val expectedResiduals = 0 +: tasksWithResidualPerPartition.map(n => if (n > 0) 1 else 0)
+        // Every task uses it, so it ships once: in the common block when several partitions have
+        // tasks, otherwise with the one partition that does.
         assert(
-          residualsPerPartition == expectedResiduals,
-          "expected the shared non-partition residual to dedup to 1 pool entry per partition " +
+          residualsPerPartition.sum == 1,
+          "expected the shared non-partition residual to dedup to 1 pool entry " +
             s"across $tasksWithResidual task references, got $residualsPerPartition")
 
         spark.sql("DROP TABLE test_cat.db.residual_dedup_test")

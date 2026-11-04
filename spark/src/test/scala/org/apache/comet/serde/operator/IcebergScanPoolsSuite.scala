@@ -63,11 +63,14 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
   // Each partition's message as the driver ships it, and the scan the executor builds from it.
   private def shipAndInject(common: IcebergScanCommon, partitions: IndexedSeq[IcebergScan])
       : (IcebergScanCommon, IndexedSeq[(IcebergScan, IcebergScan)]) = {
-    val block = IcebergScanPools.commonBlock(common)
+    // Read the pools the way the driver does after planning: from the serialized scan.
+    val pools = new IcebergScanPools.SerializedPools(common.toByteArray)
+    val layout = IcebergScanPools.Layout(pools, partitions)
+    val block = IcebergScanPools.commonBlock(common, layout)
     (
       block,
       partitions.map { p =>
-        val payload = IcebergScanPools.partitionPayload(common, p)
+        val payload = IcebergScanPools.partitionPayload(pools, layout, p)
         payload -> IcebergScanPools.forPartition(block, payload)
       })
   }
@@ -201,17 +204,26 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
       val (block, shipped) = shipAndInject(common, partitions)
       val usedBy = users(common, partitions)
       val empty = IcebergScanCommon.getDefaultInstance
+      // Entries every non-empty partition uses ship once in the common block.
+      val nonEmpty = partitions.indices.filter(partitions(_).getFileScanTasksCount > 0).toSet
+      // toSeq first: Map.collect into (pool, index) tuples would build a Map and merge them.
+      val everywhere = usedBy.toSeq.collect {
+        case (e, ps) if nonEmpty.size >= 2 && ps == nonEmpty => e
+      }.toSet
       withClue(s"seed $seed: ") {
-        assert(entries(block, empty).isEmpty, "the common block holds per-file entries")
-        partitions.indices.foreach { p =>
-          val expected = usedBy.collect { case (e, ps) if ps.contains(p) => content(common, e) }
-          val own = asCommon(shipped(p)._1.getOwnPools)
-          val sent = entries(own, empty).map(content(own, _))
-          assert(sent.size == expected.size, s"partition $p ships an entry twice or extra")
-          assert(sent.toSet == expected.toSet, s"partition $p ships the wrong entries")
+        val inCommon = entries(block, empty).map(content(block, _))
+        assert(inCommon.size == everywhere.size, "the common block holds an entry twice or extra")
+        assert(inCommon.toSet == everywhere.map(content(common, _)))
+        nonEmpty.foreach { p =>
+          val used = usedBy.toSeq.collect { case (e, ps) if ps.contains(p) => e }.toSet
+          val expected = (used -- everywhere).map(content(common, _))
+          // Own entries follow the common ones and may point at them, so resolve them merged.
           val injected = shipped(p)._2.getCommon
+          val sent = entries(injected, block).map(content(injected, _))
+          assert(sent.size == expected.size, s"partition $p ships an entry twice or extra")
+          assert(sent.toSet == expected, s"partition $p ships the wrong entries")
           val kept = entries(injected, empty).map(content(injected, _))
-          assert(kept.toSet == expected.toSet && kept.size == expected.size)
+          assert(kept.size == used.size && kept.toSet == used.map(content(common, _)))
         }
       }
     }
@@ -264,7 +276,7 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
     assert(sizes.distinct.size == 1, s"shipped sizes grow with shared delete files: $sizes")
   }
 
-  test("a delete file every partition uses ships with each of them") {
+  test("a delete file every partition uses ships once in the common block") {
     // An unpartitioned equality delete applies to every data file.
     val global = IcebergDeleteFile
       .newBuilder()
@@ -287,18 +299,21 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
         .addFileScanTasks(fileTask(s"a-$b.parquet", Some(0), None, None))
         .build()
     }
-    val (_, shipped) = shipAndInject(common, partitions)
-    shipped.foreach { case (payload, _) =>
-      assert(payload.getOwnPools.getDeleteFilePoolList.asScala.toSeq == Seq(global))
-      assert(payload.getOwnPools.getDeleteFilePathPoolCount == 1)
-    }
+    val (block, shipped) = shipAndInject(common, partitions)
+    assert(block.getDeleteFilePoolList.asScala.toSeq == Seq(global))
+    assert(block.getDeleteFilePathPoolCount == 1 && block.getDeleteFilesPoolCount == 1)
+    shipped.foreach { case (payload, _) => assert(!payload.hasOwnPools) }
     assertSameTasks(common, partitions)
   }
 
   test("a partition with no tasks ships an empty message") {
     val (common, partitions) = bucketedScan(3)
     val withEmpty = partitions :+ IcebergScan.getDefaultInstance
-    val payload = IcebergScanPools.partitionPayload(common, IcebergScan.getDefaultInstance)
+    val pools = new IcebergScanPools.MessagePools(common)
+    val payload = IcebergScanPools.partitionPayload(
+      pools,
+      IcebergScanPools.Layout(pools, withEmpty),
+      IcebergScan.getDefaultInstance)
     assert(!payload.hasOwnPools)
     assert(payload.getSerializedSize == 0)
     assertSameTasks(common, withEmpty)
@@ -309,8 +324,10 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
     val bad = partitions.head.toBuilder
       .setFileScanTasks(0, partitions.head.getFileScanTasks(0).toBuilder.setDeleteFilesIdx(99))
       .build()
+    val pools = new IcebergScanPools.MessagePools(common)
+    val layout = IcebergScanPools.Layout(pools, partitions)
     val error = intercept[IllegalStateException] {
-      IcebergScanPools.partitionPayload(common, bad)
+      IcebergScanPools.partitionPayload(pools, layout, bad)
     }
     assert(error.getMessage.contains("delete_files_set index 99 is out of range"))
   }
@@ -330,7 +347,7 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
       val (common, partitions) = randomScan(new Random(seed))
       val (block, shipped) = shipAndInject(common, partitions)
       withClue(s"seed $seed: ") {
-        assert(block == otherFields(common))
+        assert(otherFields(block) == otherFields(common))
         shipped.foreach { case (_, injected) =>
           assert(otherFields(injected.getCommon) == otherFields(common))
         }
@@ -389,9 +406,36 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
 
   test("lazily built scan data compares by content without building partitions") {
     val (common, partitions) = bucketedScan(3)
-    def data(c: IcebergScanCommon) =
-      new IcebergPartitionPlanData(c, partitions.map(_.toByteArray).toArray)
+    def data(c: IcebergScanCommon) = {
+      val pools = new IcebergScanPools.SerializedPools(c.toByteArray)
+      new IcebergPartitionPlanData(
+        pools,
+        IcebergScanPools.Layout(pools, partitions),
+        partitions.map(_.toByteArray).toArray)
+    }
     assert(data(common).sameAs(data(common)))
     assert(!data(common).sameAs(data(common.toBuilder.setScanHashCode(7).build())))
+  }
+
+  test("reading the serialized pools gives the same entries as the parsed message") {
+    (0 until 50).foreach { seed =>
+      val (common, _) = randomScan(new Random(seed))
+      val parsed = new IcebergScanPools.MessagePools(common)
+      val serialized = new IcebergScanPools.SerializedPools(common.toByteArray)
+      withClue(s"seed $seed: ") {
+        assert(serialized.pathCount == parsed.pathCount)
+        assert((0 until parsed.pathCount).forall(i => serialized.path(i) == parsed.path(i)))
+        assert(serialized.deleteCount == parsed.deleteCount)
+        assert((0 until parsed.deleteCount).forall(i => serialized.delete(i) == parsed.delete(i)))
+        assert(serialized.setCount == parsed.setCount)
+        assert((0 until parsed.setCount).forall(i => serialized.set(i) == parsed.set(i)))
+        assert(serialized.partitionValueCount == parsed.partitionValueCount)
+        assert((0 until parsed.partitionValueCount).forall(i =>
+          serialized.partitionValue(i) == parsed.partitionValue(i)))
+        assert(serialized.residualCount == parsed.residualCount)
+        assert((0 until parsed.residualCount).forall(i =>
+          serialized.residual(i) == parsed.residual(i)))
+      }
+    }
   }
 }

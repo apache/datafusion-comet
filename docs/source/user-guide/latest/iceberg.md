@@ -197,12 +197,13 @@ These `s3.*` storage properties are not specific to the Hive catalog shown here.
 ### Plan data per task
 
 The native reader sends each task only the delete files, partition values and residual filters
-that its own files need, the way Spark's Iceberg reader does. A coalesce without a shuffle
-(`coalesce(n)`, or a write that coalesces its input) combines several input partitions into one
-task, and that task then carries a copy of a shared delete file for every input partition that
-uses it. Scans where many partitions share delete files, such as tables with unpartitioned
-equality deletes, can make coalesced tasks large. Compacting delete files, or repartitioning
-instead of coalescing, avoids this.
+that its own files need, the way Spark's Iceberg reader does. Entries that every partition needs,
+such as unpartitioned equality deletes, are sent once per executor instead. A coalesce without a
+shuffle (`coalesce(n)`, or a write that coalesces its input) combines several input partitions
+into one task, and that task then carries a copy of a shared delete file for every input
+partition that uses it. Scans where many, but not all, partitions share delete files can make
+coalesced tasks large. Compacting delete files, or repartitioning instead of coalescing, avoids
+this.
 
 ### Current limitations
 
