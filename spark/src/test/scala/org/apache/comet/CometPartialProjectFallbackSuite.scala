@@ -512,10 +512,12 @@ class CometPartialProjectFallbackSuite
       spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
       val query = "SELECT x FROM t WHERE y IS NOT NULL AND abs(10 div x) > 0"
       withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
-        val withoutWholeStage = withSQLConf(
+        // A var, because Spark 3.x (Scala 2.12) types `withSQLConf(...)(f)` as `Unit`.
+        var withoutWholeStage: Seq[Int] = Nil
+        withSQLConf(
           CometConf.COMET_ENABLED.key -> "false",
           SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
-          sql(query).collect().map(_.getInt(0)).sorted.toSeq
+          withoutWholeStage = sql(query).collect().map(_.getInt(0)).sorted.toSeq
         }
         assert(withoutWholeStage == Seq(1, 2, 3), s"unexpected Spark rows $withoutWholeStage")
         withDetouredSerdes("Abs") {
