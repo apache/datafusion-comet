@@ -180,22 +180,21 @@ if [ -n "${2:-}" ]; then
   fi
 fi
 
-jar_list_failed ()
-{
-    echo "[ERROR] Listing jar contents for file '${artifact}' failed."
-    exit 1
-}
-trap jar_list_failed SIGUSR1
-
 for artifact_index in "${!artifact_list[@]}"; do
   artifact="${artifact_list[artifact_index]}"
   artifact_allowed_expr="${allowed_expr}"
   if [ "${artifact_index}" -eq "${sources_index}" ]; then
     artifact_allowed_expr="${sources_allowed_expr}"
   fi
+  # List the jar once for all the checks below. pipefail makes a jar tf failure fail the
+  # assignment. On Windows the output from jar tf may contain \r\n's.  Normalize to \n.
+  if ! entries=$(jar tf "${artifact}" | tr -d '\r'); then
+    echo "[ERROR] Listing jar contents for file '${artifact}' failed."
+    exit 1
+  fi
   bad_contents=()
-  # Note: On Windows the output from jar tf may contain \r\n's.  Normalize to \n.
-  while IFS='' read -r line; do bad_contents+=("$line"); done < <( ( jar tf "${artifact}" | sed 's/\\r//' || kill -SIGUSR1 $$ ) | grep -v -E "${artifact_allowed_expr}" )
+  # printf '%s' adds no line, so an empty listing yields no bad entries.
+  while IFS='' read -r line; do bad_contents+=("$line"); done < <(printf '%s' "${entries}" | grep -v -E "${artifact_allowed_expr}")
   if [ ${#bad_contents[@]} -gt 0 ]; then
     echo "[ERROR] Found artifact with unexpected contents: '${artifact}'"
     echo "    Please check the following and either correct the build or update"
@@ -211,13 +210,14 @@ for artifact_index in "${!artifact_list[@]}"; do
 
   # Check the complete license text in both main and sources jars containing libcomet.
   # Common/test-only jars without the native library keep their existing legal resources.
-  if jar tf "${artifact}" | tr -d '\r' |
-      grep -E '^org/apache/comet/[^/]+/[^/]+/(libcomet\.(so|dylib)|comet\.dll)$' > /dev/null; then
+  # Here-strings rather than pipes: under pipefail, grep -q closing a pipe early could fail
+  # the writer and hide a match.
+  if grep -q -E '^org/apache/comet/[^/]+/[^/]+/(libcomet\.(so|dylib)|comet\.dll)$' <<< "${entries}"; then
     if ! check_native_license_versions; then
       bad_artifacts=${bad_artifacts}+1
       continue
     fi
-    license_count=$(jar tf "${artifact}" | tr -d '\r' | awk '$0 == "META-INF/LICENSE" { n++ } END { print n+0 }')
+    license_count=$(awk '$0 == "META-INF/LICENSE" { n++ } END { print n+0 }' <<< "${entries}")
     if [ "${license_count}" -ne 1 ]; then
       echo "[ERROR] Expected exactly one META-INF/LICENSE in '${artifact}'."
       bad_artifacts=${bad_artifacts}+1
