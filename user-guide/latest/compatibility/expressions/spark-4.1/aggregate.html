@@ -934,6 +934,10 @@ under the License.
 <ul class="simple">
 <li><p>Before Spark 4.2, Comet deduplicates NaN values (treats <code class="docutils literal notranslate"><span class="pre">NaN</span> <span class="pre">==</span> <span class="pre">NaN</span></code>) while Spark treats each NaN as a distinct value. Comet treats -0.0 and 0.0 as distinct while Spark treats them as equal. When <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code>, <code class="docutils literal notranslate"><span class="pre">collect_set</span></code> on floating-point types falls back to Spark on those versions unless <code class="docutils literal notranslate"><span class="pre">spark.comet.expression.CollectSet.allowIncompatible=true</span></code> is set.</p></li>
 </ul>
+<p>The following cases are not supported by Comet and always fall back to Spark, regardless of any <code class="docutils literal notranslate"><span class="pre">allowIncompatible</span></code> setting:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">collect_set</span></code> over FLOAT or DOUBLE in a PartialMerge chain (for example, beside <code class="docutils literal notranslate"><span class="pre">count(DISTINCT</span> <span class="pre">...)</span></code>) falls back to Spark to preserve signed-zero and NaN semantics.</p></li>
+</ul>
 </section>
 <section id="first">
 <h2>First<a class="headerlink" href="#first" title="Link to this heading">#</a></h2>

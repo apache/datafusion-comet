@@ -41,6 +41,10 @@ The following incompatibilities cause `CollectSet` to fall back to Spark by defa
 
 - Before Spark 4.2, Comet deduplicates NaN values (treats `NaN == NaN`) while Spark treats each NaN as a distinct value. Comet treats -0.0 and 0.0 as distinct while Spark treats them as equal. When `spark.comet.exec.strictFloatingPoint=true`, `collect_set` on floating-point types falls back to Spark on those versions unless `spark.comet.expression.CollectSet.allowIncompatible=true` is set.
 
+The following cases are not supported by Comet and always fall back to Spark, regardless of any `allowIncompatible` setting:
+
+- `collect_set` over FLOAT or DOUBLE in a PartialMerge chain (for example, beside `count(DISTINCT ...)`) falls back to Spark to preserve signed-zero and NaN semantics.
+
 ## First
 
 The following differences from Spark are always present and do not require any additional configuration:
