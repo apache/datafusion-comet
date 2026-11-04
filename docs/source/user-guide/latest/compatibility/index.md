@@ -203,22 +203,32 @@ The other examples use ANSI division:
   `SELECT d FROM (SELECT abs(10 div x) AS d, rand(1) AS r FROM t) WHERE r > 2` returns no rows in
   Spark, and `SELECT t.d FROM (SELECT x, abs(10 div x) AS d FROM t) t JOIN u ON t.x = u.x` returns
   rows in Spark when `u` has no row with `x` = 0. With the detour, both can raise
-  `DIVIDE_BY_ZERO`.
+  `DIVIDE_BY_ZERO`. Comet's Rust-implemented projection also evaluates every item for every row,
+  so this is not specific to the detour: turning the detour off avoids it only where the
+  projection then falls back to Spark.
 - Spark eliminates common subexpressions across all the items of a projection and evaluates them
   up front, including ones that sit on the right of an `AND`. Comet eliminates them only within
   one item. So `SELECT x <> 0 AND abs(10 div x) > 1 AS a, x <> 0 AND abs(10 div x) > 2 AS b FROM t`
   with a row where `x` is 0 raises `DIVIDE_BY_ZERO` in Spark, with or without whole-stage codegen,
   and returns rows with the detour, as Comet's Rust-implemented projection does.
-- Spark's whole-stage code for a filter evaluates each `IS NOT NULL` conjunct only just before the
-  first conjunct that reads its column, or at the end if none does. Comet evaluates the condition as
-  one expression, conjunct by conjunct from left to right, as Spark without whole-stage codegen
-  does. The difference goes both ways:
+- Spark's whole-stage code for a filter splits out each `IS NOT NULL` conjunct whose argument is a
+  column, or a null-intolerant expression of columns such as `x + 1`, and evaluates it only just
+  before the first other conjunct that reads one of those columns, or at the end if none does.
+  Comet evaluates the condition as one expression, conjunct by conjunct from left to right, as
+  Spark does for a filter it runs without whole-stage codegen. The difference goes both ways:
   - For `WHERE y IS NOT NULL AND abs(10 div x) > 0` with a row where `x` is 0 and `y` is NULL,
     Spark raises `DIVIDE_BY_ZERO` and Comet returns the other rows. Comet's Rust-implemented
     filter returns the rows too.
   - For `WHERE abs(10 div coalesce(x, 0)) > 0 AND x IS NOT NULL` with a row where `x` is NULL,
     Spark drops the row before dividing and returns the other rows, and Comet raises
     `DIVIDE_BY_ZERO`.
+
+Spark eliminates common subexpressions in a filter condition only when it runs the filter without
+whole-stage codegen. It does that when `spark.sql.codegen.wholeStage` is off, when the condition
+contains an expression without code generation of its own, such as a higher-order function, or
+when the filter has more fields than `spark.sql.codegen.maxFields`, and then only when
+`spark.sql.subexpressionElimination.enabled` is on. Comet compiles a detoured filter condition with
+or without subexpression elimination to match the form Spark would use for that filter.
 
 The detour does not take a nondeterministic filter condition, because that ordering changes which
 rows it keeps. For the same reason it does not take a projection item that Spark sees as

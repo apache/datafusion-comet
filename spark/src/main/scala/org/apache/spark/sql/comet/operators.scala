@@ -1514,7 +1514,7 @@ object CometFilterExec extends CometOperatorSerde[FilterExec] {
       builder: Operator.Builder,
       childOp: OperatorOuterClass.Operator*): Option[OperatorOuterClass.Operator] = {
     val cond =
-      CometJvmDetour.exprToProtoOrDetour(op.condition, op.child.output, filterCondition = true)
+      CometJvmDetour.exprToProtoOrDetour(op.condition, op.child.output, filter = Some(op))
 
     if (cond.isDefined && childOp.nonEmpty) {
       val filterBuilder = OperatorOuterClass.Filter

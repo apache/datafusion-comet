@@ -499,6 +499,71 @@ class CometPartialProjectFallbackSuite
     }
   }
 
+  test("a filter Spark runs outside whole-stage codegen keeps subexpression elimination") {
+    // Spark leaves this filter out of whole-stage codegen, because `exists` is a non-leaf
+    // `CodegenFallback`. Its predicate is then built by `GeneratePredicate`, which eliminates
+    // `abs(10 div x)` and computes it before the AND, so Spark raises DIVIDE_BY_ZERO for x = 0.
+    // The kernel must compile the condition the same way.
+    withTempPath { dir =>
+      sql(
+        "SELECT * FROM VALUES (0, array(1)), (2, array(1)), (5, array(1)), (1, array(1)) " +
+          "AS v(x, arr)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1 " +
+        "AND exists(arr, e -> e > 0)"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withDetouredSerdes("ArrayExists") {
+          assert(
+            collect(stripAQEPlan(sql(query).queryExecution.executedPlan)) {
+              case f: CometFilterExec => f
+            }.nonEmpty,
+            "expected the filter to be detoured")
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+          assert(
+            sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
+              cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+            s"expected both to raise DIVIDE_BY_ZERO, got spark=$sparkError comet=$cometError")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("with whole-stage codegen off, a detoured filter follows the subexpression setting") {
+    // With `spark.sql.codegen.wholeStage=false` Spark builds the predicate with `GeneratePredicate`,
+    // which eliminates common subexpressions when `spark.sql.subexpressionElimination.enabled` is
+    // on. With it on, `abs(10 div x)` runs before the AND and both raise for x = 0; with it off,
+    // the AND short-circuits and both return rows.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+        withDetouredSerdes("Abs") {
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(sql(query))
+          assert(
+            sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
+              cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+            s"expected both to raise DIVIDE_BY_ZERO, got spark=$sparkError comet=$cometError")
+          withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+            checkSparkAnswerAndOperator(
+              sql(query),
+              includeClasses = Seq(classOf[CometFilterExec]))
+          }
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
   test("a deterministic filter can skip an ANSI error that whole-stage Spark raises") {
     // This pins current behavior, which differs from Spark with whole-stage codegen. Spark's
     // `FilterExec` evaluates `y IS NOT NULL` at the end when no other conjunct reads `y`, so
