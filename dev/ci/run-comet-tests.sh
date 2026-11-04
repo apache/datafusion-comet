@@ -24,10 +24,11 @@
 #
 #   dev/ci/run-comet-tests.sh exec -Pspark-4.0
 #
-# The group tag does not select integration suites (@IntegrationTestSuite, such as
-# ParquetEncryptionITCase). The ScalaTest plugin excludes them, and they run under
-# maven-failsafe-plugin, which ignores the tag. So the default `test` goal never runs
-# them, and `--goal install` runs all of them whichever group is named.
+# Integration suites (@IntegrationTestSuite, such as ParquetEncryptionITCase) are excluded
+# from the ScalaTest plugin and run under maven-failsafe-plugin, which ignores the tag. With
+# a goal that reaches failsafe, such as install, this script passes failsafe the *ITCase
+# suites that carry the group's tag, or skips it when there are none. The default `test`
+# goal never reaches failsafe, so it never runs them.
 #
 # Build the native library first: `make core`, or `make release` with -Prelease.
 # Written for bash 3.2.
@@ -49,8 +50,8 @@ Usage: dev/ci/run-comet-tests.sh [--goal <goal>] <group> [maven args...]
 
   groups   $groups
   --goal    the Maven goal to run (default: test). install also runs the
-            spark-integration checks, which are not selected by the group:
-            every *ITCase suite runs, whichever group is named.
+            spark-integration checks, only the *ITCase suites that carry
+            the group's tag.
 USAGE
   exit 2
 }
@@ -79,10 +80,29 @@ shift
 
 cd "$REPO"
 
+# Failsafe ignores the group tag, so name the group's integration suites to it.
+IT_ARGS=""
+case "$GOAL" in
+  *install* | *verify* | *integration-test*)
+    IT_SUITES=""
+    for file in $(grep -rl --include='*ITCase.*' "^@IntegrationTestSuite" spark/src/test |
+      xargs grep -l "^@$TAG\$" || true); do
+      name="$(basename "$file")"
+      IT_SUITES="${IT_SUITES:+$IT_SUITES,}${name%.*}"
+    done
+    if [ -n "$IT_SUITES" ]; then
+      IT_ARGS="-Dit.test=$IT_SUITES -Dfailsafe.failIfNoSpecifiedTests=false"
+    else
+      IT_ARGS="-DskipITs"
+    fi
+    ;;
+esac
+
 export SPARK_HOME="${SPARK_HOME:-$REPO}"
 export SPARK_LOCAL_HOSTNAME="${SPARK_LOCAL_HOSTNAME:-localhost}"
 export SPARK_LOCAL_IP="${SPARK_LOCAL_IP:-127.0.0.1}"
 export MAVEN_OPTS="${MAVEN_OPTS:--Xmx4G -Xms2G -XX:+UnlockDiagnosticVMOptions -XX:+ShowMessageBoxOnError -XX:+HeapDumpOnOutOfMemoryError -XX:ErrorFile=./hs_err_pid%p.log}"
 
 set -x
-exec ./mvnw -B "$GOAL" "-DtagsToInclude=org.apache.comet.tags.$TAG" "$@"
+# shellcheck disable=SC2086 # IT_ARGS is a list of -D options without spaces in them
+exec ./mvnw -B "$GOAL" "-DtagsToInclude=org.apache.comet.tags.$TAG" $IT_ARGS "$@"

@@ -751,14 +751,11 @@ dev/ci/run-comet-tests.sh exec -Pspark-4.0     # arguments after the group go to
 The script runs `mvnw test` by default. CI passes `--goal install` and `-Prelease`, which uses the
 library that `make release` builds.
 
-The group tag does not select an integration suite, one marked `@IntegrationTestSuite` such as
-`ParquetEncryptionITCase`. The ScalaTest plugin excludes those, and Maven runs them under
-`maven-failsafe-plugin` by their `*ITCase` name, which ignores the tag. The default `test` goal
-therefore never runs them, and `--goal install` runs every one of them whichever group you name.
-
-CI still selects suites by the lists in the workflow files, not by tag, and runs `install`. An
-integration suite is excluded from that selection too, so it runs in every group's job whichever
-group the list names it under.
+An integration suite, one marked `@IntegrationTestSuite` such as `ParquetEncryptionITCase`, is not
+run by the ScalaTest plugin. Maven runs it under `maven-failsafe-plugin` by its `*ITCase` name,
+which ignores the tag, so the script passes failsafe the integration suites that carry the group's
+tag. They run only with a goal that reaches failsafe, such as `install`, which is what CI uses; the
+default `test` goal never runs them.
 
 A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
 does not have or because running them there is not worth the cost. These are listed in
