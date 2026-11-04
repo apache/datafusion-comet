@@ -24,6 +24,11 @@
 #
 #   dev/ci/run-comet-tests.sh exec -Pspark-4.0
 #
+# The group tag does not select integration suites (@IntegrationTestSuite, such as
+# ParquetEncryptionITCase). The ScalaTest plugin excludes them, and they run under
+# maven-failsafe-plugin, which ignores the tag. So the default `test` goal never runs
+# them, and `--goal install` runs all of them whichever group is named.
+#
 # Build the native library first: `make core`, or `make release` with -Prelease.
 # Written for bash 3.2.
 
@@ -44,7 +49,8 @@ Usage: dev/ci/run-comet-tests.sh [--goal <goal>] <group> [maven args...]
 
   groups   $groups
   --goal    the Maven goal to run (default: test). install also runs the
-            spark-integration checks.
+            spark-integration checks, which are not selected by the group:
+            every *ITCase suite runs, whichever group is named.
 USAGE
   exit 2
 }
