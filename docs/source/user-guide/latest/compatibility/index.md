@@ -212,10 +212,14 @@ The other examples use ANSI division:
   with a row where `x` is 0 raises `DIVIDE_BY_ZERO` in Spark, with or without whole-stage codegen,
   and returns rows with the detour, as Comet's Rust-implemented projection does.
 - Spark's whole-stage code for a filter splits out each `IS NOT NULL` conjunct whose argument is a
-  column, or a null-intolerant expression of columns such as `x + 1`, and evaluates it only just
-  before the first other conjunct that reads one of those columns, or at the end if none does.
-  Comet evaluates the condition as one expression, conjunct by conjunct from left to right, as
-  Spark does for a filter it runs without whole-stage codegen. The difference goes both ways:
+  column, or a null-intolerant expression of columns only, such as `x + y` (a literal such as the
+  `1` in `x + 1` does not count). Just before the first other
+  conjunct that reads a column, it checks that the column is not null: with the split-out
+  `x IS NOT NULL`, or, if only a conjunct such as `x + y IS NOT NULL` covers `x`, with a
+  `x IS NOT NULL` check of its own. The split-out conjuncts not used that way, including
+  `x + y IS NOT NULL` itself, run at the end. Comet evaluates the condition as one expression,
+  conjunct by conjunct from left to right, as Spark does for a filter it runs without whole-stage
+  codegen. The difference goes both ways:
   - For `WHERE y IS NOT NULL AND abs(10 div x) > 0` with a row where `x` is 0 and `y` is NULL,
     Spark raises `DIVIDE_BY_ZERO` and Comet returns the other rows. Comet's Rust-implemented
     filter returns the rows too.
@@ -224,11 +228,14 @@ The other examples use ANSI division:
     `DIVIDE_BY_ZERO`.
 
 Before Spark 4.2, Spark eliminates common subexpressions in a filter condition only when it runs
-the filter without whole-stage codegen. It does that when `spark.sql.codegen.wholeStage` is off,
-when the condition contains an expression without code generation of its own, such as a
-higher-order function, or when the filter has more fields than `spark.sql.codegen.maxFields`, and
-then only when
-`spark.sql.subexpressionElimination.enabled` is on. For a projection, Spark eliminates them when
+the filter without whole-stage codegen, and only when `spark.sql.subexpressionElimination.enabled`
+is on. It runs a filter that way when `spark.sql.codegen.wholeStage` is off, when the condition
+contains an expression without code generation of its own, such as a higher-order function, or
+when the filter has more fields than `spark.sql.codegen.maxFields`. With
+`spark.sql.codegen.factoryMode=NO_CODEGEN`, such a filter is interpreted and evaluates a common
+subexpression only when first needed, which is the same as not eliminating it; from Spark 3.5 that
+factory mode also turns whole-stage codegen off, so this applies to every filter. For a
+projection, Spark eliminates them when
 that setting is on, except with `spark.sql.codegen.factoryMode=NO_CODEGEN` for a projection it runs
 without whole-stage codegen (from Spark 3.5 that is every projection), where it evaluates a common
 subexpression only when first needed. Comet compiles each detoured filter condition and projection
@@ -239,12 +246,19 @@ whole-stage codegen after all, and the error behavior can differ.
 
 Spark 4.2 also eliminates common subexpressions in a filter that runs in whole-stage code, when
 `spark.sql.subexpressionElimination.enabled` and
-`spark.sql.subexpressionElimination.filterExec.enabled` are on and the condition repeats a
-subexpression that is more than a column or field read. It evaluates each one just before the first
-conjunct that reads it, which Comet does not reproduce, so on Spark 4.2 the detour does not take
-such a filter condition and the filter falls back to Spark. For example, with ANSI mode on,
+`spark.sql.subexpressionElimination.filterExec.enabled` are on. It looks only at the conjuncts
+other than the split-out `IS NOT NULL` ones, and only at subexpressions it would evaluate every
+time: both sides of `AND` and `OR` count (unless
+`spark.sql.subexpressionElimination.skipForShortcutExpr` is on), but inside `CASE`, `IF` or
+`COALESCE` only the parts that are always evaluated, or common to every branch, count. It also
+ignores a repeated subexpression that is only a column or field read. When such a common
+subexpression exists, Spark evaluates it just before the first conjunct that reads it, which Comet
+does not reproduce, so on Spark 4.2 the detour does not take that filter condition and the filter
+falls back to Spark. For example, with ANSI mode on,
 `WHERE x = 0 OR abs(10 div x) + abs(10 div x) > 1` raises `DIVIDE_BY_ZERO` in Spark 4.2 for a row
-where `x` is 0.
+where `x` is 0. A repeat inside one branch, as in
+`CASE WHEN x = 0 THEN true ELSE abs(10 div x) + abs(10 div x) > 1 END`, does not count, and that
+condition is detoured.
 
 The detour does not take a nondeterministic filter condition, because that ordering changes which
 rows it keeps. For the same reason it does not take a projection item that Spark sees as

@@ -20,9 +20,10 @@
 package org.apache.comet
 
 import org.apache.spark.SparkConf
-import org.apache.spark.sql.{CometTestBase, DataFrame}
+import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Alias, AttributeReference, Literal, Multiply}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
+import org.apache.spark.sql.connector.catalog.{Identifier, InMemoryCatalog}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.hive.CometHiveTestExpressions
@@ -549,6 +550,135 @@ class CometPartialProjectFallbackSuite
         }
       }
       spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a cheap common subexpression does not stop the filter detour") {
+    // Spark 4.2's whole-stage filter ignores a common subexpression that `CollapseProject.isCheap`
+    // calls cheap, such as the struct field read `s.a` here, so the condition is detoured on every
+    // version.
+    withTempPath { dir =>
+      spark
+        .range(0, 20, 1, numPartitions = 1)
+        .selectExpr("named_struct('a', id) AS s")
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("LessThan") {
+        val df = sql("SELECT s.a FROM t WHERE s.a > 1 AND s.a < 10")
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometFilterExec]))
+        assertExpressionImpl(
+          stripAQEPlan(df.queryExecution.executedPlan),
+          native = Seq.empty,
+          dispatched = Seq("lessthan"))
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a repeat only inside split-out IS NOT NULL conjuncts does not stop the filter detour") {
+    // Spark 4.2's whole-stage filter looks for common subexpressions only in the conjuncts other
+    // than the split-out `IsNotNull`s. Here `abs(x * x)` repeats only inside two of those, so the
+    // condition is detoured on every version.
+    withIntTable {
+      withDetouredSerdes("Abs") {
+        val df =
+          sql("SELECT x FROM t WHERE abs(x * x) IS NOT NULL AND abs(x * x) - x IS NOT NULL")
+        checkSparkAnswerAndOperator(df, includeClasses = Seq(classOf[CometFilterExec]))
+        assertExpressionImpl(
+          stripAQEPlan(df.queryExecution.executedPlan),
+          native = Seq.empty,
+          dispatched = Seq("abs"))
+      }
+    }
+  }
+
+  test("with Spark 4.2's filter CSE turned off, the filter detour applies again") {
+    assume(CometSparkSessionExtensions.isSpark42Plus, "the setting exists from Spark 4.2")
+    // `spark.sql.subexpressionElimination.filterExec.enabled=false` turns off the whole-stage
+    // filter CSE that makes the detour decline. Spark then short-circuits the AND for x = 0, as
+    // the detour does.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        "spark.sql.subexpressionElimination.filterExec.enabled" -> "false") {
+        withDetouredSerdes("Abs") {
+          checkSparkAnswerAndOperator(
+            sql("SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"),
+            includeClasses = Seq(classOf[CometFilterExec]))
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a detoured filter reads sliced booleans from a native aggregate (#6424)") {
+    // The hash aggregate emits its groups in slices of the batch size, and a sliced boolean
+    // column has a bit offset that the bridge must honor. The detoured filter condition reads `b`
+    // from those slices. (A projection here would be folded into the aggregate.) `abs(k)` sits in
+    // one branch only, so Spark 4.2's filter CSE does not apply.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        spark
+          .range(0, 4000)
+          .selectExpr("id % 2000 AS k", "id % 2000 % 3 = 0 AS b")
+          .write
+          .parquet(dir.getCanonicalPath)
+        withSQLConf(
+          SQLConf.SHUFFLE_PARTITIONS.key -> "1",
+          CometConf.COMET_BATCH_SIZE.key -> "100") {
+          withParquetTable(dir.getCanonicalPath, "g") {
+            withDetouredSerdes("Abs") {
+              val df = spark
+                .table("g")
+                .groupBy("k", "b")
+                .count()
+                .filter("IF(b, abs(k) % 2 = 0, k % 2 = 1)")
+              assertCodegenRan {
+                val (_, plan) = checkSparkAnswerAndOperator(df)
+                assert(plan.collect { case f: CometFilterExec => f }.nonEmpty)
+                assertExpressionImpl(plan, native = Seq.empty, dispatched = Seq("abs"))
+              }
+              // Check every retained row, since an offset bug both adds and drops rows.
+              checkAnswer(
+                df,
+                (0 until 2000)
+                  .filter(k => if (k % 3 == 0) k % 2 == 0 else k % 2 == 1)
+                  .map(k => Row(k.toLong, k % 3 == 0, 2L)))
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("the detour does not take a DataSource V2 function's decimal result (#6425)") {
+    // The function returns `Decimal(i)` at scale 0 for a `DECIMAL(10, 2)`. Spark corrects that
+    // only when it writes a row, which the kernel cannot reproduce, so the dispatcher refuses the
+    // call (`CometInvokeTargets`) and the item falls back to Spark through the detour too.
+    withSQLConf(
+      "spark.sql.catalog.decfn_detour" -> classOf[InMemoryCatalog].getName,
+      CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true") {
+      val catalog = spark.sessionState.catalogManager
+        .catalog("decfn_detour")
+        .asInstanceOf[InMemoryCatalog]
+      catalog.createFunction(
+        Identifier.of(Array("ns"), "as_money"),
+        new CometCodegenSuite.InvokeIntAsDecimalFunction(CometCodegenSuite.Money))
+      withTable("t") {
+        sql("CREATE TABLE t (c INT) USING parquet")
+        sql("INSERT INTO t VALUES (3), (NULL), (100000000), (-100000000)")
+        val df = sql(
+          "SELECT decfn_detour.ns.as_money(c) IS NULL, " +
+            "CAST(decfn_detour.ns.as_money(c) AS STRING) FROM t")
+        checkSparkAnswerAndFallbackReason(df, "calls the DataSource V2 function")
+        assert(!hasCometProject(df), "expected the projection to fall back to Spark")
+      }
     }
   }
 

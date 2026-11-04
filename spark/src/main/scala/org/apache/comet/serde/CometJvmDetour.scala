@@ -68,13 +68,16 @@ import org.apache.comet.shims.ShimFilterCse
  *     like any deterministic item and its `rand` advances only for the rows Spark evaluates. The
  *     kernel's would advance for every row and give different values, so such an item, one that
  *     reports itself deterministic but contains a nondeterministic node, is not detoured.
- *   - Spark's whole-stage `FilterExec` splits the conjuncts of the condition and evaluates each
- *     `IsNotNull` only just before the first conjunct that reads its column, or at the end if
- *     none does. The kernel evaluates the condition as one short-circuiting `AND`, left to right,
- *     as Spark without whole-stage codegen does. For a deterministic condition only errors differ
- *     (ANSI errors, or `raise_error` / `assert_true`), in both directions. The kernel can skip an
- *     error Spark raises: `y IS NOT NULL AND abs(10 div x) > 0` with a row `(0, NULL)`, where
- *     Spark moves the `IsNotNull` to the end. And it can raise one Spark skips: `abs(10 div
+ *   - Spark's whole-stage `FilterExec` splits out the `IsNotNull` conjuncts whose argument is
+ *     null-intolerant and made of columns only (`x + y`, not `x + 1`). Just before the first
+ *     other conjunct that reads a column, it checks that the column is not null, with the
+ *     split-out `IsNotNull(x)` or, if only one such as `IsNotNull(x + y)` covers `x`, a synthetic
+ *     `IsNotNull(x)`. The split-out conjuncts not used that way, `IsNotNull(x + y)` included, run
+ *     at the end. The kernel evaluates the condition as one short-circuiting `AND`, left to
+ *     right, as Spark without whole-stage codegen does. For a deterministic condition only errors
+ *     differ (ANSI errors, or `raise_error` / `assert_true`), in both directions. The kernel can
+ *     skip an error Spark raises: `y IS NOT NULL AND abs(10 div x) > 0` with a row `(0, NULL)`,
+ *     where Spark moves the `IsNotNull` to the end. And it can raise one Spark skips: `abs(10 div
  *     coalesce(x, 0)) > 0 AND x IS NOT NULL` with a NULL `x`, where Spark evaluates the
  *     `IsNotNull` before the first conjunct, which reads `x`. For a nondeterministic condition
  *     the kept rows differ: a conjunct such as `rand(42) < 0.5` runs, and advances its state, for

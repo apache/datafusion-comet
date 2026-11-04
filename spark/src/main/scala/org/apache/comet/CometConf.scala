@@ -831,7 +831,9 @@ object CometConf extends ShimCometConf {
           "raise it where Spark does not, or not raise it where Spark does. The detour does " +
           "not take a nondeterministic filter condition, or a " +
           "projection item that contains a nondeterministic expression Spark does not see as " +
-          "such. It does not take an item that contains an expression disabled with " +
+          "such, or, on Spark 4.2, a filter condition whose common subexpressions Spark's " +
+          "whole-stage filter eliminates. It does not take an item that contains an " +
+          "expression disabled with " +
           "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
           "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
           "`java_method`. See 'JVM expression detour' in the Comet Compatibility Guide. " +
