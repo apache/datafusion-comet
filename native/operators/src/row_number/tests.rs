@@ -666,7 +666,7 @@ async fn changing_keys_reuse_the_boundary_reservation() {
     );
     let retained = pool.reserved();
     assert!(retained > 0);
-    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(retained)]);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(retained)]);
 
     assert_eq!(
         row_numbers(&[stream.next().await.unwrap().unwrap()]),
@@ -699,7 +699,7 @@ async fn boundary_reservations_follow_key_size_changes() {
     );
     let small = pool.reserved();
     assert!(small > 0);
-    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(small)]);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(small)]);
 
     assert_eq!(
         row_numbers(&[stream.next().await.unwrap().unwrap()]),
@@ -707,7 +707,7 @@ async fn boundary_reservations_follow_key_size_changes() {
     );
     let large = pool.reserved();
     assert!(large > small);
-    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(large - small)]);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(large - small)]);
 
     assert_eq!(
         row_numbers(&[stream.next().await.unwrap().unwrap()]),
@@ -721,7 +721,7 @@ async fn boundary_reservations_follow_key_size_changes() {
 }
 
 #[tokio::test]
-async fn refused_replacement_releases_the_boundary_reservation() {
+async fn replacement_growth_can_exceed_the_pool_limit() {
     let batches = ["a".repeat(32), "b".repeat(8192)]
         .into_iter()
         .enumerate()
@@ -738,45 +738,49 @@ async fn refused_replacement_releases_the_boundary_reservation() {
         row_numbers(&[stream.next().await.unwrap().unwrap()]),
         vec![1, 2]
     );
-    let retained = pool.reserved();
-    assert!(retained > 0);
-    assert_eq!(pool.take_calls(), vec![PoolCall::TryGrow(retained)]);
+    let small = pool.reserved();
+    assert!(small > 0 && small < 1024);
+    let mut calls = pool.take_calls();
 
-    let error = stream.next().await.unwrap().unwrap_err();
-    assert!(matches!(
-        error,
-        datafusion::common::DataFusionError::ResourcesExhausted(_)
-    ));
-    assert_eq!(pool.reserved(), 0);
-    assert!(matches!(
-        pool.take_calls().as_slice(),
-        [PoolCall::TryGrow(additional), PoolCall::Shrink(released)]
-            if *additional > 1024 && *released == retained
-    ));
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
+    );
+    let large = pool.reserved();
+    assert!(large >= 8192);
+    calls.extend(pool.take_calls());
+    assert_eq!(
+        calls,
+        vec![PoolCall::Grow(small), PoolCall::Grow(large - small)]
+    );
     drop(stream);
-    assert!(pool.take_calls().is_empty());
+    assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(large)]);
 }
 
-#[test]
-fn refused_boundary_reservations_are_released() {
-    let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(1));
-    let reservation = MemoryConsumer::new("test refusal").register(&pool);
-    let mut state = RowNumberState {
-        key: vec![],
-        rank: 0,
-        reservation,
-    };
-    let input = batch(Arc::new(StringArray::from(vec!["some partition key"])));
-    let plan = window(std::slice::from_ref(&input), true, &["row_number"]);
-    let result = state.evaluate(
-        input,
-        plan.window_expr()[0].partition_by(),
-        plan.schema(),
-        1,
+#[tokio::test]
+async fn initial_nested_key_can_exceed_the_pool_limit() {
+    let keys: ArrayRef = Arc::new(StructArray::new(
+        vec![Field::new("value", DataType::Utf8View, true)].into(),
+        vec![Arc::new(StringViewArray::from(vec!["x".repeat(8192); 2]))],
+        None,
+    ));
+    let input = batch(keys);
+    let plan = RowNumberExec::try_new(window(&[input], true, &["row_number"])).unwrap();
+    let pool = Arc::new(RecordingMemoryPool::new(1));
+    let mut stream = plan
+        .execute(0, task_context_with_pool(Arc::clone(&pool) as _))
+        .unwrap();
+    assert_eq!(
+        row_numbers(&[stream.next().await.unwrap().unwrap()]),
+        vec![1, 2]
     );
-    assert!(result.is_err());
-    assert!(state.key.is_empty());
+    let retained = pool.reserved();
+    assert!(retained >= 8192);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Grow(retained)]);
+    assert!(stream.next().await.is_none());
     assert_eq!(pool.reserved(), 0);
+    assert_eq!(pool.take_calls(), vec![PoolCall::Shrink(retained)]);
 }
 
 #[tokio::test]
