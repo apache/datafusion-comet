@@ -191,12 +191,20 @@ for an expression that can raise an error:
   Spark, and can raise `DIVIDE_BY_ZERO` with the detour.
 - Spark's whole-stage code for a filter evaluates each `IS NOT NULL` conjunct only just before the
   first conjunct that reads its column, or at the end if none does. Comet evaluates the condition as
-  one expression, conjunct by conjunct from left to right. So for `WHERE y IS NOT NULL AND abs(10 div x) > 0` with a row where `x`
-  is 0 and `y` is NULL, Spark raises `DIVIDE_BY_ZERO` and Comet returns the other rows. Comet's
-  Rust-implemented filter and Spark without whole-stage codegen return the rows too.
+  one expression, conjunct by conjunct from left to right, as Spark without whole-stage codegen
+  does. The difference goes both ways:
+  - For `WHERE y IS NOT NULL AND abs(10 div x) > 0` with a row where `x` is 0 and `y` is NULL,
+    Spark raises `DIVIDE_BY_ZERO` and Comet returns the other rows. Comet's Rust-implemented
+    filter returns the rows too.
+  - For `WHERE abs(10 div coalesce(x, 0)) > 0 AND x IS NOT NULL` with a row where `x` is NULL,
+    Spark drops the row before dividing and returns the other rows, and Comet raises
+    `DIVIDE_BY_ZERO`.
 
 The detour does not take a nondeterministic filter condition, because that ordering changes which
-rows it keeps. It also does not take an item that contains an expression disabled with
+rows it keeps. For the same reason it does not take a projection item that Spark sees as
+deterministic but that contains a nondeterministic expression, as Spark 4's
+`make_valid_utf8(cast(rand(1) AS string))` does: Spark evaluates such an item only for the rows an
+operator above reads, so the item's random values would differ. It also does not take an item that contains an expression disabled with
 `spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from outside
 Spark's Catalyst packages (such as a Hive UDF), or `reflect` / `java_method`. Those operators fall
 back to Spark as they do with the option off.
