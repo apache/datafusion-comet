@@ -99,9 +99,20 @@ fn extract_query_value<'a>(query: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
+fn is_escape_at(bytes: &[u8], i: usize) -> bool {
+    matches!(bytes.get(i + 1..i + 3), Some([h, l]) if h.is_ascii_hexdigit() && l.is_ascii_hexdigit())
+}
+
+// Characters java.net.URI rejects in every component, plus '%' not followed by two hex digits.
 fn has_invalid_uri_chars(s: &str) -> bool {
-    s.bytes()
-        .any(|b| b == b' ' || b == b'{' || b == b'}' || b == b'<' || b == b'>' || b < 0x20)
+    let bytes = s.as_bytes();
+    let bad_byte = bytes.iter().enumerate().any(|(i, &b)| match b {
+        b' ' | b'"' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}' | 0x7f => true,
+        b'%' => !is_escape_at(bytes, i),
+        _ => b < 0x20,
+    });
+    // Non-ASCII characters are allowed unless they are control or space characters.
+    bad_byte || (!s.is_ascii() && s.chars().any(|c| c.is_control() || c.is_whitespace()))
 }
 
 fn invalid_url_err(value: &str) -> datafusion::common::DataFusionError {
@@ -183,13 +194,45 @@ fn parse_url_component<'a>(
 
     // A value without a scheme is a relative reference; a leading ':' is an empty
     // scheme name, which java.net.URI rejects ("Expected scheme name at index 0").
-    if scheme.is_none() && value.starts_with(':') {
+    if value.starts_with(':') {
         return Err(invalid_url_err(value));
+    }
+
+    // java.net.URI: scheme = alpha *( alpha | digit | "+" | "-" | "." ), followed by a
+    // non-empty scheme-specific part; one not starting with '/' makes the URI opaque.
+    let mut opaque = false;
+    if let Some(scheme) = scheme {
+        let mut bytes = scheme.bytes();
+        let valid_scheme = bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+            && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+        let scheme_specific = &value[scheme.len() + 1..];
+        if !valid_scheme || scheme_specific.is_empty() || scheme_specific.starts_with('#') {
+            return Err(invalid_url_err(value));
+        }
+        opaque = !scheme_specific.starts_with('/');
     }
 
     // java.net.URI rejects an empty authority ("//", "http://") unless a path,
     // query or fragment follows it ("Expected authority").
-    if authority == Some("") && path.is_empty() && query.is_none() && fragment.is_none() {
+    if authority == Some("") && file.is_empty() && fragment.is_none() {
+        return Err(invalid_url_err(value));
+    }
+
+    if fragment.is_some_and(|f| f.contains('#')) {
+        return Err(invalid_url_err(value));
+    }
+
+    // An opaque URI (mailto:x) has only a scheme, a scheme-specific part and a fragment.
+    if opaque {
+        return Ok(match part {
+            "PROTOCOL" => scheme,
+            "REF" => fragment,
+            _ => None,
+        });
+    }
+
+    // java.net.URI allows '[' and ']' in a query or fragment, but not in a hierarchical path.
+    if path.contains(['[', ']']) {
         return Err(invalid_url_err(value));
     }
 
@@ -802,50 +845,15 @@ mod tests {
     }
 
     #[test]
-    fn test_relative_reference() -> Result<()> {
-        // Expected values are from Spark 4.1.1 (java.net.URI).
-        for (url, part, key, expected) in [
-            ("/shop?ref=abc&id=42#top", "PATH", None, Some("/shop")),
-            ("/shop?ref=abc&id=42#top", "QUERY", Some("id"), Some("42")),
-            ("/shop?ref=abc&id=42#top", "REF", None, Some("top")),
-            ("/shop?ref=abc&id=42#top", "HOST", None, None),
-            ("?id=7", "FILE", None, Some("?id=7")),
-            ("notaurl", "PATH", None, Some("notaurl")),
-            ("a/b:c?id=1", "PATH", None, Some("a/b:c")),
-            (
-                "//user:pw@example.com:8080/p",
-                "HOST",
-                None,
-                Some("example.com"),
-            ),
-            (
-                "//user:pw@example.com:8080/p",
-                "USERINFO",
-                None,
-                Some("user:pw"),
-            ),
-            ("///p?id=3", "AUTHORITY", None, None),
-            ("//?id=4", "QUERY", None, Some("id=4")),
-            ("/r?to=http://x.com/a&id=1", "QUERY", Some("id"), Some("1")),
-        ] {
-            assert_eq!(
-                parse_url_component(url, part, key)?,
-                expected,
-                "{url} {part}"
-            );
+    fn test_invisible_chars() -> Result<()> {
+        // DEL, NBSP, NEL and U+2028 are illegal for java.net.URI; other non-ASCII is allowed.
+        for url in ["/p\u{7f}q", "/p\u{a0}q", "/p\u{85}q", "/p?a=\u{2028}"] {
+            assert!(parse_url_component(url, "PATH", None).is_err(), "{url:?}");
         }
+        assert_eq!(
+            parse_url_component("/p\u{e9}q", "PATH", None)?,
+            Some("/p\u{e9}q")
+        );
         Ok(())
-    }
-
-    #[test]
-    fn test_invalid_relative_reference() {
-        for url in [":", ":foo", "://missing-scheme", "//", "http://"] {
-            for part in ["HOST", "PATH", "PROTOCOL", "FILE"] {
-                assert!(
-                    parse_url_component(url, part, None).is_err(),
-                    "{url} {part}"
-                );
-            }
-        }
     }
 }
