@@ -73,6 +73,10 @@ SELECT sum(length(concat(repeat('x', 262144), CAST(tile AS STRING)))) FROM (SELE
 query
 SELECT sum(length(concat(repeat('x', 65536), CAST(tile AS STRING)))) FROM (SELECT ntile(2) OVER (ORDER BY id) AS tile FROM range(0, 32768, 1, 1))
 
+-- a scalar beside a volatile expression, which is not evaluated at plan time
+query
+SELECT sum(length(c)) FROM (SELECT concat(repeat('x', 262144), uuid()) AS c FROM range(0, 8192, 1, 1))
+
 -- a scalar built from the subquery result is wider than the result itself
 query
 SELECT sum(length(c)) FROM (SELECT concat(repeat((SELECT max(s) FROM test_large_scalar_wide), 2), CAST(k AS STRING)) AS c FROM test_large_scalar_ids)

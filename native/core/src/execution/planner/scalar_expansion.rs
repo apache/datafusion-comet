@@ -91,14 +91,15 @@ impl PhysicalPlanner {
     ///
     /// A scalar is any subtree without a column reference or a volatile function, evaluated
     /// here on a one-row batch: `repeat(<subquery>, 8)` is wider than the subquery result it is
-    /// built from. A subtree that fails to evaluate counts nothing, so that its error surfaces
-    /// where Spark's would, at execution. The members of an `IN` list are compared and never
-    /// expanded.
+    /// built from. A subtree that is not a scalar is evaluated per row, so only the scalars
+    /// among its children count. A subtree that fails to evaluate counts nothing, so that its
+    /// error surfaces where Spark's would, at execution. The members of an `IN` list are
+    /// compared and never expanded.
     fn expanded_scalar_bytes(&self, expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> usize {
         if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
             return self.expanded_scalar_bytes(in_list.expr(), schema);
         }
-        if !is_column_free(expr) {
+        if !self.is_scalar(expr) {
             return expr
                 .children()
                 .into_iter()
@@ -109,15 +110,6 @@ impl PhysicalPlanner {
             expr.data_type(schema),
             Ok(DataType::Utf8 | DataType::Binary)
         ) {
-            return 0;
-        }
-        // A volatile function yields a value per row and advances a seeded generator when
-        // evaluated. A JVM UDF is the user's code, which may have side effects or be slow, and a
-        // planner unit test has no JVM to read a subquery result from.
-        if contains(expr, &|e| is_volatile(e) || e.is::<JvmScalarUdfExpr>())
-            || (self.exec_context_id == TEST_EXEC_CONTEXT_ID
-                && contains(expr, &|e| e.is::<Subquery>()))
-        {
             return 0;
         }
         // One row, so that a kernel that expands its scalar arguments still yields one value.
@@ -146,8 +138,19 @@ impl PhysicalPlanner {
     }
 }
 
-fn is_column_free(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    !expr.is::<Column>() && expr.children().iter().all(|child| is_column_free(child))
+impl PhysicalPlanner {
+    /// Whether `expr` yields one value for a batch that can be computed at plan time. A column
+    /// reference and a volatile function yield a value per row, and evaluating a volatile
+    /// function advances its seeded generator. A JVM UDF is the user's code, which may have
+    /// side effects or be slow, and a planner unit test has no JVM to read a subquery result
+    /// from.
+    fn is_scalar(&self, expr: &Arc<dyn PhysicalExpr>) -> bool {
+        let per_row = expr.is::<Column>()
+            || is_volatile(expr)
+            || expr.is::<JvmScalarUdfExpr>()
+            || (self.exec_context_id == TEST_EXEC_CONTEXT_ID && expr.is::<Subquery>());
+        !per_row && expr.children().iter().all(|child| self.is_scalar(child))
+    }
 }
 
 fn is_volatile(expr: &Arc<dyn PhysicalExpr>) -> bool {
@@ -160,10 +163,6 @@ fn is_volatile(expr: &Arc<dyn PhysicalExpr>) -> bool {
         || expr
             .downcast_ref::<ScalarFunctionExpr>()
             .is_some_and(|f| f.fun().signature().volatility == Volatility::Volatile)
-}
-
-fn contains(expr: &Arc<dyn PhysicalExpr>, is: &dyn Fn(&Arc<dyn PhysicalExpr>) -> bool) -> bool {
-    is(expr) || expr.children().iter().any(|child| contains(child, is))
 }
 
 #[cfg(test)]
@@ -252,6 +251,31 @@ mod tests {
             .downcast_ref::<BatchSplitExec>()
             .expect("a split under the expanding operator");
         assert_eq!(256, split.batch_size());
+    }
+
+    #[test]
+    fn counts_a_scalar_beside_a_volatile_sibling_without_evaluating_the_sibling() {
+        use datafusion_comet_spark_expr::UuidExpr;
+        let schema = schema();
+        let one_row = RecordBatch::try_new_with_options(
+            Arc::new(Schema::empty()),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(1)),
+        )
+        .unwrap();
+        let first_draw =
+            |expr: &Arc<dyn PhysicalExpr>| expr.evaluate(&one_row).unwrap().into_array(1).unwrap();
+        let uuid: Arc<dyn PhysicalExpr> = Arc::new(UuidExpr::new(0));
+        let mixed = binary(
+            lit("x".repeat(256 * 1024)),
+            Operator::StringConcat,
+            Arc::clone(&uuid),
+            &schema,
+        )
+        .unwrap();
+        assert_eq!(bytes(mixed), 256 * 1024);
+        let fresh: Arc<dyn PhysicalExpr> = Arc::new(UuidExpr::new(0));
+        assert_eq!(*first_draw(&uuid), *first_draw(&fresh));
     }
 
     #[test]

@@ -89,6 +89,9 @@ impl OperatorBuilder for ShuffleWriterBuilder {
             CometPartitioning::Hash(exprs, _) => {
                 planner.bound_scalar_expansion(writer_input, exprs)
             }
+            CometPartitioning::RangePartitioning(ordering, ..) => {
+                planner.bound_scalar_expansion(writer_input, ordering.iter().map(|sort| &sort.expr))
+            }
             _ => writer_input,
         };
 
