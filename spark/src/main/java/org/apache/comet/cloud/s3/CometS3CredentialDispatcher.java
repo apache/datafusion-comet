@@ -26,6 +26,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -48,6 +52,11 @@ import org.apache.comet.util.ClassLoaders;
  * is what retires a provider whose catalog properties were superseded, such as when an Iceberg REST
  * catalog vends new credentials for a table: native code releases the old handle when it drops the
  * last reader built on it. Providers still referenced at JVM shutdown are closed then.
+ *
+ * <p>A release can come from any thread that drops a native reader, including a Tokio worker or a
+ * task thread inside a scan, so the dispatcher closes released providers on its own daemon thread.
+ * A {@code close()} that blocks, such as Iceberg's {@code VendedCredentialsProvider} waiting for a
+ * token refresh in flight, then delays only the closes queued behind it.
  */
 public final class CometS3CredentialDispatcher {
 
@@ -59,6 +68,15 @@ public final class CometS3CredentialDispatcher {
       new ConcurrentHashMap<>();
   private static final AtomicLong HANDLE_SEQ = new AtomicLong(1L);
   private static final CometS3AccessMode[] MODES = CometS3AccessMode.values();
+
+  private static final ExecutorService DEFAULT_CLOSER =
+      Executors.newSingleThreadExecutor(
+          r -> {
+            Thread thread = new Thread(r, "comet-s3-credential-close");
+            thread.setDaemon(true);
+            return thread;
+          });
+  private static volatile Executor closer = DEFAULT_CLOSER;
 
   static {
     Runtime.getRuntime()
@@ -118,7 +136,11 @@ public final class CometS3CredentialDispatcher {
     }
     KEY_TO_HANDLE.remove(registered.key, handle);
     INSTANCES.remove(handle, registered);
-    close(registered, "after its last reference was released");
+    try {
+      closer.execute(() -> close(registered, "after its last reference was released"));
+    } catch (RejectedExecutionException e) {
+      close(registered, "after its last reference was released");
+    }
   }
 
   /**
@@ -231,10 +253,21 @@ public final class CometS3CredentialDispatcher {
   /** Visible for tests; otherwise invoked from the JVM shutdown hook. */
   static void closeAll() {
     for (RegisteredProvider registered : INSTANCES.values()) {
-      close(registered, "during shutdown");
+      // A concurrent last release may have retired the provider already, and closes it itself.
+      if (registered.retire()) {
+        close(registered, "during shutdown");
+      }
     }
     INSTANCES.clear();
     KEY_TO_HANDLE.clear();
+  }
+
+  /**
+   * Visible for tests: runs closes of released providers on {@code executor}, or on the
+   * dispatcher's own thread when it is null.
+   */
+  static void setCloserForTesting(Executor executor) {
+    closer = executor == null ? DEFAULT_CLOSER : executor;
   }
 
   /** Visible for tests: the number of providers the dispatcher holds. */
@@ -307,6 +340,11 @@ public final class CometS3CredentialDispatcher {
           return true;
         }
       }
+    }
+
+    /** Retires the provider outright. Returns false when it was already retired. */
+    boolean retire() {
+      return refs.getAndSet(RETIRED) != RETIRED;
     }
 
     /**

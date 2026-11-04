@@ -153,8 +153,8 @@ impl FileIoCacheKey {
     /// Whether `other` is a `FileIO` for the same table, access mode and catalog built from
     /// different properties, which this key's `FileIO` supersedes. A catalog that re-vends
     /// credentials gives a table new properties, and a commit moves its metadata file, so the table
-    /// is compared by its root: the reference path up to `/metadata/`. A commit that keeps the
-    /// properties supersedes nothing, so neighboring snapshots share one provider.
+    /// is compared by [`Self::table_location`]. A commit that keeps the properties supersedes
+    /// nothing, so neighboring snapshots share one provider.
     ///
     /// When both carry `s3.session-token-expires-at-ms`, only a later expiry supersedes. Two
     /// sessions reading one table with different vended tokens then keep both entries instead of
@@ -162,12 +162,26 @@ impl FileIoCacheKey {
     fn supersedes(&self, other: &Self) -> bool {
         self.access_mode == other.access_mode
             && self.catalog_name == other.catalog_name
-            && table_root(&self.reference_path) == table_root(&other.reference_path)
+            && self.table_location() == other.table_location()
             && self.properties != other.properties
             && match (self.token_expires_at_ms(), other.token_expires_at_ms()) {
                 (Some(new), Some(old)) => new > old,
                 _ => true,
             }
+    }
+
+    /// What identifies the table across commits. A read's reference path is a metadata file, and
+    /// Iceberg writes all of a table's metadata files into one directory (`write.metadata.path`, or
+    /// `<location>/metadata`), so a read compares that directory. A write's reference path is the
+    /// table's data location, which a commit doesn't move.
+    fn table_location(&self) -> &str {
+        if self.access_mode == AccessMode::Read as u8 {
+            self.reference_path
+                .rfind('/')
+                .map_or(self.reference_path.as_str(), |i| &self.reference_path[..i])
+        } else {
+            &self.reference_path
+        }
     }
 
     fn token_expires_at_ms(&self) -> Option<u64> {
@@ -176,13 +190,6 @@ impl FileIoCacheKey {
             .find(|(k, _)| k == "s3.session-token-expires-at-ms")
             .and_then(|(_, v)| v.parse().ok())
     }
-}
-
-/// The table location of a metadata file path, or the path itself when it isn't one.
-fn table_root(reference_path: &str) -> &str {
-    reference_path
-        .rfind("/metadata/")
-        .map_or(reference_path, |i| &reference_path[..i])
 }
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
@@ -945,6 +952,41 @@ mod tests {
 
     /// A commit that keeps the credentials leaves the previous snapshot's `FileIO` cached, so a
     /// time-travel self-join or reads of neighboring snapshots don't rebuild it on each task.
+    /// With `write.metadata.path` set, a table's metadata files sit in that directory, which need
+    /// not end in `/metadata`. A commit under `s3://b/meta/db/t1` still supersedes the table's
+    /// previous `FileIO`, and two tables under `s3://b/metadata/db/` stay apart.
+    #[test]
+    fn cache_compares_reads_by_metadata_directory() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        let custom_v1 = "s3://b/meta/db/t1/00001-a.metadata.json";
+        let custom_v2 = "s3://b/meta/db/t1/00002-b.metadata.json";
+        assert!(cache
+            .insert(key("t1", custom_v1), local_file_io())
+            .is_empty());
+        assert_eq!(cache.insert(key("t2", custom_v2), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", custom_v1)).is_none());
+
+        let shared_t1 = "s3://b/metadata/db/t1/00001-c.metadata.json";
+        let shared_t2 = "s3://b/metadata/db/t2/00001-d.metadata.json";
+        assert!(cache
+            .insert(key("t1", shared_t1), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("t2", shared_t2), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("t1", shared_t1)).is_some());
+        assert_eq!(cache.entries.len(), 3);
+    }
+
     #[test]
     fn cache_keeps_the_file_io_of_a_commit_with_unchanged_properties() {
         let mut cache = FileIoCache::new(8);

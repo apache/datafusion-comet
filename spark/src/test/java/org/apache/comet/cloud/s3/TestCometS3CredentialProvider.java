@@ -20,6 +20,7 @@
 package org.apache.comet.cloud.s3;
 
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -41,7 +42,14 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
   static volatile CometS3Credentials nextResult =
       new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
 
+  /** When set, {@code close()} counts down {@link #closeEntered} and waits for this latch. */
+  static volatile CountDownLatch blockClose;
+
+  static volatile CountDownLatch closeEntered;
+  static volatile String lastCloseThread;
+
   private volatile String tenantId;
+  private volatile boolean closed;
 
   static void reset() {
     initCount.set(0);
@@ -54,6 +62,9 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
     throwOnNext = null;
     throwOnClose = null;
     nextResult = new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
+    blockClose = null;
+    closeEntered = null;
+    lastCloseThread = null;
   }
 
   @Override
@@ -64,6 +75,9 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
 
   @Override
   public CometS3Credentials getCredentialsForPath(CometS3CredentialContext context) {
+    if (closed) {
+      throw new IllegalStateException("TestCometS3CredentialProvider used after close()");
+    }
     callCount.incrementAndGet();
     lastBucket = context.getBucket();
     lastPath = context.getPath();
@@ -79,6 +93,16 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
 
   @Override
   public void close() throws Exception {
+    closed = true;
+    lastCloseThread = Thread.currentThread().getName();
+    CountDownLatch entered = closeEntered;
+    if (entered != null) {
+      entered.countDown();
+    }
+    CountDownLatch block = blockClose;
+    if (block != null) {
+      block.await();
+    }
     closeCount.incrementAndGet();
     Exception toThrow = throwOnClose;
     if (toThrow != null) {
