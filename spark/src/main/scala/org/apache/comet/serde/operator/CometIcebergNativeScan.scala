@@ -26,7 +26,6 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
-import scala.util.Try
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
@@ -633,16 +632,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    */
   private lazy val vendedCredentialProviderAvailable: Boolean = {
     val cometLoader = getClass.getClassLoader
-    // scalastyle:off classforname
-    val usable = Try {
-      Class.forName(VendedCredentialProviderClass, false, cometLoader)
-      val sdkProvider = Class.forName(AwsCredentialsProviderClass, false, cometLoader)
-      val clientProperties =
-        Class.forName(AwsClientPropertiesClass, false, ClassLoaders.contextOrDefault(cometLoader))
-      Class.forName(AwsCredentialsProviderClass, false, clientProperties.getClassLoader) eq
-        sdkProvider
-    }.getOrElse(false)
-    // scalastyle:on classforname
+    val usable =
+      vendedCredentialProviderUsable(cometLoader, ClassLoaders.contextOrDefault(cometLoader))
     if (!usable) {
       logInfo(
         s"$VendedCredentialProviderClass is not usable in this JVM, so native Iceberg scans " +
@@ -650,6 +641,27 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     }
     usable
   }
+
+  /**
+   * The check behind [[vendedCredentialProviderAvailable]], for the loaders Comet and Iceberg
+   * come from. It fails when Comet's loader can't see the AWS SDK, such as when the only copy is
+   * on Spark's user-jar loader, and when `AwsClientProperties` links against another copy of it.
+   */
+  private[comet] def vendedCredentialProviderUsable(
+      cometLoader: ClassLoader,
+      contextLoader: ClassLoader): Boolean =
+    // scalastyle:off classforname
+    try {
+      Class.forName(VendedCredentialProviderClass, false, cometLoader)
+      val sdkProvider = Class.forName(AwsCredentialsProviderClass, false, cometLoader)
+      val clientProperties = Class.forName(AwsClientPropertiesClass, false, contextLoader)
+      Class.forName(AwsCredentialsProviderClass, false, clientProperties.getClassLoader) eq
+        sdkProvider
+    } catch {
+      // A LinkageError, such as part of the SDK missing, means the same as a missing class here.
+      case _: ClassNotFoundException | _: LinkageError => false
+    }
+  // scalastyle:on classforname
 
   private val AwsCredentialsProviderClass =
     "software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"

@@ -20,6 +20,7 @@
 package org.apache.comet.serde.operator
 
 import java.lang.reflect.InvocationTargetException
+import java.net.{URL, URLClassLoader}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -73,6 +74,53 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       if (isSpark40Plus) Some(CometIcebergNativeScan.VendedCredentialProviderClass) else None
     CometIcebergNativeScan.withVendedCredentialProvider(refreshEndpoint).get(providerKey) shouldBe
       expected
+  }
+
+  // The class loader layouts the driver-side check has to tell apart. Spark 3.x builds don't ship
+  // the provider, so the check is false there whatever the loaders.
+  private val sdkPackage = "software.amazon.awssdk."
+  private def appLoader: ClassLoader = getClass.getClassLoader
+
+  /** Sees everything the test JVM does except the AWS SDK, like Comet beside a user-jar SDK. */
+  private def loaderWithoutSdk: ClassLoader = new ClassLoader(appLoader) {
+    override def loadClass(name: String, resolve: Boolean): Class[_] =
+      if (name.startsWith(sdkPackage)) throw new ClassNotFoundException(name)
+      else super.loadClass(name, resolve)
+  }
+
+  private def jarOf(className: String): URL =
+    // scalastyle:off classforname
+    Class.forName(className, false, appLoader).getProtectionDomain.getCodeSource.getLocation
+  // scalastyle:on classforname
+
+  test("the provider is usable when Comet and Iceberg share one AWS SDK") {
+    CometIcebergNativeScan.vendedCredentialProviderUsable(appLoader, appLoader) shouldBe
+      isSpark40Plus
+  }
+
+  test("the provider is not usable when the only AWS SDK is on the user-jar loader") {
+    // Iceberg on the context loader resolves the SDK, but Comet's loader can't, so the provider
+    // would fail to initialize with NoClassDefFoundError.
+    CometIcebergNativeScan.vendedCredentialProviderUsable(loaderWithoutSdk, appLoader) shouldBe
+      false
+  }
+
+  test("the provider is not usable when Iceberg links against another copy of the AWS SDK") {
+    // A loader with its own iceberg-aws and AWS SDK auth jars, and no parent to share them with,
+    // as with spark.{driver,executor}.userClassPathFirst and the SDK on both class paths. Spark 3.x
+    // test class paths need not carry those jars, and the check is false there anyway.
+    assume(isSpark40Plus)
+    val isolated = new URLClassLoader(
+      Array(
+        jarOf("org.apache.iceberg.aws.AwsClientProperties"),
+        jarOf("software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"),
+        jarOf("software.amazon.awssdk.identity.spi.IdentityProvider")),
+      null)
+    try {
+      CometIcebergNativeScan.vendedCredentialProviderUsable(appLoader, isolated) shouldBe false
+    } finally {
+      isolated.close()
+    }
   }
 
   test("a relative refresh endpoint selects the provider only with a catalog uri") {
