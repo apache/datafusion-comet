@@ -244,7 +244,8 @@ Spark's whole-stage code falls back at run time, because the generated method is
 `spark.sql.codegen.hugeMethodLimit` or fails to compile, Spark runs the operator without
 whole-stage codegen after all, and the error behavior can differ.
 
-Spark 4.2 also eliminates common subexpressions in a filter that runs in whole-stage code, when
+From Spark 4.2 (SPARK-56032), Spark also eliminates common subexpressions in a filter that runs
+in whole-stage code, when
 `spark.sql.subexpressionElimination.enabled` and
 `spark.sql.subexpressionElimination.filterExec.enabled` are on. It looks only at the conjuncts
 other than the split-out `IS NOT NULL` ones, and only at subexpressions it would evaluate every
@@ -253,9 +254,11 @@ time: both sides of `AND` and `OR` count (unless
 `COALESCE` only the parts that are always evaluated, or common to every branch, count. It also
 ignores a repeated subexpression that is only a column or field read. When such a common
 subexpression exists, Spark evaluates it just before the first conjunct that reads it, which Comet
-does not reproduce, so on Spark 4.2 the detour does not take that filter condition and the filter
+does not reproduce, so from Spark 4.2 the detour does not take that filter condition and the
+filter
 falls back to Spark. For example, with ANSI mode on,
-`WHERE x = 0 OR abs(10 div x) + abs(10 div x) > 1` raises `DIVIDE_BY_ZERO` in Spark 4.2 for a row
+`WHERE x = 0 OR abs(10 div x) + abs(10 div x) > 1` raises `DIVIDE_BY_ZERO` from Spark 4.2 for a
+row
 where `x` is 0. A repeat inside one branch, as in
 `CASE WHEN x = 0 THEN true ELSE abs(10 div x) + abs(10 div x) > 1 END`, does not count, and that
 condition is detoured.

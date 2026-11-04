@@ -22,8 +22,9 @@ package org.apache.comet.shims
 import org.apache.spark.sql.execution.FilterExec
 
 /**
- * Shim for whether whole-stage `FilterExec` eliminates common subexpressions in its condition.
- * Spark 3.4 through 4.1 never do; Spark 4.2 added it, handled by the spark-4.2 shim.
+ * Shim for whether whole-stage `FilterExec` eliminates common subexpressions in its condition. It
+ * is absent before SPARK-56032, first shipped in Spark 4.2.0, so Spark 3.4 through 4.1 never do;
+ * the spark-4.2 shim handles Spark 4.2 and later.
  */
 object ShimFilterCse {
   def wholeStageEliminatesCommonSubexpressions(filter: FilterExec): Boolean = false

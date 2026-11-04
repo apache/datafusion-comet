@@ -25,9 +25,10 @@ import org.apache.spark.sql.execution.FilterExec
 
 /**
  * Shim for whether whole-stage `FilterExec` eliminates common subexpressions in its condition.
- * Spark 4.2 added this to `FilterExec.doConsume`. It evaluates each common subexpression just
- * before the first conjunct that reads it, interleaved with the `IsNotNull` checks, a form the
- * JVM detour's kernel does not reproduce.
+ * SPARK-56032 and its follow-ups added this to `FilterExec.doConsume`, first shipped in Spark
+ * 4.2.0, and every later release inherits it, so a shim for Spark 4.3 or later should copy this
+ * one. It evaluates each common subexpression just before the first conjunct that reads it,
+ * interleaved with the `IsNotNull` checks, a form the JVM detour's kernel does not reproduce.
  *
  * This mirrors the gate in Spark 4.2.0's `FilterExec.doConsume` (`basicPhysicalOperators.scala`):
  * `spark.sql.subexpressionElimination.enabled` and

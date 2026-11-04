@@ -85,14 +85,14 @@ import org.apache.comet.shims.ShimFilterCse
  *     detoured.
  *   - Spark's whole-stage `FilterExec` does not eliminate common subexpressions in its predicate
  *     before Spark 4.2, which could otherwise move a repeated subexpression out of an `AND`'s
- *     short circuit. Spark 4.2 eliminates them there, evaluating each just before the first
- *     conjunct that reads it, which the kernel cannot reproduce, so such a condition is not
- *     detoured on 4.2 (see `ShimFilterCse`). `FilterExec` without whole-stage codegen does,
- *     through `GeneratePredicate`. Spark leaves a filter out of whole-stage codegen when its
- *     condition has a non-leaf `CodegenFallback` (a higher-order function, say), when it has too
- *     many fields, or when whole-stage codegen is off. So a filter condition is compiled with or
- *     without subexpression elimination to match the form Spark plans for that filter (see
- *     [[filterSubexpressionElimination]]). Projection items keep it within each item where
+ *     short circuit. From Spark 4.2 (SPARK-56032) it eliminates them there, evaluating each just
+ *     before the first conjunct that reads it, which the kernel cannot reproduce, so such a
+ *     condition is not detoured from 4.2 (see `ShimFilterCse`). `FilterExec` without whole-stage
+ *     codegen does, through `GeneratePredicate`. Spark leaves a filter out of whole-stage codegen
+ *     when its condition has a non-leaf `CodegenFallback` (a higher-order function, say), when it
+ *     has too many fields, or when whole-stage codegen is off. So a filter condition is compiled
+ *     with or without subexpression elimination to match the form Spark plans for that filter
+ *     (see [[filterSubexpressionElimination]]). Projection items keep it within each item where
  *     Spark's form for the projection has it (see [[projectSubexpressionElimination]]).
  *     `ProjectExec` also eliminates common subexpressions across items and evaluates them up
  *     front, including ones on the right of an `AND`. The kernel is compiled per item, so it
@@ -312,9 +312,9 @@ object CometJvmDetour {
     } else if (filter.exists(f =>
         runsInWholeStageCodegen(f) && ShimFilterCse.wholeStageEliminatesCommonSubexpressions(
           f))) {
-      // Spark 4.2+: whole-stage `FilterExec` evaluates each common subexpression just before the
-      // first conjunct that reads it. The kernel either eliminates them up front or not at all,
-      // and neither matches, so the error behavior could differ.
+      // From Spark 4.2 (SPARK-56032), whole-stage `FilterExec` evaluates each common
+      // subexpression just before the first conjunct that reads it. The kernel either eliminates
+      // them up front or not at all, and neither matches, so the error behavior could differ.
       Some(
         "Spark's whole-stage filter eliminates the common subexpressions of this condition, " +
           "evaluating each just before the first conjunct that reads it, which the dispatcher " +
