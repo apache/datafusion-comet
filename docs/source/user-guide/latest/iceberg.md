@@ -194,6 +194,16 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
 
 These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (`client.region` or `s3.region`) nor the executor environment (`AWS_REGION` or `AWS_DEFAULT_REGION`) supplies one, Comet uses `us-east-1`, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
+### Plan data per task
+
+The native reader sends each task only the delete files, partition values and residual filters
+that its own files need, the way Spark's Iceberg reader does. A coalesce without a shuffle
+(`coalesce(n)`, or a write that coalesces its input) combines several input partitions into one
+task, and that task then carries a copy of a shared delete file for every input partition that
+uses it. Scans where many partitions share delete files, such as tables with unpartitioned
+equality deletes, can make coalesced tasks large. Compacting delete files, or repartitioning
+instead of coalescing, avoids this.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:

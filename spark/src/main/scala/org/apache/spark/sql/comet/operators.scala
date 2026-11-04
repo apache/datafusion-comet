@@ -66,7 +66,7 @@ import org.apache.comet.serde.{CometCollectBuffer, CometOperatorSerde, Compatibl
 import org.apache.comet.serde.OperatorOuterClass.{AggregateMode => CometAggregateMode, Operator}
 import org.apache.comet.serde.QueryPlanSerde
 import org.apache.comet.serde.QueryPlanSerde.{aggExprToProto, exprToProto, hasNonDefaultStringCollation, isStringCollationType, supportedSortType}
-import org.apache.comet.serde.operator.CometSink
+import org.apache.comet.serde.operator.{CometSink, IcebergScanPools}
 import org.apache.comet.shims.MergeRowsMetricsShim
 
 /**
@@ -454,7 +454,7 @@ private[comet] object PlanDataInjector extends Logging {
    *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
    */
   private[comet] def findAllPlanData(
-      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, PartitionPlanData]) = {
     plan match {
       case iceberg: CometIcebergNativeScanExec =>
         // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
@@ -469,7 +469,7 @@ private[comet] object PlanDataInjector extends Logging {
         // it. sendDriverMetrics guards on the execution id, so the standalone-scan path (which
         // posts from doExecuteColumnar) and this fused path never double-post.
         iceberg.sendDriverMetrics()
-        if (iceberg.commonData.nonEmpty && iceberg.perPartitionData.nonEmpty) {
+        if (iceberg.commonData.nonEmpty && iceberg.partitionPlanData.length > 0) {
           // A self-join/self-merge can put two scans of the same table (same metadata_location)
           // in one native plan, and they can match on scan_hash_code too while reading
           // different files, so the key also carries the op's plan_id (see withPlanId).
@@ -477,7 +477,7 @@ private[comet] object PlanDataInjector extends Logging {
           // uses to look it up, keeps the two sides from drifting apart.
           IcebergPlanDataInjector.getKey(iceberg.nativeOp) match {
             case Some(key) =>
-              (Map(key -> iceberg.commonData), Map(key -> iceberg.perPartitionData))
+              (Map(key -> iceberg.commonData), Map(key -> iceberg.partitionPlanData))
             case None =>
               (Map.empty, Map.empty)
           }
@@ -495,8 +495,8 @@ private[comet] object PlanDataInjector extends Logging {
       case s: CometLeafExec with CometScanWithPlanData =>
         s.ensureSubqueriesResolved()
         s.sendDriverMetrics()
-        if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
-          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
+        if (s.commonData.nonEmpty && s.partitionPlanData.length > 0) {
+          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.partitionPlanData))
         } else {
           (Map.empty, Map.empty)
         }
@@ -518,12 +518,9 @@ private[comet] object PlanDataInjector extends Logging {
         val results = plan.children.map(findAllPlanData)
         (
           mergeByKey(results.map(_._1))(java.util.Arrays.equals(_, _)),
-          mergeByKey(results.map(_._2))(samePartitionData))
+          mergeByKey(results.map(_._2))(PartitionPlanData.same))
     }
   }
-
-  private def samePartitionData(a: Array[Array[Byte]], b: Array[Array[Byte]]): Boolean =
-    a.length == b.length && a.indices.forall(i => java.util.Arrays.equals(a(i), b(i)))
 
   /**
    * Merges the planning data found under sibling subtrees. The injector looks data up by key, so
@@ -573,11 +570,13 @@ private[comet] object IcebergPlanDataInjector extends PlanDataInjector {
   override def inject(op: Operator, common: Prepared, partitionBytes: Array[Byte]): Operator = {
     val scan = op.getIcebergScan
 
-    val tasksOnly = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
+    val partition = OperatorOuterClass.IcebergScan.parseFrom(partitionBytes)
 
+    // The common block plus the pool entries this partition's tasks use (see IcebergScanPools).
+    val pruned = IcebergScanPools.forPartition(common, partition)
     val scanBuilder = scan.toBuilder
-    scanBuilder.setCommon(common)
-    scanBuilder.addAllFileScanTasks(tasksOnly.getFileScanTasksList)
+    scanBuilder.setCommon(pruned.getCommon)
+    scanBuilder.addAllFileScanTasks(pruned.getFileScanTasksList)
 
     op.toBuilder.setIcebergScan(scanBuilder).build()
   }
@@ -887,7 +886,7 @@ private[comet] case class NativeExecContext(
     // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
     // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
+    @transient perPartitionByKey: Map[String, PartitionPlanData],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean,
     // Like plan data, file paths are sliced onto each task's Partition on the driver.
@@ -1129,11 +1128,11 @@ abstract class CometNativeExec extends CometExec {
     // broadcast plan.
     val (firstNonBroadcastPlanRDD, firstNonBroadcastPlanNumPartitions) =
       firstNonBroadcastPlan.get._1 match {
-        // Plan-data scans, Iceberg included, are sized from perPartitionData, which
+        // Plan-data scans, Iceberg included, are sized from partitionPlanData, which
         // findAllPlanData above has resolved. A bucketed scan has one entry per bucket, after any
         // bucket coalescing, so the count still matches its HashPartitioning.
         case scan: CometScanWithPlanData =>
-          (null.asInstanceOf[RDD[Any]], scan.perPartitionData.length)
+          (null.asInstanceOf[RDD[Any]], scan.partitionPlanData.length)
         case scan: CometIcebergNativeScanExec =>
           (null.asInstanceOf[RDD[Any]], scan.numPartitions)
         case plan: CometNativeExec =>
@@ -1406,6 +1405,9 @@ trait CometScanWithPlanData { self: CometLeafExec =>
   def sourceKey: String
   def commonData: Array[Byte]
   def perPartitionData: Array[Array[Byte]]
+
+  /** [[perPartitionData]] for execution. Override to build each partition's bytes on demand. */
+  def partitionPlanData: PartitionPlanData = PartitionPlanData(perPartitionData)
 
   // DPP / partition filters that may carry AQE SubqueryAdaptiveBroadcast
   // subqueries needing rewrite by CometPlanAdaptiveDynamicPruningFilters.

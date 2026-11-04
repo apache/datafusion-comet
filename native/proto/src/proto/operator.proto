@@ -377,7 +377,8 @@ enum IcebergPredicateOperator {
   NotIn = 14;
 }
 
-// Common data shared by all partitions in split mode (sent once, captured in closure)
+// Common data shared by all partitions of a scan. Each task deserializes its own copy, so it
+// holds no per-file pool entries (see IcebergScan.own_pools).
 message IcebergScanCommon {
   // Catalog-specific configuration for FileIO (credentials, S3/GCS config, etc.)
   map<string, string> catalog_properties = 1;
@@ -388,7 +389,10 @@ message IcebergScanCommon {
   // Schema to read
   repeated SparkStructField required_schema = 3;
 
-  // Deduplication pools (must contain all entries for cross-partition deduplication)
+  // Deduplication pools. In the common block the driver ships, the five per-file pools
+  // (partition_data_pool, delete_files_pool, residual_pool, delete_file_pool,
+  // delete_file_path_pool) are empty: each partition ships the entries its tasks use in
+  // IcebergScan.own_pools, and the JVM merges them in before the plan reaches native.
   repeated string schema_pool = 4;
   // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
   // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
@@ -414,8 +418,8 @@ message IcebergScanCommon {
 
   // Flat pool of unique delete files, referenced by index from DeleteFileList. Iceberg's default
   // partition delete granularity has one delete file apply to many data files, so interning each
-  // delete file here (rather than embedding copies per delete_files_pool set) keeps the broadcast
-  // common message from growing with the number of references.
+  // delete file here (rather than embedding copies per delete_files_pool set) keeps a
+  // partition's pools from growing with the number of references.
   repeated IcebergDeleteFile delete_file_pool = 14;
 
   // Flat pool of unique delete-file paths, referenced by index from IcebergDeleteFile. A V3
@@ -432,11 +436,28 @@ message IcebergScanCommon {
 }
 
 message IcebergScan {
-  // Common data shared across partitions (pools, metadata, catalog props)
+  // Common data shared across partitions (pools, metadata, catalog props). Unset in the
+  // per-partition message the driver ships. In the plan that reaches native it holds everything
+  // the partition's tasks index into.
   IcebergScanCommon common = 1;
 
   // Single partition's file scan tasks
   repeated IcebergFileScanTask file_scan_tasks = 2;
+
+  // Only in the per-partition message the driver ships: the per-file pool entries this
+  // partition's tasks use. The JVM merges them into common before the plan reaches native, and
+  // native rejects a plan that still has them (see IcebergScanPools).
+  IcebergFilePools own_pools = 3;
+}
+
+// The five per-file pools of IcebergScanCommon, holding one partition's entries. Field meanings
+// match the IcebergScanCommon fields of the same name.
+message IcebergFilePools {
+  repeated PartitionData partition_data_pool = 1;
+  repeated DeleteFileList delete_files_pool = 2;
+  repeated IcebergPredicate residual_pool = 3;
+  repeated IcebergDeleteFile delete_file_pool = 4;
+  repeated string delete_file_path_pool = 5;
 }
 
 // Common data shared by all partitions for native Lance scans.
@@ -496,7 +517,8 @@ message IcebergFileScanTask {
   // decodes this directly; no KMS unwrap is needed on the native side.
   optional bytes key_metadata = 6;
 
-  // Indices into IcebergScan deduplication pools
+  // Indices into the deduplication pools. The four non-file pools are in the common block; the
+  // per-file pools are in IcebergScan.own_pools until the JVM merges them (see IcebergScanPools).
   uint32 schema_idx = 15;
   optional uint32 partition_spec_idx = 17;
   optional uint32 name_mapping_idx = 18;

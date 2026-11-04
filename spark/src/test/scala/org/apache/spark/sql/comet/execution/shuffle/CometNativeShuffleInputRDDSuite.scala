@@ -23,7 +23,7 @@ import org.apache.spark.{HashPartitioner, Partition, TaskContext}
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
 import org.apache.spark.serializer.JavaSerializer
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometExecRDD, CometMetricNode, NativeExecContext, PartitionPlanData, PlanDataSlice}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -119,7 +119,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
       2,
       Set.empty,
       CometMetricNode(Map.empty),
-      planData)
+      planData.map { case (key, bytes) => key -> PartitionPlanData(bytes) })
     val local = remote.copyForLocalShuffle()
 
     assert(local.id != remote.id)
@@ -207,7 +207,7 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
         CometNativeShuffleInputRDD,
         CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch]) = {
       val perPartitionByKey =
-        Map("scan-0" -> Array.fill(numPartitions)(new Array[Byte](1024)))
+        Map("scan-0" -> PartitionPlanData(Array.fill(numPartitions)(new Array[Byte](1024))))
       val childMetricNode = CometMetricNode(Map.empty)
       val writerMetrics = Map(
         "spilled_bytes" -> SQLMetrics.createSizeMetric(sc, "disk spilled bytes"),
@@ -262,5 +262,56 @@ class CometNativeShuffleInputRDDSuite extends CometTestBase {
     val part = largeRdd.partitions(7).asInstanceOf[CometNativeShuffleInputPartition]
     assert(part.planDataByKey.keySet == Set("scan-0"))
     assert(part.planDataByKey("scan-0").length == 1024)
+  }
+
+  test("a shuffle map task's plan data is built only when its partition is serialized") {
+    val built = new java.util.concurrent.atomic.AtomicInteger()
+    val data = new PartitionPlanData {
+      override def length: Int = 2
+      override def apply(i: Int): Array[Byte] = {
+        built.incrementAndGet()
+        Array.fill(3)(i.toByte)
+      }
+    }
+    val partition =
+      new CometNativeShuffleInputPartition(1, Array.empty, new PlanDataSlice(Map("k" -> data), 1))
+    assert(built.get == 0, "plan data built before the task was serialized")
+
+    val bytes = new java.io.ByteArrayOutputStream()
+    val out = new java.io.ObjectOutputStream(bytes)
+    out.writeObject(partition)
+    out.close()
+    assert(built.get == 1)
+
+    val in = new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(bytes.toByteArray))
+    val received = in.readObject().asInstanceOf[CometNativeShuffleInputPartition]
+    assert(received.planDataByKey("k").toSeq == Seq.fill(3)(1.toByte))
+    assert(built.get == 1, "the executor side rebuilt the plan data")
+  }
+
+  test("an RDD's partitions don't build any partition's plan data") {
+    // Spark keeps every partition object for the job's lifetime, so building the partitions must
+    // not build the plan data. Only serializing a task does.
+    val built = new java.util.concurrent.atomic.AtomicInteger()
+    val data = new PartitionPlanData {
+      override def length: Int = 1000
+      override def apply(i: Int): Array[Byte] = {
+        built.incrementAndGet()
+        Array(i.toByte)
+      }
+    }
+    val rdd = CometExecRDD(
+      spark.sparkContext,
+      inputRDDs = Seq.empty,
+      commonByKey = Map("k" -> Array[Byte](1)),
+      perPartitionByKey = Map("k" -> data),
+      serializedPlan = Array.empty,
+      planFingerprint = 0L,
+      numPartitions = 1000,
+      numOutputCols = 1,
+      nativeMetrics = CometMetricNode(Map.empty),
+      subqueries = Seq.empty)
+    assert(rdd.partitions.length == 1000)
+    assert(built.get == 0, s"building the partitions built ${built.get} partitions' plan data")
   }
 }

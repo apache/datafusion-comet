@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
-import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode, PartitionPlanData, PlanDataSlice}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -44,7 +44,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
+    @transient perPartitionByKey: Map[String, PartitionPlanData] = Map.empty,
     positionalRoundRobin: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
@@ -98,13 +98,11 @@ private[shuffle] class CometNativeShuffleInputRDD(
       // `leafRdd.partitions` on the executor, which would otherwise trigger getPartitions and
       // hit the @transient-null trap (e.g. CometExecRDD.perPartitionByKey).
       val inputParts = inputRDDs.map(_.partitions(i)).toArray
-      // Slice this partition's plan data off the @transient full map here on the driver. Carrying
-      // only the per-partition slice on the Partition object (serialized per task) keeps the full
-      // O(numPartitions) map out of the broadcast task binary, which otherwise blows the 2GB
-      // ByteArrayOutputStream limit on jobs with tens of millions of partitions. Mirrors
-      // CometExecRDD.getPartitions.
-      val planDataByKey = perPartitionByKey.map { case (key, arr) => key -> arr(i) }
-      new CometNativeShuffleInputPartition(i, inputParts, planDataByKey)
+      // Carry only this partition's slice of the plan data on the Partition object, built when the
+      // task is serialized. Keeping the full O(numPartitions) map out of the broadcast task binary
+      // avoids the 2GB ByteArrayOutputStream limit on jobs with tens of millions of partitions.
+      // Mirrors CometExecRDD.getPartitions.
+      new CometNativeShuffleInputPartition(i, inputParts, new PlanDataSlice(perPartitionByKey, i))
     }.toArray
 
   override def compute(
@@ -144,8 +142,10 @@ private[shuffle] class CometNativeShuffleInputRDD(
 private[shuffle] class CometNativeShuffleInputPartition(
     override val index: Int,
     val inputPartitions: Array[Partition],
-    val planDataByKey: Map[String, Array[Byte]])
-    extends Partition
+    planData: PlanDataSlice)
+    extends Partition {
+  def planDataByKey: Map[String, Array[Byte]] = planData.get
+}
 
 /**
  * Iterator handed to [[CometNativeShuffleWriter.write]] via Spark's ShuffleMapTask. Reports no

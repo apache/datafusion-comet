@@ -120,7 +120,8 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
     assert(commonByKey.keySet == Set("contrib-key"))
     assert(commonByKey("contrib-key") sameElements common)
     assert(perPartitionByKey.keySet == Set("contrib-key"))
-    assert(perPartitionByKey("contrib-key").map(_.toSeq).toSeq == perPart.map(_.toSeq).toSeq)
+    assert(
+      perPartitionByKey("contrib-key").toArray.map(_.toSeq).toSeq == perPart.map(_.toSeq).toSeq)
     assert(
       scan.subqueriesResolved,
       "findAllPlanData must drive the scan's subquery-resolution lifecycle before reading data")
@@ -145,7 +146,9 @@ class CometScanWithPlanDataSuite extends AnyFunSuite {
     assert(commonByKey.keySet == Set("shared-key"))
     assert(commonByKey("shared-key") sameElements Array[Byte](1, 2))
     assert(
-      perPartitionByKey("shared-key").map(_.toSeq).toSeq == Seq(Seq[Byte](10), Seq[Byte](20)))
+      perPartitionByKey("shared-key").toArray.map(_.toSeq).toSeq == Seq(
+        Seq[Byte](10),
+        Seq[Byte](20)))
   }
 
   test("findAllPlanData rejects two scans with different data under one key") {

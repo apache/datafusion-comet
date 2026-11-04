@@ -32,7 +32,7 @@ import org.json4s.jackson.JsonMethods._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec, PartitionPlanData}
 import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
@@ -950,17 +950,21 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Called after doPrepare() has resolved DPP subqueries. Builds pools and per-partition data in
    * one pass from the DPP-filtered partitions.
    *
-   * The result splits into a common block plus one block per Spark partition. The common block
-   * holds everything shared across partitions and is broadcast once per executor in the stage
-   * task binary; each per-partition block ships with its task. Protobuf serializes by value and
-   * shares nothing between repeated fields, so shared values (schemas, specs, partition data,
-   * residuals, delete files) are interned into pools in the common block and referenced by index.
+   * The result splits into a common block plus one block per Spark partition. Protobuf serializes
+   * by value and shares nothing between repeated fields, so repeated values (schemas, specs,
+   * partition data, residuals, delete files) are interned into pools and referenced by index.
    * Pooling also keeps a message under protobuf's 2 GiB limit (getSerializedSize returns int and
    * wraps past it), which matters for anything that scales with the number of tasks.
    *
+   * Every task deserializes the common block, so it has to stay small. The per-file pool entries
+   * (delete files, their paths and sets, partition values, residuals) ship with each partition
+   * whose tasks use them, and the common block holds none of them (see IcebergScanPools). Each
+   * partition's block is built when its task is serialized. Keeping every delete file in the
+   * common block made each partition's plan as large as the whole scan's delete metadata.
+   *
    * Delete files use two levels: a flat pool of unique files, plus a per-task list of indices
    * into it. One delete file applies to many data files under Iceberg's default partition delete
-   * granularity, so this stores each file once and references it many times, as Iceberg's own
+   * granularity, so each partition stores it once and references it many times, as Iceberg's own
    * DeleteFileIndex does.
    *
    * @param scanExec
@@ -970,12 +974,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * @param metadata
    *   Pre-extracted Iceberg metadata from CometScanRule
    * @return
-   *   Tuple of (commonBytes, perPartitionBytes) for native execution
+   *   The common block's bytes, and each partition's bytes built when its task is serialized
    */
   def serializePartitions(
       scanExec: BatchScanExec,
       output: Seq[Attribute],
-      metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
+      metadata: CometIcebergNativeScanMetadata): (Array[Byte], PartitionPlanData) = {
 
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
@@ -1265,76 +1269,75 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     }
 
-    // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
-    // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
-    // and the logging runs before toByteArray so the breakdown survives even if that allocation
-    // fails. String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
+    // The per-file pool entries ship with each partition that uses them, so the common block
+    // every task deserializes doesn't grow with the number of files.
+    val original = commonBuilder.build()
+    val common = IcebergScanPools.commonBlock(original)
+
+    // Per-pool byte sizes of the whole scan, to diagnose large plan data. Sizes sum as Long because
+    // a single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
+    // and they are logged before any toByteArray so the breakdown survives a failed allocation.
+    // String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
     def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
     def sumStrBytes(strings: mutable.Buffer[String]): Long =
       strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
-    val commonPoolBytes: Seq[(String, Int, Long)] = Seq(
-      (
-        "schema",
-        commonBuilder.getSchemaPoolCount,
-        sumStrBytes(commonBuilder.getSchemaPoolList.asScala)),
+    val scanPoolBytes: Seq[(String, Int, Long)] = Seq(
+      ("schema", original.getSchemaPoolCount, sumStrBytes(original.getSchemaPoolList.asScala)),
       (
         "partition_type",
-        commonBuilder.getPartitionTypePoolCount,
-        sumStrBytes(commonBuilder.getPartitionTypePoolList.asScala)),
+        original.getPartitionTypePoolCount,
+        sumStrBytes(original.getPartitionTypePoolList.asScala)),
       (
         "partition_spec",
-        commonBuilder.getPartitionSpecPoolCount,
-        sumStrBytes(commonBuilder.getPartitionSpecPoolList.asScala)),
+        original.getPartitionSpecPoolCount,
+        sumStrBytes(original.getPartitionSpecPoolList.asScala)),
       (
         "name_mapping",
-        commonBuilder.getNameMappingPoolCount,
-        sumStrBytes(commonBuilder.getNameMappingPoolList.asScala)),
+        original.getNameMappingPoolCount,
+        sumStrBytes(original.getNameMappingPoolList.asScala)),
       (
         "project_field_ids",
-        commonBuilder.getProjectFieldIdsPoolCount,
-        sumSizes(
-          commonBuilder.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))),
+        original.getProjectFieldIdsPoolCount,
+        sumSizes(original.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))),
       (
         "partition_data",
-        commonBuilder.getPartitionDataPoolCount,
-        sumSizes(
-          commonBuilder.getPartitionDataPoolList.asScala.iterator.map(_.getSerializedSize))),
+        original.getPartitionDataPoolCount,
+        sumSizes(original.getPartitionDataPoolList.asScala.iterator.map(_.getSerializedSize))),
       (
         "delete_file",
-        commonBuilder.getDeleteFilePoolCount,
-        sumSizes(commonBuilder.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
+        original.getDeleteFilePoolCount,
+        sumSizes(original.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
       (
         "delete_file_path",
-        commonBuilder.getDeleteFilePathPoolCount,
-        sumStrBytes(commonBuilder.getDeleteFilePathPoolList.asScala)),
+        original.getDeleteFilePathPoolCount,
+        sumStrBytes(original.getDeleteFilePathPoolList.asScala)),
       (
         "delete_files_set",
-        commonBuilder.getDeleteFilesPoolCount,
-        sumSizes(commonBuilder.getDeleteFilesPoolList.asScala.iterator.map(_.getSerializedSize))),
+        original.getDeleteFilesPoolCount,
+        sumSizes(original.getDeleteFilesPoolList.asScala.iterator.map(_.getSerializedSize))),
       (
         "residual",
-        commonBuilder.getResidualPoolCount,
-        sumSizes(commonBuilder.getResidualPoolList.asScala.iterator.map(_.getSerializedSize))))
-
-    val perPartitionSizes = perPartitionBuilders.map(_.getSerializedSize.toLong)
-    val perPartitionTotal = perPartitionSizes.sum
-    val perPartitionMax = if (perPartitionSizes.isEmpty) 0L else perPartitionSizes.max
+        original.getResidualPoolCount,
+        sumSizes(original.getResidualPoolList.asScala.iterator.map(_.getSerializedSize))))
 
     logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
     logInfo(
-      "  Common pools (unique/bytes): " +
-        commonPoolBytes
+      "  Scan pools (unique/bytes): " +
+        scanPoolBytes
           .map { case (name, count, bytes) => s"$name=$count/$bytes" }
           .mkString(", ") +
-        s"; total=${commonPoolBytes.map(_._3).sum} bytes")
-    logInfo(
-      s"  Per-partition messages: ${perPartitionBuilders.size}, " +
-        s"total=$perPartitionTotal bytes, max=$perPartitionMax bytes")
+        s"; total=${scanPoolBytes.map(_._3).sum} bytes")
 
-    val commonBytes = commonBuilder.build().toByteArray
-    val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray
+    val commonBytes = common.toByteArray
+    // Tasks only, still indexing the full pools. Each partition's message is built from these
+    // when its task is serialized, so the driver holds every partition's tasks once and never
+    // every partition's message at the same time.
+    val taskBytes = perPartitionBuilders.map(_.toByteArray).toArray
+    logInfo(s"  Common block: ${commonBytes.length} bytes. Per-partition messages: " +
+      s"${taskBytes.length}, task bytes total=${taskBytes.iterator.map(_.length.toLong).sum}, " +
+      s"max=${if (taskBytes.isEmpty) 0 else taskBytes.iterator.map(_.length).max}")
 
-    (commonBytes, perPartitionBytes)
+    (commonBytes, new IcebergPartitionPlanData(original, taskBytes))
   }
 
   override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
@@ -1354,4 +1357,36 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Serialization happens at execution time after doPrepare() resolves DPP subqueries
     CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
   }
+}
+
+/**
+ * A scan's per-partition messages, each built when its task is serialized: the partition's tasks
+ * plus the per-file pool entries they use (see IcebergScanPools.partitionPayload).
+ */
+private[operator] final class IcebergPartitionPlanData(
+    private val original: OperatorOuterClass.IcebergScanCommon,
+    private val taskBytes: Array[Array[Byte]])
+    extends PartitionPlanData {
+
+  override def length: Int = taskBytes.length
+
+  // Same table state read into the same partitions, compared without building any partition.
+  override def sameAs(other: PartitionPlanData): Boolean = other match {
+    case that: IcebergPartitionPlanData =>
+      that.original == original && that.taskBytes.length == taskBytes.length &&
+      taskBytes.indices.forall(i => java.util.Arrays.equals(taskBytes(i), that.taskBytes(i)))
+    case _ => false
+  }
+
+  // With no per-file entries in the scan, the stored task bytes already are each message.
+  private val hasFileEntries = IcebergScanPools.hasFileEntries(original)
+
+  override def apply(i: Int): Array[Byte] =
+    if (!hasFileEntries) {
+      taskBytes(i)
+    } else {
+      IcebergScanPools
+        .partitionPayload(original, OperatorOuterClass.IcebergScan.parseFrom(taskBytes(i)))
+        .toByteArray
+    }
 }
