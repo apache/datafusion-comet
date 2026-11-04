@@ -24,7 +24,9 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.apache.spark.{SparkException, SparkThrowable}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
+import org.apache.comet.tags.ExpressionsGroup
 
+@ExpressionsGroup
 class SparkErrorConverterSuite extends AnyFunSuite {
 
   test("ArithmeticOverflow preserves the suggested function") {

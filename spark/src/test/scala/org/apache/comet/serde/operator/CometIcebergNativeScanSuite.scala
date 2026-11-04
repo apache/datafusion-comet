@@ -30,8 +30,10 @@ import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
 
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.tags.ExecGroup
 
 /** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
+@ExecGroup
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   test("complex type null residuals are not serialized") {

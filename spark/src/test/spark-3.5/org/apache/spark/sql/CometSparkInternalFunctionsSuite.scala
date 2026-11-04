@@ -22,6 +22,9 @@ package org.apache.spark.sql
 import org.apache.spark.sql.catalyst.expressions.Empty2Null
 import org.apache.spark.sql.functions.col
 
+import org.apache.comet.tags.ExecGroup
+
+@ExecGroup
 class CometSparkInternalFunctionsSuite extends CometTestBase {
 
   test("empty2null is offloaded to Comet") {

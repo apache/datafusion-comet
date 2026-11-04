@@ -53,7 +53,9 @@ import com.google.flatbuffers.Table
 
 import org.apache.comet.{CometConf, CometExecIterator, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
+import org.apache.comet.tags.ShuffleGroup
 
+@ShuffleGroup
 class CometCelebornShuffleReaderSuite extends CometTestBase {
 
   import NativeShuffleTestFrames._

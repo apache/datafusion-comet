@@ -33,6 +33,7 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, NativeColumnarToRowConverter}
+import org.apache.comet.tags.ShuffleGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -41,6 +42,7 @@ import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, SchemaGenOpt
  * These tests verify that CometNativeColumnarToRowExec produces correct results for all supported
  * data types.
  */
+@ShuffleGroup
 class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit

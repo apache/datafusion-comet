@@ -27,8 +27,10 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
+@ExpressionsGroup
 class CometMathExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("abs") {

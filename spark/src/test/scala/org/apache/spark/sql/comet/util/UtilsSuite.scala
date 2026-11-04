@@ -39,8 +39,10 @@ import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.CometArrowAllocator
+import org.apache.comet.tags.ExecGroup
 import org.apache.comet.vector.CometVector
 
+@ExecGroup
 class UtilsSuite extends CometTestBase {
 
   test("serializeBatches round trips schema metadata larger than the output chunk estimate") {

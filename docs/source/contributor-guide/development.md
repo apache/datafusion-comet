@@ -710,19 +710,28 @@ make test-jvm
 
 ### 6. Register New Test Suites in CI
 
-Comet's CI does not automatically discover test suites. Instead, test suites are explicitly listed
-in the GitHub Actions workflow files so they can be grouped by category and run as separate parallel
-jobs. This reduces overall CI time.
-
-If you add a new Comet Scala Test suite, you must add it to the `suite` matrix in **both** workflow files:
+CI runs Comet's Scala test suites in four groups, each as its own parallel job. A new suite joins a
+group in two places: its class carries the group's ScalaTest tag, and its fully qualified class name
+is listed under the group in the `suite` matrix of **both** workflow files:
 
 - `.github/workflows/pr_build_linux.yml`
 - `.github/workflows/pr_build_macos.yml`
 
-Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
-`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
-appropriate group. For example, if you add a new expression test suite, add it to the
-`expressions` group:
+| Tag                 | Group         | Covers                                                         |
+| ------------------- | ------------- | -------------------------------------------------------------- |
+| `@ScansGroup`       | `scans`       | Parquet, CSV and Iceberg reads and writes, and the fuzz suites |
+| `@ShuffleGroup`     | `shuffle`     | Native and columnar shuffle, and the Celeborn integration      |
+| `@ExecGroup`        | `exec`        | Operators, plan rules, plugins, memory, and TPC queries        |
+| `@ExpressionsGroup` | `expressions` | Expression evaluation, casts, codegen, and the SQL file tests  |
+
+For example, a new expression suite goes in the `expressions` group:
+
+```scala
+import org.apache.comet.tags.ExpressionsGroup
+
+@ExpressionsGroup
+class YourNewExpressionSuite extends CometTestBase {
+```
 
 ```yaml
 - name: "expressions"
@@ -732,27 +741,32 @@ appropriate group. For example, if you add a new expression test suite, add it t
     org.apache.comet.YourNewExpressionSuite  # <-- add here
 ```
 
-Choose the group that best matches the area your test covers:
+Tag each concrete suite class. A tag on an abstract base class or a trait does not reach the suites
+that extend it. A suite that has a copy in more than one Spark version source set, such as
+`spark-3.5` and `spark-4.0`, needs the tag in each copy.
 
-| Group         | Covers                                                     |
-| ------------- | ---------------------------------------------------------- |
-| `fuzz`        | Fuzz testing and data generation                           |
-| `shuffle`     | Shuffle operators and related exchange behavior            |
-| `parquet`     | Parquet read/write and native reader tests                 |
-| `csv`         | CSV native read tests                                      |
-| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
-| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
-| `sql`         | SQL-level behavior tests                                   |
+The `preflight` job in `.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull
+request. It fails when a concrete suite has no group tag or more than one, or when either workflow
+file does not list it under the group its tag names.
 
-**Important:** The suite lists in both workflow files must stay in sync. The `preflight` job in
-`.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull request. It scans for all
-`*Suite.scala` files in the repository and verifies that each one appears in both workflow files.
-If any suite is missing, this check will fail and block the PR.
+#### Test Groups
+
+`dev/ci/run-comet-tests.sh` runs one group locally: the suites that carry its tag, which
+`dev/ci/check-suites.py` keeps the same as the group's CI job.
+
+```sh
+make
+dev/ci/run-comet-tests.sh expressions          # the default Spark profile
+dev/ci/run-comet-tests.sh exec -Pspark-4.0     # arguments after the group go to Maven
+```
+
+The script runs `mvnw test` by default. Pass `--goal install` to also run the `spark-integration`
+checks, and `-Prelease` to use the library that `make release` builds.
 
 A small number of suites are deliberately **not** run in CI, because they need infrastructure CI
-does not have or because running them there is not worth the cost. These are listed in the
-`ignore_list` in `dev/ci/check-suites.py`, and each one documents in its own scaladoc why it is
-excluded and how to run it. Run a manual suite with:
+does not have or because running them there is not worth the cost. These are listed in
+`IGNORE_LIST` in `dev/ci/check-suites.py` and carry no group tag. Each one documents in its own
+scaladoc why it is excluded and how to run it. Run a manual suite with:
 
 ```sh
 ./mvnw test -Dtest=none -Dsuites="org.apache.comet.parquet.ParquetReadFromFakeHadoopFsSuite"

@@ -44,12 +44,14 @@ import org.apache.comet.{CometConf, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 import org.apache.comet.hadoop.fs.{FakeAbfsFileSystem, FakeHdfsAuthorityFileSystem}
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.tags.ExecGroup
 
 /**
  * Native scans over files in more than one object store, without a cloud store: `hdfs://nn1` and
  * `hdfs://nn2` are two native stores backed by the local disk. Native execution cannot read them,
  * so claimed scans are checked on their plans, and declined scans are run by Spark.
  */
+@ExecGroup
 class CometMultiStoreScanSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private var rootDir: File = _

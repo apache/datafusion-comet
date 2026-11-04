@@ -27,7 +27,9 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.metric.SQLShuffleWriteMetricsReporter.{SHUFFLE_BYTES_WRITTEN, SHUFFLE_RECORDS_WRITTEN}
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ShuffleGroup
 
+@ShuffleGroup
 class CometCelebornShuffleStatisticsSuite extends CometTestBase {
   import testImplicits._
 

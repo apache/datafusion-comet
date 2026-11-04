@@ -30,6 +30,7 @@ import org.apache.spark.sql.functions.{broadcast, col, size, sum}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.{CometConf, ExtendedExplainInfo}
+import org.apache.comet.tags.ExecGroup
 
 // Top-level, so the encoders need no outer pointer, which is the ordinary user shape.
 case class TypedDsRec(a: Int, b: String)
@@ -50,6 +51,7 @@ object TypedDsCounter {
 }
 
 /** Tests for [[CometConf.COMET_CONVERT_FROM_TYPED_DATASET_ENABLED]]. */
+@ExecGroup
 class CometTypedDatasetSuite extends CometTestBase {
 
   import testImplicits._

@@ -28,6 +28,9 @@ import org.apache.spark.sql.connector.expressions.Transform
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{FloatType, LongType, StringType, TimestampType}
 
+import org.apache.comet.tags.ShuffleGroup
+
+@ShuffleGroup
 class CometShuffle4_0Suite extends CometColumnarShuffleSuite {
   protected val adaptiveExecutionEnabled: Boolean = true
 

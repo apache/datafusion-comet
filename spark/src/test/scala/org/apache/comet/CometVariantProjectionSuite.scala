@@ -35,7 +35,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
 
 import org.apache.comet.serde.operator.CometNativeScan
+import org.apache.comet.tags.ScansGroup
 
+@ScansGroup
 class CometVariantProjectionSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = super.sparkConf
     .set(SQLConf.USE_V1_SOURCE_LIST.key, "parquet")

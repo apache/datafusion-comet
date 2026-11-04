@@ -30,8 +30,10 @@ import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, CometShuffleSizeLimitException}
 import org.apache.comet.shuffle.{CelebornShufflePartitionPusher, CelebornShufflePusherFactory, RecordingCelebornPushClient}
+import org.apache.comet.tags.ShuffleGroup
 
 /** Exercises real Spark map tasks, native RSS planning, and the Celeborn map lifecycle. */
+@ShuffleGroup
 class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
 
   import testImplicits._

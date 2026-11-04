@@ -31,7 +31,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometInMemoryCachePruningSuite extends CometTestBase {
 
   override protected def beforeAll(): Unit = {

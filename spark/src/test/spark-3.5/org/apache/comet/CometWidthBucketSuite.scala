@@ -22,6 +22,9 @@ package org.apache.comet
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 
+import org.apache.comet.tags.ExpressionsGroup
+
+@ExpressionsGroup
 class CometWidthBucketSuite extends CometTestBase {
 
   private def countSparkProjectExec(plan: SparkPlan): Int =

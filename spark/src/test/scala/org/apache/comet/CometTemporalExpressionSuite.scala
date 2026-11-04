@@ -36,8 +36,10 @@ import org.apache.spark.sql.types.{DataTypes, StructField, StructType}
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.serde.{CometDateFormat, CometTimeZone, CometTruncDate, CometTruncTimestamp}
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
+@ExpressionsGroup
 class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /** Timezones used to verify that TimestampNTZ operations are timezone-independent. */

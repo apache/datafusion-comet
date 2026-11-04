@@ -30,6 +30,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 
+import org.apache.comet.tags.ExecGroup
+
+@ExecGroup
 class CometUnsafeProjectionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   /** A schema with every writer GenerateUnsafeProjection nests: structs, arrays and maps. */

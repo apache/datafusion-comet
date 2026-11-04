@@ -28,7 +28,9 @@ import org.apache.spark.sql.execution.joins.BroadcastHashJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometEmptyRelationExecSuite extends CometTestBase {
 
   // CometTestBase enables the Spark-to-Arrow conversions; use their production defaults here.

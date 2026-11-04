@@ -30,7 +30,9 @@ import org.apache.spark.sql.types.StringType
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometCollationSuite extends CometTestBase {
 
   // Queries that group, sort, or shuffle on a non-default collated string must fall back to

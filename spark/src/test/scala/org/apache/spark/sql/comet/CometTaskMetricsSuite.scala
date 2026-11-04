@@ -47,7 +47,9 @@ import org.apache.spark.unsafe.Platform
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
 import org.apache.comet.serde.{Metric, OperatorOuterClass}
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def sparkConf: SparkConf = {

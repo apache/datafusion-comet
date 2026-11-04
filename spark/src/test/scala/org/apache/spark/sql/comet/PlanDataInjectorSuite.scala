@@ -26,7 +26,9 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager
 
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class PlanDataInjectorSuite extends AnyFunSuite {
 
   /** Builds an un-injected IcebergScan operator: hasCommon, zero file_scan_tasks. */

@@ -31,8 +31,10 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 
 import org.apache.comet.serde.CometStructsToJson
+import org.apache.comet.tags.ExpressionsGroup
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
 
+@ExpressionsGroup
 class CometJsonExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit

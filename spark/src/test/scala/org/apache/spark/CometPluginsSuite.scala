@@ -34,7 +34,9 @@ import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage}
+import org.apache.comet.tags.ExecGroup
 
+@ExecGroup
 class CometPluginsSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -175,6 +177,7 @@ class CometPluginsSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsDefaultSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -193,6 +196,7 @@ class CometPluginsDefaultSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
 
   private val warning =
@@ -276,6 +280,7 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
 
   private val warning = "spark.comet.exec.memoryPool.fraction=0.8 is deprecated"
@@ -300,6 +305,7 @@ class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()
@@ -328,6 +334,7 @@ class CometPluginsUnifiedModeSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsExtensionOnlySuite extends CometTestBase {
   // No plugin and no off-heap memory. CometTestBase registers CometSparkSessionExtensions
   // directly, as an application can with spark.sql.extensions.
@@ -389,6 +396,7 @@ class CometPluginsExtensionOnlySuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   // The application runs Spark's own shuffle manager.
   override protected def sparkConf: SparkConf = {
@@ -430,6 +438,7 @@ class CometPluginsSparkShuffleManagerSuite extends CometTestBase {
   }
 }
 
+@ExecGroup
 class CometPluginsEventLogSuite extends SparkFunSuite {
 
   import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}

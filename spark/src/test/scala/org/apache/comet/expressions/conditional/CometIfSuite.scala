@@ -22,6 +22,9 @@ package org.apache.comet.expressions.conditional
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+import org.apache.comet.tags.ExpressionsGroup
+
+@ExpressionsGroup
 class CometIfSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("if expression") {
