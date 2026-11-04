@@ -349,14 +349,14 @@ object CometExplainInfo {
   }
 
   /**
-   * Forget the fallback reasons recorded on `node`, in the current conversion's journal and in
-   * its tag. For a conversion that recorded reasons on a tree and then converted it another way,
-   * such as `CometJvmDetour`.
+   * Replace the fallback reasons the current conversion's journal holds for `node`; an empty set
+   * removes the entry. For `CometJvmDetour`, which puts back the journal as it was before a
+   * conversion it abandoned. Does nothing outside a fallback reason scope.
    */
-  private[comet] def clearFallbackReasons(node: Expression): Unit = {
-    Option(fallbackJournal.get()).foreach(_.remove(node))
-    node.unsetTagValue(FALLBACK_REASONS)
-  }
+  private[comet] def setJournalFallbackReasons(node: Expression, reasons: Set[String]): Unit =
+    Option(fallbackJournal.get()).foreach { journal =>
+      if (reasons.isEmpty) journal.remove(node) else journal.put(node, reasons)
+    }
 
   private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
     Option(fallbackJournal.get())

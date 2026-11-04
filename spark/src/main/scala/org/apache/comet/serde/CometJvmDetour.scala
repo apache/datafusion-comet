@@ -19,7 +19,12 @@
 
 package org.apache.comet.serde
 
+import java.util.IdentityHashMap
+
+import scala.jdk.CollectionConverters._
+
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression}
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 
 import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{withFallbackReason, withInfo}
@@ -53,15 +58,35 @@ object CometJvmDetour {
   /**
    * Convert one root expression: a projection list item or a filter condition. Tries the usual
    * conversion first and, if that fails, the detour.
+   *
+   * The failed conversion leaves fallback reasons and coverage tags in the tree. They do not
+   * apply once the whole tree runs in the dispatcher: an operator that falls back for another
+   * reason, such as another projection item, must not report them, and a node that converted to
+   * Rust before an ancestor failed now runs in the kernel. So the explain state of the tree is
+   * put back as it was before the conversion, and kept from the conversion only if the detour
+   * does not happen either. Putting back a snapshot, rather than clearing the tree, matters when
+   * a node is shared with an item converted earlier, as `CollapseProject` can leave it: that
+   * item's tags on the node stay.
    */
   def exprToProtoOrDetour(
       root: Expression,
       inputs: Seq[Attribute],
       binding: Boolean = true): Option[Expr] =
     CometExplainInfo.withExpressionFallbackReasonScope {
-      QueryPlanSerde
-        .exprToProto(root, inputs, binding)
-        .orElse(detour(root, inputs, binding))
+      val beforeConversion = ExplainState.of(root)
+      QueryPlanSerde.exprToProto(root, inputs, binding).orElse {
+        if (!CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.get()) {
+          None
+        } else {
+          val afterConversion = ExplainState.of(root)
+          beforeConversion.restore()
+          val detoured = detour(root, inputs, binding)
+          if (detoured.isEmpty) {
+            afterConversion.mergeInto()
+          }
+          detoured
+        }
+      }
     }
 
   /**
@@ -92,7 +117,6 @@ object CometJvmDetour {
         None
       case None =>
         CometScalaUDF.emitJvmCodegenDispatch(target, inputs, binding).map { proto =>
-          clearConversionTags(root, target)
           withInfo(
             target,
             "Expression evaluated in the JVM by the codegen dispatcher (JVM detour)")
@@ -118,21 +142,71 @@ object CometJvmDetour {
       if (CometConf.isExprEnabled(name)) None else Some(name)
     })
 
-  /**
-   * Clear what the failed conversion recorded in the tree under `root`, now that the whole tree
-   * runs in the dispatcher. Its fallback reasons no longer apply, and an operator that falls back
-   * for another reason, such as another projection item, must not report them. Its coverage tags
-   * would count a node that converted to Rust before an ancestor failed as Rust-implemented,
-   * although it now runs in the kernel. `emitJvmCodegenDispatch` has already tagged `target` with
-   * the names of everything in the kernel, so those tags on `target` are kept.
-   */
-  private def clearConversionTags(root: Expression, target: Expression): Unit =
-    root.foreach { e =>
-      CometExplainInfo.clearFallbackReasons(e)
-      e.unsetTagValue(CometExplainInfo.NATIVE_EXPRS)
-      if (!(e eq target)) {
-        e.unsetTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS)
-        e.unsetTagValue(CometExplainInfo.DISPATCHED_SELF)
+  /** The explain tags and journal entry of one node, as they were at a point in time. */
+  private final case class NodeExplainState(
+      node: Expression,
+      nativeExprs: Option[Set[String]],
+      dispatchExprs: Option[Set[String]],
+      dispatchedSelf: Boolean,
+      reasonsTag: Option[Set[String]],
+      journalReasons: Set[String])
+
+  /** The explain state of every node of a tree, each instance once. */
+  private final class ExplainState(nodes: Seq[NodeExplainState]) {
+
+    /** Put every node back to this state. */
+    def restore(): Unit = nodes.foreach { n =>
+      setOrUnset(n.node, CometExplainInfo.NATIVE_EXPRS, n.nativeExprs)
+      setOrUnset(n.node, CometExplainInfo.CODEGEN_DISPATCH_EXPRS, n.dispatchExprs)
+      setOrUnset(n.node, CometExplainInfo.FALLBACK_REASONS, n.reasonsTag)
+      if (n.dispatchedSelf) {
+        n.node.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
+      } else {
+        n.node.unsetTagValue(CometExplainInfo.DISPATCHED_SELF)
       }
+      CometExplainInfo.setJournalFallbackReasons(n.node, n.journalReasons)
     }
+
+    /** Add this state to each node's current state, so neither loses what it recorded. */
+    def mergeInto(): Unit = nodes.foreach { n =>
+      def union(tag: TreeNodeTag[Set[String]], saved: Option[Set[String]]): Unit =
+        saved.foreach(v => n.node.setTagValue(tag, n.node.getTagValue(tag).getOrElse(Set()) ++ v))
+      union(CometExplainInfo.NATIVE_EXPRS, n.nativeExprs)
+      union(CometExplainInfo.CODEGEN_DISPATCH_EXPRS, n.dispatchExprs)
+      union(CometExplainInfo.FALLBACK_REASONS, n.reasonsTag)
+      if (n.dispatchedSelf) n.node.setTagValue(CometExplainInfo.DISPATCHED_SELF, ())
+      CometExplainInfo.setJournalFallbackReasons(
+        n.node,
+        CometExplainInfo.currentFallbackReasons(n.node) ++ n.journalReasons)
+    }
+
+    private def setOrUnset(
+        node: Expression,
+        tag: TreeNodeTag[Set[String]],
+        value: Option[Set[String]]): Unit =
+      value match {
+        case Some(v) => node.setTagValue(tag, v)
+        case None => node.unsetTagValue(tag)
+      }
+  }
+
+  private object ExplainState {
+    def of(root: Expression): ExplainState = {
+      val seen = new IdentityHashMap[Expression, NodeExplainState]()
+      root.foreach { e =>
+        if (!seen.containsKey(e)) {
+          seen.put(
+            e,
+            NodeExplainState(
+              e,
+              e.getTagValue(CometExplainInfo.NATIVE_EXPRS),
+              e.getTagValue(CometExplainInfo.CODEGEN_DISPATCH_EXPRS),
+              e.getTagValue(CometExplainInfo.DISPATCHED_SELF).isDefined,
+              e.getTagValue(CometExplainInfo.FALLBACK_REASONS),
+              CometExplainInfo.currentFallbackReasons(e)))
+        }
+      }
+      new ExplainState(seen.values().asScala.toSeq)
+    }
+  }
 }

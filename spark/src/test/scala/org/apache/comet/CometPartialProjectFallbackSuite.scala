@@ -21,13 +21,14 @@ package org.apache.comet
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame}
-import org.apache.spark.sql.catalyst.expressions.{Abs, Alias, AttributeReference}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Alias, AttributeReference, Literal, Multiply}
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.IntegerType
 
+import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometJvmDetour, QueryPlanSerde}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
@@ -293,6 +294,57 @@ class CometPartialProjectFallbackSuite
         assert(
           fallbackReasons(df).isEmpty,
           s"expected no fallback reasons, got ${fallbackReasons(df)}")
+      }
+    }
+  }
+
+  test("a detour keeps explain tags that another item left on a shared subtree") {
+    // `CollapseProject` can leave one subtree instance in two projection items. `b` converts to
+    // Rust first and tags the shared `x + 1`; detouring `a` afterwards must leave that tag, and a
+    // fallback reason another conversion recorded on the node, in place.
+    val x = AttributeReference("x", IntegerType)()
+    val shared = Add(x, Literal(1))
+    val b = Alias(Multiply(shared, Literal(2)), "b")()
+    val a = Alias(Abs(shared), "a")()
+    withDetouredSerdes("Abs") {
+      CometExplainInfo.withFallbackReasonScope {
+        assert(CometJvmDetour.exprToProtoOrDetour(b, Seq(x)).isDefined)
+        val nativeBefore = shared.getTagValue(CometExplainInfo.NATIVE_EXPRS)
+        assert(nativeBefore.exists(_.nonEmpty), "expected b's conversion to tag the shared node")
+        withFallbackReason(shared, "reason from another item")
+
+        val detoured = CometJvmDetour.exprToProtoOrDetour(a, Seq(x))
+        assert(detoured.exists(_.hasJvmScalarUdf), s"expected a detour, got $detoured")
+
+        assert(
+          shared.getTagValue(CometExplainInfo.NATIVE_EXPRS) == nativeBefore,
+          "expected the shared node to keep b's coverage tag")
+        assert(
+          CometExplainInfo.currentFallbackReasons(shared) == Set("reason from another item"),
+          "expected the shared node to keep the other item's fallback reason")
+        // What `a`'s own abandoned conversion recorded is gone.
+        assert(
+          CometExplainInfo.currentFallbackReasons(a.child).isEmpty,
+          "expected no fallback reason left on the detoured abs")
+      }
+    }
+  }
+
+  test("a refused detour keeps the conversion's fallback reasons") {
+    val x = AttributeReference("x", IntegerType)()
+    val a = Alias(Abs(x), "a")()
+    withDetouredSerdes("Abs") {
+      withSQLConf("spark.sql.codegen.maxFields" -> "1") {
+        CometExplainInfo.withFallbackReasonScope {
+          assert(CometJvmDetour.exprToProtoOrDetour(a, Seq(x)).isEmpty)
+          val reasons = CometExplainInfo.currentFallbackReasons(a.child)
+          assert(
+            reasons.exists(_.contains(CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key)),
+            s"expected the conversion's reason, got $reasons")
+          assert(
+            reasons.exists(_.contains("maxFields")),
+            s"expected the dispatcher's reason, got $reasons")
+        }
       }
     }
   }
