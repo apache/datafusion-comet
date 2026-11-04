@@ -46,6 +46,13 @@ version. If neither `spark.memory.offHeap.enabled` nor `spark.comet.exec.onHeap.
 and skips the remaining steps. Otherwise it:
 
 - Appends `CometSparkSessionExtensions` to `spark.sql.extensions`, unless it is already listed.
+- On Spark 4.0 and later, sets `spark.shuffle.manager` to Comet's `CometShuffleManager`, when
+  `spark.comet.enabled` and Comet shuffle are on and the application has not set `spark.shuffle.manager`. An
+  application's own value is always kept. It is not set where Comet would disable itself anyway, such as on a
+  big-endian platform, with `spark.sql.parquet.int96TimestampConversion=true`, or when the native library fails to
+  load. Before Spark 4.0 the plugin cannot do this, because Spark has created the shuffle manager by the time plugins
+  run. It runs before the cache serializer step, since that serializer is installed only with one of Comet's shuffle
+  managers.
 - Sets `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer` when
   `spark.comet.exec.inMemoryCache.enabled=true`, unless the application has chosen a different serializer.
   It leaves Spark's serializer in place where Comet could not scan its format natively or Kryo would
@@ -139,7 +146,9 @@ executing, the resulting Arrow batches are imported into the JVM using Arrow FFI
 ## Shuffle
 
 Comet integrates with Spark's shuffle mechanism, optimizing both shuffle writes and reads. Comet's shuffle manager
-must be registered with Spark using the following configuration:
+must be registered with Spark using the following configuration. On Spark 4.0 and later, `CometDriverPlugin`
+registers it when the application leaves `spark.shuffle.manager` unset (see above); on earlier versions, the
+application must set it:
 
 ```
 --conf spark.shuffle.manager=org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager

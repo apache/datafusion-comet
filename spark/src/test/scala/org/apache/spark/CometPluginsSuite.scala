@@ -31,7 +31,7 @@ import org.apache.spark.scheduler.{SparkListenerApplicationEnd, SparkListenerEve
 import org.apache.spark.sql.{CometTestBase, SaveMode, SparkSession}
 import org.apache.spark.sql.comet.CometPlan
 import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleExchangeExec, CometShuffleManager}
-import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.util.{JsonProtocol, ManualClock, Utils}
 
 import org.apache.comet.{COMET_VERSION, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions}
@@ -366,6 +366,11 @@ class CometDriverPluginShuffleManagerSuite extends SparkFunSuite {
     disablingKeys.foreach { key =>
       assert(chosen(new SparkConf(false).set(key, "false")).isEmpty, key)
     }
+  }
+
+  test("leaves the shuffle manager unset where Comet disables itself whatever the manager") {
+    val conf = new SparkConf(false).set(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key, "true")
+    assert(chosen(conf).isEmpty)
   }
 }
 

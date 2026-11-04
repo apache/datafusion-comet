@@ -33,7 +33,7 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerApplicationEnd, S
 import org.apache.spark.serializer.KryoSerializer
 import org.apache.spark.sql.comet.execution.arrow.ArrowCachedBatchSerializer
 import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager, CometShuffleManager}
-import org.apache.spark.sql.internal.StaticSQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.util.{Clock, SystemClock}
 
 import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
@@ -180,15 +180,30 @@ object CometDriverPlugin extends Logging {
   // disable itself. Only from Spark 4.0 (SPARK-45762) does SparkContext create the manager after
   // it initializes the plugins, from the same conf that executors then fetch. An application's own
   // choice, even Spark's, is kept: it may depend on that manager, as Celeborn does.
+  // Nor is it set where Comet disables itself whatever the manager, since Comet would not run and
+  // Spark would copy every row of its exchanges for want of a SortShuffleManager.
   private[apache] def maybeSetShuffleManager(conf: SparkConf): Unit = {
     if (CometSparkSessionExtensions.isSpark40Plus &&
       getBooleanConf(conf, CometConf.COMET_ENABLED) &&
       getBooleanConf(conf, CometConf.COMET_SHUFFLE_ENABLED) &&
-      !conf.contains(SHUFFLE_MANAGER)) {
+      !conf.contains(SHUFFLE_MANAGER) &&
+      !cometUnsupportedAtStartup(conf)) {
       val value = classOf[CometShuffleManager].getName
       conf.set(SHUFFLE_MANAGER.key, value)
       logInfo(s"Auto-set ${SHUFFLE_MANAGER.key}=$value")
     }
+  }
+
+  // Applies the checks that isCometLoaded makes on the platform and settings. A library that
+  // fails to load when nativeLoadRequired is set counts as supported: isCometLoaded throws then,
+  // when Comet first plans a query, and the application should not fail here instead.
+  private def cometUnsupportedAtStartup(conf: SparkConf): Boolean = {
+    val int96Conversion = conf.getBoolean(SQLConf.PARQUET_INT96_TIMESTAMP_CONVERSION.key, false)
+    val nativeLoadRequired = getBooleanConf(conf, CometConf.COMET_NATIVE_LOAD_REQUIRED)
+    Try(
+      CometSparkSessionExtensions
+        .unsupportedEnvironmentReason(int96Conversion, nativeLoadRequired)
+        .isDefined).getOrElse(false)
   }
 
   // Use Comet's cache serializer only when the native in-memory cache scan can run, which needs
