@@ -49,6 +49,29 @@ CREATE TABLE cp_large(k int, v int) USING parquet
 statement
 INSERT INTO cp_large SELECT id, id FROM range(10000)
 
+-- CrossJoinExec repeats each left row through ScalarValue, so the left side covers every
+-- type with NULLs, nested NULLs, NaN and both signed zeros.
+statement
+CREATE TABLE cp_types(s string, d decimal(10, 2), ts timestamp, dt date, b binary, bo boolean,
+  f double, a array<int>, st struct<x: int, y: string>, m map<string, int>) USING parquet
+
+statement
+INSERT INTO cp_types VALUES
+  ('a', 1.25, TIMESTAMP '2024-01-01 12:34:56', DATE '2024-01-01', X'0102', true, 1.5,
+    array(1, NULL), named_struct('x', 1, 'y', 'p'), map('k', 1)),
+  (NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+  ('', -1.25, TIMESTAMP '1969-12-31 23:59:59', DATE '1969-12-31', X'', false,
+    cast('NaN' AS double), array(), named_struct('x', NULL, 'y', NULL), map('k', NULL)),
+  ('b', 0.00, TIMESTAMP '1970-01-01 00:00:00', DATE '1970-01-01', X'FF', true,
+    cast('-0.0' AS double), array(NULL), named_struct('x', 2, 'y', NULL), map()),
+  ('c', 99999999.99, TIMESTAMP '2038-01-19 03:14:07', DATE '9999-12-31', X'00', false,
+    0.0, array(2, 3), NULL, NULL)
+
+-- Native, every type on the left side
+query
+SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM cp_types) l
+CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM cp_right) r
+
 -- Native, with NULLs on both sides
 query
 SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM cp_left) l
