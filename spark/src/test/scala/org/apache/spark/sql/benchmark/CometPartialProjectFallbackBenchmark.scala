@@ -24,29 +24,29 @@ import org.apache.spark.benchmark.Benchmark
 import org.apache.comet.CometConf
 
 /**
- * Benchmark to measure the effect of the partial project fallback / JVM expression detour
- * (`spark.comet.exec.jvmDetour.enabled`) on projections and filters that contain a single
- * expression with no native translation.
+ * Benchmark to measure the effect of the JVM expression detour (partial project fallback,
+ * `spark.comet.exec.jvmDetour.enabled`) on projections and filters that contain an expression
+ * Comet cannot translate.
  *
- * Without the detour, one unsupported expression falls the whole operator back to Spark, which
- * breaks the native island above the scan: a `ColumnarToRow` transition materializes every read
- * column and the supported sibling expressions run row-wise in Spark WSCG. With the detour, only
- * the unsupported subtree crosses to the JVM (its argument columns over Arrow FFI); the operator
- * — and the pipeline around it — stays native.
+ * Without the detour, one such expression makes the whole operator fall back to Spark: a
+ * columnar-to-row transition converts every column the operator reads, and the other projection
+ * items run in Spark as well. With the detour, the projection item or filter condition that
+ * contains the expression runs with codegen dispatch (Spark's own generated code over the Arrow
+ * batch, reading only the columns that item uses), and the operator and the plan around it stay
+ * in the Comet pipeline. The detour takes the whole item, not just the expression: in the filter
+ * case the whole condition `sqrt(x) > 1.0 AND a > 5.0` runs in the dispatcher.
  *
- * The unsupported expression is simulated by naming `sqrt` in
- * `spark.comet.testing.unsupportedExpressions` in both Comet cases, so `sqrt` reaches the detour
- * exactly as an expression without a Comet translation would. (Disabling it with
+ * `sqrt` stands in for an expression without a Comet translation: it is named in
+ * `spark.comet.testing.unsupportedExpressions` in both Comet cases. (Disabling it with
  * `spark.comet.expression.Sqrt.enabled=false` would not do: that keeps it out of the detour.)
- * Only the detour flag differs between the two Comet cases, so the delta isolates the
- * island-preservation win rather than the cost of `sqrt` itself (which runs in the JVM either
- * way). Using a cheap, registered expression keeps the measurement stable as Comet's native
- * coverage evolves.
+ * Only the detour flag differs between the two Comet cases, so the difference between them
+ * measures keeping the operator in the Comet pipeline, not the cost of `sqrt`, which runs in the
+ * JVM either way. Using a cheap, registered expression keeps the measurement stable as Comet's
+ * expression coverage changes.
  *
- * Three shapes: a lone unsupported expression over a wide native scan (pure transition cost), a
- * projection mixing many native expressions with one unsupported (the compounding case — native
- * siblings stay native), and a filter whose predicate contains an unsupported subexpression. To
- * run:
+ * Three shapes: one detoured item next to six passthrough columns over a native scan (mostly the
+ * cost of the transition), a projection of seven Rust-implemented items and one detoured item,
+ * and a filter whose condition contains the expression. To run:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometPartialProjectFallbackBenchmark
  * }}}
@@ -62,7 +62,8 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
     CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Sqrt")
 
   /**
-   * Print whether the detour-on plan is fully Comet native, so a misconfigured run is obvious.
+   * Print whether every operator of the detour-on plan is a Comet operator, so a misconfigured
+   * run is obvious.
    */
   private def reportDetourPlan(query: String): Unit = {
     val configs = cometConfigs + (CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true")
@@ -74,10 +75,9 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
       findFirstNonCometOperator(plan) match {
         case Some(op) =>
           println(
-            s"  [detour on] NOTE: plan not fully Comet native (first: ${op.nodeName}) — " +
-              "island not preserved for this shape")
+            s"  [detour on] NOTE: plan falls back to Spark at ${op.nodeName} for this shape")
         case None =>
-          println("  [detour on] plan is fully Comet native (island preserved)")
+          println("  [detour on] every operator is a Comet operator")
       }
       // scalastyle:on println
     }
@@ -100,7 +100,7 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
       }
     }
 
-    benchmark.addCase("Comet (detour on - island preserved)") { _ =>
+    benchmark.addCase("Comet (detour on - operator stays in Comet)") { _ =>
       val configs = cometConfigs + (CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true")
       withSQLConf(configs.toSeq: _*) {
         spark.sql(query).noop()
@@ -116,7 +116,8 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
     withTempPath { dir =>
       withTempTable("t") {
         // Wide numeric table: `x` feeds sqrt (treated as having no translation); a..f are
-        // passthrough / arithmetic inputs that stay columnar only when the operator stays native.
+        // passthrough / arithmetic inputs that stay in Arrow batches only when the operator
+        // stays in the Comet pipeline.
         spark
           .range(rows)
           .selectExpr(
@@ -135,26 +136,27 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
         runBenchmark(
           "Partial project fallback - lone unsupported expression over a native scan") {
           // Off: the whole projection (sqrt + six passthrough columns) falls back to Spark, so
-          // every read column crosses a ColumnarToRow transition. On: native project, sqrt detours.
+          // every column read crosses a columnar-to-row transition. On: the projection stays in
+          // Comet and only the `sqrt(x)` item runs in the dispatcher.
           benchmarkQuery(
             "lone unsupported expr, wide passthrough",
             rows,
             "SELECT sqrt(x) AS s, a, b, c, d, e, f FROM t")
         }
 
-        runBenchmark("Partial project fallback - mixed native + one unsupported expression") {
-          // Off: all eight expressions run row-wise in Spark. On: the seven native arithmetic
-          // expressions stay native, only sqrt detours to the JVM kernel.
+        runBenchmark("Partial project fallback - mixed projection with one unsupported item") {
+          // Off: all eight items run row by row in Spark. On: the seven arithmetic items are
+          // Rust-implemented and only the `sqrt(x)` item runs in the dispatcher.
           benchmarkQuery(
-            "mixed projection (7 native + 1 unsupported)",
+            "mixed projection (7 Rust-implemented + 1 detoured item)",
             rows,
             "SELECT sqrt(x) AS s, a + b AS n1, a * c AS n2, b - d AS n3, c * e AS n4, " +
               "(a + b) * (c - d) AS n5, e + f AS n6, a - e AS n7 FROM t")
         }
 
         runBenchmark("Partial project fallback - filter with an unsupported subexpression") {
-          // Off: the filter falls back, breaking the scan->filter island. On: the filter stays
-          // in Comet, with the whole condition (sqrt and the comparison with it) detoured.
+          // Off: the filter falls back to Spark behind a columnar-to-row transition. On: the
+          // filter stays in Comet and the whole condition runs in the dispatcher.
           benchmarkQuery(
             "filter predicate with unsupported subexpr",
             rows,
