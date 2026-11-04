@@ -23,7 +23,7 @@ import java.util.IdentityHashMap
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, CallMethodViaReflection, Expression}
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 
 import org.apache.comet.{CometConf, CometExplainInfo}
@@ -51,7 +51,10 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  *
  * The detour is not attempted when the tree contains an expression the user disabled with
  * `spark.comet.expression.<Name>.enabled=false`, because that switch is documented to make the
- * expression fall back to Spark.
+ * expression fall back to Spark. It is not attempted either when the tree can run code that is
+ * not Spark's: an expression class from outside Spark's Catalyst packages, such as a Hive UDF, or
+ * `reflect` / `java_method`. The dispatcher does not take those through its own serdes (see
+ * `CometScalaUDF` and `CometInvokeTargets`), and the detour must not let them in by another way.
  */
 object CometJvmDetour {
 
@@ -109,12 +112,15 @@ object CometJvmDetour {
       case a: Alias => a.child
       case other => other
     }
-    disabledExpression(target) match {
-      case Some(name) =>
-        withFallbackReason(
-          root,
-          s"JVM detour not attempted: the expression contains $name, which is disabled by " +
-            s"${CometConf.getExprEnabledConfigKey(name)}=false")
+    val declined = disabledExpression(target)
+      .map { name =>
+        s"the expression contains $name, which is disabled by " +
+          s"${CometConf.getExprEnabledConfigKey(name)}=false"
+      }
+      .orElse(nonSparkCodeReason(target))
+    declined match {
+      case Some(reason) =>
+        withFallbackReason(root, s"JVM detour not attempted: $reason")
         None
       case None =>
         CometScalaUDF.emitJvmCodegenDispatch(target, inputs, binding).map { proto =>
@@ -142,6 +148,25 @@ object CometJvmDetour {
       }
       if (CometConf.isExprEnabled(name)) None else Some(name)
     })
+
+  /** The package every expression class the detour takes must be in. */
+  private val CatalystPackage = "org.apache.spark.sql.catalyst."
+
+  /**
+   * Why `tree` can run code that is not Spark's, or `None`. An expression class from outside
+   * Spark's Catalyst packages can do anything in its `eval` or generated code: a Hive UDF calls
+   * the Hive function, and a third-party extension's expression calls the extension. `reflect`
+   * and `java_method` call a Java method the query names. Calls through `Invoke` and
+   * `StaticInvoke` are checked by `CometInvokeTargets` when the tree is dispatched.
+   */
+  private[comet] def nonSparkCodeReason(tree: Expression): Option[String] =
+    tree.collectFirst {
+      case e if !e.getClass.getName.startsWith(CatalystPackage) =>
+        s"${CometExplainInfo.exprDisplayName(e)} is ${e.getClass.getName}, which is not a " +
+          "Spark Catalyst expression"
+      case e: CallMethodViaReflection =>
+        s"${CometExplainInfo.exprDisplayName(e)} calls a Java method named in the query"
+    }
 
   /** The explain tags and journal entry of one node, as they were at a point in time. */
   private final case class NodeExplainState(

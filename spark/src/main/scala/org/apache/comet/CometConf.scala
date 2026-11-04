@@ -826,8 +826,9 @@ object CometConf extends ShimCometConf {
         "including rows that Spark would not evaluate, such as rows past a `LIMIT`. Under " +
         "`spark.sql.ansi.enabled=true` an expression that raises an error can therefore raise " +
         "it for such a row; see 'ANSI errors from rows skipped by LIMIT' in the Comet " +
-        "Compatibility Guide. An item that contains an expression disabled with " +
-        "`spark.comet.expression.<Name>.enabled=false` still falls back to Spark. Requires " +
+        "Compatibility Guide. The detour does not take an item that contains an expression " +
+        "disabled with `spark.comet.expression.<Name>.enabled=false`, a Hive UDF or another " +
+        "expression from outside Spark, or `reflect` / `java_method`. Requires " +
         COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)

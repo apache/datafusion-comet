@@ -25,8 +25,9 @@ import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Alias, AttributeRefe
 import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec}
 import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
+import org.apache.spark.sql.hive.CometHiveTestExpressions
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.IntegerType
+import org.apache.spark.sql.types.{IntegerType, StringType}
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.serde.{CometJvmDetour, QueryPlanSerde}
@@ -259,6 +260,66 @@ class CometPartialProjectFallbackSuite
               fallbackReasons(df).exists(_.contains(CometConf.getExprEnabledConfigKey(name))),
               s"expected a reason naming the disabled config, got ${fallbackReasons(df)}")
           }
+        }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Code that is not Spark's stays out of the kernel.
+  // ---------------------------------------------------------------------------------------------
+
+  test("an item with a Hive UDF is not detoured") {
+    // The spark module has no Hive-enabled session in its tests (spark-hive is on the test
+    // classpath only for Iceberg's metastore), so this builds the `HiveGenericUDF` directly and
+    // drives the serde.
+    val s = AttributeReference("s", StringType)()
+    val item = Alias(CometHiveTestExpressions.hiveUpper(s), "u")()
+    withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true") {
+      CometExplainInfo.withFallbackReasonScope {
+        assert(CometJvmDetour.exprToProtoOrDetour(item, Seq(s)).isEmpty, "expected no detour")
+        val reasons = CometExplainInfo.currentFallbackReasons(item)
+        assert(
+          reasons.exists(_.contains("which is not a Spark Catalyst expression")),
+          s"expected the Hive UDF reason, got $reasons")
+      }
+    }
+  }
+
+  test("an item with reflect is not detoured") {
+    withIntTable {
+      withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        val df = sql("SELECT reflect('java.lang.Integer', 'toHexString', coalesce(x, 0)) FROM t")
+        checkSparkAnswer(df)
+        assert(!hasCometProject(df), "expected the projection to fall back to Spark")
+        assert(
+          fallbackReasons(df).exists(_.contains("calls a Java method named in the query")),
+          s"expected the reflect reason, got ${fallbackReasons(df)}")
+        val stats = CometScalaUDFCodegen.stats()
+        assert(stats.compileCount == 0, s"expected no kernel compile, got $stats")
+      }
+    }
+  }
+
+  test("a built-in expression without a Comet translation is detoured") {
+    // Not forced through the testing config. Spark rewrites `session_window` in a projection to
+    // a `named_struct` of `PreciseTimestampConversion` and other expressions, and that
+    // item has no Comet translation. (On Spark 3.5 Spark also adds a filter, which Comet
+    // translates, so `precisetimestampconversion` appears there too; `named_struct` appears only
+    // in the detoured item.)
+    withTable("t") {
+      sql("CREATE TABLE t (ts TIMESTAMP) USING parquet")
+      sql(
+        "INSERT INTO t VALUES (TIMESTAMP'2024-01-15 10:00:00'), (NULL), " +
+          "(TIMESTAMP'1999-12-31 23:59:59')")
+      val query = "SELECT session_window(ts, '5 minutes') AS w FROM t"
+      val off = sql(query)
+      checkSparkAnswer(off)
+      assert(!hasCometProject(off), "expected the projection to fall back with the detour off")
+      withSQLConf(CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true") {
+        assertCodegenRan {
+          checkSparkAnswerAndImpl(sql(query), dispatched = Seq("named_struct"))
         }
       }
     }
