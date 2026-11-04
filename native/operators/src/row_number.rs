@@ -318,7 +318,8 @@ impl RowNumberState {
                     .map(|array| array.get_array_memory_size())
                     .sum::<usize>()
                     + key.capacity() * std::mem::size_of::<ArrayRef>();
-                self.reservation.try_resize(size)?;
+                // The key already exists and cannot spill, so account for it unconditionally.
+                self.reservation.resize(size);
                 self.key = key;
             }
         }
