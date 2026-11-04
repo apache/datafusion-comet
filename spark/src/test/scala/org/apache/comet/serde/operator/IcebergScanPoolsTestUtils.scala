@@ -123,10 +123,12 @@ object IcebergScanPoolsTestUtils {
   }
 
   /**
-   * A scan where every partition but the last reads one data file with the same delete file. The
-   * delete file is shared, but not by every partition, so each partition that uses it ships it.
+   * A scan where each partition reads one data file, and the first `users` of them share one
+   * delete file. Whether it ships in the common block depends on how many partitions use it.
    */
-  def sharedDeleteScan(partitionCount: Int): (IcebergScanCommon, IndexedSeq[IcebergScan]) = {
+  def sharedDeleteScan(
+      partitionCount: Int,
+      users: Int): (IcebergScanCommon, IndexedSeq[IcebergScan]) = {
     val common = IcebergScanCommon
       .newBuilder()
       .setMetadataLocation(metadataLocation)
@@ -135,7 +137,7 @@ object IcebergScanPoolsTestUtils {
       .addDeleteFilesPool(DeleteFileList.newBuilder().addDeleteFileIndices(0))
       .build()
     val partitions = (0 until partitionCount).map { p =>
-      val deletes = if (p < partitionCount - 1) Some(0) else None
+      val deletes = if (p < users) Some(0) else None
       IcebergScan
         .newBuilder()
         .addFileScanTasks(fileTask(f"data-$p%08d.parquet", deletes, None, None))

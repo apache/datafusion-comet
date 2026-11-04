@@ -1272,7 +1272,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // The per-file pool entries ship with each partition that uses them, so the common block
     // every task deserializes doesn't grow with the number of files.
     val original = commonBuilder.build()
-    // Entries every partition uses stay in the common block once; the rest ship per partition.
+    // Entries at least half of the partitions use stay in the common block; the rest ship with
+    // each partition that uses them.
     val layout =
       IcebergScanPools.Layout(new IcebergScanPools.MessagePools(original), perPartitionBuilders)
     val common = IcebergScanPools.commonBlock(original, layout)

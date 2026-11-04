@@ -32,20 +32,20 @@ import org.apache.comet.serde.OperatorOuterClass.{DeleteFileList, IcebergDeleteF
  * Decides where an Iceberg scan's pool entries ship.
  *
  * Five pools grow with the number of files in the scan: delete file paths, delete files, delete
- * file sets, partition values and residuals. An entry that every partition uses, such as an
- * unpartitioned equality delete, ships once in the common block, since every task needs it
- * anyway. Every other entry ships with each partition whose tasks use it, as Iceberg's own Spark
- * reader ships each task's delete files with the task. So a task never holds entries that only
- * other partitions use.
+ * file sets, partition values and residuals. An entry that at least half of the partitions use,
+ * such as an unpartitioned equality delete, ships once in the common block. Every other entry
+ * ships with each partition whose tasks use it, as Iceberg's own Spark reader ships each task's
+ * delete files with the task. Since each entry in the common block is needed by at least half of
+ * the tasks, the common block is at most twice what an average partition's tasks need.
  *
  * A partition's tasks index the common entries first, then the partition's own. On the driver,
  * [[partitionPayload]] builds one partition's message. On the executor, [[forPartition]] appends
  * its own entries to the common block.
  *
  * Known limit: a coalesce without a shuffle puts several partitions' messages in one task, and
- * each carries its own copy of the entries they share. Entries that many but not all partitions
- * use, such as the partition-scoped deletes of a large partition, are then repeated once per
- * coalesced partition.
+ * each carries its own copy of the entries they share. Entries that fewer than half of the
+ * partitions use, such as the partition-scoped deletes of a large partition, are then repeated
+ * once per coalesced partition.
  */
 private[apache] object IcebergScanPools {
 
@@ -165,8 +165,8 @@ private[apache] object IcebergScanPools {
     }
 
   /**
-   * Which entries every non-empty partition uses, and each one's index in the common block. With
-   * fewer than two non-empty partitions there are none.
+   * Which entries at least half of the non-empty partitions use, and each one's index in the
+   * common block. With fewer than two non-empty partitions there are none.
    */
   final class Layout private[IcebergScanPools] (
       val path: Array[Int],
@@ -184,7 +184,7 @@ private[apache] object IcebergScanPools {
 
   object Layout {
 
-    /** Finds the entries of `pools` that every non-empty partition among `partitions` uses. */
+    /** Finds the entries of `pools` that at least half of the non-empty `partitions` use. */
     def apply(pools: FilePools, partitions: collection.IndexedSeq[IcebergScan]): Layout = {
       val paths = new Users("delete_file_path", pools.pathCount)
       val deletes = new Users("delete_file", pools.deleteCount)
@@ -207,13 +207,15 @@ private[apache] object IcebergScanPools {
           }
         }
       }
-      val everyone = if (nonEmpty >= 2) nonEmpty else Int.MaxValue
+      // A set's delete files and a delete file's path have at least the set's users, so an entry
+      // in the common block only points at entries that are there too.
+      val half = if (nonEmpty >= 2) (nonEmpty + 1) / 2 else Int.MaxValue
       new Layout(
-        paths.usedBy(everyone),
-        deletes.usedBy(everyone),
-        sets.usedBy(everyone),
-        partitionValues.usedBy(everyone),
-        residuals.usedBy(everyone))
+        paths.usedBy(half),
+        deletes.usedBy(half),
+        sets.usedBy(half),
+        partitionValues.usedBy(half),
+        residuals.usedBy(half))
     }
 
     /** How many partitions use each entry of one pool. */
@@ -234,11 +236,11 @@ private[apache] object IcebergScanPools {
         }
       }
 
-      // Each entry's index among the entries `partitions` partitions use, or Unused.
+      // Each entry's index among the entries at least `partitions` partitions use, or Unused.
       def usedBy(partitions: Int): Array[Int] = {
         var next = 0
         users.map { n =>
-          if (n == partitions) {
+          if (n >= partitions) {
             next += 1
             next - 1
           } else {
@@ -250,8 +252,8 @@ private[apache] object IcebergScanPools {
   }
 
   /**
-   * The common block every task gets: the scan without its per-file pools, plus the entries every
-   * partition uses.
+   * The common block every task gets: the scan without its per-file pools, plus the entries at
+   * least half of the partitions use.
    */
   def commonBlock(original: IcebergScanCommon, layout: Layout): IcebergScanCommon = {
     val builder = original.toBuilder

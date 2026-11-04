@@ -1370,8 +1370,9 @@ class CometIcebergNativeSuite
     table.newRowDelta().addDeletes(deleteFile).commit()
   }
 
-  // An unpartitioned equality delete applies to every data file, so every partition uses it and it
-  // ships once in the common block instead of in each task. The rows must still match Spark.
+  // An unpartitioned equality delete applies to every older data file, so most partitions use it
+  // and it ships once in the common block instead of in each task. The rows must still match
+  // Spark, including a newer row the delete does not apply to.
   test("a global equality delete ships once in the common block and reads the right rows") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(
@@ -1406,6 +1407,9 @@ class CometIcebergNativeSuite
           "id",
           Seq(2, 105, 210, 315),
           warehouseDir)
+        // A newer append the delete does not apply to: its id 2 row must survive. Partitions holding
+        // only this file do not use the delete, which still ships once while most partitions do.
+        spark.sql("INSERT INTO test_cat.db.global_eq_delete VALUES (2, 'newer')")
 
         val (_, cometPlan) =
           checkSparkAnswerAndOperator("SELECT * FROM test_cat.db.global_eq_delete ORDER BY id")

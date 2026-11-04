@@ -204,11 +204,12 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
       val (block, shipped) = shipAndInject(common, partitions)
       val usedBy = users(common, partitions)
       val empty = IcebergScanCommon.getDefaultInstance
-      // Entries every non-empty partition uses ship once in the common block.
+      // Entries at least half of the non-empty partitions use ship once in the common block.
       val nonEmpty = partitions.indices.filter(partitions(_).getFileScanTasksCount > 0).toSet
+      val half = (nonEmpty.size + 1) / 2
       // toSeq first: Map.collect into (pool, index) tuples would build a Map and merge them.
       val everywhere = usedBy.toSeq.collect {
-        case (e, ps) if nonEmpty.size >= 2 && ps == nonEmpty => e
+        case (e, ps) if nonEmpty.size >= 2 && ps.size >= half => e
       }.toSet
       withClue(s"seed $seed: ") {
         val inCommon = entries(block, empty).map(content(block, _))
@@ -222,8 +223,10 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
           val sent = entries(injected, block).map(content(injected, _))
           assert(sent.size == expected.size, s"partition $p ships an entry twice or extra")
           assert(sent.toSet == expected, s"partition $p ships the wrong entries")
+          // The plan holds the common entries, which some partitions skip, and its own.
           val kept = entries(injected, empty).map(content(injected, _))
-          assert(kept.size == used.size && kept.toSet == used.map(content(common, _)))
+          val visible = used ++ everywhere
+          assert(kept.size == visible.size && kept.toSet == visible.map(content(common, _)))
         }
       }
     }
@@ -232,7 +235,8 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
   test("the common block and each partition's plan do not grow with the scan") {
     // Partition 0's data is the same at every scan size, so its message and plan must be too.
     // Shipping the whole scan's pools in the common block made both grow with the scan.
-    val sizes = Seq(2, 100, 10000).map { buckets =>
+    // From four partitions up, a bucket's own entries are used by fewer than half of them.
+    val sizes = Seq(4, 100, 10000).map { buckets =>
       val (common, partitions) = bucketedScan(buckets)
       val (block, shipped) = shipAndInject(common, partitions)
       (
@@ -272,7 +276,8 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
       val (block, shipped) = shipAndInject(common.build(), partitions)
       (block.getSerializedSize, shipped.head._1.getSerializedSize)
     }
-    val sizes = Seq(3, 100, 10000).map(shippedSize)
+    // From five partitions up, a delete file two neighbours share is used by fewer than half.
+    val sizes = Seq(5, 100, 10000).map(shippedSize)
     assert(sizes.distinct.size == 1, s"shipped sizes grow with shared delete files: $sizes")
   }
 
@@ -437,5 +442,24 @@ class IcebergScanPoolsSuite extends AnyFunSuite {
           serialized.residual(i) == parsed.residual(i)))
       }
     }
+  }
+
+  test("a delete file most partitions use ships once, one fewer than half use ships per task") {
+    // Newer appends that a delete does not apply to, or a bucket with no deletes, leave some
+    // partitions without it. It still ships once while at least half of the partitions use it.
+    def layout(users: Int): (IcebergScanCommon, IndexedSeq[(IcebergScan, IcebergScan)]) = {
+      val (common, partitions) = sharedDeleteScan(8, users)
+      assertSameTasks(common, partitions)
+      shipAndInject(common, partitions)
+    }
+    val (most, mostShipped) = layout(users = 7)
+    assert(most.getDeleteFilePoolCount == 1)
+    assert(mostShipped.forall(!_._1.hasOwnPools))
+    val (half, _) = layout(users = 4)
+    assert(half.getDeleteFilePoolCount == 1)
+    val (few, fewShipped) = layout(users = 3)
+    assert(few.getDeleteFilePoolCount == 0)
+    assert(fewShipped.take(3).forall(_._1.getOwnPools.getDeleteFilePoolCount == 1))
+    assert(fewShipped.drop(3).forall(!_._1.hasOwnPools))
   }
 }

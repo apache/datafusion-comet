@@ -179,7 +179,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     // not follow the whole scan.
     val scanOp = icebergScanOp(IcebergScanPoolsTestUtils.metadataLocation, scanHashCode = 7)
     val key = IcebergPlanDataInjector.getKey(scanOp).get
-    val injected = Seq(2, 100, 10000).map { buckets =>
+    // From four partitions up, a bucket's own entries are used by fewer than half of them.
+    val injected = Seq(4, 100, 10000).map { buckets =>
       val (common, partitions) = IcebergScanPoolsTestUtils.bucketedScan(buckets)
       PlanDataInjector.injectPlanData(
         parseBasePlan(scanOp.toByteArray),
@@ -210,7 +211,8 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     // Pins a documented limit: without a shuffle, a coalesced task serializes all its input
     // partitions, and each brings its own copy of the delete files it uses. Spark's Iceberg
     // reader writes a shared delete file once per task. Update this test if that changes.
-    val (common, partitions) = IcebergScanPoolsTestUtils.sharedDeleteScan(8)
+    // Three of eight partitions use the delete file: too few for the common block.
+    val (common, partitions) = IcebergScanPoolsTestUtils.sharedDeleteScan(8, users = 3)
     val layout = layoutOf(common, partitions)
     val data = new PartitionPlanData {
       override def length: Int = partitions.length
@@ -230,7 +232,7 @@ class PlanDataInjectorSuite extends AnyFunSuite {
       bytes.size()
     }
     val perPartition = taskSize(2) - taskSize(1)
-    assert(taskSize(7) - taskSize(1) == 6 * perPartition, "each input partition adds the same")
+    assert(taskSize(3) - taskSize(1) == 2 * perPartition, "each input partition adds the same")
     assert(
       perPartition > data(0).length,
       "each input partition carries its own copy of the shared delete file")

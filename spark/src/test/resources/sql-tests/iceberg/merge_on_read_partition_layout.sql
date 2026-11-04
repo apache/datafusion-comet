@@ -16,9 +16,9 @@
 -- under the License.
 
 -- The native scan ships a partition value, delete file or residual once in the common block when
--- every Spark partition uses it, and otherwise with each Spark partition whose tasks use it (see
--- IcebergScanPools). Grouping the read by partition key makes every partition value and delete
--- file belong to one Spark partition. Without grouping, the tiny split size puts each data file
+-- at least half of the Spark partitions use it, and otherwise with each Spark partition whose
+-- tasks use it (see IcebergScanPools). Grouping the read by partition key makes every partition
+-- value and delete file belong to one Spark partition. Without grouping, the tiny split size puts each data file
 -- in its own Spark partition, so the two data files of a partition both get its value and its
 -- delete file. The matrix runs both layouts against Spark, with and without a coalesce, which
 -- puts several partitions' plan data in one task. Identity partition values become column
