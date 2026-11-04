@@ -44,9 +44,11 @@ import org.apache.comet.CometConf
  * JVM either way. Using a cheap, registered expression keeps the measurement stable as Comet's
  * expression coverage changes.
  *
- * Three shapes: one detoured item next to six passthrough columns over a native scan (mostly the
- * cost of the transition), a projection of seven Rust-implemented items and one detoured item,
- * and a filter whose condition contains the expression. To run:
+ * Five shapes: one detoured item next to six passthrough columns over a native scan (mostly the
+ * cost of the transition), a projection of seven Rust-implemented items and one detoured item, a
+ * filter whose condition contains the expression, and that projection and filter each feeding a
+ * `GROUP BY` aggregate with a shuffle, where the detour also decides where the operators above
+ * run. Each shape prints the executed plan's operators with the detour off and on. To run:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometPartialProjectFallbackBenchmark
  * }}}
@@ -62,29 +64,37 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
     CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Sqrt")
 
   /**
-   * Print whether every operator of the detour-on plan is a Comet operator, so a misconfigured
-   * run is obvious.
+   * Print the operators of the executed plan with the detour off and on, top first, so the
+   * results can say which operators run in Comet and which fall back to Spark, and a
+   * misconfigured run is obvious.
    */
-  private def reportDetourPlan(query: String): Unit = {
-    val configs = cometConfigs + (CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> "true")
-    withSQLConf(configs.toSeq: _*) {
-      val df = spark.sql(query)
-      df.noop()
-      val plan = stripAQEPlan(df.queryExecution.executedPlan)
-      // scalastyle:off println
-      findFirstNonCometOperator(plan) match {
-        case Some(op) =>
-          println(
-            s"  [detour on] NOTE: plan falls back to Spark at ${op.nodeName} for this shape")
-        case None =>
-          println("  [detour on] every operator is a Comet operator")
+  private def reportPlans(query: String): Unit = {
+    for (detour <- Seq(false, true)) {
+      val configs =
+        cometConfigs + (CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> detour.toString)
+      withSQLConf(configs.toSeq: _*) {
+        val df = spark.sql(query)
+        df.noop()
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        val operators = plan.collect { case op => op.nodeName }.mkString(" > ")
+        val label = if (detour) "detour on " else "detour off"
+        // scalastyle:off println
+        println(s"  [$label] $operators")
+        if (detour) {
+          findFirstNonCometOperator(plan) match {
+            case Some(op) =>
+              println(s"  [detour on ] NOTE: falls back to Spark at ${op.nodeName}")
+            case None =>
+              println("  [detour on ] every operator is a Comet operator")
+          }
+        }
+        // scalastyle:on println
       }
-      // scalastyle:on println
     }
   }
 
   private def benchmarkQuery(name: String, cardinality: Long, query: String): Unit = {
-    reportDetourPlan(query)
+    reportPlans(query)
     val benchmark = new Benchmark(name, cardinality, output = output)
 
     benchmark.addCase("Spark") { _ =>
@@ -161,6 +171,25 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
             "filter predicate with unsupported subexpr",
             rows,
             "SELECT id, x FROM t WHERE sqrt(x) > 1.0 AND a > 5.0")
+        }
+
+        runBenchmark("Partial project fallback - detoured projection feeding an aggregate") {
+          // What the detour is for: the operators above the projection. `s` is read twice, so
+          // `CollapseProject` does not fold the projection into the aggregate, and the projection
+          // with the detoured `sqrt(x)` item stays under a hash aggregate and its shuffle.
+          benchmarkQuery(
+            "projection with a detoured item under GROUP BY",
+            rows,
+            "SELECT k, sum(s) AS total, max(s) AS top, count(*) AS n FROM " +
+              "(SELECT cast(f AS INT) AS k, sqrt(x) AS s FROM t) GROUP BY k")
+        }
+
+        runBenchmark("Partial project fallback - detoured filter feeding an aggregate") {
+          benchmarkQuery(
+            "filter with a detoured condition under GROUP BY",
+            rows,
+            "SELECT cast(f AS INT) AS k, sum(a) AS total, count(*) AS n FROM t " +
+              "WHERE sqrt(x) > 1.0 AND a > 5.0 GROUP BY cast(f AS INT)")
         }
       }
     }
