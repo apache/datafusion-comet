@@ -20,6 +20,7 @@
 package org.apache.spark.sql.benchmark
 
 import org.apache.spark.benchmark.Benchmark
+import org.apache.spark.sql.execution.adaptive.{AQEShuffleReadExec, QueryStageExec}
 
 import org.apache.comet.CometConf
 
@@ -48,7 +49,8 @@ import org.apache.comet.CometConf
  * cost of the transition), a projection of seven Rust-implemented items and one detoured item, a
  * filter whose condition contains the expression, and that projection and filter each feeding a
  * `GROUP BY` aggregate with a shuffle, where the detour also decides where the operators above
- * run. Each shape prints the executed plan's operators with the detour off and on. To run:
+ * run. Each shape prints the executed plan's operators with the detour off and on; pass
+ * `--plans-only` to print only those, over a small table, without timing. To run:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometPartialProjectFallbackBenchmark
  * }}}
@@ -63,10 +65,18 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
     CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true",
     CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key -> "Sqrt")
 
+  /** With `--plans-only`, print the plans over a small table and skip the timed cases. */
+  private var plansOnly = false
+
   /**
    * Print the operators of the executed plan with the detour off and on, top first, so the
    * results can say which operators run in Comet and which fall back to Spark, and a
    * misconfigured run is obvious.
+   *
+   * The DataFrame's own plan is executed before it is read. `noop()` would run a separate write
+   * query and leave this one's adaptive plan unexecuted, so it would still be the initial plan,
+   * before AQE adds the transitions and query stages. The walk goes into the query stages
+   * (`AdaptiveSparkPlanHelper.collect`), which a plain `collect` treats as leaves.
    */
   private def reportPlans(query: String): Unit = {
     for (detour <- Seq(false, true)) {
@@ -74,14 +84,26 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
         cometConfigs + (CometConf.COMET_EXEC_JVM_DETOUR_ENABLED.key -> detour.toString)
       withSQLConf(configs.toSeq: _*) {
         val df = spark.sql(query)
-        df.noop()
+        df.queryExecution.executedPlan.execute().foreach(_ => ())
         val plan = stripAQEPlan(df.queryExecution.executedPlan)
-        val operators = plan.collect { case op => op.nodeName }.mkString(" > ")
+        val operators = collect(plan) { case op => op.nodeName }.mkString(" > ")
         val label = if (detour) "detour on " else "detour off"
         // scalastyle:off println
         println(s"  [$label] $operators")
         if (detour) {
-          findFirstNonCometOperator(plan) match {
+          // Check the plan and the plan of each query stage in it: the checker walks with a
+          // plain `foreach`, which treats a stage as a leaf. `AQEShuffleReadExec` and the stages
+          // themselves are AQE wrappers around the Comet shuffle, not operators of their own.
+          val stagePlans = collect(plan) { case stage: QueryStageExec => stage.plan }
+          val firstNonComet = (plan +: stagePlans).iterator
+            .flatMap(p =>
+              findFirstNonCometOperator(
+                p,
+                classOf[AQEShuffleReadExec],
+                classOf[QueryStageExec]).iterator)
+            .toSeq
+            .headOption
+          firstNonComet match {
             case Some(op) =>
               println(s"  [detour on ] NOTE: falls back to Spark at ${op.nodeName}")
             case None =>
@@ -95,6 +117,9 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
 
   private def benchmarkQuery(name: String, cardinality: Long, query: String): Unit = {
     reportPlans(query)
+    if (plansOnly) {
+      return
+    }
     val benchmark = new Benchmark(name, cardinality, output = output)
 
     benchmark.addCase("Spark") { _ =>
@@ -121,7 +146,8 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
   }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    val rows = 16L * 1024 * 1024
+    plansOnly = mainArgs.contains("--plans-only")
+    val rows = if (plansOnly) 4096L else 16L * 1024 * 1024
 
     withTempPath { dir =>
       withTempTable("t") {
@@ -174,9 +200,10 @@ object CometPartialProjectFallbackBenchmark extends CometBenchmarkBase {
         }
 
         runBenchmark("Partial project fallback - detoured projection feeding an aggregate") {
-          // What the detour is for: the operators above the projection. `s` is read twice, so
-          // `CollapseProject` does not fold the projection into the aggregate, and the projection
-          // with the detoured `sqrt(x)` item stays under a hash aggregate and its shuffle.
+          // What the detour is for: the operators above the projection. The projection with the
+          // detoured `sqrt(x)` item stays below the hash aggregate and its shuffle (Spark does
+          // not fold a projection into the aggregate above it); `max(s)` adds a second aggregate
+          // over the detoured item.
           benchmarkQuery(
             "projection with a detoured item under GROUP BY",
             rows,
