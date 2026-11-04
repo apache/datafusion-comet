@@ -171,6 +171,36 @@ already-ordered `TakeOrderedAndProject` inputs are tracked in
 An error on a row absent from the final result is not always a mismatch: Spark can also need to
 evaluate that row, for example to sort the input or process an `OFFSET` prefix.
 
+## JVM expression detour
+
+`spark.comet.exec.jvmDetour.enabled` is an experimental option and is off by default. It applies
+when an item of a projection, or a filter condition, contains an expression that Comet cannot
+translate. Instead of falling the operator back to Spark, Comet runs that whole item with codegen
+dispatch, so the operator stays in the Comet pipeline. The item runs in Spark's own generated code
+for it, including the parts Comet could translate. Verbose extended explain shows such an operator
+with `[COMET-INFO: Expression evaluated in the JVM by the codegen dispatcher (JVM detour)]`.
+
+For a row that both evaluate, the item computes what Spark's generated code computes. What can
+differ is which rows the item is evaluated for, which matters under `spark.sql.ansi.enabled=true`
+for an expression that can raise an error:
+
+- Comet evaluates the item for every row of the batch. Spark's whole-stage code evaluates a
+  deterministic projection item only when an operator above it in the same stage reads it, so it
+  skips the item for rows that a filter above drops, and for rows past a `LIMIT`. For example,
+  `SELECT d FROM (SELECT abs(10 div x) AS d, rand(1) AS r FROM t) WHERE r > 2` returns no rows in
+  Spark, and can raise `DIVIDE_BY_ZERO` with the detour.
+- Spark's whole-stage code for a filter evaluates each `IS NOT NULL` conjunct only just before the
+  first conjunct that reads its column, or at the end if none does. Comet evaluates the condition as
+  one expression, conjunct by conjunct from left to right. So for `WHERE y IS NOT NULL AND abs(10 div x) > 0` with a row where `x`
+  is 0 and `y` is NULL, Spark raises `DIVIDE_BY_ZERO` and Comet returns the other rows. Comet's
+  Rust-implemented filter and Spark without whole-stage codegen return the rows too.
+
+The detour does not take a nondeterministic filter condition, because that ordering changes which
+rows it keeps. It also does not take an item that contains an expression disabled with
+`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from outside
+Spark's Catalyst packages (such as a Hive UDF), or `reflect` / `java_method`. Those operators fall
+back to Spark as they do with the option off.
+
 ## ANSI-mode error classes and messages
 
 Under `spark.sql.ansi.enabled=true`, several native error paths raise the error at the correct

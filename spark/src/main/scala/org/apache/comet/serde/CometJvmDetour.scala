@@ -47,16 +47,28 @@ import org.apache.comet.serde.ExprOuterClass.Expr
  * to Rust would remove that protection without anything noticing. At the root there are no
  * ancestors in the expression: the projection only outputs the value, and the filter only keeps
  * the rows where it is true. Every node of the tree, conditionals included, runs in Spark's code,
- * so `CASE`, `IF`, `AND`, `OR` and `COALESCE` keep Spark's per-row short-circuit evaluation.
+ * so `CASE`, `IF`, `AND`, `OR` and `COALESCE` keep their short-circuit evaluation within a row.
  *
- * A nondeterministic filter condition is not detoured. Spark's whole-stage code for `FilterExec`
- * does not evaluate the condition as one expression: it splits the conjuncts, and evaluates each
- * `IsNotNull` only just before the first conjunct that reads its column. So a nondeterministic
- * conjunct such as `rand(42) < 0.5` runs for rows that a later `IsNotNull` drops, and its state
- * advances for them. The kernel evaluates the condition as one short-circuiting `AND`, which
- * skips those rows, and keeps different rows. A deterministic condition is unaffected by the
- * order. A projection item has no such difference: `ProjectExec` evaluates each item once for
- * every input row, as the kernel does, and each nondeterministic item keeps its own state.
+ * What the kernel cannot reproduce is when Spark's whole-stage code evaluates an item at all:
+ *
+ *   - The kernel evaluates every item for every row of the batch. Spark's whole-stage
+ *     `ProjectExec` defers a deterministic item until an operator above it in the stage reads it,
+ *     so it never evaluates the item for a row that a filter above drops, or for rows past a
+ *     `LIMIT`. Under ANSI the kernel can then raise an error that Spark does not. (A
+ *     nondeterministic item is evaluated eagerly for every row by Spark too, and each keeps its
+ *     own state, so its values match.)
+ *   - Spark's whole-stage `FilterExec` splits the conjuncts of the condition and evaluates each
+ *     `IsNotNull` only just before the first conjunct that reads its column, or at the end if
+ *     none does. The kernel evaluates the condition as one short-circuiting `AND`. For a
+ *     deterministic condition only ANSI errors differ: the kernel can skip an error Spark raises,
+ *     as Comet's Rust filter and Spark without whole-stage codegen also do (`y IS NOT NULL AND
+ *     abs(10 div x) > 0` with a row `(0, NULL)`). For a nondeterministic condition the kept rows
+ *     differ: a conjunct such as `rand(42) < 0.5` runs, and advances its state, for rows that a
+ *     later `IsNotNull` drops. So a nondeterministic filter condition is not detoured.
+ *   - Spark's `FilterExec` does not eliminate common subexpressions in its predicate, so a filter
+ *     condition is compiled without subexpression elimination, which could otherwise move a
+ *     repeated subexpression out of an `AND`'s short circuit. Projection items keep it, as
+ *     `ProjectExec` does.
  *
  * The detour is not attempted when the tree contains an expression the user disabled with
  * `spark.comet.expression.<Name>.enabled=false`, because that switch is documented to make the
@@ -131,12 +143,18 @@ object CometJvmDetour {
         withFallbackReason(root, s"JVM detour not attempted: $reason")
         None
       case None =>
-        CometScalaUDF.emitJvmCodegenDispatch(target, inputs, binding).map { proto =>
-          withInfo(
+        CometScalaUDF
+          .emitJvmCodegenDispatch(
             target,
-            "Expression evaluated in the JVM by the codegen dispatcher (JVM detour)")
-          QueryPlanSerde.attachExprIdAndContext(target, proto)
-        }
+            inputs,
+            binding,
+            subexpressionElimination = !filterCondition)
+          .map { proto =>
+            withInfo(
+              target,
+              "Expression evaluated in the JVM by the codegen dispatcher (JVM detour)")
+            QueryPlanSerde.attachExprIdAndContext(target, proto)
+          }
     }
   }
 
@@ -162,7 +180,9 @@ object CometJvmDetour {
    * filter condition, an expression the user disabled, a subquery, and code that is not Spark's.
    */
   private[comet] def declineReason(target: Expression, filterCondition: Boolean): Option[String] =
-    if (filterCondition && !target.deterministic) {
+    // Walks the tree, because `deterministic` is not transitive everywhere: `Invoke` ignores its
+    // `targetObject`, which is where Spark 4's `make_valid_utf8` puts its input.
+    if (filterCondition && target.exists(!_.deterministic)) {
       Some(
         "the filter condition is nondeterministic, and Spark's filter evaluates its conjuncts " +
           "in an order the dispatcher does not reproduce, so a nondeterministic conjunct would " +

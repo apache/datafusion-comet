@@ -815,24 +815,24 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_JVM_DETOUR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.jvmDetour.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Experimental. When an item of a projection, or a filter condition, contains an " +
-        "expression that Comet cannot translate, run that whole item with codegen dispatch " +
-        "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
-        "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
-        "columns the item reads cross to the JVM. The whole item runs in Spark's generated " +
-        "code for it, including the parts Comet could translate, and conditional expressions " +
-        "in the item evaluate their branches row by row as that code does. Like other Comet " +
-        "expressions, the item is evaluated for every row of the batch, including rows that " +
-        "Spark would not evaluate, such as rows past a `LIMIT`. Under " +
-        "`spark.sql.ansi.enabled=true` an expression that raises an error can therefore raise " +
-        "it for such a row; see 'ANSI errors from rows skipped by LIMIT' in the Comet " +
-        "Compatibility Guide. The detour does not take a nondeterministic filter condition, " +
-        "because Spark's filter evaluates the conjuncts of a condition in its own order. It " +
-        "does not take an item that contains an expression disabled with " +
-        "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
-        "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
-        "`java_method`. Requires " +
-        COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
+      .doc(
+        "Experimental. When an item of a projection, or a filter condition, contains an " +
+          "expression that Comet cannot translate, run that whole item with codegen dispatch " +
+          "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
+          "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
+          "columns the item reads cross to the JVM. The whole item runs in Spark's generated " +
+          "code for it, including the parts Comet could translate. The item is evaluated for " +
+          "every row of the batch, while Spark can skip rows: a projection item that a filter " +
+          "above it drops, or rows past a `LIMIT`. Spark's filter also orders the conjuncts of " +
+          "a condition its own way. Under `spark.sql.ansi.enabled=true` an expression that " +
+          "raises an error can therefore raise it where Spark does not, or not raise it where " +
+          "Spark does. The detour does not take a nondeterministic filter condition. It does " +
+          "not take an item that contains an expression disabled with " +
+          "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
+          "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
+          "`java_method`. See 'JVM expression detour' in the Comet Compatibility Guide. " +
+          "Requires " +
+          COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 

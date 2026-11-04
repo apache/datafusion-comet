@@ -414,8 +414,9 @@ class CometPartialProjectFallbackSuite
     // Spark's whole-stage code for `FilterExec` evaluates `y IS NOT NULL` only just before the
     // first conjunct that reads `y`, so `rand(42)` runs for every row, including the rows with a
     // NULL `y`, and its stream advances for them. The kernel would evaluate the condition as one
-    // short-circuiting AND, skipping those rows, and keep different rows (62 instead of 56 here,
-    // which is what Spark itself returns without whole-stage codegen).
+    // short-circuiting AND, skipping those rows, and keep different rows. On this data Spark keeps
+    // 69 rows, and 62 without whole-stage codegen, which evaluates the condition the way the
+    // kernel does.
     withTempPath { dir =>
       spark
         .range(0, 200, 1, numPartitions = 1)
@@ -433,6 +434,99 @@ class CometPartialProjectFallbackSuite
         assert(
           fallbackReasons(df).exists(_.contains("the filter condition is nondeterministic")),
           s"expected the nondeterministic-filter reason, got ${fallbackReasons(df)}")
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("nondeterminism hidden under an Invoke is seen (Spark 4.0+)") {
+    // `Invoke.deterministic` ignores its `targetObject`, which is where Spark 4 puts the input of
+    // `make_valid_utf8`, so the condition's own `deterministic` is true. On this data Spark keeps
+    // 69 rows; detouring the condition kept 62.
+    assume(CometSparkSessionExtensions.isSpark40Plus, "make_valid_utf8 needs Spark 4.0+")
+    withTempPath { dir =>
+      spark
+        .range(0, 200, 1, numPartitions = 1)
+        .selectExpr("CAST(id AS INT) AS id", "IF(id % 3 = 0, NULL, CAST(id AS INT)) AS y")
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withDetouredSerdes("Abs") {
+        val df = sql(
+          "SELECT id FROM t WHERE y IS NOT NULL AND " +
+            "abs(ascii(substr(make_valid_utf8(cast(rand(42) AS string)), 3, 1)) - 48) < 5")
+        checkSparkAnswer(df)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        assert(
+          collect(plan) { case f: CometFilterExec => f }.isEmpty,
+          "expected the filter to fall back to Spark")
+        assert(
+          fallbackReasons(df).exists(_.contains("the filter condition is nondeterministic")),
+          s"expected the nondeterministic-filter reason, got ${fallbackReasons(df)}")
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a detoured filter condition is compiled without subexpression elimination") {
+    // Spark's `FilterExec` does not eliminate common subexpressions in its predicate. With it,
+    // the kernel would compute `abs(10 div x)` once before the AND, so for x = 0 the division would
+    // run, and raise under ANSI, although `x <> 0` is false. A projection keeps subexpression
+    // elimination, as `ProjectExec` does: there both Spark and the detour raise.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (0), (2), (5), (1) AS v(x)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        withDetouredSerdes("Abs") {
+          assertCodegenRan {
+            checkSparkAnswerAndOperator(
+              sql("SELECT x FROM t WHERE x <> 0 AND abs(10 div x) + abs(10 div x) > 1"),
+              includeClasses = Seq(classOf[CometFilterExec]))
+          }
+          val (sparkError, cometError) = checkSparkAnswerMaybeThrows(
+            sql("SELECT x <> 0 AND abs(10 div x) + abs(10 div x) > 1 AS b FROM t"))
+          assert(
+            sparkError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")) &&
+              cometError.exists(_.getMessage.contains("DIVIDE_BY_ZERO")),
+            s"expected both to raise DIVIDE_BY_ZERO, got spark=$sparkError comet=$cometError")
+        }
+      }
+      spark.catalog.dropTempView("t")
+    }
+  }
+
+  test("a deterministic filter can skip an ANSI error that whole-stage Spark raises") {
+    // This pins current behavior, which differs from Spark with whole-stage codegen. Spark's
+    // `FilterExec` evaluates `y IS NOT NULL` at the end when no other conjunct reads `y`, so
+    // for the row (0, NULL) it runs `10 div x` and raises DIVIDE_BY_ZERO. The kernel evaluates
+    // the condition left to right and skips that row, as Comet's Rust filter and Spark without
+    // whole-stage codegen also do. The compatibility guide documents this.
+    withTempPath { dir =>
+      sql("SELECT * FROM VALUES (1, 1), (2, 2), (0, NULL), (3, 3) AS v(x, y)")
+        .coalesce(1)
+        .write
+        .parquet(dir.getAbsolutePath)
+      spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t")
+      val query = "SELECT x FROM t WHERE y IS NOT NULL AND abs(10 div x) > 0"
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        val withoutWholeStage = withSQLConf(
+          CometConf.COMET_ENABLED.key -> "false",
+          SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false") {
+          sql(query).collect().map(_.getInt(0)).sorted.toSeq
+        }
+        assert(withoutWholeStage == Seq(1, 2, 3), s"unexpected Spark rows $withoutWholeStage")
+        withDetouredSerdes("Abs") {
+          val df = sql(query)
+          val rows = df.collect().map(_.getInt(0)).sorted.toSeq
+          assert(rows == withoutWholeStage, s"expected $withoutWholeStage, got $rows")
+          val plan = stripAQEPlan(df.queryExecution.executedPlan)
+          assert(
+            collect(plan) { case f: CometFilterExec => f }.nonEmpty,
+            "expected the filter to be detoured")
+        }
       }
       spark.catalog.dropTempView("t")
     }
