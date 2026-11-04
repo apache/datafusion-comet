@@ -643,7 +643,7 @@ until it merges.
 Contributors who have shown sustained engagement with the project, through merged PRs, issues,
 PR reviews, and discussions, can be exempted from the limit. The exemptions are listed under
 `bypass_users` in [`.asf.yaml`](https://github.com/apache/datafusion-comet/blob/main/.asf.yaml).
-To ask for one, comment on one of your PRs or start a GitHub discussion.
+To ask for one, email dev@datafusion.apache.org.
 
 Use `git push` for normal updates to your PR branch. If you need to force push after a rebase
 or amend, use `git push --force-with-lease` instead of `git push --force` (or `-f`). This reduces
