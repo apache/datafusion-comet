@@ -957,7 +957,7 @@ fn cast_binary_to_string<O: OffsetSizeTrait>(
                             nulls.clone()
                         } else {
                             // `sliced` shares the bitmap when the slice starts on a byte boundary.
-                            let bits = Buffer::from_slice_ref(&nulls.inner().sliced());
+                            let bits = Buffer::from_slice_ref(nulls.inner().sliced());
                             NullBuffer::new(BooleanBuffer::new(bits, 0, nulls.len()))
                         }
                     });

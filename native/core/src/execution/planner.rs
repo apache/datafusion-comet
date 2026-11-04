@@ -63,7 +63,7 @@ use arrow::compute::CastOptions;
 use arrow::datatypes::{
     DataType, Field, FieldRef, Fields, IntervalUnit, Schema, TimeUnit, DECIMAL128_MAX_PRECISION,
 };
-use arrow::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow::ffi_stream::{FFI_ArrowArrayStream, RecordBatchStreamReader};
 use datafusion::{
     arrow::{compute::SortOptions, datatypes::SchemaRef},
     config::ConfigOptions,
@@ -1933,7 +1933,7 @@ impl PhysicalPlanner {
 
                 // Consumes the first input source for the scan. The Java side passes an
                 // `org.apache.arrow.c.ArrowArrayStream` whose `memoryAddress` points at the C
-                // struct; native takes ownership via `ArrowArrayStreamReader::from_raw`.
+                // struct; native takes ownership via `RecordBatchStreamReader::from_raw`.
                 let input_source = if self.exec_context_id == TEST_EXEC_CONTEXT_ID
                     && inputs.is_empty()
                 {
@@ -1945,7 +1945,7 @@ impl PhysicalPlanner {
                         jni_call!(env, arrow_array_stream(java_stream.as_obj()).memory_address() -> i64)
                     })?;
                     let reader = unsafe {
-                        ArrowArrayStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
+                        RecordBatchStreamReader::from_raw(address as *mut FFI_ArrowArrayStream)
                     }
                     .map_err(|e| {
                         GeneralError(format!("Failed to import ArrowArrayStream from JVM: {e}"))
@@ -4854,8 +4854,8 @@ mod tests {
     async fn partial_merge_over_sorted_input_runs_as_final() {
         use arrow::array::Int64Array;
         use datafusion::assert_batches_sorted_eq;
+        use datafusion::physical_plan::aggregates::GroupClusteringMode;
         use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode};
-        use datafusion::physical_plan::InputOrderMode;
         use spark_expression::agg_expr::ExprStruct as AggExprStruct;
 
         // A Spark PartialMerge grouped by (g, k) over a native sort on g, which DataFusion 55's
@@ -4925,8 +4925,8 @@ mod tests {
             .unwrap();
         assert_eq!(&AggregateMode::Final, final_agg.mode());
         assert_eq!(
-            &InputOrderMode::PartiallySorted(vec![0]),
-            final_agg.input_order_mode()
+            &GroupClusteringMode::Partial(vec![0]),
+            final_agg.group_clustering_mode()
         );
 
         let input_schema = planned.children[0].schema();
@@ -5009,7 +5009,11 @@ mod tests {
                 .downcast_ref::<AggregateExec>()
                 .unwrap();
             assert_eq!(&AggregateMode::Single, single.mode(), "{case}");
-            assert_ne!(&InputOrderMode::Linear, single.input_order_mode(), "{case}");
+            assert_ne!(
+                &GroupClusteringMode::None,
+                single.group_clustering_mode(),
+                "{case}"
+            );
         }
     }
 

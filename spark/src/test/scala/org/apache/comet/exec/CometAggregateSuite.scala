@@ -209,7 +209,7 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         .write
         .parquet(path)
       // Sorting on g, the first grouping key, makes DataFusion run the final aggregate as an
-      // OrderedFinalAggregateStream, which spills and reads its spill files back the same way.
+      // ClusteredFinalAggregateStream, which spills and reads its spill files back the same way.
       // Spark drops a sort under an aggregate unless EliminateSorts is excluded. With a 2.5 MiB
       // pool, merging the runs takes nearly all of the aggregate's share. The sort's merge
       // reservation is lowered so that the sort fits in the pool too.
@@ -360,8 +360,9 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("PartialMerge over a sort-merge join on a prefix of its keys spills (issue #6880)") {
-    // The sorts under the join need more than a 2 or 8 MiB pool's fair share, so this uses 16 MiB.
-    withPartialMergeOverSortedPrefix(Seq(16)) { path =>
+    // The sorts under the join need more than a 2 MiB pool's fair share, and with 12 MiB or more
+    // the PartialMerge fits without spilling, so this uses 8 MiB.
+    withPartialMergeOverSortedPrefix(Seq(8)) { path =>
       // With the default rules, the join's hash partitioning on g satisfies the PartialMerge keyed
       // by (g, k), so the join, the partial aggregate and the PartialMerge run in one native plan,
       // and the PartialMerge sees its input sorted on g. The suite lets AQE broadcast up to 1g at
