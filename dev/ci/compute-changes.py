@@ -443,6 +443,31 @@ FILTERS = {
         ".mvn/**",
         "mvnw",
     ],
+    "iceberg_1_12": [
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        "spark/pom.xml",
+        "dev/diffs/iceberg/**",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/iceberg_spark_test_reusable.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
+    ],
     "delta_3_5": [
         "contrib/delta-spark/**",
         "!**.md",
@@ -608,11 +633,13 @@ POLICY = {
     "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version the queue runs; the three older versions run
-    # nightly. One label opts a pull request into all four.
+    # nightly, as does 1.12, which is the Spark 4.2 coverage and so shares that
+    # suite's tier. One label opts a pull request into all five.
     "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_12": ["nightly", "label:run-iceberg-tests"],
     # The Delta contrib suites all run nightly. The PR tier's strict warnings
     # job compiles the contrib against Spark 3.5, so a change that breaks its
     # build on Spark 3.5 fails on its own pull request. One label opts a pull
