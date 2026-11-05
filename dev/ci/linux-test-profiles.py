@@ -46,6 +46,7 @@ from pathlib import Path
 # `run-all-spark-profiles` label). The goal of the list is coverage of every
 # Java, Scala and Spark version without testing every combination.
 PROFILES = [
+    {"name": "Spark 3.5, JDK 17, Scala 2.12", "java_version": "17", "maven_opts": "-Pspark-3.5 -Pscala-2.12", "tier": "nightly"},
     {"name": "Spark 3.5, JDK 17, Scala 2.13", "java_version": "17", "maven_opts": "-Pspark-3.5 -Pscala-2.13", "tier": "nightly"},
     {"name": "Spark 4.0, JDK 21", "java_version": "21", "maven_opts": "-Pspark-4.0", "tier": "nightly"},
     # The default build profile, and the one a contributor builds locally.

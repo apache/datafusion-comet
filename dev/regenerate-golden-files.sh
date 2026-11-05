@@ -128,7 +128,7 @@ main() {
 
     # Validate target version if specified
     if [ -n "$target_version" ]; then
-        if [[ ! "$target_version" =~ ^(3\.4|3\.5|4\.0|4\.1|4\.2)$ ]]; then
+        if [[ ! "$target_version" =~ ^(3\.5|4\.0|4\.1|4\.2)$ ]]; then
             echo "[ERROR] Invalid Spark version: $target_version"
             echo "[ERROR] Supported versions: 3.5, 4.0, 4.1, 4.2"
             exit 1

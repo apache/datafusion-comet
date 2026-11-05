@@ -298,7 +298,7 @@ re-armed automatically.
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
 profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, the Iceberg suites for
-1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
+1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
 changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.
