@@ -204,6 +204,13 @@ uses it. Scans where many partitions share delete files, such as tables with unp
 equality deletes, can make coalesced tasks large. Compacting delete files, or repartitioning
 instead of coalescing, avoids this.
 
+The driver builds every task's plan data before the scan starts, and keeps it until the query
+ends. It keeps one copy of a shared delete file for each partition that uses it. A table with
+many unpartitioned equality deletes, read as many partitions, can therefore use a lot of driver
+memory. Compact the delete files before reading such a table natively. Building plan data only
+when each task is sent is tracked in
+[#7523](https://github.com/apache/datafusion-comet/issues/7523).
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:
