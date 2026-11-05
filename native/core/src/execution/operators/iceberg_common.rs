@@ -1038,6 +1038,62 @@ mod tests {
         assert_eq!(cache.entries.len(), 1);
     }
 
+    /// A write's reference path is the table's data location, compared whole: new properties for
+    /// it supersede, while a sibling table's location, which shares its parent, stays apart.
+    #[test]
+    fn cache_compares_writes_by_data_location() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                "cat",
+                AccessMode::Write,
+            )
+            .unwrap()
+        };
+        let t = "s3://b/warehouse/db/t";
+        let u = "s3://b/warehouse/db/u";
+        assert!(cache.insert(key("t1", t), local_file_io()).is_empty());
+        assert!(cache.insert(key("t1", u), local_file_io()).is_empty());
+        assert_eq!(cache.insert(key("t2", u), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", t)).is_some());
+        assert!(cache.get(&key("t1", u)).is_none());
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// The expiry only decides when both entries carry one. Re-vended properties with an expiry
+    /// supersede an entry without one, and the other way round.
+    #[test]
+    fn cache_evicts_when_only_one_entry_has_an_expiry() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: Option<&str>| {
+            let mut properties =
+                HashMap::from([("s3.session-token".to_string(), token.to_string())]);
+            if let Some(expires_at_ms) = expires_at_ms {
+                properties.insert(
+                    "s3.session-token-expires-at-ms".to_string(),
+                    expires_at_ms.to_string(),
+                );
+            }
+            FileIoCacheKey::new(
+                &properties,
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache.insert(key("t1", None), local_file_io()).is_empty());
+        assert_eq!(
+            cache.insert(key("t2", Some("1000")), local_file_io()).len(),
+            1
+        );
+        assert_eq!(cache.insert(key("t3", None), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t3", None)).is_some());
+        assert_eq!(cache.entries.len(), 1);
+    }
+
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {
         storage_factory_for(path, &HashMap::new(), "test_cat", mode)
             .map(|_| ())

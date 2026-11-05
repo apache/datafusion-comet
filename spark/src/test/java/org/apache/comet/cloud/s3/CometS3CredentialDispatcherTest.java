@@ -366,12 +366,14 @@ public class CometS3CredentialDispatcherTest {
   @Test
   public void releaseClosesOnTheDispatcherThread() throws Exception {
     CometS3CredentialDispatcher.setCloserForTesting(null);
-    TestCometS3CredentialProvider.closeEntered = new CountDownLatch(1);
+    TestCometS3CredentialProvider.closeFinished = new CountDownLatch(1);
     long handle = init();
 
     CometS3CredentialDispatcher.release(handle);
 
-    assertTrue(TestCometS3CredentialProvider.closeEntered.await(10, TimeUnit.SECONDS));
+    // Waiting for the whole close keeps its count out of the next test's.
+    assertTrue(TestCometS3CredentialProvider.closeFinished.await(10, TimeUnit.SECONDS));
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
     assertEquals("comet-s3-credential-close", TestCometS3CredentialProvider.lastCloseThread);
     assertEquals(0, CometS3CredentialDispatcher.registeredCount());
   }
@@ -383,6 +385,8 @@ public class CometS3CredentialDispatcherTest {
     CountDownLatch block = new CountDownLatch(1);
     TestCometS3CredentialProvider.blockClose = block;
     TestCometS3CredentialProvider.closeEntered = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    TestCometS3CredentialProvider.closeFinished = finished;
     try {
       long retired = init();
       CometS3CredentialDispatcher.release(retired);
@@ -395,6 +399,8 @@ public class CometS3CredentialDispatcherTest {
     } finally {
       block.countDown();
     }
+    assertTrue(finished.await(10, TimeUnit.SECONDS));
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
   }
 
   /**

@@ -46,6 +46,10 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
   static volatile CountDownLatch blockClose;
 
   static volatile CountDownLatch closeEntered;
+
+  /** When set, {@code close()} counts this down once it has counted the close. */
+  static volatile CountDownLatch closeFinished;
+
   static volatile String lastCloseThread;
 
   private volatile String tenantId;
@@ -64,6 +68,7 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
     nextResult = new CometS3Credentials("AKIATEST", "secret", "session-tok", 0L);
     blockClose = null;
     closeEntered = null;
+    closeFinished = null;
     lastCloseThread = null;
   }
 
@@ -99,15 +104,22 @@ public class TestCometS3CredentialProvider implements CometS3CredentialProvider 
     if (entered != null) {
       entered.countDown();
     }
-    CountDownLatch block = blockClose;
-    if (block != null) {
-      block.await();
-    }
-    closeCount.incrementAndGet();
-    Exception toThrow = throwOnClose;
-    if (toThrow != null) {
-      throwOnClose = null;
-      throw toThrow;
+    try {
+      CountDownLatch block = blockClose;
+      if (block != null) {
+        block.await();
+      }
+      closeCount.incrementAndGet();
+      Exception toThrow = throwOnClose;
+      if (toThrow != null) {
+        throwOnClose = null;
+        throw toThrow;
+      }
+    } finally {
+      CountDownLatch finished = closeFinished;
+      if (finished != null) {
+        finished.countDown();
+      }
     }
   }
 }
