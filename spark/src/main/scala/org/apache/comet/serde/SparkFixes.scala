@@ -22,9 +22,9 @@ package org.apache.comet.serde
 import org.apache.spark.sql.comet.util.Utils
 
 /**
- * SPARK-58821 and SPARK-60118, which change results Comet reproduces natively, and the Spark
- * releases that carry them. The fixes leave nothing in the plan for Comet to detect, so the
- * checks go by the version. Other fixes Comet picks by version keep their own checks, such as
+ * SPARK-58821, SPARK-60118 and SPARK-60119, which change results Comet reproduces natively, and
+ * the Spark releases that carry them. The fixes leave nothing in the plan for Comet to detect, so
+ * the checks go by the version. Other fixes Comet picks by version keep their own checks, such as
  * `RegrSparkVersions` and `ArraySetSupport.normalizesFloats`.
  */
 private[comet] object SparkFixes {
@@ -44,7 +44,16 @@ private[comet] object SparkFixes {
   def castsZeroWithAnyExponentToDecimal(sparkVersion: String): Boolean =
     fixedIn(sparkVersion)
 
-  // Both fixes are on branch-4.0, branch-4.1, branch-4.2 and master, and in the 4.0.5-rc3,
+  /**
+   * SPARK-60119: `Decimal.changePrecision` skips `BigDecimal.setScale` when the value's magnitude
+   * already decides the result, so a string far below the target scale's ulp casts to 0 where
+   * `setScale` used to throw a raw `ArithmeticException`. That includes a scale difference that
+   * does not fit in an int, such as `'1e-2147483647'` to `DECIMAL(10,-2)`.
+   */
+  def castsTinyStringToDecimalZero(sparkVersion: String): Boolean =
+    fixedIn(sparkVersion)
+
+  // All three fixes are on branch-4.0, branch-4.1, branch-4.2 and master, and in the 4.0.5-rc3,
   // 4.1.4-rc4 and 4.2.1-rc3 release candidates, so the first releases that carry them are 4.0.5,
   // 4.1.4 and 4.2.1.
   private def fixedIn(sparkVersion: String): Boolean =

@@ -810,6 +810,7 @@ impl PhysicalPlanner {
                     expr.is_spark4_plus,
                 );
                 cast_options.decimal_zero_any_exponent = expr.decimal_zero_any_exponent;
+                cast_options.decimal_tiny_to_zero = expr.decimal_tiny_to_zero;
                 Ok(Arc::new(Cast::new(
                     child,
                     datatype,
