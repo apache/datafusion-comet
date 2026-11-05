@@ -40,6 +40,10 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+
 /**
  * Unit tests for {@link IcebergVendedS3CredentialProvider}. A local HTTP server stands in for the
  * REST catalog's credentials endpoint, so the refresh test exercises Iceberg's real {@code
@@ -237,6 +241,40 @@ public class IcebergVendedS3CredentialProviderTest {
         assertThrows(IllegalStateException.class, () -> p.getCredentialsForPath(CONTEXT));
     assertTrue(e.getMessage(), e.getMessage().contains("anonymous or empty credentials"));
     assertTrue(e.getMessage(), e.getMessage().contains("s3.comet.credential.provider.class"));
+  }
+
+  /** Stands in for an Iceberg credentials provider that holds a client, as the vended one does. */
+  public static final class CloseableCredentialsProvider
+      implements AwsCredentialsProvider, AutoCloseable {
+    static final AtomicInteger closeCount = new AtomicInteger();
+
+    public static CloseableCredentialsProvider create(Map<String, String> properties) {
+      return new CloseableCredentialsProvider();
+    }
+
+    @Override
+    public AwsCredentials resolveCredentials() {
+      return AwsBasicCredentials.create("AKIA_CLOSEABLE", "secret_CLOSEABLE");
+    }
+
+    @Override
+    public void close() {
+      closeCount.incrementAndGet();
+    }
+  }
+
+  @Test
+  public void closeClosesTheIcebergProvider() throws Exception {
+    CloseableCredentialsProvider.closeCount.set(0);
+    Map<String, String> props = new HashMap<>();
+    props.put("client.credentials-provider", CloseableCredentialsProvider.class.getName());
+
+    IcebergVendedS3CredentialProvider p = new IcebergVendedS3CredentialProvider();
+    p.initialize(props);
+    assertEquals("AKIA_CLOSEABLE", p.getCredentialsForPath(CONTEXT).getAccessKeyId());
+    p.close();
+
+    assertEquals(1, CloseableCredentialsProvider.closeCount.get());
   }
 
   @Test

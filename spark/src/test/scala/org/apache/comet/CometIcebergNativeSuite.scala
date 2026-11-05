@@ -4731,8 +4731,8 @@ class CometIcebergNativeSuite
     assume(icebergAvailable, "Iceberg not available in classpath")
 
     // A local warehouse never builds an S3 bridge, so the scan runs without calling the endpoint.
-    val endpoint =
-      Map("client.refresh-credentials-endpoint" -> "http://127.0.0.1:1/v1/credentials")
+    // Catalogs usually return a relative endpoint, which the provider resolves against `uri`.
+    val endpoint = Map("client.refresh-credentials-endpoint" -> "/v1/credentials")
     withRESTCatalog(vendedCredentials = endpoint) { (restUri, _, warehouseDir) =>
       withSQLConf(
         "spark.sql.catalog.rest_vend" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -4754,9 +4754,12 @@ class CometIcebergNativeSuite
         val expected =
           if (isSpark40Plus) Some(CometIcebergNativeScan.VendedCredentialProviderClass) else None
         scans.foreach { scan =>
-          val selected = scan.nativeIcebergScanMetadata.catalogProperties
-            .get(CometIcebergNativeScan.IcebergCredentialProviderClassKey)
+          val properties = scan.nativeIcebergScanMetadata.catalogProperties
+          val selected = properties.get(CometIcebergNativeScan.IcebergCredentialProviderClassKey)
           assert(selected == expected, s"Serialized provider $selected, expected $expected")
+          assert(
+            properties.get("uri").contains(restUri),
+            s"Serialized uri ${properties.get("uri")}, expected $restUri")
         }
 
         spark.sql("DROP TABLE rest_vend.db.t")
