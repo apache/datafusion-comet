@@ -23,8 +23,9 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{internal_datafusion_err, internal_err, Result};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::expressions::{Column, LambdaVariable, Literal};
+use datafusion::physical_expr::expressions::{Column, LambdaExpr, LambdaVariable, Literal};
 use datafusion::physical_expr::PhysicalExpr;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -293,12 +294,24 @@ pub(super) fn evaluate_projected(
 /// A [`LambdaVariable`] reads a column of the batch its lambda is evaluated on exactly as a
 /// [`Column`] does, so it is projected and re-indexed the same way.
 pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
+    // A lambda inside `expr` binds its parameters: they are not columns of the batch `expr` is
+    // evaluated on, so they are neither projected nor re-indexed. Lambda parameter names are unique
+    // per lambda, so no name is both bound inside `expr` and free in it.
+    let mut bound: HashSet<String> = HashSet::new();
+    expr.apply(|e| {
+        if let Some(lambda) = e.downcast_ref::<LambdaExpr>() {
+            bound.extend(lambda.params().iter().cloned());
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
     let mut projection = vec![];
     expr.apply(|e| {
         if let Some(column) = e.downcast_ref::<Column>() {
             projection.push(column.index());
         } else if let Some(variable) = e.downcast_ref::<LambdaVariable>() {
-            projection.push(variable.index());
+            if !bound.contains(variable.name()) {
+                projection.push(variable.index());
+            }
         }
         Ok(TreeNodeRecursion::Continue)
     })?;
@@ -318,7 +331,10 @@ pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<d
                         Arc::new(Column::new(column.name(), new)) as Arc<dyn PhysicalExpr>
                     ));
                 }
-            } else if let Some(variable) = e.downcast_ref::<LambdaVariable>() {
+            } else if let Some(variable) = e
+                .downcast_ref::<LambdaVariable>()
+                .filter(|v| !bound.contains(v.name()))
+            {
                 let new = position(variable.index())?;
                 if new != variable.index() {
                     return Ok(Transformed::yes(Arc::new(LambdaVariable::new(

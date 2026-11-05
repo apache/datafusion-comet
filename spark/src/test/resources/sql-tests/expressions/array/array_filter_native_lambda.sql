@@ -65,7 +65,7 @@ INSERT INTO test_filter_lambda VALUES
    array(CAST(7 AS DECIMAL(10, 2))), array(DATE '2000-01-01'), array(TIMESTAMP '2000-01-01 00:00:00'),
    array(X'AA'), array(true), array(TIMESTAMP_NTZ '2000-01-01 00:00:00'), array(CAST(7 AS TINYINT)), array(CAST(7 AS SMALLINT)), 8, 7, 'y')
 
--- The customer shape: drop NULL and empty-string elements.
+-- A common cleaning shape: drop NULL and empty-string elements.
 query expect_native(filter)
 SELECT id, filter(strs, x -> nvl(x, '') != '') FROM test_filter_lambda
 
@@ -198,3 +198,14 @@ SELECT id, filter(ints, v -> v > 0) FROM test_filter_lambda WHERE id < 0
 -- elements `x > 0` rules out, so this lambda stays on the dispatcher.
 query expect_dispatch(filter)
 SELECT id, filter(ints, v -> v > 0 AND element_at(array(threshold, 5), v) > 1) FROM test_filter_lambda
+
+-- A lambda inside an argument that is evaluated only for the rows where an earlier argument or operand
+-- leaves the result open. The lambda parameter belongs to the inner lambda, not to the outer batch.
+query expect_native(filter)
+SELECT id, array_contains(ints, size(filter(ints, x -> x > 1))) FROM test_filter_lambda
+
+query expect_native(filter)
+SELECT id, size(ints) > 2 AND size(filter(ints, x -> x > 1)) > 1 FROM test_filter_lambda
+
+query expect_native(filter)
+SELECT id, size(ints) < 1 OR size(filter(strs, x -> x IS NOT NULL AND x != '')) > 1 FROM test_filter_lambda

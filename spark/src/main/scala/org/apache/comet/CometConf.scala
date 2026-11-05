@@ -806,9 +806,9 @@ object CometConf extends ShimCometConf {
         "Whether to evaluate the lambda of a higher-order function natively when its body " +
           "is made only of expressions that Comet supports natively. The lambda then runs " +
           "vectorized over all the elements of a batch instead of once per element in the JVM. " +
-          "Currently applies to `filter`. Lambdas that cannot run natively use the JVM codegen " +
-          "dispatcher (see `spark.comet.exec.scalaUDF.codegen.enabled`). The Expression Tuning " +
-          "guide lists which lambdas run natively.")
+          "Applies to `filter` and `exists`. Lambdas that cannot run natively use the JVM " +
+          "codegen dispatcher (see `spark.comet.exec.scalaUDF.codegen.enabled`). The " +
+          "Expression Tuning guide lists which lambdas run natively.")
       .booleanConf
       .createWithDefault(true)
 

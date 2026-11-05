@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- `filter(arr, x -> nvl(x, '') != '')` on a numeric, boolean, date or timestamp array is the
--- customer's "drop the empty elements" rule. Spark plans it as
+-- `filter(arr, x -> nvl(x, '') != '')` on a numeric, boolean, date or timestamp array is a common
+-- "drop the empty elements" rule. Spark plans it as
 -- `NOT (coalesce(CAST(x AS STRING), '') = '')`, which no cast result can make false except a
 -- NULL element, so Comet runs it as `array_compact` instead of casting every element to a string.
 -- Each query must return what Spark returns, including for NULL arrays, empty arrays and

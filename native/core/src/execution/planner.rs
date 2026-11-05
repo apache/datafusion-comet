@@ -96,6 +96,7 @@ use crate::parquet::parquet_support::{
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
+use datafusion::functions_nested::array_any_match::array_any_match_higher_order_function;
 use datafusion::functions_nested::array_filter::array_filter_higher_order_function;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
@@ -1176,6 +1177,7 @@ impl PhysicalPlanner {
                     Arc::new(LambdaExpr::try_new(vec![hof.param_name.clone()], body)?);
                 let func = match hof.func.as_str() {
                     "array_filter" => array_filter_higher_order_function(),
+                    "array_any_match" => array_any_match_higher_order_function(),
                     other => {
                         return Err(GeneralError(format!(
                             "Unsupported higher-order function '{other}'"
@@ -5344,8 +5346,96 @@ mod tests {
         }
     }
 
+    /// A higher-order function as the right operand of OR or AND: DataFusion evaluates the right
+    /// operand over only the rows the left operand leaves open.
+    #[test]
+    fn test_higher_order_as_right_operand() -> Result<(), DataFusionError> {
+        use arrow::array::{BooleanArray, ListBuilder, StringBuilder};
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, BoundReference, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
+            spark_expression::Expr {
+                expr_struct: Some(expr_struct),
+                query_context: None,
+                expr_id: None,
+            }
+        }
+        fn bound(index: i32) -> spark_expression::Expr {
+            expr(Bound(BoundReference {
+                index,
+                datatype: None,
+            }))
+        }
+        fn binary(left: spark_expression::Expr, right: spark_expression::Expr) -> Box<BinaryExpr> {
+            Box::new(BinaryExpr {
+                left: Some(Box::new(left)),
+                right: Some(Box::new(right)),
+            })
+        }
+        // array_any_match(a, x#1 -> x#1 = c)
+        let any_match = expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+            func: "array_any_match".to_string(),
+            array: Some(Box::new(bound(0))),
+            param_name: "x#1".to_string(),
+            body: Some(Box::new(expr(ExprStruct::Eq(binary(
+                expr(ExprStruct::LambdaVariable(LambdaVariable {
+                    name: "x#1".to_string(),
+                })),
+                bound(1),
+            ))))),
+        })));
+
+        let mut builder = ListBuilder::new(StringBuilder::new());
+        for row in [vec!["a"], vec!["b"], vec!["a"], vec!["z"]] {
+            row.into_iter()
+                .for_each(|v| builder.values().append_value(v));
+            builder.append(true);
+        }
+        let list = builder.finish();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "x", "z"])),
+                Arc::new(BooleanArray::from(vec![true, false, false, false])),
+            ],
+        )?;
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // b OR any_match(...): rows 0 and 3 are true, the others have no match.
+        let or = expr(ExprStruct::Or(binary(bound(2), any_match.clone())));
+        let physical = planner.create_expr(&or, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![true, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // NOT b AND any_match(...): rows 1 and 2 are false, row 3 matches.
+        let and = expr(ExprStruct::And(binary(
+            expr(ExprStruct::Not(Box::new(
+                datafusion_comet_proto::spark_expression::UnaryExpr {
+                    child: Some(Box::new(bound(2))),
+                },
+            ))),
+            any_match,
+        )));
+        let physical = planner.create_expr(&and, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![false, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+        Ok(())
+    }
+
     #[test]
     fn test_higher_order_filter() -> Result<(), DataFusionError> {
+        use arrow::array::BooleanArray;
         use arrow::array::ListBuilder;
         use arrow::array::StringBuilder;
         use datafusion_comet_proto::spark_expression::{
@@ -5433,7 +5523,35 @@ mod tests {
         ]);
         assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
 
-        // The argument must be an array, and only array_filter is implemented.
+        // array_any_match(a, x#1 -> x#1 = c) is Spark's `exists`: true when an element matches, NULL
+        // when none does but the predicate was NULL for some element, false otherwise, and NULL for a
+        // NULL array.
+        let list = string_lists(vec![
+            Some(vec![Some("a"), None, Some("b")]),
+            Some(vec![]),
+            None,
+            Some(vec![Some("b")]),
+            Some(vec![Some("b"), None]),
+        ]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "a", "x", "a"])),
+            ],
+        )?;
+        let physical = planner
+            .create_expr(&filter("array_any_match", bound(0)), Arc::clone(&schema))
+            .unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![Some(true), Some(false), None, Some(false), None]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // The argument must be an array, and only array_filter and array_any_match are implemented.
         let not_array = planner.create_expr(&filter("array_filter", bound(1)), Arc::clone(&schema));
         assert!(not_array
             .unwrap_err()

@@ -23,6 +23,8 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
+import org.apache.comet.udf.codegen.CometScalaUDFCodegen
+
 /**
  * Higher-order function regression coverage for the codegen dispatcher.
  *
@@ -98,14 +100,21 @@ class CometCodegenHOFSuite
 
   test("ArrayExists respects three-valued logic through codegen dispatcher") {
     withArrayIntTable("(array(1, null, 3)), (array(1, 2, 3)), (array()), (null)") {
-      Seq(false, true).foreach { followThreeValuedLogic =>
-        withSQLConf(
-          "spark.sql.legacy.followThreeValuedLogicInArrayExists" ->
-            followThreeValuedLogic.toString) {
-          assertCodegenRan {
-            checkSparkAnswerAndOperator(sql("SELECT exists(a, x -> x > 10) FROM t"))
-          }
+      // With the legacy setting off Spark returns false where DataFusion's array_any_match returns
+      // NULL, so only the dispatcher runs `exists`. With it on the lambda runs natively and the
+      // dispatcher stays idle, with the same answer as Spark.
+      withSQLConf("spark.sql.legacy.followThreeValuedLogicInArrayExists" -> "false") {
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(sql("SELECT exists(a, x -> x > 10) FROM t"))
         }
+      }
+      withSQLConf("spark.sql.legacy.followThreeValuedLogicInArrayExists" -> "true") {
+        CometScalaUDFCodegen.resetStats()
+        checkSparkAnswerAndOperator(sql("SELECT exists(a, x -> x > 10) FROM t"))
+        val after = CometScalaUDFCodegen.stats()
+        assert(
+          after.compileCount + after.cacheHitCount == 0,
+          s"expected exists to run natively, but the dispatcher ran: $after")
       }
     }
   }
