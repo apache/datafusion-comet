@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet.execution.shuffle
 
 import org.apache.spark._
 import org.apache.spark.rdd.{DeterministicLevel, RDD}
-import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode}
+import org.apache.spark.sql.comet.{CometExecRDD, CometMetricNode, PartitionPlanData}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.CometShuffleBlockIterator
@@ -44,7 +44,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
     numPartitionsParam: Int,
     shuffleScanIndices: Set[Int],
     spillMetricNode: CometMetricNode,
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]] = Map.empty,
+    @transient perPartitionByKey: Map[String, Array[PartitionPlanData]] = Map.empty,
     positionalRoundRobin: Boolean = false)
     extends RDD[Product2[Int, ColumnarBatch]](
       sc,
@@ -144,7 +144,7 @@ private[shuffle] class CometNativeShuffleInputRDD(
 private[shuffle] class CometNativeShuffleInputPartition(
     override val index: Int,
     val inputPartitions: Array[Partition],
-    val planDataByKey: Map[String, Array[Byte]])
+    val planDataByKey: Map[String, PartitionPlanData])
     extends Partition
 
 /**
@@ -159,7 +159,7 @@ private[shuffle] class CometNativeShuffleInputIterator(
     val partitionIndex: Int,
     val inputObjects: Array[Object],
     val shuffleBlockIterators: Map[Int, CometShuffleBlockIterator],
-    val planDataByKey: Map[String, Array[Byte]])
+    val planDataByKey: Map[String, PartitionPlanData])
     extends Iterator[Product2[Int, ColumnarBatch]] {
 
   override def hasNext: Boolean = false

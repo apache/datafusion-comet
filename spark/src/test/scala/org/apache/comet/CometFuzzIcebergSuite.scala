@@ -22,13 +22,12 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.sql.Column
-import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.IcebergScanPlanData.distinctResiduals
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -177,12 +176,6 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
     }
   }
 
-  /** The pool entries a scan ships: the common block's, then each partition's own. */
-  private def storedPools(
-      scan: CometIcebergNativeScanExec): Seq[OperatorOuterClass.IcebergScanCommon] =
-    OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData) +:
-      scan.perPartitionData.toSeq.map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon)
-
   // Asserts that predicate pushdown actually happens for the types that support it. For each
   // primitive column it runs an equality filter and inspects the scan's serialized pools: the
   // residual pool must be non-empty exactly when the column's type is one Comet maps to an Iceberg
@@ -233,7 +226,7 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         val (_, cometPlan) = checkSparkAnswer(df.where(col(name) === lit(v)))
         val scans = collectIcebergNativeScans(cometPlan)
         assert(scans.length == 1, s"expected one native scan for '$name'\n$cometPlan")
-        val pushed = storedPools(scans.head).exists(_.getResidualPoolCount > 0)
+        val pushed = distinctResiduals(scans.head).nonEmpty
         if (isPushable(field.dataType)) {
           assert(
             pushed,
@@ -259,8 +252,8 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
         assert(scans.length == 1, s"$cometPlan")
         // Older Iceberg leaks manifest streams when commonData forces planning.
         if (!isIcebergVersionLessThan("1.8.0")) {
-          val residuals = storedPools(scans.head).map(_.getResidualPoolCount).sum
-          assert(residuals == 0, s"unexpected residual for $name: $predicate")
+          val residuals = distinctResiduals(scans.head)
+          assert(residuals.isEmpty, s"unexpected residual for $name: $predicate")
         }
       }
     }

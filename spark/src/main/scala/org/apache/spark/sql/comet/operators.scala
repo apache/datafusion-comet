@@ -454,7 +454,7 @@ private[comet] object PlanDataInjector extends Logging {
    *   (commonByKey, perPartitionByKey) - common data is shared, per-partition varies
    */
   private[comet] def findAllPlanData(
-      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+      plan: SparkPlan): (Map[String, Array[Byte]], Map[String, Array[PartitionPlanData]]) = {
     plan match {
       case iceberg: CometIcebergNativeScanExec =>
         // Trigger Spark's standard prepare -> waitForSubqueries lifecycle so DPP
@@ -496,7 +496,9 @@ private[comet] object PlanDataInjector extends Logging {
         s.ensureSubqueriesResolved()
         s.sendDriverMetrics()
         if (s.commonData.nonEmpty && s.perPartitionData.nonEmpty) {
-          (Map(s.sourceKey -> s.commonData), Map(s.sourceKey -> s.perPartitionData))
+          (
+            Map(s.sourceKey -> s.commonData),
+            Map(s.sourceKey -> PartitionPlanData.wrap(s.perPartitionData)))
         } else {
           (Map.empty, Map.empty)
         }
@@ -518,12 +520,9 @@ private[comet] object PlanDataInjector extends Logging {
         val results = plan.children.map(findAllPlanData)
         (
           mergeByKey(results.map(_._1))(java.util.Arrays.equals(_, _)),
-          mergeByKey(results.map(_._2))(samePartitionData))
+          mergeByKey(results.map(_._2))(PartitionPlanData.same))
     }
   }
-
-  private def samePartitionData(a: Array[Array[Byte]], b: Array[Array[Byte]]): Boolean =
-    a.length == b.length && a.indices.forall(i => java.util.Arrays.equals(a(i), b(i)))
 
   /**
    * Merges the planning data found under sibling subtrees. The injector looks data up by key, so
@@ -894,7 +893,7 @@ private[comet] case class NativeExecContext(
     // Partition object - see CometNativeShuffleInputRDD / CometExecRDD); the executor reads its own
     // slice, never this map. Keeping it off the wire stops it from bloating the broadcast task
     // binary when this context rides on the non-transient CometShuffleDependency.nativeShuffleSpec.
-    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
+    @transient perPartitionByKey: Map[String, Array[PartitionPlanData]],
     shuffleScanIndices: Set[Int],
     hasScanInput: Boolean,
     // Like plan data, file paths are sliced onto each task's Partition on the driver.

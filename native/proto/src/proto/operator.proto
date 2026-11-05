@@ -390,8 +390,10 @@ message IcebergScanCommon {
 
   // Deduplication pools. In the common block every task gets, the per-file pools
   // (partition_data_pool, delete_files_pool, residual_pool, delete_file_pool,
-  // delete_file_path_pool) are empty: each partition ships the entries its tasks use in its own
-  // IcebergScan.common, and the JVM merges the two before the plan reaches native.
+  // delete_file_path_pool) are empty: each partition's IcebergScan.common holds the entries its
+  // tasks use, and the JVM merges the two before the plan reaches native. The driver ships a
+  // partition's delete files and their paths apart from its message, shared with the other
+  // partitions that use them, and the executor JVM adds them to the partition's pools.
   repeated string schema_pool = 4;
   // Index-aligned with partition_spec_pool: entry i is the StructType JSON for the spec at
   // partition_spec_pool[i]. Native uses this pairing to recover each entry's spec_id when
