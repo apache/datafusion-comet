@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.types.{BinaryType, DataType, StringType}
 
-import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen, DispatchOccurrence}
+import org.apache.comet.codegen.{CometBatchKernel, CometBatchKernelCodegen, DispatchOccurrence, WithoutSubexpressionElimination}
 import org.apache.comet.codegen.CometBatchKernelCodegen.{ArrayColumnSpec, ArrowColumnSpec, MapColumnSpec, ScalarColumnSpec, StructColumnSpec, StructFieldSpec}
 import org.apache.comet.udf.CometUDF
 
@@ -191,8 +191,9 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
         val loader = Option(Thread.currentThread().getContextClassLoader)
           .getOrElse(classOf[Expression].getClassLoader)
         // The serde wraps a non-deterministic tree in a `DispatchOccurrence` so each occurrence
-        // has its own cache entry; the wrapper is only a key component and is dropped here.
-        val boundExpr =
+        // has its own cache entry; the wrapper is only a key component and is dropped here. A
+        // `WithoutSubexpressionElimination` under it is an instruction to the compiler.
+        val received =
           try {
             DispatchOccurrence.untag(
               SparkEnv.get.closureSerializer
@@ -206,7 +207,9 @@ class CometScalaUDFCodegen extends CometUDF with Logging {
                 t)
               throw t
           }
-        val compiled = CometBatchKernelCodegen.compile(boundExpr, specs)
+        val (boundExpr, subexpressionElimination) =
+          WithoutSubexpressionElimination.unwrap(received)
+        val compiled = CometBatchKernelCodegen.compile(boundExpr, specs, subexpressionElimination)
         val kernel = compiled.newInstance()
         kernel.init(partitionIndex)
         val outputField = CometBatchKernelCodegen.toFfiArrowField(

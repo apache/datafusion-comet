@@ -820,6 +820,50 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_EXEC_JVM_DETOUR_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.exec.jvmDetour.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Experimental. When an item of a projection, or a filter condition, contains an " +
+          "expression that Comet cannot translate, run that whole item with codegen dispatch " +
+          "(Spark's own generated code, run over the Arrow batch) instead of falling the " +
+          "operator back to Spark, so the operator stays in the Comet pipeline. Only the " +
+          "columns the item reads cross to the JVM. The whole item runs in Spark's generated " +
+          "code for it, including the parts Comet could translate. The item is evaluated for " +
+          "every row of the batch, while Spark can skip rows: for example a projection item " +
+          "for rows that a filter or join above it in the same stage drops, or rows past a " +
+          "`LIMIT`. Spark also eliminates common subexpressions across the items of a " +
+          "projection, and its filter orders the conjuncts of a condition its own way. An " +
+          "expression that can raise an error (for example under " +
+          "`spark.sql.ansi.enabled=true`, or `raise_error` / `assert_true`) can therefore " +
+          "raise it where Spark does not, or not raise it where Spark does. The detour does " +
+          "not take a nondeterministic filter condition, or a " +
+          "projection item that contains a nondeterministic expression Spark does not see as " +
+          "such, or, from Spark 4.2, a filter condition whose common subexpressions Spark's " +
+          "whole-stage filter eliminates. It does not take an item that contains an " +
+          "expression disabled with " +
+          "`spark.comet.expression.<Name>.enabled=false`, a subquery, an expression class from " +
+          "outside Spark's Catalyst packages (such as a Hive UDF), or `reflect` / " +
+          "`java_method`. See 'JVM expression detour' in the Comet Compatibility Guide. " +
+          "Requires " +
+          COMET_SCALA_UDF_CODEGEN_ENABLED.key + s"=true. $COMPAT_GUIDE.")
+      .booleanConf
+      .createWithDefault(false)
+
+  val COMET_TESTING_UNSUPPORTED_EXPRESSIONS: ConfigEntry[Seq[String]] =
+    conf("spark.comet.testing.unsupportedExpressions")
+      .category(CATEGORY_TESTING)
+      .doc(
+        "Test-only. Comma-separated expression names, as used in " +
+          "`spark.comet.expression.<Name>.enabled`, that Comet treats as having no " +
+          "translation. Unlike disabling an expression, this leaves it eligible for " +
+          s"codegen dispatch through `${COMET_EXEC_JVM_DETOUR_ENABLED.key}`, so tests and " +
+          "benchmarks can send a chosen expression through the JVM detour.")
+      .internal()
+      .stringConf
+      .toSequence
+      .createWithDefault(Nil)
+
   val COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.shuffle.native.partitioning.hash.enabled")
       .withAlternative("spark.comet.native.shuffle.partitioning.hash.enabled")
@@ -1636,6 +1680,13 @@ object CometConf extends ShimCometConf {
 
   def isExprEnabled(name: String, conf: SQLConf = SQLConf.get): Boolean = {
     getBooleanConf(getExprEnabledConfigKey(name), defaultValue = true, conf)
+  }
+
+  /** Whether `name` is listed in [[COMET_TESTING_UNSUPPORTED_EXPRESSIONS]]. */
+  def isExprUnsupportedForTesting(name: String, conf: SQLConf = SQLConf.get): Boolean = {
+    // Read the raw string first so the common empty case does not split a list per expression.
+    val raw = conf.getConfString(COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key, "")
+    raw.nonEmpty && raw.split(",").exists(_.trim == name)
   }
 
   def getExprEnabledConfigKey(name: String): String = {

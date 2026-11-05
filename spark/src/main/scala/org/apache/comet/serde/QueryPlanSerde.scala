@@ -1050,6 +1050,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
             s"${CometConf.getExprEnabledConfigKey(exprConfName)}=true to enable it.")
         return None
       }
+      if (CometConf.isExprUnsupportedForTesting(exprConfName)) {
+        withFallbackReason(
+          expr,
+          s"$exprConfName is treated as having no Comet translation by " +
+            s"${CometConf.COMET_TESTING_UNSUPPORTED_EXPRESSIONS.key}")
+        return None
+      }
       handler.getSupportLevel(expr) match {
         case Unsupported(notes) =>
           // `CodegenDispatchFallback` serdes have no native path for these cases either, but the
