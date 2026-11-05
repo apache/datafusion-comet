@@ -3925,51 +3925,60 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // A native nested loop join emits its rows build row by build row, out of the streamed side's
     // order that it reports (#6898), and Spark plans no sort above it. A window that runs in Spark
     // there, one without partition keys or one with a collated key, gets its input sorted again.
-    // One partition, so no exchange comes between the join and the window.
-    withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
-      try {
-        val pairs = spark.range(2).toDF("z").hint("broadcast")
-        val sorted = (columns: Seq[String], keys: Seq[String]) =>
-          spark
-            .range(0, 12, 1, 1)
-            .selectExpr(columns: _*)
-            .sortWithinPartitions(keys.map(col): _*)
-            .cache()
-            .join(pairs, col("v") % 2 <= col("z"))
-        val queries = Seq(
-          sorted(Seq("id AS v"), Seq("v"))
-            .selectExpr("v", "dense_rank() OVER (ORDER BY v) AS r")) ++
-          (if (isSpark40Plus) {
-             val collated = Seq(
-               "id % 3 AS k",
-               "id AS v",
-               "CASE id % 4 WHEN 0 THEN 'A' WHEN 1 THEN 'a' WHEN 2 THEN 'B' ELSE 'b' END " +
-                 "COLLATE UTF8_LCASE AS s")
-             Seq(
-               // lower(s) leaves the case-insensitive peers equal in the output, whose order among
-               // themselves the comparison would otherwise see.
-               sorted(collated, Seq("s"))
-                 .selectExpr("lower(s) AS s", "dense_rank() OVER (ORDER BY s) AS r"),
-               sorted(collated, Seq("k", "s")).selectExpr(
-                 "k",
-                 "count(*) OVER (PARTITION BY k ORDER BY s " +
-                   "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS c"))
-           } else {
-             Nil
-           })
-        queries.foreach { df =>
-          val (_, plan) = checkSparkAnswer(df)
-          withClue(s"$plan\n") {
-            assert(collect(plan) { case j: CometBroadcastNestedLoopJoinExec => j }.nonEmpty)
-            val windows = collect(plan) { case w: WindowExec => w }
-            assert(windows.nonEmpty && windows.forall(_.child match {
-              case _: SortExec | WholeStageCodegenExec(_: SortExec) => true
-              case _ => false
-            }))
+    // One partition, so no exchange comes between the join and the window, with or without AQE.
+    // With AQE, the stage's own pass can make the added sort native and then the window above it.
+    Seq(false, true).foreach { aqe =>
+      withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
+        try {
+          val pairs = spark.range(2).toDF("z").hint("broadcast")
+          val sorted = (columns: Seq[String], keys: Seq[String]) =>
+            spark
+              .range(0, 12, 1, 1)
+              .selectExpr(columns: _*)
+              .sortWithinPartitions(keys.map(col): _*)
+              .cache()
+              .join(pairs, col("v") % 2 <= col("z"))
+          val queries = Seq(
+            sorted(Seq("id AS v"), Seq("v"))
+              .selectExpr("v", "dense_rank() OVER (ORDER BY v) AS r")) ++
+            (if (isSpark40Plus) {
+               val collated = Seq(
+                 "id % 3 AS k",
+                 "id AS v",
+                 "CASE id % 4 WHEN 0 THEN 'A' WHEN 1 THEN 'a' WHEN 2 THEN 'B' ELSE 'b' END " +
+                   "COLLATE UTF8_LCASE AS s")
+               Seq(
+                 // lower(s) leaves the case-insensitive peers equal in the output, whose order
+                 // among themselves the comparison would otherwise see.
+                 sorted(collated, Seq("s"))
+                   .selectExpr("lower(s) AS s", "dense_rank() OVER (ORDER BY s) AS r"),
+                 sorted(collated, Seq("k", "s")).selectExpr(
+                   "k",
+                   "count(*) OVER (PARTITION BY k ORDER BY s " +
+                     "ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS c"))
+             } else {
+               Nil
+             })
+          queries.foreach { df =>
+            val (_, plan) = checkSparkAnswer(df)
+            withClue(s"$plan\n") {
+              assert(plan.isInstanceOf[AdaptiveSparkPlanExec] == aqe)
+              val finalPlan = stripAQEPlan(plan)
+              val joins = collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }
+              assert(joins.nonEmpty)
+              val windowInputs = collect(finalPlan) {
+                case w: WindowExec => w.child
+                case w: CometWindowExec => w.child
+              }
+              assert(windowInputs.nonEmpty && windowInputs.forall {
+                case _: SortExec | _: CometSortExec | WholeStageCodegenExec(_: SortExec) => true
+                case _ => false
+              })
+            }
           }
+        } finally {
+          spark.catalog.clearCache()
         }
-      } finally {
-        spark.catalog.clearCache()
       }
     }
   }

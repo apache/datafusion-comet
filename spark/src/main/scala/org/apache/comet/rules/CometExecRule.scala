@@ -53,7 +53,7 @@ import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -1083,13 +1083,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
   }
 
   /**
-   * Sorts the input of a window that runs in Spark when its order may be false. Spark plans no
-   * sort below a window whose child reports the order it needs, and its window trusts that order.
-   * A Comet operator that may not keep the order it reports, such as a native nested loop join
-   * (#6898), then hands the window rows out of order, and it groups them wrongly.
+   * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
+   * false. Spark plans no sort below a window whose child reports the order it needs, and its
+   * window trusts that order. A Comet operator that may not keep the order it reports, such as a
+   * native nested loop join (#6898), then hands the window rows out of order, and it groups them
+   * wrongly.
    */
   private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
-    case window: WindowExec
+    case window: WindowExecBase
         if window.requiredChildOrdering.head.nonEmpty &&
           CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
       window.withNewChildren(
