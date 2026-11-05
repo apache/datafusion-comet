@@ -1375,8 +1375,7 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
       SizeChildCounter.calls.get()
     }
     withParquetTable(Seq("a,b,c", null, "", "x,y").map(Tuple1(_)), "tbl") {
-      // Native size already gives -1 for NULL, the legacy answer, and a child that cannot be
-      // NULL needs no guard.
+      // The two shapes that need no NULL guard: legacy size of NULL and a non-nullable child.
       Seq("true" -> "splitOrNull", "false" -> "splitOrEmpty").foreach { case (legacy, split) =>
         withSQLConf(
           SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,

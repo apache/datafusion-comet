@@ -1067,11 +1067,9 @@ object CometSize extends CometExpressionSerde[Size] {
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
 
-    // Native size already gives -1 for a NULL array or map, the legacy answer, and a child that
-    // cannot be NULL never takes the NULL branch, so the guard only matters when a NULL has to
-    // give NULL. Without it the child is evaluated once over the whole batch rather than once
-    // for the guard and again for the size, so an expensive child such as a Scala UDF is not
-    // paid for twice and a nondeterministic one stays in step.
+    // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
+    // a NULL child must give NULL. The guard serializes the child twice, which would run an
+    // expensive child such as a Scala UDF twice per row.
     if (expr.legacySizeOfNull || !expr.child.nullable) {
       return scalarFunctionExprToProto("size", arrayExprProto)
     }
@@ -1079,13 +1077,13 @@ object CometSize extends CometExpressionSerde[Size] {
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, IntegerType), inputs, binding)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExprProto)
         .addThen(sizeScalarExprProto)
-        .setElseExpr(emptyLiteralExprProto)
+        .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
@@ -1103,11 +1101,6 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-  }
-
-  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
-    val value = if (legacySizeOfNull) -1 else null
-    exprToProtoInternal(Literal(value, IntegerType), Seq.empty, binding = true)
   }
 
 }
