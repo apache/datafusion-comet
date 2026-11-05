@@ -37,7 +37,7 @@ import org.apache.comet.iceberg.IcebergReflection
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   private val refreshEndpoint =
-    Map("client.refresh-credentials-endpoint" -> "https://catalog/v1/credentials")
+    Map("client.refresh-credentials-endpoint" -> "/v1/credentials", "uri" -> "https://catalog")
   private val providerKey = CometIcebergNativeScan.IcebergCredentialProviderClassKey
 
   test("vended refresh endpoint selects the vended credential provider") {
@@ -123,15 +123,23 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     }
   }
 
-  test("a relative refresh endpoint selects the provider only with a catalog uri") {
-    val relative = Map("client.refresh-credentials-endpoint" -> "/v1/credentials")
-    CometIcebergNativeScan
-      .withVendedCredentialProvider(relative, providerAvailable = true) shouldBe relative
-    CometIcebergNativeScan
-      .withVendedCredentialProvider(
-        relative + ("uri" -> "https://catalog"),
-        providerAvailable = true)
-      .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+  test("a refresh endpoint selects the provider only with a catalog uri") {
+    // Iceberg's VendedCredentialsProvider rejects a missing uri even for an absolute endpoint.
+    for (endpoint <- Seq("/v1/credentials", "https://catalog/v1/credentials")) {
+      withClue(endpoint) {
+        val props = Map("client.refresh-credentials-endpoint" -> endpoint)
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props + ("uri" -> " "), providerAvailable = true)
+          .get(providerKey) shouldBe None
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(
+            props + ("uri" -> "https://catalog"),
+            providerAvailable = true)
+          .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+      }
+    }
   }
 
   test("no provider is selected when the build lacks the provider class") {
