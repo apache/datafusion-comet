@@ -77,6 +77,14 @@ metrics only through that scan.
 
 Each cached batch is stored as a single Arrow IPC record batch message and its body.
 
+A cache built from rows cuts its batches at `spark.sql.inMemoryColumnarStorage.batchSize` rows,
+10000 by default, as Spark's own format does. A cache built from the Arrow batches of Comet
+operators stores a batch of at least half that size as it stands, without copying it, and first
+combines smaller ones up to that size. A shuffle read, for example, returns at least one batch per
+map output block, so a relation cached from a shuffle over many map tasks would otherwise hold
+thousands of small batches, each with its own metadata and statistics. Batches of Spark's own
+column vectors have to be copied into Arrow anyway, so they are combined whatever their size.
+
 The message carries **no Arrow schema**. The reader already has one: `InMemoryRelation` knows the
 cached relation's attributes, and Comet maps them to exactly the Arrow fields the writer produced.
 Storing a schema in every batch would repeat the same bytes once per cached batch — for a wide
