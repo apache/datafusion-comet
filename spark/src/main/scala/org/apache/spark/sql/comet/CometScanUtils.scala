@@ -32,7 +32,7 @@ import org.apache.comet.objectstore.NativeConfig
 
 object CometScanUtils {
 
-  private[comet] def copyScanWithFilters(
+  private[apache] def copyScanWithFilters(
       scan: FileSourceScanExec,
       partitionFilters: Seq[Expression],
       dataFilters: Seq[Expression]): FileSourceScanExec = {

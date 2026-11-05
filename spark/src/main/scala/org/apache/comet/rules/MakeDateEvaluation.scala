@@ -231,9 +231,10 @@ private[rules] object MakeDateEvaluation {
 
       val original = node match {
         case scan: CometScanExec =>
-          scan.wrapped.copy(
-            partitionFilters = scan.partitionFilters,
-            dataFilters = scan.dataFilters)
+          CometScanUtils.copyScanWithFilters(
+            scan.wrapped,
+            scan.partitionFilters,
+            scan.dataFilters)
         case scan: CometNativeScanExec => scan.sparkFallback(Nil)
         case native: CometExec => native.originalPlan
         case shuffle: CometShuffleExchangeExec => shuffle.originalPlan

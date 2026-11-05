@@ -26,16 +26,19 @@ import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.types.{IntegerType, StructType}
 import org.apache.spark.util.collection.BitSet
 
-private[comet] object ExtendedFileSourceScanExec {
-  def apply(output: Seq[Attribute]): FileSourceScanExec = {
+private[apache] object ExtendedFileSourceScanExec {
+  def apply(
+      output: Seq[Attribute],
+      partitionFilters: Seq[Expression] = Nil,
+      dataFilters: Seq[Expression] = Nil): FileSourceScanExec = {
     new ExtendedFileSourceScanExec(
       null,
       output,
       new StructType().add("id", IntegerType),
-      Nil,
+      partitionFilters,
       None,
       None,
-      Nil,
+      dataFilters,
       Some(TableIdentifier("test")),
       true,
       true,
@@ -44,7 +47,7 @@ private[comet] object ExtendedFileSourceScanExec {
 }
 
 // Model a distribution that adds scan fields. An inherited case-class copy would discard them.
-private[comet] class ExtendedFileSourceScanExec(
+private[apache] class ExtendedFileSourceScanExec(
     relation: HadoopFsRelation,
     output: Seq[Attribute],
     requiredSchema: StructType,

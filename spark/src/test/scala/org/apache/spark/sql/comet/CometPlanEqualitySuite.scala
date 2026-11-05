@@ -77,7 +77,8 @@ class CometPlanEqualitySuite extends AnyFunSuite {
   test("scan canonicalization retains Spark normalization and removes original DPP filters") {
     val output = Seq(AttributeReference("id", IntegerType)())
     val staticFilter = GreaterThan(output.head, Literal(1))
-    val scan = ExtendedFileSourceScanExec(output).copy(
+    val scan = ExtendedFileSourceScanExec(
+      output,
       partitionFilters =
         Seq(staticFilter, DynamicPruningExpression(EqualTo(output.head, Literal(2)))),
       dataFilters = Seq(LessThan(output.head, Literal(10))))
