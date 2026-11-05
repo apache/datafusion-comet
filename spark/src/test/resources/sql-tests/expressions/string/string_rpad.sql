@@ -88,3 +88,7 @@ SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100)) FROM test_rpad
 
 query expect_native(rpad)
 SELECT rpad(s, (SELECT max(len) FROM test_rpad WHERE len > 100), 'x') FROM test_rpad
+
+-- A scalar string with a NULL scalar length gives a NULL scalar.
+query expect_native(rpad)
+SELECT rpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_rpad), s), (SELECT max(len) FROM test_rpad WHERE len > 100), 'x') FROM test_rpad

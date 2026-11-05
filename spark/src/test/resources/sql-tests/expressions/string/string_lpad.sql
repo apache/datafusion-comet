@@ -88,3 +88,7 @@ SELECT lpad(s, (SELECT max(len) FROM test_lpad WHERE len > 100)) FROM test_lpad
 
 query expect_native(lpad)
 SELECT lpad(s, (SELECT max(len) FROM test_lpad WHERE len > 100), 'x') FROM test_lpad
+
+-- A scalar string with a NULL scalar length gives a NULL scalar.
+query expect_native(lpad)
+SELECT lpad(IF(coalesce(len, 0) > -1000, (SELECT max(s) FROM test_lpad), s), (SELECT max(len) FROM test_lpad WHERE len > 100), 'x') FROM test_lpad
