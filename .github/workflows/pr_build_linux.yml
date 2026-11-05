@@ -71,6 +71,14 @@ on:
         description: 'Which Spark profiles linux-test runs: all, pr (the default build profile) or nightly (the rest)'
         type: string
         default: 'all'
+      jemalloc:
+        # Set by ci.yml for a pull request into main that carries the
+        # `run-jemalloc-tests` label. build-native then builds the native
+        # library with the jemalloc Cargo feature, and linux-test runs Maven
+        # with -Pjemalloc, which makes the tests check that it loaded.
+        description: 'Build the native library with jemalloc and run the JVM tests with -Pjemalloc'
+        type: boolean
+        default: false
 
 env:
   RUST_VERSION: stable
@@ -420,8 +428,8 @@ jobs:
         run: |
           cd native
           # CI profile: same overflow behavior as release, but faster compilation
-          # (no LTO, parallel codegen)
-          cargo build --profile ci
+          # (no LTO, parallel codegen). The `jemalloc` input builds it with jemalloc.
+          cargo build --profile ci ${{ inputs.jemalloc && '--features jemalloc' || '' }}
         env:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3 -Clink-arg=-fuse-ld=bfd"
 
@@ -720,7 +728,8 @@ jobs:
         with:
           artifact_name: ${{ matrix.profile.name }}-${{ matrix.suite.name }}-${{ github.run_id }}-${{ github.run_number }}-${{ github.run_attempt }}
           suites: ${{ matrix.suite.value }}
-          maven_opts: ${{ matrix.profile.maven_opts }}
+          # -Pjemalloc makes the tests check that the native library uses jemalloc.
+          maven_opts: ${{ matrix.profile.maven_opts }}${{ inputs.jemalloc && ' -Pjemalloc' || '' }}
           upload-test-reports: true
           skip-native-build: true
 

@@ -327,7 +327,9 @@ ran about 4% slower. A longer interval trims less often for less cost, but lets 
 up between trims.
 
 Trimming only applies to glibc. In builds that use the `jemalloc` or `mimalloc` feature, Comet's
-native memory does not come from glibc, and those allocators manage freed memory themselves.
+native memory does not come from glibc, and those allocators manage freed memory themselves. The
+`jemalloc` Maven profile makes such a build. See
+[Building with the jemalloc allocator](../source.md#building-with-the-jemalloc-allocator).
 Limiting the number of glibc arenas with the `MALLOC_ARENA_MAX` environment variable also keeps
 resident memory down, but it was markedly slower in the measurements in
 [#7108](https://github.com/apache/datafusion-comet/issues/7108).

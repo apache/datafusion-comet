@@ -78,3 +78,34 @@ To build Comet from the source distribution on an isolated environment without a
 ```console
 make release-nogit PROFILES="-Pspark-4.1"
 ```
+
+## Building with the jemalloc allocator
+
+The native library allocates its memory with the system allocator, which is glibc malloc on Linux.
+In a long-running executor, glibc can keep several GiB of freed native memory resident (see
+[#7108](https://github.com/apache/datafusion-comet/issues/7108)). The published jars use the system
+allocator. To build Comet with [jemalloc](https://jemalloc.net/) instead, add the `jemalloc` profile:
+
+```console
+make release PROFILES="-Pspark-4.1 -Pjemalloc"
+```
+
+`make release-nogit` accepts it too. The profile builds the native library with its `jemalloc` Cargo
+feature. When Comet loads the native library, it logs which allocator it uses, at INFO level:
+
+```
+Comet native library uses the jemalloc allocator
+```
+
+Only Comet's native allocations use jemalloc. The JVM and any other native library in the executor
+still allocate through glibc.
+
+jemalloc reads its options from the `_RJEM_MALLOC_CONF` environment variable rather than
+`MALLOC_CONF`, because Comet links a build of jemalloc with prefixed symbols. Set it for executors
+with `spark.executorEnv._RJEM_MALLOC_CONF`, for example
+`--conf spark.executorEnv._RJEM_MALLOC_CONF=background_thread:true`.
+
+jemalloc fails every allocation on a kernel whose memory pages are larger than those of the machine
+it was built on. Some arm64 distributions use 64 KiB pages. When the executors may run on one, build
+with `JEMALLOC_SYS_WITH_LG_PAGE=16` set in the environment, which builds jemalloc for 64 KiB pages.
+That also works on kernels with smaller pages.

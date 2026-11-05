@@ -130,6 +130,14 @@ class CometSparkSessionExtensionsSuite extends CometTestBase {
     assert(after eq before, s"reload unpacked another copy of the native library: $after")
   }
 
+  test("a build with the jemalloc profile loads a jemalloc native library") {
+    // -Pjemalloc sets comet.jemalloc for the tests. The profile does not build the native
+    // library itself, so this catches one that was built without the jemalloc Cargo feature.
+    assume(sys.props.get("comet.jemalloc").contains("true"))
+    assert(NativeBase.isLoaded)
+    assert(NativeBase.isFeatureEnabled("jemalloc"))
+  }
+
   test("Arrow properties") {
     NativeBase.setLoaded(false)
     NativeBase.load()
