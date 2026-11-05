@@ -123,8 +123,7 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
     CometDriverPlugin.registerIcebergWriteReport(sc.conf)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
-    CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
-    CometDriverPlugin.warnIfNativeColumnarToRowSet(sc.getConf)
+    CometDriverPlugin.warnIfDeprecatedConfigsSet(sc.getConf)
 
     extraConfs
   }
@@ -321,32 +320,32 @@ object CometDriverPlugin extends Logging {
       .exists(factor => !Try(factor.toDouble).toOption.contains(submitDefault))
   }
 
+  // Deprecated configs that the driver warns about when they are set, with the reason for each.
+  //
   // spark.comet.exec.memoryPool.fraction was documented as holding back part of the off-heap pool
   // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
   // to the tasks that ask for it, and the fraction only caps each task's total under
   // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
-  private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
-    val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
-    conf.getOption(key).foreach { value =>
-      logWarning(
-        s"$key=$value is deprecated and will be removed in a future major release. It does " +
-          "not leave room in spark.memory.offHeap.size for native memory that Comet's memory " +
-          "pools do not track, because Spark hands out the whole off-heap pool whatever it is " +
-          s"set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
-          s"${CometConf.TUNING_GUIDE}.")
-    }
-  }
+  //
+  // spark.comet.exec.columnarToRow.native.enabled turned on a Rust columnar-to-row converter that
+  // has been removed, so the key no longer does anything.
+  private def deprecatedConfigs: Seq[(ConfigEntry[_], String)] = Seq(
+    CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION ->
+      ("It does not leave room in spark.memory.offHeap.size for native memory that Comet's " +
+        "memory pools do not track, because Spark hands out the whole off-heap pool whatever " +
+        s"it is set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
+        s"${CometConf.TUNING_GUIDE}."),
+    CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED ->
+      "It has no effect: Comet always converts Arrow batches to Spark rows on the JVM.")
 
-  // The Rust columnar-to-row converter that spark.comet.exec.columnarToRow.native.enabled turned
-  // on has been removed, so the key no longer does anything.
-  private[apache] def warnIfNativeColumnarToRowSet(conf: SparkConf): Unit = {
-    val key = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key
-    conf.getOption(key).foreach { value =>
-      logWarning(
-        s"$key=$value is deprecated and will be removed in a future major release. It has no " +
-          "effect: Comet always converts Arrow batches to Spark rows on the JVM.")
+  private[apache] def warnIfDeprecatedConfigsSet(conf: SparkConf): Unit =
+    deprecatedConfigs.foreach { case (entry, reason) =>
+      conf.getOption(entry.key).foreach { value =>
+        logWarning(
+          s"${entry.key}=$value is deprecated and will be removed in a future major release. " +
+            reason)
+      }
     }
-  }
 
   // Reads a deprecated alternative too, such as spark.comet.exec.shuffle.enabled, as a session
   // would.

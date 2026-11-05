@@ -129,7 +129,7 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       CometConf.COMET_ENABLED.key -> "false")
 
     addCase(
-      "Comet JVM (CometColumnarToRowExec)",
+      "Comet (CometColumnarToRowExec)",
       classOf[CometColumnarToRowExec],
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true")
@@ -437,7 +437,7 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
   /**
    * Benchmark where a JVM operator (Scala UDF projection + aggregate) consumes the rows. Unlike
    * the noop() sink, this defeats escape analysis and exercises the WholeStageCodegen fusion of
-   * the CodegenSupport JVM C2R with its consumer.
+   * the CodegenSupport Comet C2R with its consumer.
    */
   def jvmConsumerBenchmark(values: Int): Unit = {
     val benchmark =

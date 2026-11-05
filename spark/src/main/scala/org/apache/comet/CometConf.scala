@@ -522,7 +522,7 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.direct.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental: Whether to use the direct columnar to row converter in the JVM " +
+        "Experimental: Whether to use the direct columnar to row converter in Comet's " +
           "columnar to row operator's non-codegen paths (including broadcast relation " +
           "builds). The direct converter writes values straight from Arrow buffers into " +
           "UnsafeRow format without per-value object allocation, which is significantly " +

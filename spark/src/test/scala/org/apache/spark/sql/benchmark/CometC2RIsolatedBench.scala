@@ -57,12 +57,12 @@ object CometC2RIsolatedBench {
       .add("c", DoubleType)
       .add("d", StringType),
     i => InternalRow(i.toLong, i, i.toDouble, UTF8String.fromString(s"value_$i")),
-    // All three converters return UnsafeRow, so reading a raw fixed slot avoids allocating a
+    // Both converters return UnsafeRow, so reading a raw fixed slot avoids allocating a
     // UTF8String in the benchmark sink.
     row => row.getLong(0) + row.getLong(3))
 
   // The columns a TPC-H lineitem aggregation reaches C2R with: four compact decimals, a date,
-  // and two short flag strings. The strings force the native general (row-at-a-time) path.
+  // and two short flag strings. The strings force the direct converter's row-at-a-time path.
   private val tpchDecimalsWithStrings = Scenario(
     "4 x decimal(12,2), date, 2 x string (tpch-like)",
     new StructType()
@@ -85,7 +85,8 @@ object CometC2RIsolatedBench {
     // A compact decimal is stored directly as an unscaled long in UnsafeRow.
     row => row.getLong(0) + row.getInt(4))
 
-  // Same decimals without any var-length column, so the native column-wise fast path engages.
+  // Same decimals without any var-length column, so the direct converter's column-wise fast
+  // path engages.
   private val decimalsAllFixedWidth = Scenario(
     "4 x decimal(12,2), date, long (all fixed-width)",
     new StructType()
@@ -106,7 +107,7 @@ object CometC2RIsolatedBench {
     row => row.getLong(0) + row.getLong(5))
 
   // Precision > 18: the JVM accessor allocates byte[] -> BigInteger -> java BigDecimal ->
-  // scala BigDecimal -> Decimal per value; the native side writes 16 bytes.
+  // scala BigDecimal -> Decimal per value; the direct converter writes 16 bytes.
   private val highPrecisionDecimals = Scenario(
     "2 x decimal(38,10), long (high precision)",
     new StructType()

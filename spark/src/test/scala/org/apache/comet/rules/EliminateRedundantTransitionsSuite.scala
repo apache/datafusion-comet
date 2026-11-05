@@ -35,11 +35,6 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
     stripAQEPlan(plan)
   }
 
-  private def isCometColumnarToRow(plan: SparkPlan): Boolean = plan match {
-    case _: CometColumnarToRowExec => true
-    case _ => false
-  }
-
   // The rule decides, per `ColumnarToRowExec`, whether the subtree below it is Comet columnar.
   // That check is memoized across the whole plan, so a Comet branch must not make a sibling
   // Spark-only branch look Comet, or the other way around.
@@ -62,7 +57,7 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
 
       val Seq(cometBranch, sparkBranch) = result.children
       assert(
-        isCometColumnarToRow(cometBranch),
+        cometBranch.isInstanceOf[CometColumnarToRowExec],
         s"Comet branch should use a Comet columnar-to-row transition:\n${result.treeString}")
       assert(
         sparkBranch == sparkTransition,

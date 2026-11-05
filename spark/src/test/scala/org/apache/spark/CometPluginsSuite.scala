@@ -276,51 +276,29 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
   }
 }
 
-class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
-
-  private val warning = "spark.comet.exec.memoryPool.fraction=0.8 is deprecated"
+class CometPluginsDeprecatedConfigWarningSuite extends CometTestBase {
 
   private def warningsFor(conf: SparkConf): Seq[String] = {
     // Logging derives the logger name by stripping the object's trailing '$'
     val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
-    val appender = new LogAppender("memory pool fraction warning")
+    val appender = new LogAppender("deprecated config warning")
     withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
-      CometDriverPlugin.warnIfMemoryPoolFractionSet(conf)
+      CometDriverPlugin.warnIfDeprecatedConfigsSet(conf)
     }
     appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
   }
 
-  test("warns when the memory pool fraction is set") {
-    val conf = new SparkConf().set("spark.comet.exec.memoryPool.fraction", "0.8")
-    assert(warningsFor(conf).exists(_.contains(warning)))
-  }
-
-  test("does not warn when the memory pool fraction is unset") {
-    assert(!warningsFor(new SparkConf()).exists(_.contains("memoryPool.fraction")))
-  }
-}
-
-class CometPluginsNativeColumnarToRowWarningSuite extends CometTestBase {
-
-  private val warning = "spark.comet.exec.columnarToRow.native.enabled=true is deprecated"
-
-  private def warningsFor(conf: SparkConf): Seq[String] = {
-    // Logging derives the logger name by stripping the object's trailing '$'
-    val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
-    val appender = new LogAppender("native columnar to row warning")
-    withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
-      CometDriverPlugin.warnIfNativeColumnarToRowSet(conf)
+  Seq(
+    "spark.comet.exec.memoryPool.fraction" -> "0.8",
+    "spark.comet.exec.columnarToRow.native.enabled" -> "true").foreach { case (key, value) =>
+    test(s"warns when $key is set") {
+      val warnings = warningsFor(new SparkConf().set(key, value))
+      assert(warnings.exists(_.contains(s"$key=$value is deprecated")), warnings)
     }
-    appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
   }
 
-  test("warns when native columnar to row conversion is set") {
-    val conf = new SparkConf().set("spark.comet.exec.columnarToRow.native.enabled", "true")
-    assert(warningsFor(conf).exists(_.contains(warning)))
-  }
-
-  test("does not warn when native columnar to row conversion is unset") {
-    assert(!warningsFor(new SparkConf()).exists(_.contains("columnarToRow.native")))
+  test("does not warn when no deprecated config is set") {
+    assert(!warningsFor(new SparkConf()).exists(_.contains("is deprecated")))
   }
 }
 

@@ -52,9 +52,9 @@ the same plan is shown in the Spark SQL UI. When reading a plan, look for:
 
 - **Node prefix.** `Comet*` nodes are accelerated by Comet. Anything without
   the prefix is unmodified Spark.
-- **Transitions.** `CometColumnarToRow` and `CometSparkRowToColumnar` mark boundaries between columnar Comet execution
-  and row-based Spark execution. Frequent transitions usually indicate
-  fallback inside the plan.
+- **Transitions.** `CometColumnarToRow` and `CometSparkRowToColumnar` mark
+  boundaries between columnar Comet execution and row-based Spark execution.
+  Frequent transitions usually indicate fallback inside the plan.
 - **Exchange type.** `CometExchange` is the native shuffle path,
   `CometColumnarExchange` is the JVM columnar shuffle path, and a plain
   `Exchange` means Spark shuffle. See [Shuffle Operators](#shuffle-operators)
@@ -182,8 +182,9 @@ the config has no effect there.
 Not every node in the plan is an eligible operator. The following are excluded
 from both operator counts:
 
-- Transition nodes (`CometColumnarToRow`, `CometSparkRowToColumnar`, `CometSparkColumnarToColumnar`, `ColumnarToRow`,
-  `RowToColumnar`), which are reported separately as the transition count.
+- Transition nodes (`CometColumnarToRow`, `CometSparkRowToColumnar`,
+  `CometSparkColumnarToColumnar`, `ColumnarToRow`, `RowToColumnar`), which are
+  reported separately as the transition count.
   `CometSparkRowToColumnar` and `CometSparkColumnarToColumnar` are the two names
   a single operator renders under, depending on whether its child already
   produces columnar data, and both are excluded.
@@ -387,8 +388,6 @@ shuffle and choose between the implementations.
 ### Columnar/Row Transitions
 
 Comet inserts these nodes wherever data has to cross the columnar/row boundary.
-Multiple implementations exist because the optimal strategy depends on what
-produced the columnar data.
 
 | Node                           | Direction           | Notes                                                                                              |
 | ------------------------------ | ------------------- | -------------------------------------------------------------------------------------------------- |

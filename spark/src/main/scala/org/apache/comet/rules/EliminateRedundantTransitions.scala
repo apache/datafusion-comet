@@ -112,14 +112,23 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case ColumnarToRowExec(range: CometRangeExec) =>
         range.originalPlan
       case c @ ColumnarToRowExec(child) if hasCometNativeChild(child, containsCometPlanMemo) =>
-        val op = createColumnarToRowExec(child)
-        if (c.logicalLink.isEmpty) {
-          op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-          op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+        if (containsVariantType(child.schema)) {
+          // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant
+          // getters and Spark's Variant UnsafeRow encoding.
+          // https://github.com/apache/datafusion-comet/issues/5436
+          withFallbackReason(
+            c,
+            "Comet columnar-to-row conversion does not support type VariantType")
         } else {
-          c.logicalLink.foreach(op.setLogicalLink)
+          val op = CometColumnarToRowExec(child)
+          if (c.logicalLink.isEmpty) {
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          } else {
+            c.logicalLink.foreach(op.setLogicalLink)
+          }
+          op
         }
-        op
       case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
       case CometColumnarToRowExec(range: CometRangeExec) =>
@@ -308,21 +317,5 @@ case class EliminateRedundantTransitions(session: SparkSession)
           }
       }
     }
-  }
-
-  /**
-   * Creates the columnar to row transition operator: `CometColumnarToRowExec`, or Spark's
-   * `ColumnarToRowExec` for a schema that contains Variant.
-   */
-  private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
-    // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
-    // and Spark's Variant UnsafeRow encoding.
-    // https://github.com/apache/datafusion-comet/issues/5436
-    if (containsVariantType(child.schema)) {
-      return withFallbackReason(
-        ColumnarToRowExec(child),
-        "Comet columnar-to-row conversion does not support type VariantType")
-    }
-    CometColumnarToRowExec(child)
   }
 }
