@@ -64,6 +64,7 @@ pub enum OperatorType {
     MergeRows,
     Explode,
     BroadcastNestedLoopJoin,
+    CrossJoin,
     WindowGroupLimit,
 }
 
@@ -152,7 +153,9 @@ impl OperatorRegistry {
 
     /// Register join operators
     fn register_join_operators(&mut self) {
-        use super::join::{BroadcastNestedLoopJoinBuilder, HashJoinBuilder, SortMergeJoinBuilder};
+        use super::join::{
+            BroadcastNestedLoopJoinBuilder, CrossJoinBuilder, HashJoinBuilder, SortMergeJoinBuilder,
+        };
 
         self.builders
             .insert(OperatorType::HashJoin, Box::new(HashJoinBuilder));
@@ -162,6 +165,8 @@ impl OperatorRegistry {
             OperatorType::BroadcastNestedLoopJoin,
             Box::new(BroadcastNestedLoopJoinBuilder),
         );
+        self.builders
+            .insert(OperatorType::CrossJoin, Box::new(CrossJoinBuilder));
     }
 
     /// Register window operators
@@ -238,6 +243,7 @@ fn get_operator_type(spark_operator: &Operator) -> Option<OperatorType> {
         OpStruct::TextScan(_) => Some(OperatorType::TextScan),
         OpStruct::ShuffleScan(_) => Some(OperatorType::ShuffleScan),
         OpStruct::BroadcastNestedLoopJoin(_) => Some(OperatorType::BroadcastNestedLoopJoin),
+        OpStruct::CrossJoin(_) => Some(OperatorType::CrossJoin),
         OpStruct::RangeScan(_) => None,
         OpStruct::Sample(_) => None, // Not yet in OperatorType enum
         OpStruct::MergeRows(_) => Some(OperatorType::MergeRows),
