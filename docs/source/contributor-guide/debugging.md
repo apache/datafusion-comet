@@ -260,21 +260,28 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 #### Example: dumping window operator output
 
 In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
-the window operator builds `window_agg`, either a `BoundedWindowAggExec` or a
-`WindowAggExec` depending on whether every window expression runs with bounded
-memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` and
-builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
+the window operator builds `window_agg`. A window containing only `ROW_NUMBER`
+uses `RowNumberExec`, which generates one rank array per input batch and carries
+its final partition key and counter across batches. Other functions use
+`BoundedWindowAggExec` or `WindowAggExec`, depending on whether every expression
+runs with bounded memory. The builder then optionally wraps `window_agg` in a casting
+`ProjectionExec` and builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
 window output, wrap `window_agg` right after it is built, before the cast
 projection:
 
 ```rust
 let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
-    Arc::new(BoundedWindowAggExec::try_new(
+    let window = BoundedWindowAggExec::try_new(
         window_expr,
         Arc::clone(&child.native_plan),
         InputOrderMode::Sorted,
         !partition_exprs.is_empty(),
-    )?)
+    )?;
+    if RowNumberExec::supports(&window) {
+        Arc::new(RowNumberExec::try_new(window)?)
+    } else {
+        Arc::new(window)
+    }
 } else {
     Arc::new(WindowAggExec::try_new(
         window_expr,

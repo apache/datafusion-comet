@@ -4460,6 +4460,9 @@ mod tests {
         };
         let (mut scans, _, planned) = planner.create_plan(&operator, &mut vec![], 1).unwrap();
         assert_eq!(planned.additional_native_plans.len(), 1);
+        assert!(planned.additional_native_plans[0]
+            .downcast_ref::<datafusion_comet_operators::RowNumberExec>()
+            .is_some());
 
         let rows = 100;
         let mut inputs = [vec![
