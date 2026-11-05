@@ -1005,6 +1005,19 @@ object IcebergReflection extends Logging {
    * @return
    *   Path to the table metadata file
    */
+  /**
+   * The table's UUID, from `Table.uuid()` or its current metadata. A table dropped and created
+   * again at the same location gets a new one.
+   */
+  def getTableUuid(table: Any): Option[String] = {
+    def uuidOf(target: Any): Option[String] =
+      findMethodInHierarchy(target.getClass, "uuid").flatMap { method =>
+        try Option(method.invoke(target)).map(_.toString)
+        catch { case NonFatal(_) => None }
+      }
+    uuidOf(table).orElse(getTableMetadata(table).flatMap(uuidOf))
+  }
+
   def getMetadataLocation(table: Any): Option[String] = {
     getTableMetadata(table).flatMap { metadata =>
       try {

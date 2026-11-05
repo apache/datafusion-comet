@@ -347,13 +347,33 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
     CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, dirs + dir("data/p=4")) shouldBe None
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 2
 
-    // An expired listing is taken again.
+    // An expired listing is taken again: after the TTL when one is set, after an hour otherwise.
+    // A listing carries the clock it was taken with, so the second clock counts from the first.
+    val later = System.currentTimeMillis() + 61 * 1000
     CometIcebergNativeScan.hdfsEncryptionZoneFallback(
       conf,
       dirs,
       ttlSeconds = 60,
-      nowMillis = System.currentTimeMillis() + 61 * 1000) shouldBe None
+      nowMillis = later) shouldBe None
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 3
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+      conf,
+      dirs,
+      nowMillis = later + 3601 * 1000) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 4
+
+    // Another table at the same directories, say one re-created after a purge, has its own
+    // listing.
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+      conf,
+      dirs,
+      tableUuid = Some("re-created")) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 5
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+      conf,
+      dirs,
+      tableUuid = Some("re-created")) shouldBe None
+    CountingHdfsFileSystem.listStatusCalls.get() shouldBe 5
 
     // More parents than the budget: the scan is declined after that many listings, which are
     // kept, and the next scan continues from them.

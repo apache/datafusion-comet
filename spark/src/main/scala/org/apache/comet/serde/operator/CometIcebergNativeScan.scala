@@ -737,19 +737,22 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     authorities.filterNot(hasPort).toSeq.sorted
 
   /**
-   * Listings taken for the encryption-zone check, by filesystem URI and parent directory: when
-   * each was taken, and the encrypted flag of every child. A data directory cannot become a zone
-   * root once it holds files, so a listing is reused until `spark.sql.metadataCacheTTLSeconds`
-   * expires it, if set; bounded so a long session over many tables stays small.
+   * Listings taken for the encryption-zone check, by filesystem URI, table UUID and parent
+   * directory: when each was taken, and the encrypted flag of every child. A data directory
+   * cannot become a zone root once it holds files, and a table dropped and created again at the
+   * same path, inside a new zone or not, has a new UUID, so a listing is reused until it is older
+   * than `spark.sql.metadataCacheTTLSeconds`, or than [[DefaultEncryptionZoneListingAgeSeconds]]
+   * when that is unset. Bounded so a long session over many tables stays small.
    */
-  private val listedParents: java.util.Map[(String, String), (Long, Map[String, Boolean])] =
+  private val listedParents
+      : java.util.Map[(String, String, String), (Long, Map[String, Boolean])] =
     java.util.Collections.synchronizedMap(
-      new java.util.LinkedHashMap[(String, String), (Long, Map[String, Boolean])](
+      new java.util.LinkedHashMap[(String, String, String), (Long, Map[String, Boolean])](
         64,
         0.75f,
         true) {
         override def removeEldestEntry(
-            eldest: java.util.Map.Entry[(String, String), (Long, Map[String, Boolean])])
+            eldest: java.util.Map.Entry[(String, String, String), (Long, Map[String, Boolean])])
             : Boolean =
           size() > 10000
       })
@@ -757,29 +760,34 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   /** Listings one scan may take for the encryption-zone check before it is declined instead. */
   private[comet] val MaxEncryptionZoneListings = 1000
 
+  /** How long a listing is kept when `spark.sql.metadataCacheTTLSeconds` is unset. */
+  private[comet] val DefaultEncryptionZoneListingAgeSeconds = 3600L
+
   /**
    * Why a scan of `directories`, HDFS directories of data and delete files, must not be claimed
    * on account of HDFS encryption zones, or None. iceberg-rust's HDFS client is built without KMS
    * support and rejects every file of a zone. The NameNode flags each path inside a zone as
    * encrypted, directories included, so one listing of a parent tells the flag of every data
    * directory under it: the partitions of a table cost one call, not one each. A listing is kept
-   * (see [[listedParents]]), and a directory missing from a kept listing, a new partition, lists
-   * its parent again. A cluster that cannot hold a zone at all, one whose NameNode advertises no
-   * key provider (a client-cached call) and whose session configures none, is not listed. A scan
-   * that would take more than `maxListings` listings is declined after that many, which are kept,
-   * so a later scan continues from them.
+   * per table (see [[listedParents]]), and a directory missing from a kept listing, a new
+   * partition, lists its parent again. A cluster that cannot hold a zone at all, one whose
+   * NameNode advertises no key provider (a client-cached call) and whose session configures none,
+   * is not listed. A scan that would take more than `maxListings` listings is declined after that
+   * many, which are kept, so a later scan continues from them.
    */
   def hdfsEncryptionZoneFallback(
       hadoopConf: Configuration,
       directories: Set[String],
+      tableUuid: Option[String] = None,
       ttlSeconds: Long = -1L,
       maxListings: Int = MaxEncryptionZoneListings,
       nowMillis: Long = System.currentTimeMillis()): Option[String] = {
     val configuredProvider =
       Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
         .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
-    def fresh(listedAt: Long): Boolean =
-      ttlSeconds <= 0 || nowMillis - listedAt < ttlSeconds * 1000
+    val maxAgeMillis =
+      (if (ttlSeconds > 0) ttlSeconds else DefaultEncryptionZoneListingAgeSeconds) * 1000
+    def fresh(listedAt: Long): Boolean = nowMillis - listedAt < maxAgeMillis
     // A directory at the root of the filesystem has no parent and is listed itself.
     val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
       Option(dir.getParent).getOrElse(dir)
@@ -791,7 +799,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       .map { case (parent, dirs) =>
         try {
           val fs = parent.getFileSystem(hadoopConf)
-          val key = (fs.getUri.toString, parent.toString)
+          val key = (fs.getUri.toString, tableUuid.getOrElse(""), parent.toString)
           val kept = Option(listedParents.get(key)).collect {
             case (listedAt, flags)
                 if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.toString)) =>

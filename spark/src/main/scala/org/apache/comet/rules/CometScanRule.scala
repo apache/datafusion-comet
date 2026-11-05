@@ -1008,6 +1008,7 @@ case class CometScanRule(session: SparkSession)
               CometIcebergNativeScan.hdfsEncryptionZoneFallback(
                 hadoopConf,
                 taskValidation.hdfsDirectories,
+                tableUuid = tableOpt.flatMap(IcebergReflection.getTableUuid),
                 ttlSeconds = session.sessionState.conf
                   .getConf(StaticSQLConf.METADATA_CACHE_TTL_SECONDS))
             }
