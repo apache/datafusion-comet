@@ -37,10 +37,13 @@ object CometScanUtils {
       partitionFilters: Seq[Expression],
       dataFilters: Seq[Expression]): FileSourceScanExec = {
     // Keep the runtime's full constructor, including fields added by Spark distributions.
-    // The supported Spark versions share these positions for partition and data filters.
     val args = scan.productIterator.map(_.asInstanceOf[AnyRef]).toArray
-    args(4) = partitionFilters
-    args(7) = dataFilters
+    // Spark 4 adds a stream argument before the schema; the filters keep the same offsets
+    // after it. Locate the existing schema rather than assuming a Spark-specific arity.
+    val schemaIndex = args.indexWhere(_ eq scan.requiredSchema)
+    require(schemaIndex >= 0, "FileSourceScanExec is missing its required schema")
+    args(schemaIndex + 1) = partitionFilters
+    args(schemaIndex + 4) = dataFilters
     scan.makeCopy(args).asInstanceOf[FileSourceScanExec]
   }
 
