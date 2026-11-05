@@ -978,14 +978,13 @@ case class CometScanRule(session: SparkSession)
           // The client connects as HADOOP_USER_NAME, or as the executor's OS user, never as the
           // Spark user the JVM reader runs as (opendal exposes no user setting). Claimed only
           // when the executors are known to read as the Spark user: HADOOP_USER_NAME set to it
-          // in their environment, or, in local mode, the JVM's own user.
+          // in their environment, or, in local mode, the JVM's own user. The setting is read
+          // from the SparkContext's configuration, which launched the executors: a session can
+          // hold the key in its SQLConf (`SET`, or a builder option on an existing context)
+          // without the executors ever seeing it.
           val sparkUser = session.sparkContext.sparkUser
           val executorEnvKey = "spark.executorEnv.HADOOP_USER_NAME"
-          val executorUser = Option(
-            session.sessionState.conf
-              .getConfString(
-                executorEnvKey,
-                session.sparkContext.getConf.get(executorEnvKey, null)))
+          val executorUser = Option(session.sparkContext.getConf.get(executorEnvKey, null))
             .orElse {
               if (session.sparkContext.isLocal) {
                 Some(sys.env.getOrElse("HADOOP_USER_NAME", System.getProperty("user.name")))

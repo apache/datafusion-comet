@@ -30,6 +30,7 @@ import scala.util.Random
 import org.apache.commons.io.FileUtils
 import org.apache.iceberg.{DataFiles, FileFormat, Table}
 import org.apache.spark.SparkConf
+import org.apache.spark.SparkEnv
 import org.apache.spark.paths.SparkPath
 import org.apache.spark.sql.{CometTestBase, SaveMode}
 import org.apache.spark.sql.catalyst.InternalRow
@@ -771,8 +772,8 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       dataFiles: Seq[String],
       hadoopConf: Seq[(String, String)] = Seq.empty,
       catalogProps: Seq[(String, String)] = Seq.empty,
-      metadataPrefix: String = FakeHdfsSchemeFileSystem.PREFIX)
-      : (Seq[CometBatchScanExec], Set[String]) = {
+      metadataPrefix: String = FakeHdfsSchemeFileSystem.PREFIX,
+      sparkConf: Seq[(String, String)] = Seq.empty): (Seq[CometBatchScanExec], Set[String]) = {
     // A catalog of its own, so no test reads another's cached catalog or warehouse.
     val catalog = s"hdfs_gate_${UUID.randomUUID().toString.take(8)}"
     var claimed = Seq.empty[CometBatchScanExec]
@@ -813,7 +814,9 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
           CometConf.COMET_EXEC_ENABLED.key -> "true",
           CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") ++ hadoopConf
         withSQLConf(confs: _*) {
-          val transformed = CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+          val transformed = withLiveSparkConf(sparkConf) {
+            CometScanRule(spark).apply(stripAQEPlan(sparkPlan))
+          }
           claimed = transformed.collect { case s: CometBatchScanExec => s }
           reasons = transformed
             .collect { case s: BatchScanExec =>
@@ -825,6 +828,26 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
       }
     }
     (claimed, reasons)
+  }
+
+  /**
+   * Sets `entries` on the live SparkConf for `f`: the configuration the SparkContext launched its
+   * executors with, which `CometScanRule` reads for `spark.executorEnv.*`, as opposed to the
+   * session's SQLConf that `withSQLConf` sets.
+   */
+  private def withLiveSparkConf[T](entries: Seq[(String, String)])(f: => T): T = {
+    val conf = SparkEnv.get.conf
+    val previous = entries.map { case (key, _) => key -> conf.getOption(key) }
+    entries.foreach { case (key, value) =>
+      conf.set(key, value)
+      assert(spark.sparkContext.getConf.get(key) == value, s"$key did not reach the context")
+    }
+    try f
+    finally
+      previous.foreach {
+        case (key, Some(value)) => conf.set(key, value)
+        case (key, None) => conf.remove(key)
+      }
   }
 
   private def nameNodeProperties(scan: CometBatchScanExec): Map[String, String] =
@@ -916,7 +939,7 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     // Spark user the JVM reader uses; the scan is claimed only when those are known to agree.
     val (claimed, reasons) = planIcebergScanOverHdfs(
       Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
-      Seq("spark.executorEnv.HADOOP_USER_NAME" -> "someone-else"))
+      sparkConf = Seq("spark.executorEnv.HADOOP_USER_NAME" -> "someone-else"))
     assert(claimed.isEmpty, "a scan read as another user must not be claimed")
     assert(
       reasons.exists(r =>
@@ -928,8 +951,28 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assume(icebergAvailable, "Iceberg not available in classpath")
     val (claimed, reasons) = planIcebergScanOverHdfs(
       Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
-      Seq("spark.executorEnv.HADOOP_USER_NAME" -> spark.sparkContext.sparkUser))
+      sparkConf = Seq("spark.executorEnv.HADOOP_USER_NAME" -> spark.sparkContext.sparkUser))
     assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
+  }
+
+  test(
+    "iceberg scan: HADOOP_USER_NAME in the session's SQLConf does not stand for the executors'") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val key = "spark.executorEnv.HADOOP_USER_NAME"
+    val dataFile = "hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"
+    // A session can hold the key without the executors having seen it, so the SQLConf value
+    // must not stand in for the context's: the Spark user there and another user on the
+    // context is declined.
+    val (declined, reasons) = planIcebergScanOverHdfs(
+      Seq(dataFile),
+      hadoopConf = Seq(key -> spark.sparkContext.sparkUser),
+      sparkConf = Seq(key -> "someone-else"))
+    assert(declined.isEmpty, "the SQLConf value must not be read")
+    assert(reasons.exists(_.contains("'someone-else'")), reasons)
+    // The other way round the SQLConf is ignored too; in local mode the JVM's user then counts.
+    val (claimed, _) =
+      planIcebergScanOverHdfs(Seq(dataFile), hadoopConf = Seq(key -> "someone-else"))
+    assert(claimed.size == 1, "the SQLConf value must not be read")
   }
 
   test("iceberg scan: a host:port HDFS location is claimed with no NameNode declaration") {

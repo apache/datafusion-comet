@@ -226,9 +226,11 @@ continue from the listings kept.
 On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
 operating system user when that variable is unset, rather than as the Spark user. Comet therefore
 claims an HDFS scan only when the executors are known to read as the Spark user: set
-`spark.executorEnv.HADOOP_USER_NAME` to the user that submits the job (in local mode, the JVM's
-`HADOOP_USER_NAME` or operating system user must be that user). Otherwise the scan falls back with
-a reason that names the setting. Writes to HDFS use Iceberg's own writer.
+`spark.executorEnv.HADOOP_USER_NAME` to the user that submits the job, when the application is
+submitted (Comet reads it from the SparkContext's configuration; a value set on a session
+afterwards never reaches the executors). In local mode, the JVM's `HADOOP_USER_NAME` or operating
+system user must be that user. Otherwise the scan falls back with a reason that names the setting.
+Writes to HDFS use Iceberg's own writer.
 
 ### Current limitations
 
