@@ -26,13 +26,9 @@ import scala.reflect.runtime.universe.runtimeMirror
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.connector.read.streaming.SparkDataStream
 import org.apache.spark.sql.execution.FileSourceScanExec
-import org.apache.spark.sql.execution.datasources.HadoopFsRelation
-import org.apache.spark.sql.types.{IntegerType, StructType}
-import org.apache.spark.util.collection.BitSet
+import org.apache.spark.sql.types.IntegerType
 import org.apache.xbean.asm9.{ClassReader, Opcodes}
 import org.apache.xbean.asm9.tree.{ClassNode, FieldInsnNode, MethodInsnNode}
 
@@ -47,19 +43,7 @@ class CometPlanEqualitySuite extends AnyFunSuite {
     val output = Seq(AttributeReference("id", IntegerType)())
     val partitionFilters = Seq(GreaterThan(output.head, Literal(1)))
     val dataFilters = Seq(LessThan(output.head, Literal(10)))
-    val scan = new CometPlanEqualitySuite.ExtendedFileSourceScanExec(
-      null,
-      None,
-      output,
-      new StructType().add("id", IntegerType),
-      Nil,
-      None,
-      None,
-      Nil,
-      Some(TableIdentifier("test")),
-      true,
-      true,
-      output)
+    val scan = ExtendedFileSourceScanExec(output)
 
     val nativeScan = CometNativeScanExec(
       nativeOp = null,
@@ -78,31 +62,25 @@ class CometPlanEqualitySuite extends AnyFunSuite {
       sourceKey = "")
     val copied = nativeScan
       .sparkFallback(Nil)
-      .asInstanceOf[CometPlanEqualitySuite.ExtendedFileSourceScanExec]
+      .asInstanceOf[FileSourceScanExec]
 
+    assert(copied.getClass == scan.getClass)
     assert(copied.partitionFilters == partitionFilters)
     assert(copied.dataFilters == dataFilters)
     assert(copied.output == output)
     assert(copied.tableIdentifier == scan.tableIdentifier)
     assert(copied.disableBucketedScan)
-    assert(copied.vendorFlag)
-    assert(copied.vendorOutput == output)
+    assert(copied.productIterator.toSeq.takeRight(2) == Seq(true, output))
     assert(scan.partitionFilters.isEmpty && scan.dataFilters.isEmpty)
   }
 
   test("scan canonicalization retains Spark normalization and removes original DPP filters") {
     val output = Seq(AttributeReference("id", IntegerType)())
     val staticFilter = GreaterThan(output.head, Literal(1))
-    val scan = FileSourceScanExec(
-      null,
-      None,
-      output,
-      new StructType().add("id", IntegerType),
-      Seq(staticFilter, DynamicPruningExpression(EqualTo(output.head, Literal(2)))),
-      None,
-      None,
-      Seq(LessThan(output.head, Literal(10))),
-      Some(TableIdentifier("test")))
+    val scan = ExtendedFileSourceScanExec(output).copy(
+      partitionFilters =
+        Seq(staticFilter, DynamicPruningExpression(EqualTo(output.head, Literal(2)))),
+      dataFilters = Seq(LessThan(output.head, Literal(10))))
 
     assert(
       CometScanUtils.canonicalizeOriginalPlan(scan) ==
@@ -247,41 +225,6 @@ class CometPlanEqualitySuite extends AnyFunSuite {
 }
 
 object CometPlanEqualitySuite {
-  // Model a Spark distribution that appends fields to FileSourceScanExec. An inherited
-  // case-class copy would return the base class and discard these fields.
-  private class ExtendedFileSourceScanExec(
-      relation: HadoopFsRelation,
-      stream: Option[SparkDataStream],
-      output: Seq[Attribute],
-      requiredSchema: StructType,
-      partitionFilters: Seq[Expression],
-      optionalBucketSet: Option[BitSet],
-      optionalNumCoalescedBuckets: Option[Int],
-      dataFilters: Seq[Expression],
-      tableIdentifier: Option[TableIdentifier],
-      disableBucketedScan: Boolean,
-      val vendorFlag: Boolean,
-      val vendorOutput: Seq[Attribute])
-      extends FileSourceScanExec(
-        relation,
-        stream,
-        output,
-        requiredSchema,
-        partitionFilters,
-        optionalBucketSet,
-        optionalNumCoalescedBuckets,
-        dataFilters,
-        tableIdentifier,
-        disableBucketedScan) {
-    override def productArity: Int = 12
-
-    override def productElement(index: Int): Any = index match {
-      case 10 => vendorFlag
-      case 11 => vendorOutput
-      case _ => super.productElement(index)
-    }
-  }
-
   private class IncompleteEquality(val compared: Int, val omitted: Boolean) {
     override def equals(other: Any): Boolean = other match {
       case that: IncompleteEquality => compared == that.compared
