@@ -189,9 +189,8 @@ github:
     creation_cap:
       enabled: true
       max_open_pull_requests: 3
-      # The cap is intended to limit the number of PRs created by AI bots. The
-      # following contributors have demonstrated engagement with the project through
-      # filing issues, reviewing PRs, and engaging in discussions, so the cap is not
+      # The following contributors have shown sustained engagement with the project,
+      # through merged PRs, issues, PR reviews, and discussions, so the cap is not
       # applied to them.
       #
       # ASF makes GitHub's bypass list match this list exactly, so a login added by
