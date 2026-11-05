@@ -14,8 +14,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-ARG HAS_MACOS_SDK="false"
-
 FROM ubuntu:20.04 AS base
 
 USER root
@@ -63,36 +61,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo2junit
 
-# Stage to add OSXCross if MacOSSDK is provided
-FROM base AS with-macos-sdk-true
-ARG MACOS_SDK
-
-COPY workdir/$MACOS_SDK /opt/xcode/
-
-RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-    rustup target add aarch64-apple-darwin; \
-elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-    rustup target add x86_64-apple-darwin; \
-fi
-
-# Build OSXCross
-RUN cd /opt && git clone --depth 1 https://github.com/tpoechtrager/osxcross.git \
-    && cd /opt/osxcross \
-    && ./tools/gen_sdk_package_pbzx.sh /opt/xcode/${MACOS_SDK} \
-    && cd .. \
-    && cp /opt/osxcross/*.tar.xz tarballs \
-    && UNATTENDED=1 ./build.sh
-ENV PATH="/opt/osxcross/target/bin:${PATH}"
-# Use osxcross toolchain for cargo
-COPY workdir/cargo.config /root/.cargo/config
-ENV HAS_OSXCROSS="true"
-
-# Placeholder Stage if MacOSSDK is not provided
-FROM base AS with-macos-sdk-false
-RUN echo "Building without MacOS"
-
-
-FROM with-macos-sdk-${HAS_MACOS_SDK} AS final
+FROM base AS final
 
 COPY build-comet-native-libs.sh /opt/comet-rm/build-comet-native-libs.sh
 WORKDIR /opt/comet-rm
