@@ -49,8 +49,12 @@
 //! otherwise evict each other's entries, among them the footers the Delta deletion vector planning
 //! loads before the scan opens them. The limit stays up while a task finishes and others run on,
 //! because the cache evicts the least recently used entry whoever loaded it, so lowering it would
-//! take those footers from a running task as readily as the finished task's. Each task takes its
-//! share when it asks for the cache and gives it back when its `RuntimeEnv` drops it, so the limit
+//! take those footers from a running task as readily as the finished task's. That does not make
+//! the footers a running task preloaded safe: they are older than the finished task's entries, so
+//! when the next task loads its own, they are evicted first, and the scan that needed them fetches
+//! them again. This is an accepted cost, a refetch of a footer a task of its own would have kept,
+//! and only when the entries the stage's tasks load exceed what the limit holds. Each task takes
+//! its share when it asks for the cache and gives it back when its `RuntimeEnv` drops it, so the limit
 //! follows the tasks that actually run, whatever the executor's configured cores say. Shared
 //! entries are stored once, so the tasks of a stage hold no more than they did, and a retained
 //! cache holds no more than one task's.
