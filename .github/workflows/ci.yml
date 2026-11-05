@@ -643,9 +643,10 @@ jobs:
   iceberg_1_11:
     name: Iceberg Spark SQL Tests (Iceberg 1.11)
     needs: changes
-    # Queue-only by default; PRs need the `run-iceberg-tests` label. Iceberg
-    # 1.11 is our only Spark 4.1 Iceberg coverage, which is why it is the one
-    # Iceberg version the queue runs while 1.8/1.9/1.10 run nightly.
+    # Runs on every PR whose paths match, and in the queue. Iceberg 1.11 is our
+    # only Spark 4.1 Iceberg coverage, which is why it is the one Iceberg
+    # version the PR and queue tiers run while 1.8/1.9/1.10 run nightly (or
+    # earlier on a PR with the `run-iceberg-tests` label).
     if: needs.changes.outputs.iceberg_1_11 == 'true'
     uses: ./.github/workflows/iceberg_spark_test_reusable.yml
     with:

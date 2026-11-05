@@ -160,9 +160,10 @@ Some things to know:
   `main` that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
   nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
   caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
-  23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. Those figures
-  predate the Spark SQL and Iceberg suites joining the PR tier; a change that routes to them adds
-  their shards, which run in parallel with the Linux build's test matrix.
+  23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
+  routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their
+  shards run in parallel with the Linux build's test matrix, but the Spark SQL job first builds its
+  own native library and test classes, which took 45 minutes.
 - **Scheduled runs stay upstream.** The nightly run, Miri, the stale-PR closer and the weekly
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
   start no job. Miri can still be run on your fork by dispatching it.

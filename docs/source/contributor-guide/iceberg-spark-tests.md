@@ -131,8 +131,9 @@ diff must be generated against its own tag.
 The `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
 run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
 Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four
-run earlier on a pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. Each job
+Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.8.1, 1.9.1 and
+1.10.0 run once a night against `main`. Those three run earlier on a pull request labeled
+`run-iceberg-tests`. Each job
 calls `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
 for how the pull-request, merge-queue and nightly tiers differ.
@@ -162,8 +163,9 @@ and failure propagation. The fixture does not compile Spark or Iceberg.
 Apply the `run-iceberg-tests` label to a pull request whenever it touches the Iceberg scan or write
 path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
-own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue's, and the
-first verdict on the older Iceberg versions is the nightly run's, after the change has landed.
+own Spark tests, but the Iceberg 1.11 job does and every pull request gets its verdict. Without the
+label, the first verdict on the older Iceberg versions is the nightly run's, after the change has
+landed.
 
 ### Which writer ran each Iceberg write
 
