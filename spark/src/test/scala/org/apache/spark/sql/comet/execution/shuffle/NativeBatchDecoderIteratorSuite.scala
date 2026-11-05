@@ -19,13 +19,17 @@
 
 package org.apache.spark.sql.comet.execution.shuffle
 
-import java.io.{ByteArrayInputStream, EOFException}
+import java.io.{ByteArrayInputStream, EOFException, InputStream}
 import java.nio.ByteBuffer
 
 import scala.collection.mutable.ArrayBuffer
 
+import org.apache.spark.{HashPartitioner, TaskContext}
+import org.apache.spark.shuffle.BaseShuffleHandle
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.metric.SQLMetrics
+import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.storage.{BlockId, ShuffleBlockId}
 
 import org.apache.comet.Native
 import org.apache.comet.vector.NativeUtil
@@ -77,14 +81,15 @@ class NativeBatchDecoderIteratorSuite extends CometTestBase {
     }
   }
 
-  test("coalescing releases oversized read buffers between fetched blocks") {
+  test("coalescing keeps the task's read buffer across fetched blocks") {
+    // The first frame outgrows the initial buffer. The two frames after it, one in the same
+    // fetched block and one in the next, are read into that same grown buffer.
     val largeRows = 40 * 1024
     val firstBlock = intFrame(0 until largeRows) ++ intFrame(Seq(41))
     val secondBlock = intFrame(Seq(42))
     val input = CometBlockStoreShuffleReader.concatenate(
-      Iterator(new ByteArrayInputStream(firstBlock), new ByteArrayInputStream(secondBlock)),
-      resetDecoderBuffer = true)
-    val capacities = ArrayBuffer.empty[Int]
+      Iterator(new ByteArrayInputStream(firstBlock), new ByteArrayInputStream(secondBlock)))
+    val buffers = ArrayBuffer.empty[ByteBuffer]
     val native = new Native {
       override def appendShuffleBatch(
           handle: Long,
@@ -92,7 +97,7 @@ class NativeBatchDecoderIteratorSuite extends CometTestBase {
           length: Int,
           numColumns: Int,
           tracingEnabled: Boolean): Int = {
-        capacities += shuffleBlock.capacity()
+        buffers += shuffleBlock
         super.appendShuffleBatch(handle, shuffleBlock, length, numColumns, tracingEnabled)
       }
     }
@@ -109,11 +114,48 @@ class NativeBatchDecoderIteratorSuite extends CometTestBase {
       val grouped = decoder.next()
       assert((0 until grouped.numRows()).map(grouped.column(0).getInt) == Seq(41, 42))
       assert(!decoder.hasNext)
-      assert(capacities(0) > 128 * 1024)
-      assert(capacities.toSeq == Seq(capacities(0), capacities(0), 128 * 1024))
+      assert(buffers.size == 3)
+      assert(buffers(0).capacity() > ShuffleReadBuffer.INITIAL_CAPACITY)
+      assert(buffers.forall(_ eq buffers(0)))
     } finally {
       decoder.close()
       nativeUtil.close()
+    }
+  }
+
+  test("a reduce task reads every fetched block into one buffer") {
+    // One decoder iterator per fetched block, as CometBlockStoreShuffleReader.read creates them,
+    // all sharing the task's buffer: the first block grows it once and the rest reuse it, where
+    // a buffer per iterator would be allocated, and zeroed, again for every block over the
+    // initial size.
+    val largeRows = 40 * 1024
+    val blocks = Seq(intFrame(0 until largeRows), intFrame(0 until largeRows), intFrame(Seq(7)))
+    val dependency = new CometShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
+      spark.sparkContext.emptyRDD[(Int, ColumnarBatch)],
+      new HashPartitioner(1),
+      decodeTime = SQLMetrics.createNanoTimingMetric(spark.sparkContext, "decode time"),
+      outputAttributes = Seq.empty)
+    val context: TaskContext = TaskContext.empty()
+    val reader = new CometBlockStoreShuffleReader[Int, ColumnarBatch](
+      new BaseShuffleHandle(dependency.shuffleId, dependency),
+      Iterator.empty,
+      context,
+      context.taskMetrics().createTempShuffleReadMetrics(),
+      serializerManager = null,
+      blockManager = null,
+      mapOutputTracker = null) {
+      override protected[shuffle] def fetchIterator: Iterator[(BlockId, InputStream)] =
+        blocks.iterator.zipWithIndex.map { case (block, i) =>
+          (ShuffleBlockId(dependency.shuffleId, i.toLong, 0), new ByteArrayInputStream(block))
+        }
+    }
+    val allocationsBefore = ShuffleReadBuffer.allocations.get()
+    try {
+      val rows = reader.read().map(_._2.numRows()).sum
+      assert(rows == 2 * largeRows + 1)
+      assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 1L)
+    } finally {
+      context.markTaskCompleted(None)
     }
   }
 
