@@ -32,6 +32,18 @@ import org.apache.comet.objectstore.NativeConfig
 
 object CometScanUtils {
 
+  private[comet] def copyScanWithFilters(
+      scan: FileSourceScanExec,
+      partitionFilters: Seq[Expression],
+      dataFilters: Seq[Expression]): FileSourceScanExec = {
+    // Keep the runtime's full constructor, including fields added by Spark distributions.
+    // The supported Spark versions share these positions for partition and data filters.
+    val args = scan.productIterator.map(_.asInstanceOf[AnyRef]).toArray
+    args(4) = partitionFilters
+    args(7) = dataFilters
+    scan.makeCopy(args).asInstanceOf[FileSourceScanExec]
+  }
+
   /**
    * Filters unused DynamicPruningExpression expressions - one which has been replaced with
    * DynamicPruningExpression(Literal.TrueLiteral) during Physical Planning
@@ -54,9 +66,10 @@ object CometScanUtils {
     if (originalPlan == null) {
       null
     } else {
-      originalPlan
-        .copy(partitionFilters =
-          originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]))
+      copyScanWithFilters(
+        originalPlan,
+        originalPlan.partitionFilters.filterNot(_.isInstanceOf[DynamicPruningExpression]),
+        originalPlan.dataFilters)
         .doCanonicalize()
     }
   }
