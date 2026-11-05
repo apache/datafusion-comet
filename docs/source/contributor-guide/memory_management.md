@@ -618,6 +618,9 @@ diverge for several structural reasons:
   not told when a stage ends, so a kept cache is freed once no task of its stage has run for 10
   seconds, once tasks of two other stages run on the executor, or when the plugin shuts down. With
   the setting off, each task has its own 50 MiB cache, freed with the task.
+  To check that tasks share it, run the executors with `COMET_LOG_LEVEL=DEBUG` (see
+  [Native log configuration](debugging.md#native-log-configuration)) and count the
+  `shared metadata cache: hit` and `shared metadata cache: miss` lines in their logs.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
   Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the

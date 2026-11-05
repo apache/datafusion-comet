@@ -75,6 +75,7 @@ use datafusion::execution::cache::cache_manager::{
 };
 use datafusion::execution::cache::default_cache::DefaultCache;
 use datafusion::execution::cache::{Cache, CacheEntryInfo};
+use log::debug;
 use object_store::path::Path;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -252,11 +253,16 @@ impl SharedMetadataCaches {
     /// has asked for one yet.
     pub(crate) fn cache_for(&self, key: StageKey) -> Arc<TaskCache> {
         let mut registry = self.registry.lock().unwrap();
-        let stage = registry
-            .alive
-            .get(&key)
-            .and_then(Weak::upgrade)
-            .unwrap_or_else(|| Arc::new(StageCache::new()));
+        let existing = registry.alive.get(&key).and_then(Weak::upgrade);
+        debug!(
+            "shared metadata cache: {} for {key:?}",
+            if existing.is_some() {
+                "reusing"
+            } else {
+                "creating"
+            }
+        );
+        let stage = existing.unwrap_or_else(|| Arc::new(StageCache::new()));
         registry.alive.insert(key.clone(), Arc::downgrade(&stage));
 
         registry.retained.retain(|(retained, _)| *retained != key);
@@ -367,10 +373,17 @@ impl StoreScopedCache {
 
 impl Cache<Path, CachedFileMetadataEntry> for StoreScopedCache {
     fn get(&self, key: &Path) -> Option<CachedFileMetadataEntry> {
-        self.inner.get(&self.scoped(key))
+        let entry = self.inner.get(&self.scoped(key));
+        debug!(
+            "shared metadata cache: {} {key} ({} entries)",
+            if entry.is_some() { "hit" } else { "miss" },
+            self.inner.len()
+        );
+        entry
     }
 
     fn put(&self, key: &Path, value: CachedFileMetadataEntry) -> Option<CachedFileMetadataEntry> {
+        debug!("shared metadata cache: put {key}");
         self.inner.put(&self.scoped(key), value)
     }
 
