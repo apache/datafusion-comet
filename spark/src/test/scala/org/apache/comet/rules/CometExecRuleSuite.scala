@@ -155,6 +155,41 @@ class CometExecRuleSuite extends CometTestBase {
     }.sum
   }
 
+  test("make_date scan fallback preserves additional runtime constructor fields") {
+    withSQLConf(CometConf.COMET_EXEC_MAKE_DATE_OPERATOR_FALLBACK_ENABLED.key -> "true") {
+      val output = Seq(AttributeReference("day", DataTypes.IntegerType)())
+      val partitionFilters = Seq(
+        GreaterThan(
+          MakeDate(Literal(2024), Literal(1), output.head),
+          Literal.create(java.sql.Date.valueOf("2024-01-01"), DataTypes.DateType)))
+      val dataFilters = Seq(GreaterThan(output.head, Literal(1)))
+      val wrapped = ExtendedFileSourceScanExec(output)
+      val scan = CometScanExec(
+        relation = wrapped.relation,
+        output = wrapped.output,
+        requiredSchema = wrapped.requiredSchema,
+        partitionFilters = partitionFilters,
+        optionalBucketSet = wrapped.optionalBucketSet,
+        optionalNumCoalescedBuckets = wrapped.optionalNumCoalescedBuckets,
+        dataFilters = dataFilters,
+        tableIdentifier = wrapped.tableIdentifier,
+        disableBucketedScan = wrapped.disableBucketedScan,
+        wrapped = wrapped)
+
+      val restored = MakeDateEvaluation
+        .preserve(CollectLimitExec(1, scan))
+        .asInstanceOf[CollectLimitExec]
+        .child
+        .asInstanceOf[FileSourceScanExec]
+
+      assert(restored.getClass == wrapped.getClass)
+      assert(restored.partitionFilters == partitionFilters)
+      assert(restored.dataFilters == dataFilters)
+      assert(restored.productIterator.toSeq.takeRight(2) == Seq(true, output))
+      assert(wrapped.partitionFilters.isEmpty && wrapped.dataFilters.isEmpty)
+    }
+  }
+
   test("make_date preserves row demand below lazy consumers, including reused native plans") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
