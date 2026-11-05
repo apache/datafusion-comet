@@ -7111,6 +7111,8 @@ class CometIcebergNativeSuite
   // Spark's V2 path.
   test("AQE DPP - V2 broadcast query stage creation order (SPARK-34637)") {
     assume(icebergAvailable, "Iceberg not available")
+    // https://github.com/apache/datafusion-comet/issues/7422
+    assume(isSpark35Plus, "Spark 3.4 fails the DPP build side, see #7422")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -7146,14 +7148,12 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        if (isSpark35Plus) {
-          val cometSubqueries = collectWithSubqueries(cometPlan) {
-            case s: CometSubqueryBroadcastExec => s
-          }
-          assert(
-            cometSubqueries.nonEmpty,
-            s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
+        val cometSubqueries = collectWithSubqueries(cometPlan) {
+          case s: CometSubqueryBroadcastExec => s
         }
+        assert(
+          cometSubqueries.nonEmpty,
+          s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.q34637_fact")
       }
