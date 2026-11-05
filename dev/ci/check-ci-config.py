@@ -207,15 +207,15 @@ ROUTING_CASES = [
 # where "allowed" ignores path filters. Written out longhand rather than
 # derived from POLICY, so that a change to the routing has to be stated twice
 # and cannot be made by accident.
-# The PR tier is the Linux build and nothing else. Every Spark SQL and Iceberg
-# suite waits for the queue or the nightly run, or for its label.
-PR_TIER = {"build_linux", "build_linux_full"}
-# The queue adds one Spark version (4.1, the default profile) and one Iceberg
-# version (1.11, the only Spark 4.1 coverage), plus the build-level gates.
+# The PR tier is the Linux build plus one Spark version (4.1, the default
+# profile, catalyst and sql_core only) and one Iceberg version (1.11, the only
+# Spark 4.1 coverage). Every other Spark SQL and Iceberg suite waits for the
+# nightly run, or for its label.
+PR_TIER = {"build_linux", "build_linux_full", "spark_4_1", "iceberg_1_11"}
+# The queue runs the same Spark and Iceberg versions as the PR tier, adds the
+# Spark 4.1 sql_hive shards, and adds the build-level gates.
 QUEUE_TIER = PR_TIER | {
-    "spark_4_1",
     "spark_4_1_hive",
-    "iceberg_1_11",
     "build_macos",
     "build_macos_full",
     "benchmark",
@@ -244,9 +244,9 @@ NIGHTLY_TIER = {
 # `schedule` cases below assert its absence rather than quietly accept it
 # coming back.
 SPARK_DEPRECATED = {"spark_3_4"}
-# One label opts a pull request into every Iceberg version, whichever tier
-# each sits in.
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+# One label opts a pull request into every nightly Iceberg version. Iceberg
+# 1.11 is in the PR tier, so it needs no label.
+ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10"}
 # Likewise one label for every Delta profile.
 DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}
@@ -372,22 +372,9 @@ POLICY_CASES = [
         },
         {"build_linux_all_profiles"},
     ),
-    # Spark 4.1 is queue-only too. Two labels feed its one call: the suite
-    # label selects every module, the hive label only the sql_hive shards.
-    # Neither label pulls in any other Spark version.
-    (
-        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
-        PR_TIER | {"spark_4_1", "spark_4_1_hive"},
-    ),
-    (
-        {
-            "name": "pull_request",
-            "action": "labeled",
-            "label": "run-spark-4.1-tests",
-            "labels": ["run-spark-4.1-tests"],
-        },
-        {"spark_4_1", "spark_4_1_hive"},
-    ),
+    # Spark 4.1's catalyst and sql_core shards are in the PR tier. Its sql_hive
+    # shards are queue-only, and their label brings them forward without
+    # pulling in any other Spark version.
     (
         {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-hive-tests"]},
         PR_TIER | {"spark_4_1_hive"},
@@ -401,17 +388,16 @@ POLICY_CASES = [
         },
         {"spark_4_1_hive"},
     ),
-    # Adding the hive label on top of the suite label re-runs only the hive
-    # rows: a `labeled` run selects what the new label gates, and the suite
-    # label's earlier run already covered every module at this commit.
+    # The retired suite label gates nothing now, so it must not start a second
+    # pipeline or add anything to a pushed commit's run.
     (
         {
             "name": "pull_request",
             "action": "labeled",
-            "label": "run-spark-4.1-hive-tests",
-            "labels": ["run-spark-4.1-tests", "run-spark-4.1-hive-tests"],
+            "label": "run-spark-4.1-tests",
+            "labels": ["run-spark-4.1-tests"],
         },
-        {"spark_4_1_hive"},
+        set(),
     ),
     # An opt-in label present on a pushed commit adds just that suite. For the
     # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
@@ -547,8 +533,8 @@ POLICY_CASES = [
     # because a fork cannot see the labels on the pull request.
     (fork_pr(), set()),
     (
-        fork_pr(labels=["run-spark-4.1-tests", "run-delta-tests"]),
-        {"spark_4_1", "spark_4_1_hive"} | DELTA_OPT_IN,
+        fork_pr(labels=["run-spark-4.1-hive-tests", "run-delta-tests"]),
+        {"spark_4_1_hive"} | DELTA_OPT_IN,
     ),
     # The label brings the non-default Spark profiles forward here, while the
     # fork's run covers the default profile and the lints, so between them every
