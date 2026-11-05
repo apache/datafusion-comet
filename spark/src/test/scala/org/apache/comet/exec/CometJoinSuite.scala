@@ -37,7 +37,7 @@ import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide
 import org.apache.spark.sql.catalyst.plans.{Inner, JoinType, LeftOuter, LeftSemi}
 import org.apache.spark.sql.catalyst.plans.logical.Join
 import org.apache.spark.sql.catalyst.plans.physical.SinglePartition
-import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometBroadcastHashJoinExec, CometBroadcastNestedLoopJoinExec, CometCartesianProductExec, CometFilterExec, CometHashJoin, CometHashJoinExec, CometNativeScanExec, CometProjectExec, CometRangeExec, CometSampleExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec, CometUnionExec, CometWindowExec}
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution.{CoalesceExec, ColumnarToRowTransition, InputAdapter, LocalTableScanExec, SortExec, SparkPlan, SQLExecution, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
@@ -153,6 +153,25 @@ class CometJoinSuite extends CometTestBase {
               case join: CometBroadcastHashJoinExec => join
             }
           }
+        }
+      }
+    }
+  }
+
+  test("cross join stays on Spark by default (native path is opt-in)") {
+    withSQLConf(
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq((0, 10), (1, 11), (2, 12)), "l") {
+        withParquetTable(Seq((0, 100), (1, 101)), "r") {
+          val df = sql(
+            "SELECT * FROM (SELECT /*+ COALESCE(1) */ * FROM l) l " +
+              "CROSS JOIN (SELECT /*+ COALESCE(1) */ * FROM r) r")
+          checkSparkAnswer(df)
+          assert(
+            !df.queryExecution.executedPlan.exists(_.isInstanceOf[CometCartesianProductExec]),
+            "cross join must stay on Spark when cartesianProduct.enabled is false")
         }
       }
     }
@@ -1454,10 +1473,7 @@ class CometJoinSuite extends CometTestBase {
         case _ => false
       }.isEmpty),
       plan)
-    // Propagates the session's confs, such as the batch size, to the tasks as collect() does.
-    val parts = SQLExecution.withSQLConfPropagated(spark) {
-      query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
-    }
+    val parts = query.queryExecution.toRdd.map(_.getInt(0)).glom().collect()
     parts.zipWithIndex.foreach { case (keys, i) =>
       assert(keys.sameElements(keys.sorted), s"partition $i is out of order\n$plan")
     }

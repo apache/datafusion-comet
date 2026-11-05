@@ -43,6 +43,38 @@ import org.apache.comet.vector.CometVector
 
 class UtilsSuite extends CometTestBase {
 
+  test("serializeBatches round trips schema metadata larger than the output chunk estimate") {
+    val random = new scala.util.Random(42)
+    // Keep vector data below 4 KiB while the varied field names exceed it even after compression.
+    val vectors = (0 until 256).map { i =>
+      val vector = new IntVector(random.alphanumeric.take(64).mkString, CometArrowAllocator)
+      vector.allocateNew(1)
+      vector.set(0, i)
+      vector.setValueCount(1)
+      vector
+    }
+    val columns = vectors.map { vector =>
+      CometVector.getVector(vector, new CDataDictionaryProvider): ColumnVector
+    }
+    val batch = new ColumnarBatch(columns.toArray, 1)
+    try {
+      assert(vectors.map(_.getBufferSize).sum < 4096)
+      val (rows, buffer) = Utils.serializeBatches(Iterator(batch)).next()
+      try {
+        assert(rows == 1)
+        assert(buffer.size > 4096)
+        assert(buffer.getChunks.length > 1)
+        assert(buffer.getChunks.head.remaining() == 4096)
+        val decoded = Utils.decodeBatches(buffer, "schema-chunks")
+        val result = decoded.next()
+        assert(result.numRows() == 1)
+        assert(result.numCols() == vectors.length)
+        vectors.indices.foreach(i => assert(result.column(i).getInt(0) == i))
+        assert(!decoded.hasNext)
+      } finally buffer.dispose()
+    } finally batch.close()
+  }
+
   test("serializeBatches preserves row count for a zero-column batch") {
     val numRows = 5
     val batch = new ColumnarBatch(Array.empty[ColumnVector], numRows)
