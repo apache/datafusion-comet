@@ -5311,7 +5311,7 @@ class CometIcebergNativeSuite
         // partition share the entry.
         assert(
           tasksWithResidualPerPartition.exists(_ > 1),
-          s"expected a partition with several tasks carrying a residual: " +
+          "expected a partition with several tasks carrying a residual: " +
             tasksWithResidualPerPartition)
         // Every task uses it, so it ships once: in the common block when several partitions have
         // tasks, otherwise with the one partition that does.
