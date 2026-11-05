@@ -120,6 +120,12 @@ the tasks of an executor that read it at the same time share one such copy. The 
 usage log reports the allocator's total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.
 
+The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
+the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of
+retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
+Inputs and output coexist during that copy, and one decoded lookahead can be retained. The grouping
+limit therefore does not cap total reader RSS, and oversized input batches pass through unchanged.
+
 Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
 join reserves its whole build side, because DataFusion skips only the buffers that the same plan
 has already counted, so with N tasks sharing one copy the pool holds N times the bytes that are
