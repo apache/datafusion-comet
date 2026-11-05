@@ -105,6 +105,11 @@ trait ShimSparkErrorConverter {
         // Spark 3.x takes SQLQueryContext, not QueryContext
         Some(QueryExecutionErrors.overflowInSumOfDecimalError(sqlCtx(context)))
 
+      case "NumericOutOfRange" =>
+        Some(
+          QueryExecutionErrors.outOfDecimalTypeRangeError(
+            UTF8String.fromString(params("value").toString)))
+
       case "NumericValueOutOfRange" =>
         // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
         val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
