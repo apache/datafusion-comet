@@ -219,6 +219,7 @@ them like any other production setting.
 | `spark.comet.exec.broadcastExchange.enabled` | Whether to enable broadcastExchange by default. | true |
 | `spark.comet.exec.broadcastHashJoin.enabled` | Whether to enable broadcastHashJoin by default. | true |
 | `spark.comet.exec.broadcastNestedLoopJoin.enabled` | Whether to enable broadcastNestedLoopJoin by default. | true |
+| `spark.comet.exec.cartesianProduct.enabled` | Whether to enable cartesianProduct by default. Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill (https://github.com/apache/datafusion/issues/26383). Runs natively only without a join condition and when each input reports exactly one partition. | false |
 | `spark.comet.exec.coalesce.enabled` | Whether to enable coalesce by default. | true |
 | `spark.comet.exec.collectLimit.enabled` | Whether to enable collectLimit by default. | true |
 | `spark.comet.exec.collectMetrics.enabled` | Whether to enable collectMetrics by default. | true |

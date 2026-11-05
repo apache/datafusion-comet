@@ -1496,95 +1496,99 @@ them like any other production setting.</p>
 <td><p>Whether to enable broadcastNestedLoopJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.coalesce.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.cartesianProduct.enabled</span></code></p></td>
+<td><p>Whether to enable cartesianProduct by default. Opt-in: DataFusion’s CrossJoinExec buffers the left input and cannot spill (https://github.com/apache/datafusion/issues/26383). Runs natively only without a join condition and when each input reports exactly one partition.</p></td>
+<td><p>false</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.coalesce.enabled</span></code></p></td>
 <td><p>Whether to enable coalesce by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectLimit.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectLimit.enabled</span></code></p></td>
 <td><p>Whether to enable collectLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectMetrics.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.collectMetrics.enabled</span></code></p></td>
 <td><p>Whether to enable collectMetrics by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.emptyRelation.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.emptyRelation.enabled</span></code></p></td>
 <td><p>Whether to enable emptyRelation by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.existenceJoin.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.existenceJoin.enabled</span></code></p></td>
 <td><p>Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is combined with another predicate via OR. Sort-merge joins, residual (non-equi) join conditions, computed (non-column) join keys, and NOT IN combined with OR fall back to Spark.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.expand.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.expand.enabled</span></code></p></td>
 <td><p>Whether to enable expand by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.explode.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.explode.enabled</span></code></p></td>
 <td><p>Whether to enable explode by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.filter.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.filter.enabled</span></code></p></td>
 <td><p>Whether to enable filter by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.globalLimit.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.globalLimit.enabled</span></code></p></td>
 <td><p>Whether to enable globalLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.hashJoin.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.hashJoin.enabled</span></code></p></td>
 <td><p>Whether to enable hashJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localLimit.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localLimit.enabled</span></code></p></td>
 <td><p>Whether to enable localLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.localTableScan.enabled</span></code></p></td>
 <td><p>Whether to enable localTableScan by default.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.mergeRows.enabled</span></code></p></td>
 <td><p>Whether to enable mergeRows by default. Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark 4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native MergeRows is used only where the enclosing Comet write path preserves that contract..</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.project.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.project.enabled</span></code></p></td>
 <td><p>Whether to enable project by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.range.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.range.enabled</span></code></p></td>
 <td><p>Whether to enable range by default. When enabled, Comet generates the rows of <code class="docutils literal notranslate"><span class="pre">spark.range</span></code> and SQL <code class="docutils literal notranslate"><span class="pre">range()</span></code> in native code, so the operators above them can run natively. It is off by default because it can be slower than Spark when those operators are only cheap expressions, such as a filter, which Spark compiles together with the range into one loop.</p></td>
 <td><p>false</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sample.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sample.enabled</span></code></p></td>
 <td><p>Whether to enable sample by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sort.enabled</span></code></p></td>
 <td><p>Whether to enable sort by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoin.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoin.enabled</span></code></p></td>
 <td><p>Whether to enable sortMergeJoin by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.sortMergeJoinWithJoinFilter.enabled</span></code></p></td>
 <td><p>Support for Sort Merge Join with filter. Deprecated: this config will be removed in a future major release.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.takeOrderedAndProject.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.takeOrderedAndProject.enabled</span></code></p></td>
 <td><p>Whether to enable takeOrderedAndProject by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.union.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.union.enabled</span></code></p></td>
 <td><p>Whether to enable union by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.window.enabled</span></code></p></td>
 <td><p>Whether to enable window by default.</p></td>
 <td><p>true</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.windowGroupLimit.enabled</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.windowGroupLimit.enabled</span></code></p></td>
 <td><p>Whether to enable windowGroupLimit by default.</p></td>
 <td><p>true</p></td>
 </tr>
