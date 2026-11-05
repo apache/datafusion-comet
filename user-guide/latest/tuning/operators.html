@@ -948,6 +948,19 @@ same buffers. The copy is freed when the last of these tasks completes, so a tas
 broadcast again. Each task still builds its own hash table.</p>
 <p>Set <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.broadcastExchange.shareDecoded.enabled=false</span></code> to have every task decode the whole broadcast for
 itself.</p>
+<section id="broadcast-compression">
+<h4>Broadcast compression<a class="headerlink" href="#broadcast-compression" title="Link to this heading">#</a></h4>
+<p>Comet compresses the Arrow IPC batches of a broadcast with Spark’s <code class="docutils literal notranslate"><span class="pre">spark.io.compression.codec</span></code>. When
+<code class="docutils literal notranslate"><span class="pre">spark.broadcast.compress</span></code> is <code class="docutils literal notranslate"><span class="pre">true</span></code>, which is Spark’s default, Spark compresses the broadcast again with the same
+codec, and executors decompress it twice. The second pass runs on the driver before the join can start, and it saves few
+bytes because the data is already compressed: up to about 10% when the build side has sorted or sequential columns,
+such as surrogate keys, and 0 to 6% otherwise. Its cost grows with the size of the broadcast and with the codec level.
+In local tests with broadcasts of 270 to 460 MiB, it added about 0.2 seconds of driver time and up to 0.15 seconds on
+each executor with <code class="docutils literal notranslate"><span class="pre">lz4</span></code>, and about 0.85 seconds of driver time with <code class="docutils literal notranslate"><span class="pre">zstd</span></code> at level 5.</p>
+<p>For queries that broadcast large build sides, consider setting <code class="docutils literal notranslate"><span class="pre">spark.broadcast.compress=false</span></code>. The setting applies to
+every broadcast in the application, so broadcasts that Comet does not create, such as the build side of a join that
+runs in Spark, are sent uncompressed too.</p>
+</section>
 </section>
 <section id="join-runtime-filters">
 <h3>Join Runtime Filters<a class="headerlink" href="#join-runtime-filters" title="Link to this heading">#</a></h3>
@@ -1173,7 +1186,10 @@ array with a non-default string collation continues through the JVM codegen disp
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#optimizing-joins">Optimizing Joins</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#left-semi-sort-merge-joins">Left-semi sort-merge joins</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcast-joins">Broadcast Joins</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcast-joins">Broadcast Joins</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#broadcast-compression">Broadcast compression</a></li>
+</ul>
+</li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters">Join Runtime Filters</a><ul class="nav section-nav flex-column">
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#early-filtering-in-join-chains">Early filtering in join chains</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#join-runtime-filters-through-residual-predicates">Join runtime filters through residual predicates</a></li>
