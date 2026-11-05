@@ -45,6 +45,7 @@ import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode}
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 import org.apache.spark.sql.execution.metric.SQLMetrics
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -60,7 +61,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
   import testImplicits._
 
   private final class RecordingReaderBackend(client: RecordingCelebornRawClient)
-      extends ShuffleManager {
+      extends ShimBlockingShuffleManager {
     var readRange: Option[(Int, Int, Int, Int)] = None
     var unregistered: Option[Int] = None
     var fileToRemove: Option[Path] = None
@@ -238,7 +239,8 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
                 dependency.rangePartitionBounds)
               writer.write(inputs)
               writer.stop(success = true)
-              val dataFile = SparkEnv.get.shuffleManager.shuffleBlockResolver
+              val dataFile = ShimBlockingShuffleManager
+                .blockResolver(SparkEnv.get.shuffleManager)
                 .asInstanceOf[IndexShuffleBlockResolver]
                 .getDataFile(dependency.shuffleId, context.taskAttemptId())
               val bytes = Files.readAllBytes(dataFile.toPath)

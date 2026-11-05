@@ -24,7 +24,6 @@ import java.io.File
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.test.TestSparkSession
 
 import org.apache.comet.{CometConf, CometSparkSessionExtensions}
 
@@ -37,7 +36,7 @@ class CometVariantShreddingSuite extends VariantShreddingSuite {
     .set(CometConf.COMET_ONHEAP_ENABLED.key, "true")
     .set(CometConf.COMET_SHUFFLE_ENABLED.key, "false")
 
-  override protected def createSparkSession: TestSparkSession = {
+  override protected def createSparkSession = {
     val session = super.createSparkSession
     new CometSparkSessionExtensions().apply(session.extensions)
     session

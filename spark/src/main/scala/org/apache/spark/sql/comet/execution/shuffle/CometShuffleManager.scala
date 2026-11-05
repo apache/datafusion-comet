@@ -33,6 +33,7 @@ import org.apache.spark.shuffle._
 import org.apache.spark.shuffle.api.ShuffleExecutorComponents
 import org.apache.spark.shuffle.sort.{BypassMergeSortShuffleHandle, SerializedShuffleHandle, SortShuffleManager, SortShuffleWriter}
 import org.apache.spark.sql.comet.PlanDataInjector
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.util.collection.OpenHashSet
 
@@ -41,7 +42,7 @@ import org.apache.comet.CometConf
 /**
  * A [[ShuffleManager]] that uses Arrow format to shuffle data.
  */
-class CometShuffleManager(conf: SparkConf) extends ShuffleManager with Logging {
+class CometShuffleManager(conf: SparkConf) extends ShimBlockingShuffleManager with Logging {
 
   import CometShuffleManager._
   import SortShuffleManager._

@@ -35,6 +35,7 @@ import org.apache.spark.rpc.{RpcCallContext, RpcEndpointRef, RpcEnv, ThreadSafeR
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.comet.PlanDataInjector
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 import org.apache.spark.util.RpcUtils
 
 import org.apache.comet.CometConf
@@ -57,7 +58,7 @@ class CometCelebornShuffleManager private[shuffle] (
     planningSupportFactory: SparkConf => CelebornNativeShufflePlanningSupport = conf =>
       CometCelebornShuffleManager.nativeShufflePlanningSupport(conf),
     localManagerFactory: SparkConf => ShuffleManager = conf => new CometShuffleManager(conf))
-    extends ShuffleManager {
+    extends ShimBlockingShuffleManager {
 
   /** Constructor used by Spark on both the driver and executors. */
   def this(conf: SparkConf, isDriver: Boolean) =
@@ -283,7 +284,8 @@ class CometCelebornShuffleManager private[shuffle] (
     }
   }
 
-  override def shuffleBlockResolver: ShuffleBlockResolver = backend.shuffleBlockResolver
+  override def shuffleBlockResolver: ShuffleBlockResolver =
+    ShimBlockingShuffleManager.blockResolver(backend)
 
   override def unregisterShuffle(shuffleId: Int): Boolean = {
     sizeLimitFallbacks.remove(shuffleId)

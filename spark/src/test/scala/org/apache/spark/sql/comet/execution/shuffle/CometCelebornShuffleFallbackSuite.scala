@@ -34,6 +34,7 @@ import org.apache.spark.scheduler.{JobFailed, MapStatus, SparkListener, SparkLis
 import org.apache.spark.shuffle.{ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.shuffle.celeborn.CelebornShuffleHandle
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
@@ -756,7 +757,8 @@ class CometCelebornFallbackTestClient extends RecordingCelebornPushClient {
   }
 }
 
-private[shuffle] class CometCelebornFallbackTestBackend(conf: SparkConf) extends ShuffleManager {
+private[shuffle] class CometCelebornFallbackTestBackend(conf: SparkConf)
+    extends ShimBlockingShuffleManager {
   private val ordinaryShuffle = new CometShuffleManager(conf)
 
   override def registerShuffle[K, V, C](

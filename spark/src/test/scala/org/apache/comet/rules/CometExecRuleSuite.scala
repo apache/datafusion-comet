@@ -1689,7 +1689,16 @@ class CometExecRuleSuite extends CometTestBase {
   private def checkUnchangedDppReplans(): Unit = {
     val observed = new ConcurrentLinkedQueue[(CometBroadcastExchangeExec, LogicalPlan)]()
     val tempTag = AdaptiveSparkPlanExec.TEMP_LOGICAL_PLAN_TAG
-    val costEvaluator = SimpleCostEvaluator(forceOptimizeSkewedJoin = false)
+    // Spark 4.3 added a `countLocalSort` flag to `SimpleCostEvaluator` and a `numLocalSorts` field
+    // to `SimpleCost`, so build both through their constructors with every flag off and count zero.
+    def newWithAll[T](cls: Class[T], value: AnyRef): T = {
+      val constructor = cls.getConstructors.head
+      constructor
+        .newInstance(Seq.fill(constructor.getParameterCount)(value): _*)
+        .asInstanceOf[T]
+    }
+    val costEvaluator = newWithAll(classOf[SimpleCostEvaluator], java.lang.Boolean.FALSE)
+    val zeroCost = newWithAll(classOf[SimpleCost], Int.box(0))
     withReplanObserver { (broadcast, stage) =>
       assert(stage.physicalPlan eq broadcast)
       assert(broadcast.getTagValue(tempTag).exists(_ eq stage.logicalPlan))
@@ -1700,8 +1709,8 @@ class CometExecRuleSuite extends CometTestBase {
       // Spark rejects an equal-cost candidate when its physical tree is unchanged.
       // Pin both inputs to that decision, including Comet's retained temporary link.
       assert(previous == broadcast)
-      assert(costEvaluator.evaluateCost(previous) == SimpleCost(0))
-      assert(costEvaluator.evaluateCost(broadcast) == SimpleCost(0))
+      assert(costEvaluator.evaluateCost(previous) == zeroCost)
+      assert(costEvaluator.evaluateCost(broadcast) == zeroCost)
       observed.add((broadcast.clone().asInstanceOf[CometBroadcastExchangeExec], logicalPlan))
     } {
       val plan = checkDppLinkQuery()

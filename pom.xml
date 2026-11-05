@@ -878,6 +878,32 @@ under the License.
     </profile>
 
     <profile>
+      <!-- Experimental Spark 4.3 support, targeting the 4.3.0 release. -->
+      <id>spark-4.3</id>
+      <properties>
+        <scala.version>2.13.18</scala.version>
+        <scala.binary.version>2.13</scala.binary.version>
+        <spark.version>4.3.0</spark.version>
+        <spark.version.short>4.3</spark.version.short>
+        <hadoop-azure.version>3.5.0</hadoop-azure.version>
+        <parquet.version>1.17.0</parquet.version>
+        <semanticdb.version>4.13.10</semanticdb.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
+        <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
+        <shims.minorVerSrc>spark-4.3</shims.minorVerSrc>
+        <!-- No Delta release targets Spark 4.3 yet (Delta 4.3.x still builds against
+             Spark 4.1). The contrib compiles against 4.3.1 here but is unsupported on
+             this profile until Delta ships Spark 4.3 support. -->
+        <delta.spark.version>4.3.1</delta.spark.version>
+        <!-- Use jdk17 by default -->
+        <java.version>17</java.version>
+        <maven.compiler.source>${java.version}</maven.compiler.source>
+        <maven.compiler.target>${java.version}</maven.compiler.target>
+      </properties>
+    </profile>
+
+    <profile>
       <!-- Builds the out-of-tree Delta Lake scan contrib. Pair with a Spark profile
            (e.g. -Pspark-3.5,delta); the native library's default features include the
            `delta` Cargo feature the contrib relies on. -->
