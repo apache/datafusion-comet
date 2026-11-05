@@ -300,6 +300,30 @@ class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
   }
 }
 
+class CometPluginsNativeColumnarToRowWarningSuite extends CometTestBase {
+
+  private val warning = "spark.comet.exec.columnarToRow.native.enabled=true is deprecated"
+
+  private def warningsFor(conf: SparkConf): Seq[String] = {
+    // Logging derives the logger name by stripping the object's trailing '$'
+    val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
+    val appender = new LogAppender("native columnar to row warning")
+    withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
+      CometDriverPlugin.warnIfNativeColumnarToRowSet(conf)
+    }
+    appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
+  }
+
+  test("warns when native columnar to row conversion is set") {
+    val conf = new SparkConf().set("spark.comet.exec.columnarToRow.native.enabled", "true")
+    assert(warningsFor(conf).exists(_.contains(warning)))
+  }
+
+  test("does not warn when native columnar to row conversion is unset") {
+    assert(!warningsFor(new SparkConf()).exists(_.contains("columnarToRow.native")))
+  }
+}
+
 class CometPluginsUnifiedModeSuite extends CometTestBase {
   override protected def sparkConf: SparkConf = {
     val conf = new SparkConf()

@@ -1653,14 +1653,14 @@ index 0df7f806272..9cdfe8b8f46 100644
              df.collect()
            }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
-index 2e33f6505ab..f0e64fd58ca 100644
+index 2e33f6505ab..1e2d21aafd0 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/SubquerySuite.scala
 @@ -23,10 +23,11 @@ import org.apache.spark.SparkRuntimeException
  import org.apache.spark.sql.catalyst.expressions.SubqueryExpression
  import org.apache.spark.sql.catalyst.plans.{LeftAnti, LeftSemi}
  import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, Filter, Join, LogicalPlan, Project, Sort, Union}
-+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometNativeScanExec, CometScanExec}
++import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeScanExec, CometScanExec}
  import org.apache.spark.sql.execution._
  import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanHelper, DisableAdaptiveExecution}
  import org.apache.spark.sql.execution.datasources.FileScanRDD
@@ -1669,7 +1669,7 @@ index 2e33f6505ab..f0e64fd58ca 100644
  import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -1529,6 +1530,30 @@ class SubquerySuite extends QueryTest
+@@ -1529,6 +1530,24 @@ class SubquerySuite extends QueryTest
              fs.inputRDDs().forall(
                _.asInstanceOf[FileScanRDD].filePartitions.forall(
                  _.files.forall(_.urlEncodedPath.contains("p=0"))))
@@ -1691,16 +1691,10 @@ index 2e33f6505ab..f0e64fd58ca 100644
 +            fs.inputRDDs().forall(
 +              _.asInstanceOf[FileScanRDD].filePartitions.forall(
 +                _.files.forall(_.urlEncodedPath.contains("p=0"))))
-+        case CometNativeColumnarToRowExec(
-+        fs: CometNativeScanExec) =>
-+          fs.partitionFilters.exists(ExecSubqueryExpression.hasSubquery) &&
-+            fs.inputRDDs().forall(
-+              _.asInstanceOf[FileScanRDD].filePartitions.forall(
-+                _.files.forall(_.urlEncodedPath.contains("p=0"))))
          case _ => false
        })
      }
-@@ -2094,7 +2119,7 @@ class SubquerySuite extends QueryTest
+@@ -2094,7 +2113,7 @@ class SubquerySuite extends QueryTest
  
        df.collect()
        val exchanges = collect(df.queryExecution.executedPlan) {
@@ -1709,7 +1703,7 @@ index 2e33f6505ab..f0e64fd58ca 100644
        }
        assert(exchanges.size === 1)
      }
-@@ -2678,18 +2703,29 @@ class SubquerySuite extends QueryTest
+@@ -2678,18 +2697,29 @@ class SubquerySuite extends QueryTest
      def checkFileSourceScan(query: String, answer: Seq[Row]): Unit = {
        val df = sql(query)
        checkAnswer(df, answer)
@@ -1747,28 +1741,6 @@ index 2e33f6505ab..f0e64fd58ca 100644
      }
  
      withTable("t1", "t2") {
-diff --git a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-index a40e34d94d0..abc1f035d15 100644
---- a/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-+++ b/sql/core/src/test/scala/org/apache/spark/sql/VariantEndToEndSuite.scala
-@@ -21,6 +21,7 @@ import org.apache.spark.sql.QueryTest.sameRows
- import org.apache.spark.sql.catalyst.InternalRow
- import org.apache.spark.sql.catalyst.expressions.{Cast, Literal}
- import org.apache.spark.sql.catalyst.expressions.variant.{ToVariantObject, VariantExpressionEvalUtils}
-+import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
- import org.apache.spark.sql.execution.WholeStageCodegenExec
- import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
- import org.apache.spark.sql.functions._
-@@ -358,7 +359,8 @@ class VariantEndToEndSuite extends QueryTest with SharedSparkSession {
-             s"cast(to_variant_object(s) as ${schema(2).dataType.sql})")
-           checkAnswer(df, input)
-           val plan = df.queryExecution.executedPlan
--          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY"))
-+          assert(plan.isInstanceOf[WholeStageCodegenExec] == (codegenMode == "CODEGEN_ONLY")
-+            || plan.isInstanceOf[CometNativeColumnarToRowExec])
-         }
-       }
-     }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
 index 11e9547dfc5..327e0b1bc5b 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/collation/CollationSuite.scala
@@ -2369,18 +2341,18 @@ index aa619c5cde8..4b5a42e683f 100644
      nums.createOrReplaceTempView("nums")
  
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
-index aed11badb71..1a365b5aacf 100644
+index aed11badb71..ab7e9456e26 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/execution/SparkPlanSuite.scala
 @@ -23,6 +23,7 @@ import org.apache.spark.sql.QueryTest
  import org.apache.spark.sql.catalyst.InternalRow
  import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference}
  import org.apache.spark.sql.catalyst.plans.logical.Deduplicate
-+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec}
++import org.apache.spark.sql.comet.CometColumnarToRowExec
  import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
  import org.apache.spark.sql.internal.SQLConf
  import org.apache.spark.sql.test.SharedSparkSession
-@@ -134,7 +135,11 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
+@@ -134,7 +135,10 @@ class SparkPlanSuite extends QueryTest with SharedSparkSession {
          spark.range(1).write.parquet(path.getAbsolutePath)
          val df = spark.read.parquet(path.getAbsolutePath)
          val columnarToRowExec =
@@ -2388,7 +2360,6 @@ index aed11badb71..1a365b5aacf 100644
 +          df.queryExecution.executedPlan.collectFirst {
 +            case p: ColumnarToRowExec => p
 +            case p: CometColumnarToRowExec => p
-+            case p: CometNativeColumnarToRowExec => p
 +          }.get
          try {
            spark.range(1).foreach { _ =>
@@ -4040,7 +4011,7 @@ index 800a58f0c1d..2506d27b94d 100644
      }
    }
 diff --git a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
-index c4b09c4b289..75c3437788e 100644
+index c4b09c4b289..7aafa8a74d9 100644
 --- a/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 +++ b/sql/core/src/test/scala/org/apache/spark/sql/sources/BucketedReadSuite.scala
 @@ -26,10 +26,11 @@ import org.apache.spark.sql.catalyst.expressions
@@ -4092,7 +4063,7 @@ index c4b09c4b289..75c3437788e 100644
  
            val bucketColumnType = bucketedDataFrame.schema.apply(bucketColumnIndex).dataType
            val rowsWithInvalidBuckets = fileScan.execute().filter(row => {
-@@ -454,28 +466,54 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -454,28 +466,52 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
          val joinOperator = if (joined.sparkSession.sessionState.conf.adaptiveExecutionEnabled) {
            val executedPlan =
              joined.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec].executedPlan
@@ -4123,9 +4094,7 @@ index c4b09c4b289..75c3437788e 100644
 +                case s: SortMergeJoinExec => s
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
 +              }
-+            case CometNativeColumnarToRowExec(child) =>
-+              child.asInstanceOf[CometSortMergeJoinExec].originalPlan match {
-+                case s: SortMergeJoinExec => s
++            case s: SortMergeJoinExec => s
 +                case o => fail(s"expected SortMergeJoinExec, but found\n$o")
 +              }
 +            case o => fail(s"expected SortMergeJoinExec, but found\n$o")
@@ -4155,7 +4124,7 @@ index c4b09c4b289..75c3437788e 100644
            s"expected sort in the right child to be $sortRight but found\n${joinOperator.right}")
  
          // check the output partitioning
-@@ -838,11 +876,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -838,11 +874,11 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
        df1.write.format("parquet").bucketBy(8, "i").saveAsTable("bucketed_table")
  
        val scanDF = spark.table("bucketed_table").select("j")
@@ -4169,7 +4138,7 @@ index c4b09c4b289..75c3437788e 100644
        checkAnswer(aggDF, df1.groupBy("j").agg(max("k")))
      }
    }
-@@ -1031,15 +1069,24 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
+@@ -1031,15 +1067,24 @@ abstract class BucketedReadSuite extends QueryTest with SQLTestUtils with Adapti
            Seq(true, false).foreach { aqeEnabled =>
              withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqeEnabled.toString) {
                val plan = sql(query).queryExecution.executedPlan

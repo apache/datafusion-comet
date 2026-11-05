@@ -124,6 +124,7 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
     CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
+    CometDriverPlugin.warnIfNativeColumnarToRowSet(sc.getConf)
 
     extraConfs
   }
@@ -333,6 +334,17 @@ object CometDriverPlugin extends Logging {
           "pools do not track, because Spark hands out the whole off-heap pool whatever it is " +
           s"set to. Size ${EXECUTOR_MEMORY_OVERHEAD.key} for that memory instead. " +
           s"${CometConf.TUNING_GUIDE}.")
+    }
+  }
+
+  // The Rust columnar-to-row converter that spark.comet.exec.columnarToRow.native.enabled turned
+  // on has been removed, so the key no longer does anything.
+  private[apache] def warnIfNativeColumnarToRowSet(conf: SparkConf): Unit = {
+    val key = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key
+    conf.getOption(key).foreach { value =>
+      logWarning(
+        s"$key=$value is deprecated and will be removed in a future major release. It has no " +
+          "effect: Comet always converts Arrow batches to Spark rows on the JVM.")
     }
   }
 

@@ -20,7 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
 
 import org.apache.comet.CometConf
@@ -37,7 +37,6 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
 
   private def isCometColumnarToRow(plan: SparkPlan): Boolean = plan match {
     case _: CometColumnarToRowExec => true
-    case _: CometNativeColumnarToRowExec => true
     case _ => false
   }
 

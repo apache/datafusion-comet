@@ -25,7 +25,6 @@ import org.apache.parquet.io.api.Binary
 import org.apache.parquet.schema.MessageTypeParser
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.comet.CometNativeColumnarToRowExec
 import org.apache.spark.sql.comet.CometNativeScanExec
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, ProjectExec, SparkPlan}
@@ -71,7 +70,6 @@ class CometVariantProjectionSuite extends CometTestBase {
     val plan = checkVariantAnswer(df, expected.getOrElse(sparkRows(df)))
     checkCometOperators(plan, classOf[ColumnarToRowExec])
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty, plan.toString)
-    assert(collect(plan) { case c: CometNativeColumnarToRowExec => c }.isEmpty, plan.toString)
   }
 
   private def checkScanFallbackPlan(df: DataFrame, reason: String): Unit = {

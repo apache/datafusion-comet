@@ -24,7 +24,7 @@ import java.util.IdentityHashMap
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.sideBySide
-import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeColumnarToRowExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometCollectLimitExec, CometColumnarToRowExec, CometIcebergWriteExec, CometMapInBatchExec, CometNativeWriteExec, CometPlan, CometRangeExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.comet.shims.{MapInBatchInfo, ShimCometMapInBatch}
 import org.apache.spark.sql.comet.util.Utils.containsVariantType
@@ -122,11 +122,7 @@ case class EliminateRedundantTransitions(session: SparkSession)
         op
       case CometColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
         sparkToColumnar.child
-      case CometNativeColumnarToRowExec(sparkToColumnar: CometSparkToColumnarExec) =>
-        sparkToColumnar.child
       case CometColumnarToRowExec(range: CometRangeExec) =>
-        range.originalPlan
-      case CometNativeColumnarToRowExec(range: CometRangeExec) =>
         range.originalPlan
       case CometSparkToColumnarExec(child: CometSparkToColumnarExec, _) => child
       // Replace MapInBatchExec (PythonMapInArrowExec / MapInArrowExec / MapInPandasExec) that has
@@ -177,8 +173,6 @@ case class EliminateRedundantTransitions(session: SparkSession)
       case ColumnarToRowExec(child: CometCollectLimitExec) =>
         child
       case CometColumnarToRowExec(child: CometCollectLimitExec) =>
-        child
-      case CometNativeColumnarToRowExec(child: CometCollectLimitExec) =>
         child
       case other =>
         other
@@ -259,7 +253,6 @@ case class EliminateRedundantTransitions(session: SparkSession)
    * runtime with `requires a columnar (Comet native) child`.
    */
   private def stripColumnarToRow(plan: SparkPlan): Option[SparkPlan] = plan match {
-    case CometNativeColumnarToRowExec(child) => Some(child)
     case CometColumnarToRowExec(child) => Some(child)
     case ColumnarToRowExec(child) => Some(child)
     case _ => None
@@ -274,7 +267,6 @@ case class EliminateRedundantTransitions(session: SparkSession)
    */
   private def extractColumnarChild(plan: SparkPlan): Option[SparkPlan] = plan match {
     case CometColumnarToRowExec(child) => Some(child)
-    case CometNativeColumnarToRowExec(child) => Some(child)
     // Chained `mapInArrow(udf1).mapInArrow(udf2)`: by the time the outer operator is visited
     // (transformUp is bottom-up) the inner one has already become a `CometMapInBatchExec`, which
     // is itself columnar. There is no row transition between them to strip, so consume its
@@ -319,29 +311,18 @@ case class EliminateRedundantTransitions(session: SparkSession)
   }
 
   /**
-   * Creates an appropriate columnar to row transition operator.
-   *
-   * If native columnar to row conversion is enabled and the schema is supported, uses
-   * CometNativeColumnarToRowExec. Variant uses Spark's conversion; other unsupported schemas use
-   * CometColumnarToRowExec.
+   * Creates the columnar to row transition operator: `CometColumnarToRowExec`, or Spark's
+   * `ColumnarToRowExec` for a schema that contains Variant.
    */
   private def createColumnarToRowExec(child: SparkPlan): SparkPlan = {
-    val schema = child.schema
     // TODO: Remove this fallback once Comet columnar-to-row conversion supports Variant getters
     // and Spark's Variant UnsafeRow encoding.
     // https://github.com/apache/datafusion-comet/issues/5436
-    if (containsVariantType(schema)) {
+    if (containsVariantType(child.schema)) {
       return withFallbackReason(
         ColumnarToRowExec(child),
-        "Native columnar-to-row conversion does not support type VariantType")
+        "Comet columnar-to-row conversion does not support type VariantType")
     }
-    val useNative = CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.get() &&
-      CometNativeColumnarToRowExec.supportsSchema(schema)
-
-    if (useNative) {
-      CometNativeColumnarToRowExec(child)
-    } else {
-      CometColumnarToRowExec(child)
-    }
+    CometColumnarToRowExec(child)
   }
 }

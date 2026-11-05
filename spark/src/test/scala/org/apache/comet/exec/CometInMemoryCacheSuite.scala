@@ -1023,11 +1023,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
 
       val plan = df.queryExecution.executedPlan.toString()
       assert(plan.contains("CometInMemoryTableScan"))
-      // Rows come out of a Comet converter rather than Spark's ColumnarToRow. Either variant
-      // satisfies that; which one is used depends on the default of
-      // spark.comet.exec.columnarToRow.native.enabled.
+      // Rows come out of Comet's converter rather than Spark's ColumnarToRow.
       assert(
-        plan.contains("CometColumnarToRow") || plan.contains("CometNativeColumnarToRow"),
+        plan.contains("CometColumnarToRow"),
         s"expected a Comet columnar-to-row above the cache scan, got:\n$plan")
 
       spark.catalog.clearCache()

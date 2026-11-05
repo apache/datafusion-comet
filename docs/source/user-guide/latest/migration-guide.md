@@ -57,6 +57,19 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.3.0
+
+Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
+
+### Deprecated and Removed Settings
+
+`spark.comet.exec.columnarToRow.native.enabled` is deprecated and will be removed in a future major
+release. Comet `1.3.0` removes the Rust columnar-to-row converter that it enabled, so the setting no
+longer has any effect. Comet always converts Arrow batches to Spark rows on the JVM, which was
+already the default. The driver logs a warning when the setting is present in the Spark
+configuration.
+
 ## Upgrading to Comet 1.2.0
 
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
