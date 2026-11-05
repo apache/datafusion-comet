@@ -369,7 +369,6 @@ pub(super) fn append_field(
 ///
 /// Unlike `append_struct_fields_field_major`, this function takes slices of row addresses,
 /// sizes, and null flags directly, without needing to navigate from a parent row.
-#[allow(clippy::redundant_closure_call)]
 fn append_nested_struct_fields_field_major(
     row_addresses: &[jlong],
     row_sizes: &[jint],
@@ -384,24 +383,20 @@ fn append_nested_struct_fields_field_major(
     let mut nested_sizes: Vec<jint> = Vec::new();
     let mut nested_is_null: Vec<bool> = Vec::new();
 
-    // Helper macro for processing primitive fields
+    // Process one field across all rows with the appropriate Arrow builder.
     macro_rules! process_field {
-        ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
+        ($builder_type:ty, $field_idx:expr, $getter:ident $(, $arg:expr)?) => {{
             let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
 
             for row_idx in 0..num_rows {
                 if struct_is_null[row_idx] {
-                    // Struct is null, field is also null
                     field_builder.append_null();
                 } else {
-                    let row_addr = row_addresses[row_idx];
-                    let row_size = row_sizes[row_idx];
-                    row.point_to(row_addr, row_size);
-
+                    row.point_to(row_addresses[row_idx], row_sizes[row_idx]);
                     if row.is_null_at($field_idx) {
                         field_builder.append_null();
                     } else {
-                        field_builder.append_value($get_value(&row, $field_idx));
+                        field_builder.append_value(row.$getter($field_idx $(, $arg)?));
                     }
                 }
             }
@@ -411,110 +406,24 @@ fn append_nested_struct_fields_field_major(
     // Process each field across all rows
     for (field_idx, field) in fields.iter().enumerate() {
         match field.data_type() {
-            DataType::Boolean => {
-                process_field!(BooleanBuilder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_boolean(idx));
-            }
-            DataType::Int8 => {
-                process_field!(Int8Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_byte(idx));
-            }
-            DataType::Int16 => {
-                process_field!(Int16Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_short(idx));
-            }
-            DataType::Int32 => {
-                process_field!(Int32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_int(idx));
-            }
-            DataType::Int64 => {
-                process_field!(Int64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_long(idx));
-            }
-            DataType::Float32 => {
-                process_field!(Float32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_float(idx));
-            }
-            DataType::Float64 => {
-                process_field!(Float64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_double(idx));
-            }
-            DataType::Date32 => {
-                process_field!(Date32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_date(idx));
-            }
+            DataType::Boolean => process_field!(BooleanBuilder, field_idx, get_boolean),
+            DataType::Int8 => process_field!(Int8Builder, field_idx, get_byte),
+            DataType::Int16 => process_field!(Int16Builder, field_idx, get_short),
+            DataType::Int32 => process_field!(Int32Builder, field_idx, get_int),
+            DataType::Int64 => process_field!(Int64Builder, field_idx, get_long),
+            DataType::Float32 => process_field!(Float32Builder, field_idx, get_float),
+            DataType::Float64 => process_field!(Float64Builder, field_idx, get_double),
+            DataType::Date32 => process_field!(Date32Builder, field_idx, get_date),
             DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                process_field!(
-                    TimestampMicrosecondBuilder,
-                    field_idx,
-                    |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
-                );
+                process_field!(TimestampMicrosecondBuilder, field_idx, get_timestamp)
             }
             DataType::Time64(TimeUnit::Nanosecond) => {
-                process_field!(
-                    Time64NanosecondBuilder,
-                    field_idx,
-                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
-                );
+                process_field!(Time64NanosecondBuilder, field_idx, get_long)
             }
-            DataType::Binary => {
-                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
-
-                for row_idx in 0..num_rows {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        let row_addr = row_addresses[row_idx];
-                        let row_size = row_sizes[row_idx];
-                        row.point_to(row_addr, row_size);
-
-                        if row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(row.get_binary(field_idx));
-                        }
-                    }
-                }
-            }
-            DataType::Utf8 => {
-                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
-
-                for row_idx in 0..num_rows {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        let row_addr = row_addresses[row_idx];
-                        let row_size = row_sizes[row_idx];
-                        row.point_to(row_addr, row_size);
-
-                        if row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(row.get_string(field_idx));
-                        }
-                    }
-                }
-            }
+            DataType::Binary => process_field!(BinaryBuilder, field_idx, get_binary),
+            DataType::Utf8 => process_field!(StringBuilder, field_idx, get_string),
             DataType::Decimal128(p, _) => {
-                let p = *p;
-                let field_builder =
-                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
-
-                for row_idx in 0..num_rows {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        let row_addr = row_addresses[row_idx];
-                        let row_size = row_sizes[row_idx];
-                        row.point_to(row_addr, row_size);
-
-                        if row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(row.get_decimal(field_idx, p));
-                        }
-                    }
-                }
+                process_field!(Decimal128Builder, field_idx, get_decimal, *p)
             }
             DataType::Struct(nested_fields) => {
                 let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
@@ -817,9 +726,8 @@ fn append_map_column_batch(
 }
 
 /// Appends struct fields to the struct builder using field-major order.
-/// This processes one field at a time across all rows, which moves type dispatch
-/// outside the row loop (O(fields) dispatches instead of O(rows × fields)).
-#[allow(clippy::redundant_closure_call, clippy::too_many_arguments)]
+/// Collects each struct row once, then uses the same field-major path as nested structs.
+#[allow(clippy::too_many_arguments)]
 fn append_struct_fields_field_major(
     row_addresses_ptr: *mut jlong,
     row_sizes_ptr: *mut jint,
@@ -831,237 +739,34 @@ fn append_struct_fields_field_major(
     fields: &arrow::datatypes::Fields,
 ) -> Result<(), CometError> {
     let num_rows = row_end - row_start;
-    let num_fields = fields.len();
-
-    // First pass: Build struct validity and collect which structs are null
-    // We use a Vec<bool> for simplicity; could use a bitset for better memory
+    let mut struct_addresses = Vec::with_capacity(num_rows);
+    let mut struct_sizes = Vec::with_capacity(num_rows);
     let mut struct_is_null = Vec::with_capacity(num_rows);
 
     for i in row_start..row_end {
         read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-
         let is_null = parent_row.is_null_at(column_idx);
         struct_is_null.push(is_null);
 
         if is_null {
             struct_builder.append_null();
+            struct_addresses.push(0);
+            struct_sizes.push(0);
         } else {
             struct_builder.append(true);
+            let struct_row = parent_row.get_struct(column_idx, fields.len());
+            struct_addresses.push(struct_row.get_row_addr());
+            struct_sizes.push(struct_row.get_row_size());
         }
     }
 
-    // Reused by every nested struct field. The recursive call only borrows them.
-    let mut nested_addresses: Vec<jlong> = Vec::new();
-    let mut nested_sizes: Vec<jint> = Vec::new();
-    let mut nested_is_null: Vec<bool> = Vec::new();
-
-    // Helper macro for processing primitive fields
-    macro_rules! process_field {
-        ($builder_type:ty, $field_idx:expr, $get_value:expr) => {{
-            let field_builder = get_field_builder!(struct_builder, $builder_type, $field_idx);
-
-            for (row_idx, i) in (row_start..row_end).enumerate() {
-                if struct_is_null[row_idx] {
-                    // Struct is null, field is also null
-                    field_builder.append_null();
-                } else {
-                    read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                    let nested_row = parent_row.get_struct(column_idx, num_fields);
-
-                    if nested_row.is_null_at($field_idx) {
-                        field_builder.append_null();
-                    } else {
-                        field_builder.append_value($get_value(&nested_row, $field_idx));
-                    }
-                }
-            }
-        }};
-    }
-
-    // Second pass: Process each field across all rows
-    for (field_idx, field) in fields.iter().enumerate() {
-        match field.data_type() {
-            DataType::Boolean => {
-                process_field!(BooleanBuilder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_boolean(idx));
-            }
-            DataType::Int8 => {
-                process_field!(Int8Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_byte(idx));
-            }
-            DataType::Int16 => {
-                process_field!(Int16Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_short(idx));
-            }
-            DataType::Int32 => {
-                process_field!(Int32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_int(idx));
-            }
-            DataType::Int64 => {
-                process_field!(Int64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_long(idx));
-            }
-            DataType::Float32 => {
-                process_field!(Float32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_float(idx));
-            }
-            DataType::Float64 => {
-                process_field!(Float64Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_double(idx));
-            }
-            DataType::Date32 => {
-                process_field!(Date32Builder, field_idx, |row: &SparkUnsafeRow, idx| row
-                    .get_date(idx));
-            }
-            DataType::Timestamp(TimeUnit::Microsecond, _) => {
-                process_field!(
-                    TimestampMicrosecondBuilder,
-                    field_idx,
-                    |row: &SparkUnsafeRow, idx| row.get_timestamp(idx)
-                );
-            }
-            DataType::Time64(TimeUnit::Nanosecond) => {
-                process_field!(
-                    Time64NanosecondBuilder,
-                    field_idx,
-                    |row: &SparkUnsafeRow, idx| row.get_long(idx)
-                );
-            }
-            DataType::Binary => {
-                let field_builder = get_field_builder!(struct_builder, BinaryBuilder, field_idx);
-
-                for (row_idx, i) in (row_start..row_end).enumerate() {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                        let nested_row = parent_row.get_struct(column_idx, num_fields);
-
-                        if nested_row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(nested_row.get_binary(field_idx));
-                        }
-                    }
-                }
-            }
-            DataType::Utf8 => {
-                let field_builder = get_field_builder!(struct_builder, StringBuilder, field_idx);
-
-                for (row_idx, i) in (row_start..row_end).enumerate() {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                        let nested_row = parent_row.get_struct(column_idx, num_fields);
-
-                        if nested_row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(nested_row.get_string(field_idx));
-                        }
-                    }
-                }
-            }
-            DataType::Decimal128(p, _) => {
-                let p = *p;
-                let field_builder =
-                    get_field_builder!(struct_builder, Decimal128Builder, field_idx);
-
-                for (row_idx, i) in (row_start..row_end).enumerate() {
-                    if struct_is_null[row_idx] {
-                        field_builder.append_null();
-                    } else {
-                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                        let nested_row = parent_row.get_struct(column_idx, num_fields);
-
-                        if nested_row.is_null_at(field_idx) {
-                            field_builder.append_null();
-                        } else {
-                            field_builder.append_value(nested_row.get_decimal(field_idx, p));
-                        }
-                    }
-                }
-            }
-            // For nested structs, apply field-major processing recursively
-            DataType::Struct(nested_fields) => {
-                let nested_builder = get_field_builder!(struct_builder, StructBuilder, field_idx);
-
-                // Collect nested struct addresses and sizes in one pass, building validity
-                nested_addresses.clear();
-                nested_sizes.clear();
-                nested_is_null.clear();
-                nested_addresses.reserve(num_rows);
-                nested_sizes.reserve(num_rows);
-                nested_is_null.reserve(num_rows);
-
-                for (row_idx, i) in (row_start..row_end).enumerate() {
-                    if struct_is_null[row_idx] {
-                        // Parent struct is null, nested struct is also null
-                        nested_builder.append_null();
-                        nested_is_null.push(true);
-                        nested_addresses.push(0);
-                        nested_sizes.push(0);
-                    } else {
-                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                        let parent_struct = parent_row.get_struct(column_idx, num_fields);
-
-                        if parent_struct.is_null_at(field_idx) {
-                            nested_builder.append_null();
-                            nested_is_null.push(true);
-                            nested_addresses.push(0);
-                            nested_sizes.push(0);
-                        } else {
-                            nested_builder.append(true);
-                            nested_is_null.push(false);
-                            // Get nested struct address and size
-                            let nested_row =
-                                parent_struct.get_struct(field_idx, nested_fields.len());
-                            nested_addresses.push(nested_row.get_row_addr());
-                            nested_sizes.push(nested_row.get_row_size());
-                        }
-                    }
-                }
-
-                // Recursively process nested struct fields in field-major order
-                append_nested_struct_fields_field_major(
-                    &nested_addresses,
-                    &nested_sizes,
-                    &nested_is_null,
-                    nested_builder,
-                    nested_fields,
-                )?;
-            }
-            // Every value of a NullType field is null, so there is nothing to read from the row.
-            DataType::Null => {
-                let field_builder = get_field_builder!(struct_builder, NullBuilder, field_idx);
-                for _ in row_start..row_end {
-                    field_builder.append_null();
-                }
-            }
-            // For list and map, fall back to append_field since they have variable-length elements
-            dt @ (DataType::List(_) | DataType::Map(_, _)) => {
-                for (row_idx, i) in (row_start..row_end).enumerate() {
-                    if struct_is_null[row_idx] {
-                        let null_row = SparkUnsafeRow::default();
-                        append_field(dt, struct_builder, &null_row, field_idx)?;
-                    } else {
-                        read_row_at!(parent_row, row_addresses_ptr, row_sizes_ptr, i);
-                        let nested_row = parent_row.get_struct(column_idx, num_fields);
-                        append_field(dt, struct_builder, &nested_row, field_idx)?;
-                    }
-                }
-            }
-            _ => {
-                unreachable!(
-                    "Unsupported data type of struct field: {:?}",
-                    field.data_type()
-                )
-            }
-        }
-    }
-
-    Ok(())
+    append_nested_struct_fields_field_major(
+        &struct_addresses,
+        &struct_sizes,
+        &struct_is_null,
+        struct_builder,
+        fields,
+    )
 }
 
 /// Appends column of top rows to the given array builder.
@@ -1803,7 +1508,7 @@ fn builder_to_array(
 #[cfg(test)]
 mod test {
     use arrow::array::AsArray;
-    use arrow::datatypes::{Fields, TimestampMicrosecondType};
+    use arrow::datatypes::{Decimal128Type, Fields, Int64Type, TimestampMicrosecondType};
 
     use super::*;
 
@@ -2019,16 +1724,21 @@ mod test {
         row
     }
 
-    fn struct_column(data_type: &DataType, rows: &[Vec<u64>]) -> ArrayRef {
+    fn struct_column_range(
+        data_type: &DataType,
+        rows: &[Vec<u64>],
+        row_start: usize,
+        row_end: usize,
+    ) -> ArrayRef {
         let mut row_addresses: Vec<jlong> = rows.iter().map(|r| r.as_ptr() as jlong).collect();
         let mut row_sizes: Vec<jint> = rows.iter().map(|r| (r.len() * 8) as jint).collect();
         let schema = [data_type.clone()];
-        let mut builder = make_builders(data_type, rows.len(), 1.0).unwrap();
+        let mut builder = make_builders(data_type, row_end - row_start, 1.0).unwrap();
         append_columns(
             row_addresses.as_mut_ptr(),
             row_sizes.as_mut_ptr(),
-            0,
-            rows.len(),
+            row_start,
+            row_end,
             &schema,
             0,
             &mut builder,
@@ -2036,6 +1746,10 @@ mod test {
         )
         .unwrap();
         builder.finish()
+    }
+
+    fn struct_column(data_type: &DataType, rows: &[Vec<u64>]) -> ArrayRef {
+        struct_column_range(data_type, rows, 0, rows.len())
     }
 
     // `named_struct('x', a, 'n', null)` reaches the field-major struct conversion with a
@@ -2107,5 +1821,101 @@ mod test {
         assert_eq!(n.data_type(), &DataType::Null);
         assert_eq!(n.len(), 4);
         assert_eq!(n.logical_null_count(), 4);
+    }
+
+    #[test]
+    fn field_major_struct_paths_preserve_variable_fields_and_decimals() {
+        let fields = Fields::from(vec![
+            Field::new("binary", DataType::Binary, true),
+            Field::new("string", DataType::Utf8, true),
+            Field::new("small_decimal", DataType::Decimal128(10, 2), true),
+            Field::new("large_decimal", DataType::Decimal128(30, 2), true),
+        ]);
+        let data_type = DataType::Struct(fields);
+        let as_words = |bytes: [u8; 16]| {
+            bytes
+                .as_chunks::<8>()
+                .0
+                .iter()
+                .map(|chunk| u64::from_ne_bytes(*chunk))
+                .collect::<Vec<_>>()
+        };
+        let large_decimal = 123_456_789_012_345_678_901_234_i128;
+        let populated = unsafe_row_with_struct(Some(&[
+            Some(as_words(*b"abcdefghijklmnop")),
+            Some(as_words(*b"qrstuvwxyzABCDEF")),
+            Some(vec![12345]),
+            Some(as_words(large_decimal.to_be_bytes())),
+        ]));
+        let all_null = unsafe_row_with_struct(Some(&[None, None, None, None]));
+        let top_rows = [populated, unsafe_row_with_struct(None), all_null];
+        let top = struct_column(&data_type, &top_rows);
+
+        let nested_type =
+            DataType::Struct(Fields::from(vec![Field::new("inner", data_type, true)]));
+        let nested_rows = [
+            unsafe_row_with_struct(Some(&[Some(top_rows[0][2..].to_vec())])),
+            unsafe_row_with_struct(Some(&[None])),
+            unsafe_row_with_struct(Some(&[Some(top_rows[2][2..].to_vec())])),
+        ];
+        let nested = struct_column(&nested_type, &nested_rows);
+        let nested_struct = nested.as_struct().column(0).as_struct();
+
+        for struct_array in [top.as_struct(), nested_struct] {
+            assert_eq!(struct_array.null_count(), 1);
+            assert!(struct_array.is_null(1));
+            assert!(struct_array.is_valid(2));
+
+            let binary = struct_array.column(0).as_binary::<i32>();
+            assert_eq!(binary.value(0), b"abcdefghijklmnop");
+            assert!(binary.is_null(1) && binary.is_null(2));
+
+            let string = struct_array.column(1).as_string::<i32>();
+            assert_eq!(string.value(0), "qrstuvwxyzABCDEF");
+            assert!(string.is_null(1) && string.is_null(2));
+
+            let small_decimal = struct_array.column(2).as_primitive::<Decimal128Type>();
+            assert_eq!(small_decimal.value(0), 12345);
+            assert!(small_decimal.is_null(1) && small_decimal.is_null(2));
+
+            let large = struct_array.column(3).as_primitive::<Decimal128Type>();
+            assert_eq!(large.value(0), large_decimal);
+            assert!(large.is_null(1) && large.is_null(2));
+        }
+    }
+
+    #[test]
+    fn field_major_struct_paths_preserve_lists_in_row_range() {
+        let list_type = DataType::List(Arc::new(Field::new("item", DataType::Int64, true)));
+        let data_type = DataType::Struct(Fields::from(vec![Field::new("items", list_type, true)]));
+        let array_row = unsafe_row_with_array(Some(&[Some(5), None, Some(9)]));
+        let rows = [
+            unsafe_row_with_struct(None),
+            unsafe_row_with_struct(Some(&[Some(array_row[2..].to_vec())])),
+            unsafe_row_with_struct(Some(&[None])),
+            unsafe_row_with_struct(None),
+        ];
+        let top = struct_column_range(&data_type, &rows, 1, rows.len());
+
+        let nested_type =
+            DataType::Struct(Fields::from(vec![Field::new("inner", data_type, true)]));
+        let nested_rows = [
+            unsafe_row_with_struct(None),
+            unsafe_row_with_struct(Some(&[Some(rows[1][2..].to_vec())])),
+            unsafe_row_with_struct(Some(&[Some(rows[2][2..].to_vec())])),
+            unsafe_row_with_struct(Some(&[None])),
+        ];
+        let nested = struct_column_range(&nested_type, &nested_rows, 1, nested_rows.len());
+        let nested_struct = nested.as_struct().column(0).as_struct();
+
+        for struct_array in [top.as_struct(), nested_struct] {
+            assert_eq!(struct_array.len(), 3);
+            assert!(struct_array.is_null(2));
+            let lists = struct_array.column(0).as_list::<i32>();
+            let values = lists.value(0);
+            let actual: Vec<Option<i64>> = values.as_primitive::<Int64Type>().iter().collect();
+            assert_eq!(actual, vec![Some(5), None, Some(9)]);
+            assert!(lists.is_null(1) && lists.is_null(2));
+        }
     }
 }
