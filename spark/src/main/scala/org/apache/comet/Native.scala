@@ -430,6 +430,33 @@ class Native extends NativeBase {
       numRows: Int): NativeColumnarToRowInfo
 
   /**
+   * Convert Arrow columnar data to Spark UnsafeRow format in a new JVM byte array.
+   *
+   * @param offsetsOut
+   *   receives the start of each row in the returned array, then its total length, so at least
+   *   numRows + 1 entries.
+   * @return
+   *   the rows, back to back.
+   */
+  @native def columnarToRowConvertToArray(
+      c2rHandle: Long,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      numRows: Int,
+      offsetsOut: Array[Int]): Array[Byte]
+
+  /**
+   * Like columnarToRowConvertToArray, but reads each column from raw Arrow buffer addresses
+   * instead of the C Data interface. `desc` holds validity, offsets and data addresses and flags
+   * (bit 0: 64-bit offsets) for each column.
+   */
+  @native def columnarToRowConvertRaw(
+      c2rHandle: Long,
+      desc: Array[Long],
+      numRows: Int,
+      offsetsOut: Array[Int]): Array[Byte]
+
+  /**
    * Close and release the native columnar to row converter.
    *
    * @param c2rHandle

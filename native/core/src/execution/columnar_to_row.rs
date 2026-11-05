@@ -884,6 +884,10 @@ pub struct ColumnarToRowContext {
     _batch_size: usize,
     /// Whether all columns are fixed-width (enables fast path).
     all_fixed_width: bool,
+    /// Flat path scratch: per-row lengths, row starts (num_rows + 1), var-length cursors.
+    row_lens: Vec<usize>,
+    row_starts: Vec<usize>,
+    cursors: Vec<usize>,
 }
 
 impl ColumnarToRowContext {
@@ -917,6 +921,9 @@ impl ColumnarToRowContext {
             fixed_width_size,
             _batch_size: batch_size,
             all_fixed_width,
+            row_lens: Vec::new(),
+            row_starts: Vec::new(),
+            cursors: Vec::new(),
         }
     }
 
@@ -1911,10 +1918,392 @@ fn write_nested_variable_to_buffer(
     }
 }
 
+/// Whether a type can be written by the column-wise flat path: a fixed-width type, or a
+/// variable-length type whose bytes are a single contiguous value.
+fn is_flat(data_type: &DataType) -> bool {
+    is_fixed_width(data_type)
+        || matches!(
+            data_type,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::FixedSizeBinary(_)
+                | DataType::Decimal128(_, _)
+        )
+}
+
+/// Big-endian minimal two's complement bytes of `value`, as `i128_to_spark_decimal_bytes`
+/// returns them, without allocating. Returns the buffer and the start of the value in it.
+#[inline]
+fn decimal_bytes(value: i128) -> ([u8; 16], usize) {
+    let bytes = value.to_be_bytes();
+    let sign_byte = if value < 0 { 0xFF } else { 0x00 };
+    let mut start = 0;
+    while start < 15 && bytes[start] == sign_byte && ((bytes[start + 1] ^ sign_byte) & 0x80) == 0 {
+        start += 1;
+    }
+    (bytes, start)
+}
+
+/// Adds each valid row's padded value length to `row_lens`.
+#[inline]
+fn add_var_lens<F: Fn(usize) -> usize>(
+    row_lens: &mut [usize],
+    nulls: Option<&arrow::buffer::NullBuffer>,
+    len_at: F,
+) {
+    match nulls {
+        None => {
+            for (i, l) in row_lens.iter_mut().enumerate() {
+                *l += round_up_to_8(len_at(i));
+            }
+        }
+        Some(nb) => {
+            for (i, l) in row_lens.iter_mut().enumerate() {
+                if nb.is_valid(i) {
+                    *l += round_up_to_8(len_at(i));
+                }
+            }
+        }
+    }
+}
+
+impl ColumnarToRowContext {
+    /// Whether every column in the schema can use the column-wise flat path.
+    pub fn is_flat(&self) -> bool {
+        self.schema.iter().all(is_flat)
+    }
+
+    /// Casts each array to the schema type, as `convert` does.
+    pub fn prepare(&self, arrays: &[ArrayRef]) -> CometResult<Vec<ArrayRef>> {
+        if arrays.len() != self.schema.len() {
+            return Err(CometError::Internal(format!(
+                "Column count mismatch: expected {}, got {}",
+                self.schema.len(),
+                arrays.len()
+            )));
+        }
+        arrays
+            .iter()
+            .zip(self.schema.iter())
+            .map(|(arr, schema_type)| Self::maybe_cast_to_schema_type(arr, schema_type))
+            .collect()
+    }
+
+    /// Computes the start of each row for the flat path and returns the total size in bytes.
+    /// `row_starts` gets `num_rows + 1` entries, the last being the total.
+    pub fn plan_flat(&mut self, arrays: &[ArrayRef], num_rows: usize) -> CometResult<usize> {
+        let fixed = self.fixed_width_size;
+        let mut row_lens = std::mem::take(&mut self.row_lens);
+        row_lens.clear();
+        row_lens.resize(num_rows, fixed);
+        for array in arrays {
+            let nulls = array.nulls();
+            match array.data_type() {
+                DataType::Utf8 => {
+                    let o = array.as_string::<i32>().value_offsets();
+                    add_var_lens(&mut row_lens, nulls, |i| (o[i + 1] - o[i]) as usize)
+                }
+                DataType::LargeUtf8 => {
+                    let o = array.as_string::<i64>().value_offsets();
+                    add_var_lens(&mut row_lens, nulls, |i| (o[i + 1] - o[i]) as usize)
+                }
+                DataType::Binary => {
+                    let o = array.as_binary::<i32>().value_offsets();
+                    add_var_lens(&mut row_lens, nulls, |i| (o[i + 1] - o[i]) as usize)
+                }
+                DataType::LargeBinary => {
+                    let o = array.as_binary::<i64>().value_offsets();
+                    add_var_lens(&mut row_lens, nulls, |i| (o[i + 1] - o[i]) as usize)
+                }
+                DataType::FixedSizeBinary(w) => {
+                    let w = *w as usize;
+                    add_var_lens(&mut row_lens, nulls, |_| w)
+                }
+                DataType::Decimal128(p, _) if *p > MAX_LONG_DIGITS => {
+                    let v = array.as_primitive::<Decimal128Type>().values();
+                    add_var_lens(&mut row_lens, nulls, |i| 16 - decimal_bytes(v[i]).1)
+                }
+                _ => {}
+            }
+        }
+        let starts = &mut self.row_starts;
+        starts.clear();
+        starts.reserve(num_rows + 1);
+        let mut total = 0usize;
+        for &l in &row_lens {
+            starts.push(total);
+            total += l;
+        }
+        starts.push(total);
+        self.row_lens = row_lens;
+        Ok(total)
+    }
+
+    /// The row starts computed by the last `plan_flat`.
+    pub fn row_starts(&self) -> &[usize] {
+        &self.row_starts
+    }
+
+    /// Writes the rows planned by `plan_flat` into `out`, which must be zeroed and exactly the
+    /// planned size. Works column by column.
+    // Each loop indexes several per-row arrays (starts, cursors, values) by row.
+    #[allow(clippy::needless_range_loop)]
+    pub fn write_flat(
+        &mut self,
+        arrays: &[ArrayRef],
+        num_rows: usize,
+        out: &mut [u8],
+    ) -> CometResult<()> {
+        let starts = &self.row_starts;
+        debug_assert_eq!(starts.len(), num_rows + 1);
+        debug_assert_eq!(out.len(), starts[num_rows]);
+        let bitset = self.null_bitset_width;
+        let fixed = self.fixed_width_size;
+        let mut cursors = std::mem::take(&mut self.cursors);
+        cursors.clear();
+        cursors.extend(starts[..num_rows].iter().map(|s| s + fixed));
+
+        for (col, array) in arrays.iter().enumerate() {
+            let slot = bitset + col * 8;
+            let nulls = array.nulls().filter(|n| n.null_count() > 0);
+            if let Some(nb) = nulls {
+                let word = (col / 64) * 8;
+                let mask = 1u64 << (col % 64);
+                for i in 0..num_rows {
+                    if nb.is_null(i) {
+                        let p = starts[i] + word;
+                        let w = u64::from_le_bytes(out[p..p + 8].try_into().unwrap()) | mask;
+                        out[p..p + 8].copy_from_slice(&w.to_le_bytes());
+                    }
+                }
+            }
+            let valid = |i: usize| nulls.is_none_or(|nb| nb.is_valid(i));
+
+            macro_rules! fixed_col {
+                ($t:ty, $f:expr) => {{
+                    let v = array.as_primitive::<$t>().values();
+                    for i in 0..num_rows {
+                        if valid(i) {
+                            let p = starts[i] + slot;
+                            let x: i64 = $f(v[i]);
+                            out[p..p + 8].copy_from_slice(&x.to_le_bytes());
+                        }
+                    }
+                }};
+            }
+            macro_rules! var_col {
+                ($get:expr) => {{
+                    for i in 0..num_rows {
+                        if valid(i) {
+                            let bytes: &[u8] = $get(i);
+                            let len = bytes.len();
+                            // Like the row path, an empty value leaves the slot zero.
+                            if len == 0 {
+                                continue;
+                            }
+                            let dst = cursors[i];
+                            out[dst..dst + len].copy_from_slice(bytes);
+                            let rel = (dst - starts[i]) as u64;
+                            let p = starts[i] + slot;
+                            out[p..p + 8]
+                                .copy_from_slice(&((rel << 32) | len as u64).to_le_bytes());
+                            cursors[i] = dst + round_up_to_8(len);
+                        }
+                    }
+                }};
+            }
+
+            use arrow::datatypes::*;
+            match array.data_type() {
+                DataType::Boolean => {
+                    let a = array.as_boolean();
+                    for i in 0..num_rows {
+                        if valid(i) && a.value(i) {
+                            out[starts[i] + slot] = 1;
+                        }
+                    }
+                }
+                DataType::Int8 => fixed_col!(Int8Type, |x: i8| x as i64),
+                DataType::Int16 => fixed_col!(Int16Type, |x: i16| x as i64),
+                DataType::Int32 => fixed_col!(Int32Type, |x: i32| x as i64),
+                DataType::Int64 => fixed_col!(Int64Type, |x: i64| x),
+                DataType::Float32 => fixed_col!(Float32Type, |x: f32| x.to_bits() as i64),
+                DataType::Float64 => fixed_col!(Float64Type, |x: f64| x.to_bits() as i64),
+                DataType::Date32 => fixed_col!(Date32Type, |x: i32| x as i64),
+                DataType::Timestamp(TimeUnit::Microsecond, _) => {
+                    fixed_col!(TimestampMicrosecondType, |x: i64| x)
+                }
+                DataType::Time64(TimeUnit::Nanosecond) => {
+                    fixed_col!(Time64NanosecondType, |x: i64| x)
+                }
+                DataType::Decimal128(p, _) if *p <= MAX_LONG_DIGITS => {
+                    fixed_col!(Decimal128Type, |x: i128| x as i64)
+                }
+                DataType::Decimal128(_, _) => {
+                    let v = array.as_primitive::<Decimal128Type>().values();
+                    for i in 0..num_rows {
+                        if valid(i) {
+                            let (bytes, start) = decimal_bytes(v[i]);
+                            let len = 16 - start;
+                            let dst = cursors[i];
+                            out[dst..dst + len].copy_from_slice(&bytes[start..]);
+                            let rel = (dst - starts[i]) as u64;
+                            let p = starts[i] + slot;
+                            out[p..p + 8]
+                                .copy_from_slice(&((rel << 32) | len as u64).to_le_bytes());
+                            cursors[i] = dst + round_up_to_8(len);
+                        }
+                    }
+                }
+                DataType::Utf8 => {
+                    let a = array.as_string::<i32>();
+                    var_col!(|i| a.value(i).as_bytes())
+                }
+                DataType::LargeUtf8 => {
+                    let a = array.as_string::<i64>();
+                    var_col!(|i| a.value(i).as_bytes())
+                }
+                DataType::Binary => {
+                    let a = array.as_binary::<i32>();
+                    var_col!(|i| a.value(i))
+                }
+                DataType::LargeBinary => {
+                    let a = array.as_binary::<i64>();
+                    var_col!(|i| a.value(i))
+                }
+                DataType::FixedSizeBinary(_) => {
+                    let a = array.as_fixed_size_binary();
+                    var_col!(|i| a.value(i))
+                }
+                other => {
+                    return Err(CometError::Internal(format!(
+                        "Unexpected type in flat columnar-to-row path: {other:?}"
+                    )))
+                }
+            }
+        }
+        self.cursors = cursors;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    fn flat_matches_existing(arrays: Vec<ArrayRef>) {
+        let schema: Vec<DataType> = arrays.iter().map(|a| a.data_type().clone()).collect();
+        let n = arrays[0].len();
+        let mut reference = ColumnarToRowContext::new(schema.clone(), n);
+        let (ptr, offsets, lengths) = reference.convert(&arrays, n).unwrap();
+        let total = offsets
+            .last()
+            .map(|o| *o as usize + *lengths.last().unwrap() as usize);
+        let expected = unsafe { std::slice::from_raw_parts(ptr, total.unwrap_or(0)) }.to_vec();
+        let expected_starts: Vec<usize> = offsets.iter().map(|o| *o as usize).collect();
+
+        let mut ctx = ColumnarToRowContext::new(schema, n);
+        assert!(ctx.is_flat());
+        let prepared = ctx.prepare(&arrays).unwrap();
+        let size = ctx.plan_flat(&prepared, n).unwrap();
+        let mut out = vec![0u8; size];
+        ctx.write_flat(&prepared, n, &mut out).unwrap();
+        assert_eq!(&ctx.row_starts()[..n], expected_starts.as_slice());
+        if let Some(pos) = out.iter().zip(&expected).position(|(a, b)| a != b) {
+            let row = expected_starts.partition_point(|s| *s <= pos) - 1;
+            let start = expected_starts[row];
+            panic!(
+                "byte {pos} differs (row {row}, offset in row {}): got {:?} expected {:?}; schema {:?}",
+                pos - start,
+                &out[start..start + 48.min(out.len() - start)],
+                &expected[start..start + 48.min(expected.len() - start)],
+                arrays.iter().map(|a| a.data_type()).collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn test_flat_path_matches_general_path() {
+        let n = 300;
+        let ints: ArrayRef = Arc::new(Int32Array::from_iter((0..n).map(|i| {
+            if i % 7 == 0 {
+                None
+            } else {
+                Some(i * 3 - 100)
+            }
+        })));
+        let longs: ArrayRef = Arc::new(Int64Array::from_iter_values((0..n).map(|i| i as i64 * -7)));
+        let bools: ArrayRef = Arc::new(BooleanArray::from_iter((0..n).map(|i| {
+            if i % 5 == 0 {
+                None
+            } else {
+                Some(i % 2 == 0)
+            }
+        })));
+        let doubles: ArrayRef = Arc::new(Float64Array::from_iter((0..n).map(|i| {
+            if i % 11 == 0 {
+                None
+            } else {
+                Some(i as f64 / 3.0)
+            }
+        })));
+        let strings: ArrayRef = Arc::new(StringArray::from_iter((0..n).map(|i| {
+            if i % 4 == 0 {
+                None
+            } else {
+                Some("x".repeat(i as usize % 23))
+            }
+        })));
+        let large: ArrayRef = Arc::new(LargeBinaryArray::from_iter((0..n).map(|i| {
+            if i % 6 == 0 {
+                None
+            } else {
+                Some(vec![i as u8; i as usize % 17])
+            }
+        })));
+        let small_dec: ArrayRef = Arc::new(
+            Decimal128Array::from_iter((0..n).map(|i| {
+                if i % 9 == 0 {
+                    None
+                } else {
+                    Some(i as i128 * 12345 - 99999)
+                }
+            }))
+            .with_precision_and_scale(12, 2)
+            .unwrap(),
+        );
+        let wide_dec: ArrayRef = Arc::new(
+            Decimal128Array::from_iter((0..n).map(|i| {
+                if i % 8 == 0 {
+                    None
+                } else {
+                    Some((i as i128 - 150) * 10i128.pow((i % 30) as u32))
+                }
+            }))
+            .with_precision_and_scale(38, 10)
+            .unwrap(),
+        );
+        let date: ArrayRef = Arc::new(Date32Array::from_iter_values(0..n));
+        let all = vec![
+            ints, longs, bools, doubles, strings, large, small_dec, wide_dec, date,
+        ];
+        flat_matches_existing(all.clone());
+        // Sliced inputs exercise non-zero array offsets.
+        flat_matches_existing(all.iter().map(|a| a.slice(13, 200)).collect());
+        // Fixed-width only, compared against the existing fixed-width fast path.
+        flat_matches_existing(vec![
+            Arc::clone(&all[0]),
+            Arc::clone(&all[1]),
+            Arc::clone(&all[2]),
+            Arc::clone(&all[6]),
+        ]);
+        // More than 64 columns spill the null bitset into a second word.
+        flat_matches_existing((0..70).map(|i| Arc::clone(&all[i % all.len()])).collect());
+    }
 
     #[test]
     fn test_bitset_width_calculation() {

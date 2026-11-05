@@ -123,14 +123,22 @@ class NativeUtil extends AutoCloseable {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       batch: ColumnarBatch): Int = {
-    val numRows = mutable.ArrayBuffer.empty[Int]
+    // Tracks the row counts without boxing: one count, plus the full list only on a mismatch.
+    var firstNumRows = -1
+    var numRowsMismatch = false
+    def recordNumRows(n: Int): Unit = {
+      if (firstNumRows < 0) firstNumRows = n
+      else if (n != firstNumRows) numRowsMismatch = true
+    }
 
-    (0 until batch.numCols()).foreach { index =>
+    val numCols = batch.numCols()
+    var index = 0
+    while (index < numCols) {
       batch.column(index) match {
         case a: CometVector =>
           val valueVector = a.getValueVector
 
-          numRows += valueVector.getValueCount
+          recordNumRows(valueVector.getValueCount)
 
           val provider = if (valueVector.getField.getDictionary != null) {
             a.getDictionaryProvider
@@ -157,7 +165,7 @@ class NativeUtil extends AutoCloseable {
           val materialised = ConstantColumnVectors
             .materialize(cv, cv.dataType(), batch.numRows(), s"_const_$index", allocator, "UTC")
 
-          numRows += materialised.getValueCount
+          recordNumRows(materialised.getValueCount)
 
           val arrowSchema = ArrowSchema.wrap(schemaAddrs(index))
           val arrowArray = ArrowArray.wrap(arrayAddrs(index))
@@ -167,14 +175,21 @@ class NativeUtil extends AutoCloseable {
             "Comet execution only takes Arrow Arrays, but got " +
               s"${c.getClass}")
       }
+      index += 1
     }
 
-    if (numRows.distinct.length > 1) {
+    if (numRowsMismatch) {
+      val counts = (0 until numCols).map { i =>
+        batch.column(i) match {
+          case a: CometVector => a.getValueVector.getValueCount
+          case _ => batch.numRows()
+        }
+      }
       throw new SparkException(
-        s"Number of rows in each column should be the same, but got [${numRows.distinct}]")
+        s"Number of rows in each column should be the same, but got [${counts.distinct}]")
     }
 
-    numRows.headOption.getOrElse(batch.numRows())
+    if (firstNumRows < 0) batch.numRows() else firstNumRows
   }
 
   /**

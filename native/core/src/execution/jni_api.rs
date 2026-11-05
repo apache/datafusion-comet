@@ -2614,6 +2614,224 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvert(
     })
 }
 
+/// Converts a batch to Spark `UnsafeRow`s in a new JVM `byte[]`, writing the start of each row
+/// and the total length (`num_rows + 1` entries) into `offsets_out`.
+///
+/// # Safety
+/// This function is inherently unsafe since it deals with raw pointers passed from JNI.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvertToArray(
+    e: EnvUnowned,
+    _class: JClass,
+    c2r_handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    num_rows: jint,
+    offsets_out: jni::objects::JIntArray,
+) -> jni::sys::jobject {
+    try_unwrap_or_throw(&e, |env| {
+        let ctx = (c2r_handle as *mut ColumnarToRowContext)
+            .as_mut()
+            .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
+        let n = num_rows as usize;
+        let imported = {
+            let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+            let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
+            unsafe { import_c2r_arrays(&array_addrs, &schema_addrs)? }
+        };
+        let too_large = |total: usize| {
+            CometError::Internal(format!(
+                "Batch too large for columnar-to-row conversion: {total} bytes"
+            ))
+        };
+        let (bytes, starts): (jni::objects::JByteArray, Vec<i32>) = if ctx.is_flat() {
+            let arrays = ctx.prepare(&imported)?;
+            let total = ctx.plan_flat(&arrays, n)?;
+            if total > (i32::MAX - 15) as usize {
+                return Err(too_large(total));
+            }
+            let bytes = env.new_byte_array(total)?;
+            {
+                let mut elems = unsafe { bytes.get_elements_critical(env, ReleaseMode::CopyBack)? };
+                let out: &mut [u8] =
+                    unsafe { std::slice::from_raw_parts_mut(elems.as_mut_ptr() as *mut u8, total) };
+                ctx.write_flat(&arrays, n, out)?;
+            }
+            let starts = ctx.row_starts().iter().map(|&s| s as i32).collect();
+            (bytes, starts)
+        } else {
+            let (ptr, offsets, lengths) = ctx.convert(&imported, n)?;
+            let total = offsets
+                .last()
+                .zip(lengths.last())
+                .map(|(o, l)| *o as usize + *l as usize)
+                .unwrap_or(0);
+            if total > (i32::MAX - 15) as usize {
+                return Err(too_large(total));
+            }
+            let mut starts = Vec::with_capacity(n + 1);
+            starts.extend_from_slice(offsets);
+            starts.push(total as i32);
+            let slice = unsafe { std::slice::from_raw_parts(ptr, total) };
+            (env.byte_array_from_slice(slice)?, starts)
+        };
+        offsets_out.set_region(env, 0, &starts)?;
+        Ok(bytes.into_raw())
+    })
+}
+
+/// Converts a batch whose columns are passed as raw Arrow buffer addresses, without the C Data
+/// interface. `desc` holds four longs per column: validity, offsets and data addresses (0 when
+/// absent) and flags (bit 0: 64-bit offsets). The JVM batch must stay alive for the call; the
+/// arrays built here borrow its memory and are dropped before returning.
+///
+/// # Safety
+/// The addresses must point to Arrow buffers of `num_rows` values of the schema's types.
+#[no_mangle]
+pub unsafe extern "system" fn Java_org_apache_comet_Native_columnarToRowConvertRaw(
+    e: EnvUnowned,
+    _class: JClass,
+    c2r_handle: jlong,
+    desc: JLongArray,
+    num_rows: jint,
+    offsets_out: jni::objects::JIntArray,
+) -> jni::sys::jobject {
+    try_unwrap_or_throw(&e, |env| {
+        let ctx = (c2r_handle as *mut ColumnarToRowContext)
+            .as_mut()
+            .ok_or_else(|| CometError::Internal("Null columnar to row context".to_string()))?;
+        let n = num_rows as usize;
+        let arrays = {
+            let desc = unsafe { desc.get_elements(env, ReleaseMode::NoCopyBack)? };
+            unsafe { borrow_raw_c2r_arrays(ctx.schema(), &desc, n)? }
+        };
+        let total = ctx.plan_flat(&arrays, n)?;
+        if total > (i32::MAX - 15) as usize {
+            return Err(CometError::Internal(format!(
+                "Batch too large for columnar-to-row conversion: {total} bytes"
+            )));
+        }
+        let bytes = env.new_byte_array(total)?;
+        {
+            let mut elems = unsafe { bytes.get_elements_critical(env, ReleaseMode::CopyBack)? };
+            let out: &mut [u8] =
+                unsafe { std::slice::from_raw_parts_mut(elems.as_mut_ptr() as *mut u8, total) };
+            ctx.write_flat(&arrays, n, out)?;
+        }
+        drop(arrays);
+        // Row starts fit in i32 because the total does.
+        let starts: Vec<i32> = ctx.row_starts().iter().map(|&s| s as i32).collect();
+        offsets_out.set_region(env, 0, &starts)?;
+        Ok(bytes.into_raw())
+    })
+}
+
+/// Builds arrays that borrow raw JVM Arrow buffers, as described for `columnarToRowConvertRaw`.
+///
+/// # Safety
+/// See `Java_org_apache_comet_Native_columnarToRowConvertRaw`.
+unsafe fn borrow_raw_c2r_arrays(
+    schema: &[arrow::datatypes::DataType],
+    desc: &[i64],
+    n: usize,
+) -> CometResult<Vec<arrow::array::ArrayRef>> {
+    use arrow::buffer::Buffer;
+    use arrow::datatypes::DataType;
+    use std::ptr::NonNull;
+    if desc.len() != schema.len() * 4 {
+        return Err(CometError::Internal(format!(
+            "{} descriptor entries for {} columns",
+            desc.len(),
+            schema.len()
+        )));
+    }
+    let owner: Arc<dyn arrow::alloc::Allocation> = Arc::new(());
+    let borrow = |addr: i64, len: usize| -> CometResult<Buffer> {
+        let ptr = NonNull::new(addr as *mut u8)
+            .ok_or_else(|| CometError::Internal("Null buffer address".to_string()))?;
+        Ok(unsafe { Buffer::from_custom_allocation(ptr, len, Arc::clone(&owner)) })
+    };
+    let mut arrays = Vec::with_capacity(schema.len());
+    for (col, dt) in schema.iter().enumerate() {
+        let (validity, offsets, data, flags) = (
+            desc[col * 4],
+            desc[col * 4 + 1],
+            desc[col * 4 + 2],
+            desc[col * 4 + 3],
+        );
+        let large = flags & 1 != 0;
+        let nulls = if validity != 0 && n > 0 {
+            let nb = arrow::buffer::NullBuffer::new(arrow::buffer::BooleanBuffer::new(
+                borrow(validity, n.div_ceil(8))?,
+                0,
+                n,
+            ));
+            (nb.null_count() > 0).then_some(nb)
+        } else {
+            None
+        };
+        let (data_type, buffers) = match dt {
+            DataType::Utf8 | DataType::Binary => {
+                let width = if large { 8 } else { 4 };
+                let offsets_buf = borrow(offsets, (n + 1) * width)?;
+                let end = if large {
+                    offsets_buf.typed_data::<i64>()[n] as usize
+                } else {
+                    offsets_buf.typed_data::<i32>()[n] as usize
+                };
+                let data_buf = if end == 0 {
+                    Buffer::from_vec(Vec::<u8>::new())
+                } else {
+                    borrow(data, end)?
+                };
+                let data_type = match (dt, large) {
+                    (DataType::Utf8, false) => DataType::Utf8,
+                    (DataType::Utf8, true) => DataType::LargeUtf8,
+                    (_, false) => DataType::Binary,
+                    (_, true) => DataType::LargeBinary,
+                };
+                (data_type, vec![offsets_buf, data_buf])
+            }
+            DataType::Boolean => (dt.clone(), vec![borrow(data, n.div_ceil(8).max(1))?]),
+            other => {
+                let width = other.primitive_width().ok_or_else(|| {
+                    CometError::Internal(format!("Unsupported raw C2R type {other:?}"))
+                })?;
+                (dt.clone(), vec![borrow(data, (n * width).max(1))?])
+            }
+        };
+        let data = unsafe {
+            arrow::array::ArrayData::builder(data_type)
+                .len(n)
+                .nulls(nulls)
+                .buffers(buffers)
+                .build_unchecked()
+        };
+        arrays.push(arrow::array::make_array(data));
+    }
+    Ok(arrays)
+}
+
+/// Imports exported columns for columnar-to-row conversion.
+///
+/// # Safety
+/// Each address must point to an exported `FFI_ArrowArray` / `FFI_ArrowSchema`, whose ownership
+/// moves to this call.
+unsafe fn import_c2r_arrays(
+    array_addrs: &[i64],
+    schema_addrs: &[i64],
+) -> CometResult<Vec<arrow::array::ArrayRef>> {
+    let mut arrays = Vec::with_capacity(array_addrs.len());
+    for (a, s) in array_addrs.iter().zip(schema_addrs) {
+        let ffi_array = unsafe { std::ptr::read(*a as *mut FFI_ArrowArray) };
+        let ffi_schema = unsafe { std::ptr::read(*s as *mut FFI_ArrowSchema) };
+        let array_data = from_ffi(ffi_array, &ffi_schema)
+            .map_err(|e| CometError::Internal(format!("Failed to import array: {}", e)))?;
+        arrays.push(decode_string_arrays(&arrow::array::make_array(array_data))?);
+    }
+    Ok(arrays)
+}
+
 /// Imports the columns at `array_addrs` and `schema_addrs` and converts their first `num_rows`
 /// rows to Spark `UnsafeRow`s in `ctx`'s buffer. Returns the buffer address and the offset and
 /// length of each row in it, valid until the next conversion. Core of

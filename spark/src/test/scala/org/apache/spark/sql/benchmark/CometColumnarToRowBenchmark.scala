@@ -81,9 +81,23 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
    * Helper method to add the standard benchmark cases for columnar to row conversion. Reduces
    * code duplication across benchmark methods.
    */
+  private def withLegacyNative[T](legacy: Boolean)(body: => T): T = {
+    val key = "comet.c2r.legacy"
+    val old = System.getProperty(key)
+    System.setProperty(key, legacy.toString)
+    try body
+    finally if (old == null) System.clearProperty(key) else System.setProperty(key, old)
+  }
+
   private def addC2RBenchmarkCases(benchmark: Benchmark, query: String): Unit = {
-    def addCase(name: String, expected: Class[_ <: SparkPlan], conf: (String, String)*): Unit = {
-      withSQLConf(conf: _*) {
+    def addCase(name: String, expected: Class[_ <: SparkPlan], conf: (String, String)*): Unit =
+      addCaseWith(name, expected, legacy = false, conf: _*)
+    def addCaseWith(
+        name: String,
+        expected: Class[_ <: SparkPlan],
+        legacy: Boolean,
+        conf: (String, String)*): Unit = {
+      withLegacyNative(legacy)(withSQLConf(conf: _*) {
         // Validate the actual noop write, whose plan can differ from the SELECT's plan.
         // Keep execution and listener synchronization outside the timed benchmark cases.
         val plans = ArrayBuffer.empty[SparkPlan]
@@ -117,11 +131,11 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
           s"$name did not execute the expected columnar-to-row conversion.\n" +
             plans.mkString("\n"))
         benchmark.out.println(s"Verified $name")
-      }
+      })
       benchmark.addCase(name) { _ =>
-        withSQLConf(conf: _*) {
+        withLegacyNative(legacy)(withSQLConf(conf: _*) {
           spark.sql(query).noop()
-        }
+        })
       }
     }
 
@@ -137,12 +151,55 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false")
 
+    addCaseWith(
+      "Comet Native, legacy (CometNativeColumnarToRowExec)",
+      classOf[CometNativeColumnarToRowExec],
+      legacy = true,
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")
+
     addCase(
-      "Comet Native (CometNativeColumnarToRowExec)",
+      "Comet Native, optimized (CometNativeColumnarToRowExec)",
       classOf[CometNativeColumnarToRowExec],
       CometConf.COMET_ENABLED.key -> "true",
       CometConf.COMET_EXEC_ENABLED.key -> "true",
       CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")
+  }
+
+  /** TPC-H lineitem-like columns: compact decimals, a date and two short flag strings. */
+  def tpchLikeBenchmark(values: Int, filter: String, label: String): Unit = {
+    val benchmark =
+      new Benchmark(
+        s"Columnar to Row - TPC-H-like decimals ($label)",
+        values.toLong,
+        output = output)
+
+    withTempPath { dir =>
+      withTempTable("parquetV1Table") {
+        val df = spark
+          .range(values.toLong)
+          .selectExpr(
+            "id",
+            "cast(id % 5000000 / 100 as decimal(12,2)) as l_quantity",
+            "cast(id % 9000000 / 100 as decimal(12,2)) as l_extendedprice",
+            "cast(id % 10 / 100 as decimal(12,2)) as l_discount",
+            "cast(id % 8 / 100 as decimal(12,2)) as l_tax",
+            "date_add(to_date('1992-01-01'), cast(id % 2500 as int)) as l_shipdate",
+            "if(id % 2 = 0, 'A', 'R') as l_returnflag",
+            "if(id % 3 = 0, 'F', 'O') as l_linestatus")
+
+        prepareTable(dir, df)
+        spark.udf.register("plus_one", (x: Long) => x + 1)
+        val query =
+          if (filter == "udf") {
+            "SELECT plus_one(id), l_quantity, l_extendedprice, l_discount, l_tax, " +
+              "l_shipdate, l_returnflag, l_linestatus FROM parquetV1Table"
+          } else s"SELECT * FROM parquetV1Table $filter"
+        addC2RBenchmarkCases(benchmark, query)
+        benchmark.run()
+      }
+    }
   }
 
   /**
@@ -477,6 +534,23 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     val numRows = 1024 * 1024 // 1M rows
+
+    val only = sys.props.get("c2r.only")
+    def runBenchmark(name: String)(f: => Unit): Unit =
+      if (only.forall(o => o.split(",").exists(name.contains(_)))) super.runBenchmark(name)(f)
+
+    runBenchmark("Columnar to Row Conversion - TPC-H-like") {
+      tpchLikeBenchmark(numRows * 4, "", "all rows")
+    }
+
+    runBenchmark("Columnar to Row Conversion - TPC-H-like, JVM UDF projection") {
+      tpchLikeBenchmark(numRows * 4, "udf", "Scala UDF projection consumer")
+    }
+
+    runBenchmark("Columnar to Row Conversion - TPC-H-like, selective filter") {
+      // Keeps 1 row in 100, so each batch reaching the conversion has about 80 rows.
+      tpchLikeBenchmark(numRows * 4, "WHERE id % 100 = 0", "1% selective filter")
+    }
 
     runBenchmark("Columnar to Row Conversion - Fixed Width Only") {
       fixedWidthOnlyBenchmark(numRows)

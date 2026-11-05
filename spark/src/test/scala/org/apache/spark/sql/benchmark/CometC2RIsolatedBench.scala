@@ -129,6 +129,60 @@ object CometC2RIsolatedBench {
     i => InternalRow((0 until 16).map(c => i.toLong + c): _*),
     row => row.getLong(0) + row.getLong(15))
 
+  // Strings long enough that copying the bytes, not per-value overhead, dominates.
+  private val longStrings = Scenario(
+    "long, 2 x string(~100 bytes)",
+    new StructType()
+      .add("a", LongType)
+      .add("b", StringType)
+      .add("c", StringType),
+    i =>
+      InternalRow(
+        i.toLong,
+        UTF8String.fromString(("b" * 90) + i),
+        UTF8String.fromString(("c" * 95) + i)),
+    row => row.getLong(0) + row.getLong(1))
+
+  // Nested types: the JVM path builds each array/struct/map through ColumnarArray /
+  // ColumnarRow accessors and writes it with UnsafeProjection's nested writers. The slot
+  // read in `consume` is the raw offset-and-size word, which avoids allocating in the sink.
+  private val intArrays = Scenario(
+    "long, array<int>(8)",
+    new StructType()
+      .add("a", LongType)
+      .add("b", ArrayType(IntegerType)),
+    i =>
+      InternalRow(
+        i.toLong,
+        org.apache.spark.sql.catalyst.util.ArrayData.toArrayData((0 until 8).map(_ + i).toArray)),
+    row => row.getLong(0) + row.getLong(1))
+
+  private val structs = Scenario(
+    "long, struct<int, double, string>",
+    new StructType()
+      .add("a", LongType)
+      .add(
+        "b",
+        new StructType()
+          .add("x", IntegerType)
+          .add("y", DoubleType)
+          .add("z", StringType)),
+    i => InternalRow(i.toLong, InternalRow(i, i.toDouble, UTF8String.fromString(s"value_$i"))),
+    row => row.getLong(0) + row.getLong(1))
+
+  private val maps = Scenario(
+    "long, map<string, int>(4)",
+    new StructType()
+      .add("a", LongType)
+      .add("b", MapType(StringType, IntegerType)),
+    i =>
+      InternalRow(
+        i.toLong,
+        org.apache.spark.sql.catalyst.util.ArrayBasedMapData(
+          (0 until 4).map(k => UTF8String.fromString(s"k$k")).toArray,
+          (0 until 4).map(_ + i).toArray)),
+    row => row.getLong(0) + row.getLong(1))
+
   private def makeBatches(scenario: Scenario, batchSize: Int): Array[ColumnarBatch] = {
     val rows = (0 until totalRows).iterator.map(scenario.makeRow)
     CometArrowConverters
@@ -174,7 +228,8 @@ object CometC2RIsolatedBench {
       if (sink == Long.MinValue) println(sink)
     }
 
-    benchmark.addCase("JVM direct converter (prototype)") { _ =>
+    val directSupported = DirectColumnarToRowConverter.supportsSchema(scenario.schema)
+    if (directSupported) benchmark.addCase("JVM direct converter (prototype)") { _ =>
       val converter = new DirectColumnarToRowConverter(scenario.schema)
       var sink = 0L
       var b = 0
@@ -210,6 +265,25 @@ object CometC2RIsolatedBench {
       if (sink == Long.MinValue) println(sink)
     }
 
+    benchmark.addCase("Native converter (heap rows)") { _ =>
+      val converter =
+        new NativeColumnarToRowConverter(scenario.schema, batchSize, heapRows = true)
+      var sink = 0L
+      try {
+        var b = 0
+        while (b < batches.length) {
+          val it = converter.convert(batches(b))
+          while (it.hasNext) {
+            sink += scenario.consume(it.next())
+          }
+          b += 1
+        }
+      } finally {
+        converter.close()
+      }
+      if (sink == Long.MinValue) println(sink)
+    }
+
     benchmark.run()
 
     // GC pressure comparison: the JVM path allocates per object-typed value (Decimal,
@@ -226,22 +300,41 @@ object CometC2RIsolatedBench {
       }
       if (sink == Long.MinValue) println(sink)
     }
-    val directAlloc = measureAllocatedBytes {
-      val converter = new DirectColumnarToRowConverter(scenario.schema)
-      var sink = 0L
-      for (batch <- batches) {
-        converter.setBatch(batch)
-        val numRows = batch.numRows()
-        var i = 0
-        while (i < numRows) {
-          sink += scenario.consume(converter.convertRow(i))
-          i += 1
+    val directAlloc =
+      if (!directSupported) -1L
+      else
+        measureAllocatedBytes {
+          val converter = new DirectColumnarToRowConverter(scenario.schema)
+          var sink = 0L
+          for (batch <- batches) {
+            converter.setBatch(batch)
+            val numRows = batch.numRows()
+            var i = 0
+            while (i < numRows) {
+              sink += scenario.consume(converter.convertRow(i))
+              i += 1
+            }
+          }
+          if (sink == Long.MinValue) println(sink)
         }
+    val nativeAlloc = measureAllocatedBytes {
+      val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
+      var sink = 0L
+      try {
+        for (batch <- batches) {
+          val it = converter.convert(batch)
+          while (it.hasNext) {
+            sink += scenario.consume(it.next())
+          }
+        }
+      } finally {
+        converter.close()
       }
       if (sink == Long.MinValue) println(sink)
     }
-    val nativeAlloc = measureAllocatedBytes {
-      val converter = new NativeColumnarToRowConverter(scenario.schema, batchSize)
+    val heapAlloc = measureAllocatedBytes {
+      val converter =
+        new NativeColumnarToRowConverter(scenario.schema, batchSize, heapRows = true)
       var sink = 0L
       try {
         for (batch <- batches) {
@@ -258,7 +351,8 @@ object CometC2RIsolatedBench {
     println(
       f"JVM heap allocation per row: JVM path ${jvmAlloc.toDouble / totalRows}%.1f bytes, " +
         f"direct path ${directAlloc.toDouble / totalRows}%.1f bytes, " +
-        f"native path ${nativeAlloc.toDouble / totalRows}%.1f bytes%n")
+        f"native path ${nativeAlloc.toDouble / totalRows}%.1f bytes, " +
+        f"native heap-rows path ${heapAlloc.toDouble / totalRows}%.1f bytes%n")
 
     batches.foreach(_.close())
   }
@@ -270,9 +364,21 @@ object CometC2RIsolatedBench {
         tpchDecimalsWithStrings,
         decimalsAllFixedWidth,
         highPrecisionDecimals,
-        widePrimitives)
+        widePrimitives,
+        longStrings,
+        intArrays,
+        structs,
+        maps)
+    // Optional filters: args(0) is a comma-separated list of scenario-name substrings,
+    // args(1) a comma-separated list of batch sizes.
+    val selected = args.headOption.filter(_.nonEmpty) match {
+      case Some(f) => scenarios.filter(s => f.split(",").exists(s.name.contains(_)))
+      case None => scenarios
+    }
+    val batchSizes =
+      if (args.length > 1) args(1).split(",").map(_.toInt).toSeq else Seq(8192, 512, 32)
 
-    for (scenario <- scenarios; batchSize <- Seq(8192, 512, 32)) {
+    for (scenario <- selected; batchSize <- batchSizes) {
       runForBatchSize(scenario, batchSize)
     }
   }

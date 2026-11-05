@@ -19,13 +19,16 @@
 
 package org.apache.comet
 
+import org.apache.arrow.vector.{BaseLargeVariableWidthVector, BaseVariableWidthVector, FieldVector}
+import org.apache.arrow.vector.types.Types.MinorType
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
-import org.apache.spark.sql.types.StructType
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.unsafe.Platform
 
 import org.apache.comet.serde.QueryPlanSerde
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometPlainVector, NativeUtil}
 
 /**
  * Native converter that converts Arrow columnar data to Spark UnsafeRow format.
@@ -44,7 +47,11 @@ import org.apache.comet.vector.NativeUtil
  * @param batchSize
  *   Maximum number of rows per batch (used for buffer pre-allocation)
  */
-class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends AutoCloseable {
+class NativeColumnarToRowConverter(
+    schema: StructType,
+    batchSize: Int,
+    heapRows: Boolean = !java.lang.Boolean.getBoolean("comet.c2r.legacy"))
+    extends AutoCloseable {
 
   private val nativeLib = new Native()
   private val nativeUtil = new NativeUtil()
@@ -66,6 +73,48 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
   // Reusable UnsafeRow for iteration
   private val unsafeRow = new UnsafeRow(schema.fields.length)
 
+  // Heap-rows mode reuses one set of FFI structs for every batch.
+  private val numCols = schema.fields.length
+  private lazy val (ffiArrays, ffiSchemas) = nativeUtil.allocateArrowStructs(numCols)
+  private lazy val ffiArrayAddrs = ffiArrays.map(_.memoryAddress())
+  private lazy val ffiSchemaAddrs = ffiSchemas.map(_.memoryAddress())
+
+  // Raw mode: the Arrow minor types each column may arrive as, for reading its buffers directly.
+  private val rawTypes: Array[Set[MinorType]] =
+    schema.fields.map(f => NativeColumnarToRowConverter.rawMinorTypes(f.dataType))
+  private val rawEligible = heapRows && rawTypes.forall(_.nonEmpty)
+  private val rawDesc = new Array[Long](numCols * 4)
+
+  /** Fills rawDesc from the batch's buffers, or returns false when a column can't be read raw. */
+  private def fillRawDesc(batch: ColumnarBatch): Boolean = {
+    val numRows = batch.numRows()
+    var c = 0
+    while (c < numCols) {
+      batch.column(c) match {
+        case v: CometPlainVector if v.getValueVector.getField.getDictionary == null =>
+          val vv = v.getValueVector
+          if (vv.getValueCount != numRows || !rawTypes(c).contains(vv.getMinorType)) return false
+          val fv = vv.asInstanceOf[FieldVector]
+          rawDesc(c * 4) = fv.getValidityBufferAddress
+          vv match {
+            case bv: BaseVariableWidthVector =>
+              rawDesc(c * 4 + 1) = bv.getOffsetBufferAddress
+              rawDesc(c * 4 + 3) = 0
+            case lv: BaseLargeVariableWidthVector =>
+              rawDesc(c * 4 + 1) = lv.getOffsetBufferAddress
+              rawDesc(c * 4 + 3) = 1
+            case _ =>
+              rawDesc(c * 4 + 1) = 0
+              rawDesc(c * 4 + 3) = 0
+          }
+          rawDesc(c * 4 + 2) = fv.getDataBufferAddress
+        case _ => return false
+      }
+      c += 1
+    }
+    true
+  }
+
   /**
    * Converts a ColumnarBatch to an iterator of InternalRows.
    *
@@ -85,6 +134,26 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
     val numRows = batch.numRows()
     if (numRows == 0) {
       return Iterator.empty
+    }
+
+    if (rawEligible && fillRawDesc(batch)) {
+      // Each batch gets its own offsets, since its iterator may outlive the next convert().
+      val offsets = new Array[Int](numRows + 1)
+      val bytes = nativeLib.columnarToRowConvertRaw(c2rHandle, rawDesc, numRows, offsets)
+      return new HeapRowIterator(bytes, offsets, numRows, numCols)
+    }
+
+    if (heapRows) {
+      val exported = nativeUtil.exportBatch(ffiArrayAddrs, ffiSchemaAddrs, batch)
+      val offsets = new Array[Int](exported + 1)
+      val bytes =
+        nativeLib.columnarToRowConvertToArray(
+          c2rHandle,
+          ffiArrayAddrs,
+          ffiSchemaAddrs,
+          exported,
+          offsets)
+      return new HeapRowIterator(bytes, offsets, exported, numCols)
     }
 
     // Export the batch to Arrow FFI and get memory addresses
@@ -109,6 +178,10 @@ class NativeColumnarToRowConverter(schema: StructType, batchSize: Int) extends A
     if (c2rHandle != 0) {
       nativeLib.columnarToRowClose(c2rHandle)
       c2rHandle = 0
+    }
+    if (heapRows && numCols > 0) {
+      ffiArrays.foreach(_.close())
+      ffiSchemas.foreach(_.close())
     }
     nativeUtil.close()
   }
@@ -141,5 +214,54 @@ private class NativeRowIterator(info: NativeColumnarToRowInfo, unsafeRow: Unsafe
     currentIdx += 1
 
     unsafeRow.copy()
+  }
+}
+
+object NativeColumnarToRowConverter {
+
+  /** The Arrow minor types a column of `dataType` can be read from raw, or empty if none. */
+  private[comet] def rawMinorTypes(dataType: DataType): Set[MinorType] = dataType match {
+    case BooleanType => Set(MinorType.BIT)
+    case ByteType => Set(MinorType.TINYINT)
+    case ShortType => Set(MinorType.SMALLINT)
+    case IntegerType => Set(MinorType.INT)
+    case LongType => Set(MinorType.BIGINT)
+    case FloatType => Set(MinorType.FLOAT4)
+    case DoubleType => Set(MinorType.FLOAT8)
+    case DateType => Set(MinorType.DATEDAY)
+    case TimestampType => Set(MinorType.TIMESTAMPMICROTZ)
+    case TimestampNTZType => Set(MinorType.TIMESTAMPMICRO)
+    case _: DecimalType => Set(MinorType.DECIMAL)
+    case _: StringType => Set(MinorType.VARCHAR, MinorType.LARGEVARCHAR)
+    case BinaryType => Set(MinorType.VARBINARY, MinorType.LARGEVARBINARY)
+    case _ => Set.empty
+  }
+}
+
+/**
+ * Iterator over rows that native conversion wrote into a JVM byte array, one array per batch.
+ * Each row is a new UnsafeRow over that array, so it stays valid after later batches without
+ * copying its bytes.
+ */
+private class HeapRowIterator(
+    bytes: Array[Byte],
+    offsets: Array[Int],
+    numRows: Int,
+    numFields: Int)
+    extends Iterator[InternalRow] {
+
+  private var currentIdx = 0
+
+  override def hasNext: Boolean = currentIdx < numRows
+
+  override def next(): InternalRow = {
+    if (!hasNext) {
+      throw new NoSuchElementException("No more rows")
+    }
+    val start = offsets(currentIdx)
+    val row = new UnsafeRow(numFields)
+    row.pointTo(bytes, Platform.BYTE_ARRAY_OFFSET + start, offsets(currentIdx + 1) - start)
+    currentIdx += 1
+    row
   }
 }
