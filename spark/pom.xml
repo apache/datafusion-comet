@@ -506,7 +506,9 @@ under the License.
           <version>${amazon-awssdk-v2.version}</version>
           <scope>provided</scope>
         </dependency>
-        <!-- iceberg-spark-runtime-4.2 is not yet published; reuse the 4.0 runtime -->
+        <!-- iceberg-spark-runtime-4.2 is not published: Iceberg 1.12.0 has a Spark 4.2 module in
+             source, but its release script (dev/stage-binaries.sh) stages 3.5, 4.0 and 4.1 only.
+             Reuse the 4.0 runtime until a release publishes the 4.2 one. -->
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
