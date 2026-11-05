@@ -232,16 +232,11 @@ FROM emp
 -- N days, so MAX(val_date) OVER (... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING)
 -- returns the largest val_date within the next 2 days of each row.
 -- Mirrors the "max(val_date) ... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING"
--- case from Spark's window.sql. Comet falls back because its native window
--- planner ships RANGE frame offsets as Int64 while arrow-arith requires an
--- Interval RHS for Date32 arithmetic. Once the native planner coerces Int ->
--- Interval for DATE sort keys (as DataFusion's type-coercion analyzer does),
--- the guard in CometWindowExec can be removed and this test will start
--- failing because Comet stops falling back — that's the signal to re-enable
--- native execution.
+-- case from Spark's window.sql. The native planner coerces the Int offset to
+-- IntervalDayTime for Date32 sort keys so this runs natively.
 -- ============================================================
 
-query expect_fallback(RANGE frame with explicit offset on DATE ORDER BY is not supported)
+query
 SELECT val_date, cate,
   MAX(val_date) OVER (PARTITION BY cate ORDER BY val_date
                       RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING) AS mx_d
@@ -671,6 +666,72 @@ SELECT player, game, score,
                    ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rows_sum,
   SUM(score) OVER (PARTITION BY player ORDER BY score
                    RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS range_sum
+FROM scores
+
+-- ============================================================
+-- 5.6: RANGE frame over array and struct ORDER BY keys
+-- DataFusion finds a CURRENT ROW bound of a RANGE frame by comparing ORDER BY
+-- values. It compares an array's elements and a struct's fields, flattening
+-- nested structs, but its comparison rejects anything nested below that, so
+-- over an array of arrays or structs, or a struct holding an array, the query
+-- fails with "Uncomparable values"
+-- (https://github.com/apache/datafusion/issues/24937). Comet falls back for
+-- those keys. The same comparison orders a null element or field above
+-- every other value, while the sort puts it first, so Comet also falls back
+-- for a key whose type can hold one
+-- (https://github.com/apache/datafusion-comet/issues/6477). Wrapping the
+-- column in coalesce keeps a key native. Ranking functions, ROWS frames and
+-- an unbounded RANGE frame never compare values that way and stay native
+-- over the same keys.
+-- ============================================================
+
+query
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(coalesce(score, 0))) AS by_array,
+  SUM(score) OVER (PARTITION BY player
+                   ORDER BY named_struct('a', named_struct('b', coalesce(score, 0))) DESC) AS by_struct
+FROM scores
+
+query expect_fallback(can hold a null element or field)
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(score)) AS by_array
+FROM scores
+
+query expect_fallback(RANGE frame on array<struct<x:int>> ORDER BY is not supported)
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(named_struct('x', score))) AS run_sum
+FROM scores
+
+query expect_fallback(RANGE frame on struct<a:array<int>> ORDER BY is not supported)
+SELECT player, game, score,
+  COUNT(score) OVER (PARTITION BY player ORDER BY named_struct('a', array(score)) DESC
+                     RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS run_count
+FROM scores
+
+query expect_fallback(RANGE frame on array<array<int>> ORDER BY is not supported)
+SELECT player, game, score,
+  LAST_VALUE(game) OVER (PARTITION BY player ORDER BY array(array(score)), game) AS lv
+FROM scores
+
+query
+SELECT player, game, score,
+  RANK() OVER (PARTITION BY player ORDER BY array(named_struct('x', score))) AS rk,
+  SUM(score) OVER (PARTITION BY player ORDER BY array(named_struct('x', score))
+                   RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS total
+FROM scores
+
+-- Spark gives CUME_DIST a RANGE frame, but DataFusion computes it from peer
+-- groups without reading the frame.
+query tolerance=1e-6
+SELECT player, game, score,
+  PERCENT_RANK() OVER (PARTITION BY player ORDER BY named_struct('a', array(score))) AS pr,
+  CUME_DIST()    OVER (PARTITION BY player ORDER BY named_struct('a', array(score))) AS cd
+FROM scores
+
+query
+SELECT player, game, score,
+  SUM(score) OVER (PARTITION BY player ORDER BY named_struct('a', array(score)), game
+                   ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rows_sum
 FROM scores
 
 -- ############################################################

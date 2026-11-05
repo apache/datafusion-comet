@@ -27,7 +27,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Partitioning, UnknownPartitioning}
-import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.execution.{SparkPlan, SQLExecution}
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
@@ -64,6 +64,14 @@ case class CometIcebergNativeScanExec(
     scanHashCode: Int,
     @transient nativeIcebergScanMetadata: CometIcebergNativeScanMetadata)
     extends CometLeafExec {
+
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = {
+    // Native execution rebuilds originalPlan from the live runtimeFilters during partition
+    // serialization. Reversion skips that path, so carry the executable DPP filters across here.
+    val restoredScan = originalPlan.copy(runtimeFilters = runtimeFilters)
+    originalPlan.logicalLink.foreach(restoredScan.setLogicalLink)
+    restoredScan
+  }
 
   override val supportsColumnar: Boolean = true
 
@@ -120,7 +128,14 @@ case class CometIcebergNativeScanExec(
   // Only accessed during execution, not planning
   def numPartitions: Int = perPartitionData.length
 
-  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(numPartitions)
+  // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
+  // not know its partition count while planning, because dynamic partition pruning decides which
+  // tasks survive and its subqueries resolve at execution. AQE reads outputPartitioning while it
+  // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
+  // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
+  // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
+  // RDD from perPartitionData instead.
+  override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
 
@@ -285,7 +300,8 @@ case class CometIcebergNativeScanExec(
       defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
-      subqueries = Seq.empty) {
+      subqueries = Seq.empty,
+      outputTypes = output.map(_.dataType)) {
       override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
         // Register before super.compute creates the CometExecIterator, so this listener runs
         // after the iterator's close has published the final scan metrics.

@@ -17,6 +17,7 @@
 
 use super::{compare_floats, has_float_leaf};
 use arrow::array::{make_comparator, Array, AsArray, DynComparator, OffsetSizeTrait};
+use arrow::buffer::NullBuffer;
 use arrow::compute::SortOptions;
 use arrow::datatypes::{ArrowPrimitiveType, DataType, Float32Type, Float64Type};
 use datafusion::common::{internal_err, DFSchema, Result};
@@ -32,7 +33,7 @@ use std::ops::Range;
 /// arrays must have the same type, ignoring field names and nullability.
 pub fn spark_comparator(left: &dyn Array, right: &dyn Array) -> Result<DynComparator> {
     check_types(left, right)?;
-    comparator(left, right, false)
+    comparator(left, right, false, true)
 }
 
 /// Builds a test of whether `left[i]` equals `right[j]` in the ordering of [`spark_comparator`].
@@ -42,7 +43,30 @@ pub fn spark_equality(
     right: &dyn Array,
 ) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>> {
     check_types(left, right)?;
-    let compare = comparator(left, right, true)?;
+    let compare = comparator(left, right, true, true)?;
+    Ok(Box::new(move |i, j| compare(i, j).is_eq()))
+}
+
+/// [`spark_comparator`] for a caller that applies the top-level nulls of `left` and `right`
+/// itself, as SQL comparisons do. A null list or struct is compared by the values under it instead
+/// of sorting first, which saves testing both null buffers on every call. Nulls inside a list or
+/// struct still sort first.
+pub(crate) fn spark_comparator_ignoring_nulls(
+    left: &dyn Array,
+    right: &dyn Array,
+) -> Result<DynComparator> {
+    check_types(left, right)?;
+    comparator(left, right, false, false)
+}
+
+/// [`spark_equality`] for a caller that applies the top-level nulls itself. See
+/// [`spark_comparator_ignoring_nulls`].
+pub(crate) fn spark_equality_ignoring_nulls(
+    left: &dyn Array,
+    right: &dyn Array,
+) -> Result<Box<dyn Fn(usize, usize) -> bool + Send + Sync>> {
+    check_types(left, right)?;
+    let compare = comparator(left, right, true, false)?;
     Ok(Box::new(move |i, j| compare(i, j).is_eq()))
 }
 
@@ -58,8 +82,15 @@ fn check_types(left: &dyn Array, right: &dyn Array) -> Result<()> {
     }
 }
 
-/// With `equality` set, the comparator only has to tell equal from unequal values.
-fn comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<DynComparator> {
+/// With `equality` set, the comparator only has to tell equal from unequal values. With `nulls`
+/// unset, it ignores the nulls of `left` and `right` themselves, though not those of their
+/// children.
+fn comparator(
+    left: &dyn Array,
+    right: &dyn Array,
+    equality: bool,
+    nulls: bool,
+) -> Result<DynComparator> {
     if !has_float_leaf(left.data_type()) {
         let options = SortOptions {
             descending: false,
@@ -68,38 +99,51 @@ fn comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<Dyn
         return Ok(make_comparator(left, right, options)?);
     }
     match (left.data_type(), right.data_type()) {
-        (DataType::Float32, DataType::Float32) => Ok(float_comparator::<Float32Type>(left, right)),
-        (DataType::Float64, DataType::Float64) => Ok(float_comparator::<Float64Type>(left, right)),
-        (DataType::List(_), DataType::List(_)) => list_comparator::<i32>(left, right, equality),
+        (DataType::Float32, DataType::Float32) => {
+            Ok(float_comparator::<Float32Type>(left, right, nulls))
+        }
+        (DataType::Float64, DataType::Float64) => {
+            Ok(float_comparator::<Float64Type>(left, right, nulls))
+        }
+        (DataType::List(_), DataType::List(_)) => {
+            list_comparator::<i32>(left, right, equality, nulls)
+        }
         (DataType::LargeList(_), DataType::LargeList(_)) => {
-            list_comparator::<i64>(left, right, equality)
+            list_comparator::<i64>(left, right, equality, nulls)
         }
         (DataType::FixedSizeList(_, _), DataType::FixedSizeList(_, _)) => {
-            fixed_size_list_comparator(left, right, equality)
+            fixed_size_list_comparator(left, right, equality, nulls)
         }
-        (DataType::Struct(_), DataType::Struct(_)) => struct_comparator(left, right, equality),
+        (DataType::Struct(_), DataType::Struct(_)) => {
+            struct_comparator(left, right, equality, nulls)
+        }
         (l, r) => internal_err!("Unsupported types for Spark comparison: {l} and {r}"),
     }
 }
 
-fn float_comparator<T: ArrowPrimitiveType>(left: &dyn Array, right: &dyn Array) -> DynComparator
+fn float_comparator<T: ArrowPrimitiveType>(
+    left: &dyn Array,
+    right: &dyn Array,
+    nulls: bool,
+) -> DynComparator
 where
     T::Native: Float,
 {
     let l = left.as_primitive::<T>().values().clone();
     let r = right.as_primitive::<T>().values().clone();
-    nulls_first(left, right, move |i, j| compare_floats(l[i], r[j]))
+    nulls_first(left, right, nulls, move |i, j| compare_floats(l[i], r[j]))
 }
 
 fn list_comparator<O: OffsetSizeTrait>(
     left: &dyn Array,
     right: &dyn Array,
     equality: bool,
+    nulls: bool,
 ) -> Result<DynComparator> {
     let (l, r) = (left.as_list::<O>(), right.as_list::<O>());
-    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality)?;
+    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality, true)?;
     let (l, r) = (l.offsets().clone(), r.offsets().clone());
-    Ok(nulls_first(left, right, move |i, j| {
+    Ok(nulls_first(left, right, nulls, move |i, j| {
         let left = l[i].as_usize()..l[i + 1].as_usize();
         let right = r[j].as_usize()..r[j + 1].as_usize();
         lexicographic(&compare, left, right, equality)
@@ -110,11 +154,12 @@ fn fixed_size_list_comparator(
     left: &dyn Array,
     right: &dyn Array,
     equality: bool,
+    nulls: bool,
 ) -> Result<DynComparator> {
     let (l, r) = (left.as_fixed_size_list(), right.as_fixed_size_list());
-    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality)?;
+    let compare = comparator(l.values().as_ref(), r.values().as_ref(), equality, true)?;
     let (l, r) = (l.value_length() as usize, r.value_length() as usize);
-    Ok(nulls_first(left, right, move |i, j| {
+    Ok(nulls_first(left, right, nulls, move |i, j| {
         lexicographic(&compare, i * l..(i + 1) * l, j * r..(j + 1) * r, equality)
     }))
 }
@@ -137,15 +182,20 @@ fn lexicographic(
         .unwrap_or(lengths)
 }
 
-fn struct_comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Result<DynComparator> {
+fn struct_comparator(
+    left: &dyn Array,
+    right: &dyn Array,
+    equality: bool,
+    nulls: bool,
+) -> Result<DynComparator> {
     let fields = left
         .as_struct()
         .columns()
         .iter()
         .zip(right.as_struct().columns())
-        .map(|(l, r)| comparator(l.as_ref(), r.as_ref(), equality))
+        .map(|(l, r)| comparator(l.as_ref(), r.as_ref(), equality, true))
         .collect::<Result<Vec<_>>>()?;
-    Ok(nulls_first(left, right, move |i, j| {
+    Ok(nulls_first(left, right, nulls, move |i, j| {
         fields
             .iter()
             .map(|compare| compare(i, j))
@@ -154,18 +204,19 @@ fn struct_comparator(left: &dyn Array, right: &dyn Array, equality: bool) -> Res
     }))
 }
 
-/// Orders nulls before values. A null slot never reaches `compare`, because the child values
-/// under a null list or struct can be anything.
+/// Orders nulls before values, unless `apply` is unset. A null slot then never reaches `compare`,
+/// because the child values under a null list or struct can be anything. Without `apply`, the
+/// caller masks the result for null slots: `compare` reads the values under them, which are in
+/// bounds in any valid array.
 fn nulls_first(
     left: &dyn Array,
     right: &dyn Array,
+    apply: bool,
     compare: impl Fn(usize, usize) -> Ordering + Send + Sync + 'static,
 ) -> DynComparator {
-    let left = left.nulls().filter(|nulls| nulls.null_count() > 0).cloned();
-    let right = right
-        .nulls()
-        .filter(|nulls| nulls.null_count() > 0)
-        .cloned();
+    let present = |nulls: &&NullBuffer| apply && nulls.null_count() > 0;
+    let left = left.nulls().filter(present).cloned();
+    let right = right.nulls().filter(present).cloned();
     if left.is_none() && right.is_none() {
         return Box::new(compare);
     }
@@ -307,6 +358,50 @@ mod tests {
         let pairs = [(0, 0), (1, 1), (2, 2), (3, 3), (3, 2), (2, 3), (0, 1)];
         for (i, j) in pairs {
             assert_eq!(equal(i, j), compare(i, j).is_eq(), "({i}, {j})");
+        }
+        Ok(())
+    }
+
+    /// Ignoring the top-level nulls compares a null list or struct by the values under it, and
+    /// leaves every other slot, and nulls further down, as `spark_comparator` orders them.
+    #[test]
+    fn ignoring_nulls_compares_the_values_under_a_null_slot() -> Result<()> {
+        let field = Arc::new(Field::new("item", DataType::Float64, true));
+        // The second row of each side is null, over `[-0.0]` and `[1.0]`, and the third holds an
+        // inner null.
+        let nulls = || Some(NullBuffer::from(vec![true, false, true]));
+        let list = |values: Vec<Option<f64>>, nulls: Option<NullBuffer>| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::clone(&field),
+                OffsetBuffer::from_lengths([1, 1, 1]),
+                Arc::new(Float64Array::from(values)),
+                nulls,
+            ))
+        };
+        let left = vec![Some(0.0), Some(-0.0), None];
+        let right = vec![Some(-0.0), Some(1.0), Some(f64::NAN)];
+        let struct_of = |values: Vec<Option<f64>>| -> ArrayRef {
+            let list = list(values, None);
+            Arc::new(StructArray::new(
+                vec![Arc::new(Field::new("v", list.data_type().clone(), true))].into(),
+                vec![list],
+                nulls(),
+            ))
+        };
+        for (l, r) in [
+            (list(left.clone(), nulls()), list(right.clone(), nulls())),
+            (struct_of(left), struct_of(right)),
+        ] {
+            let masked = spark_comparator(l.as_ref(), r.as_ref())?;
+            let unmasked = spark_comparator_ignoring_nulls(l.as_ref(), r.as_ref())?;
+            let equal = spark_equality_ignoring_nulls(l.as_ref(), r.as_ref())?;
+            assert_eq!(masked(1, 1), Ordering::Equal);
+            assert_eq!(unmasked(1, 1), Ordering::Less, "{}", l.data_type());
+            assert!(!equal(1, 1));
+            for row in [0, 2] {
+                assert_eq!(unmasked(row, row), masked(row, row), "{}", l.data_type());
+                assert_eq!(equal(row, row), masked(row, row).is_eq());
+            }
         }
         Ok(())
     }

@@ -98,8 +98,10 @@ pub(crate) fn normalize_object_store_url(
 /// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`; empty or
 /// unset means none). These route to `AmazonS3` but are not recognized by
 /// `ObjectStoreScheme::parse`. `s3a` is excluded -- object_store knows it and callers special-case
-/// it. Shared by the Parquet normalizer above and the Iceberg storage-factory gate
-/// (`iceberg_common::storage_factory_for`) so both admit the same schemes.
+/// it. Case-insensitive, which is safe for the Parquet normalizer above because it rewrites the
+/// alias to `s3://` before anything opens the path. The Iceberg storage-factory gate opens the
+/// recorded location as written, so it wraps this in `iceberg_common::is_iceberg_alias_scheme`,
+/// which additionally requires the scheme to be lowercase.
 pub(crate) fn is_s3_compliant_alias_scheme(
     scheme: &str,
     object_store_configs: &HashMap<String, String>,
@@ -198,20 +200,25 @@ impl StorageFactory for BlobHostPromotingS3StorageFactory {
             customized_credential_load: self.customized_credential_load.clone(),
         }
         .build(config)?;
-        Ok(Arc::new(BlobHostPromotingS3Storage { inner }))
+        Ok(Arc::new(BlobHostPromotingS3Storage::new(inner)))
     }
 }
 
 /// [`Storage`] that promotes hostless s3-compliant-alias locations (see
-/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to the opendal S3 storage
-/// [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`]. Serde exists only to
-/// satisfy the `Storage` typetag supertraits; Comet never serializes storage during a scan.
+/// [`promote_hostless_alias_url`]) at the open boundary, then delegates to `inner`: the opendal S3
+/// storage [`OpenDalStorageFactory::S3`] built from the same [`StorageConfig`], or the
+/// location-scoped storage when the provider is location-scoped. Serde exists only to satisfy the
+/// `Storage` typetag supertraits; Comet never serializes storage during a scan.
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct BlobHostPromotingS3Storage {
     inner: Arc<dyn Storage>,
 }
 
 impl BlobHostPromotingS3Storage {
+    pub(crate) fn new(inner: Arc<dyn Storage>) -> Self {
+        Self { inner }
+    }
+
     /// Promote a hostless path, surfacing failures as an iceberg [`Error`].
     fn promote<'a>(&self, path: &'a str) -> IcebergResult<Cow<'a, str>> {
         promote_hostless_alias_url(path)

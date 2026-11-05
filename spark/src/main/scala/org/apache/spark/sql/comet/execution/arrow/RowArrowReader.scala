@@ -26,7 +26,8 @@ import org.apache.spark.sql.catalyst.InternalRow
 
 /**
  * `ArrowReader` over an iterator of Spark `InternalRow`s, writing up to `maxRecordsPerBatch` rows
- * per call into the reader's stable VSR via `ArrowWriter`.
+ * per call into the reader's stable VSR via `ArrowWriter`. `onRows` is told each batch's row
+ * count, so a metric need not wrap the row iterator and pay a call per row.
  *
  * `ArrowWriter.create` calls `vector.allocateNew`, which releases any prior buffers and allocates
  * fresh ones. This is required for FFI safety: previously-exported batches retain their buffers
@@ -38,7 +39,8 @@ private[comet] class RowArrowReader(
     arrowSchema: Schema,
     rowIter: Iterator[InternalRow],
     maxRecordsPerBatch: Int,
-    onConversionNs: Long => Unit = _ => ())
+    onConversionNs: Long => Unit = _ => (),
+    onRows: Int => Unit = _ => ())
     extends ArrowReader(allocator) {
 
   require(maxRecordsPerBatch > 0, "Maximum records per batch must be positive")
@@ -65,6 +67,7 @@ private[comet] class RowArrowReader(
     }
     writer.finish()
     onConversionNs(System.nanoTime() - startNs)
+    onRows(rowCount)
     true
   }
 }

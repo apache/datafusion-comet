@@ -22,12 +22,14 @@ package org.apache.spark
 import java.io.ByteArrayInputStream
 import java.lang.ref.WeakReference
 import java.util.Properties
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
 
 import scala.reflect.ClassTag
 
 import org.apache.arrow.c.ArrowArrayStream
 import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.vector.BigIntVector
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{ArrowType, Field, Schema}
 import org.apache.spark.executor.TaskMetrics
@@ -39,10 +41,13 @@ import org.apache.spark.sql.comet.{CometExec, CometExecUtils, CometMetricNode, C
 import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
 import org.apache.spark.sql.functions.{col, udf}
 import org.apache.spark.sql.types.{LongType, StructField, StructType}
+import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+import org.apache.spark.util.JsonProtocol
 
-import org.apache.comet.{CometConf, CometExecIterator, CometNativeException, CometShuffleBlockIterator, Native}
+import org.apache.comet.{CometArrowAllocator, CometConf, CometExecIterator, CometExecutorMemoryUsage, CometNativeException, CometShuffleBlockIterator, Native}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.OperatorOuterClass
+import org.apache.comet.vector.CometPlainVector
 
 /**
  * Regression tests for the native plan lifecycle: every `createPlan` must be balanced by exactly
@@ -122,6 +127,7 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
             true,
             "fair_unified",
             64L << 20,
+            64L << 20,
             taskAttemptId,
             1L,
             null,
@@ -192,6 +198,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
       withTaskContext(4400000L) {
         val failMetrics = new AtomicBoolean(false)
         class ThrowingMetricNode extends CometMetricNode(Map.empty, Nil) {
+          // The iterator hands native a copy of its tree; keep this node so the failure fires.
+          override def newInstance(): CometMetricNode = this
           override def set_all_from_bytes(bytes: Array[Byte]): Unit = {
             if (failMetrics.get()) {
               throw new IllegalStateException("injected metrics update failure")
@@ -214,7 +222,8 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
           1,
           0,
           None,
-          Seq.empty)
+          Seq.empty,
+          None)
 
         failMetrics.set(true)
         // Exhausting the iterator closes it, and the close propagates the metrics failure thrown
@@ -233,6 +242,57 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     }
   }
 
+  test("an input that throws after its first batch fails the plan with its own exception") {
+    val allocator = CometArrowAllocator.newChildAllocator("input-failure", 0, Long.MaxValue)
+    try {
+      withTaskContext(4600000L) {
+        val vector = new BigIntVector("test", allocator)
+        vector.allocateNew(2)
+        vector.set(0, 1L)
+        vector.set(1, 2L)
+        vector.setValueCount(2)
+        val first = new ColumnarBatch(Array[ColumnVector](new CometPlainVector(vector)), 2)
+        val boom = new IllegalStateException("injected input failure")
+        // The stream's schema is derived from the first batch on the JVM, so a failure there
+        // propagates unchanged. Native pulls every later batch through the exported stream, and
+        // Arrow Java hands native only the text of what that pull threw.
+        val input = Iterator.single(first) ++ new Iterator[ColumnarBatch] {
+          override def hasNext: Boolean = throw boom
+          override def next(): ColumnarBatch = throw boom
+        }
+        val schema = StructType(Seq(StructField("test", LongType, nullable = false)))
+        val stream = CometArrowStream.fromColumnarBatchIter(
+          input,
+          schema,
+          CometArrowStream.NATIVE_TIMEZONE,
+          "input-failure")
+        val limitOp =
+          CometExecUtils.getLimitNativePlan(Seq(PrettyAttribute("test", LongType)), 100).get
+        val iter = CometExec.getCometIterator(
+          Array(stream.asInstanceOf[Object]),
+          1,
+          limitOp,
+          CometMetricNode(Map.empty),
+          1,
+          0,
+          None,
+          Seq.empty,
+          None)
+
+        assert(iter.hasNext && iter.next().numRows() == 2)
+        val thrown = intercept[Throwable](iter.hasNext)
+        assert(thrown eq boom, s"expected the input's own exception, got: $thrown")
+
+        TaskContext.get().asInstanceOf[TaskContextImpl].markTaskCompleted(None)
+        assert(
+          CometArrowStream.inputFailure(stream).isEmpty,
+          "a completed task must not keep its input streams' failures")
+      }
+    } finally {
+      allocator.close()
+    }
+  }
+
   test("a plan fed only by native scans returns its memory when its consumer stops early") {
     // See issue #2453. The sort keeps its sorted runs in memory, and the merge that reads them
     // spawns a Tokio task for each run.
@@ -241,9 +301,10 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
 
   test("a plan fed only by native scans returns its memory when it spilled and stops early") {
     // With a tiny pool the sort spills, and the merge that reads the spill files back holds its
-    // memory in the plan's own stream.
+    // memory in the plan's own stream. The sort's share is the 2 MiB pool less its merge's
+    // reservation, which its rows do not fit in.
     withSQLConf(
-      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.002",
+      CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.001",
       CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
       "spark.comet.datafusion.execution.sort_spill_reservation_bytes" -> "65536") {
       assertMemoryReturnedWhenTheConsumerStopsEarly(expectSpill = true)
@@ -475,6 +536,72 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(CometExecIterator.memoryUsageMessage(idle, noArrow, plansAtLastLog = 0).isEmpty)
   }
 
+  test("the memory usage log's event log record reads back from the event log's JSON") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory}
+    val mib = 1024L * 1024
+    val event = memoryUsageEvent(
+      executorId = "7",
+      time = 1700000000000L,
+      usage = Array(300 * mib, 100 * mib, 2L, 3L),
+      jvmArrow = JvmArrowMemory(allocated = 40 * mib, imported = 10 * mib))
+    assert(
+      event == CometExecutorMemoryUsage(
+        executorId = "7",
+        time = 1700000000000L,
+        nativeAllocated = 300 * mib,
+        poolsReserved = 100 * mib,
+        pools = 2L,
+        plans = 3L,
+        jvmArrowAllocated = 40 * mib,
+        jvmArrowImported = 10 * mib))
+
+    // The event log writes an event it has no format of its own for with Jackson, under its class
+    // name, which is how the history server reads it back, or skips it when Comet is not on its
+    // classpath.
+    val json = JsonProtocol.sparkEventToJsonString(event)
+    assert(json.contains(s""""Event":"${classOf[CometExecutorMemoryUsage].getName}""""), json)
+    assert(json.contains(s""""poolsReserved":${100 * mib}"""), json)
+    assert(JsonProtocol.sparkEventFromJson(json) == event)
+  }
+
+  test("the event log records the peak and the last memory usage sample of each minute") {
+    import CometExecIterator.{memoryUsageEvent, JvmArrowMemory, MemoryUsageSummary}
+    val mib = 1024L * 1024
+    // A sample taken `seconds` in, with `untrackedMiB` of native memory that no pool reserves.
+    def sample(
+        seconds: Int,
+        untrackedMiB: Long,
+        jvmArrow: JvmArrowMemory = JvmArrowMemory(0L, 0L)) =
+      memoryUsageEvent(
+        executorId = "7",
+        time = 1700000000000L + seconds * 1000L,
+        usage = Array((100 + untrackedMiB) * mib, 100 * mib, 2L, 3L),
+        jvmArrow = jvmArrow)
+
+    val summary = new MemoryUsageSummary
+    val peak = sample(10, 50)
+    val last = sample(50, 20)
+    // What decides is when the driver received the samples, by its own monotonic clock in
+    // nanoseconds, not the times the executor took them.
+    val second = TimeUnit.SECONDS.toNanos(1)
+    summary.add(sample(0, 10), receivedAt = 0L)
+    summary.add(peak, receivedAt = 10 * second)
+    summary.add(last, receivedAt = 50 * second)
+    // The summary ends a minute after the driver received its first sample.
+    assert(summary.flushIfDue(60 * second - 1).isEmpty)
+    assert(summary.flushIfDue(60 * second) == Seq(peak, last))
+
+    // Arrow memory that the JVM allocated counts as untracked, and the part imported from native
+    // does not, since the native figure already counts it.
+    val imported = sample(70, 0, JvmArrowMemory(allocated = 900 * mib, imported = 900 * mib))
+    val jvm = sample(80, 0, JvmArrowMemory(allocated = 40 * mib, imported = 0L))
+    Seq(sample(60, 30), imported, jvm).foreach(summary.add(_, receivedAt = 70 * second))
+    // What is left when the executor goes away or the application stops, a peak that is also the
+    // last sample recorded once.
+    assert(summary.flush() == Seq(jvm))
+    assert(summary.flush().isEmpty)
+  }
+
   test("the memory usage log reads JVM Arrow memory from the allocators, imports apart") {
     import CometExecIterator.JvmArrowMemory
     val root = new RootAllocator(Long.MaxValue)
@@ -558,6 +685,21 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(
       getMemoryConfig(offHeap.clone.set("spark.memory.offHeap.size", "4g")).memoryLimit
         == fourGiB)
+  }
+
+  test("the memory pool limit is the fraction of the off-heap size that the tasks share") {
+    import CometExecIterator.getMemoryConfig
+    val fourGiB = 4L * 1024 * 1024 * 1024
+    val offHeap = new SparkConf(false)
+      .set("spark.master", "local[4]")
+      .set("spark.memory.offHeap.enabled", "true")
+      .set("spark.memory.offHeap.size", "4g")
+    // withSQLConf returns Unit before Spark 4.0, so the assertions run inside it.
+    withSQLConf(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key -> "0.5") {
+      val config = getMemoryConfig(offHeap)
+      assert(config.memoryLimit == fourGiB / 2)
+      assert(config.offHeapSize == fourGiB)
+    }
   }
 
   private val kubernetesMaster = "k8s://https://kubernetes.default.svc:443"
@@ -701,6 +843,39 @@ class CometExecIteratorLifecycleSuite extends CometTestBase {
     assert(memoryUsageLogInterval(Some("-5s")) == 0L)
     assert(memoryUsageLogInterval(Some("false")) == 0L)
     assert(memoryUsageLogInterval(Some("10 seconds please")) == 0L)
+  }
+
+  test("the native runtime gets a worker thread for every core the executor runs tasks on") {
+    import CometExecIterator.numDriverOrExecutorCores
+    def cores(master: String, executorCores: Option[String] = None): Option[Int] =
+      numDriverOrExecutorCores(master, executorCores, availableProcessors = 12)
+
+    // Local mode runs tasks on the master's threads and ignores spark.executor.cores.
+    assert(cores("local") == Some(1))
+    assert(cores("local[4]") == Some(4))
+    assert(cores("local[*]") == Some(12))
+    assert(cores("local[4, 3]") == Some(4))
+    assert(cores("local[*,3]") == Some(12))
+    assert(cores("local[4]", executorCores = Some("2")) == Some(4))
+
+    // Elsewhere spark.executor.cores is the executor's core count when it is set.
+    assert(cores("spark://host:7077", executorCores = Some("3")) == Some(3))
+    assert(cores("local-cluster[2, 3, 1024]", executorCores = Some("1")) == Some(1))
+    assert(cores("yarn", executorCores = Some("8")) == Some(8))
+    assert(cores("k8s://https://host:6443", executorCores = Some("8")) == Some(8))
+    assert(cores("mesos://host:5050", executorCores = Some("8")) == Some(8))
+
+    // Without it, a standalone executor takes every core its worker offers: the master's cores
+    // per worker in local-cluster mode, and by default all of the machine's processors.
+    assert(cores("local-cluster[2, 3, 1024]") == Some(3))
+    assert(cores("local-cluster[2,3,1024]") == Some(3))
+    assert(cores("spark://host:7077") == Some(12))
+    assert(cores("spark://host1:7077,host2:7077") == Some(12))
+    // YARN and Kubernetes executors default to one core.
+    assert(cores("yarn") == Some(1))
+    assert(cores("k8s://https://host:6443") == Some(1))
+    // Other cluster managers do not tell.
+    assert(cores("mesos://host:5050").isEmpty)
   }
 
   /**

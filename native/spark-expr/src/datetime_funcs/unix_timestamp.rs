@@ -79,18 +79,8 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                     let timestamp_array =
                         array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
 
-                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
-                        timestamp_array
-                            .values()
-                            .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
-                            .collect()
-                    } else {
-                        timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
-                            .collect()
-                    };
+                    let result: PrimitiveArray<Int64Type> =
+                        timestamp_array.unary(|micros| micros / MICROS_PER_SECOND);
 
                     Ok(ColumnarValue::Array(Arc::new(result)))
                 }
@@ -111,18 +101,8 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                     let timestamp_array =
                         array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
 
-                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
-                        timestamp_array
-                            .values()
-                            .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
-                            .collect()
-                    } else {
-                        timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
-                            .collect()
-                    };
+                    let result: PrimitiveArray<Int64Type> =
+                        timestamp_array.unary(|micros| micros / MICROS_PER_SECOND);
 
                     Ok(ColumnarValue::Array(Arc::new(result)))
                 }
@@ -143,18 +123,8 @@ impl ScalarUDFImpl for SparkUnixTimestamp {
                     let timestamp_array =
                         array.as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
 
-                    let result: PrimitiveArray<Int64Type> = if timestamp_array.null_count() == 0 {
-                        timestamp_array
-                            .values()
-                            .iter()
-                            .map(|&micros| micros / MICROS_PER_SECOND)
-                            .collect()
-                    } else {
-                        timestamp_array
-                            .iter()
-                            .map(|v| v.map(|micros| micros / MICROS_PER_SECOND))
-                            .collect()
-                    };
+                    let result: PrimitiveArray<Int64Type> =
+                        timestamp_array.unary(|micros| micros / MICROS_PER_SECOND);
 
                     Ok(ColumnarValue::Array(Arc::new(result)))
                 }

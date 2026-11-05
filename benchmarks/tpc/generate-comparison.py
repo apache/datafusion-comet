@@ -104,11 +104,8 @@ def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: 
     for query in common_queries:
         a = np.median(np.array(get_durations(baseline, str(query))))
         b = np.median(np.array(get_durations(comparison, str(query))))
-        if a > b:
-            speedup = a/b-1
-        else:
-            speedup = -(1/(a/b)-1)
-        results.append(("q" + str(query), round(speedup*100, 0)))
+        # Speedup as a multiple: 2.0 means twice as fast, 0.5 means twice as slow.
+        results.append(("q" + str(query), a/b))
 
     results = sorted(results, key=lambda x: -x[1])
 
@@ -120,28 +117,27 @@ def generate_query_rel_speedup_chart(baseline, comparison, label1: str, label2: 
     else:
         fig, ax = plt.subplots(figsize=(35, 10))
 
-    # Create bar chart
-    bars = ax.bar(queries, speedups, color='skyblue')
+    # Draw the bars from 1.0x (same speed) up for speedups and down for slowdowns
+    bars = ax.bar(queries, [s - 1 for s in speedups], bottom=1, color='skyblue')
 
     # Add text annotations
     for bar, speedup in zip(bars, speedups):
-        yval = bar.get_height()
-        if yval >= 0:
-            ax.text(bar.get_x() + bar.get_width() / 2.0, min(800, yval+5), f'{yval:.0f}%', va='bottom', ha='center', fontsize=8,
+        if speedup >= 1:
+            ax.text(bar.get_x() + bar.get_width() / 2.0, speedup + 0.02, f'{speedup:.2f}x', va='bottom', ha='center', fontsize=8,
                     color='blue', rotation=90)
         else:
-            ax.text(bar.get_x() + bar.get_width() / 2.0, yval, f'{yval:.0f}%', va='top', ha='center', fontsize=8,
+            ax.text(bar.get_x() + bar.get_width() / 2.0, speedup - 0.02, f'{speedup:.2f}x', va='top', ha='center', fontsize=8,
                     color='blue', rotation=90)
 
     # Add title and labels
     ax.set_title(label2 + " speedup over " + label1 + " (" + title + ")")
-    ax.set_ylabel('Speedup Percentage (100% speedup = 2x faster)')
+    ax.set_ylabel('Speedup (2x = twice as fast, below 1x = slower)')
     ax.set_xlabel('Query')
 
-    # Customize the y-axis to handle both positive and negative values better
-    ax.axhline(0, color='black', linewidth=0.8)
-    min_value = (min(speedups) // 100) * 100
-    max_value = ((max(speedups) // 100) + 1) * 100 + 50
+    # Customize the y-axis to handle both speedups and slowdowns
+    ax.axhline(1, color='black', linewidth=0.8)
+    min_value = max(0.0, np.floor((min(min(speedups), 1.0) - 0.25) * 4) / 4)
+    max_value = max(speedups) * 1.1 + 0.25
     ax.set_ylim(min_value, max_value)
 
     # Show grid for better readability

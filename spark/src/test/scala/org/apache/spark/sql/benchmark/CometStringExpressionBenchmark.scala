@@ -41,7 +41,11 @@ case class StringExprConfig(
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometStringExpressionBenchmark
  * }}}
- * Results will be written to "spark/benchmarks/CometStringExpressionBenchmark-**results.txt".
+ * Results will be written to "spark/benchmarks/CometStringExpressionBenchmark-**results.txt". The
+ * replace_match cases use literal arguments, while replace_column_match cases read the
+ * replacement from a column. Each set uses the same input width with 0%, about 10%, and 100%
+ * match density. Compare their Comet results on a dispatcher-only revision and a native-default
+ * revision under the same Spark profile, batch size, and hardware.
  */
 object CometStringExpressionBenchmark extends CometBenchmarkBase {
 
@@ -72,6 +76,25 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
       "select regexp_replace(c1, '[0-9]', 'X') from parquetV1Table"),
     StringExprConfig("repeat", "select repeat(c1, 3) from parquetV1Table"),
     StringExprConfig("replace", "select replace(c1, '123', 'ab') from parquetV1Table"),
+    // Both literal arguments stay scalar in DataFusion 55.1.0's replace fast path.
+    StringExprConfig(
+      "replace_match_0pct",
+      "select replace(replace_no_match, '123', 'ab') from parquetV1Table"),
+    StringExprConfig(
+      "replace_match_10pct",
+      "select replace(replace_ten_percent, '123', 'ab') from parquetV1Table"),
+    StringExprConfig(
+      "replace_match_100pct",
+      "select replace(replace_all_match, '123', 'ab') from parquetV1Table"),
+    StringExprConfig(
+      "replace_column_match_0pct",
+      "select replace(replace_no_match, '123', replace_with) from parquetV1Table"),
+    StringExprConfig(
+      "replace_column_match_10pct",
+      "select replace(replace_ten_percent, '123', replace_with) from parquetV1Table"),
+    StringExprConfig(
+      "replace_column_match_100pct",
+      "select replace(replace_all_match, '123', replace_with) from parquetV1Table"),
     StringExprConfig("reverse", "select reverse(c1) from parquetV1Table"),
     StringExprConfig("rlike", "select c1 rlike '[0-9]+' from parquetV1Table"),
     StringExprConfig("rpad", "select rpad(c1, 150, 'x') from parquetV1Table"),
@@ -85,7 +108,23 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     StringExprConfig("substring", "select substring(c1, 1, 100) from parquetV1Table"),
     StringExprConfig("translate", "select translate(c1, '123456', 'aBcDeF') from parquetV1Table"),
     StringExprConfig("trim", "select trim(c1) from parquetV1Table"),
-    StringExprConfig("upper", "select upper(c1) from parquetV1Table"))
+    StringExprConfig("upper", "select upper(c1) from parquetV1Table")) ++
+    Seq(16, 256, 1024).flatMap { searchBytes =>
+      val search = "'" + ("a" * searchBytes) + "'"
+      Seq(
+        StringExprConfig(
+          s"replace_column_search_${searchBytes}b_0pct",
+          s"select replace(replace_long_${searchBytes}_0pct, $search, replace_with) " +
+            "from parquetV1Table"),
+        StringExprConfig(
+          s"replace_column_search_${searchBytes}b_10pct",
+          s"select replace(replace_long_${searchBytes}_10pct, $search, replace_with) " +
+            "from parquetV1Table"),
+        StringExprConfig(
+          s"replace_column_search_${searchBytes}b_100pct",
+          s"select replace(replace_long_${searchBytes}_100pct, $search, replace_with) " +
+            "from parquetV1Table"))
+    }
 
   // Collated cases are Spark 4.0+ only, since the COLLATE syntax does not parse on 3.4 and 3.5.
   // CometLevenshtein reports collated input as Unsupported and CodegenDispatchFallback runs it
@@ -107,24 +146,60 @@ object CometStringExpressionBenchmark extends CometBenchmarkBase {
     }
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
-    runBenchmarkWithTable("String expressions", 1024) { v =>
+    val replaceMatchOnly = mainArgs.contains("replace-match-only")
+    val replaceColumnOnly = mainArgs.contains("replace-column-only")
+    val replaceLongSearchOnly = mainArgs.contains("replace-column-long-only")
+    val rows =
+      if (replaceMatchOnly || replaceColumnOnly || replaceLongSearchOnly) 65536 else 1024
+    runBenchmarkWithTable("String expressions", rows) { v =>
       withTempPath { dir =>
         withTempTable("parquetV1Table") {
           // c2 gives expressions that take a length or a count something to vary over per row.
           // `pmod` keeps it non-negative, so `space(c2)` builds a string on every row rather
           // than returning empty for the negative half of the input.
+          val longSearchInputs = Seq(16, 256, 1024).flatMap { searchBytes =>
+            val flankBytes = (2048 - searchBytes) / 2
+            val matchSource =
+              s"CONCAT(REPEAT('b', $flankBytes), REPEAT('a', $searchBytes), " +
+                s"REPEAT('b', $flankBytes))"
+            Seq(
+              s"REPEAT('b', 2048) AS replace_long_${searchBytes}_0pct",
+              s"CASE WHEN PMOD(value, 10) = 0 THEN $matchSource ELSE " +
+                s"REPEAT('b', 2048) END AS replace_long_${searchBytes}_10pct",
+              s"$matchSource AS replace_long_${searchBytes}_100pct")
+          }
           prepareTable(
             dir,
             spark.sql(
               "SELECT REPEAT(CAST(value AS STRING), 10) AS c1," +
-                s" CAST(PMOD(value, 200) AS INT) AS c2 FROM $tbl"))
+                " CAST(PMOD(value, 200) AS INT) AS c2," +
+                " REPEAT('abc---def', 8) AS replace_no_match," +
+                " CASE WHEN PMOD(value, 10) = 0 THEN REPEAT('abc123def', 8)" +
+                " ELSE REPEAT('abc---def', 8) END AS replace_ten_percent," +
+                " REPEAT('abc123def', 8) AS replace_all_match," +
+                " CASE WHEN PMOD(value, 20) = 0 THEN CAST(NULL AS STRING)" +
+                " WHEN PMOD(value, 3) = 0 THEN ''" +
+                " WHEN PMOD(value, 3) = 1 THEN 'ab' ELSE 'XYZ' END AS replace_with" +
+                ", " + longSearchInputs.mkString(", ") +
+                s" FROM $tbl"))
 
           val extraConfigs = Map(
             CometConf.getExprAllowIncompatConfigKey("Upper") -> "true",
             CometConf.getExprAllowIncompatConfigKey("Lower") -> "true",
             CometConf.getExprAllowIncompatConfigKey("InitCap") -> "true")
 
-          (stringExpressions ++ collatedStringExpressions).foreach { config =>
+          val cases = if (replaceColumnOnly) {
+            stringExpressions.filter(_.name.startsWith("replace_column_match_"))
+          } else if (replaceLongSearchOnly) {
+            stringExpressions.filter(_.name.startsWith("replace_column_search_"))
+          } else if (replaceMatchOnly) {
+            stringExpressions.filter(config =>
+              config.name.startsWith("replace_match_") ||
+                config.name.startsWith("replace_column_match_"))
+          } else {
+            stringExpressions ++ collatedStringExpressions
+          }
+          cases.foreach { config =>
             val allConfigs = extraConfigs ++ config.extraCometConfigs
             runBenchmark(config.name) {
               runExpressionBenchmark(config.name, v.toLong, config.query, allConfigs)

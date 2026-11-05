@@ -91,6 +91,15 @@ case class CometLocalTopKExec(
     override val serializedPlanOpt: SerializedPlan)
     extends CometUnaryExec {
 
+  override def sparkFallback(newChildren: Seq[SparkPlan]): SparkPlan = newChildren match {
+    // Local candidate selection was inserted by Comet. Only the outer TopK owns
+    // the original Spark operator's offset and projection.
+    case Seq(restoredChild) => restoredChild
+    case _ =>
+      throw new CometExec.InvalidSparkFallbackException(
+        s"CometLocalTopKExec expected one restored child but received ${newChildren.size}")
+  }
+
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
   override def outputOrdering: Seq[SortOrder] = sortOrder

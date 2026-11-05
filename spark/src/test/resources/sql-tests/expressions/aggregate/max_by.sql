@@ -17,9 +17,8 @@
 
 -- max_by(x, y) returns the value of x associated with the maximum value of y.
 --
--- The value (x) must be a fixed-length type: Spark only uses HashAggregate (the aggregate
--- operator Comet accelerates) when the aggregation buffer is mutable, so variable-length
--- value types such as string force SortAggregate and fall back to Spark.
+-- The value (x) must be a fixed-length type. A variable-length value type such as string makes
+-- Spark plan SortAggregate rather than HashAggregate, and Comet falls back for it.
 --
 -- Ordering values are kept unique within each group so results are deterministic (max_by is
 -- non-deterministic when several rows tie on the maximum ordering).
@@ -262,12 +261,11 @@ SELECT grp, max_by(v, ord) FROM mb_signed_zero GROUP BY grp ORDER BY grp
 -- ============================================================
 -- Variable-length value or ordering falls back to Spark
 --
--- A plain max_by over a string is planned as SortAggregate, which Comet never converts, so the
--- serde's type check is not what stops it. Pairing it with a TypedImperativeAggregate switches
--- Spark to ObjectHashAggregate, which Comet does convert, and then getSupportLevel is the only
--- thing that keeps the aggregate off the native path. That matters most for a string *ordering*:
--- Arrow's row format compares raw UTF-8 bytes, while Spark compares collation sort keys, so this
--- check is load-bearing for correctness and not just an optimisation.
+-- A plain max_by over a string is planned as SortAggregate, and pairing it with a
+-- TypedImperativeAggregate switches Spark to ObjectHashAggregate. Comet converts both, so
+-- getSupportLevel is the only thing that keeps the aggregate off the native path. That matters
+-- most for a string *ordering*: Arrow's row format compares raw UTF-8 bytes, while Spark compares
+-- collation sort keys, so this check is load-bearing for correctness and not just an optimisation.
 -- ============================================================
 
 statement
@@ -282,3 +280,9 @@ SELECT grp, max_by(s, v), percentile(v, 0.5) FROM mb_varlen GROUP BY grp ORDER B
 
 query expect_fallback(Unsupported ordering data type)
 SELECT grp, max_by(v, s), percentile(v, 0.5) FROM mb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported value data type)
+SELECT grp, max_by(s, v) FROM mb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported ordering data type)
+SELECT grp, max_by(v, s) FROM mb_varlen GROUP BY grp ORDER BY grp

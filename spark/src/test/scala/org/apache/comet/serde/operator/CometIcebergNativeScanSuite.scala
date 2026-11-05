@@ -19,19 +19,19 @@
 
 package org.apache.comet.serde.operator
 
+import java.lang.reflect.InvocationTargetException
+
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
+import org.apache.iceberg.{DeleteFile, FileContent}
 import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
 
-/**
- * Unit tests for [[CometIcebergNativeScan.hadoopToIcebergS3Properties]]. The pinned iceberg-rust
- * S3 parser reads ONLY global `s3.*` keys (never `s3.bucket.*`), so the function drops per-bucket
- * keys and promotes just the TARGET bucket's keys to global `s3.*`. Pure-function assertions, so
- * a lightweight `AnyFunSuite` (no Spark session) suffices.
- */
+import org.apache.comet.iceberg.IcebergReflection
+
+/** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   test("complex type null residuals are not serialized") {
@@ -238,5 +238,160 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
     out("s3.endpoint") shouldBe "https://global.example.com"
     out.values.toSet should not contain "https://some.example.com"
+  }
+
+  private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")
+
+  private def serializeDeleteFile(file: AnyRef) =
+    CometIcebergNativeScan.serializeDeleteFile(
+      file,
+      file.getClass,
+      file.getClass,
+      keyMetadataMethod(file.getClass),
+      _ => 0)
+
+  test("required Iceberg delete-file accessors are present") {
+    Seq("content", "specId", "equalityFieldIds").foreach { accessor =>
+      IcebergReflection.findMethod(classOf[DeleteFile], accessor).isDefined shouldBe true
+    }
+  }
+
+  test("Iceberg delete content names match native serde literals") {
+    FileContent.POSITION_DELETES.toString shouldBe IcebergReflection.ContentTypes.POSITION_DELETES
+    FileContent.EQUALITY_DELETES.toString shouldBe IcebergReflection.ContentTypes.EQUALITY_DELETES
+  }
+
+  test("position-delete file with null equality ids serializes without equality ids") {
+    val proto = serializeDeleteFile(new PositionDeleteFile)
+    proto.getContentType shouldBe "POSITION_DELETES"
+    proto.getPartitionSpecId shouldBe 7
+    proto.getEqualityIdsCount shouldBe 0
+    proto.getFilePathIdx shouldBe 0
+  }
+
+  test("equality-delete file serializes declared equality ids") {
+    val proto = serializeDeleteFile(new EqualityDeleteFile)
+    proto.getContentType shouldBe "EQUALITY_DELETES"
+    proto.getEqualityIdsCount shouldBe 2
+    proto.getEqualityIds(0) shouldBe 3
+    proto.getEqualityIds(1) shouldBe 5
+  }
+
+  test("equality-delete file with null equality ids is fatal") {
+    val ex =
+      intercept[IllegalStateException](serializeDeleteFile(new EqualityDeleteFileWithNullIds))
+    ex.getMessage shouldBe
+      "Iceberg equality delete file 's3://bucket/eq-null-ids.parquet' has no equality field IDs"
+  }
+
+  test("equality-delete file with empty equality ids is fatal") {
+    val ex =
+      intercept[IllegalStateException](serializeDeleteFile(new EqualityDeleteFileWithEmptyIds))
+    ex.getMessage shouldBe
+      "Iceberg equality delete file 's3://bucket/eq-empty-ids.parquet' has no equality field IDs"
+  }
+
+  test("content invocation failure propagates instead of defaulting to position deletes") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingContentDeleteFile))
+    ex.getCause.getMessage shouldBe "content boom"
+  }
+
+  test("spec id invocation failure propagates instead of defaulting to zero") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingSpecIdDeleteFile))
+    ex.getCause.getMessage shouldBe "spec boom"
+  }
+
+  test("equality-id invocation failure propagates instead of dropping ids") {
+    val ex =
+      intercept[InvocationTargetException](serializeDeleteFile(new ThrowingEqualityIdsDeleteFile))
+    ex.getCause.getMessage shouldBe "ids boom"
+  }
+
+  test("missing content accessor is fatal") {
+    assertThrows[NoSuchMethodException](serializeDeleteFile(new NoContentAccessorDeleteFile))
+  }
+
+  test("missing equality-id accessor is fatal") {
+    assertThrows[NoSuchMethodException](serializeDeleteFile(new NoEqualityIdsAccessorDeleteFile))
+  }
+
+  test("missing delete-file path accessor is fatal") {
+    val ex = intercept[RuntimeException](serializeDeleteFile(new NoPathAccessorDeleteFile))
+    ex.getMessage should include("Neither location() nor path() is declared")
+  }
+
+  private abstract class BaseDeleteFile {
+    def location(): String
+    def format(): String = "PARQUET"
+    def recordCount(): java.lang.Long = java.lang.Long.valueOf(1L)
+    def keyMetadata(): java.nio.ByteBuffer = null
+  }
+
+  private class PositionDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/pos-delete.parquet"
+    def content(): String = "POSITION_DELETES"
+    def specId(): Int = 7
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class EqualityDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-delete.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] =
+      java.util.List.of(Integer.valueOf(3), Integer.valueOf(5))
+  }
+
+  private class EqualityDeleteFileWithNullIds extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-null-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class EqualityDeleteFileWithEmptyIds extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/eq-empty-ids.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = java.util.List.of[Integer]()
+  }
+
+  private class ThrowingContentDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = throw new RuntimeException("content boom")
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class ThrowingSpecIdDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "POSITION_DELETES"
+    def specId(): Int = throw new RuntimeException("spec boom")
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class ThrowingEqualityIdsDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = throw new RuntimeException("ids boom")
+  }
+
+  private class NoContentAccessorDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def specId(): Int = 0
+    def equalityFieldIds(): java.util.List[Integer] = null
+  }
+
+  private class NoEqualityIdsAccessorDeleteFile extends BaseDeleteFile {
+    override def location(): String = "s3://bucket/d.parquet"
+    def content(): String = "EQUALITY_DELETES"
+    def specId(): Int = 0
+  }
+
+  private class NoPathAccessorDeleteFile {
+    def keyMetadata(): java.nio.ByteBuffer = null
   }
 }

@@ -35,7 +35,7 @@ class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
       SQLConf.SHUFFLE_PARTITIONS.key -> "2",
       "spark.sql.optimizer.plannedWrite.enabled" -> "true",
-      CometConf.COMET_SPARK_TO_ARROW_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "false",
       CometConf.COMET_SHUFFLE_CONVERT_FROM_SPARK_PLAN_ENABLED.key -> "false") {
       withNativeWriter {
         withTempPath { dir =>
@@ -64,12 +64,8 @@ class CometEmptyRelationParquetWriterSuite extends CometParquetWriterTestBase {
                 }
                 if (nativeEmpty) {
                   assert(collect(plan) { case e: CometEmptyRelationExec => e }.nonEmpty)
-                  // A native empty relation is a zero-partition RDD, which is what
-                  // CometDataWritingCommand declines on the Spark 3.x path: that writer only maps
-                  // existing partitions, so no task runs and no file is written. Spark 4.0+ goes
-                  // through the WriteFilesExec seam instead, where CometWriteFilesExec swaps in a
-                  // dummy single-partition RDD exactly as Spark's own WriteFilesExec does, so
-                  // partition 0 still writes the schema-only file the readback above needs.
+                  // CometWriteFilesExec replaces the zero-partition native empty relation
+                  // with one empty partition, so a task writes the schema-only file above.
                   assertHasCometNativeWriteExec(plan)
                 } else {
                   // Spark's own EmptyRelationExec is not a Comet operator, so

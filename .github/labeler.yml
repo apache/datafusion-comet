@@ -127,6 +127,19 @@ area:Iceberg:
           - '**/*[Ii]ceberg*'
           - '**/*[Ii]ceberg*/**'
 
+# Explicit paths, since a *[Dd]elta* glob would also match the Iceberg delta-write code.
+area:Delta:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'contrib/delta/**'
+          - 'contrib/delta-spark/**'
+          - 'native/core/src/execution/delta_dv.rs'
+          - 'native/core/src/execution/planner/delta_scan.rs'
+          - 'native/core/src/execution/planner/delta_spark_scan.rs'
+          - '.github/workflows/delta_*.yml'
+          - 'dev/verify-contrib-delta-gate.sh'
+          - 'docs/source/user-guide/latest/delta.md'
+
 area:ci:
   - changed-files:
       - any-glob-to-all-files: '{.github/**,dev/ci/**,dev/release/**,dev/*.sh,dev/*.py,dev/*.xml,dev/*.toml}'

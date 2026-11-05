@@ -29,15 +29,16 @@
 //! | Utf8, LargeUtf8, Binary, LargeBinary, FixedSizeBinary | yes |
 //! | Date32, Date64, Timestamp | yes |
 //! | Decimal128 precision ≤ 18 | yes |
-//! | Decimal128 precision > 18 | yes |
+//! | Decimal128 precision > 18 | **no** — upstream uses fixed-width little-endian bytes |
 //! | Dictionary (top-level) | yes |
 //! | List / LargeList / FixedSizeList of primitives | yes |
 //! | Map&lt;Utf8, Int32&gt; / Map&lt;Int32, Utf8&gt; / Map&lt;Utf8, Utf8&gt; / Map&lt;Int32, Int32&gt; | yes |
-//! | Map&lt;Utf8, Decimal128&gt; | yes |
+//! | Map&lt;Utf8, Decimal128&gt; | only for precision ≤ 18 |
 //! | Struct (non-null parent) | yes, but not routed (see below) |
 //! | Struct NULL with hidden children | **no** — `SparkXxhash64` hashes hidden children |
 //! | List&lt;Dictionary&gt; | **no** — upstream restarts from seed 42 |
 //! | Time64(ns) | **no** — upstream does not dispatch |
+//! | Float32/64 NaN with non-canonical bits | **no** — upstream hashes the raw bits |
 //! | custom seed | **no** — `SparkXxhash64` hardcodes 42 |
 
 use super::{create_xxhash64_hashes, spark_xxhash64};
@@ -122,6 +123,18 @@ fn assert_compatible(label: &str, arrays: &[ArrayRef]) {
     let expr = comet_expr(arrays, SPARK_DEFAULT_SEED as i64)
         .unwrap_or_else(|e| panic!("{label}: Comet expression failed: {e}"));
     assert_eq!(expr, upstream, "{label}: expression mismatch");
+}
+
+// The pinned DataFusion implementation still uses the old decimal encoding.
+// Spark parity is checked separately; routing must not reintroduce that encoding.
+fn assert_wide_decimal_uses_comet(label: &str, arrays: &[ArrayRef]) {
+    let kernel = comet_kernel(arrays, SPARK_DEFAULT_SEED).unwrap();
+    let upstream = spark_xxhash64_upstream(arrays).unwrap();
+    assert_ne!(
+        kernel, upstream,
+        "{label}: expected different decimal encodings"
+    );
+    assert_eq!(comet_expr(arrays, 42).unwrap(), kernel, "{label}: routing");
 }
 
 fn col(array: impl Array + 'static) -> Vec<ArrayRef> {
@@ -430,6 +443,26 @@ fn float64() {
     );
 }
 
+/// Spark hashes NaN through `doubleToLongBits`, which canonicalizes it. `SparkXxhash64` hashes the
+/// raw bits, so it differs from Spark for a NaN with the sign bit set.
+#[test]
+fn non_canonical_nan_diverges_from_spark_xxhash64() {
+    let values: ArrayRef = Arc::new(Float64Array::from(vec![
+        f64::NAN,
+        f64::from_bits(0xfff8_0000_0000_0000),
+    ]));
+    let comet = comet_kernel(&[Arc::clone(&values)], SPARK_DEFAULT_SEED).unwrap();
+    let expr = comet_expr(&[Arc::clone(&values)], SPARK_DEFAULT_SEED as i64).unwrap();
+    let upstream = spark_xxhash64_upstream(&[values]).unwrap();
+    assert_eq!(expr, comet, "floats must not be delegated to SparkXxhash64");
+    assert_eq!(comet[0], upstream[0], "the canonical NaN still matches");
+    assert_eq!(comet[1], comet[0], "every NaN hashes as the canonical NaN");
+    assert_ne!(
+        comet[1], upstream[1],
+        "SparkXxhash64 hashes the raw bits of a NaN"
+    );
+}
+
 #[test]
 fn utf8() {
     assert_compatible(
@@ -584,7 +617,7 @@ fn decimal128_precision_18_fits_i64() {
 #[test]
 fn decimal128_precision_20_does_not_fit_i64() {
     let too_big = 10_000_000_000_000_000_000i128; // 1e19, beyond i64::MAX
-    assert_compatible(
+    assert_wide_decimal_uses_comet(
         "Decimal128(20,2)",
         &col(decimal128(
             20,
@@ -604,7 +637,7 @@ fn decimal128_precision_20_does_not_fit_i64() {
 #[test]
 fn decimal128_precision_38() {
     let wide = 10i128.pow(28);
-    assert_compatible(
+    assert_wide_decimal_uses_comet(
         "Decimal128(38,10)",
         &col(decimal128(
             38,
@@ -619,6 +652,27 @@ fn decimal128_precision_38() {
             ],
         )),
     );
+}
+
+#[test]
+fn wide_decimal_list_and_dictionary_use_comet() {
+    let values: ArrayRef = Arc::new(decimal128(38, 0, vec![Some(128), Some(-129), None]));
+    let dict: ArrayRef = Arc::new(
+        DictionaryArray::<Int8Type>::try_new(
+            Int8Array::from(vec![Some(1), Some(0), Some(2), None]),
+            Arc::clone(&values),
+        )
+        .unwrap(),
+    );
+    let list: ArrayRef = Arc::new(ListArray::new(
+        Arc::new(Field::new("item", values.data_type().clone(), true)),
+        OffsetBuffer::new(vec![0, 2, 3].into()),
+        values,
+        None,
+    ));
+    for array in [dict, list] {
+        assert_wide_decimal_uses_comet("nested wide decimal", &[array]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -923,7 +977,7 @@ fn map_utf8_decimal128_small() {
 #[test]
 fn map_utf8_decimal128_large() {
     let wide = 10_000_000_000_000_000_000i128;
-    assert_compatible(
+    assert_wide_decimal_uses_comet(
         "Map<Utf8,Decimal128(20,2)>",
         &[map_utf8_decimal(
             20,

@@ -21,13 +21,13 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
+import org.apache.spark.sql.catalyst.expressions.{And, AtLeastNNonNulls, Attribute, BinaryExpression, EqualNullSafe, EqualTo, Expression, GreaterThan, GreaterThanOrEqual, In, InSet, IsNaN, IsNotNull, IsNull, KnownFloatingPointNormalized, LessThan, LessThanOrEqual, Literal, Not, Or}
 import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BooleanType, DoubleType, FloatType}
 
 import org.apache.comet.CometConf
-import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, withFallbackReason}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde._
 
@@ -47,7 +47,6 @@ object CometNot extends CometExpressionSerde[Not] {
     expr.child match {
       case inner: EqualTo if hasNativePath(CometEqualTo, inner) =>
         createBinaryExpr(
-          inner,
           inner.left,
           inner.right,
           inputs,
@@ -55,7 +54,6 @@ object CometNot extends CometExpressionSerde[Not] {
           (builder, binaryExpr) => builder.setNeq(binaryExpr))
       case inner: EqualNullSafe if hasNativePath(CometEqualNullSafe, inner) =>
         createBinaryExpr(
-          inner,
           inner.left,
           inner.right,
           inputs,
@@ -71,7 +69,6 @@ object CometNot extends CometExpressionSerde[Not] {
         // native, or returns None, which cascades this Not to None and falls the enclosing
         // operator back to Spark.
         createUnaryExpr(
-          expr,
           expr.child,
           inputs,
           binding,
@@ -93,7 +90,6 @@ object CometAnd extends CometExpressionSerde[And] {
       { case _: And => true; case _ => false },
       { case a: And => (a.left, a.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -111,7 +107,6 @@ object CometOr extends CometExpressionSerde[Or] {
       { case _: Or => true; case _ => false },
       { case o: Or => (o.left, o.right) })
     createBalancedBinaryExpr(
-      expr,
       operands,
       inputs,
       binding,
@@ -125,7 +120,6 @@ object CometEqualTo extends CollationAwareBinaryPredicate[EqualTo] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -140,7 +134,6 @@ object CometEqualNullSafe extends CollationAwareBinaryPredicate[EqualNullSafe] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -155,7 +148,6 @@ object CometGreaterThan extends CollationAwareBinaryPredicate[GreaterThan] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -170,7 +162,6 @@ object CometGreaterThanOrEqual extends CollationAwareBinaryPredicate[GreaterThan
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -185,7 +176,6 @@ object CometLessThan extends CollationAwareBinaryPredicate[LessThan] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -200,7 +190,6 @@ object CometLessThanOrEqual extends CollationAwareBinaryPredicate[LessThanOrEqua
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -215,7 +204,6 @@ object CometIsNull extends CometExpressionSerde[IsNull] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
@@ -229,7 +217,6 @@ object CometIsNotNull extends CometExpressionSerde[IsNotNull] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
@@ -500,6 +487,38 @@ object ComparisonUtils {
       // explain fallback.
       liftFallbackReasons(serializedValue, expr)
       serializedList.foreach(liftFallbackReasons(_, expr))
+      None
+    }
+  }
+}
+
+object CometAtLeastNNonNulls extends CometExpressionSerde[AtLeastNNonNulls] {
+  override def convert(
+      expr: AtLeastNNonNulls,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[Expr] = {
+    // Native evaluation, like Spark's, stops counting a row once it reaches n, which takes at
+    // least the first n children. So it may skip the children after those, which a shared
+    // subexpression that Spark eliminates would evaluate for every row.
+    val skippable = if (expr.n <= 0) expr.children else expr.children.drop(expr.n)
+    if (!canSkipEvaluation(skippable)) {
+      withFallbackReason(
+        expr,
+        "AtLeastNNonNulls would skip a subexpression that Spark evaluates for every row")
+      return None
+    }
+    val children = expr.children.map(exprToProtoInternal(_, inputs, binding))
+    if (children.forall(_.isDefined)) {
+      Some(
+        Expr
+          .newBuilder()
+          .setAtLeastNNonNulls(
+            ExprOuterClass.AtLeastNNonNulls
+              .newBuilder()
+              .setN(expr.n)
+              .addAllChildren(children.map(_.get).asJava))
+          .build())
+    } else {
       None
     }
   }

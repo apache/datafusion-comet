@@ -26,7 +26,7 @@ import scala.collection.JavaConverters._
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, GenericInternalRow, IsNotNull, IsNull, StartsWith}
 import org.apache.spark.sql.catalyst.util.TypeUtils
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch, SimpleMetricsCachedBatchSerializer}
 import org.apache.spark.sql.comet.util.Utils
@@ -39,7 +39,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.NativeUtil
+import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -52,10 +52,12 @@ import org.apache.comet.vector.NativeUtil
  * and length, so `CachedBatchIpc.Projection.load` copies out just the selected columns' byte
  * ranges. The cache manager still owns storage and eviction; this class only changes the cached
  * payload.
+ *
+ * `sizeInBytes` is not the payload's size. It is inherited from `SimpleMetricsCachedBatch`, which
+ * sums the decoded per-column sizes in `stats`. `statsRow` explains why they are decoded sizes.
  */
 private case class CometCachedBatch(
     override val numRows: Int,
-    override val sizeInBytes: Long,
     override val stats: InternalRow,
     bytes: ChunkedByteBuffer)
     extends SimpleMetricsCachedBatch
@@ -112,9 +114,9 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       if (tracksBounds(attr.dataType)) TypeUtils.getInterpretedOrdering(attr.dataType) else null
     }.toArray
 
-  // Bounds and null counts per column, gathered before the batch is serialized: serializing
-  // clears the batch's vectors, and the per-column byte sizes that complete the statistics row
-  // are only known afterwards. See statsRow.
+  // Bounds and null counts per column of the Arrow batch encodeBatches writes, gathered before
+  // it is serialized: serializing clears the batch's vectors, and the per-column byte sizes that
+  // complete the statistics row are only known afterwards. See statsRow.
   private[sql] def gatherColumnStats(
       batch: ColumnarBatch,
       attrs: Seq[Attribute],
@@ -128,7 +130,10 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     var c = 0
     while (c < numCols) {
       val col = batch.column(c)
+      val knownNulls = arrowNullCount(col)
       val (min, max, nullCount) = attrs(c).dataType match {
+        // Every row is null, so there are no bounds and nothing to read.
+        case _ if knownNulls == numRows => (null, null, numRows)
         case BooleanType => gatherBooleanStats(col, numRows)
         case ByteType => gatherByteStats(col, numRows)
         case ShortType => gatherShortStats(col, numRows)
@@ -142,13 +147,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
         case _: StringType => gatherStringStats(col, numRows, orderings(c))
         case other =>
           assert(!tracksBounds(other), s"Missing cache bounds implementation for $other")
-          var nullCount = 0
-          var r = 0
-          while (r < numRows) {
-            if (col.isNullAt(r)) nullCount += 1
-            r += 1
-          }
-          (null, null, nullCount)
+          (null, null, knownNulls)
       }
       if (nullCount < numRows) {
         lower(c) = min
@@ -159,6 +158,15 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     }
 
     (lower, upper, nulls)
+  }
+
+  // Every column of a batch encodeBatches writes is a CometDecodedVector, which takes its null
+  // count from Arrow once, when it is built, and answers isNullAt from the same validity bitmap.
+  private def arrowNullCount(col: ColumnVector): Int = col match {
+    case v: CometDecodedVector => v.numNulls()
+    case other =>
+      throw new IllegalStateException(
+        s"Cache statistics read from ${other.getClass.getName}, not a Comet Arrow vector")
   }
 
   // Keep each loop specialized and box only its final bounds. r == nullCount identifies
@@ -350,11 +358,14 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       values(base + 1) = upper(c)
       values(base + 2) = nulls(c)
       values(base + 3) = numRows
-      // The stored size of the column's own Arrow buffers, taken from the message's buffer
-      // layout, so it is exact rather than an estimate. Cache pruning uses
-      // bounds/null-count/row-count rather than this field, but Spark reserves it and reports it,
-      // so record the real value. The per-batch message framing is not attributed to any column,
-      // so these sum to slightly less than sizeInBytes.
+      // The column's decoded size: the plain length of its own Arrow buffers before compression.
+      // SimpleMetricsCachedBatch sums these into sizeInBytes, which Spark's planner reads as the
+      // size of a materialized cached relation, for the broadcast threshold and the shuffled hash
+      // join build side among others. Spark's DefaultCachedBatchSerializer also records each
+      // column's uncompressed size here (ColumnStats.sizeInBytes). The compressed payload can be
+      // several times smaller, and a relation reported at that size would be planned differently
+      // from the same relation in Spark's cache format, for example broadcast where Spark's cache
+      // would have it shuffled.
       values(base + 4) = columnSizes(c)
       c += 1
     }
@@ -400,9 +411,6 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
     val orderings = boundsOrderings(attrs)
 
     batches.map { batch =>
-      // Bounds and null counts are read from the input batch before it is serialized, and the row
-      // is only assembled once the per-column sizes the message reports are known.
-      val (lower, upper, nulls) = gatherColumnStats(batch, attrs, orderings)
       val numRows = batch.numRows()
 
       // Written as it stands only if its vectors are ones the writer accepts and are already laid
@@ -411,21 +419,31 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       // rather than merely usual.
       val writeDirectly =
         Utils.isArrowBacked(batch) && CachedBatchIpc.matchesReaderLayout(batch, readerFields)
-
-      val (bytes, columnSizes) = if (writeDirectly) {
-        CachedBatchIpc.serialize(batch, codec, CometArrowAllocator, settings.chunkSize)
-      } else {
-        val arrowBatch =
+      val arrowBatch =
+        if (writeDirectly) {
+          batch
+        } else {
           CometArrowConverters.columnarBatchToArrowBatch(batch, arrowSchema, CometArrowAllocator)
-        try CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
-        finally arrowBatch.close()
-      }
+        }
 
-      CometCachedBatch(
-        numRows = numRows,
-        sizeInBytes = bytes.size,
-        stats = statsRow(lower, upper, nulls, numRows, columnSizes),
-        bytes = bytes)
+      try {
+        // Bounds and null counts are read from the batch that is written, so every null count is
+        // the one Arrow holds. Spark's own numNulls can be wrong: its vectorized Parquet reader
+        // marks a column missing from a file all-null without counting any nulls. The row is
+        // only assembled once serialize has measured the per-column sizes.
+        val (lower, upper, nulls) = gatherColumnStats(arrowBatch, attrs, orderings)
+        val (bytes, columnSizes) =
+          CachedBatchIpc.serialize(arrowBatch, codec, CometArrowAllocator, settings.chunkSize)
+
+        CometCachedBatch(
+          numRows = numRows,
+          stats = statsRow(lower, upper, nulls, numRows, columnSizes),
+          bytes = bytes)
+      } finally {
+        if (!writeDirectly) {
+          arrowBatch.close()
+        }
+      }
     }
   }
 
@@ -696,11 +714,7 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
 
     convertCachedBatchToColumnarBatch(input, cacheAttributes, selectedAttributes, conf)
       .mapPartitions { batches =>
-        val toUnsafe = UnsafeProjection.create(selectedAttributes, selectedAttributes)
-
-        batches.flatMap { batch =>
-          batch.rowIterator().asScala.map(row => toUnsafe(row).copy())
-        }
+        new CachedBatchRowIterator(selectedAttributes).createObject(batches)
       }
   }
 }
@@ -734,6 +748,11 @@ object ArrowCachedBatchSerializer {
 
   def supportsSchema(schema: Seq[Attribute]): Boolean =
     schema.forall(a => supportsType(a.dataType))
+
+  /**
+   * The class of Comet's cached batch, which Kryo has to have registered to store this format.
+   */
+  private[apache] val cachedBatchClass: Class[_] = classOf[CometCachedBatch]
 
   /**
    * The classes a `CometCachedBatch` adds on top of [[org.apache.comet.CometKryoRegistrator]]'s

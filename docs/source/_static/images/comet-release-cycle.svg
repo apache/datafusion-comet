@@ -1,0 +1,233 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 798" width="960" height="798" role="img" aria-labelledby="title desc">
+  <title id="title">Comet release cycle</title>
+  <desc id="desc">A Comet release takes three to four weeks. On day 0 the release branch branch-N.M is cut from main. For about a week the branch is audited for regressions, and a pull request against main is opened to fix each one. Over the next one to two weeks the fixes are reviewed, merged to main, and backported to the release branch with git cherry-pick -x. Then a release candidate is tagged and voted on; if the vote fails, the problems are fixed and the next release candidate is tagged. Once the vote passes the release is published, and the next release starts right away.</desc>
+  <style>
+    svg { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+    .mono, .code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace; }
+    .code { font-size: 0.92em; }
+
+    /* surfaces */
+    .canvas { fill: #fcfcfb; }
+    .band { fill: #f4f3ef; stroke: #e7e6e0; }
+    .box, .badge, .commit { fill: #ffffff; }
+    .edge { fill: none; stroke: #d9d8d1; }
+    .pill { fill: #efeee9; stroke: #dddcd5; }
+    .knock-band { fill: #f4f3ef; }
+
+    /* the release, in the OSS colour */
+    .oss { fill: #2a78d6; }
+    .oss-ring { stroke: #2a78d6; stroke-width: 2; }
+    .branch { fill: none; stroke: #2a78d6; stroke-width: 2.5; }
+    .next { fill: none; stroke: #2a78d6; stroke-width: 2; stroke-dasharray: 5 4; }
+    .backported { fill: #2a78d6; stroke: #f4f3ef; stroke-width: 2; }
+    .tag { stroke: #2a78d6; }
+
+    /* text */
+    .h1 { font-size: 22px; font-weight: 700; fill: #0b0b0b; }
+    .lede { font-size: 13.5px; fill: #52514e; }
+    .band-title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; fill: #0b0b0b; }
+    .band-sub { font-size: 12.5px; fill: #52514e; }
+    .title { font-size: 15px; font-weight: 600; fill: #0b0b0b; }
+    .badge-text { font-size: 12.5px; font-weight: 700; fill: #0b0b0b; }
+    .badge-text-sm { font-size: 11.5px; font-weight: 700; fill: #0b0b0b; }
+    .body { font-size: 13px; fill: #52514e; }
+    .submono { font-size: 12.5px; fill: #52514e; }
+    .label { font-size: 12px; fill: #52514e; }
+    .pill-text { font-size: 11.5px; font-weight: 500; fill: #52514e; }
+    .skill-text { font-size: 11.5px; fill: #52514e; }
+
+    /* lines */
+    .flow { fill: none; stroke: #77766f; stroke-width: 1.5; }
+    .trigger { stroke-dasharray: 5 4; }
+    .arrowhead { fill: #77766f; }
+    .trunk { fill: none; stroke: #77766f; stroke-width: 2.5; }
+    .commit { stroke: #77766f; stroke-width: 2; }
+    .stem { fill: none; stroke: #2a78d6; stroke-width: 1.5; }
+    .guide { fill: none; stroke: #dddcd5; stroke-width: 1; stroke-dasharray: 2 3; }
+
+    @media (prefers-color-scheme: dark) {
+      .canvas { fill: #121211; }
+      .band { fill: #1b1b1a; stroke: #2c2c2a; }
+      .box, .badge, .commit { fill: #262624; }
+      .edge { stroke: #3c3c39; }
+      .pill { fill: #31312e; stroke: #44443f; }
+      .knock-band { fill: #1b1b1a; }
+
+      .oss { fill: #3987e5; }
+      .oss-ring, .tag, .stem { stroke: #3987e5; }
+      .branch, .next { stroke: #3987e5; }
+      .backported { fill: #3987e5; stroke: #1b1b1a; }
+
+      .h1, .band-title, .title, .badge-text, .badge-text-sm { fill: #ffffff; }
+      .lede, .band-sub, .body, .submono, .label, .pill-text, .skill-text { fill: #c3c2b7; }
+
+      .flow, .trunk, .commit { stroke: #a09f98; }
+      .arrowhead { fill: #a09f98; }
+      .guide { stroke: #3c3c39; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path class="arrowhead" d="M0,0.6 L10,5 L0,9.4 Z"/>
+    </marker>
+  </defs>
+
+  <rect class="canvas" width="960" height="798" rx="16"/>
+
+  <!-- ===== Header ===== -->
+  <text x="32" y="42" class="h1">Comet release cycle</text>
+  <text x="32" y="66" class="lede">How a release moves from cutting the branch to the final release. N.M is the release in progress, for example 1.2.</text>
+
+  <!-- ===== Band 1: release cycle ===== -->
+  <rect class="band" x="16" y="88" width="928" height="442" rx="14"/>
+  <text x="36" y="114" class="band-title">RELEASE CYCLE</text>
+  <text x="36" y="132" class="band-sub">three to four weeks per release, then the next one starts</text>
+  <!-- Step 1: Cut the release branch -->
+  <g transform="translate(36,158)">
+    <rect class="box" width="272" height="130" rx="10"/>
+    <path class="oss" d="M5,1.34 A10,10 0 0 0 0,10 V120 A10,10 0 0 0 5,128.66 Z"/>
+    <rect class="edge" width="272" height="130" rx="10"/>
+    <circle class="badge oss-ring" cx="22" cy="0" r="11"/>
+    <text x="22" y="4.5" class="badge-text" text-anchor="middle">1</text>
+    <rect class="pill" x="213.47" y="-10" width="46.53" height="20" rx="10"/>
+    <text x="236.73" y="4" class="pill-text" text-anchor="middle">day 0</text>
+    <text x="16" y="34" class="title">Cut the release branch</text>
+    <text x="16" y="58" class="body">Create <tspan class="code">branch-N.M</tspan> from <tspan class="code">main</tspan></text>
+    <text x="16" y="76" class="body">Protect it; add a <tspan class="code">backport-N.M</tspan> label</text>
+    <text x="16" y="94" class="body">Version and docs PRs on the branch</text>
+    <text x="16" y="112" class="body">Bump <tspan class="code">main</tspan> to the next version</text>
+  </g>
+  <!-- Step 2: Audit for regressions -->
+  <g transform="translate(344,158)">
+    <rect class="box" width="272" height="130" rx="10"/>
+    <path class="oss" d="M5,1.34 A10,10 0 0 0 0,10 V120 A10,10 0 0 0 5,128.66 Z"/>
+    <rect class="edge" width="272" height="130" rx="10"/>
+    <circle class="badge oss-ring" cx="22" cy="0" r="11"/>
+    <text x="22" y="4.5" class="badge-text" text-anchor="middle">2</text>
+    <rect class="pill" x="170.59" y="-10" width="89.41" height="20" rx="10"/>
+    <text x="215.3" y="4" class="pill-text" text-anchor="middle">about a week</text>
+    <text x="16" y="34" class="title">Audit for regressions</text>
+    <text x="16" y="58" class="body">Benchmark against the last release</text>
+    <text x="16" y="76" class="body">Review the expression support docs</text>
+    <text x="16" y="94" class="body">Check the scheduled CI runs</text>
+    <text x="16" y="112" class="body">Open a fix PR on <tspan class="code">main</tspan> for each one</text>
+  </g>
+  <!-- Step 3: Review and backport -->
+  <g transform="translate(652,158)">
+    <rect class="box" width="272" height="130" rx="10"/>
+    <path class="oss" d="M5,1.34 A10,10 0 0 0 0,10 V120 A10,10 0 0 0 5,128.66 Z"/>
+    <rect class="edge" width="272" height="130" rx="10"/>
+    <circle class="badge oss-ring" cx="22" cy="0" r="11"/>
+    <text x="22" y="4.5" class="badge-text" text-anchor="middle">3</text>
+    <rect class="pill" x="186.62" y="-10" width="73.38" height="20" rx="10"/>
+    <text x="223.31" y="4" class="pill-text" text-anchor="middle">1–2 weeks</text>
+    <text x="16" y="34" class="title">Review and backport</text>
+    <text x="16" y="58" class="body">Get the fix PRs reviewed and merged</text>
+    <text x="16" y="76" class="body">Backport each fix to <tspan class="code">branch-N.M</tspan></text>
+    <text x="16" y="94" class="body">with <tspan class="code">git cherry-pick -x</tspan></text>
+    <text x="16" y="112" class="body">Track them with <tspan class="code">backport-N.M</tspan></text>
+  </g>
+  <!-- Step 4: Release candidate -->
+  <g transform="translate(652,342)">
+    <rect class="box" width="272" height="130" rx="10"/>
+    <path class="oss" d="M5,1.34 A10,10 0 0 0 0,10 V120 A10,10 0 0 0 5,128.66 Z"/>
+    <rect class="edge" width="272" height="130" rx="10"/>
+    <circle class="badge oss-ring" cx="22" cy="0" r="11"/>
+    <text x="22" y="4.5" class="badge-text" text-anchor="middle">4</text>
+    <rect class="pill" x="178.95" y="-10" width="81.05" height="20" rx="10"/>
+    <text x="219.48" y="4" class="pill-text" text-anchor="middle">3+ day vote</text>
+    <text x="16" y="34" class="title">Release candidate</text>
+    <text x="16" y="58" class="body">Check for missing backports</text>
+    <text x="16" y="76" class="body">Change log, full CI run</text>
+    <text x="16" y="94" class="body">Tag <tspan class="code">N.M.0-rc1</tspan>, stage Maven artifacts</text>
+    <text x="16" y="112" class="body">Start the vote on the dev list</text>
+  </g>
+  <!-- Step 5: Final release -->
+  <g transform="translate(344,342)">
+    <rect class="box" width="272" height="130" rx="10"/>
+    <path class="oss" d="M5,1.34 A10,10 0 0 0 0,10 V120 A10,10 0 0 0 5,128.66 Z"/>
+    <rect class="edge" width="272" height="130" rx="10"/>
+    <circle class="badge oss-ring" cx="22" cy="0" r="11"/>
+    <text x="22" y="4.5" class="badge-text" text-anchor="middle">5</text>
+    <rect class="pill" x="190.25" y="-10" width="69.75" height="20" rx="10"/>
+    <text x="225.12" y="4" class="pill-text" text-anchor="middle">week 3–4</text>
+    <text x="16" y="34" class="title">Final release</text>
+    <text x="16" y="58" class="body">Push the <tspan class="code">N.M.0</tspan> release tag</text>
+    <text x="16" y="76" class="body">Promote the Maven artifacts</text>
+    <text x="16" y="94" class="body">Publish the source tarball</text>
+    <text x="16" y="112" class="body">Announce the release</text>
+  </g>
+  <!-- 1 -> 2 -> 3 along the top, down to 4, back along the bottom to 5 -->
+  <path class="flow" d="M308,223 L344,223" marker-end="url(#arrow)"/>
+  <path class="flow" d="M616,223 L652,223" marker-end="url(#arrow)"/>
+  <path class="flow" d="M788,288 L788,342" marker-end="url(#arrow)"/>
+  <path class="flow" d="M652,407 L616,407" marker-end="url(#arrow)"/>
+  <!-- 5 -> 1: the next release starts right away -->
+  <path class="flow" d="M344,407 L184,407 Q172,407 172,395 L172,288" marker-end="url(#arrow)"/>
+  <text x="52" y="433" class="label">Start the next release right away:</text>
+  <text x="52" y="450" class="label">three to four weeks have passed</text>
+  <!-- vote fails: fix it and tag the next RC -->
+  <path class="flow" d="M818,472 L818,484 Q818,492 810,492 L766,492 Q758,492 758,484 L758,472" marker-end="url(#arrow)"/>
+  <text x="788" y="510" class="label" text-anchor="middle">Vote fails: fix it, tag the next RC</text>
+
+  <!-- ===== Band 2: what happens on main and the release branch ===== -->
+  <rect class="band" x="16" y="550" width="928" height="232" rx="14"/>
+  <text x="36" y="576" class="band-title">ON THE BRANCHES</text>
+  <text x="36" y="594" class="band-sub">fixes merge to main first, then are backported to the release branch</text>
+  <!-- step markers along the time axis, with guides at the step boundaries -->
+  <path class="guide" d="M170,644 V750"/>
+  <path class="guide" d="M340,644 V750"/>
+  <path class="guide" d="M620,644 V750"/>
+  <path class="guide" d="M810,644 V750"/>
+  <circle class="badge oss-ring" cx="157.96" cy="626" r="9.5"/>
+  <text x="157.96" y="630" class="badge-text-sm" text-anchor="middle">1</text>
+  <text x="173.46" y="630" class="label">cut</text>
+  <circle class="badge oss-ring" cx="237.84" cy="626" r="9.5"/>
+  <text x="237.84" y="630" class="badge-text-sm" text-anchor="middle">2</text>
+  <text x="253.34" y="630" class="label">audit</text>
+  <circle class="badge oss-ring" cx="419.38" cy="626" r="9.5"/>
+  <text x="419.38" y="630" class="badge-text-sm" text-anchor="middle">3</text>
+  <text x="434.88" y="630" class="label">review and backport</text>
+  <circle class="badge oss-ring" cx="677.66" cy="626" r="9.5"/>
+  <text x="677.66" y="630" class="badge-text-sm" text-anchor="middle">4</text>
+  <text x="693.16" y="630" class="label">RC and vote</text>
+  <circle class="badge oss-ring" cx="786.54" cy="626" r="9.5"/>
+  <text x="786.54" y="630" class="badge-text-sm" text-anchor="middle">5</text>
+  <text x="802.04" y="630" class="label">release</text>
+  <!-- main keeps moving; branch-N.M is cut from it on day 0 -->
+  <text x="36" y="676" class="submono mono">main</text>
+  <text x="36" y="742" class="submono mono">branch-N.M</text>
+  <path class="trunk" d="M84,672 H916" marker-end="url(#arrow)"/>
+  <path class="branch" d="M170,672 C170,716 182,738 214,738 H810"/>
+  <circle class="commit" cx="170" cy="672" r="5.5"/>
+  <!-- fixes merge to main, then are cherry-picked onto the release branch -->
+  <circle class="commit" cx="310" cy="672" r="5.5"/>
+  <path class="flow trigger" d="M314.51,678.61 L349.93,730.56" marker-end="url(#arrow)"/>
+  <circle class="backported" cx="355" cy="738" r="5.5"/>
+  <circle class="commit" cx="430" cy="672" r="5.5"/>
+  <path class="flow trigger" d="M434.51,678.61 L469.93,730.56" marker-end="url(#arrow)"/>
+  <circle class="backported" cx="475" cy="738" r="5.5"/>
+  <circle class="commit" cx="550" cy="672" r="5.5"/>
+  <path class="flow trigger" d="M554.51,678.61 L589.93,730.56" marker-end="url(#arrow)"/>
+  <circle class="backported" cx="595" cy="738" r="5.5"/>
+  <text x="430" y="658" class="label" text-anchor="middle">fixes merge to main first</text>
+  <text x="475" y="766" class="label" text-anchor="middle">backports (git cherry-pick -x)</text>
+  <!-- other commits on the release branch -->
+  <circle class="backported" cx="240" cy="738" r="5.5"/>
+  <text x="240" y="766" class="label" text-anchor="middle">version and docs</text>
+  <circle class="backported" cx="650" cy="738" r="5.5"/>
+  <text x="650" y="766" class="label" text-anchor="middle">change log</text>
+  <circle class="backported" cx="700" cy="738" r="5.5"/>
+  <path class="stem" d="M700,722 V732"/>
+  <rect class="pill tag" x="660.01" y="702" width="79.98" height="20" rx="10"/>
+  <text x="700" y="716" class="skill-text mono" text-anchor="middle">N.M.0-rc1</text>
+  <text x="755" y="766" class="label" text-anchor="middle">vote</text>
+  <circle class="backported" cx="810" cy="738" r="5.5"/>
+  <path class="stem" d="M810,722 V732"/>
+  <rect class="pill tag" x="784.23" y="702" width="51.55" height="20" rx="10"/>
+  <text x="810" y="716" class="skill-text mono" text-anchor="middle">N.M.0</text>
+  <!-- the next release branch is cut right away -->
+  <circle class="commit" cx="862" cy="672" r="5.5"/>
+  <path class="next" d="M862,678 C862,702 872,712 896,712" marker-end="url(#arrow)"/>
+  <text x="924" y="658" class="label" text-anchor="end">next release branch</text>
+</svg>

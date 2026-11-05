@@ -26,7 +26,7 @@ import scala.collection.mutable
 import scala.jdk.CollectionConverters._
 import scala.util.control.NonFatal
 
-import org.apache.arrow.compression.{CommonsCompressionFactory, ZstdCompressionCodec}
+import org.apache.arrow.compression.CommonsCompressionFactory
 import org.apache.arrow.flatbuf.{RecordBatch => FlatBufRecordBatch}
 import org.apache.arrow.memory.{ArrowBuf, BufferAllocator}
 import org.apache.arrow.vector.{FieldVector, TypeLayout, ValueVector, VectorLoader, VectorSchemaRoot, VectorUnloader}
@@ -70,27 +70,33 @@ private[comet] object CachedBatchIpc {
    */
   def compressionCodec(codecName: String, zstdLevel: Int): CompressionCodec = codecName match {
     case "none" => NoCompressionCodec.INSTANCE
-    // Constructed directly rather than through CompressionCodec.Factory, which ignores the level
-    // and always builds a codec at zstd's default.
-    case "zstd" => new ZstdCompressionCodec(zstdLevel)
-    // Arrow's other codec, LZ4_FRAME, is not offered. It is commons-compress's pure-Java LZ4 --
-    // no relation to the JNI-accelerated lz4-java behind spark.io.compression.codec -- and
-    // measures three orders of magnitude slower to write than zstd while also producing larger
-    // output, so nothing prefers it. Reads still accept it, since the factory the read path uses
-    // handles whatever codec a batch records.
+    // Comet's subclass of Arrow's codec, which corrects the capacity handed to zstd; see
+    // CometZstdCompressionCodec. Constructed directly rather than through
+    // CompressionCodec.Factory, which ignores the level and always builds a codec at zstd's
+    // default.
+    case "zstd" => new CometZstdCompressionCodec(zstdLevel)
+    // Arrow's LZ4_FRAME format, written with lz4-java rather than Arrow's own pure-Java codec;
+    // see Lz4FrameCompressionCodec.
+    case "lz4" => Lz4FrameCompressionCodec
     case other =>
       throw new SparkException(
         s"Unsupported Arrow compression codec for Comet's cache: $other. " +
-          "Supported values: none, zstd")
+          "Supported values: none, zstd, lz4")
   }
 
   // Decompressors are stateless and shared. Resolving one per cached batch would allocate a codec
-  // per batch on every scan, and the enum lookup walks the CodecType values each time.
+  // per batch on every scan, and the enum lookup walks the CodecType values each time. LZ4_FRAME
+  // is read with the codec that writes it rather than with Arrow's pure-Java one, which inflates
+  // through heap copies and streams.
   private val readCodecs: Map[CompressionUtil.CodecType, CompressionCodec] =
     CompressionUtil.CodecType
       .values()
       .filter(_ != CompressionUtil.CodecType.NO_COMPRESSION)
-      .map(t => t -> CommonsCompressionFactory.INSTANCE.createCodec(t))
+      .map {
+        case CompressionUtil.CodecType.LZ4_FRAME =>
+          CompressionUtil.CodecType.LZ4_FRAME -> Lz4FrameCompressionCodec
+        case t => t -> CommonsCompressionFactory.INSTANCE.createCodec(t)
+      }
       .toMap
 
   /**
@@ -128,6 +134,11 @@ private[comet] object CachedBatchIpc {
    * answers for the top-level vector only, so a struct of large strings passes it while its child
    * is stored with 64-bit offsets and read with 32-bit ones.
    *
+   * A vector must also hold exactly the batch's rows. The cache records the null counts of the
+   * vectors it writes, so a vector longer than the batch it sits in would count nulls past the
+   * batch's last row, and could be recorded all null and pruned by `IS NOT NULL` without being
+   * decoded. Converting copies exactly the batch's rows.
+   *
    * Names, nullability and a timestamp's timezone are not compared. None of them changes how the
    * reader interprets the body, and the writer's legitimately differ -- a Comet scan labels
    * timestamps with the session's zone where the reader rebuilds them as UTC, which is a label
@@ -137,7 +148,8 @@ private[comet] object CachedBatchIpc {
     batch.numCols() == readerFields.length &&
       (0 until batch.numCols()).forall { i =>
         batch.column(i) match {
-          case v: CometVector => sameLayout(writtenField(v), readerFields(i))
+          case v: CometVector =>
+            v.numValues() == batch.numRows() && sameLayout(writtenField(v), readerFields(i))
           case _ => false
         }
       }
@@ -186,9 +198,10 @@ private[comet] object CachedBatchIpc {
    * batch arrives at whatever size the plan above produced. Chunks are appended rather than grown
    * and recopied, so the write also never holds the payload twice.
    *
-   * Returns the message and the on-body compressed size of each top-level column, which the
-   * caller records in the statistics row. The sizes come from the message's own buffer layout, so
-   * they are the real stored sizes rather than an estimate.
+   * Returns the message and the decoded size of each top-level column. Each size is measured on
+   * the batch before compression, from the plain lengths of the column's own buffers, which is
+   * what `getBufferSize` reports for a vector. The caller records the sizes in the statistics
+   * row; `ArrowCachedBatchSerializer.statsRow` explains why they are decoded sizes.
    *
    * Dictionary-encoded columns are decoded to their plain form first. A payload with no Schema
    * message cannot describe a dictionary encoding, and the schema the reader rebuilds from Spark
@@ -204,7 +217,7 @@ private[comet] object CachedBatchIpc {
       codec: CompressionCodec,
       allocator: BufferAllocator,
       chunkSize: Int): (ChunkedByteBuffer, Array[Long]) = {
-    val (vectors, decoded) = decodeDictionaries(batch, allocator)
+    val (vectors, allocated) = decodeDictionaries(batch, allocator)
     try {
       val root = new VectorSchemaRoot(vectors.asJava)
       // A batch of zero columns carries only a row count, which a VectorSchemaRoot cannot infer
@@ -213,34 +226,41 @@ private[comet] object CachedBatchIpc {
         root.setRowCount(batch.numRows())
       }
 
-      // Unloaded plain and compressed afterwards rather than by handing the codec to the unloader;
-      // see compressed for why.
-      val unloader = new VectorUnloader(root, true, NoCompressionCodec.INSTANCE, true)
-      val plainBatch = unloader.getRecordBatch
-      val recordBatch =
-        try compressed(plainBatch, codec, allocator)
-        finally plainBatch.close()
-      try {
+      // A grouped aggregate emits its groups as slices of one batch, which reach the JVM with
+      // offsets that start past zero. Unloaded as they are, each slice would be cached, and
+      // reported by columnSizes, with the bytes of the slices before it.
+      Utils.withRebasedOffsets(root) { written =>
+        // Unloaded plain and compressed afterwards rather than by handing the codec to the
+        // unloader; see compressed for why.
         val fields = vectors.map(_.getField)
-        // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
-        // own buffers by now, so this does not touch it, and getField still answers afterwards:
-        // clearing releases buffers, not the schema.
-        root.clear()
-
-        val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+        val unloader = new VectorUnloader(written, true, NoCompressionCodec.INSTANCE, true)
+        val plainBatch = unloader.getRecordBatch
+        val (sizes, recordBatch) =
+          try {
+            (columnSizes(fields, plainBatch), compressed(plainBatch, codec, allocator))
+          } finally {
+            plainBatch.close()
+          }
         try {
-          val channel = new WriteChannel(Channels.newChannel(out))
-          MessageSerializer.serialize(channel, recordBatch)
+          // Leaves the batch in the state serializeBatches leaves one. The record batch holds its
+          // own buffers by now, and so does the slice, so this does not touch either.
+          root.clear()
+
+          val out = new ChunkedByteBufferOutputStream(chunkSize, ByteBuffer.allocate)
+          try {
+            val channel = new WriteChannel(Channels.newChannel(out))
+            MessageSerializer.serialize(channel, recordBatch)
+          } finally {
+            out.close()
+          }
+          (out.toChunkedByteBuffer, sizes)
         } finally {
-          out.close()
+          recordBatch.close()
         }
-        (out.toChunkedByteBuffer, columnSizes(fields, recordBatch))
-      } finally {
-        recordBatch.close()
       }
     } finally {
-      // Only the vectors this method allocated. The rest belong to the input batch.
-      decoded.foreach(v =>
+      // Only the vectors allocated for this write. The rest belong to the input batch.
+      allocated.foreach(v =>
         try v.close()
         catch { case NonFatal(_) => () })
     }
@@ -608,11 +628,10 @@ private[comet] object CachedBatchIpc {
   }
 
   /**
-   * The on-body compressed size of each top-level column.
+   * The size of each top-level column's buffers in `recordBatch`.
    *
-   * Each column owns the run of buffers its subtree occupies, so its stored size is the sum of
-   * those buffers' recorded lengths. With one payload per batch these are the only per-column
-   * sizes available -- there is no separate stream to measure -- and they are exact.
+   * Each column owns the run of buffers its subtree occupies, so its size is the sum of those
+   * buffers' recorded lengths.
    */
   private def columnSizes(fields: Seq[Field], recordBatch: ArrowRecordBatch): Array[Long] = {
     val buffers = recordBatch.getBuffersLayout
@@ -635,32 +654,34 @@ private[comet] object CachedBatchIpc {
   /**
    * Replace every dictionary-encoded column of `batch` with its decoded form.
    *
-   * Returns the vectors to write and, separately, the ones allocated here so the caller can close
-   * exactly those. Columns that needed no decoding are returned as they are and stay owned by
+   * Returns the vectors to write and, separately, the ones allocated for the write, so the caller
+   * can close exactly those: the decoded columns, and any that
+   * [[Utils.getBatchFieldVectorsWithProviders]] allocated, such as a 32-bit copy of a
+   * large-offset column. Columns that needed neither are returned as they are and stay owned by
    * `batch`.
    */
   private def decodeDictionaries(
       batch: ColumnarBatch,
       allocator: BufferAllocator): (Seq[FieldVector], Seq[ValueVector]) = {
-    val decoded = mutable.ArrayBuffer.empty[ValueVector]
+    val columns = Utils.getBatchFieldVectorsWithProviders(batch)
+    val allocated = mutable.ArrayBuffer.empty[ValueVector]
+    allocated ++= Utils.allocatedFor(batch, columns.map(_._1))
     try {
       val vectors =
-        Utils.getBatchFieldVectorsWithProviders(batch).map { case (vector, providerOpt) =>
+        columns.map { case (vector, providerOpt) =>
           if (vector.getField.getDictionary == null) {
             vector
           } else {
             val dictionary = Utils.lookupDictionary(vector, providerOpt)
             val plain = DictionaryEncoder.decode(vector, dictionary, allocator)
-            decoded += plain
+            allocated += plain
             plain.asInstanceOf[FieldVector]
           }
         }
-      (vectors, decoded.toSeq)
+      (vectors, allocated.toSeq)
     } catch {
       case NonFatal(e) =>
-        decoded.foreach(v =>
-          try v.close()
-          catch { case NonFatal(closeError) => e.addSuppressed(closeError) })
+        Utils.closeAfterFailure(allocated.toSeq, e)
         throw e
     }
   }

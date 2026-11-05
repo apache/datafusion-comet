@@ -26,7 +26,7 @@ import scala.collection.mutable
 import org.apache.spark.sql.ExtendedExplainGenerator
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Expression, Literal, ScalaUDF}
 import org.apache.spark.sql.catalyst.trees.{TreeNode, TreeNodeTag}
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometEmptyRelationExec, CometInMemoryTableScanExec, CometNativeColumnarToRowExec, CometPlan, CometSparkToColumnarExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, InputAdapter, ReusedSubqueryExec, RowToColumnarExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
@@ -109,6 +109,10 @@ class ExtendedExplainInfo extends ExtendedExplainGenerator {
     // Spark's treeString displays the eliminated plan, but it does not execute and must not
     // contribute Spark operators, fallback reasons, or expressions to Comet's reporting.
     case _: CometEmptyRelationExec => Seq.empty
+    // Spark's treeString displays the cached relation and the plan that built it. That plan runs
+    // when the relation is materialized, not as part of every query that reads it, so it must not
+    // count toward the coverage or the fallback reasons of each of those queries.
+    case _: CometInMemoryTableScanExec => Seq.empty
     case _ => node.innerChildren
   }
 
@@ -313,6 +317,43 @@ object CometCoverageStats {
 
 object CometExplainInfo {
   val FALLBACK_REASONS = new TreeNodeTag[Set[String]]("CometFallbackReasons")
+
+  // Planning is synchronous on the calling thread. Keep the journal scoped to a conversion,
+  // rather than trusting mutable tags which Catalyst can copy onto shared expression instances.
+  // Identity keys distinguish equal expressions. This is deliberately not inheritable: planning
+  // a subquery on another thread must not retain or share its parent's mutable journal.
+  private val fallbackJournal = new ThreadLocal[IdentityHashMap[Expression, Set[String]]]
+
+  private[comet] def withFallbackReasonScope[T](body: => T): T = {
+    val previous = fallbackJournal.get()
+    fallbackJournal.set(new IdentityHashMap[Expression, Set[String]]())
+    try body
+    finally {
+      if (previous == null) fallbackJournal.remove() else fallbackJournal.set(previous)
+    }
+  }
+
+  private[comet] def withExpressionFallbackReasonScope[T](body: => T): T = {
+    if (fallbackJournal.get() != null) body else withFallbackReasonScope(body)
+  }
+
+  private[comet] def recordFallbackReasons(
+      node: Expression,
+      reasons: Set[String]): Option[Set[String]] = {
+    Option(fallbackJournal.get()).map { journal =>
+      val previous = Option(journal.get(node)).getOrElse(Set.empty[String])
+      val current = previous ++ reasons
+      journal.put(node, current)
+      current
+    }
+  }
+
+  private[comet] def currentFallbackReasons(node: Expression): Set[String] = {
+    Option(fallbackJournal.get())
+      .flatMap(journal => Option(journal.get(node)))
+      .getOrElse(Set.empty)
+  }
+
   val EXTENSION_INFO = new TreeNodeTag[Set[String]]("CometExtensionInfo")
 
   // Expression names the serde routed through the JVM codegen dispatcher. Set on each such

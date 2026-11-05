@@ -25,6 +25,7 @@ import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.comet.execution.shuffle.CometShuffledBatchRDD
 import org.apache.spark.sql.execution.ScalarSubquery
+import org.apache.spark.sql.types.DataType
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
 
@@ -67,7 +68,12 @@ private[spark] class CometExecRDD(
     broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
     encryptedFilePaths: Seq[String] = Seq.empty,
     shuffleScanIndices: Set[Int] = Set.empty,
-    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty)
+    @transient perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+    outputTypes: Seq[DataType] = Seq.empty,
+    // Set by a contrib leaf scan (e.g. the Delta contrib's `CometDeltaNativeScanExec`) that
+    // builds this RDD directly, bypassing `CometNativeExec.executeColumnarWithContext`'s own
+    // `ctx.hasScanInput` check, so it reports task input metrics without subclassing this RDD.
+    reportScanInputMetrics: Boolean = false)
     extends RDD[ColumnarBatch](sc, inputRDDs.map(rdd => new OneToOneDependency(rdd))) {
 
   // Determine partition count: from inputs if available, otherwise from parameter
@@ -87,6 +93,8 @@ private[spark] class CometExecRDD(
     s"All per-partition arrays must have length $numPartitions, but found: " +
       perPartitionByKey.map { case (key, arr) => s"$key -> ${arr.length}" }.mkString(", "))
 
+  private val sqlConf = CapturedSQLConf.capture()
+
   override protected def getPartitions: Array[Partition] = {
     (0 until numPartitions).map { idx =>
       val inputParts = inputRDDs.map(_.partitions(idx)).toArray
@@ -97,11 +105,19 @@ private[spark] class CometExecRDD(
     }.toArray
   }
 
-  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
+  override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] =
+    sqlConf.withConf(computeNative(split, context))
+
+  private def computeNative(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     // Must precede resolveInputObjects and the CometExecIterator: completion listeners run in
     // reverse registration order, so registering first means this listener runs last, after
     // nested native blocks and the iterator have published their final metric values.
     Option(context).foreach(nativeMetrics.reportSpillMetrics)
+    // Registered here for the same reason: it has to run after the iterator's close has
+    // published the final scan metrics.
+    if (reportScanInputMetrics) {
+      Option(context).foreach(nativeMetrics.reportScanInputMetrics)
+    }
 
     val partition = split.asInstanceOf[CometExecPartition]
 
@@ -136,7 +152,8 @@ private[spark] class CometExecRDD(
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleBlockIters,
-      taskFilePaths = partition.filePaths)
+      taskFilePaths = partition.filePaths,
+      outputTypes = outputTypes)
 
     // Register ScalarSubqueries so native code can look them up
     subqueries.foreach(sub => CometScalarSubquery.setSubquery(it.id, sub))
@@ -229,7 +246,9 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption: Option[Broadcast[SerializableConfiguration]] = None,
       encryptedFilePaths: Seq[String] = Seq.empty,
       shuffleScanIndices: Set[Int] = Set.empty,
-      perPartitionFilePaths: Array[Seq[String]] = Array.empty): CometExecRDD = {
+      perPartitionFilePaths: Array[Seq[String]] = Array.empty,
+      outputTypes: Seq[DataType] = Seq.empty,
+      reportScanInputMetrics: Boolean = false): CometExecRDD = {
     // scalastyle:on
 
     new CometExecRDD(
@@ -246,6 +265,8 @@ object CometExecRDD {
       broadcastedHadoopConfForEncryption,
       encryptedFilePaths,
       shuffleScanIndices,
-      perPartitionFilePaths)
+      perPartitionFilePaths,
+      outputTypes,
+      reportScanInputMetrics)
   }
 }

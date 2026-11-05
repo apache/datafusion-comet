@@ -25,7 +25,7 @@ use crate::SparkError;
 
 /// Checks row boundaries before the DataFusion `map` used by CometMapFromArrays.
 #[derive(Debug, Default, PartialEq, Eq, Hash)]
-pub(crate) struct SparkMapFromArrays {
+pub struct SparkMapFromArrays {
     inner: MapFunc,
 }
 

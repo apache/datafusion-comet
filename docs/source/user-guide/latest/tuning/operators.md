@@ -30,6 +30,58 @@ to configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`. Comet does 
 to test with both for your specific workloads.
 
 To configure Comet to convert `SortMergeJoin` to `ShuffledHashJoin`, set `spark.comet.exec.forceShuffledHashJoin=true`.
+The conversion only happens when the build side is under a size limit, and a join whose build side has no statistics
+is left as a `SortMergeJoin`. The size is Spark's planning estimate of the build side, or under AQE the materialized
+shuffle size of the build side. By default the limit is Spark's own rule for choosing a `ShuffledHashJoin`:
+`spark.sql.autoBroadcastJoinThreshold` times the initial shuffle partition count
+(`spark.sql.adaptive.coalescePartitions.initialPartitionNum` when AQE and partition coalescing are both on and it is
+set, else `spark.sql.shuffle.partitions`). When broadcasts are disabled with a non-positive threshold, Spark's default
+threshold of 10 MB is used instead. Set `spark.comet.exec.forceShuffledHashJoin.maxBuildSize` to a size in bytes to use a fixed
+limit, or to a non-positive value to convert every eligible join regardless of size.
+
+### Left-semi sort-merge joins
+
+A left-semi join returns each left row if any right row matches. For an unfiltered batch join
+on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
+to keep one copy of each repeated key per batch before the native sort. The option is off by
+default. The right sort must read the key column directly from a Comet shuffle. With the
+`fair_unified` memory pool, the native planner checks at first execution for memory held by another
+Spark consumer in the task and skips reduction if it finds any, logging the reason at
+debug level. This best-effort check does not cover consumers that allocate memory later.
+
+The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
+batches smaller than 1,024 rows. Many small shuffle blocks can therefore bypass reduction even in a large
+partition. Batches with too few repeated keys also pass through; after an unprofitable
+batch, reduction is only tried again on a larger batch in the same partition. The join
+reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
+
+Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Extending reduction to those joins or across small batches is separate follow-up work.
+
+### Broadcast Joins
+
+Comet broadcasts the build side of a broadcast join as Arrow IPC batches, which each task that reads the broadcast
+decodes before building its hash table. By default, the tasks of an executor that read a broadcast at the same time
+share one decoded copy of it. The first of them decodes the broadcast, and the others wait for that decode and read the
+same buffers. The copy is freed when the last of these tasks completes, so a task that starts after that decodes the
+broadcast again. Each task still builds its own hash table.
+
+Set `spark.comet.exec.broadcastExchange.shareDecoded.enabled=false` to have every task decode the whole broadcast for
+itself.
+
+#### Broadcast compression
+
+Comet compresses the Arrow IPC batches of a broadcast with Spark's `spark.io.compression.codec`. When
+`spark.broadcast.compress` is `true`, which is Spark's default, Spark compresses the broadcast again with the same
+codec, and executors decompress it twice. The second pass runs on the driver before the join can start, and it saves few
+bytes because the data is already compressed: up to about 10% when the build side has sorted or sequential columns,
+such as surrogate keys, and 0 to 6% otherwise. Its cost grows with the size of the broadcast and with the codec level.
+In local tests with broadcasts of 270 to 460 MiB, it added about 0.2 seconds of driver time and up to 0.15 seconds on
+each executor with `lz4`, and about 0.85 seconds of driver time with `zstd` at level 5.
+
+For queries that broadcast large build sides, consider setting `spark.broadcast.compress=false`. The setting applies to
+every broadcast in the application, so broadcasts that Comet does not create, such as the build side of a join that
+runs in Spark, are sent uncompressed too.
 
 ### Join Runtime Filters
 
@@ -59,45 +111,99 @@ boundaries. A shuffled hash join can still filter probe batches after shuffle, b
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](../metrics.md#hash-joins)
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
 
+#### Early filtering in join chains
+
+With `spark.comet.exec.join.dynamicFilter.enabled=true`, an eligible join can also
+use its completed build keys to filter decoded rows before an intermediate inner
+join. For example, when a final join accepts only customer 42, it can remove other
+customers before an earlier join looks up their orders. This reduces intermediate
+join work while the final join still checks every match and preserves duplicates.
+
+Placement follows direct probe-side columns through ordinary inner joins already
+eligible for runtime filtering (a single signed-integer key),
+column-only projections, and direct column null checks above the first intermediate join.
+After crossing a join, the early consumer stays above inferred null checks so null
+keys do not prevent adaptive bypass. It stops at computed
+expressions, other predicates, limits, unsupported joins, and execution boundaries.
+These early filters operate on decoded batches; they do not introduce additional
+Parquet pruning or skip schema conversions. Each intermediate join retains its
+existing reader-filter checks.
+
+Early filtering stops evaluating after two consecutive nonempty evaluated batches
+remove no rows, avoiding repeated membership checks on unselective inputs. That
+decision is local to one execution. The final join remains responsible for matching
+rows, including if later batches become more selective. The `dynamic_filter_early_*`
+metrics belong to the join supplying the filter; intermediate joins and projections
+retain their own input/output metrics.
+
+#### Join runtime filters through residual predicates
+
+Native join runtime filtering is enabled with
+`spark.comet.exec.join.dynamicFilter.enabled`. It can reject probe rows whose keys
+are absent from the completed build side and use eligible Parquet readers to prune
+row groups. By default, an intervening residual filter permits reader propagation
+only for direct-column `IS NOT NULL` checks combined with `AND`.
+
+Set `spark.comet.exec.join.dynamicFilter.allowDeterministicFilterPushdown=true` to
+let the join filter pass through other deterministic residual predicates, such as
+`quantity > 0` or a Spark-generated Bloom check. The original residual and the
+exact join remain in place. For example, when the build contains only item IDs
+17 and 42, a row for item 99 can be rejected before evaluating its quantity.
+Nondeterministic predicates, limits, all standalone projections (including column-only
+projections), and execution boundaries continue to stop reader propagation. Spark can
+insert a standalone projection to drop residual-only columns, so the example requires
+keeping `quantity` in the output alongside `item_id`. Projection within the Parquet
+scan itself remains supported. Parquet schema conversion checks remain active.
+Reader attachment through column-only projections is tracked in
+[#7113](https://github.com/apache/datafusion-comet/issues/7113).
+
+The separate setting lets applications keep the existing runtime-filter behavior
+while choosing whether to allow broader reader pruning. Spark can already skip
+residual evaluation through other pruning paths, but those paths are not present in
+every plan. This setting defaults to false because deterministic expressions can
+throw. Earlier pruning can skip division-by-zero or ANSI cast errors on rows that
+cannot join. Errors on retained rows still propagate. Enable it only when skipping
+such errors on eliminated rows is acceptable. Parquet row filtering during decoding
+also requires `spark.comet.parquet.rowFilterPushdown.enabled`; row-group statistics
+pruning does not require that setting.
+
 ## Adaptive Partial Aggregation
 
-For high-cardinality grouping, Comet can bypass partial hash aggregation when it is not
-reducing the number of rows enough. This currently applies only to fused native shuffle-writer
-plans whose partial aggregates are grouping-only or single-argument `COUNT`. Low-cardinality
-inputs continue to aggregate normally. The SQL metric `rows bypassing partial aggregation`
-shows whether skipping occurred.
+Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
+aggregation for high-cardinality grouping when it is not reducing the number of rows enough. This
+experimental optimization is disabled by default. It currently applies only to fused native
+shuffle-writer plans whose partial aggregates are grouping-only or single-argument `COUNT`.
+Low-cardinality inputs continue to aggregate normally. The SQL metric
+`rows bypassing partial aggregation` shows whether skipping occurred.
+
+DataFusion makes the decision separately in each task. It starts checking after the first 100,000
+input rows, and as soon as the number of groups divided by the number of input rows exceeds `0.8`,
+it stops aggregating and sends the rest of the task's rows to the shuffle as they are. It does not
+check again, so a task whose keys repeat after a mostly distinct start, such as several snapshot
+files of the same keys packed into one split, can shuffle many times more rows than it would with
+skipping disabled. Compare the shuffle write metrics with the setting enabled and disabled before
+enabling it for a workload.
 
 Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
 Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
 `COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
-The DataFusion testing configuration override does not bypass these safety checks.
 
-DataFusion 55 defaults to probing after 100,000 input rows per partial aggregation
-partition and skipping when the number of groups divided by input rows exceeds `0.8`.
-To experiment with these thresholds, enable `spark.comet.exec.respectDataFusionConfigs`,
+To experiment with the thresholds, also enable `spark.comet.exec.respectDataFusionConfigs`,
 a development and testing option that defaults to `false`. For example, the following
 SQL settings pass through the default threshold values, which you can adjust:
 
 ```sql
+SET spark.comet.exec.aggregate.skipPartial.enabled=true;
 SET spark.comet.exec.respectDataFusionConfigs=true;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold=100000;
 SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=0.8;
 ```
 
 A lower row threshold allows an earlier decision; a lower ratio threshold makes
-skipping more likely. Skipping can increase the number of partial states emitted
-and the amount of shuffle data, so measure the effect on your workload.
-
-To disable skipping, keep `spark.comet.exec.respectDataFusionConfigs=true` and set
-the ratio threshold above the maximum possible groups/input-rows ratio:
-
-```sql
-SET spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold=1.1;
-```
-
-These settings only tune eligible plans. Unsupported accumulators and modes remain
-disabled even when configuration overrides are enabled.
+skipping more likely. These settings only tune eligible plans. They cannot enable skipping
+while `spark.comet.exec.aggregate.skipPartial.enabled` is `false`, or for unsupported
+accumulators and modes.
 
 ## Local TopK Fusion
 
@@ -151,17 +257,20 @@ See [TopK metrics](../metrics.md#local-topk).
 
 ## Optimizing Sorting on Floating-Point Values
 
-Comet normalizes NaN payloads and signed zeros in scalar `FLOAT` and `DOUBLE` ordering keys, so `ORDER BY`, window
-ordering and range partitioning on them match Spark and stay native even with
-`spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their original
-NaN representation and zero sign.
+Comet normalizes NaN payloads and signed zeros in `FLOAT` and `DOUBLE` ordering keys, including floating-point values
+nested in arrays and structs, so `ORDER BY`, window ordering and range partitioning on them match Spark and stay native
+even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
+original NaN representation and zero sign.
 
-Floating-point values nested in arrays, structs, or maps are compared with Arrow's raw total ordering instead, which can
-differ from Spark when the data contains both zero and negative zero, or more than one NaN representation. This is likely
-an edge case that is not of concern for many users. Setting `spark.comet.exec.strictFloatingPoint=true` makes those
-nested cases fall back to Spark, and they can be forced back onto the native path with
-`spark.comet.expression.SortOrder.allowIncompatible=true`.
+A key that nests values in an array or struct whose type can hold a null element or field stays native under
+`ASC NULLS LAST` and `DESC NULLS FIRST` too: Comet separates the key's root null placement from its nested ordering
+([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that has to find a row's
+peers over such a key still falls back to Spark
+([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
-`sort_array` is separate. It sorts array elements rather than ordering rows, and its elements are compared with Arrow's
-raw total ordering, so `spark.comet.exec.strictFloatingPoint=true` makes it fall back even for a scalar floating-point
-element type. Use `spark.comet.expression.SortArray.allowIncompatible=true` to keep it native.
+`sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
+also stays native with `spark.comet.exec.strictFloatingPoint=true`.
+
+The default `array_sort` comparator also runs natively. It puts null array elements last while comparing nulls
+inside nested arrays and structs below non-null values. A custom `array_sort` comparator or an
+array with a non-default string collation continues through the JVM codegen dispatcher.

@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-.PHONY: all core jvm test clean release-linux release bench print-benchmark-args
+.PHONY: all core jvm test clean rat release-linux release bench print-benchmark-args
 
 define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs $(PROFILES))
@@ -53,6 +53,8 @@ clean:
 	cd native && cargo clean
 	./mvnw clean $(PROFILES)
 	rm -rf .dist
+rat:
+	./dev/release/check-rat.sh HEAD
 bench:
 	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo bench $(FEATURES_ARG) $(filter-out $@,$(MAKECMDGOALS))
 format:

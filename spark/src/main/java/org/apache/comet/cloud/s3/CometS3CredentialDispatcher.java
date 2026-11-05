@@ -122,10 +122,12 @@ public final class CometS3CredentialDispatcher {
   }
 
   /**
-   * Invoked by native code when it creates the object store for {@code bucket}, and again after a
-   * read through that store fails with 403. Returns {@code null} when the provider behind {@code
-   * handle} does not implement {@link CometS3LocationScopedCredentialProvider}, which leaves it
-   * with one credential per bucket. Otherwise returns a copy of the provider's locations.
+   * Invoked by native code when it creates the object store for {@code bucket} (Parquet), or builds
+   * an Iceberg {@code FileIO} for catalog properties whose locations it does not have yet or first
+   * uses {@code bucket} through one (Iceberg), and again after a request fails with 403. Returns
+   * {@code null} when the provider behind {@code handle} does not implement {@link
+   * CometS3LocationScopedCredentialProvider}, which leaves it with one credential per bucket, or
+   * per table on the Iceberg path. Otherwise returns a copy of the provider's locations.
    *
    * <p>Copying the list here runs any lazy {@code List} code inside this call, so its exceptions
    * reach native code as ordinary Java exceptions, and a non-{@code String} element fails with

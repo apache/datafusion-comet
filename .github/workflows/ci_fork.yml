@@ -1,0 +1,109 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Fork runs: a push to a branch of a contributor's fork runs the pull request
+# tier on the contributor's own GitHub runners, so a fork pull request does not
+# spend ASF's shared capacity on it. ci.yml upstream skips the PR tier for a
+# fork pull request into main (see `is_fork_pull_request` in
+# dev/ci/compute-changes.py), keeping only the preflight checks and the opt-in
+# `run-*` suites, and fork_ci_status.yml mirrors this run onto the pull request
+# as the informational `CI (fork)` check. The merge queue runs the queue tier on
+# the merge result, so a fork run is feedback and never a gate.
+#
+# This is a separate workflow, and not a wider `push` trigger on ci.yml, for the
+# same reason ci_label.yml is one. A skipped job still publishes a check run
+# under its own name, and a push to a branch of this repository can land on the
+# very commit a pull request is testing. A skipped `Required Checks` from that
+# push would compete with the pull request's real verdict. Here the only job
+# that can be skipped is named after this workflow's own run, and upstream it is
+# always skipped.
+#
+# Every branch of a fork is run the same way, the default branch included. ci.yml
+# also triggers on a push to `main`, in a fork as upstream, but its Preflight job
+# skips that run unless it came through this workflow, so a fork push is tested
+# once and the bridge has one workflow to look up. A push that adds nothing to
+# upstream main, such as a sync of the fork, selects no suite; see
+# dev/ci/fork-push-changed-files.sh.
+name: Comet CI (fork run)
+
+# No `concurrency` here, and none for a fork push in ci.yml either: see the
+# `supersede` job. A group on the caller as well as in ci.yml would deadlock
+# the two.
+on:
+  push:
+    branches-ignore:
+      - asf-site
+
+permissions:
+  contents: read
+
+jobs:
+  # A newer push to a branch supersedes the run in flight, as it does for a pull
+  # request upstream, but not through a concurrency group. Group names compare
+  # without regard to case, and a fork can hold both `feature` and `Feature`,
+  # which are two branches: keying a group on the branch would let a push to one
+  # cancel the other's run, and no expression can make the two keys differ. So the
+  # runs get no shared group, and this job cancels the older runs of exactly this
+  # branch, which it can compare with case.
+  supersede:
+    name: Cancel superseded runs
+    # Upstream, a push to any branch other than main is a pull request's own
+    # business: the pull request run tests it, and a second run here would
+    # test it twice.
+    if: github.repository != 'apache/datafusion-comet'
+    runs-on: ubuntu-slim
+    # Failing to cancel only leaves an older run to finish, so it never blocks the run.
+    continue-on-error: true
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = context.ref.replace(/^refs\/heads\//, '');
+            for (const status of ['queued', 'in_progress']) {
+              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner, repo, workflow_id: 'ci_fork.yml', event: 'push', status, per_page: 100,
+              });
+              for (const run of runs) {
+                // The API's branch filter ignores case, so filter here, where `feature`
+                // and `Feature` stay two branches.
+                if (run.head_branch !== branch || run.run_number >= context.runNumber) continue;
+                try {
+                  await github.rest.actions.cancelWorkflowRun({ owner, repo, run_id: run.id });
+                  core.info('Cancelled run ' + run.run_number + ' of ' + branch);
+                } catch (error) {
+                  // 409: it finished between the listing and the cancel.
+                  if (error.status !== 409) throw error;
+                }
+              }
+            }
+
+  ci:
+    name: Fork run
+    needs: supersede
+    if: github.repository != 'apache/datafusion-comet'
+    # The union of what ci.yml's jobs request, for the same reason as in
+    # ci_label.yml: GitHub checks a called workflow's permissions against
+    # this ceiling for every job when the run starts, including the ones this
+    # event skips.
+    permissions:
+      actions: read
+      contents: write
+      issues: write
+    uses: ./.github/workflows/ci.yml

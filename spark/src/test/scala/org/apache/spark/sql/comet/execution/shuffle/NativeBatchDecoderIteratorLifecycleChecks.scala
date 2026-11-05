@@ -27,7 +27,7 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
-import org.apache.comet.{CometShuffleReadFailureHandler, Native}
+import org.apache.comet.{CometShuffleBlockIterator, CometShuffleReadFailureHandler, Native}
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 import org.apache.comet.vector.NativeUtil
 
@@ -115,6 +115,69 @@ private[shuffle] object NativeBatchDecoderIteratorLifecycleChecks {
     } finally {
       util.close()
     }
+  }
+
+  /** Both shuffle readers read in pieces of their read buffer size, without `available()`. */
+  def readersReadInPiecesOfTheReadBufferSize(): Unit = {
+    val bodyBytes = 1024 * 1024
+    val readBufferSize = 16 * 1024
+    val largeFrame = ByteBuffer
+      .allocate(16 + bodyBytes)
+      .order(ByteOrder.LITTLE_ENDIAN)
+      .putLong(8L + bodyBytes)
+      .putLong(0L)
+      .array()
+    class CountingInput extends ByteArrayInputStream(largeFrame) {
+      var availableCalls = 0
+      var largestRead = 0
+
+      override def available(): Int = {
+        availableCalls += 1
+        super.available()
+      }
+
+      override def read(bytes: Array[Byte], offset: Int, length: Int): Int = {
+        largestRead = math.max(largestRead, length)
+        super.read(bytes, offset, length)
+      }
+
+      def check(): Unit = {
+        assert(availableCalls == 0, "The reader asked the stream for available bytes")
+        assert(largestRead == readBufferSize, s"The largest read was $largestRead bytes")
+      }
+    }
+
+    val decoderInput = new CountingInput
+    val batch = new TrackingBatch()
+    val util = new NativeUtil {
+      override def getNextBatch(
+          numOutputCols: Int,
+          decode: (Array[Long], Array[Long]) => Long): Option[ColumnarBatch] = Some(batch)
+    }
+    try {
+      val decoder = NativeBatchDecoderIterator(
+        decoderInput,
+        new SQLMetric("nsTiming", 0L),
+        null,
+        util,
+        tracingEnabled = false,
+        readBufferSize = readBufferSize)
+      assert(decoder.next() eq batch)
+      assert(!decoder.hasNext)
+    } finally {
+      util.close()
+    }
+    decoderInput.check()
+
+    val blockInput = new CountingInput
+    val blocks = new CometShuffleBlockIterator(blockInput, (_: Long) => (), readBufferSize)
+    try {
+      assert(blocks.hasNext() == bodyBytes)
+      assert(blocks.hasNext() == -1)
+    } finally {
+      blocks.close()
+    }
+    blockInput.check()
   }
 
   def closesPrefetchedBatch(): Unit = {

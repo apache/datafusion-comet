@@ -16,8 +16,8 @@
 // under the License.
 
 use arrow::array::{
-    Array, ArrayRef, BooleanBuilder, Float32Builder, Float64Builder, Int32Builder, Int64Builder,
-    RecordBatch, StringBuilder, StructArray,
+    Array, ArrayRef, BooleanBufferBuilder, BooleanBuilder, Float32Builder, Float64Builder,
+    Int32Builder, Int64Builder, RecordBatch, StringBuilder, StructArray,
 };
 use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::common::Result;
@@ -127,7 +127,6 @@ impl PhysicalExpr for FromJson {
 /// Parse JSON string array into struct array
 fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<ArrayRef> {
     use arrow::array::StringArray;
-    use arrow::buffer::NullBuffer;
 
     let string_array = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
         datafusion::common::DataFusionError::Execution("from_json expects string input".to_string())
@@ -141,11 +140,9 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
 
     let num_rows = string_array.len();
     let mut field_builders = create_field_builders(fields, num_rows)?;
-    let mut struct_nulls = vec![true; num_rows];
-    for (row_idx, struct_null) in struct_nulls.iter_mut().enumerate() {
+    for row_idx in 0..num_rows {
         if string_array.is_null(row_idx) {
             // Null input -> null struct
-            *struct_null = false;
             append_null_to_all_builders(&mut field_builders);
         } else {
             let json_str = string_array.value(row_idx);
@@ -155,20 +152,17 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
                 Ok(json_value) => {
                     if let serde_json::Value::Object(obj) = json_value {
                         // Struct is not null, extract each field
-                        *struct_null = true;
                         for (field, builder) in fields.iter().zip(field_builders.iter_mut()) {
                             let field_value = obj.get(field.name());
                             append_field_value(builder, field, field_value)?;
                         }
                     } else {
                         // Not an object -> struct with null fields
-                        *struct_null = true;
                         append_null_to_all_builders(&mut field_builders);
                     }
                 }
                 Err(_) => {
                     // Parse error -> struct with null fields (PERMISSIVE mode)
-                    *struct_null = true;
                     append_null_to_all_builders(&mut field_builders);
                 }
             }
@@ -179,12 +173,13 @@ fn json_string_to_struct(arr: &Arc<dyn Array>, schema: &DataType) -> Result<Arra
         .into_iter()
         .map(finish_builder)
         .collect::<Result<Vec<_>>>()?;
-    let null_buffer = NullBuffer::from(struct_nulls);
-    Ok(Arc::new(StructArray::new(
+    // Only a null input row yields a null struct, so the output validity is the input's.
+    Ok(Arc::new(StructArray::try_new_with_length(
         fields.clone(),
         arrays,
-        Some(null_buffer),
-    )))
+        string_array.nulls().cloned(),
+        num_rows,
+    )?))
 }
 
 /// Builder enum for different data types
@@ -198,7 +193,7 @@ enum FieldBuilder {
     Struct {
         fields: arrow::datatypes::Fields,
         builders: Vec<FieldBuilder>,
-        null_buffer: Vec<bool>,
+        null_buffer: BooleanBufferBuilder,
     },
 }
 
@@ -229,7 +224,7 @@ fn create_field_builders(
                 Ok(FieldBuilder::Struct {
                     fields: nested_fields.clone(),
                     builders: nested_builders,
-                    null_buffer: Vec::with_capacity(capacity),
+                    null_buffer: BooleanBufferBuilder::new(capacity),
                 })
             }
             dt => Err(datafusion::common::DataFusionError::Execution(format!(
@@ -255,7 +250,7 @@ fn append_null_to_all_builders(builders: &mut [FieldBuilder]) {
                 ..
             } => {
                 // Append null to nested struct
-                null_buffer.push(false);
+                null_buffer.append(false);
                 append_null_to_all_builders(nested_builders);
             }
         }
@@ -284,7 +279,7 @@ fn append_field_value(
                     null_buffer,
                     ..
                 } => {
-                    null_buffer.push(false);
+                    null_buffer.append(false);
                     append_null_to_all_builders(nested_builders);
                 }
             }
@@ -352,7 +347,7 @@ fn append_field_value(
             // Handle nested struct
             if let Some(obj) = value.as_object() {
                 // Non-null nested struct
-                null_buffer.push(true);
+                null_buffer.append(true);
                 for (nested_field, nested_builder) in
                     nested_fields.iter().zip(nested_builders.iter_mut())
                 {
@@ -361,7 +356,7 @@ fn append_field_value(
                 }
             } else {
                 // Not an object -> null nested struct
-                null_buffer.push(false);
+                null_buffer.append(false);
                 append_null_to_all_builders(nested_builders);
             }
         }
@@ -386,13 +381,13 @@ fn finish_builder(builder: FieldBuilder) -> Result<ArrayRef> {
         FieldBuilder::Struct {
             fields,
             builders,
-            null_buffer,
+            mut null_buffer,
         } => {
             let nested_arrays: Vec<ArrayRef> = builders
                 .into_iter()
                 .map(finish_builder)
                 .collect::<Result<Vec<_>>>()?;
-            let null_buf = arrow::buffer::NullBuffer::from(null_buffer);
+            let null_buf = arrow::buffer::NullBuffer::new(null_buffer.finish());
             Arc::new(StructArray::new(fields, nested_arrays, Some(null_buf)))
         }
     })

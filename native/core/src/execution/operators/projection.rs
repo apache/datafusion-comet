@@ -19,6 +19,9 @@
 
 use std::sync::Arc;
 
+use datafusion::physical_expr::expressions::Column;
+use datafusion::physical_expr::projection::{ProjectionExpr, ProjectionExprs};
+use datafusion::physical_plan::filter::{FilterExec, FilterExecBuilder};
 use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion_comet_proto::spark_operator::Operator;
 use jni::objects::{Global, JObject};
@@ -46,7 +49,7 @@ impl OperatorBuilder for ProjectionBuilder {
         let children = &spark_plan.children;
 
         assert_eq!(children.len(), 1);
-        let (scans, shuffle_scans, child) =
+        let (scans, shuffle_scans, mut child) =
             planner.create_plan(&children[0], inputs, partition_count)?;
 
         // Create projection expressions
@@ -57,12 +60,28 @@ impl OperatorBuilder for ProjectionBuilder {
             .map(|(idx, expr)| {
                 planner
                     .create_expr(expr, child.schema())
-                    .map(|r| (r, format!("col_{idx}")))
+                    .map(|r| ProjectionExpr::new(r, format!("col_{idx}")))
             })
             .collect();
 
+        let mut exprs = ProjectionExprs::from(exprs?);
+        if let Some(filter) = child.native_plan.downcast_ref::<FilterExec>() {
+            if exprs.iter().all(|expr| expr.expr.is::<Column>()) {
+                let indices = exprs.column_indices();
+                if indices.len() < child.schema().fields().len() {
+                    // Filter each required output column once, then restore its order and aliases.
+                    // Keep both native plans so Spark metrics describe the executed work.
+                    let mapping = ProjectionExprs::from_indices(&indices, &child.schema());
+                    exprs = exprs.try_map_exprs(|expr| mapping.project_expr(&expr))?;
+                    let filter = FilterExecBuilder::from(filter)
+                        .apply_projection(Some(indices))?
+                        .build()?;
+                    Arc::make_mut(&mut child).native_plan = Arc::new(filter);
+                }
+            }
+        }
         let projection = Arc::new(ProjectionExec::try_new(
-            exprs?,
+            exprs.iter().cloned(),
             Arc::clone(&child.native_plan),
         )?);
 

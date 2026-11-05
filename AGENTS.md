@@ -30,6 +30,9 @@ Relevant entry points:
 - [Adding a New Expression](docs/source/contributor-guide/adding_a_new_expression.md) /
   [Adding a New Operator](docs/source/contributor-guide/adding_a_new_operator.md).
 - [Debugging Guide](docs/source/contributor-guide/debugging.md).
+- [Documentation Style Guide](docs/source/contributor-guide/style_guide.md): the terms to use for
+  how Comet runs a query, and the conventions for docs pages. Read it before editing `docs/source`,
+  `README.md`, or the `.doc(...)` strings in config classes.
 - [Backporting to Release Branches](docs/source/contributor-guide/backporting.md): a fix that
   goes to one release branch also goes to every newer one. Cherry-pick with `-x`, and never add
   an unrelated change to a backport pull request.
@@ -46,9 +49,11 @@ remote changes before retrying; do not bypass it with `--force`. See
 ## Checking a change against CI
 
 A green pull request does not mean a change is safe to queue. The pull request tier runs the Comet
-suites against the default Spark profile only. Spark's own SQL suite and the Iceberg suites first
-report in the merge queue, where a failure evicts the pull request and blocks everyone else's
-merges, or in the nightly run, after the change has already landed.
+suites against the default Spark profile only. For a pull request from a fork it runs on the fork,
+where `CI (fork)` reports it as advisory, and `Required Checks` here passes without a build. Spark's
+own SQL suite and the Iceberg suites first report in the merge queue, where a failure evicts the
+pull request and blocks everyone else's merges, or in the nightly run, after the change has already
+landed.
 
 So when a change touches the serde, the planner, a native operator, a Spark shim, an Iceberg code
 path, or anything under `dev/diffs/`, get a verdict first. Either run the suite locally:

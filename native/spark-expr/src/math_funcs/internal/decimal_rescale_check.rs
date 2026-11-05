@@ -195,7 +195,7 @@ impl PhysicalExpr for DecimalRescaleCheckOverflow {
             Err(_) if self.fail_on_error => spark_cast(
                 arg,
                 &target_type,
-                &SparkCastOptions::new_without_timezone(EvalMode::Ansi, false),
+                &SparkCastOptions::new_without_timezone(EvalMode::Ansi),
             ),
             Err(error) => Err(error),
         }
