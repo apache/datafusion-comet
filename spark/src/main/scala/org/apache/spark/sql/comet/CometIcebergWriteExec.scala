@@ -201,7 +201,7 @@ case class CometIcebergWriteExec(
       val proj = UnsafeProjection.create(schemaTypes)
       val decoded =
         if (manifestBytes.isEmpty) new java.util.ArrayList[AnyRef]()
-        else IcebergReflection.decodeManifestToDataFiles(manifestBytes, specId)
+        else IcebergReflection.decodeManifestToDataFiles(manifestBytes, specId, outputSpec)
       val dataFiles = IcebergReflection.rebuildDataFilesWithJavaMetrics(
         decoded,
         tableIO,
