@@ -21,6 +21,7 @@ package org.apache.comet.rules
 
 import java.util.concurrent.ConcurrentHashMap
 
+import scala.annotation.tailrec
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
@@ -28,6 +29,7 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
+import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.sideBySide
@@ -60,13 +62,28 @@ import org.apache.spark.sql.types._
 import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
 import org.apache.comet.CometSparkSessionExtensions._
-import org.apache.comet.rules.CometExecRule.allExecs
+import org.apache.comet.rules.CometExecRule.{allExecs, copyLogicalLinks}
 import org.apache.comet.serde._
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator._
 import org.apache.comet.shims.{CometTypeShim, ShimCometMergeRows, ShimCometStreaming, ShimCometWindowGroupLimit, ShimSubqueryBroadcast}
 
 object CometExecRule {
+
+  // setLogicalLink promotes an inherited link to a direct link and also rewrites descendants.
+  private[rules] def copyLogicalLinks(
+      from: SparkPlan,
+      to: SparkPlan,
+      clearMissing: Boolean): Unit = {
+    if (from ne to) {
+      def copyTag(tag: TreeNodeTag[LogicalPlan]): Unit = from.getTagValue(tag) match {
+        case Some(plan) => to.setTagValue(tag, plan)
+        case None => if (clearMissing) to.unsetTagValue(tag)
+      }
+      copyTag(SparkPlan.LOGICAL_PLAN_TAG)
+      copyTag(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+    }
+  }
 
   /**
    * Whether `scan` reads a relation stored in Comet's cache format. Comet's serializer stores
@@ -777,9 +794,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         } yield {
           // AQE can link the current projection to a materialized logical query stage.
           // Its originalPlan may have an older link; preserve the current direct/inherited tags.
-          Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
-            project.getTagValue(tag).foreach(rebuilt.setTagValue(tag, _))
-          }
+          copyLogicalLinks(project, rebuilt, clearMissing = false)
           rebuilt
         }
       }
@@ -1032,6 +1047,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       case _ =>
     }
 
+  @tailrec
+  private def stageWraps(stage: LogicalQueryStage, original: LogicalPlan): Boolean =
+    stage.logicalPlan match {
+      case plan if plan eq original => true
+      case nested: LogicalQueryStage => stageWraps(nested, original)
+      case _ => false
+    }
+
   override def apply(plan: SparkPlan): SparkPlan = {
     val newPlan = _apply(plan)
     if (showTransformations && !newPlan.fastEquals(plan)) {
@@ -1160,37 +1183,29 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
 
       // Set up logical links
       newPlan = newPlan.transform {
-        case op: CometExec
-            if op
-              .getTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-              .exists(_.isInstanceOf[LogicalQueryStage]) =>
-          // AQE replanning reuses this physical root and links it to the current logical stage.
-          // originalPlan can still point to a subtree hidden inside that logical leaf, which
-          // AQE cannot replace in the current logical plan. Only preserve a direct stage link,
-          // not a link inherited from an ancestor.
-          // On the ordinary exchange path, the exchange itself is behind a QueryStageExec
-          // leaf and is not visited by this transform.
-          // Spark 4.1.3 returns the existing root in LogicalQueryStageStrategy and then calls
-          // setLogicalLink from SparkStrategies.plan:
+        case op: CometExec =>
+          // Spark reuses the physical root and links it directly to the current AQE stage.
+          // A descendant can inherit that stage if it wraps the descendant's original node.
+          // AQE replaces the linked node by identity. A stale link leaves the plan unchanged.
           // scalastyle:off line.size.limit
           // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/LogicalQueryStageStrategy.scala#L64-L65
           // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/SparkStrategies.scala#L78-L87
+          // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/main/scala/org/apache/spark/sql/execution/adaptive/AdaptiveSparkPlanExec.scala#L778-L783
           // scalastyle:on line.size.limit
-          op
-        case op: CometExec =>
-          if (op.originalPlan.logicalLink.isEmpty) {
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-            op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
-          } else {
-            op.originalPlan.logicalLink.foreach(op.setLogicalLink)
+          val keepStage = op.logicalLink.exists {
+            case stage: LogicalQueryStage =>
+              // logicalLink prefers the direct tag, so if present it points to this stage.
+              op.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isDefined ||
+              op.originalPlan.logicalLink.exists(stageWraps(stage, _))
+            case _ => false
+          }
+          if (!keepStage) {
+            copyLogicalLinks(op.originalPlan, op, clearMissing = true)
           }
           op
         case op: CometShuffleExchangeExec =>
-          // Original Spark shuffle exchange operator might have empty logical link.
-          // But the `setLogicalLink` call above on downstream operator of
-          // `CometShuffleExchangeExec` will set its logical link to the downstream
-          // operators which cause AQE behavior to be incorrect. So we need to unset
-          // the logical link here.
+          // An exchange without an original logical link can inherit an unrelated one from
+          // its parent. Clear it so AQE does not associate the exchange with that parent.
           if (op.originalPlan.logicalLink.isEmpty) {
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
             op.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)

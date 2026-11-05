@@ -1429,7 +1429,21 @@ class CometExecRuleSuite extends CometTestBase {
     }
   }
 
-  test("CometExecRule repairs ordinary and inherited logical links from the original plan") {
+  test("CometExecRule preserves an inherited AQE stage for its original logical subtree") {
+    withAdaptiveAggregateConf {
+      val aggregate = createAdaptiveAggregate()
+      val original = aggregate.originalPlan.logicalLink.get
+      val stage = LogicalQueryStage(LogicalQueryStage(original, aggregate), aggregate)
+      aggregate.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+      aggregate.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, stage)
+
+      val repaired = applyCometExecRule(aggregate)
+      assert(repaired.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
+      assert(repaired.logicalLink.exists(_ eq stage))
+    }
+  }
+
+  test("CometExecRule repairs stale logical links from the original plan") {
     withSQLConf(
       SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
       SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> "false",
@@ -1445,20 +1459,24 @@ class CometExecRuleSuite extends CometTestBase {
           original.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
           originalTag.foreach(original.setTagValue(_, originalLogicalPlan))
 
+          // Without a direct link, use a structurally equal but unrelated logical node.
+          // With a direct link, even a matching inherited stage is shadowed.
+          val stagePlan = if (hasDirectLink) originalLogicalPlan else originalLogicalPlan.clone()
           aggregate.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
           aggregate.setTagValue(
             SparkPlan.LOGICAL_PLAN_INHERITED_TAG,
-            LogicalQueryStage(originalLogicalPlan, aggregate))
+            LogicalQueryStage(stagePlan, aggregate))
           if (hasDirectLink) {
             aggregate.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, LocalRelation(aggregate.output))
           }
 
           val transformed = applyCometExecRule(aggregate)
-          if (originalTag.isDefined) {
-            assert(transformed.logicalLink.exists(_ eq originalLogicalPlan))
-          } else {
-            assert(transformed.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
-            assert(transformed.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).isEmpty)
+          Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
+            if (originalTag.contains(tag)) {
+              assert(transformed.getTagValue(tag).exists(_ eq originalLogicalPlan))
+            } else {
+              assert(transformed.getTagValue(tag).isEmpty)
+            }
           }
         }
       }

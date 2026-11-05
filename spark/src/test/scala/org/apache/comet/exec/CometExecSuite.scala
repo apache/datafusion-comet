@@ -2504,6 +2504,35 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  test("AQE broadcasts a mixed distinct aggregate after its second shuffle") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "16384",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_CONVERT_FROM_RANGE_ENABLED.key -> "true") {
+      // Each (group, distinct value) is shuffled before the 16 final groups fall below 16 KiB.
+      val df = sql("""
+          |WITH counts AS (
+          |  SELECT id % 16 AS k, count(*) AS n, count(DISTINCT id % 127) AS u
+          |  FROM range(0, 8192, 1, 4) GROUP BY id % 16
+          |)
+          |SELECT p.id, d.n, d.u
+          |FROM range(0, 16, 1, 4) p LEFT JOIN counts d ON p.id = d.k
+          |""".stripMargin)
+      val adaptive = df.queryExecution.executedPlan.asInstanceOf[AdaptiveSparkPlanExec]
+      assert(collect(adaptive.executedPlan) { case b: CometBroadcastHashJoinExec => b }.isEmpty)
+
+      checkAnswer(df, (0L until 16).map(k => Row(k, 512L, 127L)))
+
+      val finalPlan = adaptive.executedPlan
+      assert(
+        collect(finalPlan) { case b: CometBroadcastHashJoinExec => b }.size == 1,
+        finalPlan.treeString)
+    }
+  }
+
   test("CometShuffleExchangeExec logical link should be correct") {
     withTempView("v") {
       spark.sparkContext
