@@ -37,7 +37,6 @@ flowchart LR
   PR([pull request]) --> PRTIER
   PR -. with label .-> QUEUE
   PR -. with label .-> NIGHTLY
-  PR -. with label .-> S34
   MQ([merge queue]) --> PRTIER
   MQ --> QUEUE
   CRON([schedule<br>06:00 UTC]) --> NIGHTLY
@@ -45,8 +44,7 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
-  S34["Neither tier<br>Spark SQL, Spark 3.4"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
   CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
@@ -63,11 +61,10 @@ Suite by suite:
 | Benchmark compile and lint check                  | with label   | yes         | no      |
 | Delta contrib build gate                          | with label   | yes         | no      |
 | PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
-| Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
+| Comet test suites, Spark 3.5 / 4.0 / 4.2          | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
-| Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
+| Iceberg Spark SQL tests, Iceberg 1.9 / 1.10       | with label   | no          | yes     |
 | Delta contrib tests, Spark 3.5 / 4.0 / 4.1        | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the suites that must pass before
@@ -89,16 +86,6 @@ lints, the Rust tests and the Comet test matrix are skipped, which is the differ
 runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
 `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
 `dev/ci/check-ci-config.py` fails the build if you forget.
-
-Spark 3.4 is the one suite in neither tier. [Spark 3.4 support is deprecated](../user-guide/latest/compatibility/spark-versions.md#spark-34),
-so its Spark SQL suite no longer gates a merge. It remains available on demand: apply the
-`run-spark-3.4-tests` label to run it against a pull request, or trigger `ci.yml` from the Actions
-page with **Run workflow**, which runs every suite regardless of tier. A contributor touching Spark
-3.4 code can still get a verdict before merging, but applying the label is only half of that: the
-run it starts is advisory. Label the pull request and then push, and Spark 3.4 joins the required
-verdict like any other suite. See
-[Opting a pull request into a suite the PR tier skips](#opting-a-pull-request-into-a-suite-the-pr-tier-skips)
-for the mechanics.
 
 For a pull request from a fork, the pull request column's "yes" rows run on your fork rather than
 here; see [Pull requests from forks](#pull-requests-from-forks).
@@ -184,14 +171,13 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 | Label                      | Runs                                                  |
 | -------------------------- | ----------------------------------------------------- |
 | `run-macos-tests`          | macOS build and Comet test suites                     |
-| `run-all-spark-profiles`   | Comet test suites against Spark 3.4 / 3.5 / 4.0 / 4.2 |
+| `run-all-spark-profiles`   | Comet test suites against Spark 3.5 / 4.0 / 4.2       |
 | `run-benchmark-check`      | Benchmark compile and lint check                      |
 | `run-delta-build-gate`     | Delta contrib build gate                              |
 | `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2           |
 | `run-delta-tests`          | Delta contrib tests against Spark 3.5, 4.0 and 4.1    |
 | `run-spark-4.1-tests`      | Spark SQL tests against Spark 4.1, every module       |
 | `run-spark-4.1-hive-tests` | Spark SQL tests against Spark 4.1, sql_hive only      |
-| `run-spark-3.4-tests`      | Spark SQL tests against Spark 3.4                     |
 | `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                     |
 | `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                     |
 | `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                     |
@@ -199,8 +185,7 @@ Each suite outside the PR tier has a label that runs it on a pull request:
 
 For a queue-tier suite the label only brings the run forward; the queue would have run it anyway
 before the change landed. For a nightly-tier suite the label is what gets a verdict _before_ the
-change lands: without it, the first run is the nightly after the merge. For Spark 3.4 the label is
-the only way the suite runs at all.
+change lands: without it, the first run is the nightly after the merge.
 
 Apply a label from the pull request sidebar, or from the command line:
 
@@ -216,12 +201,12 @@ read alongside the commit run without replacing it.
 
 For a queue-tier suite, that separate name costs nothing: the merge queue runs the suite again
 before the change lands, so a failure a label run surfaced still blocks the merge later. A
-nightly-tier suite and Spark 3.4 have no queue run behind them. A red `Required Checks (label run)`
+nightly-tier suite has no queue run behind it. A red `Required Checks (label run)`
 leaves an earlier green `Required Checks` in place and the pull request mergeable, so treat a label
 run as feedback to read, not as a gate. For one of those suites to count toward the required
 verdict the label has to already be on the pull request when a commit is pushed, which is what the
 next push gives you, since the label stays applied. A nightly-tier regression that does slip
-through is caught by the next nightly run and filed as an issue; a Spark 3.4 one is not.
+through is caught by the next nightly run and filed as an issue.
 
 The label stays on the pull request, so every later push runs the suite as part of the normal PR
 run. Remove the label once it has served its purpose. To re-run the suite at the same commit,
@@ -233,7 +218,7 @@ does not cover. Some examples:
 - a change to the serde, the planner, or a native operator, where the Comet test suites pass but
   Spark's own SQL suite is the thing that would catch a behavior difference; `run-spark-4.1-tests`
   runs it against the default profile
-- code under `spark/src/main/spark-3.4/`, `spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
+- code under `spark/src/main/spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends; `run-all-spark-profiles` runs the Comet
   test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already
   compiles every Spark profile on every pull request, so this is for runtime differences)
@@ -247,11 +232,6 @@ does not cover. Some examples:
   compiled on macOS
 - a change to the benchmark sources under `spark/src/test/scala/org/apache/spark/sql/benchmark`
   or to `native/*/benches`
-
-Reach for `run-spark-3.4-tests` deliberately, since nothing else will run it: a change to
-`spark/src/main/spark-3.4/`, to `dev/diffs/3.4.3.diff`, or to shared code whose Spark 3.4 behavior
-you are unsure of. Without the label, a Spark 3.4 regression will not be caught before the change
-lands.
 
 Labels that gate nothing, such as `dependencies` or the type labels, also start a run. That run
 executes nothing and finishes in a minute. It is a consequence of GitHub firing the `labeled`
@@ -415,7 +395,7 @@ gh run view "$run" --repo apache/datafusion-comet --json jobs \
 
 A healthy run over a day of normal merges reports about 53 successes — nine Spark SQL shards for
 each of 3.5, 4.0 and 4.2, plus the Iceberg shards — with the handful of skips being the suites that
-belong to the queue tier rather than the nightly one — Spark 3.4, Spark 4.1
+belong to the queue tier rather than the nightly one — Spark 4.1
 and Iceberg 1.11. If everything is skipped, open the run's `Detect changes` job: it logs the
 `Nightly base:` commit it diffed against and the list of changed files, which is enough to tell a
 genuinely quiet day from a base that has drifted.
@@ -431,9 +411,8 @@ On `main`, the tiers hold the expensive suites back for the queue and the nightl
 test every change. A release branch has neither, so holding a suite back there would mean never
 running it. A pull request that targets a release branch, such as a backport, therefore runs the PR,
 queue and nightly tiers together. Release branches get few pull requests, so this costs little. The
-path filters still apply, so a documentation-only change runs none of the heavy suites. The Spark
-SQL suite for Spark 3.4 still needs its `run-spark-3.4-tests` label, and the other `run-*` labels
-have nothing to add there.
+path filters still apply, so a documentation-only change runs none of the heavy suites. The
+`run-*` labels have nothing to add there.
 
 A release branch runs the workflow files committed on it, so a change to these rules on `main`
 reaches a release branch only if it is backported. `branch-1.0` predates the tiers and follows its

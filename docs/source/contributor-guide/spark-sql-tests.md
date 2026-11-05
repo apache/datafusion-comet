@@ -37,14 +37,14 @@ Here is an overview of the changes that we need to make to Spark:
   Comet's cache format although it is disabled by default. The serializer has to be a default for the whole JVM
   because Spark keeps the first cache serializer it loads for the rest of the JVM
 
-Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
+Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.5.9 for this example.
 
 `dev/local-ci.sh` runs all of the steps below the way CI runs them:
 
 ```shell
 dev/local-ci.sh spark                # every matrix row
 dev/local-ci.sh spark catalyst       # one row
-dev/local-ci.sh spark 3.4 catalyst   # a non-default Spark version
+dev/local-ci.sh spark 3.5 catalyst   # a non-default Spark version
 ```
 
 See [Continuous Integration](ci.md#reproducing-a-suite-failure-locally). The manual steps below
@@ -55,7 +55,7 @@ are still the reference, and are what you want when creating or updating a diff 
 Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
-PROFILES="-Pspark-3.4" make release
+PROFILES="-Pspark-3.5" make release
 ```
 
 ## 2. Clone Spark and Apply Diff
@@ -65,9 +65,9 @@ Clone Apache Spark locally and apply the diff file from Comet.
 Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.
 
 ```shell
-git clone -b 'v3.4.3' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
+git clone -b 'v3.5.9' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
 cd apache-spark
-git apply ../datafusion-comet/dev/diffs/3.4.3.diff
+git apply ../datafusion-comet/dev/diffs/3.5.9.diff
 ```
 
 ## 3. Run Spark SQL Tests
@@ -115,7 +115,7 @@ ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeS
 2. Set `ENABLE_COMET=true` and `ENABLE_COMET_ONHEAP=true` in environment variables. Without
    `ENABLE_COMET_ONHEAP`, Comet stays disabled, because the tests do not enable off-heap memory.
    ![img.png](img.png)
-3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
+3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.5" make release`)
 
 ## Creating a diff file for a new Spark version
 
@@ -193,21 +193,6 @@ earlier on a pull request carrying the `run-spark-3.5-tests` / `run-spark-4.0-te
 `run-spark-4.1-tests` / `run-spark-4.2-tests` label. No Spark SQL suite runs on an unlabeled pull
 request. Apply the 3.5, 4.0 or 4.2 label when a change could behave differently on those versions,
 since without it the first verdict is the nightly run's, after the change has landed.
-
-Spark 3.4 is deprecated and is not run by the merge queue. It runs only when a pull request carries
-the `run-spark-3.4-tests` label, or when `ci.yml` is dispatched manually from the Actions page.
-Apply the label if your change touches `spark/src/main/spark-3.4/`, `dev/diffs/3.4.3.diff`, or
-shared code whose Spark 3.4 behavior you are unsure of:
-
-```shell
-gh pr edit <number> --add-label run-spark-3.4-tests
-```
-
-The run that command starts is advisory: it reports under `Required Checks (label run)`, not the
-`Required Checks` status `main` requires, so a Spark 3.4 failure there does not block the merge on
-its own. The label stays applied, so the next push you make runs Spark 3.4 as part of the required
-verdict. Read the label run's result before merging — with Spark 3.4 out of the merge queue,
-nothing else will.
 
 See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
 version, the version needs its own job in `.github/workflows/ci.yml` plus entries in `FILTERS` and
