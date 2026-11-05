@@ -1967,14 +1967,6 @@ impl PhysicalPlanner {
             OpStruct::IcebergScan(scan) => {
                 // Extract common data and single partition's file tasks
                 // Per-partition injection happens in Scala before sending to native
-                if scan.own_pools.is_some() {
-                    // The tasks would index pools that are not in common.
-                    return Err(GeneralError(
-                        "IcebergScan still carries its per-partition pools: the JVM did not \
-                         merge them into common"
-                            .into(),
-                    ));
-                }
                 let common = scan
                     .common
                     .as_ref()
@@ -3612,24 +3604,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn iceberg_scan_rejects_unmerged_partition_pools() {
-        let op = spark_operator::Operator {
-            op_struct: Some(OpStruct::IcebergScan(spark_operator::IcebergScan {
-                common: Some(spark_operator::IcebergScanCommon::default()),
-                file_scan_tasks: vec![],
-                own_pools: Some(spark_operator::IcebergFilePools::default()),
-            })),
-            ..Default::default()
-        };
-        let planner = PhysicalPlanner::default();
-        let err = planner.create_plan(&op, &mut vec![], 1).unwrap_err();
-        assert!(
-            format!("{err}").contains("did not merge them into common"),
-            "got: {err}"
-        );
     }
 
     #[test]

@@ -22,12 +22,13 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.sql.Column
+import org.apache.spark.sql.comet.CometIcebergNativeScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanExec
 import org.apache.spark.sql.functions.{col, lit}
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.operator.IcebergScanPoolsTestUtils.storedPools
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
 
@@ -175,6 +176,12 @@ class CometFuzzIcebergSuite extends CometFuzzIcebergBase {
       }
     }
   }
+
+  /** The pool entries a scan ships: the common block's, then each partition's own. */
+  private def storedPools(
+      scan: CometIcebergNativeScanExec): Seq[OperatorOuterClass.IcebergScanCommon] =
+    OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData) +:
+      scan.perPartitionData.toSeq.map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon)
 
   // Asserts that predicate pushdown actually happens for the types that support it. For each
   // primitive column it runs an equality filter and inspects the scan's serialized pools: the

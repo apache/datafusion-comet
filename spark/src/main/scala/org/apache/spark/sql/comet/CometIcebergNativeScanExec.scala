@@ -79,7 +79,7 @@ case class CometIcebergNativeScanExec(
 
   /**
    * Lazy partition serialization, deferred until execution time. Triggered from `commonData` /
-   * `partitionPlanData` (via `PlanDataInjector.findAllPlanData`) and from
+   * `perPartitionData` (via `PlanDataInjector.findAllPlanData`) and from
    * `LazyIcebergMetric.value` (via Iceberg planning metrics). Lazy val semantics ensure single
    * evaluation across entry points.
    *
@@ -92,7 +92,7 @@ case class CometIcebergNativeScanExec(
    * by every construction site), so values resolved through `waitForSubqueries` are visible on
    * both sides.
    */
-  @transient private lazy val serializedPartitionData: (Array[Byte], PartitionPlanData) = {
+  @transient private lazy val serializedPartitionData: (Array[Byte], Array[Array[Byte]]) = {
     // Canonicalized instances set originalPlan = null and are not meant to be executed.
     // If we ever reach this lazy val on a canonicalized form, fail loud rather than NPE
     // deep inside originalPlan.inputRDD.
@@ -122,19 +122,11 @@ case class CometIcebergNativeScanExec(
 
   def commonData: Array[Byte] = serializedPartitionData._1
 
-  /** Each partition's message, built when its task is serialized. */
-  def partitionPlanData: PartitionPlanData = serializedPartitionData._2
-
-  /**
-   * Every partition's message, all built at once. For tests only: execution must use
-   * [[partitionPlanData]], which builds each one when its task is serialized.
-   */
-  private[apache] def buildAllPartitionDataForTesting(): Array[Array[Byte]] =
-    partitionPlanData.toArray
+  def perPartitionData: Array[Array[Byte]] = serializedPartitionData._2
 
   // numPartitions for execution - derived from actual DPP-filtered partitions
   // Only accessed during execution, not planning
-  def numPartitions: Int = partitionPlanData.length
+  def numPartitions: Int = perPartitionData.length
 
   // Like BatchScanExec on Spark 3.5 and later without a key-grouped partitioning, the scan does
   // not know its partition count while planning, because dynamic partition pruning decides which
@@ -142,7 +134,7 @@ case class CometIcebergNativeScanExec(
   // optimizes a stage (ValidateRequirements after CoalesceShufflePartitions), which is before
   // CometPlanAdaptiveDynamicPruningFilters converts the DPP placeholders, so serializing the
   // tasks here would run a placeholder subquery. At execution, CometNativeExec sizes the native
-  // RDD from partitionPlanData instead.
+  // RDD from perPartitionData instead.
   override lazy val outputPartitioning: Partitioning = UnknownPartitioning(0)
 
   override lazy val outputOrdering: Seq[SortOrder] = Nil
@@ -302,10 +294,10 @@ case class CometIcebergNativeScanExec(
       sparkContext,
       inputRDDs = Seq.empty,
       commonByKey = Map(injectorKey -> commonData),
-      perPartitionByKey = Map(injectorKey -> partitionPlanData),
+      perPartitionByKey = Map(injectorKey -> perPartitionData),
       serializedPlan = serializedPlan,
       planFingerprint = PlanDataInjector.planFingerprint(serializedPlan),
-      defaultNumPartitions = partitionPlanData.length,
+      defaultNumPartitions = perPartitionData.length,
       numOutputCols = output.length,
       nativeMetrics = nativeMetrics,
       subqueries = Seq.empty,

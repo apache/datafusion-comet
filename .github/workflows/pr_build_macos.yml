@@ -292,7 +292,6 @@ jobs:
               org.apache.comet.objectstore.AbfsAuthParitySuite
               org.apache.comet.objectstore.AbfsScanFallbackSuite
               org.apache.comet.serde.operator.CometIcebergNativeScanSuite
-              org.apache.comet.serde.operator.IcebergScanPoolsSuite
               org.apache.comet.serde.operator.CometNativeScanSuite
               org.apache.spark.sql.CometToPrettyStringSuite
               org.apache.spark.sql.CometCollationSuite

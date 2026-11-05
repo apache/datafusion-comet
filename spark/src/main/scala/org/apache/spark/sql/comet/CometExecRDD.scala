@@ -33,16 +33,13 @@ import org.apache.comet.{CometExecIterator, CometRuntimeException, CometShuffleB
 
 /**
  * Partition that carries per-partition planning data, avoiding closure capture of all partitions.
- * The data is built while the task is serialized (see [[PlanDataSlice]]).
  */
 private[spark] class CometExecPartition(
     override val index: Int,
     val inputPartitions: Array[Partition],
-    planData: PlanDataSlice,
+    val planDataByKey: Map[String, Array[Byte]],
     val filePaths: Seq[String] = Seq.empty)
-    extends Partition {
-  def planDataByKey: Map[String, Array[Byte]] = planData.get
-}
+    extends Partition
 
 /**
  * Unified RDD for Comet native execution. Non-shuffle input slots are `RDD[ArrowArrayStream]`
@@ -61,7 +58,7 @@ private[spark] class CometExecRDD(
     sc: SparkContext,
     var inputRDDs: Seq[RDD[_]],
     commonByKey: Map[String, Array[Byte]],
-    @transient perPartitionByKey: Map[String, PartitionPlanData],
+    @transient perPartitionByKey: Map[String, Array[Array[Byte]]],
     serializedPlan: Array[Byte],
     planFingerprint: Long,
     defaultNumPartitions: Int,
@@ -101,7 +98,7 @@ private[spark] class CometExecRDD(
   override protected def getPartitions: Array[Partition] = {
     (0 until numPartitions).map { idx =>
       val inputParts = inputRDDs.map(_.partitions(idx)).toArray
-      val planData = new PlanDataSlice(perPartitionByKey, idx)
+      val planData = perPartitionByKey.map { case (key, arr) => key -> arr(idx) }
       val fp =
         if (perPartitionFilePaths.length > idx) perPartitionFilePaths(idx) else Seq.empty[String]
       new CometExecPartition(idx, inputParts, planData, fp)
@@ -239,7 +236,7 @@ object CometExecRDD {
       sc: SparkContext,
       inputRDDs: Seq[RDD[_]],
       commonByKey: Map[String, Array[Byte]],
-      perPartitionByKey: Map[String, PartitionPlanData],
+      perPartitionByKey: Map[String, Array[Array[Byte]]],
       serializedPlan: Array[Byte],
       planFingerprint: Long,
       numPartitions: Int,

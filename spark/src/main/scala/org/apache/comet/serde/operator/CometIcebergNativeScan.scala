@@ -32,7 +32,7 @@ import org.json4s.jackson.JsonMethods._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
-import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec, PartitionPlanData}
+import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
 import org.apache.spark.sql.comet.shims.ShimDataSourceRDDPartition
 import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, DataSourceRDD, DataSourceRDDPartition}
 import org.apache.spark.sql.types._
@@ -427,6 +427,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       taskBuilder: OperatorOuterClass.IcebergFileScanTask.Builder,
       commonBuilder: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionSpecToPoolIndex: mutable.HashMap[String, Int],
+      partitionPools: OperatorOuterClass.IcebergScanCommon.Builder,
       partitionDataToPoolIndex: mutable.HashMap[String, Int]): Unit = {
     try {
       val specMethod = IcebergReflection.getMethod(fileScanTaskClass, "spec")
@@ -586,7 +587,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           val partitionDataIdx = partitionDataToPoolIndex.getOrElseUpdate(
             partitionDataKey, {
               val idx = partitionDataToPoolIndex.size
-              commonBuilder.addPartitionDataPool(partitionDataProto)
+              partitionPools.addPartitionDataPool(partitionDataProto)
               idx
             })
           val _ = taskBuilder.setPartitionDataIdx(partitionDataIdx)
@@ -951,16 +952,16 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * one pass from the DPP-filtered partitions.
    *
    * The result splits into a common block plus one block per Spark partition. Protobuf serializes
-   * by value and shares nothing between repeated fields, so repeated values (schemas, specs,
-   * partition data, residuals, delete files) are interned into pools and referenced by index.
-   * Pooling also keeps a message under protobuf's 2 GiB limit (getSerializedSize returns int and
-   * wraps past it), which matters for anything that scales with the number of tasks.
+   * by value and shares nothing between repeated fields, so repeated values are interned into
+   * pools and referenced by index. Pooling also keeps a message under protobuf's 2 GiB limit
+   * (getSerializedSize returns int and wraps past it), which matters for anything that scales
+   * with the number of tasks.
    *
-   * Every task deserializes the common block, so it has to stay small. The per-file pool entries
-   * (delete files, their paths and sets, partition values, residuals) ship with each partition
-   * whose tasks use them, and the common block holds none of them (see IcebergScanPools). Each
-   * partition's block is built when its task is serialized. Keeping every delete file in the
-   * common block made each partition's plan as large as the whole scan's delete metadata.
+   * Every task deserializes the common block, so it holds only what does not grow with the files:
+   * schemas, partition specs and types, name mappings and projected field ids. Partition values,
+   * residuals, delete files and their paths and sets are interned per partition, into that
+   * partition's IcebergScan.common, so each task gets only the entries its own files use. Keeping
+   * them in the common block made each task's plan as large as the whole scan's delete metadata.
    *
    * Delete files use two levels: a flat pool of unique files, plus a per-task list of indices
    * into it. One delete file applies to many data files under Iceberg's default partition delete
@@ -974,40 +975,58 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * @param metadata
    *   Pre-extracted Iceberg metadata from CometScanRule
    * @return
-   *   The common block's bytes, and each partition's bytes built when its task is serialized
+   *   Tuple of (commonBytes, perPartitionBytes) for native execution
    */
   def serializePartitions(
       scanExec: BatchScanExec,
       output: Seq[Attribute],
-      metadata: CometIcebergNativeScanMetadata): (Array[Byte], PartitionPlanData) = {
+      metadata: CometIcebergNativeScanMetadata): (Array[Byte], Array[Array[Byte]]) = {
 
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
-    // Deduplication structures - map unique values to pool indices
+    // Deduplication structures for the pools in the common block - map unique values to indices
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
-    val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
-    // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
-    // the per-task sets as lists of indices into it, so a delete file that applies to many data
-    // files (Iceberg's default partition delete granularity) is serialized once rather than once
-    // per referencing FileScanTask. Keyed on the whole message rather than the path: V3 deletion
-    // vectors for different data files share one Puffin file and differ only by content offset,
-    // so a path key would collapse them and drop every vector but the first.
-    val deleteFileToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergDeleteFile, Int]()
-    val deleteFilesToPoolIndex =
-      mutable.HashMap[Seq[Int], Int]()
-    // Delete-file paths are interned separately from the delete files themselves: every deletion
-    // vector in a commit lives in one Puffin file, so one path is shared by as many pool entries
-    // as there are data files.
-    val deleteFilePathToPoolIndex = mutable.HashMap[String, Int]()
-    def internDeleteFilePath(path: String): Int =
-      deleteFilePathToPoolIndex.getOrElseUpdate(
-        path, {
-          val idx = deleteFilePathToPoolIndex.size
-          commonBuilder.addDeleteFilePathPool(path)
-          idx
-        })
-    val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+
+    // The per-file pools of one partition. Each partition ships the entries its own tasks use in
+    // its IcebergScan.common, and the injector merges them into the common block, so a task never
+    // holds entries that only other partitions use. Within a partition each entry is stored once.
+    final class PartitionPools {
+      val builder: OperatorOuterClass.IcebergScanCommon.Builder =
+        OperatorOuterClass.IcebergScanCommon.newBuilder()
+      val partitionData = mutable.HashMap[String, Int]()
+      // Individual delete files are interned into a flat pool; deleteFiles then dedups the
+      // per-task sets as lists of indices into it, so a delete file that applies to many data
+      // files (Iceberg's default partition delete granularity) is serialized once rather than
+      // once per referencing FileScanTask. Keyed on the whole message rather than the path: V3
+      // deletion vectors for different data files share one Puffin file and differ only by
+      // content offset, so a path key would collapse them and drop every vector but the first.
+      val deleteFiles = mutable.HashMap[OperatorOuterClass.IcebergDeleteFile, Int]()
+      val deleteFileSets = mutable.HashMap[Seq[Int], Int]()
+      // Delete-file paths are interned separately from the delete files themselves: every
+      // deletion vector in a commit lives in one Puffin file, so one path is shared by as many
+      // pool entries as there are data files.
+      val deleteFilePaths = mutable.HashMap[String, Int]()
+      val residuals = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+
+      def internDeleteFilePath(path: String): Int =
+        deleteFilePaths.getOrElseUpdate(
+          path, {
+            val idx = deleteFilePaths.size
+            builder.addDeleteFilePathPool(path)
+            idx
+          })
+
+      def isEmpty: Boolean =
+        partitionData.isEmpty && deleteFiles.isEmpty && deleteFilePaths.isEmpty &&
+          residuals.isEmpty
+    }
+    // Entries in the per-file pools, summed over partitions, for the log.
+    var partitionDataEntries = 0
+    var deleteFileEntries = 0
+    var deleteFileSetEntries = 0
+    var deleteFilePathEntries = 0
+    var residualEntries = 0
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
     // schema so a filter column projected out of the scan output is still recognized.
@@ -1094,6 +1113,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         val partitions = rdd.partitions
         partitions.foreach { partition =>
           val partitionBuilder = OperatorOuterClass.IcebergScan.newBuilder()
+          val pools = new PartitionPools
 
           val inputPartitions = ShimDataSourceRDDPartition
             .inputPartitions(partition.asInstanceOf[DataSourceRDDPartition])
@@ -1155,24 +1175,24 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     contentFileClass,
                     fileScanTaskClass,
                     deleteFileClass,
-                    internDeleteFilePath)
+                    pools.internDeleteFilePath)
                 if (deleteFilesList.nonEmpty) {
                   // Intern each delete file into the flat pool, then dedup this task's set as the
                   // resulting list of pool indices.
                   val deleteFileIndices = deleteFilesList.map { df =>
-                    deleteFileToPoolIndex.getOrElseUpdate(
+                    pools.deleteFiles.getOrElseUpdate(
                       df, {
-                        val idx = deleteFileToPoolIndex.size
-                        commonBuilder.addDeleteFilePool(df)
+                        val idx = pools.deleteFiles.size
+                        pools.builder.addDeleteFilePool(df)
                         idx
                       })
                   }
-                  val deleteFilesIdx = deleteFilesToPoolIndex.getOrElseUpdate(
+                  val deleteFilesIdx = pools.deleteFileSets.getOrElseUpdate(
                     deleteFileIndices, {
-                      val idx = deleteFilesToPoolIndex.size
+                      val idx = pools.deleteFileSets.size
                       val listBuilder = OperatorOuterClass.DeleteFileList.newBuilder()
                       deleteFileIndices.foreach(idx => listBuilder.addDeleteFileIndices(idx))
-                      commonBuilder.addDeleteFilesPool(listBuilder.build())
+                      pools.builder.addDeleteFilesPool(listBuilder.build())
                       idx
                     })
                   taskBuilder.setDeleteFilesIdx(deleteFilesIdx)
@@ -1185,10 +1205,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     pageIndexUnsupportedColumns)
 
                 residualExprOpt.foreach { residual =>
-                  val residualIdx = residualToPoolIndex.getOrElseUpdate(
+                  val residualIdx = pools.residuals.getOrElseUpdate(
                     residual, {
-                      val idx = residualToPoolIndex.size
-                      commonBuilder.addResidualPool(residual)
+                      val idx = pools.residuals.size
+                      pools.builder.addResidualPool(residual)
                       idx
                     })
                   taskBuilder.setResidualIdx(residualIdx)
@@ -1201,7 +1221,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                   taskBuilder,
                   commonBuilder,
                   partitionSpecToPoolIndex,
-                  partitionDataToPoolIndex)
+                  pools.builder,
+                  pools.partitionData)
 
                 metadata.nameMapping.foreach { nm =>
                   val nmIdx = nameMappingToPoolIndex.getOrElseUpdate(
@@ -1218,6 +1239,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             }
           }
 
+          if (!pools.isEmpty) partitionBuilder.setCommon(pools.builder)
+          partitionDataEntries += pools.partitionData.size
+          deleteFileEntries += pools.deleteFiles.size
+          deleteFileSetEntries += pools.deleteFileSets.size
+          deleteFilePathEntries += pools.deleteFilePaths.size
+          residualEntries += pools.residuals.size
           perPartitionBuilders += partitionBuilder.build()
         }
       case other if other.getClass.getName == "org.apache.spark.rdd.ParallelCollectionRDD" =>
@@ -1251,11 +1278,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
       commonBuilder.getProjectFieldIdsPoolCount,
-      partitionDataToPoolIndex.size,
-      deleteFileToPoolIndex.size,
-      deleteFilesToPoolIndex.size,
-      deleteFilePathToPoolIndex.size,
-      residualToPoolIndex.size)
+      partitionDataEntries,
+      deleteFileEntries,
+      deleteFileSetEntries,
+      deleteFilePathEntries,
+      residualEntries)
 
     val avgDedup = if (totalTasks == 0) {
       "0.0"
@@ -1269,81 +1296,60 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       }
     }
 
-    // The per-file pool entries ship with each partition that uses them, so the common block
-    // every task deserializes doesn't grow with the number of files.
-    val original = commonBuilder.build()
-    // Entries at least half of the partitions use stay in the common block; the rest ship with
-    // each partition that uses them.
-    val layout =
-      IcebergScanPools.Layout(new IcebergScanPools.MessagePools(original), perPartitionBuilders)
-    val common = IcebergScanPools.commonBlock(original, layout)
-
-    // Per-pool byte sizes of the whole scan, to diagnose large plan data. Sizes sum as Long because
-    // a single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
-    // and they are logged before any toByteArray so the breakdown survives a failed allocation.
-    // String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
+    // Per-pool byte sizes to diagnose an oversized common message. Sizes sum as Long because a
+    // single pool at or past protobuf's 2 GiB message limit overflows the int getSerializedSize,
+    // and the logging runs before toByteArray so the breakdown survives even if that allocation
+    // fails. String pools carry JSON or file paths, whose serialized size is the UTF-8 length.
     def sumSizes(sizes: Iterator[Int]): Long = sizes.map(_.toLong).sum
     def sumStrBytes(strings: mutable.Buffer[String]): Long =
       strings.iterator.map(_.getBytes(UTF_8).length.toLong).sum
-    val scanPoolBytes: Seq[(String, Int, Long)] = Seq(
-      ("schema", original.getSchemaPoolCount, sumStrBytes(original.getSchemaPoolList.asScala)),
+    val commonPoolBytes: Seq[(String, Int, Long)] = Seq(
+      (
+        "schema",
+        commonBuilder.getSchemaPoolCount,
+        sumStrBytes(commonBuilder.getSchemaPoolList.asScala)),
       (
         "partition_type",
-        original.getPartitionTypePoolCount,
-        sumStrBytes(original.getPartitionTypePoolList.asScala)),
+        commonBuilder.getPartitionTypePoolCount,
+        sumStrBytes(commonBuilder.getPartitionTypePoolList.asScala)),
       (
         "partition_spec",
-        original.getPartitionSpecPoolCount,
-        sumStrBytes(original.getPartitionSpecPoolList.asScala)),
+        commonBuilder.getPartitionSpecPoolCount,
+        sumStrBytes(commonBuilder.getPartitionSpecPoolList.asScala)),
       (
         "name_mapping",
-        original.getNameMappingPoolCount,
-        sumStrBytes(original.getNameMappingPoolList.asScala)),
+        commonBuilder.getNameMappingPoolCount,
+        sumStrBytes(commonBuilder.getNameMappingPoolList.asScala)),
       (
         "project_field_ids",
-        original.getProjectFieldIdsPoolCount,
-        sumSizes(original.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))),
-      (
-        "partition_data",
-        original.getPartitionDataPoolCount,
-        sumSizes(original.getPartitionDataPoolList.asScala.iterator.map(_.getSerializedSize))),
-      (
-        "delete_file",
-        original.getDeleteFilePoolCount,
-        sumSizes(original.getDeleteFilePoolList.asScala.iterator.map(_.getSerializedSize))),
-      (
-        "delete_file_path",
-        original.getDeleteFilePathPoolCount,
-        sumStrBytes(original.getDeleteFilePathPoolList.asScala)),
-      (
-        "delete_files_set",
-        original.getDeleteFilesPoolCount,
-        sumSizes(original.getDeleteFilesPoolList.asScala.iterator.map(_.getSerializedSize))),
-      (
-        "residual",
-        original.getResidualPoolCount,
-        sumSizes(original.getResidualPoolList.asScala.iterator.map(_.getSerializedSize))))
+        commonBuilder.getProjectFieldIdsPoolCount,
+        sumSizes(
+          commonBuilder.getProjectFieldIdsPoolList.asScala.iterator.map(_.getSerializedSize))))
+
+    val perPartitionSizes = perPartitionBuilders.map(_.getSerializedSize.toLong)
+    val perPartitionTotal = perPartitionSizes.sum
+    val perPartitionMax = if (perPartitionSizes.isEmpty) 0L else perPartitionSizes.max
 
     logInfo(s"IcebergScan: $totalTasks tasks, ${allPoolSizes.size} pools ($avgDedup% avg dedup)")
     logInfo(
-      "  Scan pools (unique/bytes): " +
-        scanPoolBytes
+      "  Common pools (unique/bytes): " +
+        commonPoolBytes
           .map { case (name, count, bytes) => s"$name=$count/$bytes" }
           .mkString(", ") +
-        s"; total=${scanPoolBytes.map(_._3).sum} bytes")
+        s"; total=${commonPoolBytes.map(_._3).sum} bytes")
+    logInfo(
+      "  Per-partition pool entries, summed over partitions: " +
+        s"partition_data=$partitionDataEntries, delete_file=$deleteFileEntries, " +
+        s"delete_file_path=$deleteFilePathEntries, delete_files_set=$deleteFileSetEntries, " +
+        s"residual=$residualEntries")
+    logInfo(
+      s"  Per-partition messages: ${perPartitionBuilders.size}, " +
+        s"total=$perPartitionTotal bytes, max=$perPartitionMax bytes")
 
-    val commonBytes = common.toByteArray
-    // Tasks only, still indexing the full pools. Each partition's message is built from these
-    // when its task is serialized, so the driver holds every partition's tasks once and never
-    // every partition's message at the same time.
-    val taskBytes = perPartitionBuilders.map(_.toByteArray).toArray
-    logInfo(s"  Common block: ${commonBytes.length} bytes. Per-partition messages: " +
-      s"${taskBytes.length}, task bytes total=${taskBytes.iterator.map(_.length.toLong).sum}, " +
-      s"max=${if (taskBytes.isEmpty) 0 else taskBytes.iterator.map(_.length).max}")
+    val commonBytes = commonBuilder.build().toByteArray
+    val perPartitionBytes = perPartitionBuilders.map(_.toByteArray).toArray
 
-    // Keep the full pools as bytes, not as the parsed message, which takes several times the heap.
-    val pools = new IcebergScanPools.SerializedPools(original.toByteArray)
-    (commonBytes, new IcebergPartitionPlanData(pools, layout, taskBytes))
+    (commonBytes, perPartitionBytes)
   }
 
   override def createExec(nativeOp: Operator, op: CometBatchScanExec): CometNativeExec = {
@@ -1363,37 +1369,4 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // Serialization happens at execution time after doPrepare() resolves DPP subqueries
     CometIcebergNativeScanExec(nativeOp, op.wrapped, op.session, metadataLocation, metadata)
   }
-}
-
-/**
- * A scan's per-partition messages, each built when its task is serialized: the partition's tasks
- * plus the per-file pool entries they use (see IcebergScanPools.partitionPayload).
- */
-private[operator] final class IcebergPartitionPlanData(
-    private val pools: IcebergScanPools.SerializedPools,
-    layout: IcebergScanPools.Layout,
-    private val taskBytes: Array[Array[Byte]])
-    extends PartitionPlanData {
-
-  override def length: Int = taskBytes.length
-
-  // Same table state read into the same partitions, compared without building any partition.
-  // The layout follows from the pools and the tasks.
-  override def sameAs(other: PartitionPlanData): Boolean = other match {
-    case that: IcebergPartitionPlanData =>
-      java.util.Arrays.equals(that.pools.bytes, pools.bytes) &&
-      that.taskBytes.length == taskBytes.length &&
-      taskBytes.indices.forall(i => java.util.Arrays.equals(taskBytes(i), that.taskBytes(i)))
-    case _ => false
-  }
-
-  override def apply(i: Int): Array[Byte] =
-    if (pools.isEmpty) {
-      // With no per-file entries in the scan, the stored task bytes already are each message.
-      taskBytes(i)
-    } else {
-      IcebergScanPools
-        .partitionPayload(pools, layout, OperatorOuterClass.IcebergScan.parseFrom(taskBytes(i)))
-        .toByteArray
-    }
 }

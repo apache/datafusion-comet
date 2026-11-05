@@ -49,7 +49,6 @@ import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
-import org.apache.comet.serde.operator.IcebergScanPoolsTestUtils.{partitionScans, storedPools}
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -143,6 +142,23 @@ class CometIcebergNativeSuite
     assert(
       collectIcebergNativeScans(cometPlan).isEmpty,
       s"Expected fallback to Spark but found a CometIcebergNativeScanExec. Plan:\n$cometPlan")
+  }
+
+  /** The pool entries a scan ships: the common block's, then each partition's own. */
+  private def storedPools(
+      scan: CometIcebergNativeScanExec): Seq[OperatorOuterClass.IcebergScanCommon] =
+    OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData) +:
+      scan.perPartitionData.toSeq.map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon)
+
+  /** The pools each partition's tasks index into once the injector merges them. */
+  private def partitionPools(
+      scan: CometIcebergNativeScanExec): Seq[OperatorOuterClass.IcebergScanCommon] = {
+    val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
+    scan.perPartitionData.toSeq.map { bytes =>
+      common.toBuilder
+        .mergeFrom(OperatorOuterClass.IcebergScan.parseFrom(bytes).getCommon)
+        .build()
+    }
   }
 
   /** Counts non-overlapping occurrences of `needle` within `haystack`. */
@@ -804,8 +820,7 @@ class CometIcebergNativeSuite
         // All of them point at the one interned path, which each partition serializes once
         // however many of its vectors reference it.
         val pathPool = stored.flatMap(_.getDeleteFilePathPoolList.asScala).distinct
-        val resolvedPaths = partitionScans(scan).flatMap { injected =>
-          val pools = injected.getCommon
+        val resolvedPaths = partitionPools(scan).flatMap { pools =>
           pools.getDeleteFilePoolList.asScala.map(v =>
             pools.getDeleteFilePathPool(v.getFilePathIdx))
         }
@@ -814,15 +829,12 @@ class CometIcebergNativeSuite
           s"expected one interned Puffin path referenced by every vector, got pool $pathPool " +
             s"and resolved paths $resolvedPaths")
         val occurrences =
-          scan
-            .buildAllPartitionDataForTesting()
-            .toSeq
+          scan.perPartitionData.toSeq
             .map(countByteOccurrences(_, pathPool.head.getBytes(UTF_8)))
-        // The path ships once in the common block when every partition uses it, otherwise once
-        // in each partition that does.
+        // Each partition that uses the path ships it once; the common block never holds it.
         val inCommon = countByteOccurrences(scan.commonData, pathPool.head.getBytes(UTF_8))
         assert(
-          inCommon <= 1 && occurrences.forall(_ <= 1) && (inCommon == 0 || occurrences.sum == 0),
+          inCommon == 0 && occurrences.forall(_ <= 1),
           s"Puffin path ${pathPool.head} serialized more than once: common $inCommon, " +
             s"partitions $occurrences")
 
@@ -886,17 +898,15 @@ class CometIcebergNativeSuite
           .head
           .getLong(0)
         assert(
-          scan.buildAllPartitionDataForTesting().length == dataFileCount,
+          scan.perPartitionData.length == dataFileCount,
           "expected one partition per data file")
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
         assert(
           common.getDeleteFilePathPoolCount == 0 && common.getDeleteFilePoolCount == 0,
           s"expected no delete files in the common block: $common")
         val own =
-          scan
-            .buildAllPartitionDataForTesting()
-            .toSeq
-            .map(OperatorOuterClass.IcebergScan.parseFrom(_).getOwnPools)
+          scan.perPartitionData.toSeq
+            .map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon)
         // Each vector belongs to one data file, so exactly that file's partition ships it,
         // together with one copy of the Puffin path.
         val vectorCounts = own.map(_.getDeleteFilePoolCount)
@@ -986,7 +996,7 @@ class CometIcebergNativeSuite
         // structured (set-of-copies before the fix, flat index pool after). Each partition ships
         // the delete files its tasks use, so a path may appear in several partitions, but only
         // once in each.
-        val planData = scans.head.commonData +: scans.head.buildAllPartitionDataForTesting().toSeq
+        val planData = scans.head.commonData +: scans.head.perPartitionData.toSeq
         val duplicated = for {
           p <- distinctPaths
           (bytes, i) <- planData.zipWithIndex
@@ -1080,10 +1090,8 @@ class CometIcebergNativeSuite
             s"per-file entries in the common block: $common")
         }
         def ownDeletes(scan: CometIcebergNativeScanExec): Seq[Int] =
-          scan
-            .buildAllPartitionDataForTesting()
-            .toSeq
-            .map(OperatorOuterClass.IcebergScan.parseFrom(_).getOwnPools.getDeleteFilePoolCount)
+          scan.perPartitionData.toSeq
+            .map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon.getDeleteFilePoolCount)
 
         // One bucket per partition: each delete file goes to exactly one partition.
         val grouped = scanOf(grouped = true)
@@ -1095,9 +1103,7 @@ class CometIcebergNativeSuite
         val perFile = scanOf(grouped = false)
         assertNoFileEntries(perFile)
         assert(
-          perFile
-            .buildAllPartitionDataForTesting()
-            .length > grouped.buildAllPartitionDataForTesting().length,
+          perFile.perPartitionData.length > grouped.perPartitionData.length,
           "expected the ungrouped read to put data files of one bucket in different partitions")
         assert(
           ownDeletes(perFile).sum > deleteFiles && ownDeletes(perFile).forall(_ <= 1),
@@ -1370,10 +1376,10 @@ class CometIcebergNativeSuite
     table.newRowDelta().addDeletes(deleteFile).commit()
   }
 
-  // An unpartitioned equality delete applies to every older data file, so most partitions use it
-  // and it ships once in the common block instead of in each task. The rows must still match
-  // Spark, including a newer row the delete does not apply to.
-  test("a global equality delete ships once in the common block and reads the right rows") {
+  // An unpartitioned equality delete applies to every older data file, so each partition holding
+  // one ships it, as Spark's Iceberg reader ships each task's delete files. The rows must still
+  // match Spark, including a newer row the delete does not apply to.
+  test("a global equality delete ships with each partition that uses it") {
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(
       icebergVersionAtLeast(1, 8),
@@ -1407,17 +1413,15 @@ class CometIcebergNativeSuite
           "id",
           Seq(2, 105, 210, 315),
           warehouseDir)
-        // A newer append the delete does not apply to: its id 2 row must survive. Partitions holding
-        // only this file do not use the delete, which still ships once while most partitions do.
+        // A newer append the delete does not apply to: its id 2 row must survive, and the
+        // partitions holding only this file must not get the delete.
         spark.sql("INSERT INTO test_cat.db.global_eq_delete VALUES (2, 'newer')")
 
         val (_, cometPlan) =
           checkSparkAnswerAndOperator("SELECT * FROM test_cat.db.global_eq_delete ORDER BY id")
         val scan = collectIcebergNativeScans(cometPlan).head
-        val own = scan
-          .buildAllPartitionDataForTesting()
-          .toSeq
-          .map(OperatorOuterClass.IcebergScan.parseFrom(_).getOwnPools)
+        val own = scan.perPartitionData.toSeq
+          .map(OperatorOuterClass.IcebergScan.parseFrom(_).getCommon)
         // Each INSERT can write several data files; the split size gives each its own partition.
         val dataFileCount = spark
           .sql("SELECT count(*) FROM test_cat.db.global_eq_delete.files WHERE content = 0")
@@ -1427,14 +1431,16 @@ class CometIcebergNativeSuite
         assert(
           own.length == dataFileCount,
           s"expected one partition per data file: ${own.length}")
+        // Older files' partitions ship the delete once each; the newer file's partition does not.
+        val copies =
+          own.map(_.getDeleteFilePoolList.asScala.count(_.getContentType == "EQUALITY_DELETES"))
         assert(
-          own.forall(
-            !_.getDeleteFilePoolList.asScala.exists(_.getContentType == "EQUALITY_DELETES")),
-          "a partition ships the equality delete itself")
+          copies.forall(_ <= 1) && copies.contains(1) && copies.contains(0),
+          s"equality delete copies per partition: $copies")
         val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
         assert(
-          common.getDeleteFilePoolList.asScala.count(_.getContentType == "EQUALITY_DELETES") == 1,
-          s"expected the equality delete once in the common block: $common")
+          common.getDeleteFilePoolCount == 0,
+          s"the common block holds delete files: $common")
 
         spark.sql("DROP TABLE test_cat.db.global_eq_delete")
       }
@@ -5161,8 +5167,7 @@ class CometIcebergNativeSuite
         // count the planned file tasks instead: 1 of the 3 date partitions' files is left. The
         // num_splits metric is not used here because the ORDER BY's range partitioning runs the
         // scan once to sample bounds and again for the shuffle, so each split is read twice.
-        val plannedTasks = icebergScans.head
-          .buildAllPartitionDataForTesting()
+        val plannedTasks = icebergScans.head.perPartitionData
           .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
           .sum
         assert(
@@ -5298,7 +5303,7 @@ class CometIcebergNativeSuite
         // Count how many FileScanTasks reference a residual across all partitions. Every task here
         // carries the same IN predicate, so a correct pool holds one entry shared by all of them.
         val tasksWithResidualPerPartition =
-          scans.head.buildAllPartitionDataForTesting().toSeq.map { bytes =>
+          scans.head.perPartitionData.toSeq.map { bytes =>
             OperatorOuterClass.IcebergScan
               .parseFrom(bytes)
               .getFileScanTasksList
@@ -5313,11 +5318,11 @@ class CometIcebergNativeSuite
           tasksWithResidualPerPartition.exists(_ > 1),
           "expected a partition with several tasks carrying a residual: " +
             tasksWithResidualPerPartition)
-        // Every task uses it, so it ships once: in the common block when several partitions have
-        // tasks, otherwise with the one partition that does.
+        // The common block holds none, and each partition with tasks ships it once.
+        val expectedResiduals = 0 +: tasksWithResidualPerPartition.map(n => if (n > 0) 1 else 0)
         assert(
-          residualsPerPartition.sum == 1,
-          "expected the shared non-partition residual to dedup to 1 pool entry " +
+          residualsPerPartition == expectedResiduals,
+          "expected the shared non-partition residual to dedup to 1 pool entry per partition " +
             s"across $tasksWithResidual task references, got $residualsPerPartition")
 
         spark.sql("DROP TABLE test_cat.db.residual_dedup_test")
@@ -5970,8 +5975,7 @@ class CometIcebergNativeSuite
           val icebergScans = collectIcebergNativeScans(cometPlan)
           assert(icebergScans.nonEmpty, "Expected CometIcebergNativeScanExec in plan")
           val scan = icebergScans.head
-          val plannedTasks = scan
-            .buildAllPartitionDataForTesting()
+          val plannedTasks = scan.perPartitionData
             .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
             .sum
           val numSplits = scan.metrics("num_splits").value
@@ -6240,8 +6244,7 @@ class CometIcebergNativeSuite
             val unprunedScan = collectIcebergNativeScans(unprunedPlan).head
             assert(unprunedScan.numPartitions == 1, s"Expected one split:\n$unprunedPlan")
             assert(
-              unprunedScan
-                .buildAllPartitionDataForTesting()
+              unprunedScan.perPartitionData
                 .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
                 .sum == 1,
               s"Expected one file scan task before pruning:\n$unprunedPlan")
@@ -6278,8 +6281,7 @@ class CometIcebergNativeSuite
                 collectIcebergDPPSubqueries(plan).nonEmpty,
                 s"Expected executable DPP on the native scan:\n$plan")
               assert(
-                scan
-                  .buildAllPartitionDataForTesting()
+                scan.perPartitionData
                   .forall(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount == 0),
                 s"Expected DPP to prune all file scan tasks:\n$plan")
               assert(scan.metrics("num_splits").value == 0, "Pruned files must not be read")
@@ -6317,8 +6319,7 @@ class CometIcebergNativeSuite
           val factB = "aqe_cat.db.single_split_join_b"
           val tables = Seq(factA, factB)
           def fileTaskCount(scan: CometIcebergNativeScanExec): Int =
-            scan
-              .buildAllPartitionDataForTesting()
+            scan.perPartitionData
               .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
               .sum
 
@@ -6784,8 +6785,7 @@ class CometIcebergNativeSuite
           // The dimension filter keeps store 3 only, so DPP reads 1 of the 10 data files.
           // Iceberg filters its already planned tasks at runtime, so count the serialized tasks
           // and the splits read rather than Iceberg's planning metrics.
-          val plannedTasks = scan
-            .buildAllPartitionDataForTesting()
+          val plannedTasks = scan.perPartitionData
             .map(OperatorOuterClass.IcebergScan.parseFrom(_).getFileScanTasksCount)
             .sum
           val numSplits = scan.metrics("num_splits").value
