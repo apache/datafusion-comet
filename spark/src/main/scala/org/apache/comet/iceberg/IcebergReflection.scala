@@ -1865,8 +1865,7 @@ object IcebergReflection extends Logging {
           genericManifestFile.getDeclaredConstructor(inputFileClass, classOf[Int])
       }
       val fileIOClass = loadClass(ClassNames.FILE_IO)
-      val manifestReadMethod = loadClass(ClassNames.MANIFEST_FILES)
-        .getMethod("read", loadClass(ClassNames.MANIFEST_FILE), fileIOClass)
+      val manifestReadMethod = manifestReadMethodOf(fileIOClass)
       manifestReadMethod.getReturnType.getMethod("iterator")
       manifestReadMethod.getReturnType.getMethod("close")
       val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
@@ -1949,8 +1948,14 @@ object IcebergReflection extends Logging {
    *
    * `specId` is stamped onto the synthesised `ManifestFile` because the manifest reader uses it
    * to pick the correct partition spec when materialising partition data on each `DataFile`.
+   * `spec` is the table's `PartitionSpec` for that id, handed to the reader through the
+   * `specsById` argument so it is not re-parsed from the manifest's metadata (Iceberg deprecated
+   * that fallback, and 1.12 removed the `read(ManifestFile, FileIO)` overload that implied it).
    */
-  def decodeManifestToDataFiles(bytes: Array[Byte], specId: Int): java.util.List[AnyRef] = {
+  def decodeManifestToDataFiles(
+      bytes: Array[Byte],
+      specId: Int,
+      spec: AnyRef): java.util.List[AnyRef] = {
     // Iceberg's `ManifestReader.open` infers format from the file extension; the in-memory path
     // must end in `.avro` for the v2 data-manifest path to be picked. The "memory:" scheme just
     // namespaces the location so it can't collide with on-disk paths in the same FileIO.
@@ -1958,8 +1963,22 @@ object IcebergReflection extends Logging {
     val fileIO = newInMemoryFileIO(location, bytes)
     val inputFile = newInMemoryInputFile(location, bytes)
     val manifestFile = newDataManifestFile(inputFile, specId)
-    readDataFilesFromManifest(manifestFile, fileIO)
+    val specsById = java.util.Collections.singletonMap(Integer.valueOf(specId), spec)
+    readDataFilesFromManifest(manifestFile, fileIO, specsById)
   }
+
+  /**
+   * `ManifestFiles.read(ManifestFile, FileIO, Map<Integer, PartitionSpec>)`, the only overload
+   * that is public on every supported Iceberg release (1.5.2 through 1.12; 1.12 dropped the
+   * two-argument one).
+   */
+  private def manifestReadMethodOf(fileIOClass: Class[_]): java.lang.reflect.Method =
+    loadClass(ClassNames.MANIFEST_FILES)
+      .getMethod(
+        "read",
+        loadClass(ClassNames.MANIFEST_FILE),
+        fileIOClass,
+        classOf[java.util.Map[_, _]])
 
   private def newInMemoryFileIO(location: String, bytes: Array[Byte]): AnyRef = {
     val cls = loadClass(ClassNames.INMEMORY_FILE_IO)
@@ -2029,13 +2048,11 @@ object IcebergReflection extends Logging {
 
   private def readDataFilesFromManifest(
       manifestFile: AnyRef,
-      fileIO: AnyRef): java.util.List[AnyRef] = {
-    val manifestFileClass = loadClass(ClassNames.MANIFEST_FILE)
+      fileIO: AnyRef,
+      specsById: java.util.Map[Integer, AnyRef]): java.util.List[AnyRef] = {
     val fileIOClass = loadClass(ClassNames.FILE_IO)
     val contentFileClass = loadClass(ClassNames.CONTENT_FILE)
-    val readMethod = loadClass(ClassNames.MANIFEST_FILES)
-      .getMethod("read", manifestFileClass, fileIOClass)
-    val reader = readMethod.invoke(null, manifestFile, fileIO)
+    val reader = manifestReadMethodOf(fileIOClass).invoke(null, manifestFile, fileIO, specsById)
     try {
       val iterator = reader.getClass
         .getMethod("iterator")
