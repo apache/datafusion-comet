@@ -675,8 +675,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * driver loaded the table, and a scan that outlives them fails with `ExpiredToken`. Iceberg's
    * `S3FileIO` refreshes them through the endpoint instead. An explicit provider key, including
    * an empty one, is left alone so it stays an opt-out. Builds without the provider class (Spark
-   * 3.x) keep the vended credentials as they are, and so does a relative endpoint with no catalog
-   * `uri` to resolve it against, which Iceberg rejects.
+   * 3.x) keep the vended credentials as they are, and so does a catalog with no `uri`: Iceberg's
+   * `VendedCredentialsProvider` needs it to reach the catalog whether the endpoint is relative or
+   * absolute.
    */
   def withVendedCredentialProvider(properties: Map[String, String]): Map[String, String] =
     withVendedCredentialProvider(properties, vendedCredentialProviderAvailable)
@@ -684,11 +685,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
   private[comet] def withVendedCredentialProvider(
       properties: Map[String, String],
       providerAvailable: Boolean): Map[String, String] = {
-    val endpoint = properties.get(RefreshCredentialsEndpointKey).map(_.trim).filter(_.nonEmpty)
-    val endpointResolves = endpoint.exists { e =>
-      e.contains("://") || properties.get(CatalogUriKey).exists(_.trim.nonEmpty)
-    }
-    val vendsRefreshEndpoint = endpointResolves &&
+    val hasEndpoint = properties.get(RefreshCredentialsEndpointKey).exists(_.trim.nonEmpty)
+    val hasCatalogUri = properties.get(CatalogUriKey).exists(_.trim.nonEmpty)
+    val vendsRefreshEndpoint = hasEndpoint && hasCatalogUri &&
       !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
     if (vendsRefreshEndpoint && providerAvailable &&
       !properties.contains(IcebergCredentialProviderClassKey)) {

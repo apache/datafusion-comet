@@ -29,9 +29,8 @@ import software.amazon.awssdk.auth.credentials.AwsCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 
 /**
- * Resolves S3 credentials for native Iceberg reads and writes the way Iceberg's own {@code
- * S3FileIO} does, so credentials vended by a REST catalog are refreshed instead of expiring
- * mid-job.
+ * Resolves S3 credentials for native Iceberg scans the way Iceberg's own {@code S3FileIO} does, so
+ * credentials vended by a REST catalog are refreshed instead of expiring mid-job.
  *
  * <p>Without a provider, the native FileIO signs every request with the {@code s3.*} credentials
  * the catalog vended when the driver loaded the table. Vended credentials are short-lived, so a
