@@ -138,6 +138,7 @@ Speeds up your existing Spark queries by running them on Apache Arrow columnar d
 :hidden:
 
 User Guide <user-guide/index>
+Download <download>
 Contributor Guide <contributor-guide/index>
 Changelog <changelog/index>
 About <about/index>
