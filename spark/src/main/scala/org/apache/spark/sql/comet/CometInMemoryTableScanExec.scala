@@ -31,6 +31,7 @@ import org.apache.spark.sql.execution.{CollectMetricsExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.columnar.{CachedRDDBuilder, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
+import org.apache.spark.sql.types.{ArrayType, MapType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.LongAccumulator
 
@@ -39,6 +40,7 @@ import org.apache.comet.serde.CometOperatorSerde
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.vector.{CometListVector, CometMapVector, CometPlainVector, CometStructVector}
 
 /**
  * Reads Spark cached table data when the cache was written by Comet's cache serializer.
@@ -122,9 +124,15 @@ case class CometInMemoryTableScanExec(
       .asInstanceOf[CometInMemoryTableScanExec]
       .copy(originalPlan = originalPlan.canonicalized.asInstanceOf[InMemoryTableScanExec])
 
-  // Use the serializer's vector types because the cached batch layout is owned by the serializer.
-  override def vectorTypes: Option[Seq[String]] =
-    serializer.vectorTypes(scanOutput, conf)
+  // The planner only creates this scan for a supported Comet cache schema.
+  override def vectorTypes: Option[Seq[String]] = Some(scanOutput.map { attr =>
+    attr.dataType match {
+      case _: StructType => classOf[CometStructVector].getName
+      case _: MapType => classOf[CometMapVector].getName
+      case _: ArrayType => classOf[CometListVector].getName
+      case _ => classOf[CometPlainVector].getName
+    }
+  })
 
   // Apply Spark's cache batch filter before decoding. Spark's InMemoryTableScanExec does this in
   // filteredCachedBatches(), but that method is private. Reusing the serializer's buildFilter here
