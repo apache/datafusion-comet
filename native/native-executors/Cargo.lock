@@ -4713,9 +4713,9 @@ dependencies = [
 
 [[package]]
 name = "parquet"
-version = "59.3.1"
+version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b3d2ef0fb136e9341570f219ecb168902e76079c6d81ad555f0a4840b1e08a3"
+checksum = "8eb260d566f2fbdabe356d26aaa5d13403aac29b5b4e44463b8f9bd7b2b12680"
 dependencies = [
  "ahash",
  "arrow-array",
@@ -4751,9 +4751,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant"
-version = "59.3.1"
+version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "587889e0dddd33f9eb536b20a489a20b2f556c4997ef1e09e49ae6df378d2ff0"
+checksum = "4d0085fde95ccfae0b8d703acd1245bda8855a0bf996eba848e8e2f9995f8606"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4767,9 +4767,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant-compute"
-version = "59.3.1"
+version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea15140dcafc6d1b4c17f1a12fcb9590ec8b82095cbd70925a5a8aa4c905e04a"
+checksum = "e1f9036efdea8177c84895f409a442e3960a8ccc642792760d8d48415542bb3a"
 dependencies = [
  "arrow",
  "arrow-schema",
@@ -4784,9 +4784,9 @@ dependencies = [
 
 [[package]]
 name = "parquet-variant-json"
-version = "59.3.1"
+version = "59.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bf54eea151d1c8369a0b491fb727229149e4a09c9518e00aaaab1f816c25c8e"
+checksum = "50ae7a6fdff86cdd5075653039b62e2ba674b0aae9228022cd74dc9cf71d7353"
 dependencies = [
  "arrow-schema",
  "base64 0.23.1",
@@ -5077,7 +5077,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck 0.5.0",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -5098,7 +5098,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -6712,7 +6712,7 @@ version = "2.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
 dependencies = [
- "rand 0.10.3",
+ "rand 0.9.5",
 ]
 
 [[package]]
