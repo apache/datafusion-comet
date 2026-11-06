@@ -23,8 +23,8 @@ import org.apache.comet.CometConf
 
 // spotless:off
 /**
- * Benchmark to measure `filter` with a lambda, and the `array_compact` / `array_remove` forms a
- * lambda can often be rewritten to. To run this benchmark:
+ * Benchmark to measure `filter` and `exists` with a lambda, and the `array_compact` /
+ * `array_remove` forms a `filter` lambda can often be rewritten to. To run this benchmark:
  * {{{
  *   SPARK_GENERATE_BENCHMARK_FILES=1 make benchmark-org.apache.spark.sql.benchmark.CometHigherOrderFunctionBenchmark
  * }}}
@@ -48,11 +48,15 @@ object CometHigherOrderFunctionBenchmark extends CometBenchmarkBase {
         val intElems = (0 until 10).map { i =>
           s"CASE WHEN (value + $i) % 5 = 0 THEN NULL ELSE cast((value + $i) % 100 as int) END"
         }
+        val dblElems = (0 until 10).map { i =>
+          s"CASE WHEN (value + $i) % 5 = 0 THEN NULL ELSE cast((value + $i) % 97 as double) END"
+        }
         prepareTable(
           dir,
           spark.sql(s"""SELECT
                |  array(${strElems.mkString(",\n")}) AS str_arr,
                |  array(${intElems.mkString(",\n")}) AS int_arr,
+               |  array(${dblElems.mkString(",\n")}) AS dbl_arr,
                |  cast(value % 3 as int) AS threshold
                |FROM $tbl""".stripMargin))
         f
@@ -89,7 +93,33 @@ object CometHigherOrderFunctionBenchmark extends CometBenchmarkBase {
     }
   }
 
+  def existsLambdaBenchmark(values: Int): Unit = {
+    prepareFilterTable {
+      Seq(
+        "string: exists(x -> x IS NULL OR x = '')" ->
+          "SELECT exists(str_arr, x -> x IS NULL OR x = '') FROM parquetV1Table",
+        "int: exists(x -> x > 90)" ->
+          "SELECT exists(int_arr, x -> x > 90) FROM parquetV1Table",
+        "double: exists(x -> x IS NULL OR x < 0 OR x > 90 OR x = 0)" ->
+          "SELECT exists(dbl_arr, x -> x IS NULL OR x < 0.0 OR x > 90.0 OR x = 0.0) FROM parquetV1Table",
+        "int: exists(x -> x > threshold)" ->
+          "SELECT exists(int_arr, x -> x > threshold) FROM parquetV1Table",
+        // exists as the right operand of OR, so it runs only for the rows the left operand leaves open.
+        "double: size(arr) < 1 OR exists(x -> x > 90)" ->
+          "SELECT size(dbl_arr) < 1 OR exists(dbl_arr, x -> x > 90.0) FROM parquetV1Table")
+        .foreach { case (name, query) =>
+          runExpressionBenchmark(name, values.toLong, query)
+          runExpressionBenchmark(
+            s"$name [dispatcher]",
+            values.toLong,
+            query,
+            Map(CometConf.COMET_NATIVE_LAMBDA_ENABLED.key -> "false"))
+        }
+    }
+  }
+
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
     runBenchmarkWithTable("FilterLambda", 1024 * 1024)(filterLambdaBenchmark)
+    runBenchmarkWithTable("ExistsLambda", 1024 * 1024)(existsLambdaBenchmark)
   }
 }

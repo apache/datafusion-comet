@@ -71,7 +71,7 @@ To get the most out of Comet when a query uses lambdas:
 
 ### Example
 
-`CometHigherOrderFunctionBenchmark` filters 1 million rows of ten-element arrays, in which every fifth element is
+`CometHigherOrderFunctionBenchmark` runs `filter` over 1 million rows of ten-element arrays, in which every fifth element is
 `NULL`. These are the best times of the Spark baseline and of Comet on an Apple M-series laptop, with
 `spark.comet.exec.nativeLambda.enabled` off and at its default:
 
@@ -81,5 +81,16 @@ To get the most out of Comet when a query uses lambdas:
 | `array_remove(array_compact(strs), '')` (same result)       | 587 ms | 252 ms                  | 252 ms         |
 | `filter(ints, x -> x IS NOT NULL)`                          | 286 ms | 124 ms                  | 125 ms         |
 | `filter(ints, x -> x > threshold)`, `threshold` is a column | 346 ms | 335 ms                  | 110 ms         |
+
+The same benchmark runs `exists` over 1 million rows of ten-element arrays, in which every fifth element is `NULL`
+(Spark 3.5, same laptop):
+
+| Query                                                       | Spark  | Comet, nativeLambda off | Comet, default |
+| ----------------------------------------------------------- | ------ | ----------------------- | -------------- |
+| `exists(ints, x -> x > 90)`                                 | 266 ms | 234 ms                  | 108 ms         |
+| `exists(dbls, x -> x IS NULL OR x < 0 OR x > 90 OR x = 0)`  | 266 ms | 225 ms                  | 94 ms          |
+| `exists(ints, x -> x > threshold)`, `threshold` is a column | 251 ms | 196 ms                  | 105 ms         |
+| `size(dbls) < 1 OR exists(dbls, x -> x > 90)`               | 355 ms | 403 ms                  | 110 ms         |
+| `exists(strs, x -> x IS NULL OR x = '')`                    | 357 ms | 183 ms                  | 168 ms         |
 
 Rewriting a lambda to built-in functions is still the fastest form, but a native lambda gets most of the way there.
