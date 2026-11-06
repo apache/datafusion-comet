@@ -33,7 +33,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
-import org.apache.comet.expressions.CometEvalMode
+import org.apache.comet.expressions.{CometCast, CometEvalMode}
 import org.apache.comet.serde.QueryPlanSerde._
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
@@ -1035,39 +1035,34 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
  */
 trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
 
-  // The native lambda has the same semantics as Spark's `filter` and `exists` for a one-parameter
-  // lambda whose body is deterministic, contains no nested lambda, and whose parameter is a type
-  // the native side can type-check against the list's element field. It needs bound references:
-  // the native side re-indexes the columns the body captures, which it cannot do for unbound ones.
+  // The native lambda has the same semantics as Spark's `filter` for a one-parameter lambda whose
+  // body is deterministic, contains no nested lambda, and whose parameter is a type the native
+  // side can type-check against the list's element field. `exists` adds a condition of its own,
+  // since Spark stops at the first match. It needs bound references: the native side re-indexes
+  // the columns the body captures, which it cannot do for unbound ones.
   protected def nativeLambdaSupported(argument: Expression, body: Expression): Boolean =
     CometConf.COMET_NATIVE_LAMBDA_ENABLED.get() &&
       body.deterministic &&
       !body.exists(_.isInstanceOf[HigherOrderFunction]) &&
       capturesOnlyFixedWidthColumns(body) &&
       shortCircuitSafe(body) &&
-      !castsToMap(argument) &&
+      !canProduceNullMapKey(argument) &&
       (argument.dataType match {
         case ArrayType(elementType, _) => isLambdaElementType(elementType)
         case _ => false
       })
 
   /**
-   * Whether `argument` casts to a type that holds a map. A TRY cast of a map whose key cast can
-   * fail makes a null key, which Arrow cannot hold (#6172), so such an argument stays on the
-   * dispatcher, which falls back to Spark for it.
+   * Whether `argument` has a TRY cast whose map key cast can fail, which makes a null key that
+   * Arrow cannot hold (#6172). The native side would have to build that map, so such an argument
+   * stays on the dispatcher, which runs it in Spark's own code, where the map never reaches
+   * Arrow.
    */
-  private def castsToMap(argument: Expression): Boolean = {
-    def holdsMap(dt: DataType): Boolean = dt match {
-      case _: MapType => true
-      case ArrayType(element, _) => holdsMap(element)
-      case StructType(fields) => fields.exists(f => holdsMap(f.dataType))
-      case _ => false
-    }
+  private def canProduceNullMapKey(argument: Expression): Boolean =
     argument.exists {
-      case c: Cast => holdsMap(c.dataType)
+      case c: Cast => CometCast.canProduceNullMapKey(c)
       case _ => false
     }
-  }
 
   /**
    * DataFusion copies each column the body captures once per element of its row's array before it
@@ -1101,7 +1096,7 @@ trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
    * arithmetic and casts raise only in the ANSI eval mode they carry. `infallible` in
    * `case_when.rs` is the native counterpart.
    */
-  private def mayRaise(e: Expression): Boolean = e match {
+  protected def mayRaise(e: Expression): Boolean = e match {
     case _: Literal | _: NamedLambdaVariable | _: AttributeReference | _: BoundReference |
         _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
         _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen | _: Length | _: Upper |
@@ -1452,8 +1447,15 @@ object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
  * otherwise. Spark returns false instead of NULL in that last case when
  * `spark.sql.legacy.followThreeValuedLogicInArrayExists` is false, so `exists` stays on the
  * dispatcher with that setting.
+ *
+ * Spark also stops at the first element that matches, so it never evaluates the body on the
+ * elements after it, while `array_any_match` evaluates the body on every element of the batch. A
+ * body in which any expression can raise would raise on an element Spark never reaches, so it
+ * stays on the dispatcher whatever operators it uses.
  */
-object CometArrayExists extends CometCodegenDispatch[ArrayExists] with NativeLambdaSerde {
+object CometArrayExists extends CometExpressionSerde[ArrayExists] with NativeLambdaSerde {
+
+  override def getSupportLevel(expr: ArrayExists): SupportLevel = Compatible()
 
   override def convert(
       expr: ArrayExists,
@@ -1461,14 +1463,20 @@ object CometArrayExists extends CometCodegenDispatch[ArrayExists] with NativeLam
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     expr.function match {
       case LambdaFunction(body, Seq(lambdaVar: NamedLambdaVariable), _)
-          if binding && expr.followThreeValuedLogic && nativeLambdaSupported(
-            expr.argument,
-            body) =>
+          if binding && expr.followThreeValuedLogic &&
+            nativeLambdaSupported(expr.argument, body) && !body.exists(mayRaise) =>
         convertLambda("array_any_match", expr.argument, lambdaVar, body, inputs, binding)
-          .orElse(super.convert(expr, inputs, binding))
-      case _ => super.convert(expr, inputs, binding)
+          .orElse(dispatch(expr, inputs, binding))
+      case _ => dispatch(expr, inputs, binding)
     }
   }
+
+  /** Spark's own evaluation through the codegen dispatcher, as for `transform` and `forall`. */
+  private def dispatch(
+      expr: ArrayExists,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] =
+    CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
 }
 
 object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]

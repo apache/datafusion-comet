@@ -101,8 +101,16 @@ query
 SELECT count(CASE WHEN exists(strs, x -> x = '') AND code = 'US' THEN 1 END)
 FROM test_exists_lambda
 
--- A body that converts each element to a date, all of it natively supported expressions.
-query expect_native(exists)
+-- Spark stops at the first element that matches, so it never evaluates the lambda on the elements after
+-- it, while the native lambda evaluates every element. A lambda in which any expression can raise stays
+-- on the dispatcher. `element_at` raises for the index 0 whatever the ANSI setting, and Spark returns
+-- true for id 1 before it reaches the 0.
+query expect_dispatch(exists)
+SELECT id, exists(ints, x -> element_at(array(threshold, 5), x) > 1) FROM test_exists_lambda
+
+-- `timestamp_seconds` of a BIGINT raises on overflow whatever the ANSI setting, so a body that converts
+-- each element to a date this way stays on the dispatcher too.
+query expect_dispatch(exists)
 SELECT id, exists(dbls, x -> datediff(DATE '2024-03-15', CAST(timestamp_seconds(CAST(x AS BIGINT)) AS DATE)) >= 2)
 FROM test_exists_lambda
 

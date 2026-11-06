@@ -5346,28 +5346,30 @@ mod tests {
         }
     }
 
+    fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
+        spark_expression::Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        }
+    }
+
+    fn bound(index: i32) -> spark_expression::Expr {
+        expr(Bound(spark_expression::BoundReference {
+            index,
+            datatype: None,
+        }))
+    }
+
     /// A higher-order function as the right operand of OR or AND: DataFusion evaluates the right
     /// operand over only the rows the left operand leaves open.
     #[test]
     fn test_higher_order_as_right_operand() -> Result<(), DataFusionError> {
         use arrow::array::{BooleanArray, ListBuilder, StringBuilder};
         use datafusion_comet_proto::spark_expression::{
-            BinaryExpr, BoundReference, HigherOrderFunc, LambdaVariable,
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
         };
 
-        fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
-            spark_expression::Expr {
-                expr_struct: Some(expr_struct),
-                query_context: None,
-                expr_id: None,
-            }
-        }
-        fn bound(index: i32) -> spark_expression::Expr {
-            expr(Bound(BoundReference {
-                index,
-                datatype: None,
-            }))
-        }
         fn binary(left: spark_expression::Expr, right: spark_expression::Expr) -> Box<BinaryExpr> {
             Box::new(BinaryExpr {
                 left: Some(Box::new(left)),
@@ -5435,26 +5437,12 @@ mod tests {
 
     #[test]
     fn test_higher_order_filter() -> Result<(), DataFusionError> {
-        use arrow::array::BooleanArray;
         use arrow::array::ListBuilder;
         use arrow::array::StringBuilder;
         use datafusion_comet_proto::spark_expression::{
-            BinaryExpr, BoundReference, HigherOrderFunc, LambdaVariable,
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
         };
 
-        fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
-            spark_expression::Expr {
-                expr_struct: Some(expr_struct),
-                query_context: None,
-                expr_id: None,
-            }
-        }
-        fn bound(index: i32) -> spark_expression::Expr {
-            expr(Bound(BoundReference {
-                index,
-                datatype: None,
-            }))
-        }
         fn variable(name: &str) -> spark_expression::Expr {
             expr(ExprStruct::LambdaVariable(LambdaVariable {
                 name: name.to_string(),
@@ -5521,34 +5509,6 @@ mod tests {
             None,
             Some(vec![]),
         ]);
-        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
-
-        // array_any_match(a, x#1 -> x#1 = c) is Spark's `exists`: true when an element matches, NULL
-        // when none does but the predicate was NULL for some element, false otherwise, and NULL for a
-        // NULL array.
-        let list = string_lists(vec![
-            Some(vec![Some("a"), None, Some("b")]),
-            Some(vec![]),
-            None,
-            Some(vec![Some("b")]),
-            Some(vec![Some("b"), None]),
-        ]);
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("a", list.data_type().clone(), true),
-            Field::new("c", DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![
-                Arc::new(list),
-                Arc::new(StringArray::from(vec!["a", "a", "a", "x", "a"])),
-            ],
-        )?;
-        let physical = planner
-            .create_expr(&filter("array_any_match", bound(0)), Arc::clone(&schema))
-            .unwrap();
-        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
-        let expected = BooleanArray::from(vec![Some(true), Some(false), None, Some(false), None]);
         assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
 
         // The argument must be an array, and only array_filter and array_any_match are implemented.

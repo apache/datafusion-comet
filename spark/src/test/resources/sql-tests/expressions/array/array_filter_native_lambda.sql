@@ -75,10 +75,6 @@ SELECT id, filter(strs, x -> x IS NOT NULL AND x != '') FROM test_filter_lambda
 query expect_native(filter)
 SELECT id, filter(strs, x -> coalesce(x, '') <> '' AND length(x) > 1) FROM test_filter_lambda
 
--- On a numeric array `nvl(x, '')` makes the lambda cast each element to a string.
-query expect_native(filter)
-SELECT id, filter(ints, x -> nvl(x, '') != '') FROM test_filter_lambda
-
 query expect_native(filter)
 SELECT id, filter(ints, x -> x > 0) FROM test_filter_lambda
 

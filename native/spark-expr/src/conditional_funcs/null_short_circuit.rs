@@ -296,17 +296,14 @@ pub(super) fn evaluate_projected(
 pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
     // A lambda inside `expr` binds its parameters: they are not columns of the batch `expr` is
     // evaluated on, so they are neither projected nor re-indexed. Lambda parameter names are unique
-    // per lambda, so no name is both bound inside `expr` and free in it.
+    // per lambda, so no name is both bound inside `expr` and free in it. `apply` visits each lambda
+    // before the variables it binds, so `bound` already holds a variable's name when it is reached.
     let mut bound: HashSet<String> = HashSet::new();
+    let mut projection = vec![];
     expr.apply(|e| {
         if let Some(lambda) = e.downcast_ref::<LambdaExpr>() {
             bound.extend(lambda.params().iter().cloned());
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })?;
-    let mut projection = vec![];
-    expr.apply(|e| {
-        if let Some(column) = e.downcast_ref::<Column>() {
+        } else if let Some(column) = e.downcast_ref::<Column>() {
             projection.push(column.index());
         } else if let Some(variable) = e.downcast_ref::<LambdaVariable>() {
             if !bound.contains(variable.name()) {

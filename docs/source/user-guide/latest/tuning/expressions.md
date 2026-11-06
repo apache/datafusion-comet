@@ -60,10 +60,14 @@ To get the most out of Comet when a query uses lambdas:
   body that combines them with an operation that can raise stays on the dispatcher. That covers a division, an
   addition or a cast under ANSI mode, which raise only in that mode, and `element_at`, which raises for the index 0 in
   any mode. `CASE WHEN`, `IF` and `COALESCE` are lazy natively too, so
-  `CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END` runs natively.
-- **Capture only numeric, boolean, date or timestamp columns.** DataFusion copies each column the lambda reads once per
-  element of the array before it evaluates the lambda, so a captured string, binary, array, struct or map column is
-  copied as many times as the array has elements. A lambda that reads one stays on the dispatcher.
+  `filter(arr, x -> CASE WHEN x = 0 THEN false ELSE 100 / x > 1 END)` runs natively.
+- **Keep operations that can raise out of an `exists` lambda.** Spark stops at the first element that matches, so
+  under ANSI mode `exists(array(1, 0), x -> 100 / x > 1)` returns true without dividing by zero, but the native lambda
+  evaluates every element. An `exists` lambda that contains any operation that can raise stays on the dispatcher,
+  whether or not it uses `AND`, `OR`, `IN` or `CASE WHEN`.
+- **Capture only numeric, decimal, boolean, date or timestamp columns.** DataFusion copies each column the lambda reads
+  once per element of the array before it evaluates the lambda, so a captured string, binary, array, struct or map
+  column is copied as many times as the array has elements. A lambda that reads one stays on the dispatcher.
 - **Use a lambda of one parameter.** `filter(arr, (x, i) -> i > 0)`, which also receives the element's index, runs
   through the dispatcher.
 
