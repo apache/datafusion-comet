@@ -45,7 +45,7 @@ use datafusion::{
     },
 };
 use datafusion_comet_operators::{
-    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
+    BatchSplitExec, CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
 };
 use datafusion_comet_proto::{
     spark_expression::Expr,
@@ -420,6 +420,16 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
     }
 }
 
+/// `plan`, or its input when it is the batch split that bounds a scalar expansion. The
+/// planner puts that split between an operator and its child, and the Spark tree has no
+/// node for it.
+fn through_batch_split(plan: &Arc<dyn ExecutionPlan>) -> &Arc<dyn ExecutionPlan> {
+    match plan.downcast_ref::<BatchSplitExec>() {
+        Some(split) => split.input(),
+        None => plan,
+    }
+}
+
 impl PhysicalPlanner {
     /// Keep Spark metric identities for the small set of nodes whose children
     /// runtime-filter placement can replace. Stop at native/Spark tree boundaries.
@@ -429,22 +439,22 @@ impl PhysicalPlanner {
     ) -> Result<Arc<SparkPlan>, ExecutionError> {
         // Walk the serialized and Spark trees together. A mismatch must not lend
         // another filter's permission to this node or any of its descendants.
-        let source = source.filter(|source| {
-            source.plan_id == plan.plan_id
-                && source.children.len() == plan.children.len()
-                && plan.children.len() == plan.native_plan.children().len()
-                && plan
-                    .native_plan
-                    .children()
-                    .iter()
-                    .zip(&plan.children)
-                    .all(|(native, spark)| Arc::ptr_eq(native, &spark.native_plan))
-                && match &source.op_struct {
-                    Some(OpStruct::Filter(_)) => plan.native_plan.is::<FilterExec>(),
-                    Some(OpStruct::Projection(_)) => plan.native_plan.is::<ProjectionExec>(),
-                    _ => false,
-                }
-        });
+        let source =
+            source.filter(|source| {
+                source.plan_id == plan.plan_id
+                    && source.children.len() == plan.children.len()
+                    && plan.children.len() == plan.native_plan.children().len()
+                    && plan.native_plan.children().iter().zip(&plan.children).all(
+                        |(native, spark)| {
+                            Arc::ptr_eq(through_batch_split(native), &spark.native_plan)
+                        },
+                    )
+                    && match &source.op_struct {
+                        Some(OpStruct::Filter(_)) => plan.native_plan.is::<FilterExec>(),
+                        Some(OpStruct::Projection(_)) => plan.native_plan.is::<ProjectionExec>(),
+                        _ => false,
+                    }
+            });
         let mut native: Arc<dyn ExecutionPlan> =
             if let Some(filter) = plan.native_plan.downcast_ref::<FilterExec>() {
                 let allowed = matches!(
@@ -462,13 +472,23 @@ impl PhysicalPlanner {
             };
         let mut prepared = plan.as_ref().clone();
         if let ([child], [only]) = (plan.children.as_slice(), native.children().as_slice()) {
-            if Arc::ptr_eq(only, &child.native_plan) {
+            if Arc::ptr_eq(through_batch_split(only), &child.native_plan) {
+                let split_size = only
+                    .downcast_ref::<BatchSplitExec>()
+                    .map(|split| split.batch_size());
                 let child = Self::prepare_probe_for_runtime_filters(
                     Arc::clone(child),
                     source.and_then(|source| source.children.first()),
                 )?;
+                let input = match split_size {
+                    Some(size) => {
+                        Arc::new(BatchSplitExec::new(Arc::clone(&child.native_plan), size))
+                            as Arc<dyn ExecutionPlan>
+                    }
+                    None => Arc::clone(&child.native_plan),
+                };
                 native = native.replace_children(
-                    vec![Arc::clone(&child.native_plan)],
+                    vec![input],
                     ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
                 )?;
                 prepared.children = vec![child];
@@ -885,6 +905,7 @@ fn rewrite_physical_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion_comet_proto::spark_expression::expr::ExprStruct;
     use datafusion_comet_proto::{spark_expression, spark_operator};
 
     fn column() -> Expr {
@@ -915,6 +936,57 @@ mod tests {
             children: vec![child],
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(column()),
+                allow_runtime_filter_pushdown: allowed,
+            })),
+            ..Default::default()
+        }
+    }
+
+    fn string_type() -> spark_expression::DataType {
+        spark_expression::DataType {
+            type_id: spark_expression::data_type::DataTypeId::String as i32,
+            type_info: None,
+        }
+    }
+
+    fn string_scan() -> Operator {
+        Operator {
+            op_struct: Some(OpStruct::Scan(spark_operator::Scan {
+                fields: vec![string_type()],
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// A filter on `column = 'x'`: the string scalar puts a batch split under the filter.
+    fn string_filter(child: Operator, allowed: bool) -> Operator {
+        let column = Expr {
+            expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
+                index: 0,
+                datatype: Some(string_type()),
+            })),
+            ..Default::default()
+        };
+        let literal = Expr {
+            expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
+                value: Some(spark_expression::literal::Value::StringVal("x".to_string())),
+                datatype: Some(string_type()),
+                is_null: false,
+            })),
+            ..Default::default()
+        };
+        Operator {
+            plan_id: child.plan_id + 1,
+            children: vec![child],
+            op_struct: Some(OpStruct::Filter(spark_operator::Filter {
+                predicate: Some(Expr {
+                    expr_struct: Some(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
+                        left: Some(Box::new(column)),
+                        right: Some(Box::new(literal)),
+                    }))),
+                    ..Default::default()
+                }),
                 allow_runtime_filter_pushdown: allowed,
             })),
             ..Default::default()
@@ -957,6 +1029,25 @@ mod tests {
             assert_eq!(allowed(&prepared.children[0]), permission);
             assert!(Arc::ptr_eq(
                 prepared.native_plan.children()[0],
+                &prepared.children[0].native_plan
+            ));
+        }
+    }
+
+    #[test]
+    fn probe_filter_permission_survives_a_scalar_batch_split() {
+        for permission in [false, true] {
+            let source = string_filter(string_scan(), permission);
+            let planned = plan(&source);
+            assert!(planned.native_plan.children()[0].is::<BatchSplitExec>());
+            let prepared =
+                PhysicalPlanner::prepare_probe_for_runtime_filters(planned, Some(&source)).unwrap();
+            assert_eq!(allowed(&prepared), permission);
+            let split = prepared.native_plan.children()[0]
+                .downcast_ref::<BatchSplitExec>()
+                .unwrap();
+            assert!(Arc::ptr_eq(
+                split.children()[0],
                 &prepared.children[0].native_plan
             ));
         }

@@ -80,3 +80,8 @@ SELECT sum(length(c)) FROM (SELECT concat(repeat('x', 262144), uuid()) AS c FROM
 -- a scalar built from the subquery result is wider than the result itself
 query
 SELECT sum(length(c)) FROM (SELECT concat(repeat((SELECT max(s) FROM test_large_scalar_wide), 2), CAST(k AS STRING)) AS c FROM test_large_scalar_ids)
+
+-- A list member computed per row expands the scalar it contains; the literal member does not
+query
+SELECT sum(CASE WHEN CAST(id AS STRING) IN (concat(repeat('x', 262144), CAST(id AS STRING)), 'foo') THEN 1 ELSE 0 END)
+FROM range(0, 8192, 1, 1)

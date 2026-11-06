@@ -59,6 +59,10 @@ impl BatchSplitExec {
         }
     }
 
+    pub fn input(&self) -> &Arc<dyn ExecutionPlan> {
+        &self.input
+    }
+
     pub fn batch_size(&self) -> usize {
         self.batch_size
     }

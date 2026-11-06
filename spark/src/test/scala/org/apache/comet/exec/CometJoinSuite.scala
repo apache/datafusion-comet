@@ -659,42 +659,53 @@ class CometJoinSuite extends CometTestBase {
               } else {
                 "dynamic_residual_probe p JOIN dynamic_residual_build b"
               }
-              val query = "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload FROM " + from +
-                " ON p.probe_key = b._1 WHERE pmod(p.payload, 7) > 0"
-              var unfilteredBytes = 0L
-              for (allowed <- Seq(false, true)) {
-                withSQLConf(
-                  CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString) {
-                  val (_, plan) = checkSparkAnswerAndOperator(
-                    sql(query),
-                    Seq(classOf[CometBroadcastHashJoinExec], classOf[CometNativeScanExec]))
-                  checkAnswer(sql(query), Seq(Row(2500, 2500L)))
-                  val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
-                  assert(joins.size == 1)
-                  val filters = collect(plan) {
-                    case filter: CometFilterExec if filter.output.exists(_.name == "probe_key") =>
-                      filter
-                  }
-                  assert(filters.size == 1, s"Expected one native residual filter:\n$plan")
-                  assert(filters.head.condition.deterministic)
-                  assert(filters.head.nativeOp.getFilter.getAllowRuntimeFilterPushdown == allowed)
-                  val scans = collect(plan) {
-                    case scan: CometNativeScanExec if scan.output.exists(_.name == "probe_key") =>
-                      scan
-                  }
-                  assert(scans.size == 1)
-                  val metrics = scans.head.metrics
-                  val bytes = metrics("bytes_scanned").value
-                  assert(joins.head.metrics("output_rows").value == 1L)
-                  assert(filters.head.metrics("output_rows").value > 0L)
-                  if (allowed) {
-                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
-                    assert(metrics("row_groups_pruned_statistics").value > 0L)
-                    assert(bytes < unfilteredBytes)
-                  } else {
-                    unfilteredBytes = bytes
-                    assert(joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
-                    assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value > 0L)
+              // A string scalar in the residual puts a batch split under the native filter,
+              // which must keep the filter's permission and let the reader filter through.
+              for (residual <- Seq(
+                  "pmod(p.payload, 7) > 0",
+                  "CAST(p.payload AS STRING) <> '2506'")) {
+                val query = "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload FROM " + from +
+                  s" ON p.probe_key = b._1 WHERE $residual"
+                var unfilteredBytes = 0L
+                for (allowed <- Seq(false, true)) {
+                  withSQLConf(
+                    CometConf.COMET_EXEC_JOIN_DYNAMIC_FILTER_ALLOW_DETERMINISTIC_FILTER_PUSHDOWN.key -> allowed.toString) {
+                    val (_, plan) = checkSparkAnswerAndOperator(
+                      sql(query),
+                      Seq(classOf[CometBroadcastHashJoinExec], classOf[CometNativeScanExec]))
+                    checkAnswer(sql(query), Seq(Row(2500, 2500L)))
+                    val joins = collect(plan) { case join: CometBroadcastHashJoinExec => join }
+                    assert(joins.size == 1)
+                    val filters = collect(plan) {
+                      case filter: CometFilterExec
+                          if filter.output.exists(_.name == "probe_key") =>
+                        filter
+                    }
+                    assert(filters.size == 1, s"Expected one native residual filter:\n$plan")
+                    assert(filters.head.condition.deterministic)
+                    assert(
+                      filters.head.nativeOp.getFilter.getAllowRuntimeFilterPushdown == allowed)
+                    val scans = collect(plan) {
+                      case scan: CometNativeScanExec
+                          if scan.output.exists(_.name == "probe_key") =>
+                        scan
+                    }
+                    assert(scans.size == 1)
+                    val metrics = scans.head.metrics
+                    val bytes = metrics("bytes_scanned").value
+                    assert(joins.head.metrics("output_rows").value == 1L)
+                    assert(filters.head.metrics("output_rows").value > 0L)
+                    if (allowed) {
+                      assert(
+                        joins.head.metrics("dynamic_filter_join_filters_attached").value > 0L)
+                      assert(metrics("row_groups_pruned_statistics").value > 0L)
+                      assert(bytes < unfilteredBytes)
+                    } else {
+                      unfilteredBytes = bytes
+                      assert(
+                        joins.head.metrics("dynamic_filter_join_filters_attached").value == 0L)
+                      assert(joins.head.metrics("dynamic_filter_join_filters_skipped").value > 0L)
+                    }
                   }
                 }
               }

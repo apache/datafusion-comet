@@ -93,11 +93,19 @@ impl PhysicalPlanner {
     /// here on a one-row batch: `repeat(<subquery>, 8)` is wider than the subquery result it is
     /// built from. A subtree that is not a scalar is evaluated per row, so only the scalars
     /// among its children count. A subtree that fails to evaluate counts nothing, so that its
-    /// error surfaces where Spark's would, at execution. The members of an `IN` list are
-    /// compared and never expanded.
+    /// error surfaces where Spark's would, at execution. A constant member of an `IN` list is
+    /// compared and never expanded; a member computed per row counts the scalars it contains.
     fn expanded_scalar_bytes(&self, expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> usize {
         if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-            return self.expanded_scalar_bytes(in_list.expr(), schema);
+            // A member that IN compares as a constant is not expanded. One computed per row is,
+            // along with the scalars it contains.
+            let members: usize = in_list
+                .list()
+                .iter()
+                .filter(|member| !self.is_scalar(member))
+                .map(|member| self.expanded_scalar_bytes(member, schema))
+                .sum();
+            return self.expanded_scalar_bytes(in_list.expr(), schema) + members;
         }
         if !self.is_scalar(expr) {
             return expr
@@ -289,6 +297,29 @@ mod tests {
         )
         .unwrap();
         assert_eq!(bytes(expr), 0);
+    }
+
+    #[test]
+    fn counts_the_scalar_in_a_list_member_computed_per_row() {
+        use datafusion_comet_spark_expr::spark_in_list;
+        let schema = schema();
+        let per_row = binary(
+            lit("x".repeat(256 * 1024)),
+            Operator::StringConcat,
+            col("s", &schema).unwrap(),
+            &schema,
+        )
+        .unwrap();
+        // The per-row member expands its scalar for every input row; the literal is compared.
+        let expr = spark_in_list(
+            col("s", &schema).unwrap(),
+            vec![per_row, lit("foo")],
+            false,
+            &schema,
+        )
+        .unwrap();
+        assert!(expr.is::<InListExpr>());
+        assert_eq!(bytes(expr), 256 * 1024);
     }
 
     #[test]
