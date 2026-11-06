@@ -47,6 +47,7 @@ import org.apache.spark.sql.Row
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.comet.{CometIcebergWriteExec, CometMergeRowsExec, IcebergCommitExec, IcebergSchedulerTestProbe, IcebergWriteExec}
+import org.apache.spark.sql.comet.execution.arrow.CometNativeArrowSource
 import org.apache.spark.sql.connector.catalog.InMemoryTableCatalog
 import org.apache.spark.sql.connector.write.{BatchWrite, DataWriterFactory, PhysicalWriteInfo, Write, WriterCommitMessage}
 import org.apache.spark.sql.execution.{ColumnarToRowTransition, LeafExecNode, SparkPlan}
@@ -409,6 +410,45 @@ class CometIcebergWriteActionSuite
         commitNodes.exists(_.metrics("numCommittedMessages").value == 1),
         "expected the dummy single-partition write task to produce one commit message")
       assertRows("zero_part", expectedIds = Seq.empty)
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/7239. A conversion of Spark rows writes
+  // every batch into the same vectors, and closing a struct vector drops its children. The write
+  // reads the conversion's Arrow stream, as native shuffle does, rather than batches it would
+  // close once native had them, which left the second batch of a partition without them.
+  test("native write reads a struct column that a conversion writes over several batches") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    withIcebergCatalog { _ =>
+      spark.sql(s"CREATE TABLE $catalog.$ns.struct_rdd (id INT, s STRUCT<a: INT>) USING iceberg")
+      val schema = new StructType()
+        .add("id", IntegerType)
+        .add("s", new StructType().add("a", IntegerType))
+      val rows = spark.sparkContext.parallelize((1 to 10).map(i => Row(i, Row(i))), 1)
+      val snapshot = captureWrite("struct_rdd") {
+        withNativeEnabled {
+          withSQLConf(
+            CometConf.COMET_BATCH_SIZE.key -> "2",
+            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+            spark.createDataFrame(rows, schema).writeTo(s"$catalog.$ns.struct_rdd").append()
+          }
+        }
+      }
+      assert(snapshot.snapshotDelta == 1L, s"expected 1 commit, got ${snapshot.snapshotDelta}")
+      val nativeWrites = snapshot.plans.flatMap { plan =>
+        collectWithSubqueries(plan) { case e: CometIcebergWriteExec => e }
+      }
+      assert(
+        nativeWrites.exists(_.child.isInstanceOf[CometNativeArrowSource]),
+        "expected a CometIcebergWriteExec over the conversion. Plans:\n" +
+          snapshot.plans.mkString("\n--\n"))
+      assertRows("struct_rdd", expectedIds = 1 to 10)
+      val fields = spark
+        .sql(s"SELECT s.a FROM $catalog.$ns.struct_rdd ORDER BY id")
+        .collect()
+        .map(_.getInt(0))
+        .toSeq
+      assert(fields == (1 to 10), s"expected ${1 to 10}, got $fields")
     }
   }
 
