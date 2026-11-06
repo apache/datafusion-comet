@@ -35,7 +35,7 @@
 //! - `COMET_SCHEDULER_EVENT_LOG_DIR`: a directory to write one event log per query to, as
 //!   Ballista's scheduler does (default: no event logs). The scheduler creates it if needed and
 //!   doesn't start if it can't write there. A log has the query's plan and a record for each
-//!   stage and task, with the task's times and the rows it wrote. Ballista sees a stage's Comet
+//!   stage and task, with the task's times and the rows it wrote. The log sees a stage's Comet
 //!   block as one operator with no metrics, so the plan shows a block only by its size, input
 //!   rows count only the rows a stage reads from other stages (not those it reads from files),
 //!   and a task's compute time covers only that reading. A task's start and end times give how
@@ -77,6 +77,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.external_host = host;
     }
     if let Some(size) = env_var("COMET_GRPC_MAX_MESSAGE_SIZE")? {
+        // The scheduler is a gRPC server for the executors and also a client of theirs, and has
+        // a setting for the client. An executor has one pair of settings, for its server and for
+        // its client of the scheduler.
         config.grpc_server_max_decoding_message_size = size;
         config.grpc_server_max_encoding_message_size = size;
         config.grpc_client_max_message_size = size;
@@ -125,7 +128,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// directory that already exists, such as a volume mounted with another owner, may not allow it.
 fn check_writable(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let probe = dir.join(format!(".comet-scheduler-{}", std::process::id()));
+    // Schedulers in containers are often PID 1, so the name also has the time, for two that share
+    // a log volume.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let probe = dir.join(format!(".comet-scheduler-{}-{nanos}", std::process::id()));
     std::fs::File::create(&probe)?;
     std::fs::remove_file(probe)
 }

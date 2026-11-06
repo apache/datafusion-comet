@@ -173,6 +173,9 @@ fn free_port() -> u16 {
 /// The HTTP status of a GET of `path` on a local port.
 fn http_status(port: u16, path: &str) -> u16 {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     write!(
         stream,
         "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
