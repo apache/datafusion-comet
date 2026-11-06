@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
+use crate::{
+    Cast, EvalMode, GetStructField, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison,
+};
 use arrow::array::{
     downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
     PrimitiveArray,
@@ -433,10 +435,11 @@ impl PhysicalExpr for CaseWhenExpr {
 /// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at little cost.
 ///
 /// That holds when it can neither fail nor return something different for seeing more rows, and is
-/// cheap: a column, a literal, and comparisons, boolean logic, null checks, widening casts and
-/// wrapping arithmetic over them. Anything else, including every function and a cast that parses a
-/// string, is treated as able to fail. `CASE` uses this to decide whether to evaluate every branch
-/// over the whole batch, which pays off only when that costs little more than selecting rows.
+/// cheap: a column, a literal, and struct fields, comparisons, boolean logic, null checks, widening
+/// casts and wrapping arithmetic over them. Anything else, including every function and a cast that
+/// parses a string, is treated as able to fail. `CASE` uses this to decide whether to evaluate
+/// every branch over the whole batch, which pays off only when that costs little more than
+/// selecting rows.
 pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     infallible(expr, input_schema, false)
 }
@@ -476,6 +479,8 @@ fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool
             || expr.is::<IsNotNullExpr>()
             || expr.is::<CaseWhenExpr>()
             || expr.is::<IfExpr>()
+            // A field of a struct cannot fail
+            || expr.is::<GetStructField>()
     };
     node_is_infallible
         && expr
