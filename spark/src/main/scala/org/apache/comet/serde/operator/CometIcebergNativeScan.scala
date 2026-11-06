@@ -1345,7 +1345,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         s"partition_data=$partitionDataEntries, delete_file=$deleteFileEntries, " +
         s"delete_files_set=$deleteFileSetEntries, residual=$residualEntries")
     logInfo(
-      s"  Delete files, each held once and shared by the partitions that use it: " +
+      "  Delete files, each held once and shared by the partitions that use it: " +
         s"${sharedDeleteFiles.size} files, ${sharedDeleteFilePaths.size} paths, " +
         s"$sharedDeleteFileBytes bytes")
     logInfo(
