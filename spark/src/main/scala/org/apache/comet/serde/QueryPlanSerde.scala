@@ -1339,20 +1339,54 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * a filter or a sort, are treated like a projection, which at worst keeps them evaluated for
    * every row where Spark does not. They are found on the first `canShortCircuitNulls` call for
    * the operator, so an operator without an argument to skip never runs `EquivalentExpressions`.
-   * `None` outside `withSharedSubexpressions`, where they are unknown.
+   * `None` outside `withSharedSubexpressions`, where they are unknown. Only those that can raise
+   * are kept, see `cannotRaise`.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
   private final class SharedSubexpressions(expressions: Seq[Expression], alwaysShared: Boolean) {
-    // Find shared nodes in Spark's original trees, then compare them after decimal promotion.
-    lazy val common: Seq[Expression] =
+    // The shared subexpressions that can raise. Find shared nodes in Spark's original trees, then
+    // compare them after decimal promotion. Promotion wraps decimal arithmetic in CheckOverflow,
+    // which `cannotRaise` does not list, so that arithmetic is always kept.
+    lazy val raising: Seq[Expression] =
       if (alwaysShared || SQLConf.get.subexpressionEliminationEnabled) {
         val equivalence = new EquivalentExpressions
         expressions.foreach(equivalence.addExprTree(_))
-        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote)
+        equivalence.getCommonSubexpressions.map(DecimalPrecision.promote).filterNot(cannotRaise)
       } else {
         Nil
       }
+  }
+
+  /**
+   * Whether evaluating `expr` on a row cannot raise, whatever the row holds. This fails closed:
+   * an expression is assumed to raise unless it is listed. Casts and numeric arithmetic raise
+   * only in the ANSI eval mode they carry, but some expressions raise in any mode, such as
+   * `element_at` with the index 0 and the arithmetic of intervals, so those stay out.
+   */
+  private def cannotRaise(expr: Expression): Boolean =
+    !expr.exists(!nodeCannotRaise(_))
+
+  private def nodeCannotRaise(node: Expression): Boolean = {
+    def plainArithmetic(a: BinaryExpression, mode: EvalMode.Value): Boolean =
+      mode != EvalMode.ANSI && a.dataType.isInstanceOf[NumericType]
+    node match {
+      case _: Literal | _: AttributeReference | _: BoundReference | _: GetStructField => true
+      case _: BinaryComparison | _: IsNull | _: IsNotNull | _: Not | _: And | _: Or | _: In |
+          _: InSet | _: IsNaN | _: Coalesce | _: If | _: CaseWhen =>
+        true
+      case _: Length | _: Upper | _: Lower | _: Substring | _: StartsWith | _: EndsWith |
+          _: Contains =>
+        true
+      case c: Cast => evalMode(c) != CometEvalMode.ANSI
+      case a: Add => plainArithmetic(a, a.evalMode)
+      case a: Subtract => plainArithmetic(a, a.evalMode)
+      case a: Multiply => plainArithmetic(a, a.evalMode)
+      case a: Divide => plainArithmetic(a, a.evalMode)
+      case a: IntegralDivide => plainArithmetic(a, a.evalMode)
+      case a: Remainder => plainArithmetic(a, a.evalMode)
+      case _ => false
+    }
   }
 
   /**
@@ -1370,17 +1404,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   /**
    * Whether native execution may skip the arguments of `expr` after the first on the rows where
    * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * `TernaryExpression` does. Not if one of them holds a subexpression that can raise and that
+   * the operator's expressions share and Spark eliminates: Spark evaluates that for every row,
+   * and raises if it fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`,
+   * where what they share is unknown.
    */
   def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
    * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
-   * the operator's expressions share and Spark eliminates, nor outside
+   * can raise and that the operator's expressions share and Spark eliminates, nor outside
    * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
    * promotion so callers may pass either original or already-promoted trees.
    */
@@ -1388,8 +1422,8 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
     // Subexpression elimination never shares a leaf, such as a column or a literal
     skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
       // Avoid decimal promotion when Spark shares nothing.
-      s.common.isEmpty || !skippable.exists { expr =>
-        DecimalPrecision.promote(expr).exists(e => s.common.exists(_.semanticEquals(e)))
+      s.raising.isEmpty || !skippable.exists { expr =>
+        DecimalPrecision.promote(expr).exists(e => s.raising.exists(_.semanticEquals(e)))
       }
     }
   }
