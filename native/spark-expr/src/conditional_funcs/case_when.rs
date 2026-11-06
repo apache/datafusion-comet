@@ -1314,6 +1314,21 @@ mod tests {
                 )),
                 true,
             ),
+            Field::new(
+                "st",
+                DataType::Struct(
+                    vec![
+                        Field::new("a", DataType::Int64, true),
+                        Field::new(
+                            "inner",
+                            DataType::Struct(vec![Field::new("b", DataType::Utf8, true)].into()),
+                            true,
+                        ),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
         let cast_in = |mode: EvalMode, e: Arc<dyn PhysicalExpr>, to: DataType| {
@@ -1353,6 +1368,12 @@ mod tests {
             c("i"),
             lit(0i64)
         ))));
+        // A field of a struct, and a field of a struct in a struct
+        let field = |e: Arc<dyn PhysicalExpr>, ordinal: usize| -> Arc<dyn PhysicalExpr> {
+            Arc::new(GetStructField::new(e, ordinal))
+        };
+        assert!(infallible(field(c("st"), 0)));
+        assert!(infallible(field(field(c("st"), 1), 0)));
 
         assert!(infallible(Arc::new(NormalizeNaNAndZero::new(
             DataType::Float64,

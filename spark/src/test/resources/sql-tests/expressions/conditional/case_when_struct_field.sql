@@ -97,9 +97,13 @@ FROM test_case_struct_field
 query
 SELECT k FROM test_case_struct_field WHERE s.p AND s.i > 0
 
--- a division by a zero that the WHEN or the left operand of AND excludes
+-- a division by a zero that the WHEN, the left operand of AND, or an earlier IN candidate excludes.
+-- Row 1 matches the first IN candidate, so Spark does not evaluate the second.
 query
 SELECT k, CASE WHEN s.n.y <> 0 THEN s.n.x div s.n.y ELSE -1 END FROM test_case_struct_field
 
 query
 SELECT k, s.n.y <> 0 AND s.n.x div s.n.y > 1 FROM test_case_struct_field
+
+query
+SELECT k, s.n.x IN (9223372036854775807, s.n.x div s.n.y) FROM test_case_struct_field
