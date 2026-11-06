@@ -143,8 +143,9 @@ DataFusion's own datetime functions take their timezone from the argument's labe
 `datafusion.execution.time_zone`, which Comet leaves unset. Wiring one of them in for a
 timezone-aware Spark expression therefore evaluates it in UTC, unless the session timezone is
 passed explicitly. For example, `to_char` formats in the input's label, which is why Comet uses it
-for `date_format` only in UTC sessions, unless
-`spark.comet.expression.DateFormatClass.allowIncompatible=true`.
+for `date_format` only in UTC sessions. With
+`spark.comet.expression.DateFormatClass.allowIncompatible=true` it uses `to_char` in other sessions
+too, and the result is formatted in UTC.
 
 ### Parsing timezone IDs
 
@@ -197,7 +198,7 @@ The timestamp-to-timestamp adaptations go through `CometCastColumnExpr` and
 between `TimestampType` and `TimestampNTZType` would apply the session timezone, and the Parquet
 reader does not.
 
-Comet does not handle two Spark settings:
+Comet's native Parquet scan does not handle two Spark settings:
 
 - Comet disables itself for a session with `spark.sql.parquet.int96TimestampConversion=true`,
   which shifts `INT96` values written by Impala.
