@@ -37,7 +37,9 @@ publish = false
 arrow-flight = "59.2.0"
 ballista-core = "55.0.0"
 ballista-executor = { version = "55.0.0", default-features = false, features = ["arrow-ipc-optimizations"] }
-ballista-scheduler = { version = "55.0.0", default-features = false }
+# `rest-api` compiles the scheduler's event-log writer (COMET_SCHEDULER_EVENT_LOG_DIR) and its REST
+# API. In Ballista 55.0.0 it logs through `tracing` without enabling it, so that is enabled here.
+ballista-scheduler = { version = "55.0.0", default-features = false, features = ["rest-api", "tracing"] }
 datafusion = { version = "55.2.0", default-features = false }
 # Comet's core crate, under the name of its library. Without the default hdfs-opendal feature,
 # which links libjvm through libhdfs.
