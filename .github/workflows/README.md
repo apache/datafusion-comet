@@ -621,7 +621,8 @@ first Maven use.
 ## Merge queue
 
 `.asf.yaml` declares a `Merge Queue` ruleset for the default branch, so `main`
-is only writable through the queue. `.asf.yaml` rulesets accept a raw GitHub
+is only writable through the queue, apart from the committer bypass described
+under "Branch protection" below. `.asf.yaml` rulesets accept a raw GitHub
 Rulesets API payload, which is how a `merge_queue` rule gets set without an
 INFRA ticket.
 
@@ -655,20 +656,34 @@ raises the bar on flakiness relative to when these suites only ran post-merge.
 
 ## Branch protection
 
-`main` is protected by two things that GitHub evaluates together, applying the
-most restrictive result:
+`main` is protected by two rulesets from `github.rulesets` in `.asf.yaml`.
+GitHub applies both, and bypass is granted per ruleset:
 
-- classic branch protection, from `github.protected_branches.main` in
-  `.asf.yaml`: one approving review, and `Required Checks` as the sole
-  required status check;
-- the `Merge Queue` ruleset, from `github.rulesets` in the same file.
+| Ruleset                     | Rules                                                        | Who can bypass                                       |
+| --------------------------- | ------------------------------------------------------------ | ---------------------------------------------------- |
+| `Default Branch Protection` | one approving review, no force push, no deletion             | `apache/root`                                        |
+| `Merge Queue`               | the merge queue, `Required Checks` as the one required check | `apache/root`, `apache/datafusion-public` (PRs only) |
 
-Release branches (`branch-N.M`) keep plain branch protection with no queue.
-Merge queue rules do not accept wildcard ref patterns, so the ruleset targets
+`apache/root` is ASF Infra (team id `118420`), so a wedged queue can always be
+recovered without a Jira ticket. `apache/datafusion-public` (team id
+`19468222`) is the public team DataFusion committers opt into through Boxer.
+Secret teams such as `apache/datafusion-committers` cannot be bypass actors,
+which is why the public one is used. A member can merge an approved PR with
+`gh pr merge <number> --squash --admin`, skipping the queue and the required
+checks but not review. The procedure is in "Merging an urgent pull request" in
+`docs/source/contributor-guide/ci.md`.
+
+`main` deliberately has no classic branch protection. While classic
+protection exists on a branch, GitHub refuses a ruleset bypass on it even for
+an approved PR with green checks (`DIRECT_MERGE: BLOCKED`), as
+apache/iceberg-rust found in apache/iceberg-rust#3481. That is why `main`'s
+review rule is a ruleset of its own rather than a `protected_branches.main`
+entry, and `dev/ci/check-ci-config.py` fails if `main` reappears under
+`protected_branches`.
+
+Release branches (`branch-N.M`) keep classic branch protection with no queue.
+Merge queue rules do not accept wildcard ref patterns, so the rulesets target
 `~DEFAULT_BRANCH` only.
-
-`apache/root` (ASF Infra, team id `118420`) is a bypass actor on the ruleset,
-so a wedged queue can always be recovered without a Jira ticket.
 
 `Required Checks` is the one context `main` requires, because a caller of a
 reusable workflow publishes a _different check name_ depending on whether it
@@ -684,8 +699,9 @@ No name is reported in both cases, so neither can be required directly.
 treats `skipped` as a pass, so it only goes red on `failure` or `cancelled`.
 
 Editing `required_status_checks` deserves care. A context that never reports
-blocks every merge to `main`, including the merge that would revert the
-mistake, and only INFRA can remove a required check by hand at that point.
+blocks every queued merge to `main`, including the merge that would revert the
+mistake. An `apache/datafusion-public` member can still land the revert with the
+bypass.
 `dev/ci/check-ci-config.py` enforces that every `ci.yml` job except `docs`
 appears in `required_checks.needs`, that the job's `name:` is the expression
 that routes `labeled` runs to a separate name (see "Label events" above), that
