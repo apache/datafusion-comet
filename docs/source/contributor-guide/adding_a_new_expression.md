@@ -398,7 +398,7 @@ query
 SELECT unhex('48656C6C6F'), unhex('')
 ```
 
-Each `query` block automatically runs the SQL through both Spark and Comet, compares results, and checks that every operator ran in Comet rather than falling back to Spark. The NULL row in the table covers NULL input. `unhex(NULL)` would not test `unhex`, because Spark's `NullPropagation` rule replaces it with a NULL literal before Comet sees it.
+Each `query` block automatically runs the SQL through both Spark and Comet, compares results, and checks that the planned query uses Comet operators rather than falling back to Spark. The NULL row in the table covers NULL input. `unhex(NULL)` would not test `unhex`, because Spark's `NullPropagation` rule replaces it with a NULL literal before Comet sees it.
 
 Run the test with:
 
@@ -453,13 +453,13 @@ relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSpark
 the choice is asserted rather than assumed:
 
 ```scala
-test("bit_length dispatches on binary and stays native on string") {
+test("round dispatches on double and stays native on decimal") {
   withTable("t") {
-    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
-    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+    sql("CREATE TABLE t (d DOUBLE, dec DECIMAL(10, 2)) USING parquet")
+    sql("INSERT INTO t VALUES (2.5, 2.50), (NULL, NULL)")
 
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT round(d, 1) FROM t"), dispatched = Seq("round"))
+    checkSparkAnswerAndImpl(sql("SELECT round(dec, 1) FROM t"), native = Seq("round"))
   }
 }
 ```
