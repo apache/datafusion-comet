@@ -90,10 +90,10 @@ object DataTypeSupport {
   }
 
   /**
-   * Shared reason for expressions whose native kernels cannot handle a negative-scale decimal.
+   * Shared reason for expressions whose Rust kernels cannot handle a negative-scale decimal.
    */
   val negativeScaleDecimalReason: String =
-    "Negative-scale decimals are not supported natively for this expression"
+    "There is no native implementation of this expression for negative-scale decimals"
 
   /**
    * True only when `dt` is itself a `DecimalType` with a negative scale. Nested types are not
