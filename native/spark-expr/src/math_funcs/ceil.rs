@@ -244,6 +244,62 @@ mod test {
     }
 
     #[test]
+    fn test_ceil_decimal128_i64_boundary_array() -> Result<()> {
+        // decimal_ceil_pow10 switches from the i64 fast path to decimal_ceil_wide exactly at
+        // i64::MAX / i64::MIN. Straddling both edges pins that the two paths agree: each pair
+        // below differs by one unscaled unit but ceils to the same value, so a divergence
+        // between the 64-bit and 128-bit divisions would show up as a mismatch here.
+        let array = Decimal128Array::from(vec![
+            Some(i64::MAX as i128),     //  9223372036854.775807 -> fast path
+            Some(i64::MAX as i128 + 1), //  9223372036854.775808 -> wide path
+            Some(i64::MIN as i128),     // -9223372036854.775808 -> fast path
+            Some(i64::MIN as i128 - 1), // -9223372036854.775809 -> wide path
+        ])
+        .with_precision_and_scale(38, 6)?;
+        let args = vec![ColumnarValue::Array(Arc::new(array))];
+        let ColumnarValue::Array(result) = spark_ceil(&args, &DataType::Decimal128(38, 0))? else {
+            unreachable!()
+        };
+        let expected = Decimal128Array::from(vec![
+            Some(9_223_372_036_855_i128),
+            Some(9_223_372_036_855_i128),
+            Some(-9_223_372_036_854_i128),
+            Some(-9_223_372_036_854_i128),
+        ])
+        .with_precision_and_scale(38, 0)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_ceil_decimal128_large_scale_array() -> Result<()> {
+        // dispatch_pow10! only specializes scales whose divisor fits in an i64, so scale 19 takes
+        // the runtime `decimal_ceil_f` fallback. Untested on the array path otherwise.
+        let array = Decimal128Array::from(vec![
+            Some(20_000_000_000_000_000_000_000_i128),  //  2000.0
+            Some(20_000_000_000_000_000_000_001_i128),  //  2000.0000000000000000001
+            Some(-20_000_000_000_000_000_000_001_i128), // -2000.0000000000000000001
+            None,
+        ])
+        .with_precision_and_scale(38, 19)?;
+        let args = vec![ColumnarValue::Array(Arc::new(array))];
+        let ColumnarValue::Array(result) = spark_ceil(&args, &DataType::Decimal128(38, 0))? else {
+            unreachable!()
+        };
+        let expected = Decimal128Array::from(vec![
+            Some(2000_i128),
+            Some(2001_i128),
+            Some(-2000_i128),
+            None,
+        ])
+        .with_precision_and_scale(38, 0)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
+        Ok(())
+    }
+
+    #[test]
     fn test_ceil_f32_scalar() -> Result<()> {
         let args = vec![ColumnarValue::Scalar(ScalarValue::Float32(Some(125.2345)))];
         let ColumnarValue::Scalar(ScalarValue::Int64(Some(result))) =
