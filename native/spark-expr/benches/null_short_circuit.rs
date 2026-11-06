@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-//! Benchmarks for ANSI arithmetic whose second operand can fail.
+//! Benchmarks for arithmetic and `concat` whose second operand can fail.
 //!
 //! Each shape runs as `eager`, evaluating both operands over the whole batch, and as `lazy`, the
 //! way Comet plans it now, evaluating the second operand only for the rows where the first one is
@@ -27,14 +27,15 @@ use arrow::record_batch::RecordBatch;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use datafusion::common::ScalarValue;
 use datafusion::config::ConfigOptions;
-use datafusion::logical_expr::Operator;
+use datafusion::logical_expr::{Operator, ScalarUDF};
 use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::prelude::SessionContext;
 use datafusion_comet_spark_expr::{
     create_comet_physical_fun_with_eval_mode, Cast, CheckOverflow, EvalMode, NullShortCircuit,
-    SparkCastOptions,
+    SparkCastOptions, WideDecimalBinaryExpr, WideDecimalOp,
 };
+use datafusion_spark::function::string::concat::SparkConcat;
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use std::hint::black_box;
@@ -49,8 +50,8 @@ type Expr = Arc<dyn PhysicalExpr>;
 /// An expression: its name, and how to build it
 type Shape = (&'static str, fn() -> Expr);
 
-/// `a` a long with `null_density` of it NULL, `p` the same as a decimal, and `b`, `c`, `s`, a long
-/// written as a string, and `d`, a decimal, never NULL.
+/// `a` a long with `null_density` of it NULL, `p` the same as a decimal and `q` as a string, and
+/// `b`, `c`, `s`, a long written as a string, and `d`, a decimal, never NULL.
 fn make_batch(null_density: f32) -> RecordBatch {
     let mut rng = StdRng::seed_from_u64(42);
     let a: Int64Array = (0..NUM_ROWS)
@@ -74,6 +75,7 @@ fn make_batch(null_density: f32) -> RecordBatch {
         .map(|_| Some(rng.random_range(0..100)))
         .collect::<Decimal128Array>()
         .with_data_type(DECIMAL);
+    let q: StringArray = a.iter().map(|v| v.map(|v| format!("id-{v}"))).collect();
     let columns: Vec<ArrayRef> = vec![
         Arc::new(a),
         Arc::new(b),
@@ -81,6 +83,7 @@ fn make_batch(null_density: f32) -> RecordBatch {
         Arc::new(s),
         Arc::new(p),
         Arc::new(d),
+        Arc::new(q),
     ];
     RecordBatch::try_new(Arc::new(schema()), columns).unwrap()
 }
@@ -93,6 +96,7 @@ fn schema() -> Schema {
         Field::new("s", DataType::Utf8, false),
         Field::new("p", DECIMAL, true),
         Field::new("d", DECIMAL, false),
+        Field::new("q", DataType::Utf8, true),
     ])
 }
 
@@ -139,13 +143,70 @@ fn mul_nested_sub() -> Expr {
 }
 
 /// `p * (1 - d)` over decimals, as in TPC-H Q1, whose right operand Comet plans as a
-/// `CheckOverflow` that fails under ANSI if the subtraction overflows
-fn decimal_mul_nested_sub() -> Expr {
+/// `CheckOverflow`, which fails if the subtraction overflows when `fail_on_error` is set, as under
+/// ANSI, and returns NULL otherwise
+fn decimal_mul_nested_sub(fail_on_error: bool) -> Expr {
     let one = Arc::new(Literal::new(ScalarValue::Decimal128(Some(100), 12, 2)));
     let sub: Expr = Arc::new(BinaryExpr::new(one, Operator::Minus, column("d", 5)));
     let sub_type = sub.data_type(&schema()).unwrap();
-    let checked = Arc::new(CheckOverflow::new(sub, sub_type, true, None, None));
+    let checked = Arc::new(CheckOverflow::new(sub, sub_type, fail_on_error, None, None));
     Arc::new(BinaryExpr::new(column("p", 4), Operator::Multiply, checked))
+}
+
+fn ansi_decimal_mul_nested_sub() -> Expr {
+    decimal_mul_nested_sub(true)
+}
+
+fn legacy_decimal_mul_nested_sub() -> Expr {
+    decimal_mul_nested_sub(false)
+}
+
+/// `p * (d * d)` under ANSI with a result too wide for a `Decimal128` multiply, which Comet plans
+/// as `WideDecimalBinaryExpr`
+fn wide_decimal_mul() -> Expr {
+    let wide = |left, right, precision, scale| -> Expr {
+        Arc::new(WideDecimalBinaryExpr::new(
+            left,
+            right,
+            WideDecimalOp::Multiply,
+            precision,
+            scale,
+            EvalMode::Ansi,
+        ))
+    };
+    let square = wide(column("d", 5), column("d", 5), 25, 4);
+    wide(column("p", 4), square, 38, 6)
+}
+
+/// `p * CAST(d AS DECIMAL(12, 4))`, whose cast rescales and fails under ANSI if it overflows
+fn decimal_mul_rescaling_cast() -> Expr {
+    let cast = Arc::new(Cast::new(
+        column("d", 5),
+        DataType::Decimal128(12, 4),
+        SparkCastOptions::new_without_timezone(EvalMode::Ansi),
+        None,
+        None,
+    ));
+    Arc::new(BinaryExpr::new(column("p", 4), Operator::Multiply, cast))
+}
+
+/// `concat(q, upper(s))`, whose `upper` Spark evaluates only where `q` is not NULL
+fn concat_upper() -> Expr {
+    let function = |udf: Arc<ScalarUDF>, args: Vec<Expr>| -> Expr {
+        let name = udf.name().to_string();
+        Arc::new(ScalarFunctionExpr::new(
+            &name,
+            udf,
+            args,
+            Arc::new(Field::new(&name, DataType::Utf8, true)),
+            Arc::new(ConfigOptions::default()),
+        ))
+    };
+    let upper = function(datafusion_functions::string::upper(), vec![column("s", 3)]);
+    function(
+        Arc::new(ScalarUDF::new_from_impl(SparkConcat::default())),
+        vec![column("q", 6), upper],
+    )
 }
 
 fn bench_arithmetic(c: &mut Criterion) {
@@ -153,10 +214,17 @@ fn bench_arithmetic(c: &mut Criterion) {
     let mut group = c.benchmark_group("null_short_circuit");
     group.throughput(Throughput::Elements(NUM_ROWS as u64));
 
-    let shapes: [Shape; 3] = [
+    let shapes: [Shape; 7] = [
         ("add_parsing_cast", add_parsing_cast),
         ("mul_nested_sub", mul_nested_sub),
-        ("decimal_mul_nested_sub", decimal_mul_nested_sub),
+        ("decimal_mul_nested_sub", ansi_decimal_mul_nested_sub),
+        (
+            "legacy_decimal_mul_nested_sub",
+            legacy_decimal_mul_nested_sub,
+        ),
+        ("wide_decimal_mul", wide_decimal_mul),
+        ("decimal_mul_rescaling_cast", decimal_mul_rescaling_cast),
+        ("concat_upper", concat_upper),
     ];
     for (name, shape) in shapes {
         for null_percent in [0, 10, 50, 70, 90] {

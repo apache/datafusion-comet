@@ -61,6 +61,18 @@ CREATE TABLE zero_bad(id int, n int, txt string) USING parquet
 statement
 INSERT INTO zero_bad SELECT /*+ REPARTITION(1) */ * FROM VALUES (1, 0, 'bad') AS t(id, n, txt)
 
+-- `n` is NULL on three rows in four, where `txt` is malformed and `big - 1` overflows. A cheap
+-- operand such as `big - 1` is first tried over the whole batch even so, and a costlier one such as
+-- a cast that parses a string is not
+statement
+CREATE TABLE mostly_null(id int, n int, txt string, big int) USING parquet
+
+statement
+INSERT INTO mostly_null SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, CAST(NULL AS INT), 'bad', -2147483648), (2, CAST(NULL AS INT), 'x', -2147483648),
+  (3, CAST(NULL AS INT), 'y', -2147483648), (4, 2, '7', 5)
+  AS t(id, n, txt, big)
+
 -- Add, subtract and multiply evaluate the right operand only where the left one is not NULL
 
 query
@@ -145,6 +157,25 @@ SELECT id, CAST(txt AS INT) % n FROM zero
 
 query
 SELECT id, CAST(txt AS INT) / n FROM zero
+
+-- TRY division returns NULL for a zero divisor without evaluating the dividend
+
+query
+SELECT id, try_divide(CAST(txt AS INT), n) FROM zero_bad
+
+query
+SELECT id, try_divide(CAST(txt AS DECIMAL(10, 2)), CAST(n AS DECIMAL(10, 2))) FROM zero_bad
+
+-- Most rows skip the second operand
+
+query
+SELECT id, n * (big - 1) FROM mostly_null
+
+query
+SELECT id, n + CAST(txt AS INT) FROM mostly_null
+
+query
+SELECT id, CAST(txt AS INT) DIV n FROM mostly_null
 
 -- No row evaluates the second operand
 

@@ -177,6 +177,11 @@ fn balanced_or(terms: &[Arc<dyn PhysicalExpr>], schema: &Schema) -> Result<Arc<d
 /// Whether `expr` returns the same for a row whichever rows it has been evaluated for. That holds
 /// for the expressions that Comet plans from deterministic ones, and is not assumed of any other.
 pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    // Its children are those of the function it wraps, so visiting both would double the work at
+    // each level of nesting
+    if let Some(short_circuit) = expr.downcast_ref::<NullShortCircuit>() {
+        return is_deterministic(short_circuit.inner());
+    }
     let node_is_deterministic = expr.is::<Column>()
         || expr.is::<Literal>()
         || expr.is::<Cast>()
@@ -193,11 +198,7 @@ pub(super) fn is_deterministic(expr: &Arc<dyn PhysicalExpr>) -> bool {
         || expr.is::<IfExpr>()
         || expr
             .downcast_ref::<ScalarFunctionExpr>()
-            .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable)
-        // Its children are those of the function it wraps
-        || expr
-            .downcast_ref::<NullShortCircuit>()
-            .is_some_and(|n| is_deterministic(n.inner()));
+            .is_some_and(|f| f.fun().signature().volatility == Volatility::Immutable);
     node_is_deterministic && expr.children().into_iter().all(is_deterministic)
 }
 
@@ -583,5 +584,24 @@ mod tests {
             })
             .unwrap();
         handle.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn deeply_nested_short_circuits_are_checked_in_linear_time() {
+        use crate::NullShortCircuit;
+        let schema = batch(vec![], vec![]).schema();
+        let mut expr = ansi_cast(col("s", &schema).unwrap(), DataType::Int32);
+        // Each level wraps a - <previous level>, so visiting the children of a NullShortCircuit
+        // as well as those of the function it wraps would take 2^64 steps
+        for _ in 0..64 {
+            let difference = Arc::new(BinaryExpr::new(
+                col("v", &schema).unwrap(),
+                Operator::Minus,
+                expr,
+            ));
+            expr = NullShortCircuit::wrap(difference, &schema).unwrap();
+            assert!(expr.is::<NullShortCircuit>());
+        }
+        assert!(is_deterministic(&expr));
     }
 }

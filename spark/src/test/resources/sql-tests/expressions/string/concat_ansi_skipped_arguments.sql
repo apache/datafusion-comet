@@ -53,6 +53,16 @@ CREATE TABLE filled(id int, n int, txt string) USING parquet
 statement
 INSERT INTO filled SELECT /*+ REPARTITION(1) */ * FROM VALUES (1, 1, 'bad'), (2, 2, '2') AS t(id, n, txt)
 
+-- `n` is NULL on three rows in four, where `txt` is malformed and `big - 1` overflows
+statement
+CREATE TABLE mostly_null(id int, n int, txt string, big int) USING parquet
+
+statement
+INSERT INTO mostly_null SELECT /*+ REPARTITION(1) */ * FROM VALUES
+  (1, CAST(NULL AS INT), 'bad', -2147483648), (2, CAST(NULL AS INT), 'x', -2147483648),
+  (3, CAST(NULL AS INT), 'y', -2147483648), (4, 2, '7', 5)
+  AS t(id, n, txt, big)
+
 query
 SELECT id, concat(IF(id = 1, CAST(NULL AS STRING), CAST(id AS STRING)), CAST(CAST(txt AS INT) AS STRING))
 FROM items
@@ -60,6 +70,14 @@ FROM items
 query
 SELECT id, concat(CAST(id AS STRING), CAST(n AS STRING), CAST(CAST(txt AS INT) AS STRING))
 FROM skipped
+
+-- Most rows skip the second argument
+
+query
+SELECT id, concat(CAST(n AS STRING), CAST(big - 1 AS STRING)) FROM mostly_null
+
+query
+SELECT id, concat(CAST(n AS STRING), CAST(CAST(txt AS INT) AS STRING)) FROM mostly_null
 
 -- No row evaluates the last argument
 query

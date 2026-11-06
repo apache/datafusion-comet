@@ -17,16 +17,17 @@
 
 use super::case_when::cannot_fail;
 use super::lazy_logical::is_deterministic;
+use crate::{Cast, CheckedBinaryExpr};
 use arrow::array::{new_null_array, Array, BooleanArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{internal_datafusion_err, internal_err, Result};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::logical_expr::{ColumnarValue, Operator};
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_expr::utils::collect_columns;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -103,15 +104,21 @@ impl NullShortCircuit {
             .into_iter()
             .zip(masked)
             .map(|(arg, masked)| {
+                let cheap = masked && is_cheap(arg, input_schema);
                 if arg.is::<Literal>() {
-                    return Ok((None, masked));
+                    return Ok(ArgPlan {
+                        field: None,
+                        masked,
+                        cheap,
+                    });
                 }
                 // A masked argument is NULL on the rows it is skipped for
                 let field = arg.return_field(input_schema)?;
-                Ok((
-                    Some(Arc::new(field.as_ref().clone().with_nullable(true))),
+                Ok(ArgPlan {
+                    field: Some(Arc::new(field.as_ref().clone().with_nullable(true))),
                     masked,
-                ))
+                    cheap,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self::try_new(inner, plans, order.to_vec())?))
@@ -122,10 +129,9 @@ impl NullShortCircuit {
         &self.inner
     }
 
-    /// `plans` holds each argument's [`Arg::field`] and whether it is masked.
     fn try_new(
         inner: Arc<dyn PhysicalExpr>,
-        plans: Vec<(Option<FieldRef>, bool)>,
+        plans: Vec<ArgPlan>,
         order: Vec<usize>,
     ) -> Result<Self> {
         let children = inner.children();
@@ -139,7 +145,7 @@ impl NullShortCircuit {
         let args = children
             .into_iter()
             .zip(plans)
-            .map(|(expr, (field, masked))| Arg::try_new(expr, field, masked))
+            .map(|(expr, plan)| Arg::try_new(expr, plan))
             .collect::<Result<Vec<_>>>()?;
         let mut body_children = Vec::with_capacity(args.len());
         let mut column = 0;
@@ -269,7 +275,11 @@ impl PhysicalExpr for NullShortCircuit {
         let plans = self
             .args
             .iter()
-            .map(|arg| (arg.field.clone(), arg.masked.is_some()))
+            .map(|arg| ArgPlan {
+                field: arg.field.clone(),
+                masked: arg.masked.is_some(),
+                cheap: arg.cheap,
+            })
             .collect();
         Ok(Arc::new(Self::try_new(inner, plans, self.order.clone())?))
     }
@@ -281,6 +291,16 @@ impl PhysicalExpr for NullShortCircuit {
     fn is_volatile_node(&self) -> bool {
         self.inner.is_volatile_node()
     }
+}
+
+/// How an argument is evaluated, decided when it is planned.
+struct ArgPlan {
+    /// See [`Arg::field`]
+    field: Option<FieldRef>,
+    /// Whether the argument is evaluated for only the rows where no earlier argument is NULL
+    masked: bool,
+    /// See [`Arg::cheap`]
+    cheap: bool,
 }
 
 /// An argument, and how it is evaluated.
@@ -297,29 +317,30 @@ struct Arg {
     /// state kept across batches, such as the random generator of `shuffle`
     masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
     /// Whether a masked argument is first tried over the whole batch, as it would be without
-    /// masking, for a batch where at least half the rows need it. Selecting the rows costs more
-    /// than evaluating the skipped ones when they are few, and less when they are many, and the
-    /// crossover moves with the cost of the argument, so half is where neither choice is much
-    /// slower than the other for the arguments measured in `benches/null_short_circuit.rs`.
-    /// Whatever it returns for a skipped row is ignored, so it only matters if it fails there,
-    /// and it requires an argument that returns the same for a row whichever rows it sees. If it
-    /// fails, the rows are selected instead, here and for the batches after it.
+    /// masking, for a batch where at least half the rows need it, or for any batch if it is
+    /// [`Arg::cheap`]. Selecting the rows costs more than evaluating the skipped ones when they
+    /// are few, and less when they are many, and the crossover moves with the cost of the
+    /// argument, so half is where neither choice is much slower than the other for the costlier
+    /// arguments measured in `benches/null_short_circuit.rs`. Whatever it returns for a skipped
+    /// row is ignored, so it only matters if it fails there, and it requires an argument that
+    /// returns the same for a row whichever rows it sees. If it fails, the rows are selected
+    /// instead, here and for the batches after it.
     speculate: AtomicBool,
+    /// Whether the argument is so cheap that evaluating it over the whole batch is about as fast
+    /// as selecting the rows that need it, however few they are, as [`is_cheap`] decides
+    cheap: bool,
 }
 
 impl Arg {
-    fn try_new(
-        expr: &Arc<dyn PhysicalExpr>,
-        field: Option<FieldRef>,
-        masked: bool,
-    ) -> Result<Self> {
-        let masked = masked.then(|| project(expr)).transpose()?;
+    fn try_new(expr: &Arc<dyn PhysicalExpr>, plan: ArgPlan) -> Result<Self> {
+        let masked = plan.masked.then(|| project(expr)).transpose()?;
         let speculate = AtomicBool::new(masked.is_some() && is_deterministic(expr));
         Ok(Self {
             expr: Arc::clone(expr),
-            field,
+            field: plan.field,
             masked,
             speculate,
+            cheap: plan.cheap,
         })
     }
 
@@ -329,8 +350,9 @@ impl Arg {
         let Some((projection, projected)) = &self.masked else {
             return self.expr.evaluate(batch);
         };
-        let mostly_needed = nulls.is_some_and(|nulls| nulls.null_count() * 2 <= nulls.len());
-        if mostly_needed && self.speculate.load(Ordering::Relaxed) {
+        let worth_trying =
+            nulls.is_some_and(|nulls| self.cheap || nulls.null_count() * 2 <= nulls.len());
+        if worth_trying && self.speculate.load(Ordering::Relaxed) {
             if let Ok(value) = evaluate_projected(projection, projected, batch, None) {
                 return Ok(value);
             }
@@ -339,6 +361,44 @@ impl Arg {
         let rows = nulls.map(|nulls| BooleanArray::new(nulls.inner().clone(), None));
         evaluate_projected(projection, projected, batch, rows.as_ref())
     }
+}
+
+/// Whether evaluating `expr` over the whole batch costs about as little as selecting the rows that
+/// need it, however few they are: a column, a literal, and integer and floating point `+`, `-` and
+/// `*`, as ANSI `checked_add`, `checked_sub` and `checked_mul` too, and casts to a wider number,
+/// over such expressions. `a * (b - c)` over longs, as in `benches/null_short_circuit.rs`,
+/// is never much slower speculated than with its rows selected, and much faster when most rows
+/// need it. Anything else, such as a cast that parses a string, decimal arithmetic and string
+/// functions, is treated as costlier. The list holds what has been measured, and can grow.
+fn is_cheap(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    if let Some(short_circuit) = expr.downcast_ref::<NullShortCircuit>() {
+        return is_cheap(short_circuit.inner(), input_schema);
+    }
+    let node_is_cheap =
+        if expr.is::<Column>() || expr.is::<Literal>() || expr.is::<CheckedBinaryExpr>() {
+            true
+        } else if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
+            matches!(
+                binary.op(),
+                Operator::Plus | Operator::Minus | Operator::Multiply
+            ) && binary
+                .data_type(input_schema)
+                .is_ok_and(|t| t.is_integer() || t.is_floating())
+        } else if let Some(cast) = expr.downcast_ref::<Cast>() {
+            cast.is_infallible(input_schema)
+        } else if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
+            matches!(
+                function.name(),
+                "checked_add" | "checked_sub" | "checked_mul"
+            )
+        } else {
+            false
+        };
+    node_is_cheap
+        && expr
+            .children()
+            .into_iter()
+            .all(|child| is_cheap(child, input_schema))
 }
 
 /// Evaluates `projected`, an expression reading the `projection` columns of `batch` from a batch
@@ -836,7 +896,61 @@ mod tests {
         // Only one row in four needs the dividend, so it was never tried over the whole batch,
         // which would have failed and stopped speculation for later batches
         let arg = &guarded.downcast_ref::<NullShortCircuit>().unwrap().args[0];
+        assert!(!arg.cheap);
         assert!(arg.speculate.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cheap_arguments_are_speculated_however_many_rows_are_skipped() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, false),
+            Field::new("c", DataType::Int64, false),
+        ]));
+        let checked = |name: &str, left, right| {
+            let fun = crate::create_comet_physical_fun_with_eval_mode(
+                name,
+                DataType::Int64,
+                &datafusion::prelude::SessionContext::new().state(),
+                None,
+                EvalMode::Ansi,
+            )
+            .unwrap();
+            Arc::new(ScalarFunctionExpr::new(
+                name,
+                fun,
+                vec![left, right],
+                Arc::new(Field::new(name, DataType::Int64, true)),
+                Arc::new(ConfigOptions::default()),
+            )) as Arc<dyn PhysicalExpr>
+        };
+        // a * (b - c) under ANSI, whose subtraction overflows only on the rows where a is NULL
+        let difference = checked(
+            "checked_sub",
+            col("b", &schema).unwrap(),
+            col("c", &schema).unwrap(),
+        );
+        let product = checked("checked_mul", col("a", &schema).unwrap(), difference);
+        let guarded = NullShortCircuit::wrap(product, &schema).unwrap();
+        let arg = &guarded.downcast_ref::<NullShortCircuit>().unwrap().args[1];
+        assert!(arg.cheap);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![None, None, None, Some(2)])),
+                Arc::new(Int64Array::from(vec![i64::MIN, i64::MIN, i64::MIN, 5])),
+                Arc::new(Int64Array::from(vec![1, 1, 1, 2])),
+            ],
+        )
+        .unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, Some(6)]));
+        assert_eq!(
+            evaluate(&guarded, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        // Only one row in four needs the difference, and it was still tried over the whole
+        // batch, where it overflowed, so the rows were selected instead
+        assert!(!arg.speculate.load(Ordering::Relaxed));
     }
 
     #[test]
