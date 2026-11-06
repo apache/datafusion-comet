@@ -244,24 +244,94 @@ FROM date_events
 ORDER BY cate, val_date
 
 -- ============================================================
--- 1.12: RANGE BETWEEN with DECIMAL ORDER BY DESC
+-- 1.12: RANGE BETWEEN with DECIMAL ORDER BY
 -- Ported from Spark's typeCoercion/native/windowFrameCoercion.sql:
 --   SELECT COUNT(*) OVER (PARTITION BY 1 ORDER BY cast(1 as decimal(10, 0)) DESC
 --     RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t
--- Comet falls back because Spark decimal arithmetic widens precision on
--- +/-, so the native frame-boundary arithmetic produces e.g. Decimal(11,0)
--- while the current row stays Decimal(10,0), and DataFusion's comparator
--- fails with "Uncomparable values". Once the native planner preserves the
--- ORDER BY column's precision when computing RANGE boundaries, the guard
--- in CometWindowExec can be removed and this test will start failing
--- because Comet stops falling back — that's the signal to re-enable it.
+-- Runs natively: Spark casts the frame offset to the ORDER BY decimal type.
+-- Boundary arithmetic still widens precision (e.g. DECIMAL(11,0)), but
+-- DataFusion compares Decimal128 values with matching scales regardless of
+-- precision. The DATE case in 1.11 keeps an IntegerType offset instead, which
+-- the native planner coerces to IntervalDayTime.
 -- ============================================================
 
-query expect_fallback(RANGE frame with explicit offset on DECIMAL ORDER BY is not supported)
+query
 SELECT COUNT(*) OVER (PARTITION BY 1
                       ORDER BY CAST(1 AS DECIMAL(10, 0)) DESC
                       RANGE BETWEEN CURRENT ROW AND 1 FOLLOWING) AS c
 FROM t_single
+
+-- 30 rows in three partitions. The fractional part rotates through
+-- .00/.25/.50/.75 so RANGE peers vary, and the same values are kept at three
+-- precisions and scales.
+statement
+CREATE TABLE dec_range(a int, d decimal(10, 2), d0 decimal(10, 0), d6 decimal(18, 6), c int) USING parquet
+
+statement
+INSERT INTO dec_range
+SELECT CAST(id % 3 AS int),
+       CAST(id % 10 + (id % 4) * 0.25 AS decimal(10, 2)),
+       CAST(id % 10 + (id % 4) * 0.25 AS decimal(10, 0)),
+       CAST(id % 10 + (id % 4) * 0.25 AS decimal(18, 6)),
+       CAST(id * 2 AS int)
+FROM range(30)
+
+-- Each frame shape with an explicit offset
+query
+SELECT a, d, c,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS s_pf,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 3 PRECEDING AND CURRENT ROW) AS s_pc,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN CURRENT ROW AND 3 FOLLOWING) AS s_cf,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN UNBOUNDED PRECEDING AND 2 FOLLOWING) AS s_uf
+FROM dec_range
+
+-- Descending order swaps the direction of `current +/- offset`, and a
+-- fractional offset exercises scale-aware boundary arithmetic
+query
+SELECT a, d, c,
+  SUM(c) OVER (PARTITION BY a ORDER BY d DESC RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS s_desc,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 0.5 PRECEDING AND 0.5 FOLLOWING) AS s_frac
+FROM dec_range
+
+-- Zero scale and a higher precision and scale
+query
+SELECT a, d0, d6, c,
+  SUM(c) OVER (PARTITION BY a ORDER BY d0 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s_d0,
+  SUM(c) OVER (PARTITION BY a ORDER BY d6 RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS s_d6
+FROM dec_range
+
+-- Partition 1 holds duplicate values, which RANGE (unlike ROWS) takes in as
+-- peers. Partition 2 holds NULL keys, which sort first under ASC. Partition 3
+-- holds negative values, so `current +/- offset` crosses zero.
+statement
+CREATE TABLE dec_range_edge(a int, d decimal(10, 2), c int) USING parquet
+
+statement
+INSERT INTO dec_range_edge VALUES
+  (1, 1.00, 10), (1, 1.00, 20), (1, 2.00, 30), (1, 2.00, 40), (1, 5.00, 50), (1, 5.00, 60),
+  (2, NULL, 10), (2, 1.00, 20), (2, 2.00, 30), (2, NULL, 40), (2, 5.00, 50),
+  (3, -5.50, 10), (3, -3.00, 20), (3, -1.25, 30), (3, 0.00, 40), (3, 1.25, 50), (3, 3.00, 60),
+  (3, 5.50, 70)
+
+query
+SELECT a, d, c,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) AS s_1,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING) AS s_2
+FROM dec_range_edge
+
+-- Maximum precision, with values and offset far enough from the Decimal128
+-- limit that `current +/- offset` cannot overflow. The overflow cases fall
+-- back and are covered in CometWindowExecSuite.
+statement
+CREATE TABLE dec_range_max(a int, d decimal(38, 0), c int) USING parquet
+
+statement
+INSERT INTO dec_range_max VALUES (1, 10, 10), (1, 13, 20), (1, 15, 30), (1, 18, 40), (1, 22, 50)
+
+query
+SELECT a, d, c,
+  SUM(c) OVER (PARTITION BY a ORDER BY d RANGE BETWEEN 3 PRECEDING AND 3 FOLLOWING) AS s
+FROM dec_range_max
 
 -- ============================================================
 -- 1.13: RANGE frame with BIGINT ORDER BY values near Long.MaxValue
