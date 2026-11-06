@@ -21,12 +21,13 @@ package org.apache.spark.sql.comet
 
 import java.util.concurrent.atomic.AtomicReference
 
+import org.apache.arrow.c.ArrowArrayStream
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
-import org.apache.spark.sql.comet.execution.arrow.CometArrowStream
+import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.util.{Utils => CometUtils}
 import org.apache.spark.sql.connector.write.{BatchWrite, WriterCommitMessage}
 import org.apache.spark.sql.execution.{SparkPlan, UnaryExecNode}
@@ -230,29 +231,41 @@ case class CometIcebergWriteExec(
 
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val schedulerProbe = IcebergSchedulerTestProbe.current
-    val inputRDD = if (child.supportsColumnar) {
-      child.executeColumnar()
-    } else {
-      throw new UnsupportedOperationException(
-        "CometIcebergWriteExec requires a columnar (Comet native) child; got " +
-          child.getClass.getName)
+    // One Arrow stream per partition, which native consumes through the C Stream Interface.
+    val streamRDD: RDD[ArrowArrayStream] = child match {
+      // Native reads the source's Arrow stream, as it does for a native operator's input. The
+      // source reuses its vectors for the next batch, and wrapping its `executeColumnar` batches
+      // below closes each batch once native has it; closing a struct vector drops its children,
+      // so the next batch would lose them (#7239). The scheduler probe counts rows as batches.
+      case source: CometNativeArrowSource if schedulerProbe.isEmpty =>
+        source.doExecuteAsArrowStream()
+      case _ if child.supportsColumnar =>
+        val inputRDD = child.executeColumnar()
+        val childRDD = schedulerProbe
+          .map(probe =>
+            new IcebergSchedulerProbeRDD(
+              inputRDD,
+              probe,
+              nativeOp.getIcebergWrite.getCommon.getDataLocation,
+              nativeOp.getIcebergWrite.getCommon.getOperationId))
+          .getOrElse(inputRDD)
+        CometArrowStream.wrapColumnarBatchRDD(
+          childRDD,
+          CometUtils.fromAttributes(child.output),
+          CometArrowStream.NATIVE_TIMEZONE,
+          "CometIcebergWriteExec")
+      case _ =>
+        throw new UnsupportedOperationException(
+          "CometIcebergWriteExec requires a columnar (Comet native) child; got " +
+            child.getClass.getName)
     }
-
-    val childRDD = schedulerProbe
-      .map(probe =>
-        new IcebergSchedulerProbeRDD(
-          inputRDD,
-          probe,
-          nativeOp.getIcebergWrite.getCommon.getDataLocation,
-          nativeOp.getIcebergWrite.getCommon.getOperationId))
-      .getOrElse(inputRDD)
-    val numPartitions = childRDD.getNumPartitions
+    val numPartitions = streamRDD.getNumPartitions
     // Native side emits the per-task Avro `DataFile` blob and the locations it wrote, one Binary
     // column each (see `build_output_schema` in `iceberg_write.rs`).
     val numOutputCols = 2
     val capturedNativeOp = nativeOp
 
-    childRDD.mapPartitionsInternal { iter =>
+    streamRDD.mapPartitionsInternal { iter =>
       val partitionId = TaskContext.getPartitionId()
       val taskAttemptId = TaskContext.get().taskAttemptId()
 
@@ -280,10 +293,7 @@ case class CometIcebergWriteExec(
 
       val execIterator = new CometExecIterator(
         CometExec.newIterId,
-        CometArrowStream.inputObjects(
-          iter,
-          CometUtils.fromAttributes(child.output),
-          "CometIcebergWriteExec"),
+        Array[Object](iter.next()),
         numOutputCols,
         planBytes,
         nativeMetrics,
