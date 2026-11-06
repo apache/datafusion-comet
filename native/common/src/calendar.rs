@@ -15,14 +15,15 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Howard Hinnant's algorithms (https://howardhinnant.github.io/date_algorithms.html), as in
-// DataFusion's date_trunc.rs where they are private. Hand-rolled rather than chrono because chrono
-// stops at year 262142 and Spark and Iceberg values reach further. Both functions are inlined
-// because per-row callers in other crates use them and the ci profile has no LTO.
+//! Proleptic Gregorian calendar conversions, using Howard Hinnant's algorithms
+//! (https://howardhinnant.github.io/date_algorithms.html) as adapted in DataFusion 55.1.0's
+//! date_trunc.rs, where they are private. Hand-rolled rather than chrono because chrono stops at
+//! year 262142 and Spark and Iceberg values reach further.
 
 /// Days since 1970-01-01 for a proleptic Gregorian date, like Java's `LocalDate.toEpochDay`.
-/// Months are 1-based. A day past the end of the month rolls into the next month. Years within
-/// about 2.5e16 of zero stay within `i64`.
+/// `month` must be in 1..=12. The result is linear in `day`, so a day past the end of the month
+/// rolls into the next month. Years within about 2.5e16 of zero stay within `i64`.
+// Inlined because per-row callers in other crates cannot inline it otherwise without LTO.
 #[inline]
 pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = year - i64::from(month <= 2);
@@ -35,8 +36,9 @@ pub fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 }
 
 /// Proleptic Gregorian `(year, month, day)` for a day count since 1970-01-01, like Java's
-/// `LocalDate.ofEpochDay`. The inverse of `days_from_civil` for any day at least 719468 below
-/// `i64::MAX`.
+/// `LocalDate.ofEpochDay`, with `month` in 1..=12 and `day` in 1..=31. The inverse of
+/// `days_from_civil` for any day at least 719468 below `i64::MAX`.
+// Inlined for the same reason as days_from_civil.
 #[inline]
 pub fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let z = days + 719_468;
@@ -121,5 +123,12 @@ mod tests {
             assert_eq!(civil_from_days(days), date, "day {days}");
             assert_eq!(days_from_civil(date.0, date.1, date.2), days);
         }
+    }
+
+    #[test]
+    fn rolls_days_past_the_month_end_forward() {
+        assert_eq!(days_from_civil(1900, 2, 29), days_from_civil(1900, 3, 1));
+        assert_eq!(days_from_civil(1970, 1, 32), 31);
+        assert_eq!(days_from_civil(1999, 12, 32), days_from_civil(2000, 1, 1));
     }
 }

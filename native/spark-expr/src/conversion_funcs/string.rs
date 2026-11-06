@@ -1419,7 +1419,7 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         //   (b) year outside chrono's representable range (> 262143 or < -262144)
         //
         // For case (b) we fall back to Howard Hinnant's direct arithmetic, which works
-        // for any year that fits in i64.  This covers the Long.MaxValue / Long.MinValue
+        // past chrono's range.  This covers the Long.MaxValue / Long.MinValue
         // boundary timestamps (year 294247 / -290308).
         let year = timestamp_info.year as i64;
         if (-262144..=262143).contains(&year) {
@@ -3582,12 +3582,13 @@ mod tests {
     /// Days from 1970-01-01 for a proleptic-Gregorian civil date (Howard Hinnant's algorithm).
     ///
     /// Used to compute the expected values of the ported Spark tests below independently of
-    /// the parser under test. Handles the full year range Spark supports, including negative
-    /// years and years beyond `chrono`'s limits, which the `Long.MinValue`/`MaxValue`
-    /// boundary cases need.
+    /// the parser under test, which reaches the shared `days_from_civil` through
+    /// `ymd_to_epoch_day`, so using that here would compare the code with itself. Handles the
+    /// full year range Spark supports, including negative years and years beyond `chrono`'s
+    /// limits, which the `Long.MinValue`/`MaxValue` boundary cases need.
     fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
         let y = year - i64::from(month <= 2);
-        // Truncating division, as the algorithm requires - not Rust's `%`-consistent one.
+        // Floor division written out, unlike the shared version's `div_euclid`.
         let era = if y >= 0 { y } else { y - 399 } / 400;
         let year_of_era = y - era * 400; // [0, 399]
         let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;

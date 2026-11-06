@@ -50,7 +50,8 @@ use std::sync::Arc;
 const MICROS_PER_SECOND: i64 = 1_000_000;
 const MICROS_PER_HOUR: i64 = 3_600_000_000;
 const MICROS_PER_DAY: i64 = 86_400_000_000;
-const UNIX_EPOCH_YEAR: i32 = 1970;
+// Every i32 epoch day falls in years -5877641..=5881580, so year and month counts fit in i32.
+const UNIX_EPOCH_YEAR: i64 = 1970;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum TemporalUnit {
@@ -117,15 +118,13 @@ fn micros_to_hours(micros: i64) -> i32 {
 
 /// `DateTimeUtil.daysToYears`: whole calendar years between the epoch and the day, floored.
 fn days_to_years(days: i32) -> i32 {
-    (civil_from_days(days.into()).0 - i64::from(UNIX_EPOCH_YEAR)) as i32
+    (civil_from_days(days.into()).0 - UNIX_EPOCH_YEAR) as i32
 }
 
 /// `DateTimeUtil.daysToMonths`: whole calendar months between the epoch and the day, floored.
-/// The widest results, at `i32::MIN` and `i32::MAX` days, are years -5877641 and 5881580, so the
-/// month count still fits in an `i32`.
 fn days_to_months(days: i32) -> i32 {
     let (year, month, _) = civil_from_days(days.into());
-    ((year - i64::from(UNIX_EPOCH_YEAR)) * 12 + month - 1) as i32
+    ((year - UNIX_EPOCH_YEAR) * 12 + month - 1) as i32
 }
 
 /// Applies a calendar function of the epoch day to a date or timestamp column in one pass.
@@ -473,22 +472,22 @@ mod tests {
         }
     }
 
-    /// The pinned cases above check the endpoints of the domain; this checks the calendar split
-    /// itself everywhere `chrono` can still represent the date, so the hand-rolled arithmetic
-    /// cannot drift in between.
+    /// The pinned cases above check the endpoints of the domain. This checks both transforms
+    /// everywhere chrono can still represent the date.
     #[test]
-    fn civil_from_days_agrees_with_chrono() {
+    fn years_and_months_agree_with_chrono() {
         use chrono::Datelike;
-        // Every day of one full 400-year Gregorian cycle either side of the epoch, then a stride
-        // over the rest of the `i32` domain (`to_naive_date_opt` returns `None` past chrono's
-        // range, which is exactly the region the pinned cases cover).
+        // Every day of one 400-year era either side of the epoch, then a stride over the rest of
+        // the i32 range (`to_naive_date_opt` returns `None` past chrono's range, which the pinned
+        // cases cover).
         let dense = -146_097..=146_097;
         for days in dense.chain((i32::MIN..=i32::MAX).step_by(999_983)) {
             if let Some(date) = Date32Type::to_naive_date_opt(days) {
-                let (year, month, day) = civil_from_days(days.into());
+                let years = date.year() - 1970;
+                assert_eq!(days_to_years(days), years, "day {days} ({date})");
                 assert_eq!(
-                    (year, month, day),
-                    (date.year().into(), date.month().into(), date.day().into()),
+                    days_to_months(days),
+                    years * 12 + date.month0() as i32,
                     "day {days} ({date})"
                 );
             }

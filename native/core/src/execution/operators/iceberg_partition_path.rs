@@ -212,6 +212,10 @@ fn human_string(transform: &Transform, field_type: &Type, value: Option<&Literal
 /// That is not `ISO_LOCAL_DATE`: `%04d` pads to four characters counting the sign and never writes
 /// a `+`, so year 10000 is `10000` and year -1 is `-001` (compare [`iso_year`]). Rust's `{:04}`
 /// pads the same way.
+///
+/// Like the other renderers here it must be total, because `generate_location` cannot return an
+/// error and iceberg-java's `EPOCH.plusDays` has no year ceiling, so it uses the shared
+/// calendar arithmetic rather than `chrono`.
 fn human_day(days: i32) -> String {
     let (year, month, day) = civil_from_days(i64::from(days));
     format!("{year:04}-{month:02}-{day:02}")
