@@ -1010,7 +1010,7 @@ under the License.
                     <arg>-Ywarn-value-discard</arg>
                     <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
                     <!-- JNI declarations and cross-version shims must retain their signatures. -->
-                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native(ExecutorsClient)?\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
@@ -1055,7 +1055,7 @@ under the License.
                     <arg>-Ywarn-numeric-widen</arg>
                     <arg>-Ywarn-unused:imports,patvars,privates,locals,params,-implicits</arg>
                     <!-- JNI declarations and cross-version shims must retain their signatures. -->
-                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.Native(ExecutorsClient)?\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;src=.*/src/[a-z]+/spark-[^/]+/.*:s</arg>
                     <!-- Default extension hooks intentionally leave parameters for overrides. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.rules\.CometScanContrib\.tryTransformV[12]\..*:s</arg>
