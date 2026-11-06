@@ -455,9 +455,12 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `CometIcebergEndToEndBenchmark`                                      | An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm's plan and the rows it wrote before timing it.                              |
 
 The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
-for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is published
-for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
-(`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
+for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. Iceberg 1.12.0 has a
+Spark 4.2 module in its source tree, but its release does not publish the runtime
+(`iceberg-spark-runtime-4.2_2.13`), so the 4.2 profile builds against the 4.0 runtime and the Comet
+Iceberg suites skip there (`icebergAvailable` is false on Spark 4.2). Iceberg's own Spark 4.2 suites
+do run, from source, in the `iceberg_1_12` CI job. Only the default profile runs on every pull
+request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
 and partition path spelling, needs a test that runs on each.
 

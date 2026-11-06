@@ -130,6 +130,7 @@ BUILD_JOBS = {
     "iceberg_1_9",
     "iceberg_1_10",
     "iceberg_1_11",
+    "iceberg_1_12",
 }
 
 # The two contrib/UDF gates also run ./mvnw, but consume no shared artifact.
@@ -233,6 +234,7 @@ NIGHTLY_TIER = {
     "iceberg_1_8",
     "iceberg_1_9",
     "iceberg_1_10",
+    "iceberg_1_12",
     "delta_3_5",
     "delta_4_0",
     "delta_4_1",
@@ -246,7 +248,13 @@ NIGHTLY_TIER = {
 SPARK_DEPRECATED = {"spark_3_4"}
 # One label opts a pull request into every Iceberg version, whichever tier
 # each sits in.
-ICEBERG_OPT_IN = {"iceberg_1_8", "iceberg_1_9", "iceberg_1_10", "iceberg_1_11"}
+ICEBERG_OPT_IN = {
+    "iceberg_1_8",
+    "iceberg_1_9",
+    "iceberg_1_10",
+    "iceberg_1_11",
+    "iceberg_1_12",
+}
 # Likewise one label for every Delta profile.
 DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | SPARK_DEPRECATED | {"docs"}

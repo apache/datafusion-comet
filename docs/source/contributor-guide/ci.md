@@ -45,29 +45,29 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1<br>Iceberg 1.11<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.8 / 1.9 / 1.10 / 1.12<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
   S34["Neither tier<br>Spark SQL, Spark 3.4"]
   CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
 Suite by suite:
 
-| Suite                                             | Pull request | Merge queue | Nightly |
-| ------------------------------------------------- | ------------ | ----------- | ------- |
-| Linux build, lint, Rust tests, TPC-H/TPC-DS       | yes          | yes         | no      |
-| Comet test suites, Spark 4.1                      | yes          | yes         | no      |
-| Spark SQL tests, Spark 4.1, catalyst and sql_core | with label   | yes         | no      |
-| Spark SQL tests, Spark 4.1, sql_hive              | with label   | yes         | no      |
-| Iceberg Spark SQL tests, Iceberg 1.11             | with label   | yes         | no      |
-| macOS build and Comet test suites                 | with label   | yes         | no      |
-| Benchmark compile and lint check                  | with label   | yes         | no      |
-| Delta contrib build gate                          | with label   | yes         | no      |
-| PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2          | with label   | yes         | no      |
-| Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2    | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
-| Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 | with label   | no          | yes     |
-| Delta contrib tests, Spark 3.5 / 4.0 / 4.1        | with label   | no          | yes     |
-| Spark SQL tests, Spark 3.4                        | with label   | no          | no      |
+| Suite                                                    | Pull request | Merge queue | Nightly |
+| -------------------------------------------------------- | ------------ | ----------- | ------- |
+| Linux build, lint, Rust tests, TPC-H/TPC-DS              | yes          | yes         | no      |
+| Comet test suites, Spark 4.1                             | yes          | yes         | no      |
+| Spark SQL tests, Spark 4.1, catalyst and sql_core        | with label   | yes         | no      |
+| Spark SQL tests, Spark 4.1, sql_hive                     | with label   | yes         | no      |
+| Iceberg Spark SQL tests, Iceberg 1.11                    | with label   | yes         | no      |
+| macOS build and Comet test suites                        | with label   | yes         | no      |
+| Benchmark compile and lint check                         | with label   | yes         | no      |
+| Delta contrib build gate                                 | with label   | yes         | no      |
+| PyArrow UDF tests, Spark 4.0 / 4.1 / 4.2                 | with label   | yes         | no      |
+| Comet test suites, Spark 3.4 / 3.5 / 4.0 / 4.2           | with label   | no          | yes     |
+| Spark SQL tests, Spark 3.5 / 4.0 / 4.2                   | with label   | no          | yes     |
+| Iceberg Spark SQL tests, Iceberg 1.8 / 1.9 / 1.10 / 1.12 | with label   | no          | yes     |
+| Delta contrib tests, Spark 3.5 / 4.0 / 4.1               | with label   | no          | yes     |
+| Spark SQL tests, Spark 3.4                               | with label   | no          | no      |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the suites that must pass before
@@ -318,7 +318,7 @@ re-armed automatically.
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
 profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, the Iceberg suites for
-1.8, 1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
+1.8, 1.9, 1.10 and 1.12, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
 changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.

@@ -123,16 +123,17 @@ git add -A
 git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
 ```
 
-Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
+Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0, 1.12.0). The file contents differ between versions, so each
 diff must be generated against its own tag.
 
 ## Running Tests in CI
 
-The `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
-run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
-Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four
-run earlier on a pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. Each job
+The `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10`, `iceberg_1_11` and `iceberg_1_12` jobs in `ci.yml` apply these
+diffs and run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs
+against Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3;
+Iceberg 1.12.0, the first release with a Spark 4.2 module, runs against Spark 4.2.0. Iceberg 1.11.0 runs in the
+merge queue; 1.8.1, 1.9.1, 1.10.0 and 1.12.0 run once a night against `main`, because Spark 4.2 support is still
+experimental. All five run earlier on a pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. Each job
 calls `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
 for how the pull-request, merge-queue and nightly tiers differ.
@@ -163,7 +164,7 @@ Apply the `run-iceberg-tests` label to a pull request whenever it touches the Ic
 path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
 own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue's, and the
-first verdict on the older Iceberg versions is the nightly run's, after the change has landed.
+first verdict on the other Iceberg versions is the nightly run's, after the change has landed.
 
 ### Which writer ran each Iceberg write
 
