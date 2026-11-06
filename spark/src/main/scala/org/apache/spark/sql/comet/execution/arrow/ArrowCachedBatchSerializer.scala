@@ -23,6 +23,7 @@ import java.lang.{Boolean => JBoolean, Byte => JByte, Double => JDouble, Float =
 
 import scala.collection.JavaConverters._
 
+import org.apache.arrow.vector.DecimalVector
 import org.apache.spark.TaskContext
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -35,11 +36,12 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 import org.apache.spark.storage.StorageLevel
+import org.apache.spark.unsafe.Platform
 import org.apache.spark.unsafe.types.UTF8String
 import org.apache.spark.util.io.ChunkedByteBuffer
 
 import org.apache.comet.{CometArrowAllocator, CometConf, DataTypeSupport}
-import org.apache.comet.vector.{CometDecodedVector, NativeUtil}
+import org.apache.comet.vector.{CometDecodedVector, CometPlainVector, NativeUtil}
 
 /**
  * Cached batch format used when Comet writes Spark in-memory cache data.
@@ -300,6 +302,64 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   private def gatherDecimalStats(
       col: ColumnVector,
       numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = col match {
+    case v: CometPlainVector if v.getValueVector.isInstanceOf[DecimalVector] =>
+      gatherDecimal128Stats(v, numRows, dt)
+    case _ => gatherDecimalStatsByValue(col, numRows, dt)
+  }
+
+  // Compares the 128-bit unscaled values in Arrow's data buffer rather than building a Decimal for
+  // every row, which for a precision past 18 digits means a BigInteger and a BigDecimal each. All
+  // the values of a column share one scale, so their unscaled order is their numeric order. A
+  // value is a signed high word over an unsigned low word, in little-endian order, and a narrow
+  // decimal is the sign extension of its low word, so one comparison covers every precision. Only
+  // the two bounds become Decimals, through the same getDecimal the by-value loop calls.
+  private def gatherDecimal128Stats(
+      col: CometPlainVector,
+      numRows: Int,
+      dt: DecimalType): (Decimal, Decimal, Int) = {
+    val base = col.getValueVector.getDataBuffer.memoryAddress()
+    var minRow = -1
+    var maxRow = -1
+    var minHi = 0L
+    var minLo = 0L
+    var maxHi = 0L
+    var maxLo = 0L
+    var nullCount = 0
+    var r = 0
+    while (r < numRows) {
+      if (col.isNullAt(r)) {
+        nullCount += 1
+      } else {
+        val lo = Platform.getLong(null, base + r * 16L)
+        val hi = Platform.getLong(null, base + r * 16L + 8L)
+        if (minRow < 0 || hi < minHi || (hi == minHi && JLong.compareUnsigned(lo, minLo) < 0)) {
+          minRow = r
+          minHi = hi
+          minLo = lo
+        }
+        if (maxRow < 0 || hi > maxHi || (hi == maxHi && JLong.compareUnsigned(lo, maxLo) > 0)) {
+          maxRow = r
+          maxHi = hi
+          maxLo = lo
+        }
+      }
+      r += 1
+    }
+    if (minRow < 0) {
+      (null, null, nullCount)
+    } else {
+      (
+        col.getDecimal(minRow, dt.precision, dt.scale),
+        col.getDecimal(maxRow, dt.precision, dt.scale),
+        nullCount)
+    }
+  }
+
+  // The fallback for a decimal column that is not a plain Arrow vector.
+  private def gatherDecimalStatsByValue(
+      col: ColumnVector,
+      numRows: Int,
       dt: DecimalType): (Decimal, Decimal, Int) = {
     var min: Decimal = null
     var max: Decimal = null
@@ -530,16 +590,23 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Columnar Comet output is stored as one Arrow IPC record batch message per cached batch. Spark
   // only calls this when supportsColumnarInput returned true, so the schema is known to be
   // Comet-writable here.
+  //
+  // Small input batches are combined first, up to spark.sql.inMemoryColumnarStorage.batchSize
+  // rows, the size the row path cuts at; see CacheBatchCoalescer.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
       storageLevel: StorageLevel,
       conf: SQLConf): RDD[CachedBatch] = {
 
+    val batchSize = conf.columnBatchSize
     val settings = writeSettings(conf)
 
     input.mapPartitions { batches =>
-      encodeBatches(batches, schema, settings)
+      encodeBatches(
+        new CacheBatchCoalescer(batches, schema, batchSize, CometArrowAllocator),
+        schema,
+        settings)
     }
   }
 
