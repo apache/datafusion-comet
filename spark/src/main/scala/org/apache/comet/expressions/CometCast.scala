@@ -578,20 +578,33 @@ object CometCast
    * cannot fail only where the conversion is always exact, such as a widening one or a string to
    * its bytes. A cast to or from a timestamp is excluded in every mode: the native kernels go
    * through chrono, which rejects years Spark accepts, and raise even for TRY. So is a cast from
-   * a date to a string, whose native formatting raises in every mode for such a year.
+   * a date to a string, whose native formatting raises in every mode for such a year. Both are
+   * checked at any depth, since a nested cast applies the same kernels to each element, field,
+   * key and value (https://github.com/apache/datafusion-comet/issues/7471).
    */
   private[comet] def cannotFail(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
     def isTimestamp(t: DataType) = t == TimestampType || t == TimestampNTZType
-    val dateToString = from == DataTypes.DateType && to.isInstanceOf[StringType]
-    !isTimestamp(from) && !isTimestamp(to) && !dateToString && (evalMode(cast) match {
+    val hasTimestamp = existsNested(from)(isTimestamp) || existsNested(to)(isTimestamp)
+    val dateToString = existsNested(from)(_ == DataTypes.DateType) &&
+      existsNested(to)(_.isInstanceOf[StringType])
+    !hasTimestamp && !dateToString && (evalMode(cast) match {
       case CometEvalMode.TRY => true
       case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
       case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
       case _ => keyCastCannotFail(from, to)
     })
   }
+
+  private def existsNested(dataType: DataType)(p: DataType => Boolean): Boolean =
+    p(dataType) || (dataType match {
+      case ArrayType(elementType, _) => existsNested(elementType)(p)
+      case MapType(keyType, valueType, _) =>
+        existsNested(keyType)(p) || existsNested(valueType)(p)
+      case StructType(fields) => fields.exists(f => existsNested(f.dataType)(p))
+      case _ => false
+    })
 
   private def isAtomicCastType(dataType: DataType): Boolean = dataType match {
     case _: NumericType | _: StringType | DataTypes.BooleanType | DataTypes.BinaryType |

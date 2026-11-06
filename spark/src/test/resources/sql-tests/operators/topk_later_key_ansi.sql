@@ -22,6 +22,7 @@
 
 -- Config: spark.sql.ansi.enabled=true
 -- Config: spark.sql.adaptive.enabled=false
+-- Config: spark.sql.parquet.outputTimestampType=TIMESTAMP_MICROS
 
 statement
 CREATE TABLE topk(a int, b int) USING parquet
@@ -113,6 +114,56 @@ SELECT a, dt FROM topk_types ORDER BY a, try_cast(dt AS TIMESTAMP) LIMIT 3
 -- Native date formatting rejects years that Spark accepts, in every mode
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, dt FROM topk_types ORDER BY a, CAST(dt AS STRING) LIMIT 3
+
+statement
+CREATE TABLE topk_nested(a int, tsa array<timestamp>, dta array<date>, sts struct<f: timestamp>,
+  std struct<f: date>, md map<int, date>, mt map<timestamp, int>, ast array<struct<f: timestamp>>)
+USING parquet
+
+statement
+INSERT INTO topk_nested SELECT /*+ REPARTITION(1) */ a, array(ts), array(dt), named_struct('f', ts),
+  named_struct('f', dt), map(1, dt), map(ts, 1), array(named_struct('f', ts)) FROM VALUES
+  (1, timestamp_micros(9000000000000000000), date_from_unix_date(100000000)),
+  (1, timestamp'2024-01-31 23:59:59', date'2024-01-31'),
+  (2, timestamp'1970-01-01 00:00:00', date'1970-01-01') AS t(a, ts, dt)
+
+-- The same native kernels cast each element, field, key and value of a nested type
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(tsa AS STRING) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(dta AS STRING) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(tsa AS array<string>) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(dta AS array<string>) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(sts AS STRING) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(std AS STRING) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(std AS struct<f: string>) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(sts AS struct<f: date>) LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(std AS struct<f: timestamp>) LIMIT 3
+
+-- A map cannot be a sort key, so test it under IS NULL, which cannot fail by itself
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(md AS map<int, string>) IS NULL LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(mt AS map<string, int>) IS NULL LIMIT 3
+
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a FROM topk_nested ORDER BY a, try_cast(ast AS STRING) LIMIT 3
 
 -- Floating-point arithmetic cannot fail even under ANSI mode
 query
