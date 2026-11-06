@@ -244,6 +244,10 @@ case class CometNativeScanExec(
 
   def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
+  // Executes itself when it is a native block on its own, serializing its plan then rather than
+  // through `serializedPlanOpt`, so it can be a block's root without a serialized plan.
+  override protected def reportsNativeCpuTime: Boolean = true
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
@@ -332,7 +336,7 @@ case class CometNativeScanExec(
       "staticFilesSize",
       "pruningTime")
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     CometMetricNode.nativeScanMetrics(session.sparkContext) ++
       scan.metrics.filter { case (k, _) => driverMetricKeys.contains(k) }
   }
