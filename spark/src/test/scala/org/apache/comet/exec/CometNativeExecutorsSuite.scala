@@ -140,7 +140,9 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
 
   private def onCluster(body: => Unit): Unit = withSQLConf(
     CometConf.COMET_NATIVE_EXECUTORS_ENABLED.key -> "true",
-    CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key -> schedulerUrl)(body)
+    // Without a cluster, only tests that the planner refuses run, and those never connect.
+    CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.key ->
+      Option(schedulerUrl).getOrElse("http://localhost:50060"))(body)
 
   /**
    * Checks that the cluster runs `query` and returns what Spark returns, in order if `ordered`.
@@ -365,23 +367,84 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
     }
   }
 
+  /** The messages of the exception that planning `df` on the cluster throws and its causes. */
+  private def refusalMessages(df: => DataFrame): Seq[String] = {
+    // withSQLConf returns Unit on Spark 3.x, so the messages come out through a var.
+    var messages: Seq[String] = Nil
+    onCluster {
+      // A new Dataset, since a Dataset keeps the plan it was first run with.
+      val error = intercept[Exception](df.queryExecution.executedPlan)
+      messages = Iterator
+        .iterate[Throwable](error)(_.getCause)
+        .takeWhile(_ != null)
+        .map(e => String.valueOf(e.getMessage))
+        .toSeq
+    }
+    messages
+  }
+
+  /** Checks that the cluster refuses `df`, naming `operator` and giving `reason`. */
+  private def checkRefused(df: => DataFrame, operator: String, reason: String): Unit = {
+    val messages = refusalMessages(df)
+    assert(
+      messages.exists(message =>
+        message.contains("Comet Native Executors cannot run this query") &&
+          message.contains(operator) && message.contains(reason)),
+      messages)
+  }
+
   nativeExecutorsTest("a query the cluster cannot run fails, naming the operator") {
     withTable { path =>
       // With Comet's sort off, the sort stays in Spark.
       withSQLConf(CometConf.COMET_EXEC_SORT_ENABLED.key -> "false") {
-        onCluster {
-          val error = intercept[Exception](spark.read.parquet(path).orderBy("v").collect())
-          val messages = Iterator
-            .iterate[Throwable](error)(_.getCause)
-            .takeWhile(_ != null)
-            .map(e => String.valueOf(e.getMessage))
-            .toSeq
-          assert(
-            messages.exists(message =>
-              message.contains("Comet Native Executors cannot run this query") &&
-                message.contains("Sort")),
-            error)
+        checkRefused(spark.read.parquet(path).orderBy("v"), "Sort", "")
+      }
+    }
+  }
+
+  // The tests below fail while planning, so they need no cluster.
+
+  test("a scan that stays on the JVM fails, naming the operator that reads from it") {
+    withTable { path =>
+      // The scan stays in Spark, and Comet converts its columnar batches to Arrow batches for the
+      // operators above it.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
+        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true") {
+        checkRefused(
+          spark.read.parquet(path).selectExpr("id + 1 AS i"),
+          "CometSparkColumnarToColumnar",
+          "do not support it yet")
+      }
+    }
+  }
+
+  test("a scan with dynamic partition pruning fails, naming the scan") {
+    withTempDir { dir =>
+      val factPath = s"${dir.getAbsolutePath}/fact.parquet"
+      val dimPath = s"${dir.getAbsolutePath}/dim.parquet"
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        val fact = spark
+          .range(0, 100)
+          .selectExpr("id AS fact_id", "date_add(date'2020-01-01', cast(id % 10 AS int)) AS d")
+        fact.write.partitionBy("d").parquet(factPath)
+        spark
+          .range(0, 10)
+          .selectExpr("id AS dim_id", "date_add(date'2020-01-01', cast(id AS int)) AS dim_d")
+          .write
+          .parquet(dimPath)
+      }
+      // Without AQE, the pruning filter is in the plan when Comet converts it.
+      withSQLConf(
+        SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+        def query = {
+          spark.read.parquet(factPath).createOrReplaceTempView("dpp_fact")
+          spark.read.parquet(dimPath).createOrReplaceTempView("dpp_dim")
+          sql("select * from dpp_fact join dpp_dim on d = dim_d where dim_id > 7")
         }
+        checkRefused(query, "CometNativeScan", "dynamic partition pruning")
       }
     }
   }

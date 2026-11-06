@@ -21,7 +21,10 @@
 //! The driver submits a query to the scheduler's Arrow Flight service, which answers with one
 //! endpoint per result partition, and then reads each partition from its executor with `DoGet`.
 
+use std::time::Duration;
+
 use arrow_flight::decode::FlightRecordBatchStream;
+use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
 use arrow_flight::{FlightClient, FlightDescriptor, Ticket};
 use datafusion_comet_proto::spark_native_executors::{
@@ -34,6 +37,7 @@ use jni::sys::{jbyteArray, jlong};
 use jni::EnvUnowned;
 use prost::Message;
 use tonic::transport::{Channel, Endpoint};
+use tonic::Code;
 
 use super::COMET_VERSION;
 use crate::errors::{try_unwrap_or_throw, CometError, CometResult};
@@ -41,6 +45,46 @@ use crate::execution::jni_api::{export_batch, get_runtime};
 
 fn client_error(context: &str, error: impl std::fmt::Display) -> CometError {
     CometError::Internal(format!("Comet Native Executors: {context}: {error}"))
+}
+
+/// How long to wait for a connection to a scheduler or an executor.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// How often to probe a connection that carries no traffic, at the TCP level and at the HTTP/2
+/// level. A query can run for a long time before the scheduler answers its submission, so a
+/// request has no overall timeout. These probes are what notice a scheduler or an executor that
+/// died or became unreachable without closing the connection.
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How long to wait for an answer to an HTTP/2 probe before giving up on the connection.
+const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The error for a failed read of a result partition. A partition the cluster has deleted gets a
+/// message that names the setting to change. The scheduler says that a partition it stores has
+/// expired, and an executor fails to open the file of a partition it has deleted.
+fn read_error(context: &str, error: FlightError) -> CometError {
+    let expired = match &error {
+        FlightError::Tonic(status) => match status.code() {
+            Code::NotFound => status.message().contains("expired"),
+            Code::Internal => {
+                let message = status.message();
+                message.contains("Failed to open partition file") && message.contains("NotFound")
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    if expired {
+        client_error(
+            context,
+            format!(
+                "the result partition expired on the cluster; raise \
+                 COMET_SCHEDULER_RESULT_RETENTION_SECONDS ({error})"
+            ),
+        )
+    } else {
+        client_error(context, error)
+    }
 }
 
 /// Connects to the Flight service at `location`, a Flight location such as
@@ -52,6 +96,11 @@ async fn connect(location: &str) -> CometResult<FlightClient> {
     };
     let channel: Channel = Endpoint::from_shared(uri)
         .map_err(|e| client_error(&format!("invalid location {location}"), e))?
+        .connect_timeout(CONNECT_TIMEOUT)
+        .tcp_keepalive(Some(KEEP_ALIVE_INTERVAL))
+        .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+        .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+        .keep_alive_while_idle(true)
         .connect()
         .await
         .map_err(|e| client_error(&format!("cannot connect to {location}"), e))?;
@@ -138,7 +187,7 @@ pub extern "system" fn Java_org_apache_comet_NativeExecutorsClient_openPartition
                 .await?
                 .do_get(Ticket::new(ticket))
                 .await
-                .map_err(|e| client_error(&format!("cannot read a partition from {location}"), e))
+                .map_err(|e| read_error(&format!("cannot read a partition from {location}"), e))
         })?;
         Ok(Box::into_raw(Box::new(stream)) as jlong)
     })
@@ -160,7 +209,7 @@ pub extern "system" fn Java_org_apache_comet_NativeExecutorsClient_nextBatch(
         let Some(batch) = get_runtime().block_on(stream.next()) else {
             return Ok(-1);
         };
-        let batch = batch.map_err(|e| client_error("cannot read a partition", e))?;
+        let batch = batch.map_err(|e| read_error("cannot read a partition", e))?;
         let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
         let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
         // SAFETY: the JVM allocated one array and one schema struct per column.
@@ -182,4 +231,41 @@ pub extern "system" fn Java_org_apache_comet_NativeExecutorsClient_closePartitio
         }
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tonic::Status;
+
+    fn message(status: Status) -> String {
+        read_error("cannot read a partition", FlightError::from(status)).to_string()
+    }
+
+    #[test]
+    fn an_expired_result_names_the_setting_to_raise() {
+        for status in [
+            Status::not_found("The results of job abc have expired"),
+            Status::internal(
+                "Ballista Error: General(\"Failed to open partition file at \\\"p\\\": \
+                 Os { code: 2, kind: NotFound, message: \\\"No such file or directory\\\" }\")",
+            ),
+        ] {
+            assert!(
+                message(status).contains("COMET_SCHEDULER_RESULT_RETENTION_SECONDS"),
+                "no hint"
+            );
+        }
+    }
+
+    #[test]
+    fn other_failures_do_not_blame_expiry() {
+        for status in [
+            Status::not_found("Job abc has no result partition 7"),
+            Status::internal("Ballista Error: something else"),
+            Status::unavailable("connection reset"),
+        ] {
+            assert!(!message(status).contains("expired"));
+        }
+    }
 }

@@ -28,7 +28,7 @@ import scala.util.Try
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruning, DynamicPruningExpression, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning, SinglePartition}
 import org.apache.spark.sql.comet.execution.shuffle.{CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, CommandResultExec, DeserializeToObjectExec, LeafExecNode, ScalarSubquery, SparkPlan}
@@ -79,6 +79,7 @@ case class CometNativeExecutorsExec(
     throw new UnsupportedOperationException(s"$nodeName only produces columnar output")
 
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
+    NativeExecutorsClient.requireNativeSupport()
     val request = CometNativeExecutors.withSubqueryResults(
       query,
       subqueryResults.collect { case sub: ScalarSubquery => sub })
@@ -114,12 +115,21 @@ private class CometNativeExecutorsRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     val partition = split.asInstanceOf[CometNativeExecutorsPartition]
+    // A Spark executor needs a libcomet built with the feature too.
+    NativeExecutorsClient.requireNativeSupport()
     val client = new NativeExecutorsClient()
     val nativeUtil = new NativeUtil()
+    // The task's completion listener closes nativeUtil, but only once there is one to register.
     val handle =
-      client.openPartition(
-        partition.endpoint.getLocation,
-        partition.endpoint.getTicket.toByteArray)
+      try {
+        client.openPartition(
+          partition.endpoint.getLocation,
+          partition.endpoint.getTicket.toByteArray)
+      } catch {
+        case t: Throwable =>
+          nativeUtil.close()
+          throw t
+      }
     val batches = new Iterator[ColumnarBatch] with AutoCloseable {
       private var current: Option[ColumnarBatch] = None
       private var pending: Option[ColumnarBatch] = None
@@ -151,12 +161,16 @@ private class CometNativeExecutorsRDD(
 
       override def close(): Unit = if (!closed) {
         closed = true
-        current.foreach(_.close())
-        current = None
-        pending.foreach(_.close())
-        pending = None
-        client.closePartition(handle)
-        nativeUtil.close()
+        try {
+          current.foreach(_.close())
+          current = None
+          pending.foreach(_.close())
+          pending = None
+        } finally {
+          // Each step runs even if an earlier one throws.
+          try client.closePartition(handle)
+          finally nativeUtil.close()
+        }
       }
     }
     context.addTaskCompletionListener[Unit](_ => batches.close())
@@ -166,7 +180,7 @@ private class CometNativeExecutorsRDD(
 
 /**
  * Plans queries for Comet Native Executors: turns the plan Comet would execute into the stage
- * graph a cluster runs, and refuses any query that cannot run entirely natively.
+ * graph a cluster runs, and refuses any query that cannot run entirely in the Comet pipeline.
  */
 object CometNativeExecutors {
 
@@ -198,22 +212,29 @@ object CometNativeExecutors {
    * on a Comet Native Executor cluster. An operator on top that only turns the query's result
    * into JVM objects, as `Dataset.rdd` adds, stays on the driver above the leaf.
    */
-  def offload(original: SparkPlan, converted: SparkPlan): SparkPlan = converted match {
-    case toObjects: DeserializeToObjectExec =>
-      toObjects.withNewChildren(Seq(offload(toObjects.child, toObjects.child)))
-    case native =>
-      val exec = CometNativeExecutorsExec(
-        native.output,
-        buildQuery(native).toByteArray,
-        CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.get(),
-        scalarSubqueries(native))
-      native.logicalLink.orElse(original.logicalLink).foreach(exec.setLogicalLink)
-      exec
+  def offload(original: SparkPlan, converted: SparkPlan): SparkPlan = {
+    NativeExecutorsClient.requireNativeSupport()
+    offloadPlan(original, converted)
   }
+
+  private def offloadPlan(original: SparkPlan, converted: SparkPlan): SparkPlan =
+    converted match {
+      case toObjects: DeserializeToObjectExec =>
+        toObjects.withNewChildren(Seq(offloadPlan(toObjects.child, toObjects.child)))
+      case native =>
+        val exec = CometNativeExecutorsExec(
+          native.output,
+          buildQuery(native).toByteArray,
+          CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.get(),
+          scalarSubqueries(native))
+        native.logicalLink.orElse(original.logicalLink).foreach(exec.setLogicalLink)
+        exec
+    }
 
   /**
    * The query a Comet Native Executor cluster runs for `plan`, the plan Comet would execute: one
-   * stage per native block, with an input for each exchange that feeds the block.
+   * stage per block of Comet operators that run as one Rust plan, with an input for each exchange
+   * that feeds the block.
    *
    * @throws CometRuntimeException
    *   naming the first operator that cannot run on a cluster
@@ -364,7 +385,10 @@ object CometNativeExecutors {
     val stages: ArrayBuffer[Stage] = ArrayBuffer.empty
     private val stageIndexes = new IdentityHashMap[SparkPlan, Integer]()
 
-    /** The index of the stage that runs the native block rooted at `plan`, adding it first. */
+    /**
+     * The index of the stage that runs the block of Comet operators rooted at `plan`, adding it
+     * first.
+     */
     def stageOf(plan: SparkPlan): Int = {
       val known = stageIndexes.get(plan)
       if (known != null) {
@@ -373,7 +397,7 @@ object CometNativeExecutors {
       val block = plan match {
         case take: CometTakeOrderedAndProjectExec => return takeOrderedStage(take)
         case native: CometNativeExec if native.serializedPlanOpt.isDefined => native
-        case other => fail(other, "it does not run natively")
+        case other => fail(other, "it is not a Comet operator that runs in Rust")
       }
       val inputs = inputsOf(block).map {
         case exchange: CometShuffleExchangeExec =>
@@ -388,7 +412,11 @@ object CometNativeExecutors {
         Seq.empty
       } else {
         val base = new PlanDataInjector.CachedPlanData(blockPlan)
-        (0 until perPartition.values.head.length).map { i =>
+        val counts = perPartition.map { case (key, data) => key -> data.length }
+        require(
+          counts.values.toSet.size == 1,
+          s"The scans of one block must have the same number of partitions, but found $counts")
+        (0 until counts.values.head).map { i =>
           val partitionData = perPartition.map { case (key, data) => key -> data(i) }
           PlanDataInjector.injectPlanData(base, common, partitionData).toByteString
         }
@@ -426,7 +454,7 @@ object CometNativeExecutors {
       // More than one input partition, so that the plan sorts across all of them.
       val blockPlan = take
         .finalNativePlan(inputPartitions = 2)
-        .getOrElse(fail(take, "its top-K plan cannot run natively"))
+        .getOrElse(fail(take, "its top-K plan cannot be built"))
       addStage(take, blockPlan, Seq(input), Seq.empty, 1, Nil)
     }
 
@@ -484,8 +512,23 @@ object CometNativeExecutors {
           inputs += exchange
         case broadcast: CometBroadcastExchangeExec =>
           inputs += broadcast
-        case _: CometNativeScanExec | _: CometIcebergNativeScanExec | _: CometRangeExec =>
-        // Read inside the block.
+        // These read or generate their rows inside the block.
+        case scan: CometNativeScanExec =>
+          rejectDynamicPruning(scan, scan.partitionFilters)
+        case scan: CometIcebergNativeScanExec =>
+          rejectDynamicPruning(scan, scan.runtimeFilters)
+        case _: CometRangeExec =>
+        // These stand for rows that the JVM feeds to the plan, which a cluster has no way to do.
+        case _: CometScanWrapper | _: CometSinkPlaceHolder =>
+          fail(plan, "its input comes from the JVM, which a cluster cannot read")
+        case _: CometNativeWriteExec | _: CometWriteFilesExec | _: CometIcebergWriteExec =>
+          fail(
+            plan,
+            "Comet Native Executors do not support writes yet " +
+              "(https://github.com/apache/datafusion-comet/issues/7371)")
+        // Any other scan: its files are not described to the cluster.
+        case leaf: CometLeafExec =>
+          fail(leaf, "Comet Native Executors do not support it yet")
         // Part of the block, even when it has a serialized plan of its own: the conversion
         // serializes some operators before their parent joins them into a larger block.
         case native: CometNativeExec =>
@@ -496,6 +539,27 @@ object CometNativeExecutors {
       inputs.toSeq
     }
 
+    /**
+     * A scan that prunes partitions with a dynamic filter lists its files only once the filter's
+     * subquery has run, which the driver cannot do before it builds the query. That includes the
+     * placeholder AQE leaves in a filter until it plans the subquery.
+     */
+    private def rejectDynamicPruning(scan: SparkPlan, filters: Seq[Expression]): Unit = {
+      val dynamic = CometScanUtils
+        .filterUnusedDynamicPruningExpressions(filters)
+        .exists(_.exists {
+          case _: DynamicPruningExpression | _: DynamicPruning => true
+          case _ => false
+        })
+      if (dynamic) {
+        fail(
+          scan,
+          "it prunes partitions with a dynamic filter (dynamic partition pruning), which " +
+            "Comet Native Executors do not support yet " +
+            "(https://github.com/apache/datafusion-comet/issues/7370)")
+      }
+    }
+
     private def partitioningOf(
         exchange: CometShuffleExchangeExec): PartitioningOuterClass.Partitioning = {
       def partitioning = PartitioningOuterClass.Partitioning.newBuilder()
@@ -504,7 +568,7 @@ object CometNativeExecutors {
           val keys = expressions.map { key =>
             QueryPlanSerde
               .exprToProto(key, exchange.child.output)
-              .getOrElse(fail(exchange, s"its partitioning key $key cannot run natively"))
+              .getOrElse(fail(exchange, s"its partitioning key $key is not supported by Comet"))
           }
           partitioning
             .setHashPartition(
@@ -518,7 +582,7 @@ object CometNativeExecutors {
           val sortOrders = ordering.map { order =>
             QueryPlanSerde
               .exprToProto(order, exchange.child.output)
-              .getOrElse(fail(exchange, s"its sort key $order cannot run natively"))
+              .getOrElse(fail(exchange, s"its sort key $order is not supported by Comet"))
           }
           partitioning
             .setRangePartition(

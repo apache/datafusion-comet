@@ -523,10 +523,15 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental. When enabled, Comet runs each query on a Comet Native Executor cluster " +
-          "instead of on Spark's executors: the driver plans the query and submits it to the " +
-          "cluster's scheduler (`spark.comet.nativeExecutors.scheduler.url`), and the results " +
-          "come back to the driver. A query that cannot run entirely natively fails, naming " +
-          "the operator that cannot. See https://github.com/apache/datafusion-comet/issues/7288.")
+          "instead of in Spark's tasks. The driver plans the query and submits it to the " +
+          "cluster's scheduler (`spark.comet.nativeExecutors.scheduler.url`), and Spark tasks " +
+          "then read the result partitions from the cluster's executors, so the Spark " +
+          "executors need a libcomet built with the `native-executors` Cargo feature and " +
+          "network access to the cluster. Commands, writes and `CommandResultExec` stay in " +
+          "Spark. A query that cannot run entirely in the Comet pipeline and on the cluster " +
+          "fails, naming the operator that cannot. Cancellation is not supported: a killed " +
+          "Spark job leaves its query running on the cluster. " +
+          "See https://github.com/apache/datafusion-comet/issues/7288.")
       .internal()
       .booleanConf
       .createWithDefault(false)
@@ -740,8 +745,8 @@ object CometConf extends ShimCometConf {
         "Experimental opt-in: let a native partial aggregate stop aggregating once its input " +
           "looks mostly distinct, and send the rest of the task's rows to the shuffle " +
           "unaggregated. Only applies to partial aggregates that feed Comet native shuffle " +
-          "and whose aggregate functions, if any, are all single-argument COUNT or AVG. The " +
-          "check starts after the first 100,000 input rows of a task, and once aggregation stops " +
+          "and whose aggregate functions, if any, are all single-argument COUNT. The check " +
+          "starts after the first 100,000 input rows of a task, and once aggregation stops " +
           "it does not resume, so a task whose keys repeat after a mostly distinct start can " +
           s"shuffle many times more rows than it would with this disabled. $TUNING_GUIDE.")
       .booleanConf
