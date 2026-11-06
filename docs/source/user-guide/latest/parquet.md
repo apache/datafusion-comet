@@ -315,19 +315,25 @@ for production, so do not turn it off to avoid an entry on this page.
 
 With `spark.comet.write.parquet.enabled=true`:
 
-- **The datetime rebase modes are ignored.** On Spark 3.4 and 3.5, whose default rebase mode is
-  `EXCEPTION`, the native writer writes dates and timestamps before October 15, 1582 that Spark
-  refuses to write, and Spark then fails to read them back under its default read mode. With
-  `spark.sql.parquet.datetimeRebaseModeInRead=LEGACY`, Spark reads them shifted by several days, on
-  every version. The files lack the `org.apache.spark.version` footer key that tells Spark they need
-  no rebasing ([#7047](https://github.com/apache/datafusion-comet/issues/7047),
-  [#3427](https://github.com/apache/datafusion-comet/issues/3427)).
+- **The `EXCEPTION` rebase mode is ignored.** On Spark 3.4 and 3.5, whose default rebase mode is
+  `EXCEPTION`, the native writer writes dates before October 15, 1582 and timestamps before
+  January 1, 1900 that Spark refuses to write
+  ([#7047](https://github.com/apache/datafusion-comet/issues/7047)). With
+  `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (or
+  `spark.sql.parquet.int96RebaseModeInWrite=LEGACY` for a timestamp column) Comet falls back to
+  Spark, because the native writer cannot rebase values to the hybrid calendar. Each file the
+  native writer does produce carries the `org.apache.spark.version` footer key, so Spark treats it
+  as written by Spark 3.0 or later and reads the values back unchanged under every
+  `spark.sql.parquet.datetimeRebaseModeInRead` setting. Files written by a Comet build that
+  predates that key have no version, and Spark then fails to read their pre-1582 values under its
+  default read mode on 3.4 and 3.5, or reads them shifted by several days under `LEGACY`.
 - **`spark.sql.parquet.outputTimestampType` and `spark.sql.parquet.writeLegacyFormat` are
   ignored.** Timestamps are always written as `INT64` microseconds, never as Spark's default
   `INT96`, so with `TIMESTAMP_MILLIS` they keep the sub-millisecond digits that Spark drops. Spark's
-  schema footer key is not written either, so a path-based read loses column metadata such as
-  comments, and with `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ`
-  columns as `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
+  schema footer key, `org.apache.spark.sql.parquet.row.metadata`, is not written either, so a
+  path-based read loses column metadata such as comments, and with
+  `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ` columns as
+  `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
   [#3425](https://github.com/apache/datafusion-comet/issues/3425)).
 - **Spark 3.4 and 3.5: `INSERT INTO` leaves the target stale.** Comet skips the steps Spark runs
   after a write: file index refresh, cache refresh, partition refresh and statistics update. Later

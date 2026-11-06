@@ -127,6 +127,7 @@ comet-test-udfs = { path = "../comet-test-udfs" }
 aws-smithy-types = "1.6.3"
 http = "1.5.0"
 reqsign-aws-v4 = "3"
+opendal = { version = "0.58.1", features = ["services-memory"] }
 
 [features]
 backtrace = ["datafusion/backtrace"]
