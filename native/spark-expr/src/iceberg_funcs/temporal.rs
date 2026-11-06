@@ -43,6 +43,7 @@ use datafusion::common::{utils::take_function_args, Result};
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
 };
+use datafusion_comet_common::civil_from_days;
 use num::integer::{div_floor, mod_floor};
 use std::sync::Arc;
 
@@ -116,35 +117,15 @@ fn micros_to_hours(micros: i64) -> i32 {
 
 /// `DateTimeUtil.daysToYears`: whole calendar years between the epoch and the day, floored.
 fn days_to_years(days: i32) -> i32 {
-    civil_from_days(days).0 - UNIX_EPOCH_YEAR
+    (civil_from_days(days.into()).0 - i64::from(UNIX_EPOCH_YEAR)) as i32
 }
 
 /// `DateTimeUtil.daysToMonths`: whole calendar months between the epoch and the day, floored.
+/// The widest results, at `i32::MIN` and `i32::MAX` days, are years -5877641 and 5881580, so the
+/// month count still fits in an `i32`.
 fn days_to_months(days: i32) -> i32 {
-    let (year, month0) = civil_from_days(days);
-    (year - UNIX_EPOCH_YEAR) * 12 + month0
-}
-
-/// Splits an epoch day into its proleptic Gregorian `(year, month0)`, following Howard Hinnant's
-/// `civil_from_days`. The intermediates are `i64` so that every `i32` epoch day is in range, which
-/// is what `LocalDate` gives Iceberg; the widest results, at `i32::MIN` and `i32::MAX` days, are
-/// years -5877641 and 5881580, so both the year and the month count still fit in an `i32`.
-fn civil_from_days(days: i32) -> (i32, i32) {
-    // Shift the epoch to 0000-03-01 so that the leap day falls at the end of the year.
-    let shifted = days as i64 + 719_468;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted.rem_euclid(146_097); // [0, 146096]
-    let year_of_era =
-        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365; // [0, 399]
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100); // [0, 365]
-    let shifted_month = (5 * day_of_year + 2) / 153; // [0, 11], March is 0
-    let month = if shifted_month < 10 {
-        shifted_month + 3
-    } else {
-        shifted_month - 9
-    };
-    let year = era * 400 + year_of_era + i64::from(month <= 2);
-    (year as i32, (month - 1) as i32)
+    let (year, month, _) = civil_from_days(days.into());
+    ((year - i64::from(UNIX_EPOCH_YEAR)) * 12 + month - 1) as i32
 }
 
 /// Applies a calendar function of the epoch day to a date or timestamp column in one pass.
@@ -504,9 +485,10 @@ mod tests {
         let dense = -146_097..=146_097;
         for days in dense.chain((i32::MIN..=i32::MAX).step_by(999_983)) {
             if let Some(date) = Date32Type::to_naive_date_opt(days) {
+                let (year, month, day) = civil_from_days(days.into());
                 assert_eq!(
-                    civil_from_days(days),
-                    (date.year(), date.month0() as i32),
+                    (year, month, day),
+                    (date.year().into(), date.month().into(), date.day().into()),
                     "day {days} ({date})"
                 );
             }
