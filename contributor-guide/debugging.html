@@ -766,7 +766,8 @@ so <code class="docutils literal notranslate"><span class="pre">spark.comet.debu
 <section id="example-dumping-window-operator-output">
 <h4>Example: dumping window operator output<a class="headerlink" href="#example-dumping-window-operator-output" title="Link to this heading">#</a></h4>
 <p>In <code class="docutils literal notranslate"><span class="pre">WindowBuilder::build</span></code> in <code class="docutils literal notranslate"><span class="pre">native/core/src/execution/planner/window.rs</span></code>,
-the window operator builds <code class="docutils literal notranslate"><span class="pre">window_agg</span></code>, either a <code class="docutils literal notranslate"><span class="pre">BoundedWindowAggExec</span></code> or a
+the window operator builds <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> over <code class="docutils literal notranslate"><span class="pre">input</span></code>, the child plan with
+Spark’s input order declared, either a <code class="docutils literal notranslate"><span class="pre">BoundedWindowAggExec</span></code> or a
 <code class="docutils literal notranslate"><span class="pre">WindowAggExec</span></code> depending on whether every window expression runs with bounded
 memory. It then optionally wraps <code class="docutils literal notranslate"><span class="pre">window_agg</span></code> in a casting <code class="docutils literal notranslate"><span class="pre">ProjectionExec</span></code> and
 builds the <code class="docutils literal notranslate"><span class="pre">SparkPlan</span></code> from either the projection or <code class="docutils literal notranslate"><span class="pre">window_agg</span></code>. To see the raw
@@ -775,14 +776,14 @@ projection:</p>
 <div class="highlight-rust notranslate"><div class="highlight"><pre><span></span><span class="kd">let</span><span class="w"> </span><span class="n">window_agg</span><span class="p">:</span><span class="w"> </span><span class="nc">Arc</span><span class="o">&lt;</span><span class="k">dyn</span><span class="w"> </span><span class="n">ExecutionPlan</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">if</span><span class="w"> </span><span class="n">all_bounded</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">BoundedWindowAggExec</span><span class="p">::</span><span class="n">try_new</span><span class="p">(</span>
 <span class="w">        </span><span class="n">window_expr</span><span class="p">,</span>
-<span class="w">        </span><span class="n">Arc</span><span class="p">::</span><span class="n">clone</span><span class="p">(</span><span class="o">&amp;</span><span class="n">child</span><span class="p">.</span><span class="n">native_plan</span><span class="p">),</span>
+<span class="w">        </span><span class="n">input</span><span class="p">,</span>
 <span class="w">        </span><span class="n">InputOrderMode</span><span class="p">::</span><span class="n">Sorted</span><span class="p">,</span>
 <span class="w">        </span><span class="o">!</span><span class="n">partition_exprs</span><span class="p">.</span><span class="n">is_empty</span><span class="p">(),</span>
 <span class="w">    </span><span class="p">)</span><span class="o">?</span><span class="p">)</span>
 <span class="p">}</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="n">Arc</span><span class="p">::</span><span class="n">new</span><span class="p">(</span><span class="n">WindowAggExec</span><span class="p">::</span><span class="n">try_new</span><span class="p">(</span>
 <span class="w">        </span><span class="n">window_expr</span><span class="p">,</span>
-<span class="w">        </span><span class="n">Arc</span><span class="p">::</span><span class="n">clone</span><span class="p">(</span><span class="o">&amp;</span><span class="n">child</span><span class="p">.</span><span class="n">native_plan</span><span class="p">),</span>
+<span class="w">        </span><span class="n">input</span><span class="p">,</span>
 <span class="w">        </span><span class="o">!</span><span class="n">partition_exprs</span><span class="p">.</span><span class="n">is_empty</span><span class="p">(),</span>
 <span class="w">    </span><span class="p">)</span><span class="o">?</span><span class="p">)</span>
 <span class="p">};</span>
