@@ -16,30 +16,13 @@
 // under the License.
 
 use arrow::array::cast::AsArray;
-use arrow::array::types::Decimal128Type;
-use arrow::array::{ArrayRef, Decimal128Array};
+use arrow::array::types::{Decimal128Type, Float32Type, Float64Type};
+use arrow::array::{Array, ArrayRef, ArrowNativeTypeOp, Decimal128Array, Int64Array};
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
+use num::integer::{div_ceil, div_floor};
 use std::sync::Arc;
-
-#[macro_export]
-macro_rules! downcast_compute_op {
-    ($ARRAY:expr, $NAME:expr, $FUNC:ident, $TYPE:ident, $RESULT:ident) => {{
-        let n = $ARRAY.as_any().downcast_ref::<$TYPE>();
-        match n {
-            Some(array) => {
-                let res: $RESULT =
-                    arrow::compute::kernels::arity::unary(array, |x| x.$FUNC() as i64);
-                Ok(Arc::new(res))
-            }
-            _ => Err(DataFusionError::Internal(format!(
-                "Invalid data type for {}",
-                $NAME
-            ))),
-        }
-    }};
-}
 
 /// Evaluates `$body` with `$exp` bound as a compile-time constant equal to `$scale`, for every
 /// decimal scale whose divisor `10^scale` fits in an `i64`. Larger scales evaluate `$fallback`,
@@ -127,8 +110,6 @@ macro_rules! dispatch_pow10 {
     };
 }
 
-pub(crate) use dispatch_pow10;
-
 #[inline]
 pub(crate) fn make_decimal_scalar(
     a: &Option<i128>,
@@ -161,4 +142,157 @@ pub(crate) fn get_precision_scale(data_type: &DataType) -> (u8, i8) {
         unreachable!()
     };
     (*precision, *scale)
+}
+
+/// The rounding direction that distinguishes `ceil` from `floor`.
+///
+/// Implemented by marker types so that each direction is monomorphized into the element loop
+/// rather than dispatched for every value.
+pub(crate) trait RoundingMode {
+    const NAME: &'static str;
+
+    fn round_f32(x: f32) -> f32;
+    fn round_f64(x: f64) -> f64;
+    fn div_i64(x: i64, div: i64) -> i64;
+    fn div_i128(x: i128, div: i128) -> i128;
+}
+
+pub(crate) struct Ceil;
+
+impl RoundingMode for Ceil {
+    const NAME: &'static str = "ceil";
+
+    #[inline]
+    fn round_f32(x: f32) -> f32 {
+        x.ceil()
+    }
+
+    #[inline]
+    fn round_f64(x: f64) -> f64 {
+        x.ceil()
+    }
+
+    #[inline]
+    fn div_i64(x: i64, div: i64) -> i64 {
+        div_ceil(x, div)
+    }
+
+    #[inline]
+    fn div_i128(x: i128, div: i128) -> i128 {
+        div_ceil(x, div)
+    }
+}
+
+pub(crate) struct Floor;
+
+impl RoundingMode for Floor {
+    const NAME: &'static str = "floor";
+
+    #[inline]
+    fn round_f32(x: f32) -> f32 {
+        x.floor()
+    }
+
+    #[inline]
+    fn round_f64(x: f64) -> f64 {
+        x.floor()
+    }
+
+    #[inline]
+    fn div_i64(x: i64, div: i64) -> i64 {
+        div_floor(x, div)
+    }
+
+    #[inline]
+    fn div_i128(x: i128, div: i128) -> i128 {
+        div_floor(x, div)
+    }
+}
+
+/// Shared implementation of Spark's `ceil` and `floor` expressions.
+pub(crate) fn spark_ceil_or_floor<M: RoundingMode>(
+    args: &[ColumnarValue],
+    data_type: &DataType,
+) -> Result<ColumnarValue, DataFusionError> {
+    let value = &args[0];
+    match value {
+        ColumnarValue::Array(array) => match array.data_type() {
+            DataType::Float32 => {
+                let result: Int64Array = arrow::compute::kernels::arity::unary(
+                    array.as_primitive::<Float32Type>(),
+                    |x| M::round_f32(x) as i64,
+                );
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+            DataType::Float64 => {
+                let result: Int64Array = arrow::compute::kernels::arity::unary(
+                    array.as_primitive::<Float64Type>(),
+                    |x| M::round_f64(x) as i64,
+                );
+                Ok(ColumnarValue::Array(Arc::new(result)))
+            }
+            DataType::Int64 => {
+                let result = array.as_any().downcast_ref::<Int64Array>().unwrap();
+                Ok(ColumnarValue::Array(Arc::new(result.clone())))
+            }
+            DataType::Decimal128(_, input_scale) if *input_scale > 0 => {
+                let (precision, scale) = get_precision_scale(data_type);
+                dispatch_pow10!(
+                    *input_scale,
+                    EXP => make_decimal_array(array, precision, scale, decimal_round_pow10::<M, EXP>),
+                    make_decimal_array(array, precision, scale, decimal_round_f::<M>(*input_scale))
+                )
+            }
+            other => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {other:?} for function {}",
+                M::NAME,
+            ))),
+        },
+        ColumnarValue::Scalar(a) => match a {
+            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
+                a.map(|x| M::round_f32(x) as i64),
+            ))),
+            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
+                a.map(|x| M::round_f64(x) as i64),
+            ))),
+            ScalarValue::Int64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(a.map(|x| x)))),
+            ScalarValue::Decimal128(a, _, input_scale) if *input_scale > 0 => {
+                let f = decimal_round_f::<M>(*input_scale);
+                let (precision, scale) = get_precision_scale(data_type);
+                make_decimal_scalar(a, precision, scale, f)
+            }
+            _ => Err(DataFusionError::Internal(format!(
+                "Unsupported data type {:?} for function {}",
+                value.data_type(),
+                M::NAME,
+            ))),
+        },
+    }
+}
+
+#[inline]
+fn decimal_round_f<M: RoundingMode>(scale: i8) -> impl Fn(i128) -> i128 {
+    let div = 10_i128.pow_wrapping(scale as u32);
+    move |x: i128| M::div_i128(x, div)
+}
+
+/// Rounds an unscaled decimal divided by `10^EXP` in the direction of `M`.
+///
+/// `EXP` is a compile-time constant so that the divisor is folded in and the division lowered to a
+/// multiply-and-shift. A 128-bit division is always a libcall, even by a constant, so values that
+/// fit in 64 bits take a 64-bit path; unscaled decimals rarely exceed that range.
+#[inline]
+fn decimal_round_pow10<M: RoundingMode, const EXP: u32>(x: i128) -> i128 {
+    match i64::try_from(x) {
+        Ok(x) => M::div_i64(x, const { 10_i64.pow(EXP) }) as i128,
+        Err(_) => decimal_round_wide::<M>(x, const { 10_i128.pow(EXP) }),
+    }
+}
+
+/// Kept out of line so that the libcall and its stack frame stay out of the loop body of every
+/// [`decimal_round_pow10`] instantiation.
+#[cold]
+#[inline(never)]
+fn decimal_round_wide<M: RoundingMode>(x: i128, div: i128) -> i128 {
+    M::div_i128(x, div)
 }

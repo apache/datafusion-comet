@@ -15,96 +15,17 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::downcast_compute_op;
-use crate::math_funcs::utils::{
-    dispatch_pow10, get_precision_scale, make_decimal_array, make_decimal_scalar,
-};
-use arrow::array::{Array, ArrowNativeTypeOp};
-use arrow::array::{Float32Array, Float64Array, Int64Array};
+use crate::math_funcs::utils::{spark_ceil_or_floor, Floor};
 use arrow::datatypes::DataType;
-use datafusion::common::{DataFusionError, ScalarValue};
+use datafusion::common::DataFusionError;
 use datafusion::physical_plan::ColumnarValue;
-use num::integer::div_floor;
-use std::sync::Arc;
 
 /// `floor` function that simulates Spark `floor` expression
 pub fn spark_floor(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
-    let value = &args[0];
-    match value {
-        ColumnarValue::Array(array) => match array.data_type() {
-            DataType::Float32 => {
-                let result = downcast_compute_op!(array, "floor", floor, Float32Array, Int64Array);
-                Ok(ColumnarValue::Array(result?))
-            }
-            DataType::Float64 => {
-                let result = downcast_compute_op!(array, "floor", floor, Float64Array, Int64Array);
-                Ok(ColumnarValue::Array(result?))
-            }
-            DataType::Int64 => {
-                let result = array.as_any().downcast_ref::<Int64Array>().unwrap();
-                Ok(ColumnarValue::Array(Arc::new(result.clone())))
-            }
-            DataType::Decimal128(_, input_scale) if *input_scale > 0 => {
-                let (precision, scale) = get_precision_scale(data_type);
-                dispatch_pow10!(
-                    *input_scale,
-                    EXP => make_decimal_array(array, precision, scale, decimal_floor_pow10::<EXP>),
-                    make_decimal_array(array, precision, scale, decimal_floor_f(*input_scale))
-                )
-            }
-            other => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {other:?} for function floor",
-            ))),
-        },
-        ColumnarValue::Scalar(a) => match a {
-            ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
-                a.map(|x| x.floor() as i64),
-            ))),
-            ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
-                a.map(|x| x.floor() as i64),
-            ))),
-            ScalarValue::Int64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(a.map(|x| x)))),
-            ScalarValue::Decimal128(a, _, input_scale) if *input_scale > 0 => {
-                let f = decimal_floor_f(*input_scale);
-                let (precision, scale) = get_precision_scale(data_type);
-                make_decimal_scalar(a, precision, scale, f)
-            }
-            _ => Err(DataFusionError::Internal(format!(
-                "Unsupported data type {:?} for function floor",
-                value.data_type(),
-            ))),
-        },
-    }
-}
-
-#[inline]
-fn decimal_floor_f(scale: i8) -> impl Fn(i128) -> i128 {
-    let div = 10_i128.pow_wrapping(scale as u32);
-    move |x: i128| div_floor(x, div)
-}
-
-/// Floor-divides an unscaled decimal by `10^EXP`.
-///
-/// `EXP` is a compile-time constant so that the divisor is folded in and the division lowered to a
-/// multiply-and-shift. A 128-bit division is always a libcall, even by a constant, so values that
-/// fit in 64 bits take a 64-bit path; unscaled decimals rarely exceed that range.
-#[inline]
-fn decimal_floor_pow10<const EXP: u32>(x: i128) -> i128 {
-    match i64::try_from(x) {
-        Ok(x) => div_floor(x, const { 10_i64.pow(EXP) }) as i128,
-        Err(_) => decimal_floor_wide(x, const { 10_i128.pow(EXP) }),
-    }
-}
-
-/// Kept out of line so that the libcall and its stack frame stay out of the loop body of every
-/// [`decimal_floor_pow10`] instantiation.
-#[cold]
-#[inline(never)]
-fn decimal_floor_wide(x: i128, div: i128) -> i128 {
-    div_floor(x, div)
+    spark_ceil_or_floor::<Floor>(args, data_type)
 }
 
 #[cfg(test)]
