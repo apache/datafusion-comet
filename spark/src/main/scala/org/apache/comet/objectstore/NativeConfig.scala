@@ -74,7 +74,7 @@ object NativeConfig {
     s3Properties.map { case (_, s3aSuffix, icebergKey) => s3aSuffix -> icebergKey }.toMap
 
   /** A URI's scheme, lowercased; None when it has none. */
-  private[comet] def lowerScheme(uri: URI): Option[String] =
+  def lowerScheme(uri: URI): Option[String] =
     Option(uri.getScheme).map(_.toLowerCase(Locale.ROOT))
 
   // Comma-separated scheme list -> trimmed, lowercased set (case-insensitive). Shared with
@@ -146,7 +146,7 @@ object NativeConfig {
    * which native reads through libhdfs. `scanOnly` holds those listed only through the scan's
    * reader options, which the scan gates decline.
    */
-  private[comet] case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
+  case class ScanLibhdfsSchemes(libhdfs: Set[String], scanOnly: Set[String])
 
   /**
    * Splits the `fs.comet.libhdfs.schemes` lists of `sessionConf` (the session's Hadoop conf) and
@@ -154,7 +154,7 @@ object NativeConfig {
    * the scan's list, but libhdfs builds its configuration from the executor classpath
    * (`core-site.xml`), not the scan's options, so a reader option cannot add a libhdfs scheme.
    */
-  private[comet] def resolveScanLibhdfsSchemes(
+  def resolveScanLibhdfsSchemes(
       sessionConf: Configuration,
       scanConf: Configuration): ScanLibhdfsSchemes =
     resolveScanLibhdfsSchemes(resolveLibhdfsSchemes(sessionConf), scanConf)
@@ -163,7 +163,7 @@ object NativeConfig {
    * As above, with the session's list already resolved by [[resolveLibhdfsSchemes]], so a caller
    * planning many scans copies the session's Hadoop conf once.
    */
-  private[comet] def resolveScanLibhdfsSchemes(
+  def resolveScanLibhdfsSchemes(
       sessionSchemes: Set[String],
       scanConf: Configuration): ScanLibhdfsSchemes = {
     val scan = resolveLibhdfsSchemes(scanConf)

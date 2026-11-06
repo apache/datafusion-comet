@@ -80,6 +80,18 @@ class AbfsScanFallbackSuite extends CometTestBase {
       .write
       .csv(localDir(dir))
 
+  private def writeText(dir: String, from: Int): Unit =
+    spark
+      .range(from.toLong, from + 10L)
+      .selectExpr("cast(id as string) as value")
+      .write
+      .text(localDir(dir))
+
+  // Text is left off the V1 source list so the scan plans as a V2 TextScan.
+  private val textConfs = Seq(
+    CometConf.COMET_TEXT_V2_NATIVE_ENABLED.key -> "true",
+    SQLConf.USE_V1_SOURCE_LIST.key -> "avro,csv,json,kafka,orc,parquet")
+
   private val csvConfs =
     Seq(CometConf.COMET_CSV_V2_NATIVE_ENABLED.key -> "true", SQLConf.USE_V1_SOURCE_LIST.key -> "")
 
@@ -178,6 +190,26 @@ class AbfsScanFallbackSuite extends CometTestBase {
     writeCsv("csv-d", 100)
     withSQLConf(csvConfs ++ accountKeys("accta" -> "a2V5LWE="): _*) {
       val df = readCsv(abfss("data", "accta", "csv-c"), abfss("logs", "accta", "csv-d"))
+      checkSparkAnswerAndFallbackReason(df, multipleAuthoritiesReason)
+    }
+  }
+
+  // The serializer declines these layouts, so the scan must fall back to Spark's row-producing
+  // scan rather than stay a columnar CometBatchScanExec (which fails with a ClassCastException).
+  test("native Text scan over two accounts with different keys falls back to Spark") {
+    writeText("text-a", 0)
+    writeText("text-b", 100)
+    withSQLConf(textConfs ++ accountKeys("accta" -> "a2V5LWE=", "acctb" -> "a2V5LWI="): _*) {
+      val df = spark.read.text(abfss("data", "accta", "text-a"), abfss("data", "acctb", "text-b"))
+      checkSparkAnswerAndFallbackReason(df, multipleAuthoritiesReason)
+    }
+  }
+
+  test("native Text scan over two containers of one account falls back to Spark") {
+    writeText("text-c", 0)
+    writeText("text-d", 100)
+    withSQLConf(textConfs ++ accountKeys("accta" -> "a2V5LWE="): _*) {
+      val df = spark.read.text(abfss("data", "accta", "text-c"), abfss("logs", "accta", "text-d"))
       checkSparkAnswerAndFallbackReason(df, multipleAuthoritiesReason)
     }
   }
