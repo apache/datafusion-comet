@@ -62,7 +62,7 @@ while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
 `spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
 `spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
 fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
-whenever more than one task is running, and the `greedy_unified` pool ignores it.
+unless the fraction is below one over the number of running tasks, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
@@ -79,11 +79,16 @@ Both pool types are shared by all the native plans in the same Spark task. A tas
 one native plan at a time, for example the native operators on either side of a union or a
 coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
-The `fair_unified` pool prevents operators from using more than an even fraction of the available memory
-(i.e. `pool_size / num_consumers`, where `num_consumers` counts the memory consumers registered by all of the task's
-native plans). This pool works best when you know beforehand
-the query has multiple operators that will likely all need to spill. Sometimes it will cause spills even
-when there is sufficient memory in order to leave enough memory for other operators.
+The `fair_unified` pool keeps memory for the operators that cannot spill, such as the final merge of a sort or the
+build side of a hash join. Spark limits each task to an even share of `spark.memory.offHeap.size` among the tasks
+using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running native plans. Within
+a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
+task's share, counting the operators of all of the task's native plans. The operators that cannot spill take what
+Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
+for the task's other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
+batch it has not yet reserved, so it then fails with "Not enough memory to continue external sort". Give the
+executors more off-heap memory, lower `spark.comet.batchSize`, or use `greedy_unified`, which leaves every limit to
+Spark.
 
 The `greedy_unified` pool type implements a greedy first-come first-serve limit. This pool works well for queries that do not
 need to spill or have a single spillable operator.
@@ -126,6 +131,8 @@ spark.executor.memoryOverheadFactor=0.2
 Raise the value further if executors are killed by the cluster manager (on Kubernetes,
 `ExecutorLostFailure` with exit code 137) rather than failing with a task-level out-of-memory error.
 To measure how much Comet needs rather than guessing, see [Sizing the Overhead from the Memory Usage Log].
+If executors are killed while the memory usage log stays well inside the limits, raising the
+overhead may only delay it; see [Returning Freed Native Memory to the Operating System].
 
 Note that on Kubernetes and YARN the overhead is added to the container size, so raising it reduces
 how many executors fit on a node. A standalone cluster ignores the overhead: its workers start
@@ -143,8 +150,10 @@ one line every 10 seconds for the whole executor:
 Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native plans, 8 memory pools); JVM Arrow allocated 310.4 MiB, 96.2 MiB of it imported from native
 ```
 
-- `allocated` is the memory that Comet's native code has allocated and not yet freed, whether or not
-  a pool tracks it.
+- `allocated` is the memory allocated through Comet's Rust global allocator and not yet freed,
+  whether or not a pool tracks it. It excludes allocations made by native libraries outside that
+  allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
+  enabled.
 - `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
   charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
   sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
@@ -175,7 +184,11 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd.
+   libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
+   PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
+   result buffer later imported into the JVM can appear in the `imported from native` figure that
+   the estimate subtracts, even though Rust's `allocated` does not count it. Use the executor's
+   peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
@@ -205,6 +218,7 @@ The executor logs one more line after its last native plan finishes, and an `all
 it when the application is submitted. Set it to `0` to turn the log off.
 
 [Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
+[Returning Freed Native Memory to the Operating System]: #returning-freed-native-memory-to-the-operating-system
 
 ### Reading the Memory Usage Log from the Event Log
 
@@ -261,6 +275,62 @@ decompress the files first, for example with `zstd -dc`. The Spark history serve
 these events, and one without Comet on its classpath logs once that it dropped them. From Spark 4.1,
 `spark.eventLog.excludedPatterns=org.apache.comet.CometExecutorMemoryUsage` leaves them out of the
 event log.
+
+## Returning Freed Native Memory to the Operating System
+
+An executor can be killed by the cluster manager for exceeding its container while every figure in
+the memory usage log stays well inside its limits. A common cause is native memory that Comet has
+already freed but the allocator has not returned to the operating system. Comet's release builds use
+the system allocator, which on Linux is usually glibc's `malloc`. glibc keeps freed memory in
+arenas so that it can reuse it, and a thread allocates from the arena it is attached to. A lot of
+what Comet's operators free stays there: each spill drops the batches the operator buffered, and the
+next stage's native plans often run on different threads, attached to other arenas, so they reuse
+only part of what the previous stage left behind. The
+`allocated` figure in the log drops when the memory is freed, but the executor's resident memory
+does not, so it grows from one stage and query to the next until the container's limit is reached.
+See [#7108](https://github.com/apache/datafusion-comet/issues/7108) for measurements.
+
+The signs are executors that the cluster manager kills for exceeding their container (on
+Kubernetes, `OOMKilled`, exit code 137) in a long application, often late in it, while the memory
+usage log shows them well below peaks they survived earlier, and the query that was running when
+they were killed passes on fresh executors.
+
+The JVM can return this memory periodically. `-XX:TrimNativeHeapInterval`, available from JDK
+17.0.12 and 21.0.3, calls glibc's `malloc_trim` at the given interval in milliseconds, which hands
+the physical pages of the free memory in the arenas back to the operating system. glibc can still
+reuse that memory afterwards; the pages are mapped in again when they are next written. It trims the whole process, so it also
+covers memory freed by the JVM itself and by native libraries other than Comet. Adding
+`-Xlog:trimnative` logs each trim, with the process's resident memory before and after and how long
+the trim took, which shows whether the flag is in effect and how much it returns:
+
+```
+spark.executor.extraJavaOptions=-XX:TrimNativeHeapInterval=5000 -Xlog:trimnative
+```
+
+```
+[58.198s][info][trimnative] Periodic Trim (11): 3918M->2823M (-1095M) 443.469ms
+```
+
+Add these options to any `spark.executor.extraJavaOptions` the application already sets, since
+setting the property again replaces its value. An older JDK does not recognize the flag and the
+executor fails to start, unless the JVM is also given `-XX:+IgnoreUnrecognizedVMOptions`, which
+makes it ignore the flag silently. To check whether this is the problem before changing the
+configuration, `jcmd <pid> System.trim_native_heap` trims a running executor once and prints how
+much memory it returned.
+
+A trim is not free: while it runs it takes each arena's lock in turn, so native allocations on that
+arena wait for it. On one workload, the nested TPC-H benchmark at scale factor 1000 with 64 GiB of
+off-heap memory per executor, an interval of 5 seconds kept the executors' resident memory at 61 to
+70 GiB in 106 GiB containers, where without it a query got 11 executors killed. A single trim
+returned up to 31.8 GiB, trims took 424 ms at the median, and the queries that had not needed it
+ran about 4% slower. A longer interval trims less often for less cost, but lets more memory build
+up between trims.
+
+Trimming only applies to glibc. In builds that use the `jemalloc` or `mimalloc` feature, Comet's
+native memory does not come from glibc, and those allocators manage freed memory themselves.
+Limiting the number of glibc arenas with the `MALLOC_ARENA_MAX` environment variable also keeps
+resident memory down, but it was markedly slower in the measurements in
+[#7108](https://github.com/apache/datafusion-comet/issues/7108).
 
 ## Batch Size
 

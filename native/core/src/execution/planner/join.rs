@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Builders for the native join operators (hash join, sort-merge join, and broadcast nested loop
-//! join), and the join-key and join-filter planning they share.
+//! Builders for the native join operators (hash join, sort-merge join, broadcast nested loop
+//! join, and cross join), and the join-key and join-filter planning they share.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -37,23 +37,28 @@ use datafusion::{
     physical_plan::{
         filter::FilterExec,
         joins::{
-            utils::JoinFilter, HashJoinExec, NestedLoopJoinExec, PartitionMode, SortMergeJoinExec,
+            utils::JoinFilter, CrossJoinExec, HashJoinExec, NestedLoopJoinExec, PartitionMode,
+            SortMergeJoinExec,
         },
         projection::ProjectionExec,
+        sorts::sort::SortExec,
         ChildrenPropertiesMode, ExecutionPlan, ExecutionPlanProperties, ReplaceChildrenOptions,
     },
 };
-use datafusion_comet_operators::{CometFilterExec, CometProjectionExec};
+use datafusion_comet_operators::{
+    CometFilterExec, CometProjectionExec, MembershipKeyReductionExec,
+};
 use datafusion_comet_proto::{
     spark_expression::Expr,
     spark_operator::{operator::OpStruct, BuildSide, JoinType, Operator},
 };
 use datafusion_datasource::{file_scan_config::FileScanConfig, source::DataSourceExec};
 use itertools::Itertools;
-use jni::objects::{Global, JObject};
+use jni::objects::{Global, JObject, JValue};
 
 use super::{operator_registry::OperatorBuilder, PhysicalPlanner, PlanCreationResult};
 use crate::{
+    errors::CometError,
     execution::{
         operators::{
             DynamicFilterJoinExec, ExecutionError, ScanExec, ShuffleScanExec, SortedInputExec,
@@ -61,6 +66,7 @@ use crate::{
         spark_plan::SparkPlan,
     },
     extract_op,
+    jvm_bridge::{check_exception, JVMClasses},
 };
 
 use ExecutionError::GeneralError;
@@ -201,6 +207,71 @@ impl OperatorBuilder for HashJoinBuilder {
 /// Builder for `SortMergeJoin`.
 pub struct SortMergeJoinBuilder;
 
+/// Spark identifies the shuffle input. Check the actual sort and its key before replacing its child.
+fn reduce_before_sort(
+    planner: &PhysicalPlanner,
+    params: &mut JoinParameters,
+    sort_options: &[SortOptions],
+) -> Result<Option<Arc<dyn ExecutionPlan>>, ExecutionError> {
+    if params.join_type != DFJoinType::LeftSemi || params.join_filter.is_some() {
+        return Ok(None);
+    }
+    let Some(sort) = params.right.native_plan.downcast_ref::<SortExec>() else {
+        return Ok(None);
+    };
+    let input = sort.input();
+    let ([(_, key)], [options]) = (params.join_on.as_slice(), sort_options) else {
+        return Ok(None);
+    };
+    let schema = input.schema();
+    let order = sort.expr().first();
+    if !(input.is::<ScanExec>() || input.is::<ShuffleScanExec>())
+        || schema.fields().len() != 1
+        || !schema.field(0).data_type().is_signed_integer()
+        || !key.is::<Column>()
+        || sort.expr().len() != 1
+        || order.options != *options
+        || !order.expr.eq(key)
+    {
+        return Ok(None);
+    }
+    // A smaller sort reservation can pass Comet's fair-share limit and reach Spark's
+    // acquireExecutionMemory, spilling a resident JVM consumer where the unreduced sort
+    // would have spilled natively. This best-effort check runs once at first execution,
+    // after input iterator construction; it cannot cover consumers that allocate later.
+    if let Some(context) = &planner.task_context {
+        let occupied = JVMClasses::with_env(|env| -> Result<bool, CometError> {
+            let result = env.call_static_method(
+                jni::jni_str!("org/apache/comet/CometExecIterator"),
+                jni::jni_str!("hasOtherExecutionMemory"),
+                jni::jni_sig!("(Lorg/apache/spark/TaskContext;)Z"),
+                &[JValue::Object(context.as_obj())],
+            );
+            if let Some(error) = check_exception(env)? {
+                return Err(error);
+            }
+            Ok(result?.z()?)
+        })?;
+        if occupied {
+            log::debug!(
+                "Skipping semi-join right-key reduction before sort {}: another Spark \
+                 consumer holds execution memory in this task",
+                params.right.plan_id
+            );
+            return Ok(None);
+        }
+    }
+    let reducer: Arc<dyn ExecutionPlan> =
+        Arc::new(MembershipKeyReductionExec::new(Arc::clone(input)));
+    let sort = Arc::clone(&params.right.native_plan).replace_children(
+        vec![Arc::clone(&reducer)],
+        ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+    )?;
+    Arc::make_mut(&mut params.right).native_plan = sort;
+    // The Spark sort collects from its replacement. The join owns the reducer's named metrics.
+    Ok(Some(reducer))
+}
+
 impl OperatorBuilder for SortMergeJoinBuilder {
     fn build(
         &self,
@@ -212,7 +283,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         let join = extract_op!(spark_plan, SortMergeJoin);
         let children = &spark_plan.children;
 
-        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+        let (mut join_params, scans, shuffle_scans) = planner.parse_join_parameters(
             inputs,
             children,
             &join.left_join_keys,
@@ -222,7 +293,7 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             partition_count,
         )?;
 
-        let sort_options = join
+        let sort_options: Vec<_> = join
             .sort_options
             .iter()
             .map(|sort_option| {
@@ -236,6 +307,14 @@ impl OperatorBuilder for SortMergeJoinBuilder {
             })
             .collect();
 
+        let reducer = if join.right_key_reduction_enabled
+            && matches!(&children[1].op_struct, Some(OpStruct::Sort(sort))
+                if sort.fetch.is_none() && sort.skip.is_none())
+        {
+            reduce_before_sort(planner, &mut join_params, &sort_options)?
+        } else {
+            None
+        };
         let left = Arc::clone(&join_params.left.native_plan);
         let right = Arc::clone(&join_params.right.native_plan);
 
@@ -267,13 +346,11 @@ impl OperatorBuilder for SortMergeJoinBuilder {
         Ok((
             scans,
             shuffle_scans,
-            Arc::new(SparkPlan::new(
+            Arc::new(SparkPlan::new_with_additional(
                 spark_plan.plan_id,
                 join,
-                vec![
-                    Arc::clone(&join_params.left),
-                    Arc::clone(&join_params.right),
-                ],
+                vec![join_params.left, join_params.right],
+                reducer.into_iter().collect(),
             )),
         ))
     }
@@ -341,6 +418,48 @@ impl OperatorBuilder for BroadcastNestedLoopJoinBuilder {
                 )),
             ))
         }
+    }
+}
+
+/// Builder for `CrossJoin` (Spark's `CartesianProductExec`).
+pub struct CrossJoinBuilder;
+
+impl OperatorBuilder for CrossJoinBuilder {
+    fn build(
+        &self,
+        spark_plan: &Operator,
+        inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
+        partition_count: usize,
+        planner: &PhysicalPlanner,
+    ) -> PlanCreationResult {
+        let children = &spark_plan.children;
+
+        // No keys or condition. The join type only satisfies the helper; CrossJoinExec emits left
+        // then right columns, as Spark does.
+        let (join_params, scans, shuffle_scans) = planner.parse_join_parameters(
+            inputs,
+            children,
+            &[],
+            &[],
+            JoinType::Inner as i32,
+            &None,
+            partition_count,
+        )?;
+
+        let left = Arc::clone(&join_params.left.native_plan);
+        let right = Arc::clone(&join_params.right.native_plan);
+
+        let cross_join = Arc::new(CrossJoinExec::new(left, right));
+
+        Ok((
+            scans,
+            shuffle_scans,
+            Arc::new(SparkPlan::new(
+                spark_plan.plan_id,
+                cross_join,
+                vec![join_params.left, join_params.right],
+            )),
+        ))
     }
 }
 

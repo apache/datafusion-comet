@@ -25,9 +25,11 @@
 //! `createPlan`, `setShufflePartitionPusher`, `executePlan` and `releasePlan` also depend on
 //! upcalls into the JVM (input iterators, the task memory manager, metrics, UDFs and scalar
 //! subqueries). Their core functions (`create_execution_context`,
-//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects
-//! as JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that
-//! need an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `register_shuffle_partition_pusher`, `execute_plan` and `release_plan`) take the JVM objects as
+//! JNI global references held by the `ExecutionContext` (`PlanJvmRefs`), and the steps that need
+//! an `Env` as callbacks: the memory pool factory, the pusher factory, and `PublishMetrics`.
+//! `setOutputStream` registers a native write's output stream through the same
+//! `register_before_execution` check as the pusher.
 
 use super::{serde, utils::SparkArrowConvert};
 use crate::{
@@ -39,7 +41,10 @@ use crate::{
         serde::to_arrow_datatype,
         shuffle::spark_unsafe::row::{process_sorted_partitions, process_sorted_row_partition},
     },
-    jvm_bridge::{JVMClasses, JavaShufflePartitionPusher, ShufflePartitionPusher},
+    jvm_bridge::{
+        JVMClasses, JavaOutputStreamSink, JavaShufflePartitionPusher, OutputStreamSink,
+        ShufflePartitionPusher,
+    },
 };
 use std::collections::HashSet;
 
@@ -57,6 +62,7 @@ use datafusion::{
 use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
+use datafusion_comet_shuffle::decoded_batch_coalescer::DecodedBatchCoalescer;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use datafusion_spark::function::array::repeat::SparkArrayRepeat;
@@ -95,7 +101,6 @@ use futures::FutureExt;
 use jni::objects::JByteBuffer;
 use jni::sys::{jlongArray, JNI_FALSE};
 use jni::{
-    errors::Result as JNIResult,
     objects::{
         Global, JByteArray, JClass, JIntArray, JLongArray, JObject, JObjectArray, JString,
         ReleaseMode,
@@ -493,11 +498,13 @@ fn op_name(op: &OpStruct) -> &'static str {
         OpStruct::CsvScan(_) => "CsvScan",
         OpStruct::ShuffleScan(_) => "ShuffleScan",
         OpStruct::BroadcastNestedLoopJoin(_) => "BroadcastNestedLoopJoin",
+        OpStruct::CrossJoin(_) => "CrossJoin",
         OpStruct::Sample(_) => "Sample",
         OpStruct::MergeRows(_) => "MergeRows",
         OpStruct::RangeScan(_) => "RangeScan",
         OpStruct::ContribScan(_) => "ContribScan",
         OpStruct::WindowGroupLimit(_) => "WindowGroupLimit",
+        OpStruct::ArrowPythonUdf(_) => "ArrowPythonUdf",
     }
 }
 
@@ -586,6 +593,10 @@ struct ExecutionContext {
     /// Task-owned remote shuffle callback, registered before native planning starts.
     /// The callback owns a JNI global reference and can safely run on Tokio workers.
     pub shuffle_partition_pusher: Option<Arc<dyn ShufflePartitionPusher>>,
+    /// The output stream of the file this plan's Parquet writer writes, registered before native
+    /// planning starts when the JVM created that file through Hadoop's FileSystem API. Like the
+    /// shuffle callback, it owns a JNI global reference and can run on any native thread.
+    pub output_stream: Option<Arc<dyn OutputStreamSink>>,
     /// Removes this context's tracing memory-pool entry on every exit path.
     memory_pool_registration: Option<ThreadMemoryPoolRegistration>,
 }
@@ -610,6 +621,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
     off_heap_mode: jboolean,
     memory_pool_type: JString,
     memory_limit: jlong,
+    off_heap_size: jlong,
     task_attempt_id: jlong,
     task_cpus: jlong,
     key_unwrapper_obj: JObject,
@@ -685,6 +697,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_createPlan(
                 off_heap_mode: off_heap_mode != JNI_FALSE,
                 memory_pool_type,
                 memory_limit,
+                off_heap_size,
                 task_attempt_id,
                 task_cpus: task_cpus as usize,
                 local_dirs: local_dirs_vec,
@@ -753,6 +766,7 @@ struct PlanInputs {
     off_heap_mode: bool,
     memory_pool_type: String,
     memory_limit: i64,
+    off_heap_size: i64,
     task_attempt_id: i64,
     task_cpus: usize,
     local_dirs: Vec<String>,
@@ -792,6 +806,7 @@ fn create_execution_context(
         off_heap_mode,
         memory_pool_type,
         memory_limit,
+        off_heap_size,
         task_attempt_id,
         task_cpus,
         local_dirs,
@@ -805,7 +820,7 @@ fn create_execution_context(
 
     // Create DataFusion memory pool
     let memory_pool_config =
-        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit)?;
+        parse_memory_pool_config(off_heap_mode, memory_pool_type, memory_limit, off_heap_size)?;
     let memory_pool = memory_pool_for(&memory_pool_config);
 
     // Register the shared base pool before wrapping it for per-plan debug logging. The
@@ -894,6 +909,7 @@ fn create_execution_context(
         task_context: jvm.task_context,
         class_loader: jvm.class_loader,
         shuffle_partition_pusher: None,
+        output_stream: None,
         memory_pool_registration,
     }))
 }
@@ -916,7 +932,7 @@ pub extern "system" fn Java_org_apache_comet_Native_setShufflePartitionPusher(
             ));
         }
 
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
         register_shuffle_partition_pusher(exec_context, || {
             Ok(Arc::new(JavaShufflePartitionPusher::try_new(
                 env, &callback,
@@ -932,21 +948,70 @@ fn register_shuffle_partition_pusher(
     exec_context: &mut ExecutionContext,
     make_pusher: impl FnOnce() -> CometResult<Arc<dyn ShufflePartitionPusher>>,
 ) -> CometResult<()> {
-    if exec_context.root_op.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback cannot be registered after native execution starts"
-                .to_string(),
-        ));
+    register_before_execution(
+        exec_context.root_op.is_some(),
+        &mut exec_context.shuffle_partition_pusher,
+        "Remote shuffle callback",
+        make_pusher,
+    )
+}
+
+/// Registers one of a plan's task-owned JVM callbacks in `slot`, built by `make` only once the
+/// plan is known to accept it: before execution has `started`, and once. `what` names the callback
+/// in the errors.
+fn register_before_execution<T: ?Sized>(
+    started: bool,
+    slot: &mut Option<Arc<T>>,
+    what: &str,
+    make: impl FnOnce() -> CometResult<Arc<T>>,
+) -> CometResult<()> {
+    if started {
+        return Err(CometError::Internal(format!(
+            "{what} cannot be registered after native execution starts"
+        )));
     }
 
-    if exec_context.shuffle_partition_pusher.is_some() {
-        return Err(CometError::Internal(
-            "Remote shuffle callback has already been registered for this task".to_string(),
-        ));
+    if slot.is_some() {
+        return Err(CometError::Internal(format!(
+            "{what} has already been registered for this task"
+        )));
     }
 
-    exec_context.shuffle_partition_pusher = Some(make_pusher()?);
+    *slot = Some(make()?);
     Ok(())
+}
+
+/// Binds the output stream of the file the plan's Parquet writer writes, for a file the JVM
+/// created itself, before native execution is initialized.
+///
+/// Separate from `createPlan` for the same reason as `setShufflePartitionPusher`: only native
+/// writes the JVM creates the file for need it, so every other caller keeps the existing ABI.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_setOutputStream(
+    e: EnvUnowned,
+    _class: JClass,
+    exec_context: jlong,
+    output: JObject,
+) {
+    try_unwrap_or_throw(&e, |env| {
+        if exec_context == 0 {
+            return Err(CometError::NullPointer(
+                "A native write's output stream requires a valid native execution plan".to_string(),
+            ));
+        }
+
+        let exec_context = get_execution_context(exec_context)?;
+        register_before_execution(
+            exec_context.root_op.is_some(),
+            &mut exec_context.output_stream,
+            "A native write's output stream",
+            || {
+                let sink: Arc<dyn OutputStreamSink> =
+                    Arc::new(JavaOutputStreamSink::try_new(env, &output)?);
+                Ok(sink)
+            },
+        )
+    })
 }
 
 /// Skipping is opt-in (`spark.comet.exec.aggregate.skipPartial.enabled`): once DataFusion's probe
@@ -1004,11 +1069,27 @@ fn prepare_datafusion_session_context(
     spark_plan: &Operator,
 ) -> CometResult<SessionContext> {
     let paths = local_dirs.into_iter().map(PathBuf::from).collect();
-    let mut rt_config = RuntimeEnvBuilder::new()
-        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size))
-        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()));
-    rt_config = rt_config.with_memory_pool(memory_pool);
+    let rt_config = comet_runtime_env(memory_pool)
+        .with_disk_manager_builder(plan_disk_manager(paths, max_temp_directory_size));
+    comet_session_context(rt_config, batch_size, task_cpus, spark_config, spark_plan)
+}
 
+/// The runtime of a Comet session that reserves memory from `memory_pool`. It has no disk
+/// manager of its own yet.
+pub(crate) fn comet_runtime_env(memory_pool: Arc<dyn MemoryPool>) -> RuntimeEnvBuilder {
+    RuntimeEnvBuilder::new()
+        .with_object_store_registry(Arc::new(CometObjectStoreRegistry::default()))
+        .with_memory_pool(memory_pool)
+}
+
+/// Configures a DataFusion session for `spark_plan` over the runtime `rt_config` builds.
+pub(crate) fn comet_session_context(
+    rt_config: RuntimeEnvBuilder,
+    batch_size: usize,
+    task_cpus: usize,
+    spark_config: &HashMap<String, String>,
+    spark_plan: &Operator,
+) -> CometResult<SessionContext> {
     let mut session_config = SessionConfig::new()
         .with_target_partitions(task_cpus)
         // This DataFusion context is within the scope of an executing Spark Task. We want to set
@@ -1403,7 +1484,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_executePlan(
 ) -> jlong {
     try_unwrap_or_throw(&e, |env| {
         // Retrieve the query
-        let exec_context = get_execution_context(exec_context);
+        let exec_context = get_execution_context(exec_context)?;
 
         let tracing_enabled = exec_context.tracing_enabled;
         // Clone the label only when tracing is enabled. The clone is needed
@@ -1479,7 +1560,8 @@ fn execute_plan(
             .with_sql_text_pool(&exec_context.spark_plan)
             .with_task_context(exec_context.task_context.clone())
             .with_class_loader(exec_context.class_loader.clone())
-            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone());
+            .with_shuffle_partition_pusher(exec_context.shuffle_partition_pusher.clone())
+            .with_output_stream(exec_context.output_stream.clone());
         let (scans, shuffle_scans, root_op) = planner.create_plan(
             &exec_context.spark_plan,
             &mut exec_context.input_sources.clone(),
@@ -1680,7 +1762,7 @@ fn log_plan_metrics(exec_context: &ExecutionContext, stage_id: jint, partition: 
 fn convert_datatype_arrays(
     env: &mut Env,
     serialized_datatypes: JObjectArray,
-) -> JNIResult<Vec<ArrowDataType>> {
+) -> CometResult<Vec<ArrowDataType>> {
     let array_len = serialized_datatypes.len(env)?;
     let mut res: Vec<ArrowDataType> = Vec::new();
 
@@ -1688,20 +1770,32 @@ fn convert_datatype_arrays(
         let inner_array = serialized_datatypes.get_element(env, i)?;
         let inner_array = unsafe { JByteArray::from_raw(&*env, inner_array.into_raw()) };
         let bytes = env.convert_byte_array(inner_array)?;
-        let data_type = serde::deserialize_data_type(bytes.as_slice()).unwrap();
-        let arrow_dt = to_arrow_datatype(&data_type);
-        res.push(arrow_dt);
+        res.push(deserialize_arrow_datatype(bytes.as_slice(), i)?);
     }
 
     Ok(res)
 }
 
-fn get_execution_context<'a>(id: i64) -> &'a mut ExecutionContext {
-    unsafe {
-        (id as *mut ExecutionContext)
-            .as_mut()
-            .expect("Comet execution context shouldn't be null!")
-    }
+/// Decodes the serialized Spark data type of column `index` into its Arrow data type.
+fn deserialize_arrow_datatype(bytes: &[u8], index: usize) -> CometResult<ArrowDataType> {
+    let data_type = serde::deserialize_data_type(bytes).map_err(|e| {
+        CometError::Internal(format!(
+            "Cannot deserialize the data type of column {index}: {e}"
+        ))
+    })?;
+    Ok(to_arrow_datatype(&data_type))
+}
+
+/// Reads the string argument `arg` of the JNI export `export`.
+fn string_arg(env: &Env, value: &JString, export: &str, arg: &str) -> CometResult<String> {
+    value
+        .try_to_string(env)
+        .map_err(|e| CometError::Internal(format!("Cannot read argument '{arg}' of {export}: {e}")))
+}
+
+fn get_execution_context<'a>(id: i64) -> CometResult<&'a mut ExecutionContext> {
+    unsafe { (id as *mut ExecutionContext).as_mut() }
+        .ok_or_else(|| CometError::Internal("Native execution context handle is null".to_string()))
 }
 
 /// Returns the partition offsets published by a finished native shuffle write.
@@ -1715,7 +1809,7 @@ pub extern "system" fn Java_org_apache_comet_Native_getShufflePartitionOffsets(
     exec_context: jlong,
 ) -> jlongArray {
     try_unwrap_or_throw(&e, |env| {
-        let context = get_execution_context(exec_context);
+        let context = get_execution_context(exec_context)?;
         let root_plan = context.root_op.as_ref().map(|op| op.native_plan.as_ref());
         let offsets = shuffle_partition_offsets(root_plan)?;
 
@@ -1796,8 +1890,14 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_writeSortedFileNative
                 let data_types = convert_datatype_arrays(env, serialized_datatypes)?;
                 let row_addresses = row_addresses.get_elements(env, ReleaseMode::NoCopyBack)?;
                 let row_sizes = row_sizes.get_elements(env, ReleaseMode::NoCopyBack)?;
-                let output_path: String = file_path.try_to_string(env).unwrap();
-                let compression_codec: String = compression_codec.try_to_string(env).unwrap();
+                let output_path =
+                    string_arg(env, &file_path, "writeSortedFileNative", "file_path")?;
+                let compression_codec = string_arg(
+                    env,
+                    &compression_codec,
+                    "writeSortedFileNative",
+                    "compression_codec",
+                )?;
 
                 let results = write_sorted_file(
                     &row_addresses,
@@ -2083,6 +2183,137 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlock(
     })
 }
 
+/// Decode a local frame into owned arrays. The direct buffer can be reused after this call.
+fn append_shuffle_batch(
+    coalescer: &mut DecodedBatchCoalescer,
+    block: &[u8],
+    num_columns: usize,
+) -> CometResult<()> {
+    let batch = read_ipc_compressed(block)?;
+    if batch.num_columns() != num_columns {
+        return Err(CometError::Internal(
+            "Shuffle frame column count mismatch".into(),
+        ));
+    }
+    coalescer.push(batch)?;
+    Ok(())
+}
+
+/// The reader owns this handle and serializes native calls with cleanup.
+/// # Safety
+/// A nonzero handle must refer to a live coalescer exclusively borrowed for this call.
+unsafe fn shuffle_batch_coalescer<'a>(handle: jlong) -> CometResult<&'a mut DecodedBatchCoalescer> {
+    unsafe { (handle as *mut DecodedBatchCoalescer).as_mut() }
+        .ok_or_else(|| CometError::Internal("Closed shuffle batch coalescer".into()))
+}
+
+fn shuffle_batch_ready_columns(coalescer: &DecodedBatchCoalescer) -> jint {
+    coalescer
+        .peek_ready()
+        .map_or(-1, |batch| batch.num_columns() as jint)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_Native_createShuffleBatchCoalescer(
+    e: EnvUnowned,
+    _class: JClass,
+    max_rows: jint,
+) -> jlong {
+    try_unwrap_or_throw(&e, |_| {
+        let coalescer = DecodedBatchCoalescer::try_new(max_rows.max(0) as usize)?;
+        Ok(Box::into_raw(Box::new(coalescer)) as jlong)
+    })
+}
+
+#[no_mangle]
+/// Decode and retain one local frame, returning ready columns or -1 for more input.
+/// # Safety
+/// The handle must be live and exclusively owned by this reader. On error, close the reader.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_appendShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    byte_buffer: JByteBuffer,
+    length: jint,
+    num_columns: jint,
+    tracing_enabled: jboolean,
+) -> jint {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("appendShuffleBatch", tracing_enabled != JNI_FALSE, || {
+            if num_columns < 0 {
+                return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
+            }
+            let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
+            let coalescer = unsafe { shuffle_batch_coalescer(handle)? };
+            append_shuffle_batch(coalescer, block, num_columns as usize)?;
+            Ok(shuffle_batch_ready_columns(coalescer))
+        })
+    })
+}
+
+#[no_mangle]
+/// Report ready output, flushing the pending group at EOF.
+/// # Safety
+/// The handle must be live and exclusively owned by this reader.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_peekShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    end_of_input: jboolean,
+    tracing_enabled: jboolean,
+) -> jint {
+    try_unwrap_or_throw(&e, |_| {
+        let coalescer = unsafe { shuffle_batch_coalescer(handle)? };
+        if end_of_input != JNI_FALSE {
+            with_trace(
+                "coalesceShuffleBatches",
+                tracing_enabled != JNI_FALSE,
+                || coalescer.finish(),
+            )?;
+        }
+        Ok(shuffle_batch_ready_columns(coalescer))
+    })
+}
+
+#[no_mangle]
+/// Transfer one ready output using the ordinary export path, including offset repair.
+/// # Safety
+/// The handle and Arrow FFI output addresses must be live and exclusively owned by this reader.
+/// Both address arrays must have the column count reported by `peekShuffleBatch`.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_takeShuffleBatch(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+    array_addrs: JLongArray,
+    schema_addrs: JLongArray,
+    tracing_enabled: jboolean,
+) -> jlong {
+    try_unwrap_or_throw(&e, |env| {
+        with_trace("exportShuffleBatch", tracing_enabled != JNI_FALSE, || {
+            let batch = unsafe { shuffle_batch_coalescer(handle)? }
+                .take_ready()
+                .ok_or_else(|| CometError::Internal("No decoded shuffle batch is ready".into()))?;
+            prepare_output(env, array_addrs, schema_addrs, batch, false)
+        })
+    })
+}
+
+#[no_mangle]
+/// # Safety
+/// A nonzero handle must be live, must not be in use, and must be released exactly once.
+pub unsafe extern "system" fn Java_org_apache_comet_Native_closeShuffleBatchCoalescer(
+    e: EnvUnowned,
+    _class: JClass,
+    handle: jlong,
+) {
+    try_unwrap_or_throw(&e, |_| {
+        if handle != 0 {
+            drop(unsafe { Box::from_raw(handle as *mut DecodedBatchCoalescer) });
+        }
+        Ok(())
+    })
+}
+
 #[no_mangle]
 /// Parse the expected schema once for a remote shuffle iterator.
 ///
@@ -2169,6 +2400,22 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_decodeShuffleBlockWit
     })
 }
 
+/// Borrows a codec header and IPC payload from a direct buffer.
+/// # Safety
+/// The buffer's backing memory must remain valid and unmodified for the borrow.
+unsafe fn shuffle_frame_bytes<'a>(
+    env: &mut Env,
+    byte_buffer: &'a JByteBuffer<'_>,
+    length: jint,
+) -> CometResult<&'a [u8]> {
+    let capacity = env.get_direct_buffer_capacity(byte_buffer)?;
+    if length < 4 || length as usize > capacity {
+        return Err(CometError::Internal("Invalid shuffle frame bounds".into()));
+    }
+    let pointer = env.get_direct_buffer_address(byte_buffer)?;
+    Ok(unsafe { std::slice::from_raw_parts(pointer, length as usize) })
+}
+
 /// Converts the JNI arguments of the `decodeShuffleBlock` entry points for
 /// [`decode_shuffle_block`].
 fn decode_shuffle_block_jni(
@@ -2179,9 +2426,7 @@ fn decode_shuffle_block_jni(
     schema_addrs: JLongArray,
     expected_types: Option<&[ArrowDataType]>,
 ) -> CometResult<jlong> {
-    let raw_pointer = env.get_direct_buffer_address(&byte_buffer)?;
-    let length = length as usize;
-    let block: &[u8] = unsafe { std::slice::from_raw_parts(raw_pointer, length) };
+    let block = unsafe { shuffle_frame_bytes(env, &byte_buffer, length)? };
     let array_addrs = unsafe { array_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     let schema_addrs = unsafe { schema_addrs.get_elements(env, ReleaseMode::NoCopyBack)? };
     unsafe { decode_shuffle_block(block, &array_addrs, &schema_addrs, expected_types) }
@@ -2219,7 +2464,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceBegin(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceBegin", "event")?;
         trace_begin(&name);
         Ok(())
     })
@@ -2234,7 +2479,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_traceEnd(
     event: JString,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = event.try_to_string(env).unwrap();
+        let name = string_arg(env, &event, "traceEnd", "event")?;
         trace_end(&name);
         Ok(())
     })
@@ -2250,7 +2495,7 @@ pub unsafe extern "system" fn Java_org_apache_comet_Native_logMemoryUsage(
     value: jlong,
 ) {
     try_unwrap_or_throw(&e, |env| {
-        let name: String = name.try_to_string(env).unwrap();
+        let name = string_arg(env, &name, "logMemoryUsage", "name")?;
         log_memory_usage(&name, value as u64);
         Ok(())
     })
@@ -3317,6 +3562,36 @@ mod tests {
     }
 
     #[test]
+    fn append_shuffle_batches_owns_decoded_input_and_preserves_values() {
+        let input = int_batch();
+        let mut block = shuffle_block(&input);
+        let mut coalescer = DecodedBatchCoalescer::try_new(16).unwrap();
+        append_shuffle_batch(&mut coalescer, &block, 1).unwrap();
+        assert_eq!(shuffle_batch_ready_columns(&coalescer), -1);
+        // The JVM reuses its direct input buffer before the pending group is exported.
+        block.fill(0);
+        append_shuffle_batch(&mut coalescer, &shuffle_block(&input), 1).unwrap();
+        coalescer.finish().unwrap();
+        assert_eq!(shuffle_batch_ready_columns(&coalescer), 1);
+        let output = coalescer.take_ready().unwrap();
+        assert_eq!(output.num_rows(), 6);
+        assert_eq!(output.slice(0, 3), input);
+        assert_eq!(output.slice(3, 3), input);
+    }
+
+    #[test]
+    fn append_shuffle_batch_rejects_frame_count_mismatch() {
+        let mut coalescer = DecodedBatchCoalescer::try_new(16).unwrap();
+        let error =
+            append_shuffle_batch(&mut coalescer, &shuffle_block(&int_batch()), 2).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Shuffle frame column count mismatch"));
+        coalescer.finish().unwrap();
+        assert!(coalescer.take_ready().is_none());
+    }
+
+    #[test]
     fn decode_shuffle_block_exports_columns() {
         let batch = int_batch();
         let block = shuffle_block(&batch);
@@ -3396,6 +3671,46 @@ mod tests {
         assert!(producer.next_batch().unwrap().is_some());
         assert!(producer.next_batch().unwrap().is_none());
         producer.stop().unwrap();
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_decodes_a_serialized_type() {
+        use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
+
+        let bytes = spark_expression::DataType {
+            type_id: DataTypeId::Int64 as i32,
+            type_info: None,
+        }
+        .encode_to_vec();
+        assert_eq!(
+            deserialize_arrow_datatype(&bytes, 0).unwrap(),
+            DataType::Int64
+        );
+    }
+
+    #[test]
+    fn deserialize_arrow_datatype_rejects_malformed_bytes() {
+        // Field 31 with the unused wire type 7, which protobuf cannot decode.
+        let error = deserialize_arrow_datatype(&[0xff], 2).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot deserialize the data type of column 2"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn get_execution_context_rejects_a_null_handle() {
+        let error = get_execution_context(0).map(|_| ()).unwrap_err();
+        assert!(matches!(error, CometError::Internal(_)), "{error:?}");
+        assert!(
+            error
+                .to_string()
+                .contains("Native execution context handle is null"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -4164,6 +4479,7 @@ mod tests {
             off_heap_mode: true,
             memory_pool_type: "greedy_unified".to_string(),
             memory_limit: 1 << 30,
+            off_heap_size: 1 << 30,
             task_attempt_id: -6201,
             task_cpus: 1,
             local_dirs: vec![std::env::temp_dir().to_str().unwrap().to_string()],
