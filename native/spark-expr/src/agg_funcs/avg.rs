@@ -334,33 +334,12 @@ where
         ])
     }
 
-    /// Each row's own partial state, as `state` emits it: the value and a count of one, or a
-    /// zero sum and count for a null or filtered-out row.
     fn convert_to_state(
         &self,
-        values: &[ArrayRef],
-        opt_filter: Option<&arrow::array::BooleanArray>,
+        _values: &[ArrayRef],
+        _opt_filter: Option<&arrow::array::BooleanArray>,
     ) -> Result<Vec<ArrayRef>> {
-        let values = values[0].as_primitive::<T>();
-        let mut sums = Vec::with_capacity(values.len());
-        let mut counts = Vec::with_capacity(values.len());
-        for idx in 0..values.len() {
-            let included = values.is_valid(idx)
-                && opt_filter.is_none_or(|filter| filter.is_valid(idx) && filter.value(idx));
-            if included {
-                sums.push(values.value(idx));
-                counts.push(1);
-            } else {
-                sums.push(T::default_value());
-                counts.push(0);
-            }
-        }
-        let sums = PrimitiveArray::<T>::new(sums.into(), None)
-            .with_data_type(self.return_data_type.clone());
-        Ok(vec![
-            Arc::new(sums) as ArrayRef,
-            Arc::new(Int64Array::new(counts.into(), None)) as ArrayRef,
-        ])
+        not_impl_err!("Input batch conversion to state not implemented")
     }
 
     fn size(&self) -> usize {
@@ -384,34 +363,6 @@ mod tests {
         partial.update_batch(&[Arc::new(Float64Array::from(vec![None, None]))])?;
         assert_eq!(partial.state()?, empty);
         assert_eq!(partial.evaluate()?, ScalarValue::Float64(None));
-        Ok(())
-    }
-
-    /// Converting rows straight to partial states, as a partial aggregate that stops aggregating
-    /// does, gives each row the state that aggregating it alone into a group would.
-    #[test]
-    fn convert_to_state_matches_one_row_groups() -> Result<()> {
-        use arrow::array::BooleanArray;
-        let values: ArrayRef = Arc::new(Float64Array::from(vec![
-            Some(1.5),
-            None,
-            Some(-2.0),
-            Some(4.0),
-        ]));
-        let filter = BooleanArray::from(vec![Some(true), Some(true), Some(true), Some(false)]);
-        let new_accumulator = || {
-            AvgGroupsAccumulator::<arrow::datatypes::Float64Type, _>::new(
-                &Float64,
-                |sum: f64, count: i64| Ok(sum / count as f64),
-            )
-        };
-
-        let converted =
-            new_accumulator().convert_to_state(&[Arc::clone(&values)], Some(&filter))?;
-
-        let mut grouped = new_accumulator();
-        grouped.update_batch(&[values], &[0, 1, 2, 3], Some(&filter), 4)?;
-        assert_eq!(converted, grouped.state(EmitTo::All)?);
         Ok(())
     }
 }

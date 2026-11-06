@@ -1035,8 +1035,6 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                         && agg.agg_exprs.iter().all(|expr| {
                             matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
                                 if count.children.len() == 1)
-                                || matches!(&expr.expr_struct, Some(AggExprStruct::Avg(avg))
-                                    if avg.child.is_some())
                         })
                 }
                 // PartialMerge consumes states, not rows.
@@ -2734,7 +2732,7 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
-    use datafusion_comet_proto::spark_expression::{AggExpr, Avg, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
     use std::future::Future;
@@ -2749,13 +2747,6 @@ mod tests {
         };
         let sum = AggExpr {
             expr_struct: Some(AggExprStruct::Sum(Sum::default())),
-            ..Default::default()
-        };
-        let avg = |child: Option<Expr>| AggExpr {
-            expr_struct: Some(AggExprStruct::Avg(Avg {
-                child,
-                ..Default::default()
-            })),
             ..Default::default()
         };
         let partial = HashAggregate {
@@ -2803,10 +2794,6 @@ mod tests {
                 ..partial.clone()
             },
             HashAggregate {
-                agg_exprs: vec![count.clone(), avg(Some(Expr::default()))],
-                ..partial.clone()
-            },
-            HashAggregate {
                 agg_exprs: vec![count.clone(), count],
                 ..partial.clone()
             },
@@ -2828,10 +2815,6 @@ mod tests {
             },
             HashAggregate {
                 agg_exprs: vec![AggExpr::default()],
-                ..partial.clone()
-            },
-            HashAggregate {
-                agg_exprs: vec![avg(None)],
                 ..partial.clone()
             },
             HashAggregate {
