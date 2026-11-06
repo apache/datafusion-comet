@@ -72,6 +72,23 @@ object IcebergWriteProtoTranslation {
   }
 
   /**
+   * Why the write's compression codec cannot be written natively, or `None` when it can. A name
+   * iceberg-java rejects (`none`, `' gzip'`, a typo) must fall back so the write fails as it does
+   * without Comet, rather than succeed natively. A name it accepts but the native writer has no
+   * equivalent for (`lzo`, `lz4_raw`) falls back too.
+   */
+  def compressionCodecRejection(props: Map[String, String]): Option[String] = {
+    val name = codecName(props)
+    if (nativeCodec(name).isDefined) {
+      None
+    } else {
+      Some(
+        s"${Keys.ParquetCompression}=$name is not a codec the native writer supports " +
+          "(iceberg-java matches the name case-insensitively without trimming)")
+    }
+  }
+
+  /**
    * Why the write's compression level (if set) cannot be honoured natively, or `None` when it
    * can. iceberg-java performs no validation at all -- `Parquet.WriteBuilder`'s context keeps
    * `compressionLevel` as a raw string and drops it into the codec-specific writer property
@@ -86,11 +103,11 @@ object IcebergWriteProtoTranslation {
       scala.util.Try(java.lang.Integer.parseInt(raw)).toOption match {
         case None => Some(s"${Keys.ParquetCompressionLevel}=$raw is not a Java int")
         case Some(level) =>
-          val nativeBounds = resolveCompression(props) match {
-            case CompressionCodec.Zstd => Some((1, 22, "zstd"))
-            case CompressionCodec.Gzip => Some((0, 9, "gzip"))
-            case CompressionCodec.Brotli => Some((0, 11, "brotli"))
-            case _ => None
+          // An unresolvable codec has no native range; `compressionCodecRejection` declines it.
+          val nativeBounds = nativeCodec(codecName(props)).collect {
+            case CompressionCodec.Zstd => (1, 22, "zstd")
+            case CompressionCodec.Gzip => (0, 9, "gzip")
+            case CompressionCodec.Brotli => (0, 11, "brotli")
           }
           nativeBounds.collect {
             case (min, max, codec) if level < min || level > max =>
@@ -173,24 +190,30 @@ object IcebergWriteProtoTranslation {
   // --- Internals ------------------------------------------------------------
 
   /**
-   * Iceberg accepts `uncompressed`, `none` (treated as uncompressed), `snappy`, `gzip`, `lz4`,
-   * `zstd`, `brotli`. Defaults to `zstd` (since Iceberg 1.4).
+   * The native codec for a codec name, or `None` when the native writer has no equivalent. The
+   * name is resolved the way iceberg-java does: `Parquet.WriteBuilder` upper-cases it with
+   * `Locale.ENGLISH` and calls `CompressionCodecName.valueOf`, so the match is case-insensitive
+   * but never trims, and `none` (ORC's spelling) is not a Parquet codec. Unset defaults to `zstd`
+   * (since Iceberg 1.4).
    */
-  private def resolveCompression(props: Map[String, String]): CompressionCodec = {
-    val raw = props
-      .get(Keys.ParquetCompression)
-      .map(_.trim.toLowerCase(Locale.ROOT))
-      .getOrElse(Keys.ParquetCompressionDefaultSince14)
-    raw match {
-      case "uncompressed" | "none" => CompressionCodec.None
-      case "snappy" => CompressionCodec.Snappy
-      case "gzip" => CompressionCodec.Gzip
-      case "lz4" => CompressionCodec.Lz4
-      case "zstd" => CompressionCodec.Zstd
-      case "brotli" => CompressionCodec.Brotli
-      case other =>
-        throw new IllegalArgumentException(s"Unsupported parquet codec '$other'")
+  private def nativeCodec(name: String): Option[CompressionCodec] =
+    name.toUpperCase(Locale.ENGLISH) match {
+      case "UNCOMPRESSED" => Some(CompressionCodec.None)
+      case "SNAPPY" => Some(CompressionCodec.Snappy)
+      case "GZIP" => Some(CompressionCodec.Gzip)
+      case "LZ4" => Some(CompressionCodec.Lz4)
+      case "ZSTD" => Some(CompressionCodec.Zstd)
+      case "BROTLI" => Some(CompressionCodec.Brotli)
+      case _ => None
     }
+
+  private def codecName(props: Map[String, String]): String =
+    props.getOrElse(Keys.ParquetCompression, Keys.ParquetCompressionDefaultSince14)
+
+  private def resolveCompression(props: Map[String, String]): CompressionCodec = {
+    val name = codecName(props)
+    nativeCodec(name).getOrElse(
+      throw new IllegalArgumentException(s"Unsupported parquet codec '$name'"))
   }
 
   /**
