@@ -1728,6 +1728,37 @@ object IcebergReflection extends Logging {
     None
   }
 
+  /** UUID source whose Spark string ordering/distribution precedes native UUID normalization. */
+  def uuidTransformSource(schema: Any, specOrOrder: Any): Option[String] = {
+    import scala.jdk.CollectionConverters._
+    val fields = getMethod(specOrOrder.getClass, "fields")
+      .invoke(specOrOrder)
+      .asInstanceOf[java.util.List[_]]
+    fields.asScala.iterator
+      .filter { field =>
+        getMethod(field.getClass, "transform").invoke(field).toString != "void"
+      }
+      .flatMap { field =>
+        val id = getMethod(field.getClass, "sourceId").invoke(field).asInstanceOf[Int]
+        Option(
+          getMethod(schema.getClass, "findField", classOf[Int])
+            .invoke(schema, Int.box(id))).flatMap { source =>
+          val tpe = getMethod(source.getClass, "type").invoke(source)
+          val typeIdName =
+            getMethod(tpe.getClass, "typeId").invoke(tpe).asInstanceOf[Enum[_]].name()
+          if (typeIdName == "UUID") {
+            Some(
+              getMethod(schema.getClass, "findColumnName", classOf[Int])
+                .invoke(schema, Int.box(id))
+                .asInstanceOf[String])
+          } else None
+        }
+      }
+      .take(1)
+      .toSeq
+      .headOption
+  }
+
   /**
    * Sum `recordCount` and `fileSizeInBytes` across `dataFiles` for SQL-metric reporting. The
    * concrete `DataFile` impl (`BaseFile`) is package-private in Iceberg, so look the accessors up

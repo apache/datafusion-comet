@@ -132,7 +132,7 @@ only the latest.
 - [ ] **Nothing nondeterministic reaches the output.** Map iteration order leaks into file names,
       manifest order and the row order of unordered reads. The fanout arm sorts its `DataFile`s by
       path for this reason ([#5776](https://github.com/apache/datafusion-comet/issues/5776)).
-- [ ] **Casts stay strict.** `decorate_batch_with_field_ids` casts with `safe: false`, so a type
+- [ ] **Casts stay strict.** `UuidAlignment::convert` casts with `safe: false`, so a type
       mismatch fails the task. A safe cast would write NULLs.
 
 ## 4. Failure Handling and Cleanup

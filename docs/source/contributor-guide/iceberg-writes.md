@@ -274,9 +274,14 @@ Points where Comet adapts iceberg-rust to match iceberg-java:
   accounting follows `FallbackValuesWriter`, `DictionaryValuesWriter` and
   `RunLengthBitPackingHybridEncoder`, and its tests pin answers recorded from parquet-mr itself. The
   held rows then go through `RowPacer`, so the roll grid does not move.
-- **Field ids and casting.** `decorate_batch_with_field_ids` casts each batch to the
+- **Field ids and casting.** `UuidAlignment::convert` (`iceberg_uuid.rs`) casts each batch to the
   field-id-annotated Arrow schema derived from the Iceberg schema, with `safe: false`, so a type
-  mismatch fails the task instead of writing NULLs.
+  mismatch fails the task instead of writing NULLs. It identifies UUID leaves by Iceberg field
+  id and parses their strings with Java-compatible UUID semantics into 16 big-endian bytes.
+  Conversion descriptors are built once per task; UUID-free subtrees keep the ordinary cast path.
+  Struct validity and list/map offset windows mask invisible values before parsing, including
+  required children under null parents. Invalid visible UUIDs fail through the existing abort
+  guard. `fixed(16)` is not treated as UUID.
 - **Deterministic output order.** `FanoutPartitions`, Comet's version of iceberg-rust's
   `FanoutWriter`, closes its files in an order that depends on how the rows arrived and on which
   partitions it closed early, so the fanout path sorts its `DataFile`s by path before returning them
@@ -442,13 +447,14 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 
 | Suite                                                                | What it covers                                                                                                                                                                                                                 |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `CometIcebergWriteActionSuite`                                       | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning. |
+| `CometIcebergWriteActionSuite`                                       | End-to-end writes through the split plan and the native writer: parity with iceberg-java, row-level DML, partition evolution, file order, cleanup on task and job failure, writes outgrowing the memory pool, AQE re-planning. UUID tests compare rows, nested fields, metrics and footers in all writer modes with AQE on/off, and check cleanup after an invalid UUID in a later batch. |
 | [`CometIcebergSchedulerFailureSuite`](iceberg-scheduler-failures.md) | Manual multi-host speculation and executor-loss recovery, with scheduler evidence and a manifest-to-storage audit.                                                                                                             |
-| `CometIcebergWriteDetectionSuite`                                    | Most eligibility rules, each accepted and declined.                                                                                                                                                                            |
+| `CometIcebergWriteDetectionSuite`                                    | Most eligibility rules, each accepted and declined, including UUID data column support and fallback for UUID partition or sort sources.                                                                                                                                                                            |
 | `CometIcebergSystemFunctionSuite`                                    | Native `bucket`, `truncate`, `years`/`months`/`days`/`hours`, which keep a partitioned write's hash distribution and sort native end to end.                                                                                   |
 | `CometIcebergRewriteActionSuite`                                     | Iceberg's `rewrite_data_files` with the split plan and the native writer.                                                                                                                                                      |
 | `IcebergWriteProtoTranslationSuite`                                  | Translation of properties into `IcebergParquetWriteSettings` and the writer mode.                                                                                                                                              |
 | Rust tests in `iceberg_write.rs` and in `iceberg_partition_*.rs`     | File rolling on the 1000-row grid, fanout order, clustered input checks, cleanup guard, manifest round trip, memory reservation, partition path rendering, partition values past `chrono`'s calendar.                          |
+| Rust tests in `iceberg_uuid.rs`                                     | Java-compatible UUID parsing against oracle fixtures, Unicode digits, field-id-based UUID detection, strict casts for non-UUID fields, and visibility masking for null parents and sliced lists/maps. |
 | Rust tests in `iceberg_dictionary.rs`                                | The per-column dictionary choice against answers recorded from parquet-mr, including columns either side of its cut-off.                                                                                                       |
 | `iceberg_dictionary_chooser` benchmark in `native/core/benches`      | The time one partition's dictionary choice takes, over primitive, struct, array, map and nested columns.                                                                                                                       |
 | `CometIcebergWriteBenchmark`                                         | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
@@ -460,6 +466,27 @@ for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg
 (`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
 and partition path spelling, needs a test that runs on each.
+
+The native writer's UUID parser is pinned against fixtures generated with JDK 17 and 21;
+`dev/GenerateIcebergUuidOracle.java` records Java's acceptance and 16-byte output, plus
+`Character.digit` for the entire BMP. Regeneration instructions and the exact tested JDK versions
+are in `native/core/src/execution/operators/testdata/README.md`.
+
+Select the UUID writer benchmark separately with:
+
+```sh
+PROFILES=-Pspark-4.1 SPARK_GENERATE_BENCHMARK_FILES=1 \
+  make benchmark-org.apache.spark.sql.benchmark.CometIcebergWriteBenchmark uuid
+```
+
+It uses real Iceberg UUID columns, four million rows, eight source Parquet files, and three
+corpora: canonical UUIDs, canonical UUIDs with one null in eight, and Java-compatible shortened
+groups. Source generation and table creation are untimed. It rejects native fallback, checks
+normalized checksums, and reports five or more measured iterations with median, range, rows/s,
+writer factor, file count and output bytes. The default benchmark selection remains the non-UUID
+control (`control` selects only its unpartitioned insert). Comparing that control before and
+after a change requires matching builds and settings;
+the UUID writer factor alone is not evidence of a regression-free non-UUID path.
 
 When writing a native-write test:
 

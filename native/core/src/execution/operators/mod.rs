@@ -38,6 +38,7 @@ pub(crate) mod iceberg_location_scoped;
 mod iceberg_partition_path;
 mod iceberg_partition_value;
 mod iceberg_scan;
+mod iceberg_uuid;
 mod iceberg_write;
 pub use iceberg_write::IcebergWriteExec;
 mod merge_rows;
