@@ -458,7 +458,7 @@ per-task Parquet write is delegated to [iceberg-rust](https://github.com/apache/
 The native writer must produce the same outcome as iceberg-java — the same Parquet features,
 statistics, and manifest metadata — so a write is only eligible when every table property it
 depends on is one the native path reproduces exactly, and additionally only when the plan
-feeding the write is fully Comet-native. For a partitioned table that plan includes the hash
+feeding the write supplies Arrow batches to Comet. For a partitioned table that plan includes the hash
 distribution and local sort Iceberg requests on its partition transforms; those stay native
 because the transforms themselves have native implementations (see
 [Iceberg system functions](#iceberg-system-functions)). Ineligible writes run through
@@ -467,7 +467,27 @@ output. A write that runs natively shows `CometIcebergWrite` under `IcebergCommi
 plan; an ineligible write keeps `IcebergWrite`.
 
 The native writer reads its input as Arrow batches from a Comet operator, so the write's input
-must itself run in Comet. A write whose input is a local relation, such as `INSERT ... VALUES` or
+must supply Arrow data. When Spark inserts `AssertNotNull` checks for nullable input written to
+required fields, those checks remain in Spark. Eligible output is converted to Arrow at the writer
+boundary, allowing native writes without a shuffle.
+
+For a partitioned clustered writer, this new conversion also requires a Spark sort to fully consume
+each writer partition before writing; only local or global limits may wrap that sort. Unsorted or
+otherwise deferred row input keeps the iceberg-java writer, preserving an earlier partition-order
+error ahead of a later Spark expression failure. Unpartitioned and fanout writers do not require
+this additional condition.
+
+Writes with `fixed(N)` fields, including nested fields, keep iceberg-java when this row conversion
+would be needed, even with a sort. This preserves Java's fixed-width validation failures; writes
+that already supply native Arrow input retain their existing eligibility.
+
+This conversion requires proof that string values, including nested strings, contain valid UTF-8.
+For example, it accepts native input with recognized Spark projections that preserve those strings
+or use validated literals. Unproven sources or string-producing expressions, such as Spark text
+input, Spark binary-to-string casts, or string-bearing collection transforms, keep the iceberg-java
+writer to preserve the original bytes. The same table and schema eligibility checks apply.
+
+A write fed directly by a local relation, such as `INSERT ... VALUES` or
 `df.writeTo(...).append()` on a DataFrame built from local data, is fed by Spark's
 `LocalTableScanExec`, which Comet only converts when `spark.comet.exec.localTableScan.enabled=true`
 (off by default). Without that setting such writes keep `IcebergWrite` and run through
