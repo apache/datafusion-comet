@@ -55,7 +55,7 @@ pub mod jvm_bridge {
 use errors::{try_unwrap_or_throw, CometError, CometResult};
 
 use crate::cloud::s3::credential_bridge::AccessMode;
-use crate::execution::operators::iceberg_common::builtin_storage_schemes;
+use crate::execution::operators::iceberg_common::{builtin_storage_schemes, load_file_io};
 
 pub mod alloc_accounting;
 pub mod cloud;
@@ -318,6 +318,50 @@ pub extern "system" fn Java_org_apache_comet_NativeBase_icebergStorageSchemes(
         let joined = builtin_storage_schemes(access_mode).join(",");
         Ok(env.new_string(joined)?.into_raw())
     })
+}
+
+/// JNI, for tests: builds the Iceberg `FileIO` a read of `reference_path` with these catalog
+/// properties uses, and keeps it in the `FileIO` cache as a read would. Building it registers the
+/// configured S3 credential provider and makes no storage request, so a JVM test can check which
+/// providers the cache holds without an S3 server.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_loadIcebergFileIOForTesting(
+    env: EnvUnowned,
+    _: JClass,
+    reference_path: JString,
+    catalog_name: JString,
+    keys: JObjectArray<JString>,
+    values: JObjectArray<JString>,
+) {
+    try_unwrap_or_throw(&env, |env| {
+        jvm_bridge::JVMClasses::init(env);
+        let reference_path: String = reference_path.try_to_string(env)?;
+        let catalog_name: String = catalog_name.try_to_string(env)?;
+        let mut properties = HashMap::new();
+        for i in 0..keys.len(env)? {
+            let key = keys.get_element(env, i)?.try_to_string(env)?;
+            let value = values.get_element(env, i)?.try_to_string(env)?;
+            properties.insert(key, value);
+        }
+        load_file_io(
+            &properties,
+            &reference_path,
+            &catalog_name,
+            AccessMode::Read,
+        )
+        .map_err(|e| CometError::Internal(e.to_string()))?;
+        Ok(())
+    })
+}
+
+/// JNI, for tests: drops every cached Iceberg `FileIO`, as `release` does before it stops the
+/// runtime, so the providers they hold are released.
+#[no_mangle]
+pub extern "system" fn Java_org_apache_comet_NativeBase_clearIcebergFileIOCacheForTesting(
+    _env: EnvUnowned,
+    _: JClass,
+) {
+    execution::operators::clear_file_io_cache();
 }
 
 /// JNI: why the native scan cannot build its ABFS store for `url` from the object store options

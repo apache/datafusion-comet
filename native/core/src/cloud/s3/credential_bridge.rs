@@ -177,6 +177,30 @@ pub enum AccessMode {
     Write = 1,
 }
 
+/// A reference to a provider registered with the JVM dispatcher. `ensureInitialized` takes it, and
+/// dropping the last bridge that shares it gives it back with `release`, so the dispatcher can
+/// close a provider once nothing reads through it, such as after a catalog re-vends credentials.
+struct ProviderHandle(i64);
+
+impl Drop for ProviderHandle {
+    fn drop(&mut self) {
+        let released = JVMClasses::with_env(|env| -> Result<(), ExecutionError> {
+            unsafe {
+                jni_static_call!(env,
+                    comet_s3_credential_dispatcher.release(self.0) -> ()
+                )?
+            };
+            Ok(())
+        });
+        if let Err(e) = released {
+            warn!(
+                "Failed to release S3 credential provider handle {}: {e}",
+                self.0
+            );
+        }
+    }
+}
+
 /// Credential provider that delegates to the JVM SPI via JNI. Instances live in the executor's
 /// FileIO and object store caches, so one serves many tasks. `handle` is the JVM-side identity
 /// for the `(provider_class, dispatch_key, catalog_properties)` triple returned by
@@ -196,7 +220,7 @@ pub struct CometS3CredentialBridge {
     bucket: String,
     path: String,
     mode: AccessMode,
-    handle: i64,
+    handle: Arc<ProviderHandle>,
     bucket_jstr: Arc<Global<JString<'static>>>,
     path_jstr: Arc<Global<JString<'static>>>,
     /// The credential this bridge last fetched, while it is fresh. A derived bridge starts with an
@@ -209,7 +233,7 @@ impl fmt::Debug for CometS3CredentialBridge {
         f.debug_struct("CometS3CredentialBridge")
             .field("provider_class", &self.provider_class)
             .field("dispatch_key", &self.dispatch_key)
-            .field("handle", &self.handle)
+            .field("handle", &self.handle.0)
             .field("bucket", &self.bucket)
             .field("path", &self.path)
             .field("mode", &self.mode)
@@ -256,7 +280,7 @@ impl CometS3CredentialBridge {
             bucket,
             path,
             mode,
-            handle,
+            handle: Arc::new(ProviderHandle(handle)),
             bucket_jstr,
             path_jstr,
             cache: CredentialCache::default(),
@@ -282,7 +306,7 @@ impl CometS3CredentialBridge {
             bucket: self.bucket.clone(),
             path,
             mode: self.mode,
-            handle: self.handle,
+            handle: Arc::clone(&self.handle),
             bucket_jstr: Arc::clone(&self.bucket_jstr),
             path_jstr,
             cache: CredentialCache::default(),
@@ -333,7 +357,7 @@ impl CometS3CredentialBridge {
             bucket,
             path,
             mode: self.mode,
-            handle: self.handle,
+            handle: Arc::clone(&self.handle),
             bucket_jstr,
             path_jstr,
             cache: CredentialCache::default(),
@@ -347,7 +371,7 @@ impl CometS3CredentialBridge {
             let creds_obj: JObject = unsafe {
                 jni_static_call!(env,
                     comet_s3_credential_dispatcher.get_credentials_for_path(
-                        self.handle,
+                        self.handle.0,
                         self.bucket_jstr.as_obj(),
                         self.path_jstr.as_obj(),
                         mode
@@ -399,7 +423,7 @@ impl CometS3CredentialBridge {
             let locations: JObject = unsafe {
                 jni_static_call!(env,
                     comet_s3_credential_dispatcher.get_policy_locations(
-                        self.handle,
+                        self.handle.0,
                         self.bucket_jstr.as_obj()
                     ) -> JObject
                 )?

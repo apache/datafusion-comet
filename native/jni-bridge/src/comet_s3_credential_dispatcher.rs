@@ -38,6 +38,9 @@ pub struct CometS3CredentialDispatcher<'a> {
     /// implement `CometS3LocationScopedCredentialProvider`.
     pub method_get_policy_locations: JStaticMethodID,
     pub method_get_policy_locations_ret: ReturnType,
+    /// Gives back the provider reference `ensureInitialized` took.
+    pub method_release: JStaticMethodID,
+    pub method_release_ret: ReturnType,
     pub field_access_key_id: JFieldID,
     pub field_secret_access_key: JFieldID,
     pub field_session_token: JFieldID,
@@ -73,6 +76,12 @@ impl<'a> CometS3CredentialDispatcher<'a> {
                 jni::jni_sig!("(JLjava/lang/String;)[Ljava/lang/String;"),
             )?,
             method_get_policy_locations_ret: ReturnType::Array,
+            method_release: env.get_static_method_id(
+                JNIString::new(Self::JVM_CLASS),
+                jni::jni_str!("release"),
+                jni::jni_sig!("(J)V"),
+            )?,
+            method_release_ret: ReturnType::Primitive(Primitive::Void),
             field_access_key_id: env.get_field_id(
                 &credentials_class,
                 jni::jni_str!("accessKeyId"),

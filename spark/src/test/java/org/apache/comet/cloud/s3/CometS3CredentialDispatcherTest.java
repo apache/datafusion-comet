@@ -19,10 +19,18 @@
 
 package org.apache.comet.cloud.s3;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -47,6 +55,13 @@ public class CometS3CredentialDispatcherTest {
     // do not leak through closeAll() / initCount / closeCount assertions.
     CometS3CredentialDispatcher.closeAll();
     TestCometS3CredentialProvider.reset();
+    // Close released providers on the releasing thread, so counts are checked right after release.
+    CometS3CredentialDispatcher.setCloserForTesting(Runnable::run);
+  }
+
+  @After
+  public void restoreCloser() {
+    CometS3CredentialDispatcher.setCloserForTesting(null);
   }
 
   private long init() {
@@ -266,5 +281,152 @@ public class CometS3CredentialDispatcherTest {
 
     // Both close() invocations ran even though one (the first to be visited) threw.
     assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  @Test
+  public void releasingTheLastReferenceClosesTheProvider() throws Exception {
+    long h1 = init();
+    long h2 = init();
+    assertEquals(h1, h2);
+
+    CometS3CredentialDispatcher.release(h1);
+    assertEquals(0, TestCometS3CredentialProvider.closeCount.get());
+    CometS3CredentialDispatcher.getCredentialsForPath(h2, "b", "k", READ);
+
+    CometS3CredentialDispatcher.release(h2);
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+    assertEquals(0, CometS3CredentialDispatcher.registeredCount());
+    Exception thrown =
+        assertThrows(
+            IllegalStateException.class,
+            () -> CometS3CredentialDispatcher.getCredentialsForPath(h2, "b", "k", READ));
+    assertTrue(thrown.getMessage().contains("not initialized"));
+  }
+
+  @Test
+  public void aRetiredKeyGetsANewProvider() {
+    long retired = init();
+    CometS3CredentialDispatcher.release(retired);
+
+    long fresh = init();
+
+    assertNotEquals(retired, fresh);
+    assertEquals(2, TestCometS3CredentialProvider.initCount.get());
+    assertEquals(1, CometS3CredentialDispatcher.registeredCount());
+  }
+
+  /** An extra release, or one for a handle closed at shutdown, changes nothing. */
+  @Test
+  public void unknownOrRepeatedReleasesAreIgnored() {
+    CometS3CredentialDispatcher.release(Long.MAX_VALUE);
+    long handle = init();
+    CometS3CredentialDispatcher.release(handle);
+    CometS3CredentialDispatcher.release(handle);
+
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+    long other = init();
+    CometS3CredentialDispatcher.release(handle);
+    assertEquals(1, CometS3CredentialDispatcher.registeredCount());
+    CometS3CredentialDispatcher.release(other);
+    assertEquals(2, TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  @Test
+  public void concurrentAcquireAndReleaseNeverUseAClosedProvider() throws Exception {
+    int threads = 8;
+    int rounds = 2000;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      List<Future<?>> futures = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        futures.add(
+            pool.submit(
+                () -> {
+                  for (int i = 0; i < rounds; i++) {
+                    long handle = init();
+                    CometS3CredentialDispatcher.getCredentialsForPath(handle, "b", "k", READ);
+                    CometS3CredentialDispatcher.release(handle);
+                  }
+                  return null;
+                }));
+      }
+      for (Future<?> f : futures) {
+        f.get();
+      }
+    } finally {
+      pool.shutdownNow();
+    }
+    assertEquals(0, CometS3CredentialDispatcher.registeredCount());
+    assertEquals(
+        TestCometS3CredentialProvider.initCount.get(),
+        TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  /** The releasing thread may be a native reader's, so the close runs on the dispatcher's own. */
+  @Test
+  public void releaseClosesOnTheDispatcherThread() throws Exception {
+    CometS3CredentialDispatcher.setCloserForTesting(null);
+    TestCometS3CredentialProvider.closeFinished = new CountDownLatch(1);
+    long handle = init();
+
+    CometS3CredentialDispatcher.release(handle);
+
+    // Waiting for the whole close keeps its count out of the next test's.
+    assertTrue(TestCometS3CredentialProvider.closeFinished.await(10, TimeUnit.SECONDS));
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+    assertEquals("comet-s3-credential-close", TestCometS3CredentialProvider.lastCloseThread);
+    assertEquals(0, CometS3CredentialDispatcher.registeredCount());
+  }
+
+  /** A close that blocks holds up neither the releasing thread nor a new reader for the key. */
+  @Test
+  public void aBlockingCloseDoesNotHoldUpRelease() throws Exception {
+    CometS3CredentialDispatcher.setCloserForTesting(null);
+    CountDownLatch block = new CountDownLatch(1);
+    TestCometS3CredentialProvider.blockClose = block;
+    TestCometS3CredentialProvider.closeEntered = new CountDownLatch(1);
+    CountDownLatch finished = new CountDownLatch(1);
+    TestCometS3CredentialProvider.closeFinished = finished;
+    try {
+      long retired = init();
+      CometS3CredentialDispatcher.release(retired);
+      assertTrue(TestCometS3CredentialProvider.closeEntered.await(10, TimeUnit.SECONDS));
+
+      long fresh = init();
+      CometS3CredentialDispatcher.getCredentialsForPath(fresh, "b", "k", READ);
+      assertNotEquals(retired, fresh);
+      assertEquals(0, TestCometS3CredentialProvider.closeCount.get());
+    } finally {
+      block.countDown();
+    }
+    assertTrue(finished.await(10, TimeUnit.SECONDS));
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
+  }
+
+  /**
+   * The shutdown hook and a concurrent last release can reach one provider together. Only one of
+   * them closes it.
+   */
+  @Test
+  public void shutdownAndAConcurrentLastReleaseCloseOnce() throws Exception {
+    long handle = init();
+    CountDownLatch block = new CountDownLatch(1);
+    TestCometS3CredentialProvider.blockClose = block;
+    TestCometS3CredentialProvider.closeEntered = new CountDownLatch(1);
+    Thread shutdown = new Thread(CometS3CredentialDispatcher::closeAll);
+    Thread releaser = new Thread(() -> CometS3CredentialDispatcher.release(handle));
+    shutdown.start();
+    try {
+      assertTrue(TestCometS3CredentialProvider.closeEntered.await(10, TimeUnit.SECONDS));
+      // Without the shared claim, this release would close the provider a second time.
+      releaser.start();
+      releaser.join(2_000);
+    } finally {
+      block.countDown();
+    }
+    shutdown.join(10_000);
+    releaser.join(10_000);
+
+    assertEquals(1, TestCometS3CredentialProvider.closeCount.get());
   }
 }
