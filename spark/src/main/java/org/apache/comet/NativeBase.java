@@ -109,6 +109,7 @@ public abstract class NativeBase {
     }
 
     initWithLogConf();
+    logAllocator();
     warnOnTzdataMismatch();
     // Only set the Arrow properties when debugging mode is off
     if (!(boolean) CometConf.COMET_DEBUG_ENABLED().get()) {
@@ -166,6 +167,21 @@ public abstract class NativeBase {
       LOG.info("Using {} for native library logging", logConfPath);
     }
     init(logConfPath, logLevel);
+  }
+
+  /**
+   * Logs which allocator the loaded native library was built with: jemalloc when it was built with
+   * the jemalloc Cargo feature, which the jemalloc Maven profile turns on, and the system allocator
+   * otherwise.
+   */
+  private static void logAllocator() {
+    try {
+      LOG.info(
+          "Comet native library uses the {} allocator",
+          isFeatureEnabled("jemalloc") ? "jemalloc" : "system");
+    } catch (Throwable t) {
+      LOG.debug("Could not tell which allocator the native library uses", t);
+    }
   }
 
   /**

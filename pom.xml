@@ -127,6 +127,9 @@ under the License.
          -DtagsToExclude=org.apache.comet.tags.AzureTest. -->
     <tagsToExclude></tagsToExclude>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
+    <!-- Whether the bundled native library is built with jemalloc, which the jemalloc profile
+         sets. The tests get it as a system property and then check the loaded library. -->
+    <comet.jemalloc>false</comet.jemalloc>
     <platform>darwin</platform>
     <arch>x86_64</arch>
     <comet.shade.packageName>org.apache.comet.shaded</comet.shade.packageName>
@@ -672,6 +675,18 @@ under the License.
       </properties>
     </profile>
 
+    <!-- Builds Comet with the jemalloc allocator instead of the system one, which is glibc malloc
+         on Linux. Maven does not build the native library, so it has to be built with the Cargo
+         feature `jemalloc`, which make adds whenever PROFILES names this profile, for example
+         `make release PROFILES="-Pspark-4.1 -Pjemalloc"`. The tests then check that the loaded
+         library uses jemalloc. -->
+    <profile>
+      <id>jemalloc</id>
+      <properties>
+        <comet.jemalloc>true</comet.jemalloc>
+      </properties>
+    </profile>
+
     <profile>
       <id>Win-x86</id>
       <activation>
@@ -1172,6 +1187,9 @@ under the License.
               <!-- Set to a directory to make AbfsAuthParitySuite record its expectation file for
                    the hadoop-azure on the classpath instead of asserting against it. -->
               <comet.abfs.parity.record>${comet.abfs.parity.record}</comet.abfs.parity.record>
+              <!-- True under the jemalloc profile, which makes CometSparkSessionExtensionsSuite
+                   check that the loaded native library uses jemalloc. -->
+              <comet.jemalloc>${comet.jemalloc}</comet.jemalloc>
               <!-- spark-hadoop-cloud is on the test classpath, so Spark 4.1+ would make the S3A
                    magic committer, PathOutputCommitProtocol and BindingParquetOutputCommitter the
                    defaults of every session (SPARK-47618). Suites that test the magic committer
