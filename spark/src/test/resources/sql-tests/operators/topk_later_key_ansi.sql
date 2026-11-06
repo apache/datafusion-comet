@@ -110,7 +110,27 @@ SELECT a, ts FROM topk_types ORDER BY a, try_cast(ts AS DATE) LIMIT 3
 query expect_fallback(can fail on rows that Spark's ordering skips)
 SELECT a, dt FROM topk_types ORDER BY a, try_cast(dt AS TIMESTAMP) LIMIT 3
 
--- The first key is evaluated for every row in Spark too
+-- Native date formatting rejects years that Spark accepts, in every mode
+query expect_fallback(can fail on rows that Spark's ordering skips)
+SELECT a, dt FROM topk_types ORDER BY a, CAST(dt AS STRING) LIMIT 3
+
+-- Floating-point arithmetic cannot fail even under ANSI mode
+query
+SELECT a, d FROM topk_types ORDER BY a, d * 1.1D, d + 1, d - 1, -d, abs(d) LIMIT 3
+
+statement
+CREATE TABLE topk_struct(a int, s struct<x: int, y: string>) USING parquet
+
+statement
+INSERT INTO topk_struct SELECT /*+ REPARTITION(1) */ a, IF(x IS NULL, NULL, named_struct('x', x,
+  'y', y)) FROM VALUES (1, 2147483647, 'p'), (1, 5, 'q'), (2, NULL, NULL), (3, -1, '') AS t(a, x, y)
+
+-- Reading a struct field cannot fail
+query
+SELECT a, s FROM topk_struct ORDER BY a, s.x, s.y LIMIT 3
+
+-- The first key is evaluated for every row in Spark too when the input has at least two rows
+-- (https://github.com/apache/datafusion-comet/issues/7527)
 query
 SELECT a, b FROM topk ORDER BY a + 1, b LIMIT 2
 
@@ -143,3 +163,6 @@ SELECT a, b FROM topk ORDER BY a, round(b, -1), CAST(CAST(b AS STRING) AS INT) L
 
 query
 SELECT a, b FROM topk_types ORDER BY a, b / 0, b % 0, b DIV 0, l + 1, l * 2 LIMIT 3
+
+query
+SELECT a, s FROM topk_struct ORDER BY a, s.x, s.y LIMIT 3

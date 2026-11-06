@@ -1405,8 +1405,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
   def cannotFail(expr: Expression): Boolean = {
     def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
     def nonAnsiNumeric(evalMode: EvalMode.Value): Boolean = evalMode != EvalMode.ANSI && numeric
+    // Floating-point arithmetic never overflows into an error, even in ANSI mode
+    def floating: Boolean = expr.dataType == FloatType || expr.dataType == DoubleType
     val nodeCannotFail = expr match {
       case _: Attribute | _: BoundReference | _: Literal => true
+      case _: GetStructField => true
       case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
       case _: In | _: InSet | _: Greatest | _: Least => true
       case _: If | _: CaseWhen | _: Coalesce | _: IsNaN | _: NaNvl => true
@@ -1429,11 +1432,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       case r: BRound => roundCannotFail(r.dataType, r.ansiEnabled)
       case c: Cast => CometCast.cannotFail(c)
       case _: UnaryPositive => true
-      case u: UnaryMinus => !u.failOnError && numeric
-      case a: Abs => !a.failOnError && numeric
-      case a: Add => nonAnsiNumeric(a.evalMode)
-      case s: Subtract => nonAnsiNumeric(s.evalMode)
-      case m: Multiply => nonAnsiNumeric(m.evalMode)
+      case u: UnaryMinus => floating || (!u.failOnError && numeric)
+      case a: Abs => floating || (!a.failOnError && numeric)
+      case a: Add => floating || nonAnsiNumeric(a.evalMode)
+      case s: Subtract => floating || nonAnsiNumeric(s.evalMode)
+      case m: Multiply => floating || nonAnsiNumeric(m.evalMode)
       case d: Divide => nonAnsiNumeric(d.evalMode)
       case d: IntegralDivide => nonAnsiNumeric(d.evalMode)
       case r: Remainder => nonAnsiNumeric(r.evalMode)

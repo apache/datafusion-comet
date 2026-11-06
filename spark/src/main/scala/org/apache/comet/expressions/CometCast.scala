@@ -577,13 +577,15 @@ object CometCast
    * cannot convert, and so does a LEGACY cast between the atomic types listed here. An ANSI cast
    * cannot fail only where the conversion is always exact, such as a widening one or a string to
    * its bytes. A cast to or from a timestamp is excluded in every mode: the native kernels go
-   * through chrono, which rejects years Spark accepts, and raise even for TRY.
+   * through chrono, which rejects years Spark accepts, and raise even for TRY. So is a cast from
+   * a date to a string, whose native formatting raises in every mode for such a year.
    */
   private[comet] def cannotFail(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
     def isTimestamp(t: DataType) = t == TimestampType || t == TimestampNTZType
-    !isTimestamp(from) && !isTimestamp(to) && (evalMode(cast) match {
+    val dateToString = from == DataTypes.DateType && to.isInstanceOf[StringType]
+    !isTimestamp(from) && !isTimestamp(to) && !dateToString && (evalMode(cast) match {
       case CometEvalMode.TRY => true
       case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
       case _ if from.isInstanceOf[StringType] && to == DataTypes.BinaryType => true
