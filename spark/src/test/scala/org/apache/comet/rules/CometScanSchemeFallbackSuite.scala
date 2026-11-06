@@ -955,6 +955,18 @@ class CometScanSchemeFallbackSuite extends CometTestBase with CometIcebergTestBa
     assert(claimed.size == 1, s"expected the scan to be claimed, fell back with: $reasons")
   }
 
+  test("iceberg scan: HDFS files are declined when icebergNative.hdfs.enabled is false") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+    val key = CometConf.COMET_ICEBERG_NATIVE_HDFS_ENABLED.key
+    val (declined, reasons) = planIcebergScanOverHdfs(
+      Seq("hdfs://nn.example.com:8020/warehouse/db/t/a.parquet"),
+      hadoopConf = Seq(key -> "false"))
+    assert(declined.isEmpty, "the switch must decline the scan")
+    assert(reasons.exists(_.contains(s"$key is false")), reasons)
+    // The switch is the one HDFS reason given: the other HDFS checks are not run.
+    assert(!reasons.exists(_.contains("HADOOP_USER_NAME")), reasons)
+  }
+
   test(
     "iceberg scan: HADOOP_USER_NAME in the session's SQLConf does not stand for the executors'") {
     assume(icebergAvailable, "Iceberg not available in classpath")

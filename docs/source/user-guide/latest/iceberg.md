@@ -231,7 +231,8 @@ claims an HDFS scan only when the executors are known to read as the Spark user:
 submitted (Comet reads it from the SparkContext's configuration; a value set on a session
 afterwards never reaches the executors). In local mode, the JVM's `HADOOP_USER_NAME` or operating
 system user must be that user. Otherwise the scan falls back with a reason that names the setting.
-Writes to HDFS use Iceberg's own writer.
+To read HDFS tables with Spark's Iceberg reader and keep the native scan for other storage, set
+`spark.comet.scan.icebergNative.hdfs.enabled=false`. Writes to HDFS use Iceberg's own writer.
 
 ### Current limitations
 
@@ -838,10 +839,11 @@ the [S3](datasources.md#s3-limitations) and [Azure](datasources.md#azure-limitat
 
 Which entries apply depends on which native paths are enabled:
 
-| Native path    | Setting                                  | Default |
-| -------------- | ---------------------------------------- | ------- |
-| Iceberg scan   | `spark.comet.scan.icebergNative.enabled` | `true`  |
-| Iceberg writer | `spark.comet.write.iceberg.enabled`      | `false` |
+| Native path          | Setting                                       | Default |
+| -------------------- | --------------------------------------------- | ------- |
+| Iceberg scan         | `spark.comet.scan.icebergNative.enabled`      | `true`  |
+| Iceberg scan of HDFS | `spark.comet.scan.icebergNative.hdfs.enabled` | `true`  |
+| Iceberg writer       | `spark.comet.write.iceberg.enabled`           | `false` |
 
 ### Reads that differ from Spark
 

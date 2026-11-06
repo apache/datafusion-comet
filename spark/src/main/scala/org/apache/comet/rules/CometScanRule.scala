@@ -958,7 +958,7 @@ case class CometScanRule(session: SparkSession)
         // iceberg-rust's HDFS client cannot use an executor's delegation tokens: opendal builds
         // every client for a synthetic nameservice, and the client looks tokens up by that name.
         // A portless authority must be a declared nameservice (see hadoopToIcebergHdfsProperties).
-        val hdfsSupported = taskValidation.hdfsAuthorities.isEmpty || {
+        def hdfsScanSupported(): Boolean = {
           val authentication = hadoopConf.getTrimmed("hadoop.security.authentication", "simple")
           val secure = !authentication.equalsIgnoreCase("simple")
           if (secure) {
@@ -1014,6 +1014,15 @@ case class CometScanRule(session: SparkSession)
             }
           encryptionZoneFallback.foreach(fallbackReasons += _)
           !secure && undeclared.isEmpty && identityKnown && encryptionZoneFallback.isEmpty
+        }
+        val hdfsSupported = taskValidation.hdfsAuthorities.isEmpty || {
+          if (COMET_ICEBERG_NATIVE_HDFS_ENABLED.get()) {
+            hdfsScanSupported()
+          } else {
+            fallbackReasons += "Iceberg scan reads HDFS files, and " +
+              s"${COMET_ICEBERG_NATIVE_HDFS_ENABLED.key} is false"
+            false
+          }
         }
 
         if (!taskValidation.allParquet) {
