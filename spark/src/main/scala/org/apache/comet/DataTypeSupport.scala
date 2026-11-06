@@ -93,7 +93,8 @@ object DataTypeSupport {
    * Shared reason for expressions whose Rust kernels cannot handle a negative-scale decimal.
    */
   val negativeScaleDecimalReason: String =
-    "There is no native implementation of this expression for negative-scale decimals"
+    "Negative-scale decimals, which Spark only allows when " +
+      "`spark.sql.legacy.allowNegativeScaleOfDecimal=true`"
 
   /**
    * True only when `dt` is itself a `DecimalType` with a negative scale. Nested types are not

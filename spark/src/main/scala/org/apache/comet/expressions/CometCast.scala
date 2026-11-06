@@ -528,7 +528,8 @@ object CometCast
           DataTypes.LongType =>
         // The native decimal to integral kernels divide by 10^scale, which overflows for a
         // negative scale. A debug build panics on any batch with a value and a release build
-        // wraps the divisor, so the cast is left to Spark.
+        // wraps the divisor, so `CodegenDispatchFallback` routes the cast through the JVM
+        // codegen dispatcher instead.
         if (isNegativeScaleDecimal(fromType)) {
           Unsupported(Some(negativeScaleDecimalReason))
         } else {
