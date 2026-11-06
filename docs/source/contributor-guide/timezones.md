@@ -218,11 +218,12 @@ not UTC.
 
 Several timezone-dependent expressions have no native implementation that is compatible in every
 session, including `date_trunc`, `date_format`, `from_unixtime`, `from_utc_timestamp`,
-`to_utc_timestamp`, `make_timestamp` and `to_timestamp`. Their serdes route the cases their Rust
-implementation cannot handle through the JVM codegen dispatcher, as they do for a session timezone
-that `CometTimeZone.nativeId` cannot express. The dispatcher runs Spark's generated code with the
-`timeZoneId` stamped on the expression, so the results match Spark, and its Arrow output is
-labelled `"UTC"` like everything else.
+`to_utc_timestamp`, `make_timestamp` and `to_timestamp`. Their serdes route the cases that Comet's
+Rust code cannot handle through the JVM codegen dispatcher, as they do for a session timezone that
+`CometTimeZone.nativeId` cannot express. For `make_timestamp`, and for `to_timestamp` with a
+format, that is every case. The dispatcher runs Spark's generated code with the `timeZoneId`
+stamped on the expression, so the results match Spark, and its Arrow output is labelled `"UTC"`
+like everything else.
 
 ## Guidelines
 
