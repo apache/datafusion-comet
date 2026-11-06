@@ -22,13 +22,14 @@
 # Merging goes through GitHub's merge queue (see `rulesets` in `.asf.yaml`), so
 # there are three tiers:
 #
-#   pull_request  fast feedback. The Linux build only, with its test matrix
-#                 run against the default Spark profile (4.1) alone.
+#   pull_request  fast feedback. The Linux build, with its test matrix run
+#                 against the default Spark profile (4.1) alone, plus Spark
+#                 SQL (catalyst and sql_core) on Spark 4.1 and Iceberg 1.11.
 #   merge_group   the authoritative gate. The PR tier plus the macOS build,
 #                 the benchmark compile check, the Delta contrib build gate,
-#                 the PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg
-#                 1.11, evaluated against the merge result rather than the
-#                 PR head. One Spark version and one Iceberg version, both
+#                 the PyArrow UDF suite and the Spark SQL sql_hive shards,
+#                 evaluated against the merge result rather than the PR
+#                 head. One Spark version and one Iceberg version, both
 #                 the default profile's.
 #   schedule      the nightly regression sweep of everything else: the Linux
 #                 test matrix against the other Spark profiles, Spark SQL on

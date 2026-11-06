@@ -399,6 +399,10 @@ POLICY_CASES = [
         },
         set(),
     ),
+    (
+        {"name": "pull_request", "action": "synchronize", "labels": ["run-spark-4.1-tests"]},
+        PR_TIER,
+    ),
     # An opt-in label present on a pushed commit adds just that suite. For the
     # deprecated Spark 3.4 suite the label is the *only* way it ever runs on a
     # pull request or the queue, so this case and the `labeled` one below are
