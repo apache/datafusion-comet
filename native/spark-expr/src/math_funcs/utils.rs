@@ -296,3 +296,333 @@ fn decimal_round_pow10<M: RoundingMode, const EXP: u32>(x: i128) -> i128 {
 fn decimal_round_wide<M: RoundingMode>(x: i128, div: i128) -> i128 {
     M::div_i128(x, div)
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{spark_ceil, spark_floor};
+    use arrow::array::{Float32Array, Float64Array};
+    use datafusion::common::cast::as_int64_array;
+    use datafusion::common::Result;
+
+    type RoundFn = fn(&[ColumnarValue], &DataType) -> Result<ColumnarValue>;
+
+    fn check_int64_array(
+        round: RoundFn,
+        input: ArrayRef,
+        expected: Vec<Option<i64>>,
+    ) -> Result<()> {
+        let data_type = input.data_type().clone();
+        let ColumnarValue::Array(result) = round(&[ColumnarValue::Array(input)], &data_type)?
+        else {
+            unreachable!()
+        };
+        assert_eq!(as_int64_array(&result)?, &Int64Array::from(expected));
+        Ok(())
+    }
+
+    fn check_decimal_array(
+        round: RoundFn,
+        input: &[Option<i128>],
+        (precision, scale): (u8, i8),
+        output_precision: u8,
+        expected: Vec<Option<i128>>,
+    ) -> Result<()> {
+        let array =
+            Decimal128Array::from(input.to_vec()).with_precision_and_scale(precision, scale)?;
+        let args = [ColumnarValue::Array(Arc::new(array))];
+        let ColumnarValue::Array(result) =
+            round(&args, &DataType::Decimal128(output_precision, 0))?
+        else {
+            unreachable!()
+        };
+        let expected =
+            Decimal128Array::from(expected).with_precision_and_scale(output_precision, 0)?;
+        let actual = result.as_any().downcast_ref::<Decimal128Array>().unwrap();
+        assert_eq!(actual, &expected);
+        Ok(())
+    }
+
+    fn check_scalar(
+        round: RoundFn,
+        input: ScalarValue,
+        data_type: &DataType,
+        expected: ScalarValue,
+    ) -> Result<()> {
+        let ColumnarValue::Scalar(actual) = round(&[ColumnarValue::Scalar(input)], data_type)?
+        else {
+            unreachable!()
+        };
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_f32_array() -> Result<()> {
+        let ceil_input = [125.2345, 15.0001, 0.1, -0.9, -1.1, 123.0].map(Some);
+        let floor_input = [125.9345, 15.9999, 0.9, -0.1, -1.999, 123.0].map(Some);
+        let with_null = |values: [Option<f32>; 6]| {
+            let values: Vec<_> = values.into_iter().chain([None]).collect();
+            Arc::new(Float32Array::from(values)) as ArrayRef
+        };
+        check_int64_array(
+            spark_ceil,
+            with_null(ceil_input),
+            vec![
+                Some(126),
+                Some(16),
+                Some(1),
+                Some(0),
+                Some(-1),
+                Some(123),
+                None,
+            ],
+        )?;
+        check_int64_array(
+            spark_floor,
+            with_null(floor_input),
+            vec![
+                Some(125),
+                Some(15),
+                Some(0),
+                Some(-1),
+                Some(-2),
+                Some(123),
+                None,
+            ],
+        )
+    }
+
+    #[test]
+    fn test_f64_array() -> Result<()> {
+        let ceil_input = [125.2345, 15.0001, 0.1, -0.9, -1.1, 123.0].map(Some);
+        let floor_input = [125.9345, 15.9999, 0.9, -0.1, -1.999, 123.0].map(Some);
+        let with_null = |values: [Option<f64>; 6]| {
+            let values: Vec<_> = values.into_iter().chain([None]).collect();
+            Arc::new(Float64Array::from(values)) as ArrayRef
+        };
+        check_int64_array(
+            spark_ceil,
+            with_null(ceil_input),
+            vec![
+                Some(126),
+                Some(16),
+                Some(1),
+                Some(0),
+                Some(-1),
+                Some(123),
+                None,
+            ],
+        )?;
+        check_int64_array(
+            spark_floor,
+            with_null(floor_input),
+            vec![
+                Some(125),
+                Some(15),
+                Some(0),
+                Some(-1),
+                Some(-2),
+                Some(123),
+                None,
+            ],
+        )
+    }
+
+    #[test]
+    fn test_i64_array() -> Result<()> {
+        for round in [spark_ceil as RoundFn, spark_floor] {
+            let values = vec![Some(-1), Some(0), Some(1), None];
+            let input = Arc::new(Int64Array::from(values.clone())) as ArrayRef;
+            check_int64_array(round, input, values)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_decimal128_array() -> Result<()> {
+        let input = [
+            Some(12345),  // 123.45
+            Some(12500),  // 125.00
+            Some(-12999), // -129.99
+            None,
+        ];
+        check_decimal_array(
+            spark_ceil,
+            &input,
+            (5, 2),
+            4,
+            vec![Some(124), Some(125), Some(-129), None],
+        )?;
+        check_decimal_array(
+            spark_floor,
+            &input,
+            (5, 2),
+            4,
+            vec![Some(123), Some(125), Some(-130), None],
+        )
+    }
+
+    #[test]
+    fn test_decimal128_wide_array() -> Result<()> {
+        // Unscaled values above i64::MAX (~9.22e18) take the wide fallback in decimal_round_pow10.
+        // The first value is an exact multiple of 10^6, the other two have a remainder.
+        let input = [
+            Some(20_000_000_000_000_000_000_i128),
+            Some(20_000_000_000_000_000_001_i128),
+            Some(-20_000_000_000_000_000_001_i128),
+            None,
+        ];
+        check_decimal_array(
+            spark_ceil,
+            &input,
+            (38, 6),
+            38,
+            vec![
+                Some(20_000_000_000_000_i128),
+                Some(20_000_000_000_001_i128),
+                Some(-20_000_000_000_000_i128),
+                None,
+            ],
+        )?;
+        check_decimal_array(
+            spark_floor,
+            &input,
+            (38, 6),
+            38,
+            vec![
+                Some(20_000_000_000_000_i128),
+                Some(20_000_000_000_000_i128),
+                Some(-20_000_000_000_001_i128),
+                None,
+            ],
+        )
+    }
+
+    #[test]
+    fn test_decimal128_i64_boundary_array() -> Result<()> {
+        // decimal_round_pow10 switches from the i64 fast path to decimal_round_wide exactly at
+        // i64::MAX / i64::MIN. Straddling both edges pins that the two paths agree: each pair
+        // below differs by one unscaled unit but rounds to the same value, so a divergence
+        // between the 64-bit and 128-bit divisions would show up as a mismatch here.
+        let input = [
+            Some(i64::MAX as i128),     //  9223372036854.775807 -> fast path
+            Some(i64::MAX as i128 + 1), //  9223372036854.775808 -> wide path
+            Some(i64::MIN as i128),     // -9223372036854.775808 -> fast path
+            Some(i64::MIN as i128 - 1), // -9223372036854.775809 -> wide path
+        ];
+        check_decimal_array(
+            spark_ceil,
+            &input,
+            (38, 6),
+            38,
+            vec![
+                Some(9_223_372_036_855_i128),
+                Some(9_223_372_036_855_i128),
+                Some(-9_223_372_036_854_i128),
+                Some(-9_223_372_036_854_i128),
+            ],
+        )?;
+        check_decimal_array(
+            spark_floor,
+            &input,
+            (38, 6),
+            38,
+            vec![
+                Some(9_223_372_036_854_i128),
+                Some(9_223_372_036_854_i128),
+                Some(-9_223_372_036_855_i128),
+                Some(-9_223_372_036_855_i128),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_decimal128_large_scale_array() -> Result<()> {
+        // dispatch_pow10! only specializes scales whose divisor fits in an i64, so scale 19 takes
+        // the runtime `decimal_round_f` fallback. Untested on the array path otherwise.
+        let input = [
+            Some(20_000_000_000_000_000_000_000_i128),  //  2000.0
+            Some(20_000_000_000_000_000_000_001_i128),  //  2000.0000000000000000001
+            Some(-20_000_000_000_000_000_000_001_i128), // -2000.0000000000000000001
+            None,
+        ];
+        check_decimal_array(
+            spark_ceil,
+            &input,
+            (38, 19),
+            38,
+            vec![Some(2000), Some(2001), Some(-2000), None],
+        )?;
+        check_decimal_array(
+            spark_floor,
+            &input,
+            (38, 19),
+            38,
+            vec![Some(2000), Some(2000), Some(-2001), None],
+        )
+    }
+
+    #[test]
+    fn test_f32_scalar() -> Result<()> {
+        check_scalar(
+            spark_ceil,
+            ScalarValue::Float32(Some(125.2345)),
+            &DataType::Float32,
+            ScalarValue::Int64(Some(126)),
+        )?;
+        check_scalar(
+            spark_floor,
+            ScalarValue::Float32(Some(125.9345)),
+            &DataType::Float32,
+            ScalarValue::Int64(Some(125)),
+        )
+    }
+
+    #[test]
+    fn test_f64_scalar() -> Result<()> {
+        check_scalar(
+            spark_ceil,
+            ScalarValue::Float64(Some(-1.1)),
+            &DataType::Float64,
+            ScalarValue::Int64(Some(-1)),
+        )?;
+        check_scalar(
+            spark_floor,
+            ScalarValue::Float64(Some(-1.999)),
+            &DataType::Float64,
+            ScalarValue::Int64(Some(-2)),
+        )
+    }
+
+    #[test]
+    fn test_i64_scalar() -> Result<()> {
+        for round in [spark_ceil as RoundFn, spark_floor] {
+            check_scalar(
+                round,
+                ScalarValue::Int64(Some(48)),
+                &DataType::Int64,
+                ScalarValue::Int64(Some(48)),
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_decimal128_scalar() -> Result<()> {
+        let input = ScalarValue::Decimal128(Some(567), 3, 1); // 56.7
+        let output_type = DataType::Decimal128(3, 0);
+        check_scalar(
+            spark_ceil,
+            input.clone(),
+            &output_type,
+            ScalarValue::Decimal128(Some(57), 3, 0),
+        )?;
+        check_scalar(
+            spark_floor,
+            input,
+            &output_type,
+            ScalarValue::Decimal128(Some(56), 3, 0),
+        )
+    }
+}
