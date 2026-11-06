@@ -175,9 +175,9 @@ exception class alone does not identify which memory limit was reached.
 | Managed memory pool | Operators spill, or a task fails when memory cannot be reserved. Spark consumers can report `SparkOutOfMemoryError`; Comet operators can report a `CometNativeException` with a message such as `Additional allocation failed for` or `Not enough memory to continue external sort`. These reservation failures normally leave the executor running. | Identify the consumer and its pool. For Comet's shared off-heap pool, consider increasing `spark.memory.offHeap.size`, running fewer tasks per executor, or reducing `spark.comet.batchSize`; see [Configuring Comet Memory]. Increasing overhead does not enlarge this pool. `SparkOutOfMemoryError` can also come from Spark's on-heap consumers, and `CometNativeException` can report unrelated errors, so check the message and failing operator first. |
 
 For example, on non-Windows YARN executors Spark adds `-XX:OnOutOfMemoryError='kill %p'` unless
-the executor's Java options already set `-XX:OnOutOfMemoryError`. The JVM can therefore terminate on a heap OOM with SIGTERM
-(exit 143) rather than reaching Spark's exit-52 handler. Use the heap-specific log message to
-diagnose this case.
+the executor's Java options already set `-XX:OnOutOfMemoryError`. The JVM can therefore terminate
+on a heap OOM with SIGTERM (exit 143) rather than reaching Spark's exit-52 handler. Use the
+heap-specific log message to diagnose this case.
 
 For the full accounting model and allocation paths, see the contributor guide's
 [Memory Management](../../../contributor-guide/memory_management.md) page.
