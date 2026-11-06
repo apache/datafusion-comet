@@ -524,7 +524,7 @@ python3 dev/ci/check-ci-config.py
 actionlint --shellcheck=off
 ```
 
-A new test suite has to be registered in the workflow files by hand; see
+A new test suite needs a group tag and a listing in the workflow files; see
 [Register New Test Suites in CI](development.md#6-register-new-test-suites-in-ci). A new job in
 `ci.yml` needs an entry in both `FILTERS` and `POLICY` in `dev/ci/compute-changes.py`, a case in
 `dev/ci/check-ci-config.py`, and a line in `required_checks.needs`. The check will tell you which

@@ -28,6 +28,7 @@ import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.serde.OperatorOuterClass.Operator
+import org.apache.comet.tags.ShuffleGroup
 
 /**
  * Ensure the serialized shuffle-map-stage task binary does not grow with the number of
@@ -43,6 +44,7 @@ import org.apache.comet.serde.OperatorOuterClass.Operator
  * Lives in the `execution.shuffle` package so it can construct the `private[shuffle]`
  * [[CometNativeShuffleInputRDD]] and the `private[comet]` [[NativeExecContext]] directly.
  */
+@ShuffleGroup
 class CometNativeShuffleInputRDDSuite extends CometTestBase {
 
   test("native shuffle input preserves its parents' determinism") {

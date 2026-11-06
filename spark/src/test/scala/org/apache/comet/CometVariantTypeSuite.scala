@@ -34,7 +34,9 @@ import org.apache.spark.sql.types.{ArrayType, BinaryType, StructField, StructTyp
 
 import org.apache.comet.rules.CometScanTypeChecker
 import org.apache.comet.serde.{CometAttributeReference, QueryPlanSerde, Unsupported}
+import org.apache.comet.tags.ExpressionsGroup
 
+@ExpressionsGroup
 class CometVariantTypeSuite extends AnyFunSuite {
   private val storageType = StructType(
     Seq(

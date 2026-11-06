@@ -26,12 +26,14 @@ import org.apache.spark.sql.types.{StringType, StructField, StructType}
 
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.Compatible
+import org.apache.comet.tags.ExpressionsGroup
 
 /**
  * Differential corpus: every pattern the plan-time analyzer admits is evaluated on Spark (Java
  * `Pattern`) and on Comet's native Rust path, and the results must match. Routing is asserted via
  * extended explain so a dispatcher fallback cannot silently satisfy the comparison.
  */
+@ExpressionsGroup
 class CometRegexParitySuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   // One pattern per whitelist production, plus the lexer-boundary cases.

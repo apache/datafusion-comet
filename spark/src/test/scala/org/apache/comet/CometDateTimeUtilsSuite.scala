@@ -26,11 +26,14 @@ import org.apache.spark.sql.functions.col
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.DataTypes
 
+import org.apache.comet.tags.ExpressionsGroup
+
 /**
  * Tests for string-to-timestamp (and string-to-date) cast correctness, ported from Spark's
  * DateTimeUtilsSuite. That suite lives in sql/catalyst and does not extend CometTestBase, so it
  * never runs in Comet CI.
  */
+@ExpressionsGroup
 class CometDateTimeUtilsSuite extends CometTestBase {
 
   import testImplicits._

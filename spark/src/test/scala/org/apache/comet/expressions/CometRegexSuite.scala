@@ -22,7 +22,9 @@ package org.apache.comet.expressions
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.comet.serde.{Compatible, Incompatible}
+import org.apache.comet.tags.ExpressionsGroup
 
+@ExpressionsGroup
 class CometRegexSuite extends AnyFunSuite {
 
   private def assertCompatible(pattern: String): Unit = {

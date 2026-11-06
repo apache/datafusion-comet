@@ -22,8 +22,10 @@ package org.apache.comet.exec
 import org.apache.spark.sql.CometTestBase
 
 import org.apache.comet.shims.ShimCometMergeRows
+import org.apache.comet.tags.ExecGroup
 
 /** Spark 3.4 compatibility coverage for the version-specific MergeRows registration shim. */
+@ExecGroup
 class CometMergeRowsSuite extends CometTestBase {
   test("Spark 3.4 leaves native MergeRows execution unregistered") {
     assert(ShimCometMergeRows.nativeExecs.isEmpty)

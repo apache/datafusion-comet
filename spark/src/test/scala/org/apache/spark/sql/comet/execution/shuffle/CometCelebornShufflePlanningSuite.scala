@@ -42,12 +42,14 @@ import org.apache.comet.{CometConf, CometExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isCometShuffleEnabled, isCometShuffleManagerEnabled}
 import org.apache.comet.rules.{CometExecRule, RevertNativeForTransitionHeavyStages}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass}
+import org.apache.comet.tags.ShuffleGroup
 
 /**
  * Plans against the actual composite manager without requiring the optional Celeborn client. Only
  * Spark-fallback queries execute: the local test backend must never receive a native dependency.
  * Native plan assertions below are not transport or live-cluster integration tests.
  */
+@ShuffleGroup
 class CometCelebornShufflePlanningSuite extends CometTestBase {
 
   override protected val shuffleManager: String =

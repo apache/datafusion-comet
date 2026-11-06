@@ -28,6 +28,7 @@ import org.apache.spark.sql.functions.{col, lit, rand, udf}
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometConf
+import org.apache.comet.tags.ShuffleGroup
 
 /**
  * Positional round robin places rows by their ordinal within the map task rather than by hashing
@@ -39,6 +40,7 @@ import org.apache.comet.CometConf
  * `CometShuffleExchangeExec.usesPositionalRoundRobin` directly rather than inferring the decision
  * from output.
  */
+@ShuffleGroup
 class CometNativePositionalRoundRobinSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   private val numPartitions = 8

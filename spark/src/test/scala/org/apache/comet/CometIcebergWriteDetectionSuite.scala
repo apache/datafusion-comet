@@ -48,7 +48,9 @@ import org.apache.comet.rules.EliminateRedundantTransitions
 import org.apache.comet.serde.{Compatible, SupportLevel, Unsupported}
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.CometIcebergNativeWrite
+import org.apache.comet.tags.ScansGroup
 
+@ScansGroup
 class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTestBase {
 
   override protected def sparkConf: SparkConf = {

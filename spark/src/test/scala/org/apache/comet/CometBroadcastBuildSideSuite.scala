@@ -33,11 +33,13 @@ import org.apache.spark.sql.execution.joins.BroadcastNestedLoopJoinExec
 import org.apache.spark.sql.internal.SQLConf
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark35Plus
+import org.apache.comet.tags.ScansGroup
 
 // Tests for the broadcast build-side bridge, spark.comet.convert.broadcastBuildSide.enabled (issue
 // #6008). A build-side scan that Comet cannot read natively, such as ORC or an Iceberg table
 // the native reader declines, is converted to Arrow so that the broadcast join runs natively. Each
 // query is compared with Spark, and the tests assert where the bridge must and must not appear.
+@ScansGroup
 class CometBroadcastBuildSideSuite extends CometTestBase with CometIcebergTestBase {
 
   // Most tests use an ORC build side. Text, Parquet, JSON and CSV scans are converted only by their
