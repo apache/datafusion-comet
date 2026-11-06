@@ -375,21 +375,76 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       tableUuid = Some("re-created")) shouldBe None
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 5
 
-    // More parents than the budget: the scan is declined after that many listings, which are
-    // kept, and the next scan continues from them.
+    // More entries than the budget: the scan is declined once that many are listed, the parents
+    // listed whole are kept, and the next scan continues from them.
     val spread = (1 to 3).map(i => dir(s"spread/t=$i/p=1")).toSet
     CountingHdfsFileSystem.reset()
     val declined =
-      CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxListings = 2)
-    assert(declined.exists(_.contains("2 directory listings")), declined)
+      CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxEntries = 2)
+    assert(declined.exists(_.contains("2 directory entries")), declined)
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 2
-    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxListings = 2) shouldBe None
+    CometIcebergNativeScan.hdfsEncryptionZoneFallback(conf, spread, maxEntries = 2) shouldBe None
     CountingHdfsFileSystem.listStatusCalls.get() shouldBe 3
 
     // A directory at the filesystem root has no parent to list.
     CometIcebergNativeScan.hdfsEncryptionZoneFallback(
       conf,
       Set(s"${CountingHdfsFileSystem.PREFIX}/")) shouldBe None
+  }
+
+  test("the encryption-zone probe lists a parent of many partitions once, in linear time") {
+    val conf = new Configuration(false)
+    conf.set("fs.hdfs.impl", classOf[CountingHdfsFileSystem].getName)
+    conf.set("fs.hdfs.impl.disable.cache", "true")
+    conf.set("hadoop.security.key.provider.path", "kms://http@kms.example.com:9600/kms")
+    val prefix = CountingHdfsFileSystem.PREFIX
+    def partitions(parent: String): Set[String] =
+      (1 to 50000).map(i => s"$prefix/$parent/p=$i").toSet
+    // Listings of these parents are made up, not read from disk.
+    CountingHdfsFileSystem.synthetic = Map(s"$prefix/wide" -> 50000, s"$prefix/wider" -> 50000)
+    CountingHdfsFileSystem.reset()
+    try {
+      val wide = partitions("wide")
+      val keptBefore = CometIcebergNativeScan.keptEncryptionZoneEntries
+      val started = System.nanoTime()
+      CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+        conf,
+        wide,
+        tableUuid = Some("wide")) shouldBe None
+      val elapsedMillis = (System.nanoTime() - started) / 1000000
+      // One listing, no per-directory status, and nothing quadratic in the partitions: a lookup
+      // that scanned the listing per directory took minutes here.
+      CountingHdfsFileSystem.listStatusCalls.get() shouldBe 1
+      CountingHdfsFileSystem.getFileStatusCalls.get() shouldBe 0
+      assert(elapsedMillis < 10000, s"the probe took $elapsedMillis ms over 50000 partitions")
+      CometIcebergNativeScan.keptEncryptionZoneEntries - keptBefore shouldBe 50000
+
+      // The budget counts entries, not listings: a parent beyond it is declined and not kept.
+      val declined = CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+        conf,
+        wide,
+        tableUuid = Some("over-budget"),
+        maxEntries = 10)
+      assert(declined.exists(_.contains("10 directory entries")), declined)
+      CountingHdfsFileSystem.listStatusCalls.get() shouldBe 2
+      CometIcebergNativeScan.keptEncryptionZoneEntries - keptBefore shouldBe 50000
+
+      // What is kept is bounded in entries too, the least recently used parents leaving first:
+      // the first table's listing goes, and its next scan lists again.
+      CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+        conf,
+        partitions("wider"),
+        tableUuid = Some("wider"),
+        maxKeptEntries = 60000) shouldBe None
+      assert(CometIcebergNativeScan.keptEncryptionZoneEntries <= 60000)
+      CometIcebergNativeScan.hdfsEncryptionZoneFallback(
+        conf,
+        wide,
+        tableUuid = Some("wide")) shouldBe None
+      CountingHdfsFileSystem.listStatusCalls.get() shouldBe 4
+    } finally {
+      CountingHdfsFileSystem.synthetic = Map.empty
+    }
   }
 
   private def keyMetadataMethod(clazz: Class[_]) = clazz.getMethod("keyMetadata")
@@ -560,9 +615,15 @@ class CountingHdfsFileSystem extends RawLocalFileSystem {
   override def getUri: URI = URI.create(CountingHdfsFileSystem.PREFIX)
   override def listStatus(path: Path): Array[FileStatus] = {
     CountingHdfsFileSystem.listStatusCalls.incrementAndGet()
-    listing = true
-    try super.listStatus(path)
-    finally listing = false
+    CountingHdfsFileSystem.synthetic.get(path.toString) match {
+      case Some(children) =>
+        Array.tabulate(children)(i =>
+          new FileStatus(0, true, 0, 0, 0, new Path(path, s"p=${i + 1}")))
+      case None =>
+        listing = true
+        try super.listStatus(path)
+        finally listing = false
+    }
   }
   override def getFileStatus(path: Path): FileStatus = {
     if (!listing) CountingHdfsFileSystem.getFileStatusCalls.incrementAndGet()
@@ -574,6 +635,9 @@ object CountingHdfsFileSystem {
   val PREFIX = "hdfs://counting"
   val listStatusCalls = new AtomicInteger()
   val getFileStatusCalls = new AtomicInteger()
+
+  /** Parents whose listing is made up of that many `p=<i>` directories, by path. */
+  @volatile var synthetic: Map[String, Int] = Map.empty
   def reset(): Unit = {
     listStatusCalls.set(0)
     getFileStatusCalls.set(0)

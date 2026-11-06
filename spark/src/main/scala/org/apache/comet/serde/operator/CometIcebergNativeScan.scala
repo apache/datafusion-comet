@@ -738,27 +738,52 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
   /**
    * Listings taken for the encryption-zone check, by filesystem URI, table UUID and parent
-   * directory: when each was taken, and the encrypted flag of every child. A data directory
-   * cannot become a zone root once it holds files, and a table dropped and created again at the
-   * same path, inside a new zone or not, has a new UUID, so a listing is reused until it is older
-   * than `spark.sql.metadataCacheTTLSeconds`, or than [[DefaultEncryptionZoneListingAgeSeconds]]
-   * when that is unset. Bounded so a long session over many tables stays small.
+   * directory: when each was taken, and the encrypted flag of every child, by name. A data
+   * directory cannot become a zone root once it holds files, and a table dropped and created
+   * again at the same path, inside a new zone or not, has a new UUID, so a listing is reused
+   * until it is older than `spark.sql.metadataCacheTTLSeconds`, or than
+   * [[DefaultEncryptionZoneListingAgeSeconds]] when that is unset. Every child is kept, not only
+   * the directories one scan reads, so a later scan of other partitions of the table lists
+   * nothing; what is kept is bounded to [[MaxKeptEncryptionZoneEntries]] children in all, the
+   * least recently used parents leaving first. Accessed under the map's own lock: a read moves
+   * the parent to the front.
    */
-  private val listedParents
-      : java.util.Map[(String, String, String), (Long, Map[String, Boolean])] =
-    java.util.Collections.synchronizedMap(
-      new java.util.LinkedHashMap[(String, String, String), (Long, Map[String, Boolean])](
-        64,
-        0.75f,
-        true) {
-        override def removeEldestEntry(
-            eldest: java.util.Map.Entry[(String, String, String), (Long, Map[String, Boolean])])
-            : Boolean =
-          size() > 10000
-      })
+  private val listedParents =
+    new java.util.LinkedHashMap[(String, String, String), (Long, Map[String, Boolean])](
+      64,
+      0.75f,
+      true)
+  private var keptEntryCount = 0
 
-  /** Listings one scan may take for the encryption-zone check before it is declined instead. */
-  private[comet] val MaxEncryptionZoneListings = 1000
+  private def keptListing(key: (String, String, String)): Option[(Long, Map[String, Boolean])] =
+    listedParents.synchronized(Option(listedParents.get(key)))
+
+  private def keepListing(
+      key: (String, String, String),
+      listing: (Long, Map[String, Boolean]),
+      maxKeptEntries: Int): Unit = listedParents.synchronized {
+    Option(listedParents.put(key, listing)).foreach(old => keptEntryCount -= old._2.size)
+    keptEntryCount += listing._2.size
+    val eldestFirst = listedParents.entrySet().iterator()
+    while (keptEntryCount > maxKeptEntries && eldestFirst.hasNext) {
+      keptEntryCount -= eldestFirst.next().getValue._2.size
+      eldestFirst.remove()
+    }
+  }
+
+  /** Children the kept listings hold, in all. */
+  private[comet] def keptEncryptionZoneEntries: Int = listedParents.synchronized(keptEntryCount)
+
+  /**
+   * Directory entries one scan may list for the encryption-zone check before it is declined
+   * instead. At HDFS's default page of 1000 entries (`dfs.ls.limit`) that is a thousand NameNode
+   * round trips, and a directory holds at most about a million entries by default
+   * (`dfs.namenode.fs-limits.max-directory-items`).
+   */
+  private[comet] val MaxEncryptionZoneEntriesPerScan = 1000000
+
+  /** Children the kept listings may hold in all, on the order of 100 bytes each. */
+  private[comet] val MaxKeptEncryptionZoneEntries = 1000000
 
   /** How long a listing is kept when `spark.sql.metadataCacheTTLSeconds` is unset. */
   private[comet] val DefaultEncryptionZoneListingAgeSeconds = 3600L
@@ -772,15 +797,17 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * per table (see [[listedParents]]), and a directory missing from a kept listing, a new
    * partition, lists its parent again. A cluster that cannot hold a zone at all, one whose
    * NameNode advertises no key provider (a client-cached call) and whose session configures none,
-   * is not listed. A scan that would take more than `maxListings` listings is declined after that
-   * many, which are kept, so a later scan continues from them.
+   * is not listed. A scan that would list more than `maxEntries` directory entries is declined
+   * once that many are listed; the parents listed whole are kept, so a later scan continues from
+   * them.
    */
   def hdfsEncryptionZoneFallback(
       hadoopConf: Configuration,
       directories: Set[String],
       tableUuid: Option[String] = None,
       ttlSeconds: Long = -1L,
-      maxListings: Int = MaxEncryptionZoneListings,
+      maxEntries: Int = MaxEncryptionZoneEntriesPerScan,
+      maxKeptEntries: Int = MaxKeptEncryptionZoneEntries,
       nowMillis: Long = System.currentTimeMillis()): Option[String] = {
     val configuredProvider =
       Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
@@ -792,7 +819,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
       Option(dir.getParent).getOrElse(dir)
     }
-    var listings = 0
+    var entries = 0
+    def budgetReason(parent: Path): String =
+      s"Iceberg scan reads HDFS directories under '$parent' and beyond, which the check for " +
+        s"encryption zones did not reach within its budget of $maxEntries directory entries; " +
+        "a later scan continues from the listings kept"
     byParent.toSeq
       .sortBy(_._1.toString)
       .iterator
@@ -800,13 +831,14 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         try {
           val fs = parent.getFileSystem(hadoopConf)
           val key = (fs.getUri.toString, tableUuid.getOrElse(""), parent.toString)
-          val kept = Option(listedParents.get(key)).collect {
+          // Children are kept by name: every directory here is a child of `parent`.
+          val kept = keptListing(key).collect {
             case (listedAt, flags)
-                if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.toString)) =>
+                if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.getName)) =>
               flags
           }
           def encryptedReason(flags: Map[String, Boolean]): Option[String] =
-            dirs.find(dir => flags.getOrElse(dir.toString, false)).map { dir =>
+            dirs.find(dir => flags.getOrElse(dir.getName, false)).map { dir =>
               s"Iceberg scan reads HDFS directory '$dir', which is in an encryption zone; " +
                 "Comet's native Iceberg reader cannot decrypt HDFS encryption zones"
             }
@@ -817,22 +849,28 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty)
               if (!canHoldZones) {
                 None
-              } else if (listings >= maxListings) {
-                Some(
-                  s"Iceberg scan reads HDFS directories under '$parent' and beyond, which the " +
-                    s"check for encryption zones did not reach within $maxListings directory " +
-                    "listings; a later scan continues from the listings kept")
+              } else if (entries >= maxEntries) {
+                Some(budgetReason(parent))
               } else {
-                listings += 1
-                val listed = fs
-                  .listStatus(parent)
-                  .map(status => status.getPath.toString -> status.isEncrypted)
-                val missing = dirs
-                  .filterNot(dir => listed.exists(_._1 == dir.toString))
-                  .map(dir => dir.toString -> fs.getFileStatus(dir).isEncrypted)
-                val flags = (listed ++ missing).toMap
-                listedParents.put(key, (nowMillis, flags))
-                encryptedReason(flags)
+                // Paged on HDFS, so a parent beyond the budget costs the budget, no more.
+                val listing = fs.listStatusIterator(parent)
+                val listed = Map.newBuilder[String, Boolean]
+                while (entries < maxEntries && listing.hasNext) {
+                  val status = listing.next()
+                  listed += status.getPath.getName -> status.isEncrypted
+                  entries += 1
+                }
+                if (listing.hasNext) {
+                  Some(budgetReason(parent))
+                } else {
+                  val children = listed.result()
+                  val missing = dirs
+                    .filterNot(dir => children.contains(dir.getName))
+                    .map(dir => dir.getName -> fs.getFileStatus(dir).isEncrypted)
+                  val flags = children ++ missing
+                  keepListing(key, (nowMillis, flags), maxKeptEntries)
+                  encryptedReason(flags)
+                }
               }
           }
         } catch {

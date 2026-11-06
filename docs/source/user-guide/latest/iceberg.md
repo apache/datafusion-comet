@@ -221,8 +221,8 @@ cannot decrypt it. Comet checks that at planning, on clusters whose NameNode adv
 provider, with one directory listing per parent of the data directories. A listing is kept per
 table for an hour, or for `spark.sql.metadataCacheTTLSeconds` when that is set, so a table
 re-created at the same path lists again on its first scan, and a new partition lists its parent
-again; a scan that would take more than 1000 listings falls back, and later scans continue from
-the listings kept.
+again; a scan that would list more than a million directory entries falls back, and later scans
+continue from the listings kept, which hold a million entries at most.
 
 On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
 operating system user when that variable is unset, rather than as the Spark user. Comet therefore
