@@ -256,6 +256,22 @@ The cost is one extra footer and page index read for a file that is never opened
 early or the file is pruned before it opens. Scans of encrypted Parquet files never prefetch. The
 `scan_io_metadata_prefetches` metric counts the opens that used a load which read storage ahead of them.
 
+### Reducing Requests to High-Latency Storage
+
+A native Parquet scan reads a file's footer and page index with one read of the last 512 KiB of the file. For a
+file smaller than that, the read returns the whole file. These settings decide how many requests the rest of
+the file then takes:
+
+| Config                                        | Default | Effect                                                                                                                                                                                       |
+| --------------------------------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `spark.comet.parquet.reuseFooterRead.enabled` | `true`  | Serves the data inside the footer read from memory instead of requesting it again, so a file smaller than 512 KiB costs one request.                                                         |
+| `spark.comet.parquet.wholeFileReadThreshold`  | `0`     | Reads a file of at most this size whole with its footer read, so it costs one request. It also reads columns the query doesn't need. Needs `reuseFooterRead`. `0` turns it off.              |
+| `spark.comet.parquet.rangeRequestSplitSize`   | `0`     | On a remote object store, splits a merged byte range longer than this into requests of at most this size, sent in parallel. One request is limited by a single connection. `0` turns it off. |
+
+The `scan_io_footer_read_reused_bytes` metric shows the bytes served from footer reads,
+`scan_io_metadata_storage_reads` counts the reads that loading metadata takes, and `scan_io_data_wait_time` shows
+how long the scan waited for data reads.
+
 ## Known Issues
 
 This section lists open issues in which Comet's Parquet reads and writes give a different result

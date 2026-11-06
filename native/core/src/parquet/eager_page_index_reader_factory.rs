@@ -111,7 +111,7 @@ use datafusion::datasource::physical_plan::parquet::{
 };
 use datafusion::execution::cache::cache_manager::{CachedFileMetadataEntry, FileMetadataCache};
 use datafusion::physical_plan::metrics::{
-    Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType,
+    Count, ExecutionPlanMetricsSet, MetricBuilder, MetricCategory, MetricType, MetricValue, Time,
 };
 use datafusion_comet_common::SparkError;
 use datafusion_datasource::{FileRange, PartitionedFile};
@@ -139,7 +139,8 @@ use std::collections::HashMap;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Instant;
 
 use crate::parquet::objectstore::http_metrics::HttpRequestMetrics;
 
@@ -149,6 +150,61 @@ pub(crate) enum ScanIoSource {
     Local,
     OtherObjectStore,
 }
+
+/// How a scan requests file bytes from storage. The default turns every option off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ScanIoOptions {
+    /// Keep the bytes the footer read fetched from the end of a file, and serve the data ranges
+    /// inside them from memory instead of requesting them again.
+    pub reuse_footer_read: bool,
+    /// Read a file of at most this many bytes whole with its footer read, so with
+    /// `reuse_footer_read` the file costs one request. 0 turns it off.
+    pub whole_file_read_threshold: u64,
+    /// On a remote object store, fetch a merged range longer than this many bytes as parallel
+    /// requests of about this size. 0 turns it off.
+    pub range_split_size: u64,
+}
+
+impl ScanIoOptions {
+    /// The size of the footer read for a file of `file_size` bytes: the whole file when it is
+    /// within `whole_file_read_threshold` and its bytes will be reused, `hint` otherwise.
+    fn footer_read_size(&self, file_size: u64, hint: Option<usize>) -> Option<usize> {
+        if self.reuse_footer_read
+            && self.whole_file_read_threshold > 0
+            && file_size <= self.whole_file_read_threshold
+        {
+            usize::try_from(file_size).ok().or(hint)
+        } else {
+            hint
+        }
+    }
+}
+
+/// The bytes a metadata load read from the end of a file. A data range inside them needs no
+/// second request.
+#[derive(Debug)]
+struct FileTail {
+    start: u64,
+    bytes: Bytes,
+}
+
+impl FileTail {
+    /// The bytes of `range` when it lies inside the tail.
+    fn slice(&self, range: &Range<u64>) -> Option<Bytes> {
+        let offset = usize::try_from(range.start.checked_sub(self.start)?).ok()?;
+        let end = offset.checked_add(range_bytes(range))?;
+        (end <= self.bytes.len()).then(|| self.bytes.slice(offset..end))
+    }
+}
+
+/// A file as a scan opens it: its path and the byte range of its split.
+type FileKey = (Path, Option<FileRange>);
+
+/// The tails of the files that have an open reader. DataFusion reads a file's Bloom filters
+/// through the reader that loaded its metadata, then decodes through a new reader that never
+/// loads metadata, so the new reader finds the tail here. The first reader holding a tail to
+/// drop removes it from the map; any other reader that took it keeps its own reference.
+type FileTails = Arc<Mutex<HashMap<FileKey, Weak<FileTail>>>>;
 
 #[derive(Debug)]
 struct ScanIoMetrics {
@@ -164,6 +220,9 @@ struct ScanIoMetrics {
     metadata_cache_hits: Count,
     metadata_cache_misses: Count,
     metadata_prefetches: Count,
+    metadata_storage_reads: Count,
+    footer_read_reused_bytes: Count,
+    data_wait_time: Time,
 }
 
 impl ScanIoMetrics {
@@ -187,6 +246,9 @@ impl ScanIoMetrics {
             metadata_cache_hits: count_counter(metrics, "scan_io_metadata_cache_hits"),
             metadata_cache_misses: count_counter(metrics, "scan_io_metadata_cache_misses"),
             metadata_prefetches: count_counter(metrics, "scan_io_metadata_prefetches"),
+            metadata_storage_reads: count_counter(metrics, "scan_io_metadata_storage_reads"),
+            footer_read_reused_bytes: byte_counter(metrics, "scan_io_footer_read_reused_bytes"),
+            data_wait_time: time_counter(metrics, "scan_io_data_wait_time"),
         }
     }
 
@@ -210,6 +272,18 @@ fn count_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Count
     MetricBuilder::new(metrics)
         .with_type(MetricType::Summary)
         .global_counter(name)
+}
+
+fn time_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str) -> Time {
+    let time = Time::new();
+    MetricBuilder::new(metrics)
+        .with_type(MetricType::Summary)
+        .with_category(MetricCategory::Timing)
+        .build(MetricValue::Time {
+            name: name.into(),
+            time: time.clone(),
+        });
+    time
 }
 
 fn range_bytes(range: &Range<u64>) -> usize {
@@ -236,25 +310,48 @@ pub struct EagerPageIndexReaderFactory {
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
+    options: ScanIoOptions,
+    tails: FileTails,
 }
 
 impl EagerPageIndexReaderFactory {
-    /// Shares the scan's counters and metadata cache across all readers made by this factory.
-    /// Native cloud stores are wrapped so coalesced requests and consumed response bytes are
-    /// visible to the counters. Local and custom HDFS stores retain their range-read behavior.
-    /// Construction performs no I/O; the returned factory owns the store and cache references.
+    /// [`Self::with_options`] with every [`ScanIoOptions`] option off.
+    #[cfg(test)]
     pub(crate) fn new(
         store: Arc<dyn ObjectStore>,
         metadata_cache: Arc<FileMetadataCache>,
         source: ScanIoSource,
         metrics: &ExecutionPlanMetricsSet,
     ) -> Self {
+        Self::with_options(
+            store,
+            metadata_cache,
+            source,
+            metrics,
+            ScanIoOptions::default(),
+        )
+    }
+
+    /// Shares the scan's counters and metadata cache across all readers made by this factory.
+    /// Native cloud stores are wrapped so coalesced requests and consumed response bytes are
+    /// visible to the counters. Local and custom HDFS stores retain their range-read behavior.
+    /// `options` decide how readers request file bytes. Construction performs no I/O; the
+    /// returned factory owns the store and cache references.
+    pub(crate) fn with_options(
+        store: Arc<dyn ObjectStore>,
+        metadata_cache: Arc<FileMetadataCache>,
+        source: ScanIoSource,
+        metrics: &ExecutionPlanMetricsSet,
+        options: ScanIoOptions,
+    ) -> Self {
         let scan_io_metrics = Arc::new(ScanIoMetrics::new(metrics));
         let store: Arc<dyn ObjectStore> = if source == ScanIoSource::ObjectStore {
             Arc::new(ScanIoObjectStore {
                 inner: store,
                 scan_io_metrics: Arc::clone(&scan_io_metrics),
-                role: ScanIoStoreRole::ObjectStore,
+                role: ScanIoStoreRole::ObjectStore {
+                    range_split_size: options.range_split_size,
+                },
             })
         } else {
             store
@@ -269,6 +366,8 @@ impl EagerPageIndexReaderFactory {
             conversion_check: None,
             deferred_rejections: Arc::new(Mutex::new(HashMap::new())),
             next_file_prefetch: None,
+            options,
+            tails: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -319,6 +418,7 @@ impl EagerPageIndexReaderFactory {
                 Arc::clone(&self.store),
                 Arc::clone(&self.scan_io_metrics),
                 Arc::clone(&self.metadata_cache),
+                self.options,
             ))
         });
         self
@@ -362,6 +462,14 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             .get(&partitioned_file.object_meta.location)
             .filter(|(meta, _)| meta == &partitioned_file.object_meta)
             .map(|(_, rejection)| rejection.clone());
+        // A reader DataFusion makes after another one loaded this file's metadata serves its
+        // data from that load's tail.
+        let tail = self
+            .tails
+            .lock()
+            .unwrap()
+            .get(&file_key(&partitioned_file))
+            .and_then(Weak::upgrade);
         Ok(Box::new(EagerPageIndexReader {
             file_metrics,
             scan_io_metrics: Arc::clone(&self.scan_io_metrics),
@@ -376,8 +484,15 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             deferred_rejections: Arc::clone(&self.deferred_rejections),
             deferred_rejection,
             next_file_prefetch: self.next_file_prefetch.clone(),
+            options: self.options,
+            tails: Arc::clone(&self.tails),
+            tail,
         }))
     }
+}
+
+fn file_key(file: &PartitionedFile) -> FileKey {
+    (file.object_meta.location.clone(), file.range.clone())
 }
 
 /// Reads bytes straight off the `ObjectStore`, the same way DataFusion's own `ParquetFileReader`
@@ -397,6 +512,10 @@ struct EagerPageIndexReader {
     deferred_rejections: Arc<Mutex<HashMap<Path, (ObjectMeta, RejectOnNonEmpty)>>>,
     deferred_rejection: Option<RejectOnNonEmpty>,
     next_file_prefetch: Option<Arc<NextFileMetadataPrefetch>>,
+    options: ScanIoOptions,
+    tails: FileTails,
+    /// The bytes this file's footer read fetched, which serve the ranges inside them.
+    tail: Option<Arc<FileTail>>,
 }
 
 // Arrow infers ENUM as Binary, losing the distinction from raw binary that Spark needs.
@@ -611,6 +730,11 @@ impl AsyncFileReader for EagerPageIndexReader {
         // bypasses it, and object-store coalescing can fetch more bytes than these ranges.
         self.file_metrics.bytes_scanned.add(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        if let Some(bytes) = self.tail.as_ref().and_then(|tail| tail.slice(&range)) {
+            scan_io_metrics.footer_read_reused_bytes.add(bytes.len());
+            scan_io_metrics.metadata_bytes.add(bytes.len());
+            return futures::future::ready(Ok(bytes)).boxed();
+        }
         async move {
             let bytes = self
                 .store
@@ -644,12 +768,40 @@ impl AsyncFileReader for EagerPageIndexReader {
         let requested = ranges_bytes(&ranges);
         self.file_metrics.bytes_scanned.add(requested);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
+        // Ranges inside the footer read come from it; only the others go to storage.
+        let mut served: Vec<Option<Bytes>> = ranges
+            .iter()
+            .map(|range| self.tail.as_ref().and_then(|tail| tail.slice(range)))
+            .collect();
+        let missing: Vec<Range<u64>> = ranges
+            .iter()
+            .zip(&served)
+            .filter(|(_, served)| served.is_none())
+            .map(|(range, _)| range.clone())
+            .collect();
+        scan_io_metrics
+            .footer_read_reused_bytes
+            .add(served.iter().flatten().map(Bytes::len).sum());
         async move {
-            let bytes = self
-                .store
-                .get_ranges(&self.partitioned_file.object_meta.location, &ranges)
-                .await
-                .map_err(|e| ParquetError::External(Box::new(e)))?;
+            if !missing.is_empty() {
+                let started = Instant::now();
+                let fetched = self
+                    .store
+                    .get_ranges(&self.partitioned_file.object_meta.location, &missing)
+                    .await;
+                scan_io_metrics.data_wait_time.add_elapsed(started);
+                let mut fetched = fetched
+                    .map_err(|e| ParquetError::External(Box::new(e)))?
+                    .into_iter();
+                for slot in served.iter_mut().filter(|slot| slot.is_none()) {
+                    *slot = Some(fetched.next().ok_or_else(|| {
+                        ParquetError::General(
+                            "The object store returned fewer ranges than requested".to_string(),
+                        )
+                    })?);
+                }
+            }
+            let bytes: Vec<Bytes> = served.into_iter().flatten().collect();
             scan_io_metrics
                 .data_bytes
                 .add(bytes.iter().map(Bytes::len).sum());
@@ -676,6 +828,10 @@ impl AsyncFileReader for EagerPageIndexReader {
             .and_then(|o| o.file_decryption_properties())
             .map(Arc::clone);
         let cache_enabled = file_decryption_properties.is_none();
+        let capture_tail = self.options.reuse_footer_read;
+        let footer_read_size = self
+            .options
+            .footer_read_size(object_meta.size, metadata_size_hint);
         // Take the load of this file's metadata that the previous file's open started, if any,
         // and start the next file's.
         let pending_load = self
@@ -701,14 +857,14 @@ impl AsyncFileReader for EagerPageIndexReader {
                 Some(load) => load.await.ok().flatten(),
                 None => None,
             };
-            let (metadata, storage_reads) = match prefetched {
-                Some((metadata, storage_reads)) => {
+            let loaded = match prefetched {
+                Some(loaded) => {
                     // The load read from storage ahead of this open, so the open records a cache
                     // miss, as it would have without the prefetch, and the load counts as overlapped.
-                    if storage_reads > 0 {
+                    if loaded.storage_reads > 0 {
                         scan_io_metrics.metadata_prefetches.add(1);
                     }
-                    (metadata, storage_reads)
+                    loaded
                 }
                 None => {
                     load_metadata(
@@ -716,15 +872,29 @@ impl AsyncFileReader for EagerPageIndexReader {
                         Arc::clone(&scan_io_metrics),
                         Arc::clone(&metadata_cache),
                         &object_meta,
-                        metadata_size_hint,
+                        footer_read_size,
                         file_decryption_properties,
                         page_index_policy,
+                        capture_tail,
                     )
                     .await?
                 }
             };
+            let LoadedMetadata {
+                metadata,
+                storage_reads,
+                tail,
+            } = loaded;
             if cache_enabled {
                 scan_io_metrics.record_metadata_cache_result(storage_reads);
+            }
+            if let Some(tail) = tail {
+                let tail = Arc::new(tail);
+                self.tails
+                    .lock()
+                    .unwrap()
+                    .insert(file_key(&self.partitioned_file), Arc::downgrade(&tail));
+                self.tail = Some(tail);
             }
             // Spark's missing field id check, over the raw Parquet schema as in
             // `ParquetReadSupport`. The JNI layer unwraps the `External` error, so the JVM sees
@@ -816,10 +986,20 @@ impl AsyncFileReader for EagerPageIndexReader {
     }
 }
 
+/// A file's metadata, the number of storage reads its load took (zero when the cache held the
+/// metadata), and the bytes the load read from the end of the file, when it was asked to keep
+/// them and read any.
+#[derive(Debug)]
+struct LoadedMetadata {
+    metadata: Arc<ParquetMetaData>,
+    storage_reads: usize,
+    tail: Option<FileTail>,
+}
+
 /// Loads a file's metadata through `metadata_cache`, with the page index as `page_index_policy`
-/// asks, counting the metadata and footer bytes it reads from storage. Returns the metadata
-/// together with the number of storage reads it took, which is zero when the cache already held
-/// the metadata.
+/// asks, counting the metadata and footer bytes and the storage reads it takes. With
+/// `capture_tail`, it keeps the bytes of its read that ends at the end of the file.
+#[allow(clippy::too_many_arguments)]
 async fn load_metadata(
     store: Arc<dyn ObjectStore>,
     scan_io_metrics: Arc<ScanIoMetrics>,
@@ -828,13 +1008,14 @@ async fn load_metadata(
     metadata_size_hint: Option<usize>,
     file_decryption_properties: Option<Arc<FileDecryptionProperties>>,
     page_index_policy: Option<PageIndexPolicy>,
-) -> ParquetResult<(Arc<ParquetMetaData>, usize)> {
+    capture_tail: bool,
+) -> ParquetResult<LoadedMetadata> {
     let cache_enabled = file_decryption_properties.is_none();
     let storage_reads = Arc::new(AtomicUsize::new(0));
     let footer_payload_bytes = Arc::new(AtomicUsize::new(0));
     let metadata_store = ScanIoObjectStore {
         inner: store,
-        scan_io_metrics,
+        scan_io_metrics: Arc::clone(&scan_io_metrics),
         role: ScanIoStoreRole::Metadata {
             storage_reads: Arc::clone(&storage_reads),
             footer_payload_bytes: Arc::clone(&footer_payload_bytes),
@@ -842,6 +1023,8 @@ async fn load_metadata(
             footer_recorded: AtomicBool::new(false),
             file_size: object_meta.size,
             record_footer_immediately: !cache_enabled,
+            capture_tail,
+            tail: OnceLock::new(),
         },
     };
 
@@ -867,13 +1050,24 @@ async fn load_metadata(
     } else if cache_enabled {
         metadata_store.record_valid_footer();
     }
-    Ok((metadata?, storage_reads.load(Ordering::Relaxed)))
+    let storage_reads = storage_reads.load(Ordering::Relaxed);
+    scan_io_metrics.metadata_storage_reads.add(storage_reads);
+    let metadata = metadata?;
+    let tail = match metadata_store.role {
+        ScanIoStoreRole::Metadata { tail, .. } => tail.into_inner(),
+        ScanIoStoreRole::ObjectStore { .. } => None,
+    };
+    Ok(LoadedMetadata {
+        metadata,
+        storage_reads,
+        tail,
+    })
 }
 
 /// A load of a file's metadata started before DataFusion opens the file. Dropping it aborts the
 /// load.
 /// Its result carries the number of storage reads it took, for the open that uses it to record.
-type MetadataLoad = SpawnedTask<Option<(Arc<ParquetMetaData>, usize)>>;
+type MetadataLoad = SpawnedTask<Option<LoadedMetadata>>;
 
 /// The scan-wide state of `with_next_file_metadata_prefetch`.
 #[derive(Debug)]
@@ -889,6 +1083,9 @@ struct NextFileMetadataPrefetch {
     /// next file, so a load for a file DataFusion never opens, such as one pruned before its
     /// open, is dropped at the next open.
     in_flight: Mutex<Option<(Path, MetadataLoad)>>,
+    /// The scan's options, so a load reads and keeps the footer the way the file's own open
+    /// would.
+    options: ScanIoOptions,
 }
 
 impl NextFileMetadataPrefetch {
@@ -897,6 +1094,7 @@ impl NextFileMetadataPrefetch {
         store: Arc<dyn ObjectStore>,
         scan_io_metrics: Arc<ScanIoMetrics>,
         metadata_cache: Arc<FileMetadataCache>,
+        options: ScanIoOptions,
     ) -> Self {
         // One pass from the back, so a long run of ranges of one path costs linear time. The next
         // file of `files[i]` is `files[i + 1]` when its path differs and `files[i + 1]`'s own next
@@ -924,6 +1122,7 @@ impl NextFileMetadataPrefetch {
             metadata_cache,
             next_files,
             in_flight: Mutex::new(None),
+            options,
         }
     }
 
@@ -963,6 +1162,10 @@ impl NextFileMetadataPrefetch {
         let store = Arc::clone(&self.store);
         let scan_io_metrics = Arc::clone(&self.scan_io_metrics);
         let metadata_cache = Arc::clone(&self.metadata_cache);
+        let metadata_size_hint = self
+            .options
+            .footer_read_size(object_meta.size, metadata_size_hint);
+        let capture_tail = self.options.reuse_footer_read;
         let object_meta = object_meta.clone();
         let location = object_meta.location.clone();
         let load = SpawnedTask::spawn(async move {
@@ -974,6 +1177,7 @@ impl NextFileMetadataPrefetch {
                 metadata_size_hint,
                 None,
                 Some(PageIndexPolicy::Optional),
+                capture_tail,
             )
             .await
             .ok()
@@ -984,7 +1188,10 @@ impl NextFileMetadataPrefetch {
 
 #[derive(Debug)]
 enum ScanIoStoreRole {
-    ObjectStore,
+    ObjectStore {
+        /// See [`ScanIoOptions::range_split_size`].
+        range_split_size: u64,
+    },
     Metadata {
         storage_reads: Arc<AtomicUsize>,
         footer_payload_bytes: Arc<AtomicUsize>,
@@ -992,7 +1199,111 @@ enum ScanIoStoreRole {
         footer_recorded: AtomicBool,
         file_size: u64,
         record_footer_immediately: bool,
+        /// Keep the bytes of the first read that ends at the end of the file in `tail`.
+        capture_tail: bool,
+        tail: OnceLock<FileTail>,
     },
+}
+
+/// At most this many parts of a split range are requested at once.
+const RANGE_PART_CONCURRENCY: usize = 16;
+
+/// Fetches `ranges` with `fetch` the way `coalesce_ranges` does, merging ranges up to
+/// `OBJECT_STORE_COALESCE_DEFAULT` apart, except that a merged range longer than `part_size`
+/// is fetched as parts of at most `part_size` bytes, many at once. A single GET is limited by
+/// one connection's throughput, so the parts of a large range arrive sooner together.
+async fn fetch_in_parts<F, Fut>(
+    ranges: &[Range<u64>],
+    part_size: u64,
+    fetch: F,
+) -> ObjectStoreResult<Vec<Bytes>>
+where
+    F: Fn(Range<u64>) -> Fut,
+    Fut: std::future::Future<Output = ObjectStoreResult<Bytes>>,
+{
+    let parts: Vec<Range<u64>> = merge_ranges(ranges, OBJECT_STORE_COALESCE_DEFAULT)
+        .iter()
+        .flat_map(|merged| split_range(merged, part_size))
+        .collect();
+    let fetched: Vec<Bytes> = futures::stream::iter(parts.iter().cloned())
+        .map(fetch)
+        .buffered(RANGE_PART_CONCURRENCY)
+        .try_collect()
+        .await?;
+    for (part, bytes) in parts.iter().zip(&fetched) {
+        if bytes.len() != range_bytes(part) {
+            return Err(object_store::Error::Generic {
+                store: "scan-io",
+                source: format!(
+                    "requested {} bytes at {} and received {}",
+                    range_bytes(part),
+                    part.start,
+                    bytes.len()
+                )
+                .into(),
+            });
+        }
+    }
+    Ok(ranges
+        .iter()
+        .map(|range| assemble_range(range, &parts, &fetched))
+        .collect())
+}
+
+/// Sorts `ranges` and merges those that overlap or lie at most `coalesce` bytes apart, the
+/// merge `object_store::coalesce_ranges` does. Empty ranges are dropped.
+fn merge_ranges(ranges: &[Range<u64>], coalesce: u64) -> Vec<Range<u64>> {
+    let mut sorted: Vec<Range<u64>> = ranges
+        .iter()
+        .filter(|range| !range.is_empty())
+        .cloned()
+        .collect();
+    sorted.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<u64>> = Vec::with_capacity(sorted.len());
+    for range in sorted {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end.saturating_add(coalesce) => {
+                last.end = last.end.max(range.end);
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// Splits `range` into the fewest parts of at most `part_size` bytes, all of one length except
+/// a shorter last part.
+fn split_range(range: &Range<u64>, part_size: u64) -> impl Iterator<Item = Range<u64>> + '_ {
+    let length = range.end - range.start;
+    let parts = length.div_ceil(part_size).max(1);
+    let part_length = length.div_ceil(parts);
+    (0..parts).map(move |part| {
+        let start = range.start + part * part_length;
+        start..(start + part_length).min(range.end)
+    })
+}
+
+/// The bytes of `range`, cut from the sorted, contiguous `parts` that cover it.
+fn assemble_range(range: &Range<u64>, parts: &[Range<u64>], fetched: &[Bytes]) -> Bytes {
+    if range.is_empty() {
+        return Bytes::new();
+    }
+    let first = parts.partition_point(|part| part.end <= range.start);
+    let part = &parts[first];
+    let offset = (range.start - part.start) as usize;
+    if range.end <= part.end {
+        return fetched[first].slice(offset..offset + range_bytes(range));
+    }
+    let mut bytes = bytes::BytesMut::with_capacity(range_bytes(range));
+    for (part, part_bytes) in parts[first..].iter().zip(&fetched[first..]) {
+        let from = range.start.max(part.start) - part.start;
+        let to = range.end.min(part.end) - part.start;
+        bytes.extend_from_slice(&part_bytes[from as usize..to as usize]);
+        if part.end >= range.end {
+            break;
+        }
+    }
+    bytes.freeze()
 }
 
 #[derive(Debug)]
@@ -1038,7 +1349,7 @@ impl ScanIoObjectStore {
             return;
         }
         match &self.role {
-            ScanIoStoreRole::ObjectStore => {
+            ScanIoStoreRole::ObjectStore { .. } => {
                 self.scan_io_metrics.object_store_get_calls.add(1);
                 self.scan_io_metrics
                     .object_store_get_requested_bytes
@@ -1059,7 +1370,7 @@ impl ScanIoObjectStore {
     // not successful authentication. Recheck this protocol when upgrading the decoder.
     fn record_returned(&self, range: Option<&Range<u64>>, bytes: &Bytes) {
         match &self.role {
-            ScanIoStoreRole::ObjectStore => self
+            ScanIoStoreRole::ObjectStore { .. } => self
                 .scan_io_metrics
                 .object_store_response_bytes_read
                 .add(bytes.len()),
@@ -1145,7 +1456,7 @@ impl ObjectStore for ScanIoObjectStore {
         if options.head {
             return self.inner.get_opts(location, options).await;
         }
-        if matches!(self.role, ScanIoStoreRole::ObjectStore) {
+        if matches!(self.role, ScanIoStoreRole::ObjectStore { .. }) {
             HttpRequestMetrics::new(
                 self.scan_io_metrics.http_observed_gets.clone(),
                 self.scan_io_metrics.http_retries.clone(),
@@ -1207,7 +1518,13 @@ impl ObjectStore for ScanIoObjectStore {
         ranges: &[Range<u64>],
     ) -> ObjectStoreResult<Vec<Bytes>> {
         match &self.role {
-            ScanIoStoreRole::ObjectStore => {
+            ScanIoStoreRole::ObjectStore { range_split_size } if *range_split_size > 0 => {
+                fetch_in_parts(ranges, *range_split_size, |range| {
+                    self.get_range(location, range)
+                })
+                .await
+            }
+            ScanIoStoreRole::ObjectStore { .. } => {
                 // Supported native cloud stores use object_store's default coalescing. Apply it
                 // here so get_opts observes the coalesced requests, not just logical ranges.
                 // This deliberately bypasses an inner get_ranges override: a cache or custom
@@ -1224,6 +1541,8 @@ impl ObjectStore for ScanIoObjectStore {
                 footer_payload_bytes,
                 file_size,
                 record_footer_immediately,
+                capture_tail,
+                tail,
                 ..
             } => {
                 let footer_bytes = footer_payload_bytes.load(Ordering::Relaxed);
@@ -1248,6 +1567,14 @@ impl ObjectStore for ScanIoObjectStore {
                 let bytes = self.inner.get_ranges(location, ranges).await?;
                 for (range, bytes) in ranges.iter().zip(bytes.iter()) {
                     self.record_returned(Some(range), bytes);
+                    // The first read that reaches the end of the file is the footer read.
+                    if *capture_tail && range.end == *file_size && bytes.len() == range_bytes(range)
+                    {
+                        let _ = tail.set(FileTail {
+                            start: range.start,
+                            bytes: bytes.clone(),
+                        });
+                    }
                 }
                 Ok(bytes)
             }
@@ -1309,6 +1636,18 @@ impl Drop for EagerPageIndexReader {
         self.file_metrics
             .scan_efficiency_ratio
             .set_total(self.partitioned_file.object_meta.size as usize);
+        // Unregister this file's tail when a reader holding it drops. Any other reader that took
+        // it keeps its own reference.
+        if let Some(tail) = &self.tail {
+            let key = file_key(&self.partitioned_file);
+            let mut tails = self.tails.lock().unwrap();
+            if tails
+                .get(&key)
+                .is_some_and(|registered| std::ptr::eq(registered.as_ptr(), Arc::as_ptr(tail)))
+            {
+                tails.remove(&key);
+            }
+        }
     }
 }
 
@@ -2029,5 +2368,481 @@ mod tests {
             .await
             .expect("the metadata load in flight was not aborted");
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 0);
+    }
+
+    fn scan_io_options(reuse: bool, whole_file: u64, split: u64) -> ScanIoOptions {
+        ScanIoOptions {
+            reuse_footer_read: reuse,
+            whole_file_read_threshold: whole_file,
+            range_split_size: split,
+        }
+    }
+
+    /// Writes an `a: int32` column holding `0..row_groups * rows` in row groups of `rows` rows,
+    /// without dictionary encoding, and returns the file.
+    async fn put_row_group_file(
+        store: &InMemory,
+        location: &str,
+        row_groups: usize,
+        rows: usize,
+    ) -> PartitionedFile {
+        let schema = Arc::new(Schema::new(vec![arrow::datatypes::Field::new(
+            "a",
+            DataType::Int32,
+            false,
+        )]));
+        let properties = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(rows))
+            .set_dictionary_enabled(false)
+            .build();
+        let values: Vec<i32> = (0..(row_groups * rows) as i32).collect();
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(values))],
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        let mut writer = ArrowWriter::try_new(&mut bytes, schema, Some(properties)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+        let size = bytes.len() as u64;
+        store
+            .put(&Path::from(location), Bytes::from(bytes).into())
+            .await
+            .unwrap();
+        PartitionedFile::new(location.to_string(), size)
+    }
+
+    /// The byte range of row group `index`'s column chunk, read with the synchronous reader.
+    async fn row_group_range(store: &InMemory, file: &PartitionedFile, index: usize) -> Range<u64> {
+        let bytes = store
+            .get(&file.object_meta.location)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let reader = SerializedFileReader::new(bytes).unwrap();
+        let (start, length) = reader.metadata().row_group(index).column(0).byte_range();
+        start..start + length
+    }
+
+    /// Arrow's stream builder takes a sized `AsyncFileReader`, so this forwards to a factory's
+    /// boxed reader.
+    struct ForwardingReader(Box<dyn AsyncFileReader + Send>);
+
+    impl AsyncFileReader for ForwardingReader {
+        fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, ParquetResult<Bytes>> {
+            self.0.get_bytes(range)
+        }
+
+        fn get_byte_ranges(
+            &mut self,
+            ranges: Vec<Range<u64>>,
+        ) -> BoxFuture<'_, ParquetResult<Vec<Bytes>>> {
+            self.0.get_byte_ranges(ranges)
+        }
+
+        fn get_metadata<'a>(
+            &'a mut self,
+            options: Option<&'a ArrowReaderOptions>,
+        ) -> BoxFuture<'a, ParquetResult<Arc<ParquetMetaData>>> {
+            self.0.get_metadata(options)
+        }
+    }
+
+    /// Reads every row the way DataFusion's opener does: the metadata, then one request per row
+    /// group.
+    async fn read_all(reader: Box<dyn AsyncFileReader + Send>) -> Vec<i32> {
+        let stream = parquet::arrow::ParquetRecordBatchStreamBuilder::new(ForwardingReader(reader))
+            .await
+            .unwrap()
+            .build()
+            .unwrap();
+        let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    /// Reads every row of `file` from a fresh remote store holding a copy of it, through a
+    /// factory with `options`, and returns the values, the GETs the store served and the metrics.
+    async fn read_remote(
+        source: &InMemory,
+        file: &PartitionedFile,
+        hint: Option<usize>,
+        options: ScanIoOptions,
+    ) -> (Vec<i32>, usize, ExecutionPlanMetricsSet) {
+        let store = Arc::new(RecordingStore::new());
+        let bytes = source
+            .get(&file.object_meta.location)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        store
+            .put(&file.object_meta.location, bytes.into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::with_options(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+            options,
+        );
+        let reader = factory
+            .create_reader(0, file.clone(), hint, &metrics)
+            .unwrap();
+        let values = read_all(reader).await;
+        (values, store.get_calls(), metrics)
+    }
+
+    /// A file smaller than the footer read arrives whole with it. Reusing those bytes reads the
+    /// file with one GET; requesting its data again takes a second.
+    #[tokio::test]
+    async fn a_file_inside_the_footer_read_is_read_with_one_get() {
+        let source = InMemory::new();
+        let file = put_int_file(&source, "small.parquet", None).await;
+        let hint = Some(crate::parquet::parquet_exec::METADATA_SIZE_HINT);
+        for (reuse, gets) in [(true, 1), (false, 2)] {
+            let (values, get_calls, _) =
+                read_remote(&source, &file, hint, scan_io_options(reuse, 0, 0)).await;
+            assert_eq!(values, vec![1, 2]);
+            assert_eq!(get_calls, gets, "reuse_footer_read={reuse}");
+        }
+    }
+
+    /// DataFusion's opener reads Bloom filters through the reader that loaded the metadata and
+    /// decodes through a new one from the factory, which gets the loaded metadata and never
+    /// loads its own (`load_bloom_filters` in `datafusion-datasource-parquet`'s opener). The new
+    /// reader still serves the data from the first one's footer read, so the file takes one GET.
+    #[tokio::test]
+    async fn a_reader_made_after_the_metadata_load_reuses_its_footer_read() {
+        let store = Arc::new(RecordingStore::new());
+        let file = put_int_file(&store.inner, "replaced.parquet", None).await;
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::with_options(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+            scan_io_options(true, 0, 0),
+        );
+        let hint = Some(crate::parquet::parquet_exec::METADATA_SIZE_HINT);
+
+        let mut metadata_reader = factory
+            .create_reader(0, file.clone(), hint, &metrics)
+            .unwrap();
+        let metadata = metadata_reader.get_metadata(None).await.unwrap();
+        let decoding_reader = factory.create_reader(0, file, hint, &metrics).unwrap();
+        let metadata = parquet::arrow::arrow_reader::ArrowReaderMetadata::try_new(
+            metadata,
+            ArrowReaderOptions::new(),
+        )
+        .unwrap();
+        let stream = parquet::arrow::ParquetRecordBatchStreamBuilder::new_with_metadata(
+            ForwardingReader(decoding_reader),
+            metadata,
+        )
+        .build()
+        .unwrap();
+        let batches: Vec<RecordBatch> = stream.try_collect().await.unwrap();
+        drop(metadata_reader);
+
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert_eq!(store.get_calls(), 1);
+    }
+
+    /// A native scan with a filter, built from the plan's session options like any Comet scan,
+    /// reads a small file from a remote store with one GET when footer reads are reused, and
+    /// with two when they are not. The filter makes DataFusion's opener decode through a second
+    /// reader (see the test above).
+    #[tokio::test]
+    async fn a_filtered_scan_reads_a_small_remote_file_with_one_get() {
+        use crate::parquet::parquet_exec::{init_datasource_exec, CometParquetScanOptions};
+        use crate::parquet::parquet_support::ObjectStoreBackend;
+        use datafusion::execution::object_store::ObjectStoreUrl;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
+        use datafusion::physical_expr::PhysicalExpr;
+        use datafusion::physical_plan::ExecutionPlan;
+        use datafusion::prelude::{SessionConfig, SessionContext};
+        use datafusion::scalar::ScalarValue;
+
+        for (reuse, gets) in [(true, 1), (false, 2)] {
+            let store = Arc::new(RecordingStore::new());
+            let file = put_int_file(&store.inner, "small.parquet", None).await;
+            let config = SessionConfig::new().with_extension(Arc::new(CometParquetScanOptions {
+                prefetch_next_file_metadata: false,
+                scan_io: scan_io_options(reuse, 0, 0),
+            }));
+            let session_ctx = Arc::new(SessionContext::new_with_config(config));
+            let url = ObjectStoreUrl::parse("s3://bucket").unwrap();
+            session_ctx
+                .runtime_env()
+                .register_object_store(url.as_ref(), Arc::clone(&store) as Arc<dyn ObjectStore>);
+            let schema = Arc::new(Schema::new(vec![arrow::datatypes::Field::new(
+                "a",
+                DataType::Int32,
+                false,
+            )]));
+            let filter: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("a", 0)),
+                Operator::GtEq,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(0)))),
+            ));
+            let scan = init_datasource_exec(
+                Arc::clone(&schema),
+                Some(schema),
+                None,
+                url,
+                ObjectStoreBackend::Remote,
+                vec![vec![file]],
+                None,
+                Some(vec![filter]),
+                None,
+                "UTC",
+                true,
+                false,
+                false,
+                false,
+                &session_ctx,
+                false,
+                false,
+                false,
+                false,
+                "",
+                "",
+            )
+            .unwrap();
+
+            let mut stream = scan.execute(0, session_ctx.task_ctx()).unwrap();
+            let mut rows = 0;
+            while let Some(batch) = stream.next().await {
+                rows += batch.unwrap().num_rows();
+            }
+
+            assert_eq!(rows, 2);
+            assert_eq!(store.get_calls(), gets, "reuse_footer_read={reuse}");
+        }
+    }
+
+    /// The row groups inside the footer read are served from it and the others are requested.
+    /// With a footer read that reaches back to row group 2 of 4, the file takes the footer read
+    /// and one GET each for row groups 0 and 1, instead of a GET for every row group.
+    #[tokio::test]
+    async fn the_footer_read_serves_the_row_groups_it_covers() {
+        let source = InMemory::new();
+        let file = put_row_group_file(&source, "groups.parquet", 4, 1000).await;
+        let third = row_group_range(&source, &file, 2).await;
+        let fourth = row_group_range(&source, &file, 3).await;
+        let hint = Some((file.object_meta.size - third.start) as usize);
+        let expected: Vec<i32> = (0..4000).collect();
+        let covered = (third.end - third.start + fourth.end - fourth.start) as usize;
+        for (reuse, gets, reused) in [(true, 3, covered), (false, 5, 0)] {
+            let (values, get_calls, metrics) =
+                read_remote(&source, &file, hint, scan_io_options(reuse, 0, 0)).await;
+            assert_eq!(values, expected);
+            assert_eq!(get_calls, gets, "reuse_footer_read={reuse}");
+            assert_eq!(
+                metric(&metrics, "scan_io_footer_read_reused_bytes"),
+                reused,
+                "reuse_footer_read={reuse}"
+            );
+        }
+    }
+
+    /// A file no bigger than the whole-file threshold is read with one GET, even when the footer
+    /// read alone would hold none of its data. A file one byte over the threshold is not.
+    #[tokio::test]
+    async fn a_file_within_the_whole_file_threshold_is_read_with_one_get() {
+        let source = InMemory::new();
+        let file = put_row_group_file(&source, "whole.parquet", 4, 1000).await;
+        let size = file.object_meta.size;
+        let expected: Vec<i32> = (0..4000).collect();
+
+        let (values, gets, _) =
+            read_remote(&source, &file, Some(64), scan_io_options(true, size, 0)).await;
+        assert_eq!(values, expected);
+        assert_eq!(gets, 1);
+
+        let (values, gets, _) =
+            read_remote(&source, &file, Some(64), scan_io_options(true, size - 1, 0)).await;
+        assert_eq!(values, expected);
+        assert!(gets > 1, "a file over the threshold took {gets} GET");
+    }
+
+    /// The next file's metadata load hands its footer read to that file's reader, so a small
+    /// file opened after a prefetch is read with the prefetch's one GET.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_prefetched_small_file_is_read_with_one_get() {
+        let store = Arc::new(RecordingStore::new());
+        let files = put_int_files(&store.inner, &["a.parquet", "b.parquet"]).await;
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::with_options(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+            scan_io_options(true, 0, 0),
+        )
+        .with_next_file_metadata_prefetch(Some(&files));
+        let hint = Some(crate::parquet::parquet_exec::METADATA_SIZE_HINT);
+
+        for file in &files {
+            let reader = factory
+                .create_reader(0, file.clone(), hint, &metrics)
+                .unwrap();
+            assert_eq!(read_all(reader).await, vec![1, 2]);
+        }
+
+        assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 1);
+        assert_eq!(store.reads("a.parquet"), 1);
+        assert_eq!(store.reads("b.parquet"), 1);
+    }
+
+    /// Waits until `count` reads are held at the store's gate at once.
+    async fn wait_for_held_reads(store: &RecordingStore, count: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while store.gate.receiver_count() < count {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{count} reads were never in flight at once"));
+    }
+
+    /// On a remote store, a merged range longer than the split size is fetched as parts that
+    /// are all in flight at once, and every requested range comes back whole. 1,000 bytes in
+    /// parts of at most 300 take 4 GETs. Ranges 100..200 and 650..990 merge into 890 bytes,
+    /// which take 3.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::single_range_in_vec_init)]
+    async fn ranges_longer_than_the_split_size_are_fetched_in_parallel_parts() {
+        let content = Bytes::from((0..1000u32).map(|i| (i % 251) as u8).collect::<Vec<u8>>());
+        let store = Arc::new(RecordingStore::new().with_gate("split.parquet"));
+        store
+            .put(&Path::from("split.parquet"), content.clone().into())
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::with_options(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+            scan_io_options(false, 0, 300),
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new("split.parquet".to_string(), 1000),
+                None,
+                &metrics,
+            )
+            .unwrap();
+
+        let read = tokio::spawn(async move {
+            let result = reader.get_byte_ranges(vec![0..1000]).await;
+            (reader, result)
+        });
+        wait_for_held_reads(&store, 4).await;
+        store.release();
+        let (mut reader, result) = read.await.unwrap();
+        assert_eq!(result.unwrap(), vec![content.clone()]);
+        assert_eq!(store.get_calls(), 4);
+
+        let result = reader
+            .get_byte_ranges(vec![100..200, 650..990])
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            vec![content.slice(100..200), content.slice(650..990)]
+        );
+        assert_eq!(store.get_calls(), 7);
+    }
+
+    /// The time a data read spends waiting on storage is recorded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::single_range_in_vec_init)]
+    async fn time_waiting_for_a_data_read_is_recorded() {
+        let store = Arc::new(RecordingStore::new().with_gate("wait.parquet"));
+        store
+            .put(
+                &Path::from("wait.parquet"),
+                Bytes::from_static(b"0123456789").into(),
+            )
+            .await
+            .unwrap();
+        let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+        let metrics = ExecutionPlanMetricsSet::new();
+        let factory = EagerPageIndexReaderFactory::new(
+            Arc::clone(&store) as Arc<dyn ObjectStore>,
+            runtime.cache_manager.get_file_metadata_cache(),
+            ScanIoSource::ObjectStore,
+            &metrics,
+        );
+        let mut reader = factory
+            .create_reader(
+                0,
+                PartitionedFile::new("wait.parquet".to_string(), 10),
+                None,
+                &metrics,
+            )
+            .unwrap();
+
+        let read = tokio::spawn(async move { reader.get_byte_ranges(vec![0..10]).await.is_ok() });
+        store.wait_for_held_read().await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        store.release();
+        assert!(read.await.unwrap());
+        let waited = metric(&metrics, "scan_io_data_wait_time");
+        assert!(waited >= 50_000_000, "recorded a wait of {waited} ns");
+    }
+
+    /// Every storage read of a metadata load is counted: one when the footer read holds the
+    /// footer and page index, and three when it holds only the footer's length, leaving the
+    /// footer and then the page index to read.
+    #[tokio::test]
+    async fn metadata_storage_reads_are_counted() {
+        let hint = crate::parquet::parquet_exec::METADATA_SIZE_HINT;
+        for (hint, reads) in [(hint, 1), (8, 3)] {
+            let store = Arc::new(InMemory::new());
+            let file = put_int_file(&store, "meta.parquet", None).await;
+            let runtime = datafusion::execution::runtime_env::RuntimeEnv::default();
+            let metrics = ExecutionPlanMetricsSet::new();
+            let factory = EagerPageIndexReaderFactory::new(
+                store,
+                runtime.cache_manager.get_file_metadata_cache(),
+                ScanIoSource::Local,
+                &metrics,
+            );
+            let mut reader = factory
+                .create_reader(0, file, Some(hint), &metrics)
+                .unwrap();
+            reader.get_metadata(None).await.unwrap();
+            assert_eq!(
+                metric(&metrics, "scan_io_metadata_storage_reads"),
+                reads,
+                "hint {hint}"
+            );
+        }
     }
 }
