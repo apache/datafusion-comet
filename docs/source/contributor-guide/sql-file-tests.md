@@ -242,8 +242,8 @@ SELECT abs(v) FROM test_abs
 ```
 
 This checks the plan's operators and the results. It does not prove that a named expression
-survived optimization, or whether Comet ran it natively or through the JVM codegen
-dispatcher. See [Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet).
+survived optimization, or whether Comet ran it in Rust or through codegen dispatch. See
+[Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet).
 
 #### `query spark_answer_only`
 
@@ -475,7 +475,7 @@ planning, so Comet would never see them. However, `CometSqlFileTestSuite` automa
 disables constant folding (by excluding `ConstantFolding` from the optimizer rules), so that
 rule does not remove all-literal expressions before Comet sees them. Other optimizer rules, such as
 `NullPropagation`, and Comet's own plan-time literal handling can still remove them, so an
-all-literal query is not guaranteed to run the expression natively. See
+all-literal query is not guaranteed to exercise the expression in Comet. See
 [Make sure the expression reaches Comet](#make-sure-the-expression-reaches-comet).
 `ConstantFolding: enabled` opts out of the default exclusion for fixtures that deliberately
 test folded literals.
@@ -485,11 +485,11 @@ test folded literals.
 A passing `query` shows that Comet planned the operators and matched Spark's results. It does
 not show that the expression under test was still in the plan. Watch for these traps:
 
-- **NULL literal arguments.** `NullPropagation` replaces a null-intolerant expression with a
-  NULL argument, such as `abs(NULL)`, by a NULL literal. Put NULLs in the table data, or see
-  [`ExcludeRules`](#excluderules).
+- **NULL literal arguments.** `NullPropagation` replaces a null-intolerant expression that has a
+  NULL literal argument, such as `abs(NULL)`, with a NULL literal. Put NULLs in the table data, or
+  see [`ExcludeRules`](#excluderules).
 - **Literal casts.** When a `CAST` of a literal evaluates successfully, Comet evaluates it on
-  the JVM while planning and sends only the result, so the native cast never runs. Expression
+  the JVM while planning and sends only the result, so Comet's Rust cast never runs. Expression
   coverage still lists the cast as native, so `expect_native` does not catch this. A literal
   cast that fails to evaluate is routed through the codegen dispatcher or falls back to Spark.
   Some column casts are also planned as a NULL literal, such as `DATE` to a numeric type with
@@ -511,7 +511,7 @@ not show that the expression under test was still in the plan. Watch for these t
 For signed zero, see [Cover edge cases](#cover-edge-cases). For how `SET` and `Config` changes
 are scoped, see [Statements](#statements).
 
-This example reads a string column from Parquet, so the native string-to-int cast
+This example reads a string column from Parquet, so the Rust-implemented string-to-int cast
 runs on valid values, on `'abc'` (NULL, because the suite disables ANSI by default) and on a
 NULL:
 
