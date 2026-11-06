@@ -29,11 +29,23 @@
 //! - `COMET_GRPC_MAX_MESSAGE_SIZE`: the largest message, in bytes, of Ballista's gRPC service
 //!   between the scheduler and its executors, such as a task with many partitions of a scan
 //!   (default: Ballista's 16 MiB). Set it on the executors as well, for their side of the same
-//!   messages. The Flight service for drivers has no limit. Shuffle reads between executors keep
-//!   the limit of the query's `ballista.client.grpc_max_message_size` (16 MiB by default), which
-//!   this does not change.
+//!   messages. Shuffle reads between executors keep the limit of the query's
+//!   `ballista.client.grpc_max_message_size` (16 MiB by default), which this does not change.
+//! - `COMET_SCHEDULER_FLIGHT_MAX_REQUEST_BYTES`: the largest query, in bytes, the Flight service
+//!   accepts from a driver. A query carries every stage's plan and the files of every scan
+//!   partition, so a large one is big (default `536870912`, 512 MiB).
 //! - `COMET_SCHEDULER_BALLISTA_CONFIG`: Ballista settings for every query, as comma-separated
 //!   `key=value` pairs, such as `ballista.execution.mode=pipelined`
+//! - `COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS`: the longest a query may take. The scheduler fails
+//!   and cancels a query that runs longer. A query is also cancelled when the driver that
+//!   submitted it disconnects. (default `0`: no limit)
+//! - `COMET_SCHEDULER_PIPELINED_RESULT_MAX_BYTES`: in pipelined mode, the scheduler reads each
+//!   query's result into its memory and serves it to the driver, and fails a query whose result
+//!   has more Arrow data than this (default `1073741824`, 1 GiB)
+//! - `COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES`: the most Arrow data the scheduler keeps for
+//!   all pipelined results together. A new result that doesn't fit drops the oldest results,
+//!   which a driver then finds expired. With `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` at `0`
+//!   this is the only thing that drops them (default `4294967296`, 4 GiB)
 //! - `COMET_SCHEDULER_EVENT_LOG_DIR`: a directory to write one event log per query to, as
 //!   Ballista's scheduler does (default: no event logs). The scheduler creates it if needed and
 //!   doesn't start if it can't write there. A log has the query's plan and a record for each
@@ -48,10 +60,15 @@
 //!   results, not to logs.
 //!
 //! Ballista's REST API, which lists and cancels jobs without authentication, is not served.
+//!
+//! Neither the Flight service nor Ballista's gRPC service authenticates its callers or uses TLS,
+//! and a query names the files and object stores executors read. Run a cluster only on a trusted
+//! network.
 
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow_flight::flight_service_server::FlightServiceServer;
 use ballista_scheduler::cluster::BallistaCluster;
@@ -59,7 +76,7 @@ use ballista_scheduler::config::SchedulerConfig;
 use ballista_scheduler::scheduler_process::{create_scheduler, start_grpc_service};
 use comet_native_executors::adaptive::CometAdaptiveRules;
 use comet_native_executors::codec::CometPhysicalCodec;
-use comet_native_executors::frontend::CometFlightService;
+use comet_native_executors::frontend::{CometFlightService, Limits};
 use comet_native_executors::{env_var, init_logging};
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use log::info;
@@ -102,6 +119,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
         config.event_log_dir = Some(dir);
     }
+    let max_request_bytes: usize =
+        env_var("COMET_SCHEDULER_FLIGHT_MAX_REQUEST_BYTES")?.unwrap_or(512 << 20);
+    let mut limits = Limits::default();
+    if let Some(seconds) = env_var::<u64>("COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS")? {
+        limits.query_timeout = (seconds > 0).then(|| Duration::from_secs(seconds));
+    }
+    if let Some(bytes) = env_var("COMET_SCHEDULER_PIPELINED_RESULT_MAX_BYTES")? {
+        limits.max_result_bytes = bytes;
+    }
+    if let Some(bytes) = env_var("COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES")? {
+        limits.max_stored_bytes = bytes;
+    }
     let flight_port: u16 = env_var("COMET_SCHEDULER_FLIGHT_PORT")?.unwrap_or(50060);
     let ballista_settings =
         parse_settings(&env_var::<String>("COMET_SCHEDULER_BALLISTA_CONFIG")?.unwrap_or_default())?;
@@ -118,9 +147,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc = tokio::spawn(start_grpc_service(grpc_addr, scheduler.clone()));
     let flight = tonic::transport::Server::builder()
         .add_service(
-            FlightServiceServer::new(CometFlightService::try_new(scheduler, &ballista_settings)?)
-                .max_decoding_message_size(usize::MAX)
-                .max_encoding_message_size(usize::MAX),
+            FlightServiceServer::new(
+                CometFlightService::try_new(scheduler, &ballista_settings)?.with_limits(limits),
+            )
+            .max_decoding_message_size(max_request_bytes)
+            .max_encoding_message_size(usize::MAX),
         )
         .serve(flight_addr);
     tokio::select! {

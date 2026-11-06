@@ -22,7 +22,7 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray, BinaryArray, RecordBatch, RecordBatchOptions, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt32Type};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_datafusion_err, DataFusionError, Result};
+use datafusion::common::{internal_datafusion_err, plan_datafusion_err, DataFusionError, Result};
 use datafusion::datasource::memory::MemorySourceConfig;
 use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::disk_manager::DiskManager;
@@ -55,6 +55,14 @@ use crate::execution::spark_config::{
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
 
+/// The most partitions a stage or an exchange may have. A request names the counts, and the
+/// scheduler allocates for each partition, so a request can't ask for more than this. Spark's
+/// own default is 200 shuffle partitions, and large queries use a few thousand.
+pub const MAX_PARTITIONS: usize = 1 << 16;
+
+/// The largest `spark.comet.batchSize` a request may set. Each operator sizes its buffers by it.
+const MAX_BATCH_SIZE: usize = 1 << 20;
+
 fn descriptor_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
         Field::new("partition", DataType::UInt32, false),
@@ -74,6 +82,11 @@ pub fn partition_descriptor(
     num_partitions: usize,
     plans: &[Vec<u8>],
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if num_partitions == 0 || num_partitions > MAX_PARTITIONS {
+        return Err(plan_datafusion_err!(
+            "A stage must have between 1 and {MAX_PARTITIONS} partitions, not {num_partitions}"
+        ));
+    }
     let schema = descriptor_schema();
     let partitions = (0..num_partitions)
         .map(|index| {
@@ -174,6 +187,13 @@ impl CometFragmentExec {
     /// input whose exchange it has taken away and is about to put back.
     fn check_inputs(&self) -> Result<()> {
         let partitions = self.props.output_partitioning().partition_count();
+        if self.children.len() != self.fragment.broadcast.len() + 1 {
+            return Err(internal_datafusion_err!(
+                "CometFragmentExec has {} inputs but {} broadcast flags",
+                self.children.len() - 1,
+                self.fragment.broadcast.len()
+            ));
+        }
         for (index, (input, broadcast)) in self.children[1..]
             .iter()
             .zip(&self.fragment.broadcast)
@@ -394,14 +414,14 @@ fn fragment_session(
     runtime.disk_manager = disk_manager;
     let mut conf = conf.clone();
     conf.insert(NATIVE_EXECUTORS_FRAGMENT.to_string(), "true".to_string());
-    let session = comet_session_context(
-        runtime,
-        conf.get_usize(COMET_BATCH_SIZE, DEFAULT_BATCH_SIZE),
-        1,
-        &conf,
-        spark_plan,
-    )
-    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+    let batch_size = conf.get_usize(COMET_BATCH_SIZE, DEFAULT_BATCH_SIZE);
+    if batch_size == 0 || batch_size > MAX_BATCH_SIZE {
+        return Err(plan_datafusion_err!(
+            "{COMET_BATCH_SIZE} must be between 1 and {MAX_BATCH_SIZE}, not {batch_size}"
+        ));
+    }
+    let session = comet_session_context(runtime, batch_size, 1, &conf, spark_plan)
+        .map_err(|e| DataFusionError::External(Box::new(e)))?;
     Ok(Arc::new(session))
 }
 

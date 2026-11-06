@@ -26,12 +26,13 @@ use datafusion::arrow::array::{AsArray, RecordBatch};
 use datafusion::arrow::datatypes::ArrowPrimitiveType;
 use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
 use datafusion_comet_proto::spark_expression::{
-    self, expr::ExprStruct, BoundReference, Expr, NullOrdering, SortDirection, SortOrder,
+    self, expr::ExprStruct, literal::Value, BinaryExpr, BoundReference, Cast, Expr, IfExpr,
+    Literal, MathExpr, NullOrdering, SortDirection, SortOrder,
 };
 use datafusion_comet_proto::spark_native_executors::{QueryRequest, Stage, StageInput};
 use datafusion_comet_proto::spark_operator::{
-    operator::OpStruct, BuildSide, HashJoin, JoinType, Operator, RangeScan, Scan, ShuffleScan,
-    Sort, SparkStructField,
+    operator::OpStruct, BuildSide, HashJoin, JoinType, Operator, Projection, RangeScan, Scan,
+    ShuffleScan, Sort, SparkStructField,
 };
 use datafusion_comet_proto::spark_partitioning::{
     partitioning::PartitioningStruct, HashPartition, Partitioning, RangePartition, SinglePartition,
@@ -65,6 +66,10 @@ pub fn int_type() -> spark_expression::DataType {
 
 pub fn double_type() -> spark_expression::DataType {
     data_type(DataTypeId::Double)
+}
+
+pub fn string_type() -> spark_expression::DataType {
+    data_type(DataTypeId::String)
 }
 
 pub fn bool_type() -> spark_expression::DataType {
@@ -141,9 +146,19 @@ pub fn sorting_stage(
     order: Expr,
     data_type: spark_expression::DataType,
 ) -> Stage {
+    sorting_stage_by(producer, partitioning, vec![order], vec![data_type])
+}
+
+/// Like [`sorting_stage`], for a producer with columns of `types`, sorted by `orders`.
+pub fn sorting_stage_by(
+    producer: u32,
+    partitioning: Partitioning,
+    orders: Vec<Expr>,
+    types: Vec<spark_expression::DataType>,
+) -> Stage {
     let scan = Operator {
         op_struct: Some(OpStruct::Scan(Scan {
-            fields: vec![data_type.clone()],
+            fields: types.clone(),
             source: "test".to_string(),
         })),
         ..Default::default()
@@ -152,7 +167,7 @@ pub fn sorting_stage(
         plan: Some(Operator {
             children: vec![scan],
             op_struct: Some(OpStruct::Sort(Sort {
-                sort_orders: vec![order.clone()],
+                sort_orders: orders.clone(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -163,10 +178,105 @@ pub fn sorting_stage(
             broadcast: false,
         }],
         num_partitions: 1,
-        output_schema: vec![field(data_type)],
-        output_ordering: vec![order],
+        output_schema: types.into_iter().map(field).collect(),
+        output_ordering: orders,
         ..Default::default()
     }
+}
+
+/// `input` with a projection of `exprs` on top of its block, producing columns of `types`.
+pub fn projecting_stage(
+    mut input: Stage,
+    exprs: Vec<Expr>,
+    types: Vec<spark_expression::DataType>,
+) -> Stage {
+    input.plan = Some(Operator {
+        op_struct: Some(OpStruct::Projection(Projection {
+            project_list: exprs,
+        })),
+        children: vec![input.plan.take().unwrap()],
+        ..Default::default()
+    });
+    input.output_schema = types.into_iter().map(field).collect();
+    input
+}
+
+fn expr(expr_struct: ExprStruct) -> Expr {
+    Expr {
+        expr_struct: Some(expr_struct),
+        ..Default::default()
+    }
+}
+
+pub fn long_literal(value: i64) -> Expr {
+    expr(ExprStruct::Literal(Literal {
+        value: Some(Value::LongVal(value)),
+        datatype: Some(long_type()),
+        is_null: false,
+    }))
+}
+
+pub fn null_long() -> Expr {
+    expr(ExprStruct::Literal(Literal {
+        value: None,
+        datatype: Some(long_type()),
+        is_null: true,
+    }))
+}
+
+pub fn remainder(left: Expr, right: Expr) -> Expr {
+    expr(ExprStruct::Remainder(Box::new(MathExpr {
+        left: Some(Box::new(left)),
+        right: Some(Box::new(right)),
+        return_type: Some(long_type()),
+        ..Default::default()
+    })))
+}
+
+pub fn equal(left: Expr, right: Expr) -> Expr {
+    expr(ExprStruct::Eq(Box::new(BinaryExpr {
+        left: Some(Box::new(left)),
+        right: Some(Box::new(right)),
+    })))
+}
+
+pub fn if_else(condition: Expr, then: Expr, otherwise: Expr) -> Expr {
+    expr(ExprStruct::If(Box::new(IfExpr {
+        if_expr: Some(Box::new(condition)),
+        true_expr: Some(Box::new(then)),
+        false_expr: Some(Box::new(otherwise)),
+    })))
+}
+
+pub fn cast(child: Expr, data_type: spark_expression::DataType) -> Expr {
+    expr(ExprStruct::Cast(Box::new(Cast {
+        child: Some(Box::new(child)),
+        datatype: Some(data_type),
+        timezone: "UTC".to_string(),
+        ..Default::default()
+    })))
+}
+
+/// A sort key: column `index`, of type `data_type`.
+pub fn sort_key(
+    index: i32,
+    data_type: spark_expression::DataType,
+    descending: bool,
+    nulls_first: bool,
+) -> Expr {
+    expr(ExprStruct::SortOrder(Box::new(SortOrder {
+        child: Some(Box::new(bound(index, data_type))),
+        direction: if descending {
+            SortDirection::Descending
+        } else {
+            SortDirection::Ascending
+        } as i32,
+        null_ordering: if nulls_first {
+            NullOrdering::NullsFirst
+        } else {
+            NullOrdering::NullsLast
+        } as i32,
+    })))
 }
 
 pub fn hash_on_first_column(num_partitions: i32) -> Partitioning {

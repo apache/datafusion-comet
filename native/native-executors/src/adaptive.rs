@@ -216,8 +216,14 @@ impl PhysicalOptimizerRule for HoldProbeStages {
                 let mut changed = false;
                 for join in movable_joins(&block) {
                     let (Some((probe, probe_stage)), Some((build, build_stage))) = (
-                        hash_exchange(inputs[join.probe_input]),
-                        hash_exchange(inputs[join.build_input]),
+                        inputs
+                            .get(join.probe_input)
+                            .copied()
+                            .and_then(hash_exchange),
+                        inputs
+                            .get(join.build_input)
+                            .copied()
+                            .and_then(hash_exchange),
                     ) else {
                         continue;
                     };
@@ -323,8 +329,14 @@ impl BroadcastIntoProbe {
         let inputs = &fragment.children()[1..];
         for join in movable_joins(&block) {
             let (Some((probe, _)), Some((build, _))) = (
-                hash_exchange(inputs[join.probe_input]),
-                hash_exchange(inputs[join.build_input]),
+                inputs
+                    .get(join.probe_input)
+                    .copied()
+                    .and_then(hash_exchange),
+                inputs
+                    .get(join.build_input)
+                    .copied()
+                    .and_then(hash_exchange),
             ) else {
                 continue;
             };
@@ -375,9 +387,15 @@ impl BroadcastIntoProbe {
         join: &MovableJoin,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         let inputs = &consumer.children()[1..];
-        let (_, probe_stage) = hash_exchange(inputs[join.probe_input])
+        let (_, probe_stage) = inputs
+            .get(join.probe_input)
+            .copied()
+            .and_then(hash_exchange)
             .ok_or_else(|| internal_datafusion_err!("The join's probe side is not an exchange"))?;
-        let (build, build_stage) = hash_exchange(inputs[join.build_input])
+        let (build, build_stage) = inputs
+            .get(join.build_input)
+            .copied()
+            .and_then(hash_exchange)
             .ok_or_else(|| internal_datafusion_err!("The join's build side is not an exchange"))?;
         let join_op = node_at(block, &join.path);
         let build_leaf = &join_op.children[1];
