@@ -3411,7 +3411,17 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           }
           withSQLConf(
             "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
-            for (expression <- Seq("sum(v)", "count(v, w)", "count(*) + sum(v)")) {
+            // A non-decimal AVG converts rows to partial states, including null rows.
+            assert(
+              aggregates("SELECT k, avg(v), avg(w) FROM skip_partial_eligibility GROUP BY k")
+                .map(skipped)
+                .sum > 0L)
+            for (expression <- Seq(
+                "sum(v)",
+                "count(v, w)",
+                "count(*) + sum(v)",
+                // A decimal AVG's accumulator can't convert rows to partial states.
+                "avg(CAST(v AS DECIMAL(30, 2)))")) {
               val result = aggregates(
                 "SELECT sum(n) FROM " +
                   s"(SELECT k, $expression n FROM skip_partial_eligibility GROUP BY k)")
