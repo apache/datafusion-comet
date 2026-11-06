@@ -372,6 +372,14 @@ object CometConf extends ShimCometConf {
     createExecEnabledConfig("broadcastNestedLoopJoin", defaultValue = true)
   val COMET_EXEC_SORT_MERGE_JOIN_ENABLED: ConfigEntry[Boolean] =
     createExecEnabledConfig("sortMergeJoin", defaultValue = true)
+  val COMET_EXEC_CARTESIAN_PRODUCT_ENABLED: ConfigEntry[Boolean] =
+    createExecEnabledConfig(
+      "cartesianProduct",
+      defaultValue = false,
+      notes = Some(
+        "Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill " +
+          "(https://github.com/apache/datafusion/issues/26383). Runs natively only without a " +
+          "join condition and when each input reports exactly one partition"))
   val COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
       .category(CATEGORY_EXEC)
