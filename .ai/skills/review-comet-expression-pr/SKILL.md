@@ -34,7 +34,7 @@ bar, and the output format. This skill only covers what is specific to expressio
 | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `docs/source/contributor-guide/adding_a_new_expression.md` | The serde contract, support levels, when to set the return type explicitly, shimming                                                                        |
 | `docs/source/contributor-guide/sql-file-tests.md`          | The test framework expression PRs are expected to use, and every directive it supports                                                                      |
-| `docs/source/contributor-guide/optimizing_expressions.md`  | The benchmark workflow and the no-regression rule, for PRs that change an existing kernel                                                                   |
+| `docs/source/contributor-guide/optimizing_expressions.md`  | The benchmark workflow and the slower-shape rule, for PRs that change an existing kernel                                                                    |
 | `docs/source/contributor-guide/timezones.md`               | The timestamp label rule, where the session timezone comes from, and how to test it, for datetime expressions, casts, and anything that returns a timestamp |
 
 Hold the diff against these. If the PR does something a guide says to do differently, either the PR
@@ -218,8 +218,8 @@ carrying.
 5. If a benchmark shows Comet slower than Spark, flag it. The PR needs to explain why that is
    acceptable or include a plan to fix it.
 
-For PRs optimizing an existing kernel, `optimizing_expressions.md` defines the no-regression rule
-and the requirement to record a performance audit. Hold the PR to both.
+For PRs optimizing an existing kernel, `optimizing_expressions.md` defines the rule for shapes that
+get slower and the requirement to record a performance audit. Hold the PR to both.
 
 ## 6. Documentation
 
