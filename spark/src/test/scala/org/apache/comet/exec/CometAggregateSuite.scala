@@ -3431,6 +3431,59 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("skip partial aggregation converts AVG rows to partial states") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "input").toUri.toString
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        // Mostly distinct keys within each task, with some keys repeating across tasks so the
+        // final aggregate merges converted states with each other. Values include nulls.
+        spark
+          .range(0L, 16384L, 1L, 8)
+          .selectExpr(
+            "id % 12000 AS k",
+            "CASE WHEN id % 5 = 0 THEN NULL ELSE CAST(id % 17 AS INT) END AS i",
+            "CASE WHEN id % 7 = 0 THEN NULL ELSE CAST(id % 11 AS DOUBLE) / 3 END AS d",
+            "CASE WHEN id % 3 = 0 THEN NULL ELSE CAST(id % 13 AS DECIMAL(10, 2)) / 7 END AS small",
+            "CASE WHEN id % 4 = 0 THEN NULL ELSE CAST(id % 19 AS DECIMAL(38, 10)) / 7 END AS big")
+          .write
+          .parquet(path)
+      }
+      withParquetTable(path, "skip_partial_avg") {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.SHUFFLE_PARTITIONS.key -> "8",
+          CometConf.COMET_BATCH_SIZE.key -> "128",
+          CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+          CometConf.COMET_SHUFFLE_MODE.key -> "native",
+          CometConf.COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED.key -> "true",
+          CometConf.COMET_RESPECT_DATAFUSION_CONFIGS.key -> "true",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_rows_threshold" -> "100",
+          "spark.comet.datafusion.execution.skip_partial_aggregation_probe_ratio_threshold" -> "0.8") {
+          def skipped(query: String): Long = {
+            val (_, plan) = checkSparkAnswerAndOperator(query)
+            stripAQEPlan(plan).collect { case aggregate: CometHashAggregateExec =>
+              aggregate.metrics.get("skipped_aggregation_rows").map(_.value).getOrElse(0L)
+            }.sum
+          }
+          def avgQuery(expressions: String): String =
+            s"SELECT k, $expressions FROM skip_partial_avg GROUP BY k"
+
+          // AVG over integral and floating-point inputs stops aggregating.
+          for (expressions <- Seq("avg(i)", "avg(d)", "avg(i), avg(d), count(i)")) {
+            assert(skipped(avgQuery(expressions)) > 0L, s"Expected skipping for $expressions")
+          }
+          // AVG over a decimal input that Comet aggregates as a decimal cannot convert rows to
+          // partial states, so it never stops aggregating.
+          for (expressions <- Seq("avg(big)", "avg(i), avg(big)")) {
+            assert(skipped(avgQuery(expressions)) == 0L, s"Unexpected skipping for $expressions")
+          }
+          // Whether or not a small decimal skips, the answer matches Spark's.
+          skipped(avgQuery("avg(small)"))
+        }
+      }
+    }
+  }
+
   test("first/last") {
     withSQLConf(
       SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
