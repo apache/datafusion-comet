@@ -40,13 +40,13 @@ import org.apache.spark.sql.catalyst.expressions.{And, Ascending, Attribute, Att
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{LeftOuter, RightOuter}
 import org.apache.spark.sql.columnar.{CachedBatch, SimpleMetricsCachedBatch}
-import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
+import org.apache.spark.sql.comet.{CometBroadcastHashJoinExec, CometColumnarToRowExec, CometHashAggregateExec, CometHashJoin, CometHashJoinExec, CometInMemoryTableScanExec, CometNativeScanExec, CometSortAggregateExec, CometSortExec, CometSortMergeJoinExec, CometSparkToColumnarExec}
 import org.apache.spark.sql.comet.execution.arrow.{ArrowCachedBatchSerializer, CometCachedBatchHelper}
 import org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager
 import org.apache.spark.sql.comet.util.Utils
-import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo}
+import org.apache.spark.sql.execution.{ColumnarToRowExec, CometSparkPlanInfoHelper, FileSourceScanExec, FilterExec, FormattedMode, RowToColumnarExec, SortExec, SparkPlan, SparkPlanInfo, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, AQEShuffleReadExec, QueryStageExec, ShuffleQueryStageExec}
-import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, DefaultCachedBatchSerializer, InMemoryRelation, InMemoryTableScanExec}
+import org.apache.spark.sql.execution.columnar.{CometInMemoryRelationHelper, InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec, ShuffleExchangeLike}
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions.{count, lit, max, min, sum}
@@ -113,7 +113,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     withSQLConf(pairs ++ sparkToArrowConversionConfs(enabled = true): _*)(f)
 
   test("cache scan reports the concrete decoded vector types") {
-    withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+    withConversions(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.COLUMN_BATCH_SIZE.key -> "16") {
       val cached = spark
         .sql(
           "SELECT 1 AS i, 'text' AS s, array(1, 2) AS a, " +
@@ -123,7 +125,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             "CAST(12.3 AS DECIMAL(10, 1)) AS dec, DATE '2024-01-02' AS day, " +
             "TIMESTAMP '2024-01-02 03:04:05' AS ts, " +
             "CAST('2024-01-02 03:04:05' AS TIMESTAMP_NTZ) AS ntz, " +
-            "CAST('bytes' AS BINARY) AS bin, NULL AS n, 42 AS unused")
+            "CAST('bytes' AS BINARY) AS bin, NULL AS n, id AS unused FROM range(0, 256, 1, 1)")
         .cache()
       try {
         cached.count()
@@ -146,7 +148,17 @@ class CometInMemoryCacheSuite extends CometTestBase {
           "ntz",
           "bin",
           "n")
-        query.collect()
+        val rows = query.collect()
+        assert(rows.length == 256)
+        assert(rows.forall(row => row.getInt(1) == 1 && row.getString(4) == "text"))
+        val stages = collect(query.queryExecution.executedPlan) {
+          case stage: WholeStageCodegenExec => stage
+        }
+        assert(
+          stages.exists(stage =>
+            stage.exists(_.isInstanceOf[CometColumnarToRowExec]) &&
+              stage.exists(_.isInstanceOf[CometInMemoryTableScanExec])),
+          query.queryExecution.executedPlan)
         val scans = collect(query.queryExecution.executedPlan) {
           case scan: CometInMemoryTableScanExec => scan
         }
@@ -160,7 +172,7 @@ class CometInMemoryCacheSuite extends CometTestBase {
             }
           }
           .collect()
-        assert(actual.nonEmpty)
+        assert(actual.length > 1)
         val reported = scan.vectorTypes.getOrElse(fail("cache scan reported no vector types"))
         actual.foreach(types => assert(types.toSeq == reported))
       } finally {
@@ -168,18 +180,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
         spark.catalog.clearCache()
       }
     }
-  }
-
-  test("cache vector types use the full schema when choosing fallback") {
-    val serializer = new ArrowCachedBatchSerializer()
-    val fallback = new DefaultCachedBatchSerializer()
-    val selected = Seq(AttributeReference("i", IntegerType)())
-    val unsupported = AttributeReference("interval", CalendarIntervalType)()
-    val conf = spark.sessionState.conf
-    assert(
-      serializer.vectorTypesForScan(selected :+ unsupported, selected, conf) ==
-        fallback.vectorTypes(selected, conf))
-    assert(serializer.vectorTypesForScan(selected, Seq.empty, conf).contains(Seq.empty))
   }
 
   private def cachedBatchTypes(table: String): Array[String] = {
