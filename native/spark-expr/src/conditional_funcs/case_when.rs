@@ -15,7 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::{Cast, EvalMode, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison};
+use crate::{
+    Cast, EvalMode, GetStructField, IfExpr, NormalizeNaNAndZero, SparkCastOptions, SparkComparison,
+};
 use arrow::array::{
     downcast_primitive, new_empty_array, Array, ArrayRef, AsArray, BooleanArray, GenericByteArray,
     PrimitiveArray,
@@ -433,10 +435,11 @@ impl PhysicalExpr for CaseWhenExpr {
 /// Whether `expr` can be evaluated for rows that Spark would not evaluate it for, at little cost.
 ///
 /// That holds when it can neither fail nor return something different for seeing more rows, and is
-/// cheap: a column, a literal, and comparisons, boolean logic, null checks, widening casts and
-/// wrapping arithmetic over them. Anything else, including every function and a cast that parses a
-/// string, is treated as able to fail. `CASE` uses this to decide whether to evaluate every branch
-/// over the whole batch, which pays off only when that costs little more than selecting rows.
+/// cheap: a column, a literal, and struct fields, comparisons, boolean logic, null checks, widening
+/// casts and wrapping arithmetic over them. Anything else, including every function and a cast that
+/// parses a string, is treated as able to fail. `CASE` uses this to decide whether to evaluate
+/// every branch over the whole batch, which pays off only when that costs little more than
+/// selecting rows.
 pub(super) fn is_infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
     infallible(expr, input_schema, false)
 }
@@ -476,6 +479,8 @@ fn infallible(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema, parsing: bool
             || expr.is::<IsNotNullExpr>()
             || expr.is::<CaseWhenExpr>()
             || expr.is::<IfExpr>()
+            // A field of a struct cannot fail
+            || expr.is::<GetStructField>()
     };
     node_is_infallible
         && expr
@@ -1309,6 +1314,21 @@ mod tests {
                 )),
                 true,
             ),
+            Field::new(
+                "st",
+                DataType::Struct(
+                    vec![
+                        Field::new("a", DataType::Int64, true),
+                        Field::new(
+                            "inner",
+                            DataType::Struct(vec![Field::new("b", DataType::Utf8, true)].into()),
+                            true,
+                        ),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
         ]);
         let c = |name: &str| col(name, &schema).unwrap();
         let cast_in = |mode: EvalMode, e: Arc<dyn PhysicalExpr>, to: DataType| {
@@ -1348,6 +1368,12 @@ mod tests {
             c("i"),
             lit(0i64)
         ))));
+        // A field of a struct, and a field of a struct in a struct
+        let field = |e: Arc<dyn PhysicalExpr>, ordinal: usize| -> Arc<dyn PhysicalExpr> {
+            Arc::new(GetStructField::new(e, ordinal))
+        };
+        assert!(infallible(field(c("st"), 0)));
+        assert!(infallible(field(field(c("st"), 1), 0)));
 
         assert!(infallible(Arc::new(NormalizeNaNAndZero::new(
             DataType::Float64,
