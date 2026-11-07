@@ -149,11 +149,53 @@ impl FileIoCacheKey {
             properties: sorted_properties(catalog_properties),
         })
     }
+
+    /// Whether `other` is a `FileIO` for the same table, access mode and catalog built from
+    /// different properties, which this key's `FileIO` supersedes. A catalog that re-vends
+    /// credentials gives a table new properties, and a commit moves its metadata file, so the table
+    /// is compared by [`Self::table_location`]. A commit that keeps the properties supersedes
+    /// nothing, so neighboring snapshots share one provider.
+    ///
+    /// When both carry `s3.session-token-expires-at-ms`, only a later expiry supersedes. Two
+    /// sessions reading one table with different vended tokens then keep both entries instead of
+    /// evicting each other on every insert; the LRU bound retires the older one.
+    fn supersedes(&self, other: &Self) -> bool {
+        self.access_mode == other.access_mode
+            && self.catalog_name == other.catalog_name
+            && self.table_location() == other.table_location()
+            && self.properties != other.properties
+            && match (self.token_expires_at_ms(), other.token_expires_at_ms()) {
+                (Some(new), Some(old)) => new > old,
+                _ => true,
+            }
+    }
+
+    /// What identifies the table across commits. A read's reference path is a metadata file, and
+    /// Iceberg writes all of a table's metadata files into one directory (`write.metadata.path`, or
+    /// `<location>/metadata`), so a read compares that directory. A write's reference path is the
+    /// table's data location, which a commit doesn't move.
+    fn table_location(&self) -> &str {
+        if self.access_mode == AccessMode::Read as u8 {
+            self.reference_path
+                .rfind('/')
+                .map_or(self.reference_path.as_str(), |i| &self.reference_path[..i])
+        } else {
+            &self.reference_path
+        }
+    }
+
+    fn token_expires_at_ms(&self) -> Option<u64> {
+        self.properties
+            .iter()
+            .find(|(k, _)| k == "s3.session-token-expires-at-ms")
+            .and_then(|(_, v)| v.parse().ok())
+    }
 }
 
 const FILE_IO_CACHE_CAPACITY: usize = 64;
 
-/// Least recently used entries are evicted first.
+/// Least recently used entries are evicted first. Inserting a table's `FileIO` also evicts the ones
+/// it supersedes, so their S3 credential providers can be released once no reader holds them.
 struct FileIoCache {
     entries: HashMap<FileIoCacheKey, FileIO>,
     order: VecDeque<FileIoCacheKey>,
@@ -178,17 +220,27 @@ impl FileIoCache {
         Some(file_io)
     }
 
-    /// Returns the replaced or evicted `FileIO` so the caller can drop it outside the lock.
-    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Option<FileIO> {
+    /// Returns the replaced or evicted `FileIO`s so the caller can drop them outside the lock.
+    fn insert(&mut self, key: FileIoCacheKey, file_io: FileIO) -> Vec<FileIO> {
         if let Some(previous) = self.entries.insert(key.clone(), file_io) {
-            return Some(previous);
+            return vec![previous];
         }
+        let mut evicted = Vec::new();
+        self.order.retain(|k| {
+            if key.supersedes(k) {
+                evicted.extend(self.entries.remove(k));
+                false
+            } else {
+                true
+            }
+        });
         self.order.push_back(key);
         if self.entries.len() > self.capacity {
-            let oldest = self.order.pop_front()?;
-            return self.entries.remove(&oldest);
+            if let Some(oldest) = self.order.pop_front() {
+                evicted.extend(self.entries.remove(&oldest));
+            }
         }
-        None
+        evicted
     }
 }
 
@@ -817,15 +869,229 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(cache.insert(key("a"), local_file_io()).is_none());
-        assert!(cache.insert(key("b"), local_file_io()).is_none());
+        assert!(cache.insert(key("a"), local_file_io()).is_empty());
+        assert!(cache.insert(key("b"), local_file_io()).is_empty());
         assert!(cache.get(&key("a")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert!(cache.get(&key("b")).is_none());
         assert!(cache.get(&key("a")).is_some());
         assert!(cache.get(&key("c")).is_some());
-        assert!(cache.insert(key("c"), local_file_io()).is_some());
+        assert_eq!(cache.insert(key("c"), local_file_io()).len(), 1);
         assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// A catalog that re-vends credentials for a table gives it new properties, so the table's new
+    /// `FileIO` evicts the old one, and the old one's credential provider is released once its
+    /// readers finish. That holds whether the metadata file moved or not. Other tables, catalogs
+    /// and access modes keep theirs.
+    #[test]
+    fn cache_evicts_the_file_io_a_table_supersedes() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str, catalog: &str, mode: AccessMode| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                catalog,
+                mode,
+            )
+            .unwrap()
+        };
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        let other_table = "s3://b/db/u/metadata/00001-c.metadata.json";
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Read), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", other_table, "cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(
+                key("t1", v1, "other_cat", AccessMode::Read),
+                local_file_io()
+            )
+            .is_empty());
+        assert!(cache
+            .insert(key("t1", v1, "cat", AccessMode::Write), local_file_io())
+            .is_empty());
+
+        // Re-vended credentials for the same metadata file.
+        assert_eq!(
+            cache
+                .insert(key("t2", v1, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t1", v1, "cat", AccessMode::Read)).is_none());
+
+        // A commit, with credentials vended alongside it.
+        assert_eq!(
+            cache
+                .insert(key("t3", v2, "cat", AccessMode::Read), local_file_io())
+                .len(),
+            1
+        );
+        assert!(cache.get(&key("t2", v1, "cat", AccessMode::Read)).is_none());
+        assert!(cache.get(&key("t3", v2, "cat", AccessMode::Read)).is_some());
+
+        assert!(cache
+            .get(&key("t1", other_table, "cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "other_cat", AccessMode::Read))
+            .is_some());
+        assert!(cache
+            .get(&key("t1", v1, "cat", AccessMode::Write))
+            .is_some());
+        assert_eq!(cache.entries.len(), 4);
+        assert_eq!(cache.order.len(), 4);
+    }
+
+    /// A commit that keeps the credentials leaves the previous snapshot's `FileIO` cached, so a
+    /// time-travel self-join or reads of neighboring snapshots don't rebuild it on each task.
+    /// With `write.metadata.path` set, a table's metadata files sit in that directory, which need
+    /// not end in `/metadata`. A commit under `s3://b/meta/db/t1` still supersedes the table's
+    /// previous `FileIO`, and two tables under `s3://b/metadata/db/` stay apart.
+    #[test]
+    fn cache_compares_reads_by_metadata_directory() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        let custom_v1 = "s3://b/meta/db/t1/00001-a.metadata.json";
+        let custom_v2 = "s3://b/meta/db/t1/00002-b.metadata.json";
+        assert!(cache
+            .insert(key("t1", custom_v1), local_file_io())
+            .is_empty());
+        assert_eq!(cache.insert(key("t2", custom_v2), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", custom_v1)).is_none());
+
+        let shared_t1 = "s3://b/metadata/db/t1/00001-c.metadata.json";
+        let shared_t2 = "s3://b/metadata/db/t2/00001-d.metadata.json";
+        assert!(cache
+            .insert(key("t1", shared_t1), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("t2", shared_t2), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("t1", shared_t1)).is_some());
+        assert_eq!(cache.entries.len(), 3);
+    }
+
+    #[test]
+    fn cache_keeps_the_file_io_of_a_commit_with_unchanged_properties() {
+        let mut cache = FileIoCache::new(8);
+        let properties = HashMap::from([("s3.session-token".to_string(), "t1".to_string())]);
+        let key =
+            |path: &str| FileIoCacheKey::new(&properties, path, "cat", AccessMode::Read).unwrap();
+        let v1 = "s3://b/db/t/metadata/00001-a.metadata.json";
+        let v2 = "s3://b/db/t/metadata/00002-b.metadata.json";
+        assert!(cache.insert(key(v1), local_file_io()).is_empty());
+        assert!(cache.insert(key(v2), local_file_io()).is_empty());
+        assert!(cache.get(&key(v1)).is_some());
+        assert!(cache.get(&key(v2)).is_some());
+    }
+
+    /// Two sessions reading one table with different vended tokens: only the token that expires
+    /// later evicts, so the sessions don't evict each other on every insert.
+    #[test]
+    fn cache_evicts_only_for_a_token_that_expires_later() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([
+                    ("s3.session-token".to_string(), token.to_string()),
+                    (
+                        "s3.session-token-expires-at-ms".to_string(),
+                        expires_at_ms.to_string(),
+                    ),
+                ]),
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache
+            .insert(key("later", "2000"), local_file_io())
+            .is_empty());
+        assert!(cache
+            .insert(key("earlier", "1000"), local_file_io())
+            .is_empty());
+        assert!(cache.get(&key("later", "2000")).is_some());
+        assert!(cache.get(&key("earlier", "1000")).is_some());
+
+        assert_eq!(
+            cache.insert(key("latest", "3000"), local_file_io()).len(),
+            2
+        );
+        assert!(cache.get(&key("latest", "3000")).is_some());
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    /// A write's reference path is the table's data location, compared whole: new properties for
+    /// it supersede, while a sibling table's location, which shares its parent, stays apart.
+    #[test]
+    fn cache_compares_writes_by_data_location() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, path: &str| {
+            FileIoCacheKey::new(
+                &HashMap::from([("s3.session-token".to_string(), token.to_string())]),
+                path,
+                "cat",
+                AccessMode::Write,
+            )
+            .unwrap()
+        };
+        let t = "s3://b/warehouse/db/t";
+        let u = "s3://b/warehouse/db/u";
+        assert!(cache.insert(key("t1", t), local_file_io()).is_empty());
+        assert!(cache.insert(key("t1", u), local_file_io()).is_empty());
+        assert_eq!(cache.insert(key("t2", u), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t1", t)).is_some());
+        assert!(cache.get(&key("t1", u)).is_none());
+        assert_eq!(cache.entries.len(), 2);
+    }
+
+    /// The expiry only decides when both entries carry one. Re-vended properties with an expiry
+    /// supersede an entry without one, and the other way round.
+    #[test]
+    fn cache_evicts_when_only_one_entry_has_an_expiry() {
+        let mut cache = FileIoCache::new(8);
+        let key = |token: &str, expires_at_ms: Option<&str>| {
+            let mut properties =
+                HashMap::from([("s3.session-token".to_string(), token.to_string())]);
+            if let Some(expires_at_ms) = expires_at_ms {
+                properties.insert(
+                    "s3.session-token-expires-at-ms".to_string(),
+                    expires_at_ms.to_string(),
+                );
+            }
+            FileIoCacheKey::new(
+                &properties,
+                "s3://b/db/t/metadata/00001-a.metadata.json",
+                "cat",
+                AccessMode::Read,
+            )
+            .unwrap()
+        };
+        assert!(cache.insert(key("t1", None), local_file_io()).is_empty());
+        assert_eq!(
+            cache.insert(key("t2", Some("1000")), local_file_io()).len(),
+            1
+        );
+        assert_eq!(cache.insert(key("t3", None), local_file_io()).len(), 1);
+        assert!(cache.get(&key("t3", None)).is_some());
+        assert_eq!(cache.entries.len(), 1);
     }
 
     fn factory_result(path: &str, mode: AccessMode) -> Result<(), String> {

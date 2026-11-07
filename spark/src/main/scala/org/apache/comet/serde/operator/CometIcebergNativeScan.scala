@@ -46,6 +46,7 @@ import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.serde.{CometOperatorSerde, OperatorOuterClass}
 import org.apache.comet.serde.OperatorOuterClass.{Operator, SparkStructField}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
+import org.apache.comet.util.ClassLoaders
 
 object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] with Logging {
 
@@ -605,6 +606,94 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             s"${e.getMessage}"
         logError(msg, e)
         throw new RuntimeException(msg, e)
+    }
+  }
+
+  /** Activation key for the `CometS3CredentialProvider` SPI on the native Iceberg path. */
+  private[comet] val IcebergCredentialProviderClassKey = "s3.comet.credential.provider.class"
+
+  /** The provider that refreshes REST-vended credentials (Spark 4.x builds only). */
+  private[comet] val VendedCredentialProviderClass =
+    "org.apache.comet.cloud.s3.IcebergVendedS3CredentialProvider"
+
+  // Iceberg's AwsClientProperties.REFRESH_CREDENTIALS_ENDPOINT and REFRESH_CREDENTIALS_ENABLED.
+  private val RefreshCredentialsEndpointKey = "client.refresh-credentials-endpoint"
+  private val RefreshCredentialsEnabledKey = "client.refresh-credentials-enabled"
+
+  // Iceberg's CatalogProperties.URI, which a relative refresh endpoint resolves against.
+  private val CatalogUriKey = "uri"
+
+  /**
+   * Whether the provider can initialize in this JVM. It ships in Comet's jar, so it and the AWS
+   * SDK interface it implements come from Comet's loader. It builds its delegate through
+   * `AwsClientProperties` from the context loader and casts the result to that interface, so both
+   * loaders must see one copy of the SDK. A provider that fails to initialize falls back to the
+   * default chain on every task, so the check runs once here instead.
+   */
+  private lazy val vendedCredentialProviderAvailable: Boolean = {
+    val cometLoader = getClass.getClassLoader
+    val usable =
+      vendedCredentialProviderUsable(cometLoader, ClassLoaders.contextOrDefault(cometLoader))
+    if (!usable) {
+      logInfo(
+        s"$VendedCredentialProviderClass is not usable in this JVM, so native Iceberg scans " +
+          "keep the credentials vended at table load and are not refreshed")
+    }
+    usable
+  }
+
+  /**
+   * The check behind [[vendedCredentialProviderAvailable]], for the loaders Comet and Iceberg
+   * come from. It fails when Comet's loader can't see the AWS SDK, such as when the only copy is
+   * on Spark's user-jar loader, and when `AwsClientProperties` links against another copy of it.
+   */
+  private[comet] def vendedCredentialProviderUsable(
+      cometLoader: ClassLoader,
+      contextLoader: ClassLoader): Boolean =
+    // scalastyle:off classforname
+    try {
+      Class.forName(VendedCredentialProviderClass, false, cometLoader)
+      val sdkProvider = Class.forName(AwsCredentialsProviderClass, false, cometLoader)
+      val clientProperties = Class.forName(AwsClientPropertiesClass, false, contextLoader)
+      Class.forName(AwsCredentialsProviderClass, false, clientProperties.getClassLoader) eq
+        sdkProvider
+    } catch {
+      // A LinkageError, such as part of the SDK missing, means the same as a missing class here.
+      case _: ClassNotFoundException | _: LinkageError => false
+    }
+  // scalastyle:on classforname
+
+  private val AwsCredentialsProviderClass =
+    "software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"
+  private val AwsClientPropertiesClass = "org.apache.iceberg.aws.AwsClientProperties"
+
+  /**
+   * Names [[VendedCredentialProviderClass]] as the credential provider when the catalog returned
+   * a refresh endpoint and the user named no provider.
+   *
+   * Without a provider, the native FileIO signs with the `s3.*` credentials vended when the
+   * driver loaded the table, and a scan that outlives them fails with `ExpiredToken`. Iceberg's
+   * `S3FileIO` refreshes them through the endpoint instead. An explicit provider key, including
+   * an empty one, is left alone so it stays an opt-out. Builds without the provider class (Spark
+   * 3.x) keep the vended credentials as they are, and so does a catalog with no `uri`: Iceberg's
+   * `VendedCredentialsProvider` needs it to reach the catalog whether the endpoint is relative or
+   * absolute.
+   */
+  def withVendedCredentialProvider(properties: Map[String, String]): Map[String, String] =
+    withVendedCredentialProvider(properties, vendedCredentialProviderAvailable)
+
+  private[comet] def withVendedCredentialProvider(
+      properties: Map[String, String],
+      providerAvailable: Boolean): Map[String, String] = {
+    val hasEndpoint = properties.get(RefreshCredentialsEndpointKey).exists(_.trim.nonEmpty)
+    val hasCatalogUri = properties.get(CatalogUriKey).exists(_.trim.nonEmpty)
+    val vendsRefreshEndpoint = hasEndpoint && hasCatalogUri &&
+      !properties.get(RefreshCredentialsEnabledKey).exists(_.trim.equalsIgnoreCase("false"))
+    if (vendsRefreshEndpoint && providerAvailable &&
+      !properties.contains(IcebergCredentialProviderClassKey)) {
+      properties + (IcebergCredentialProviderClassKey -> VendedCredentialProviderClass)
+    } else {
+      properties
     }
   }
 

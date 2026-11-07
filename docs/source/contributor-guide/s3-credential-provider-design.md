@@ -158,20 +158,29 @@ The Parquet path forwards the full `fs.s3a.*` config subset as `catalog_properti
 
 ## Built-in adapters
 
-Comet ships two reference SPI implementations under `org.apache.comet.cloud.s3`, so standard provider classes that the native Rust list does not match work with a config change instead of bespoke code:
+Comet ships three SPI implementations under `org.apache.comet.cloud.s3`, so standard provider classes that the native Rust list does not match work with a config change instead of bespoke code:
 
 - `HadoopS3ACredentialProviderAdapter` delegates to Hadoop S3A's own provider construction (`S3AUtils.createAWSCredentialProviderSet` on Hadoop 3.3.x, `CredentialProviderListFactory.createAWSCredentialProviderList` on 3.4+).
 - `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
+- `IcebergVendedS3CredentialProvider` resolves REST-vended Iceberg credentials through Iceberg's `AwsClientProperties`, as `S3FileIO` does, and refreshes them through `client.refresh-credentials-endpoint`. It exists only in the spark-4.x source set. `CometIcebergNativeScan.withVendedCredentialProvider` selects it for the native Iceberg scan, not the writer, when the catalog returns a refresh endpoint and a `uri` and no provider is configured.
 
-Each has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
+Each adapter has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
 
 ## Returns or throws, not a fall-through value
 
 The SPI returns a `CometS3Credentials` or throws. There is no sentinel "I do not know" return. Vendors that are only authoritative for some paths resolve the default AWS chain themselves for the rest and return the result. This matches the contract on every other AWS credential SPI in the JVM ecosystem (AWS SDK v1/v2, Hadoop S3A, Iceberg `VendedCredentialsProvider`).
 
-## Lifecycle: `AutoCloseable` plus a JVM shutdown hook
+## Lifecycle: `AutoCloseable`, reference counts and a JVM shutdown hook
 
-`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`. The dispatcher installs a JVM shutdown hook that iterates every cached instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
+`CometS3CredentialProvider` extends `AutoCloseable` with a default no-op `close()`.
+
+Each `ensureInitialized` call takes a reference to the instance it returns. A native `CometS3CredentialBridge` holds that reference, shares it with the bridges it derives (`for_path`, `for_location`), and the last of them to be dropped gives it back with `release`. When an instance's last reference is released, the dispatcher closes it and forgets its key, so a later `ensureInitialized` creates a new instance. A reference count rather than "close when superseded" keeps an instance open while any reader still uses it.
+
+The last bridge can be dropped on any thread: a Tokio worker running an iceberg-rust task, or a task thread inside `execute` that just missed the `FileIO` cache. So `release` hands the close to a single dispatcher-owned daemon thread, and a `close()` that blocks (Iceberg's `RefreshingAuthManager.close()` waits up to a minute for a refresh in flight) delays neither. The shutdown hook and a concurrent last release both claim an instance by setting its count to retired, so only one of them closes it.
+
+On the Iceberg path, bridges live in the executor's `FileIO` cache. A REST catalog that vends new credentials for a table changes the table's FileIO properties, and so the `(FQCN, dispatchKey, catalogProperties)` key. Inserting the table's new `FileIO` evicts the ones it supersedes: same access mode, catalog and table, different properties. A read identifies the table by its metadata file's directory, since Iceberg writes every metadata file of a table into one directory (`write.metadata.path`, or `<location>/metadata`). A write identifies it by its data location. When both carry `s3.session-token-expires-at-ms`, only the one that expires later supersedes, so two sessions holding different tokens for one table don't evict each other. A commit that keeps the properties supersedes nothing. Evicted providers are closed once the tasks reading through them finish, so a long-lived executor holds one provider per table in use, not one per credential it was ever vended. The cache's 64-entry LRU bound limits the rest. On the Parquet path the object store cache never evicts, so its providers live until shutdown.
+
+The dispatcher also installs a JVM shutdown hook that iterates every remaining instance and calls `close()`, swallowing per-provider exceptions so a slow or buggy vendor cannot block other providers from cleaning up. Stateless providers ignore this entirely; vendors that hold long-lived resources (HTTP clients, scheduled-refresh executors, STS connection pools) override `close()` to release them. Shutdown hooks are best-effort, so a `SIGKILL` or abrupt JVM termination skips them; vendors must not rely on `close()` for correctness, only for resource hygiene.
 
 ## Iceberg path: error message fidelity caveat
 

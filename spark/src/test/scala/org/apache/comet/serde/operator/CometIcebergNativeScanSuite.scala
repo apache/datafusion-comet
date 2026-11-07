@@ -20,6 +20,7 @@
 package org.apache.comet.serde.operator
 
 import java.lang.reflect.InvocationTargetException
+import java.net.{URL, URLClassLoader}
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
@@ -29,10 +30,123 @@ import org.apache.iceberg.expressions.Expressions
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
 
+import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 import org.apache.comet.iceberg.IcebergReflection
 
 /** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
+
+  private val refreshEndpoint =
+    Map("client.refresh-credentials-endpoint" -> "/v1/credentials", "uri" -> "https://catalog")
+  private val providerKey = CometIcebergNativeScan.IcebergCredentialProviderClassKey
+
+  test("vended refresh endpoint selects the vended credential provider") {
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(refreshEndpoint, providerAvailable = true)
+      .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+  }
+
+  test("an explicit credential provider, even an empty one, is kept") {
+    for (explicit <- Seq("com.example.MyProvider", "")) {
+      CometIcebergNativeScan
+        .withVendedCredentialProvider(
+          refreshEndpoint + (providerKey -> explicit),
+          providerAvailable = true)
+        .get(providerKey) shouldBe Some(explicit)
+    }
+  }
+
+  test("no provider is selected without a usable refresh endpoint") {
+    for (props <- Seq(
+        Map.empty[String, String],
+        Map("client.refresh-credentials-endpoint" -> " "),
+        refreshEndpoint + ("client.refresh-credentials-enabled" -> "FALSE"))) {
+      withClue(props) {
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
+      }
+    }
+  }
+
+  test("the public overload selects the provider this build ships") {
+    // Spark 4.x builds ship the provider and the AWS SDK v2 it needs; Spark 3.x builds don't.
+    val expected =
+      if (isSpark40Plus) Some(CometIcebergNativeScan.VendedCredentialProviderClass) else None
+    CometIcebergNativeScan.withVendedCredentialProvider(refreshEndpoint).get(providerKey) shouldBe
+      expected
+  }
+
+  // The class loader layouts the driver-side check has to tell apart. Spark 3.x builds don't ship
+  // the provider, so the check is false there whatever the loaders.
+  private val sdkPackage = "software.amazon.awssdk."
+  private def appLoader: ClassLoader = getClass.getClassLoader
+
+  /** Sees everything the test JVM does except the AWS SDK, like Comet beside a user-jar SDK. */
+  private def loaderWithoutSdk: ClassLoader = new ClassLoader(appLoader) {
+    override def loadClass(name: String, resolve: Boolean): Class[_] =
+      if (name.startsWith(sdkPackage)) throw new ClassNotFoundException(name)
+      else super.loadClass(name, resolve)
+  }
+
+  private def jarOf(className: String): URL =
+    // scalastyle:off classforname
+    Class.forName(className, false, appLoader).getProtectionDomain.getCodeSource.getLocation
+  // scalastyle:on classforname
+
+  test("the provider is usable when Comet and Iceberg share one AWS SDK") {
+    CometIcebergNativeScan.vendedCredentialProviderUsable(appLoader, appLoader) shouldBe
+      isSpark40Plus
+  }
+
+  test("the provider is not usable when the only AWS SDK is on the user-jar loader") {
+    // Iceberg on the context loader resolves the SDK, but Comet's loader can't, so the provider
+    // would fail to initialize with NoClassDefFoundError.
+    CometIcebergNativeScan.vendedCredentialProviderUsable(loaderWithoutSdk, appLoader) shouldBe
+      false
+  }
+
+  test("the provider is not usable when Iceberg links against another copy of the AWS SDK") {
+    // A loader with its own iceberg-aws and AWS SDK auth jars, and no parent to share them with,
+    // as with spark.{driver,executor}.userClassPathFirst and the SDK on both class paths. Spark 3.x
+    // test class paths need not carry those jars, and the check is false there anyway.
+    assume(isSpark40Plus)
+    val isolated = new URLClassLoader(
+      Array(
+        jarOf("org.apache.iceberg.aws.AwsClientProperties"),
+        jarOf("software.amazon.awssdk.auth.credentials.AwsCredentialsProvider"),
+        jarOf("software.amazon.awssdk.identity.spi.IdentityProvider")),
+      null)
+    try {
+      CometIcebergNativeScan.vendedCredentialProviderUsable(appLoader, isolated) shouldBe false
+    } finally {
+      isolated.close()
+    }
+  }
+
+  test("a refresh endpoint selects the provider only with a catalog uri") {
+    // Iceberg's VendedCredentialsProvider rejects a missing uri even for an absolute endpoint.
+    for (endpoint <- Seq("/v1/credentials", "https://catalog/v1/credentials")) {
+      withClue(endpoint) {
+        val props = Map("client.refresh-credentials-endpoint" -> endpoint)
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props, providerAvailable = true) shouldBe props
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(props + ("uri" -> " "), providerAvailable = true)
+          .get(providerKey) shouldBe None
+        CometIcebergNativeScan
+          .withVendedCredentialProvider(
+            props + ("uri" -> "https://catalog"),
+            providerAvailable = true)
+          .get(providerKey) shouldBe Some(CometIcebergNativeScan.VendedCredentialProviderClass)
+      }
+    }
+  }
+
+  test("no provider is selected when the build lacks the provider class") {
+    CometIcebergNativeScan
+      .withVendedCredentialProvider(refreshEndpoint, providerAvailable = false) shouldBe
+      refreshEndpoint
+  }
 
   test("complex type null residuals are not serialized") {
     // Container predicates stay in the post-scan filter, not the native residual pool.
