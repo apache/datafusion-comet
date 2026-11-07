@@ -25,9 +25,10 @@ Spark driver plans each query with Catalyst and Comet, then submits it to a clus
 [Apache DataFusion Ballista](https://github.com/apache/datafusion-ballista). The design is in
 [issue #7288](https://github.com/apache/datafusion-comet/issues/7288).
 
-This directory holds the cluster. The Spark driver side is in progress in
-[#7289](https://github.com/apache/datafusion-comet/pull/7289). It is its own Cargo workspace, so the
-main Comet build never depends on Ballista.
+This directory holds the cluster, which is its own Cargo workspace, so the main Comet build never
+depends on Ballista. The Spark driver side is in Comet's Spark plugin. See
+[Comet Native Executors](https://github.com/apache/datafusion-comet/blob/main/docs/source/contributor-guide/native_executors.md)
+for how to run a query on the cluster and what does not work yet.
 
 ## The scheduler's Flight service
 
