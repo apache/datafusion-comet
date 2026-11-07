@@ -96,6 +96,7 @@ the navigation menu to read more.
    Shuffle <tuning/shuffle>
    Celeborn Shuffle <tuning/celeborn>
    Operators <tuning/operators>
+   Expressions <tuning/expressions>
    Row/Columnar Transitions <tuning/transitions>
 
 .. toctree::

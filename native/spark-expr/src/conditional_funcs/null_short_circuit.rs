@@ -20,12 +20,12 @@ use arrow::array::{new_null_array, Array, BooleanArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{internal_datafusion_err, internal_err, Result};
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::expressions::{Column, Literal};
-use datafusion::physical_expr::utils::collect_columns;
+use datafusion::physical_expr::expressions::{Column, LambdaExpr, LambdaVariable, Literal};
 use datafusion::physical_expr::PhysicalExpr;
+use std::collections::HashSet;
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -290,27 +290,58 @@ pub(super) fn evaluate_projected(
 }
 
 /// The input columns that `expr` reads, and `expr` reading them from a batch of just those columns.
+///
+/// A [`LambdaVariable`] reads a column of the batch its lambda is evaluated on exactly as a
+/// [`Column`] does, so it is projected and re-indexed the same way.
 pub(super) fn project(expr: &Arc<dyn PhysicalExpr>) -> Result<(Vec<usize>, Arc<dyn PhysicalExpr>)> {
-    let mut projection = collect_columns(expr)
-        .iter()
-        .map(Column::index)
-        .collect::<Vec<_>>();
+    // A lambda inside `expr` binds its parameters: they are not columns of the batch `expr` is
+    // evaluated on, so they are neither projected nor re-indexed. Lambda parameter names are unique
+    // per lambda, so no name is both bound inside `expr` and free in it. `apply` visits each lambda
+    // before the variables it binds, so `bound` already holds a variable's name when it is reached.
+    let mut bound: HashSet<String> = HashSet::new();
+    let mut projection = vec![];
+    expr.apply(|e| {
+        if let Some(lambda) = e.downcast_ref::<LambdaExpr>() {
+            bound.extend(lambda.params().iter().cloned());
+        } else if let Some(column) = e.downcast_ref::<Column>() {
+            projection.push(column.index());
+        } else if let Some(variable) = e.downcast_ref::<LambdaVariable>() {
+            if !bound.contains(variable.name()) {
+                projection.push(variable.index());
+            }
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })?;
     projection.sort_unstable();
     projection.dedup();
+    let position = |old: usize| {
+        projection
+            .binary_search(&old)
+            .map_err(|_| internal_datafusion_err!("column {old} is not projected"))
+    };
     let projected = Arc::clone(expr)
         .transform_down(|e| {
-            let Some(column) = e.downcast_ref::<Column>() else {
-                return Ok(Transformed::no(e));
-            };
-            let index = projection
-                .binary_search(&column.index())
-                .map_err(|_| internal_datafusion_err!("{column} is not projected"))?;
-            if index == column.index() {
-                return Ok(Transformed::no(e));
+            if let Some(column) = e.downcast_ref::<Column>() {
+                let new = position(column.index())?;
+                if new != column.index() {
+                    return Ok(Transformed::yes(
+                        Arc::new(Column::new(column.name(), new)) as Arc<dyn PhysicalExpr>
+                    ));
+                }
+            } else if let Some(variable) = e
+                .downcast_ref::<LambdaVariable>()
+                .filter(|v| !bound.contains(v.name()))
+            {
+                let new = position(variable.index())?;
+                if new != variable.index() {
+                    return Ok(Transformed::yes(Arc::new(LambdaVariable::new(
+                        new,
+                        Arc::clone(variable.field()),
+                    ))
+                        as Arc<dyn PhysicalExpr>));
+                }
             }
-            Ok(Transformed::yes(
-                Arc::new(Column::new(column.name(), index)) as Arc<dyn PhysicalExpr>,
-            ))
+            Ok(Transformed::no(e))
         })?
         .data;
     Ok((projection, projected))
@@ -452,6 +483,22 @@ mod tests {
         // An offset into the batch reaches the arrays' buffers and the filter
         let actual = evaluate(&guarded, &batch.slice(1, 4)).unwrap();
         assert_eq!(actual.as_ref(), expected_positions().slice(1, 4).as_ref());
+    }
+
+    #[test]
+    fn masked_argument_may_read_a_lambda_variable() {
+        // The string `s` is read through a lambda variable, as inside the body of a lambda. The
+        // masked argument is evaluated on a projection of the batch, which has to keep it.
+        let batch = test_batch();
+        let schema = batch.schema();
+        let variable = Arc::new(LambdaVariable::new(2, Arc::clone(&schema.fields()[2])));
+        let element = ansi_cast(variable, DataType::Int32);
+        let guarded =
+            NullShortCircuit::wrap(array_position(col("a", &schema).unwrap(), element), &schema)
+                .unwrap();
+        assert!(guarded.is::<NullShortCircuit>());
+        let actual = evaluate(&guarded, &batch).unwrap();
+        assert_eq!(actual.as_ref(), expected_positions().as_ref());
     }
 
     #[test]

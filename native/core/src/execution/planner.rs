@@ -70,8 +70,11 @@ use datafusion::{
     execution::FunctionRegistry,
     logical_expr::Operator as DataFusionOperator,
     physical_expr::{
-        expressions::{BinaryExpr, CastExpr, Column, IsNullExpr, Literal as DataFusionLiteral},
-        PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
+        expressions::{
+            BinaryExpr, CastExpr, Column, IsNullExpr, LambdaExpr, LambdaVariable,
+            Literal as DataFusionLiteral,
+        },
+        HigherOrderFunctionExpr, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
     },
     physical_plan::{
         empty::EmptyExec, limit::LocalLimitExec, sorts::sort::SortExec, ExecutionPlan,
@@ -96,6 +99,8 @@ use crate::parquet::parquet_support::{
 use datafusion::common::ScalarValue;
 use datafusion::datasource::listing::PartitionedFile;
 use datafusion::datasource::object_store::ObjectStoreUrl;
+use datafusion::functions_nested::array_any_match::array_any_match_higher_order_function;
+use datafusion::functions_nested::array_filter::array_filter_higher_order_function;
 use datafusion::logical_expr::type_coercion::functions::fields_with_udf;
 use datafusion::logical_expr::{ReturnFieldArgs, ScalarUDF, TypeSignature};
 use datafusion::physical_expr::expressions::Literal;
@@ -1261,6 +1266,62 @@ impl PhysicalPlanner {
                     Arc::new(ConfigOptions::default()),
                 ));
                 Ok(expr)
+            }
+            ExprStruct::HigherOrderFunc(hof) => {
+                let array =
+                    self.create_expr(hof.array.as_ref().unwrap(), Arc::clone(&input_schema))?;
+                // The lambda parameter takes the element field of the array as planned, since
+                // DataFusion checks it against the field of the list it evaluates.
+                let array_field = array.return_field(input_schema.as_ref())?;
+                let element_field = match array_field.data_type() {
+                    DataType::List(f) | DataType::LargeList(f) => f,
+                    other => {
+                        return Err(GeneralError(format!(
+                            "{} expects an array argument, got {other}",
+                            hof.func
+                        )))
+                    }
+                };
+                // The lambda body sees the enclosing schema with the parameter appended, so
+                // `BoundReference`s keep their indexes and a `LambdaVariable` is found by name.
+                let mut fields: Vec<FieldRef> = input_schema.fields().to_vec();
+                fields.push(Arc::new(
+                    element_field.as_ref().clone().with_name(&hof.param_name),
+                ));
+                let lambda_schema = Arc::new(Schema::new_with_metadata(
+                    fields,
+                    input_schema.metadata().clone(),
+                ));
+                let body = self.create_expr(hof.body.as_ref().unwrap(), lambda_schema)?;
+                let lambda: Arc<dyn PhysicalExpr> =
+                    Arc::new(LambdaExpr::try_new(vec![hof.param_name.clone()], body)?);
+                let func = match hof.func.as_str() {
+                    "array_filter" => array_filter_higher_order_function(),
+                    "array_any_match" => array_any_match_higher_order_function(),
+                    other => {
+                        return Err(GeneralError(format!(
+                            "Unsupported higher-order function '{other}'"
+                        )))
+                    }
+                };
+                Ok(Arc::new(HigherOrderFunctionExpr::try_new_with_schema(
+                    func,
+                    vec![array, lambda],
+                    input_schema.as_ref(),
+                    Arc::new(ConfigOptions::default()),
+                )?))
+            }
+            ExprStruct::LambdaVariable(var) => {
+                let idx = input_schema.index_of(&var.name).map_err(|_| {
+                    GeneralError(format!(
+                        "Lambda variable '{}' is not in scope. Schema: {input_schema}",
+                        var.name
+                    ))
+                })?;
+                Ok(Arc::new(LambdaVariable::new(
+                    idx,
+                    Arc::clone(&input_schema.fields()[idx]),
+                )))
             }
             expr => Err(GeneralError(format!("Not implemented: {expr:?}"))),
         }
@@ -5492,6 +5553,185 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn expr(expr_struct: ExprStruct) -> spark_expression::Expr {
+        spark_expression::Expr {
+            expr_struct: Some(expr_struct),
+            query_context: None,
+            expr_id: None,
+        }
+    }
+
+    fn bound(index: i32) -> spark_expression::Expr {
+        expr(Bound(spark_expression::BoundReference {
+            index,
+            datatype: None,
+        }))
+    }
+
+    /// A higher-order function as the right operand of OR or AND: DataFusion evaluates the right
+    /// operand over only the rows the left operand leaves open.
+    #[test]
+    fn test_higher_order_as_right_operand() -> Result<(), DataFusionError> {
+        use arrow::array::{BooleanArray, ListBuilder, StringBuilder};
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn binary(left: spark_expression::Expr, right: spark_expression::Expr) -> Box<BinaryExpr> {
+            Box::new(BinaryExpr {
+                left: Some(Box::new(left)),
+                right: Some(Box::new(right)),
+            })
+        }
+        // array_any_match(a, x#1 -> x#1 = c)
+        let any_match = expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+            func: "array_any_match".to_string(),
+            array: Some(Box::new(bound(0))),
+            param_name: "x#1".to_string(),
+            body: Some(Box::new(expr(ExprStruct::Eq(binary(
+                expr(ExprStruct::LambdaVariable(LambdaVariable {
+                    name: "x#1".to_string(),
+                })),
+                bound(1),
+            ))))),
+        })));
+
+        let mut builder = ListBuilder::new(StringBuilder::new());
+        for row in [vec!["a"], vec!["b"], vec!["a"], vec!["z"]] {
+            row.into_iter()
+                .for_each(|v| builder.values().append_value(v));
+            builder.append(true);
+        }
+        let list = builder.finish();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+            Field::new("b", DataType::Boolean, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "x", "z"])),
+                Arc::new(BooleanArray::from(vec![true, false, false, false])),
+            ],
+        )?;
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // b OR any_match(...): rows 0 and 3 are true, the others have no match.
+        let or = expr(ExprStruct::Or(binary(bound(2), any_match.clone())));
+        let physical = planner.create_expr(&or, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![true, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // NOT b AND any_match(...): rows 1 and 2 are false, row 3 matches.
+        let and = expr(ExprStruct::And(binary(
+            expr(ExprStruct::Not(Box::new(
+                datafusion_comet_proto::spark_expression::UnaryExpr {
+                    child: Some(Box::new(bound(2))),
+                },
+            ))),
+            any_match,
+        )));
+        let physical = planner.create_expr(&and, Arc::clone(&schema)).unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = BooleanArray::from(vec![false, false, false, true]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+        Ok(())
+    }
+
+    #[test]
+    fn test_higher_order_filter() -> Result<(), DataFusionError> {
+        use arrow::array::ListBuilder;
+        use arrow::array::StringBuilder;
+        use datafusion_comet_proto::spark_expression::{
+            BinaryExpr, HigherOrderFunc, LambdaVariable,
+        };
+
+        fn variable(name: &str) -> spark_expression::Expr {
+            expr(ExprStruct::LambdaVariable(LambdaVariable {
+                name: name.to_string(),
+            }))
+        }
+        fn string_lists(rows: Vec<Option<Vec<Option<&str>>>>) -> ListArray {
+            let mut builder = ListBuilder::new(StringBuilder::new());
+            for row in rows {
+                match row {
+                    Some(values) => {
+                        values
+                            .into_iter()
+                            .for_each(|v| builder.values().append_option(v));
+                        builder.append(true);
+                    }
+                    None => builder.append(false),
+                }
+            }
+            builder.finish()
+        }
+
+        // array_filter(a, x#1 -> x#1 = c) over a: array<string> and c: string
+        fn filter(func: &str, array: spark_expression::Expr) -> spark_expression::Expr {
+            expr(ExprStruct::HigherOrderFunc(Box::new(HigherOrderFunc {
+                func: func.to_string(),
+                array: Some(Box::new(array)),
+                param_name: "x#1".to_string(),
+                body: Some(Box::new(expr(ExprStruct::Eq(Box::new(BinaryExpr {
+                    left: Some(Box::new(variable("x#1"))),
+                    right: Some(Box::new(bound(1))),
+                }))))),
+            })))
+        }
+
+        let list = string_lists(vec![
+            Some(vec![Some("a"), None, Some("b"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![Some("b")]),
+        ]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", list.data_type().clone(), true),
+            Field::new("c", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(list),
+                Arc::new(StringArray::from(vec!["a", "a", "a", "x"])),
+            ],
+        )?;
+
+        let session_ctx = SessionContext::new();
+        let planner = PhysicalPlanner::new(Arc::from(session_ctx), 0);
+
+        // The lambda keeps the elements equal to the captured column, and drops NULL elements.
+        let physical = planner
+            .create_expr(&filter("array_filter", bound(0)), Arc::clone(&schema))
+            .unwrap();
+        let result = physical.evaluate(&batch)?.into_array(batch.num_rows())?;
+        let expected = string_lists(vec![
+            Some(vec![Some("a"), Some("a")]),
+            Some(vec![]),
+            None,
+            Some(vec![]),
+        ]);
+        assert_eq!(&result, &(Arc::new(expected) as ArrayRef));
+
+        // The argument must be an array, and only array_filter and array_any_match are implemented.
+        let not_array = planner.create_expr(&filter("array_filter", bound(1)), Arc::clone(&schema));
+        assert!(not_array
+            .unwrap_err()
+            .to_string()
+            .contains("expects an array argument"));
+        let unknown = planner.create_expr(&filter("array_zip", bound(0)), Arc::clone(&schema));
+        assert!(unknown
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported higher-order function"));
+        Ok(())
     }
 
     #[test]
