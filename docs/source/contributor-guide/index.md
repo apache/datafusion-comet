@@ -54,6 +54,7 @@ Memory Management <memory_management>
 Iceberg Writes <iceberg-writes>
 ANSI Error Propagation <sql_error_propagation>
 S3 Credential Provider Design <s3-credential-provider-design>
+Hybrid Execution Research for Native Executors <native_executors_research>
 ```
 
 ```{toctree}
