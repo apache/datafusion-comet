@@ -22,6 +22,7 @@ package org.apache.comet.serde
 import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
+import org.apache.comet.DataTypeSupport.{isNegativeScaleDecimal, negativeScaleDecimalReason}
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
 
 object CometAtan2 extends CometExpressionSerde[Atan2] {
@@ -40,9 +41,12 @@ object CometAtan2 extends CometExpressionSerde[Atan2] {
 }
 
 object CometCeil extends CometExpressionSerde[Ceil] {
+  override def getUnsupportedReasons(): Seq[String] = Seq(negativeScaleDecimalReason)
+
   override def getSupportLevel(expr: Ceil): SupportLevel = expr.child.dataType match {
-    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-      Unsupported(Some(s"Decimal type $t has negative scale"))
+    // Spark disallows negative scale SPARK-30252
+    case t: DecimalType if isNegativeScaleDecimal(t) =>
+      Unsupported(Some(negativeScaleDecimalReason))
     case _ =>
       Compatible()
   }
@@ -64,9 +68,12 @@ object CometCeil extends CometExpressionSerde[Ceil] {
 }
 
 object CometFloor extends CometExpressionSerde[Floor] {
+  override def getUnsupportedReasons(): Seq[String] = Seq(negativeScaleDecimalReason)
+
   override def getSupportLevel(expr: Floor): SupportLevel = expr.child.dataType match {
-    case t: DecimalType if t.scale < 0 => // Spark disallows negative scale SPARK-30252
-      Unsupported(Some(s"Decimal type $t has negative scale"))
+    // Spark disallows negative scale SPARK-30252
+    case t: DecimalType if isNegativeScaleDecimal(t) =>
+      Unsupported(Some(negativeScaleDecimalReason))
     case _ =>
       Compatible()
   }
