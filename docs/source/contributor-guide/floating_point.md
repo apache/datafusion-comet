@@ -206,11 +206,13 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
   `MaxSparkVersion`, and add the `run-all-spark-profiles` label to the pull request. CI pins one
   patch release per Spark line, so when a patch release changed the rule, also test the routing in
   Scala.
-- Add the expression to `CometFloatSemanticsSuite`, which crosses the edge values with operator
-  contexts and with every expression and aggregate that accepts floating-point input. New
-  expressions go in its `expressions` or `aggregates` list. If one does not match Spark yet, add a
-  `KnownGap` that links the issue. Known gaps are strict: a case that starts matching Spark fails,
-  so the fix also removes the entry.
+- Add the expression to the sweep in `float_semantics/`, which crosses the edge values with
+  operator contexts and with every expression and aggregate that accepts floating-point input.
+  A new expression goes in `expressions.sql`, or in `aggregates.sql` for an aggregate, with one
+  query for `DOUBLE` and one for `FLOAT`. If one does not match Spark yet, mark its queries
+  `ignore(<issue>)`. A SQL file test cannot expect a difference, so a gap that should fail once it
+  is fixed goes in `CometFloatSemanticsSuite`, whose test for `collect_set` before Spark 4.2 fails
+  when the answers start to match.
 
 Fixtures to start from include `expressions/conditional/float_comparisons.sql`,
 `expressions/math/nan_divisor.sql`, `expressions/math/greatest_least_floating_point.sql`,
