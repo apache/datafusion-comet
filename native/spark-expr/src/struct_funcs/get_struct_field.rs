@@ -127,7 +127,9 @@ impl PhysicalExpr for GetStructField {
 
 /// The scalar that a one-row array holds. A list wraps the array as is: `try_from_array` rebuilds
 /// a list's element field from its name and nullability, which drops metadata such as a Variant
-/// element's extension type, so the scalar's type would no longer match `data_type`.
+/// element's extension type, so the scalar's type would no longer match `data_type`. A dictionary
+/// converts the value its key points at here for the same reason, since `try_from_array` would
+/// convert it with itself.
 fn single_row_scalar(array: ArrayRef) -> DataFusionResult<ScalarValue> {
     Ok(match array.data_type() {
         DataType::List(_) => ScalarValue::List(Arc::new(array.as_list::<i32>().clone())),
@@ -140,6 +142,15 @@ fn single_row_scalar(array: ArrayRef) -> DataFusionResult<ScalarValue> {
         }
         DataType::LargeListView(_) => {
             ScalarValue::LargeListView(Arc::new(array.as_list_view::<i64>().clone()))
+        }
+        DataType::Dictionary(key_type, _) => {
+            let dict = array.as_any_dictionary();
+            let value = if dict.keys().is_valid(0) {
+                single_row_scalar(dict.values().slice(dict.normalized_keys()[0], 1))?
+            } else {
+                ScalarValue::try_from(dict.values().data_type())?
+            };
+            ScalarValue::Dictionary(key_type.clone(), Box::new(value))
         }
         _ => ScalarValue::try_from_array(&array, 0)?,
     })
@@ -158,7 +169,10 @@ impl Display for GetStructField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, LargeListViewArray, ListArray, ListViewArray, NullArray};
+    use arrow::array::{
+        DictionaryArray, FixedSizeListArray, Int32Array, Int64Array, LargeListArray,
+        LargeListViewArray, ListArray, ListViewArray, NullArray,
+    };
     use arrow::buffer::{NullBuffer, OffsetBuffer, ScalarBuffer};
     use arrow::datatypes::Fields;
     use datafusion::physical_expr::expressions::{Column, Literal};
@@ -215,8 +229,9 @@ mod tests {
         }
     }
 
-    // A list field of a scalar struct keeps its element field, metadata included, so the scalar's
-    // type is the one `data_type` declares.
+    // A list field of a scalar struct is the struct's list, and a null struct gives a null list.
+    // Either way it keeps its element field, metadata included, so the scalar's type is the one
+    // `data_type` declares.
     #[test]
     fn list_field_of_scalar_struct_keeps_its_type() {
         let item =
@@ -228,6 +243,18 @@ mod tests {
             Arc::new(ListArray::new(
                 Arc::clone(&item),
                 OffsetBuffer::from_lengths([2]),
+                Arc::clone(&values),
+                None,
+            )),
+            Arc::new(LargeListArray::new(
+                Arc::clone(&item),
+                OffsetBuffer::from_lengths([2]),
+                Arc::clone(&values),
+                None,
+            )),
+            Arc::new(FixedSizeListArray::new(
+                Arc::clone(&item),
+                2,
                 Arc::clone(&values),
                 None,
             )),
@@ -255,13 +282,96 @@ mod tests {
 
         for list in lists {
             let fields = Fields::from(vec![Field::new("l", list.data_type().clone(), true)]);
-            let scalar = ScalarValue::Struct(Arc::new(StructArray::new(fields, vec![list], None)));
-            let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
-            match expr.evaluate(&batch).unwrap() {
-                ColumnarValue::Scalar(value) => {
-                    assert_eq!(value.data_type(), expr.data_type(&schema).unwrap())
+            // The second struct is null although its child slot holds the list.
+            for struct_nulls in [None, Some(NullBuffer::new_null(1))] {
+                let is_null = struct_nulls.is_some();
+                let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+                    fields.clone(),
+                    vec![Arc::clone(&list)],
+                    struct_nulls,
+                )));
+                let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+                let value = match expr.evaluate(&batch).unwrap() {
+                    ColumnarValue::Scalar(value) => value,
+                    ColumnarValue::Array(array) => panic!("expected a scalar, got array {array:?}"),
+                };
+                let kind = list.data_type();
+                assert_eq!(
+                    value.data_type(),
+                    expr.data_type(&schema).unwrap(),
+                    "{kind}"
+                );
+                assert_eq!(value.is_null(), is_null, "{kind}, null struct: {is_null}");
+                if !is_null {
+                    assert_eq!(value.to_array().unwrap().as_ref(), list.as_ref(), "{kind}");
                 }
+            }
+        }
+    }
+
+    // A dictionary field of a scalar struct is the value its key points at, still dictionary
+    // encoded with the same key type. A list value keeps its element field, so the field broadcasts
+    // into a column of the type `data_type` declares.
+    #[test]
+    fn dictionary_field_of_scalar_struct_keeps_its_type() {
+        let item =
+            Arc::new(Field::new("item", DataType::Int64, true).with_metadata(
+                [("ARROW:extension:name".to_string(), "test.ext".to_string())].into(),
+            ));
+        let lists = ListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::from_lengths([1, 2]),
+            Arc::new(Int64Array::from(vec![0_i64, 1, 2])),
+            None,
+        );
+        let dict = |key: Option<i32>| -> ArrayRef {
+            Arc::new(DictionaryArray::new(
+                Int32Array::from(vec![key]),
+                Arc::new(lists.clone()),
+            ))
+        };
+        let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![Arc::new(Int64Array::from(vec![0_i64, 1, 2]))],
+        )
+        .unwrap();
+
+        // The key points at the second list, a null key gives a null, and so does a null struct
+        // whose child slot still holds a key.
+        for (field, struct_nulls, expected) in [
+            (dict(Some(1)), None, Some(lists.slice(1, 1))),
+            (dict(None), None, None),
+            (dict(Some(1)), Some(NullBuffer::new_null(1)), None),
+        ] {
+            let fields = Fields::from(vec![Field::new("d", field.data_type().clone(), true)]);
+            let scalar = ScalarValue::Struct(Arc::new(StructArray::new(
+                fields,
+                vec![field],
+                struct_nulls,
+            )));
+            let expr = GetStructField::new(Arc::new(Literal::new(scalar)), 0);
+            let value = match expr.evaluate(&batch).unwrap() {
+                ColumnarValue::Scalar(value) => value,
                 ColumnarValue::Array(array) => panic!("expected a scalar, got array {array:?}"),
+            };
+            let declared = Arc::new(Schema::new(vec![Field::new(
+                "d",
+                expr.data_type(&schema).unwrap(),
+                true,
+            )]));
+            RecordBatch::try_new(
+                declared,
+                vec![value.to_array_of_size(batch.num_rows()).unwrap()],
+            )
+            .unwrap();
+            let ScalarValue::Dictionary(key_type, inner) = value else {
+                panic!("expected a dictionary scalar, got {value:?}")
+            };
+            assert_eq!(*key_type, DataType::Int32);
+            match expected {
+                Some(list) => assert_eq!(*inner, ScalarValue::List(Arc::new(list))),
+                None => assert!(inner.is_null(), "expected a null, got {inner:?}"),
             }
         }
     }
