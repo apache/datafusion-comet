@@ -271,9 +271,8 @@ query
 SELECT grp, sort_array(collect_list(v_ntz)) FROM cl_src_ts GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- ANSI intervals (with NULLs). Neither YearMonthIntervalType nor
--- DayTimeIntervalType is in QueryPlanSerde.supportedDataType, so
--- the scan rejects the column and the query falls back to Spark.
+-- ANSI intervals (with NULLs). The native Parquet scan reads both
+-- YearMonthIntervalType and DayTimeIntervalType, so these stay in Comet.
 -- ============================================================
 
 statement
@@ -289,10 +288,10 @@ INSERT INTO cl_src_interval VALUES
   (INTERVAL '-3-4' YEAR TO MONTH, INTERVAL '-5 06:07:08' DAY TO SECOND, 'b'),
   (NULL, NULL, 'b')
 
-query expect_fallback(Unsupported ym of type YearMonthIntervalType)
+query
 SELECT grp, sort_array(collect_list(ym)) FROM cl_src_interval GROUP BY grp ORDER BY grp
 
-query expect_fallback(Unsupported dt of type DayTimeIntervalType)
+query
 SELECT grp, sort_array(collect_list(dt)) FROM cl_src_interval GROUP BY grp ORDER BY grp
 
 -- ============================================================
