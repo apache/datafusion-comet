@@ -24,7 +24,7 @@ import java.io.FileNotFoundException
 import scala.util.matching.Regex
 
 import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
-import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.errors.{DataTypeErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.execution.python.CometPythonException
 import org.apache.spark.sql.types._
@@ -134,7 +134,7 @@ trait ShimSparkErrorConverter {
         // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
         val decimal = Decimal(new java.math.BigDecimal(params("value").toString))
         Some(
-          QueryExecutionErrors.cannotChangeDecimalPrecisionError(
+          DataTypeErrors.cannotChangeDecimalPrecisionError(
             decimal,
             params("precision").toString.toInt,
             params("scale").toString.toInt,

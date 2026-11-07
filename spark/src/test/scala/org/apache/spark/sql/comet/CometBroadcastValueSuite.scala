@@ -403,15 +403,17 @@ class CometBroadcastValueSuite extends CometTestBase {
       stageId = 0,
       stageAttemptNumber = 0,
       partitionId = taskAttemptId.toInt,
-      numPartitions = 8,
       taskAttemptId = taskAttemptId,
       attemptNumber = 0,
+      numPartitions = 8,
       taskMemoryManager =
         new TaskMemoryManager(new TestMemoryManager(new SparkConf()), taskAttemptId),
       localProperties = new Properties,
       metricsSystem = null,
       taskMetrics = TaskMetrics.empty,
-      cpus = 1,
+      // The CPU count: `cpus: Int` before Spark 4.3, `cpuAmount: BigDecimal` after. Positional so
+      // that both compile (the arguments before it are in declaration order for that reason).
+      1,
       resources = Map.empty)
 
   /** Runs `f` on a thread of its own, as a task running beside the test's would. */

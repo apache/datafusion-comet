@@ -26,6 +26,7 @@ import org.apache.spark.{ShuffleDependency, SparkConf, SparkEnv, TaskContext}
 import org.apache.spark.executor.CommitDeniedException
 import org.apache.spark.shuffle.{BaseShuffleHandle, FetchFailedException, IndexShuffleBlockResolver, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.CometTestBase
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import org.apache.comet.{CometConf, CometShuffleSizeLimitException}
@@ -215,7 +216,8 @@ class CometCelebornNativeShuffleWriterSuite extends CometTestBase {
 
           writer.write(inputs)
           val status = writer.stop(success = true).get
-          val localDataFile = SparkEnv.get.shuffleManager.shuffleBlockResolver
+          val localDataFile = ShimBlockingShuffleManager
+            .blockResolver(SparkEnv.get.shuffleManager)
             .asInstanceOf[IndexShuffleBlockResolver]
             .getDataFile(dependency.shuffleId, context.taskAttemptId())
 
@@ -738,7 +740,7 @@ private[shuffle] object CometCelebornNativeShuffleWriterSuite {
           commitValidator,
           onSizeLimitExceeded)))
 
-  final class LocalFallbackShuffleManager extends ShuffleManager {
+  final class LocalFallbackShuffleManager extends ShimBlockingShuffleManager {
     var unregisteredShuffle: Option[Int] = None
 
     override def registerShuffle[K, V, C](

@@ -577,6 +577,40 @@ under the License.
         </dependency>
       </dependencies>
     </profile>
+    <profile>
+      <id>spark-4.3</id>
+      <dependencies>
+        <!-- AWS SDK v2 for the built-in S3 credential adapters (spark-4.x source set). -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>${amazon-awssdk-v2.version}</version>
+          <scope>provided</scope>
+        </dependency>
+        <!-- iceberg-spark-runtime-4.3 is not yet published; reuse the 4.0 runtime -->
+        <dependency>
+          <groupId>org.apache.iceberg</groupId>
+          <artifactId>iceberg-spark-runtime-4.0_${scala.binary.version}</artifactId>
+          <version>1.10.0</version>
+          <scope>test</scope>
+        </dependency>
+        <!-- Jetty 11.x for Spark 4.3 (jakarta.servlet). Spark 4.3.0 itself ships Jetty 12, but
+             the Iceberg REST catalog test helper needs jetty-servlet, which Jetty 12 replaced
+             with the jetty-ee10-servlet artifact, so the test classpath stays on 11.x. -->
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-server</artifactId>
+          <version>11.0.26</version>
+          <scope>test</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.eclipse.jetty</groupId>
+          <artifactId>jetty-servlet</artifactId>
+          <version>11.0.26</version>
+          <scope>test</scope>
+        </dependency>
+      </dependencies>
+    </profile>
     <!--
       Delta Lake integration. Activates the contrib/delta/ subtree:
         compiles contrib/delta/src/main/scala/ into comet-spark.jar
@@ -633,7 +667,7 @@ under the License.
                 <configuration>
                   <rules>
                     <requireActiveProfile>
-                      <profiles>spark-3.4,spark-3.5,spark-4.0,spark-4.1,spark-4.2</profiles>
+                      <profiles>spark-3.4,spark-3.5,spark-4.0,spark-4.1,spark-4.2,spark-4.3</profiles>
                       <all>false</all>
                       <message>-Pcontrib-delta requires an explicit Spark profile, e.g. `-Pspark-4.1,contrib-delta`. Activating any profile turns off the activeByDefault Spark profile, which drops test-scope dependencies (iceberg-spark-runtime, Jetty) and breaks test compilation.</message>
                     </requireActiveProfile>

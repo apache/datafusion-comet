@@ -195,14 +195,16 @@ trait TaskMemoryTestUtils extends SparkFunSuite {
       stageId = 0,
       stageAttemptNumber = 0,
       partitionId = 0,
-      numPartitions = 1,
       taskAttemptId = 0L,
       attemptNumber = 0,
+      numPartitions = 1,
       taskMemoryManager = taskMemoryManager,
       localProperties = new Properties,
       metricsSystem = null,
       taskMetrics = TaskMetrics.empty,
-      cpus = 1,
+      // The CPU count: `cpus: Int` before Spark 4.3, `cpuAmount: BigDecimal` after. Positional so
+      // that both compile (the arguments before it are in declaration order for that reason).
+      1,
       resources = Map.empty)
 
     TaskContext.setTaskContext(taskContext)

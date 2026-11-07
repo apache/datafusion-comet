@@ -29,6 +29,7 @@ import org.apache.spark.{ExecutorLostFailure, ShuffleDependency, SparkConf, Task
 import org.apache.spark.scheduler.OutputCommitCoordinator
 import org.apache.spark.shuffle.{BaseShuffleHandle, ShuffleBlockResolver, ShuffleHandle, ShuffleManager, ShuffleReader, ShuffleReadMetricsReporter, ShuffleWriteMetricsReporter, ShuffleWriter}
 import org.apache.spark.sql.comet.{NativeScanPlanDataInjector, PlanDataInjector}
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 
 import org.apache.comet.serde.OperatorOuterClass
 
@@ -49,7 +50,7 @@ class CometCelebornShuffleManagerSuite extends AnyFunSuite {
     def shuffleFallbackPartitionThreshold(): Long = partitionThreshold
   }
 
-  private class RecordingShuffleManager extends ShuffleManager {
+  private class RecordingShuffleManager extends ShimBlockingShuffleManager {
 
     val returnedHandle: ShuffleHandle = new BaseShuffleHandle[Any, Any, Any](31, null)
 

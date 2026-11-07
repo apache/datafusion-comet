@@ -275,7 +275,7 @@ private[python] trait CometArrowPythonRunnerBase
       startTime: Long,
       env: SparkEnv,
       worker: PythonWorker,
-      pid: Option[Int],
+      pid: CometPythonWorkerShim.WorkerHandle,
       releasedOrClosed: AtomicBoolean,
       context: TaskContext): Iterator[ColumnarBatch] = {
     new ReaderIterator(stream, writer, startTime, env, worker, pid, releasedOrClosed, context) {

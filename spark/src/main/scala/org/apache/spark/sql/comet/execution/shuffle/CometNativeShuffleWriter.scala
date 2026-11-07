@@ -34,6 +34,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, Literal}
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning, RangePartitioning, RoundRobinPartitioning, SinglePartition}
 import org.apache.spark.sql.comet.{CometExec, CometMetricNode, CometScalarSubquery, PlanDataInjector}
+import org.apache.spark.sql.comet.shims.ShimBlockingShuffleManager
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructField
 import org.apache.spark.util.{ThreadUtils, Utils}
@@ -113,8 +114,9 @@ class CometNativeShuffleWriter[K, V](
 
   private def writeInternal(inputs: Iterator[Product2[K, V]]): Unit = {
     val localOutput = if (remoteDestination.isEmpty) {
-      val resolver =
-        SparkEnv.get.shuffleManager.shuffleBlockResolver.asInstanceOf[IndexShuffleBlockResolver]
+      val resolver = ShimBlockingShuffleManager
+        .blockResolver(SparkEnv.get.shuffleManager)
+        .asInstanceOf[IndexShuffleBlockResolver]
       val dataFile = resolver.getDataFile(shuffleId, mapId)
       Some(
         CometNativeShuffleWriter

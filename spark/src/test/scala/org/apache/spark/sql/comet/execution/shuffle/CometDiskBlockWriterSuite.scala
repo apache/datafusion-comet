@@ -56,14 +56,16 @@ class CometDiskBlockWriterSuite extends AnyFunSuite {
       stageId = 0,
       stageAttemptNumber = 0,
       partitionId = taskAttemptId.toInt,
-      numPartitions = 2,
       taskAttemptId = taskAttemptId,
       attemptNumber = 0,
+      numPartitions = 2,
       taskMemoryManager = tmm,
       localProperties = localProperties,
       metricsSystem = null,
       taskMetrics = TaskMetrics.empty,
-      cpus = 1,
+      // The CPU count: `cpus: Int` before Spark 4.3, `cpuAmount: BigDecimal` after. Positional so
+      // that both compile (the arguments before it are in declaration order for that reason).
+      1,
       resources = Map.empty)
   }
 

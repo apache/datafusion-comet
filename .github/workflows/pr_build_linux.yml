@@ -182,6 +182,9 @@ jobs:
           - name: "Spark 4.2, JDK 17"
             java_version: "17"
             maven_opts: "-Pspark-4.2"
+          - name: "Spark 4.3, JDK 17"
+            java_version: "17"
+            maven_opts: "-Pspark-4.3"
       fail-fast: false
     steps:
       - uses: actions/checkout@v7

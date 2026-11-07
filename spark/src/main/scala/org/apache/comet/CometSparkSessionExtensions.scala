@@ -276,6 +276,10 @@ object CometSparkSessionExtensions extends Logging {
     org.apache.spark.SPARK_VERSION >= "4.2"
   }
 
+  def isSpark43Plus: Boolean = {
+    org.apache.spark.SPARK_VERSION >= "4.3"
+  }
+
   def isOffHeapEnabled(sparkConf: SparkConf): Boolean = {
     sparkConf.getBoolean("spark.memory.offHeap.enabled", false)
   }
