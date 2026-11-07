@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-FROM ubuntu:20.04 AS base
+FROM ubuntu:20.04
 
 USER root
 
@@ -60,8 +60,6 @@ ENV PATH="$PATH:/root/.local/bin"
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN cargo install cargo2junit
-
-FROM base AS final
 
 COPY build-comet-native-libs.sh /opt/comet-rm/build-comet-native-libs.sh
 WORKDIR /opt/comet-rm

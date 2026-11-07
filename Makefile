@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-.PHONY: all core jvm test clean rat release-linux release bench print-benchmark-args
+.PHONY: all core jvm test clean rat release bench print-benchmark-args
 
 define spark_jvm_17_extra_args
 $(shell ./mvnw help:evaluate -q -DforceStdout -Dexpression=extraJavaTestArgs $(PROFILES))
@@ -75,25 +75,6 @@ core-amd64-libs:
 core-arm64-libs:
 	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
 
-core-amd64:
-	cd native && RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/linux/amd64
-	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/amd64
-	jar -cf spark/target/comet-native-x86_64.jar \
-		-C spark/target/classes/org/apache/comet linux
-	./dev/deploy-file spark/target/comet-native-x86_64.jar comet-native-x86_64${COMET_CLASSIFIER} jar
-
-core-arm64:
-	cd native && RUSTFLAGS="-Ctarget-cpu=neoverse-n1" cargo build --release $(FEATURES_ARG)
-	mkdir -p spark/target/classes/org/apache/comet/linux/aarch64
-	cp native/target/release/libcomet.so spark/target/classes/org/apache/comet/linux/aarch64
-	jar -cf spark/target/comet-native-aarch64.jar \
-		-C spark/target/classes/org/apache/comet linux
-	./dev/deploy-file spark/target/comet-native-aarch64.jar comet-native-aarch64${COMET_CLASSIFIER} jar
-
-release-linux: clean
-	cd native && RUSTFLAGS="-Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
-	./mvnw install -Prelease -DskipTests $(PROFILES)
 release:
 	cd native && RUSTFLAGS="$(RUSTFLAGS) -Ctarget-cpu=native" cargo build --release $(FEATURES_ARG)
 	./mvnw install -Prelease -DskipTests $(PROFILES)
