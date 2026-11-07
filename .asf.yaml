@@ -42,23 +42,12 @@ github:
     issues: true
     discussions: true
     projects: true
+  # Release branches only. `main` is protected by the rulesets below instead:
+  # while classic protection exists on a branch, GitHub refuses a ruleset
+  # bypass on it, even for an approved PR with green checks
+  # (apache/iceberg-rust#3481). dev/ci/check-ci-config.py fails if `main`
+  # comes back here.
   protected_branches:
-    main:
-      required_pull_request_reviews:
-        required_approving_review_count: 1
-      required_status_checks:
-        # `Required Checks` is the aggregator job at the bottom of
-        # .github/workflows/ci.yml. It is deliberately the only entry: the
-        # individual heavy jobs publish a different check name depending on
-        # whether they ran or were skipped, so none of them can be required
-        # directly. dev/ci/check-ci-config.py keeps this string in sync with
-        # the job's `name:`.
-        #
-        # Careful when editing this list. A context that never reports blocks
-        # every merge to main, including the merge that would fix this file,
-        # and recovering from that needs an INFRA Jira ticket.
-        contexts:
-          - "Required Checks"
     branch-0.1:
       required_pull_request_reviews:
         required_approving_review_count: 1
@@ -119,16 +108,37 @@ github:
     branch-1.2:
       required_pull_request_reviews:
         required_approving_review_count: 1
-  # GitHub's merge queue. Classic `protected_branches` above has no way to
-  # express this, but .asf.yaml rulesets accept a raw Rulesets API payload, so
-  # no INFRA ticket is needed. Same approach as apache/iceberg-python and
-  # apache/seatunnel; GitHub evaluates rulesets and classic branch protection
-  # together and applies the most restrictive result.
+  # Two rulesets protect `main`, and GitHub applies both. Bypass is granted
+  # per ruleset, which is what lets a committer skip the queue without also
+  # skipping review:
+  #
+  #   Default Branch Protection  1 approving review, no force push, no
+  #                              deletion. Only apache/root can bypass.
+  #   Merge Queue                the queue and `Required Checks`. apache/root
+  #                              and apache/datafusion-public can bypass.
+  #
+  # .asf.yaml rulesets accept a raw Rulesets API payload, so neither needs an
+  # INFRA ticket. Same approach as apache/iceberg-rust and apache/seatunnel.
   #
   # Only the default branch is queued. Merge queue rules do not support
   # wildcard ref patterns, so the branch-N.M release branches keep plain
   # branch protection.
   rulesets:
+    # The rules classic protection used to give `main`. Classic protection
+    # already blocked force pushes and deletion, rulesets have to list them.
+    - name: Default Branch Protection
+      type: branch
+      branches:
+        includes:
+          - "~DEFAULT_BRANCH"
+        excludes: []
+      bypass_teams:
+        - root
+      restrict_deletion: true
+      restrict_force_push: true
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        dismiss_stale_reviews: false
     - name: Merge Queue
       target: branch
       enforcement: active
@@ -137,12 +147,38 @@ github:
         - actor_id: 118420
           actor_type: Team
           bypass_mode: always
+        # apache/datafusion-public. DataFusion committers opt in through
+        # https://gitbox.apache.org/boxer/, then can merge an approved PR
+        # without the queue or required checks. `pull_request` allows that
+        # only through a PR, never a direct push. See "Merging an urgent pull
+        # request" in docs/source/contributor-guide/ci.md.
+        - actor_id: 19468222
+          actor_type: Team
+          bypass_mode: pull_request
       conditions:
         ref_name:
           include:
             - "~DEFAULT_BRANCH"
           exclude: []
       rules:
+        - type: required_status_checks
+          parameters:
+            # PR branches need not be up to date with main: the queue already
+            # tests each entry against the latest main.
+            strict_required_status_checks_policy: false
+            # `Required Checks` is the aggregator job at the bottom of
+            # .github/workflows/ci.yml. It is deliberately the only entry: the
+            # individual heavy jobs publish a different check name depending
+            # on whether they ran or were skipped, so none of them can be
+            # required directly. dev/ci/check-ci-config.py keeps this string
+            # in sync with the job's `name:`.
+            #
+            # Careful when editing this list. A context that never reports
+            # blocks every queued merge to main, including the merge that would
+            # fix this file. A datafusion-public member can merge the fix with
+            # the bypass.
+            required_status_checks:
+              - context: Required Checks
         - type: merge_queue
           parameters:
             # Matches enabled_merge_buttons above: squash is the only method

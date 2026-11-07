@@ -36,17 +36,20 @@
 #      branch from publishing that branch's docs over the site.
 #
 #   3. Required-check coverage. `Required Checks` in ci.yml is the job that
-#      `.asf.yaml` can name in `required_status_checks` for main. A heavy job
-#      missing from its `needs:` can fail without blocking the merge, and a
-#      rename on either side of the ci.yml/.asf.yaml pair turns the required
-#      context into one that never reports, which blocks *every* merge to main
-#      until INFRA removes it by hand. The job's name must also route `labeled`
+#      `.asf.yaml` names in the Merge Queue ruleset's `required_status_checks`
+#      for main. A heavy job missing from its `needs:` can fail without
+#      blocking the merge, and a rename on either side of the ci.yml/.asf.yaml
+#      pair turns the required context into one that never reports, which
+#      blocks *every* queued merge to main until a committer bypasses the
+#      queue to fix it. The job's name must also route `labeled`
 #      runs, which skip the PR tier by design, to a name nothing requires, so
 #      a label run cannot stand in for the real verdict. And `labeled` runs
 #      must come from a separate workflow (ci_label.yml) rather than ci.yml's
 #      own trigger: with two ci.yml runs at one commit, GitHub evaluates the
 #      required checks against only one of them, and when that is the label
-#      run the required context never reports (issue #6159).
+#      run the required context never reports (issue #6159). `main` must also
+#      stay out of `protected_branches`: classic protection on it silently
+#      disables that bypass.
 #
 #   4. Artifact-name uniqueness. Artifact names are scoped to the *run*, not
 #      to the calling workflow, and ci.yml calls the Spark SQL and Iceberg
@@ -1111,50 +1114,46 @@ def ci_jobs_and_aggregator():
     return jobs, needs, display_name
 
 
-def asf_required_contexts():
-    """Return the required_status_checks contexts .asf.yaml declares for main.
-
-    Scoped to the `main:` entry under `protected_branches:`. Release branches
-    (`branch-0.x`) have their own entries, and a context one of those requires
-    says nothing about what `main` requires.
-    """
+def asf_github_section(key):
+    """Return the lines of the `github.<key>` block in .asf.yaml, comments dropped."""
     lines = ASF_YAML.read_text(encoding="utf-8").splitlines()
-    branch_key = re.compile(r"^    ([^\s:#][^:]*):\s*$")
-    context_item = re.compile(r'^\s+- "?(.+?)"?\s*$')
-    contexts = []
-    in_protected = False
-    in_main = False
-    collecting = False
+    section = []
+    inside = False
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        if stripped == "protected_branches:":
-            in_protected = True
+        if line == f"  {key}:":
+            inside = True
             continue
-        if not in_protected:
+        if not inside:
             continue
-        # A new top-level or `github:`-level key ends the protected_branches map.
+        # A new top-level or `github:`-level key ends the block.
         if stripped and not line.startswith("    "):
             break
-        match = branch_key.match(line)
-        if match:
-            in_main = match.group(1) == "main"
-            collecting = False
-            continue
-        if not in_main:
-            continue
-        if stripped == "contexts:":
-            collecting = True
-            continue
-        if not collecting:
-            continue
+        section.append(line)
+    return section
+
+
+def asf_required_contexts():
+    """Return the required_status_checks contexts .asf.yaml declares for main.
+
+    Read from `rulesets:`, which all target the default branch. Release
+    branches (`branch-N.M`) use classic `protected_branches:` entries, and a
+    context one of those requires says nothing about what `main` requires.
+    """
+    context_item = re.compile(r'^\s+- context:\s*"?(.+?)"?\s*$')
+    contexts = []
+    for line in asf_github_section("rulesets"):
         match = context_item.match(line)
         if match:
             contexts.append(match.group(1))
-        else:
-            collecting = False
     return contexts
+
+
+def asf_classic_protects_main():
+    """Return whether .asf.yaml has a `main:` entry under `protected_branches:`."""
+    return "    main:" in asf_github_section("protected_branches")
 
 
 def aggregator_check_names(raw_name):
@@ -1173,6 +1172,14 @@ def aggregator_check_names(raw_name):
 def check_required_checks():
     jobs, needs, display_name = ci_jobs_and_aggregator()
     failures = []
+
+    if asf_classic_protects_main():
+        failures.append(
+            "`.asf.yaml` lists `main` under `protected_branches`. While classic "
+            "protection exists on `main`, GitHub refuses the Merge Queue "
+            "ruleset's committer bypass, so `main`'s rules belong in the "
+            "`Default Branch Protection` ruleset"
+        )
 
     if AGGREGATOR_JOB not in jobs:
         failures.append(
