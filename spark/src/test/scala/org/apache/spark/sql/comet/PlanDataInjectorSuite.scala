@@ -19,6 +19,8 @@
 
 package org.apache.spark.sql.comet
 
+import scala.jdk.CollectionConverters._
+
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.SparkConf
@@ -124,6 +126,222 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     // Everything outside the injected scan is preserved verbatim.
     assert(result.getPlanId == 1)
     assert(result.getChildren(0).getPlanId == 2)
+  }
+
+  /**
+   * One partition of a bucketed merge-on-read scan as the driver ships it: two tasks, and in its
+   * IcebergScan.common only the delete files, paths and partition value they use.
+   */
+  private def bucketPartition(bucket: Int): OperatorOuterClass.IcebergScan = {
+    val pools = OperatorOuterClass.IcebergScanCommon.newBuilder()
+    (0 until 2).foreach { d =>
+      pools.addDeleteFilePathPool(f"s3://bucket/table/data/b$bucket%08d-$d-deletes.parquet")
+      pools.addDeleteFilePool(
+        OperatorOuterClass.IcebergDeleteFile
+          .newBuilder()
+          .setFilePathIdx(d)
+          .setContentType("POSITION_DELETES")
+          .setFileFormat("PARQUET")
+          .setRecordCount(10))
+    }
+    pools.addDeleteFilesPool(
+      OperatorOuterClass.DeleteFileList
+        .newBuilder()
+        .addDeleteFileIndices(0)
+        .addDeleteFileIndices(1))
+    pools.addPartitionDataPool(
+      OperatorOuterClass.PartitionData
+        .newBuilder()
+        .addValues(
+          OperatorOuterClass.PartitionValue
+            .newBuilder()
+            .setFieldId(1000)
+            .setLiteral(OperatorOuterClass.IcebergLiteral.newBuilder().setIntVal(bucket))))
+    val scan = OperatorOuterClass.IcebergScan.newBuilder().setCommon(pools)
+    (0 until 2).foreach { f =>
+      scan.addFileScanTasks(
+        OperatorOuterClass.IcebergFileScanTask
+          .newBuilder()
+          .setDataFilePath(f"s3://bucket/table/data/b$bucket%08d-$f.parquet")
+          .setDeleteFilesIdx(0)
+          .setPartitionDataIdx(0))
+    }
+    scan.build()
+  }
+
+  test("an injected Iceberg plan holds the common block plus its own partition's pools") {
+    // The common block holds no per-file pools, so a task's plan carries only the delete files
+    // and partition values its own files use, however many other partitions the scan has.
+    val scanOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 7)
+    val key = IcebergPlanDataInjector.getKey(scanOp).get
+    val (commonBytes, _) =
+      icebergPlanData("s3://table/metadata/v1.json", 7, Seq("id", "v"), "unused.parquet")
+    val partition = bucketPartition(42)
+    val injected = PlanDataInjector
+      .injectPlanData(
+        parseBasePlan(scanOp.toByteArray),
+        Map(key -> commonBytes),
+        Map(key -> partition.toByteArray))
+      .getIcebergScan
+
+    val pools = injected.getCommon
+    assert(pools.getRequiredSchemaCount == 2, "the common block's fields must survive the merge")
+    assert(pools.getDeleteFilePoolCount == 2 && pools.getDeleteFilePathPoolCount == 2)
+    injected.getFileScanTasksList.asScala.foreach { task =>
+      val deletes = pools.getDeleteFilesPool(task.getDeleteFilesIdx).getDeleteFileIndicesList
+      val paths = deletes.asScala.map(d =>
+        pools.getDeleteFilePathPool(pools.getDeleteFilePool(d).getFilePathIdx))
+      assert(paths == Seq(0, 1).map(d => f"s3://bucket/table/data/b00000042-$d-deletes.parquet"))
+      assert(
+        pools
+          .getPartitionDataPool(task.getPartitionDataIdx)
+          .getValues(0)
+          .getLiteral
+          .getIntVal == 42)
+    }
+    val planSize =
+      PlanDataInjector.serializeOperator(scanOp.toBuilder.setIcebergScan(injected).build()).length
+    assert(
+      planSize <= commonBytes.length + partition.getSerializedSize + 64,
+      s"the injected plan ($planSize bytes) should hold only the common block and this partition")
+  }
+
+  /**
+   * One partition whose tasks each use all of `deleteFiles`, as the driver builds it: the delete
+   * files are shared arrays and path strings, and the partition's own message indexes into them.
+   */
+  private def sharedDeletePartition(
+      dataFiles: Seq[String],
+      deleteFiles: Seq[(String, Array[Byte])]): IcebergPartitionPlanData = {
+    val sets = OperatorOuterClass.DeleteFileList.newBuilder()
+    deleteFiles.indices.foreach(i => sets.addDeleteFileIndices(i))
+    val scan = OperatorOuterClass.IcebergScan
+      .newBuilder()
+      .setCommon(OperatorOuterClass.IcebergScanCommon.newBuilder().addDeleteFilesPool(sets))
+    dataFiles.foreach { path =>
+      scan.addFileScanTasks(
+        OperatorOuterClass.IcebergFileScanTask
+          .newBuilder()
+          .setDataFilePath(path)
+          .setDeleteFilesIdx(0))
+    }
+    new IcebergPartitionPlanData(
+      scan.build().toByteArray,
+      deleteFiles.map(_._2).toArray,
+      deleteFiles.map(_._1).toArray)
+  }
+
+  private def deletionVector(dataFile: String, offset: Long): Array[Byte] =
+    OperatorOuterClass.IcebergDeleteFile
+      .newBuilder()
+      .setContentType("POSITION_DELETES")
+      .setFileFormat("PUFFIN")
+      .setReferencedDataFile(dataFile)
+      .setContentOffset(offset)
+      .setContentSizeInBytes(40)
+      .setRecordCount(3)
+      .build()
+      .toByteArray
+
+  test("partitions sharing delete files resolve each path through their own pool") {
+    // Two deletion vectors share one Puffin file, and an equality delete has its own. The
+    // partitions list them in different orders, so each sets its own path indices.
+    val puffin = "s3://bucket/table/data/dv.puffin"
+    val eqPath = "s3://bucket/table/data/eq-deletes.parquet"
+    val dvA = (puffin, deletionVector("a.parquet", 4))
+    val dvB = (puffin, deletionVector("b.parquet", 44))
+    val eq = (
+      eqPath,
+      OperatorOuterClass.IcebergDeleteFile
+        .newBuilder()
+        .setContentType("EQUALITY_DELETES")
+        .setFileFormat("PARQUET")
+        .addEqualityIds(1)
+        .setRecordCount(5)
+        .build()
+        .toByteArray)
+    val scanOp = icebergScanOp("s3://table/metadata/v1.json", scanHashCode = 7)
+    val key = IcebergPlanDataInjector.getKey(scanOp).get
+    val (commonBytes, _) =
+      icebergPlanData("s3://table/metadata/v1.json", 7, Seq("id"), "unused.parquet")
+
+    Seq(Seq(eq, dvA), Seq(dvB, eq, dvA)).foreach { deletes =>
+      val data = sharedDeletePartition(Seq("a.parquet"), deletes)
+      val injected = PlanDataInjector
+        .injectPlanData(
+          parseBasePlan(scanOp.toByteArray),
+          Map(key -> commonBytes),
+          Map(key -> data.bytes))
+        .getIcebergScan
+      val pools = injected.getCommon
+      assert(
+        pools.getDeleteFilePathPoolList.asScala.toSet == deletes.map(_._1).toSet &&
+          pools.getDeleteFilePathPoolCount == deletes.map(_._1).distinct.size,
+        s"each path should be pooled once: ${pools.getDeleteFilePathPoolList}")
+      val task = injected.getFileScanTasks(0)
+      val resolved = pools
+        .getDeleteFilesPool(task.getDeleteFilesIdx)
+        .getDeleteFileIndicesList
+        .asScala
+        .map { i =>
+          val file = pools.getDeleteFilePool(i)
+          (pools.getDeleteFilePathPool(file.getFilePathIdx), file.getContentOffset)
+        }
+      val expected = deletes.map { case (path, bytes) =>
+        (path, OperatorOuterClass.IcebergDeleteFile.parseFrom(bytes).getContentOffset)
+      }
+      assert(resolved == expected)
+    }
+  }
+
+  test("a coalesced task carries a delete file its partitions share once") {
+    // A coalesce without a shuffle writes all of its input partitions into one task stream. A
+    // delete file those partitions share is one array, so Java serialization writes it once.
+    val keyMetadata = com.google.protobuf.ByteString.copyFrom(new Array[Byte](8 * 1024))
+    val shared = (
+      "s3://bucket/table/data/eq-deletes.parquet",
+      OperatorOuterClass.IcebergDeleteFile
+        .newBuilder()
+        .setContentType("EQUALITY_DELETES")
+        .setFileFormat("PARQUET")
+        .addEqualityIds(1)
+        .setKeyMetadata(keyMetadata)
+        .build()
+        .toByteArray)
+    val partitions = (0 until 16).map { i =>
+      new CometExecPartition(
+        i,
+        Array.empty,
+        Map("scan" -> sharedDeletePartition(Seq(s"data-$i.parquet"), Seq(shared))))
+    }
+    def serializedSize(obj: AnyRef): Int = {
+      val buffer = new java.io.ByteArrayOutputStream()
+      val out = new java.io.ObjectOutputStream(buffer)
+      out.writeObject(obj)
+      out.close()
+      buffer.size()
+    }
+
+    val one = serializedSize(partitions.head)
+    val together = serializedSize(partitions.toArray)
+    assert(one > shared._2.length, s"a partition should carry the delete file: $one bytes")
+    assert(
+      together < one + shared._2.length,
+      s"16 partitions took $together bytes; one took $one, the delete file ${shared._2.length}")
+
+    val buffer = new java.io.ByteArrayOutputStream()
+    val out = new java.io.ObjectOutputStream(buffer)
+    out.writeObject(partitions.toArray)
+    out.close()
+    val received =
+      new java.io.ObjectInputStream(new java.io.ByteArrayInputStream(buffer.toByteArray))
+        .readObject()
+        .asInstanceOf[Array[CometExecPartition]]
+        .map(_.planDataByKey("scan").asInstanceOf[IcebergPartitionPlanData])
+    assert(received.forall(_.deleteFiles.head eq received.head.deleteFiles.head))
+    received.zip(partitions).foreach { case (got, sent) =>
+      assert(got.bytes.sameElements(sent.planDataByKey("scan").bytes))
+    }
   }
 
   test("each registered injector is reachable by its opStructCase") {
