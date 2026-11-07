@@ -29,7 +29,7 @@ import scala.util.Random
 import org.apache.hadoop.fs.Path
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
-import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, Literal}
+import org.apache.spark.sql.catalyst.expressions.{AttributeReference, Cast, EvalMode, Literal}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.comet.{CometCollectLimitExec, CometProjectExec}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
@@ -2586,6 +2586,71 @@ class CometNativeCastSuite
         MapType(StringType, DoubleType)).foreach { toType =>
         castTest(input, toType)
       }
+    }
+  }
+
+  test("TRY cast of a map key that can fail is Unsupported") {
+    // https://github.com/apache/datafusion-comet/issues/5995
+    def level(from: DataType, to: DataType, mode: EvalMode.Value = EvalMode.TRY) =
+      CometCast.getSupportLevel(Cast(AttributeReference("m", from)(), to, None, mode))
+    val narrowing = (MapType(LongType, IntegerType), MapType(IntegerType, IntegerType))
+    val expected = Unsupported(Some(CometCast.tryCastNullMapKeyReason))
+    assert(level(narrowing._1, narrowing._2) == expected)
+    // Only TRY nulls a failing key. Legacy wraps and ANSI raises.
+    Seq(EvalMode.LEGACY, EvalMode.ANSI).foreach { mode =>
+      assert(level(narrowing._1, narrowing._2, mode).isInstanceOf[Compatible])
+    }
+    // A widening key cast cannot fail, and neither can these.
+    assert(
+      level(MapType(IntegerType, IntegerType), MapType(LongType, LongType))
+        .isInstanceOf[Compatible])
+    Seq(
+      BooleanType -> IntegerType,
+      IntegerType -> BooleanType,
+      TimestampType -> LongType,
+      StringType -> BinaryType,
+      ArrayType(LongType) -> ArrayType(IntegerType)).foreach { case (from, to) =>
+      assert(
+        level(MapType(from, IntegerType), MapType(to, IntegerType)).isInstanceOf[Compatible],
+        s"$from")
+    }
+    val structKey = (
+      StructType(Seq(StructField("a", LongType))),
+      StructType(Seq(StructField("a", IntegerType))))
+    assert(
+      level(MapType(structKey._1, IntegerType), MapType(structKey._2, IntegerType))
+        .isInstanceOf[Compatible])
+    // These have no native path, but are no longer refused for a null key.
+    Seq(BooleanType -> DecimalType(2, 0), IntegerType -> BinaryType, TimestampType -> BooleanType)
+      .foreach { case (from, to) =>
+        assert(level(MapType(from, IntegerType), MapType(to, IntegerType)) != expected, s"$from")
+      }
+    // A map inside an array key can still get a null key.
+    assert(
+      level(
+        MapType(ArrayType(MapType(LongType, IntegerType)), IntegerType),
+        MapType(ArrayType(MapType(IntegerType, IntegerType)), IntegerType)) == expected)
+    // A boolean key does not fit a decimal with no integral digits.
+    assert(
+      level(MapType(BooleanType, IntegerType), MapType(DecimalType(1, 1), IntegerType)) ==
+        expected)
+    // Date to timestamp is an upcast in Spark, but it overflows for extreme dates.
+    assert(level(MapType(DateType, IntegerType), MapType(TimestampType, IntegerType)) == expected)
+    // A map nested in an array and in a map value.
+    assert(level(ArrayType(narrowing._1), ArrayType(narrowing._2)) == expected)
+    assert(
+      level(MapType(IntegerType, narrowing._1), MapType(IntegerType, narrowing._2)) == expected)
+    // An earlier Incompatible struct field does not hide it (#6200).
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(7, -2)
+    }
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        level(
+          StructType(Seq(StructField("a", negScaleType), StructField("m", narrowing._1))),
+          StructType(Seq(StructField("a", StringType), StructField("m", narrowing._2)))) ==
+          expected)
     }
   }
 
