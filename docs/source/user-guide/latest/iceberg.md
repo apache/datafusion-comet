@@ -411,14 +411,13 @@ summary-aware writer commit contract.
 
 For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
 analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
-projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+projections, while on Spark 3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.
 
 Merge-on-read uses Spark's `WriteDelta`, and Iceberg's JVM `DeltaWriter` writes its rows under
 either plan, so it keeps Spark's stock write plan. On Spark 3.5+ the testing setting
 `spark.comet.write.iceberg.splitOperator.enabled` plans it as the split plan, with the same driver
 commit and reporting path, but `CometIcebergWriteExec` is never used for position-delta rows.
-Spark 3.4 always leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -438,8 +437,6 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
 - the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
 - the table uses merge-on-read (`WriteDelta`), unless the testing setting
   `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
-- the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
-  3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write is a streaming write (`writeStream` into an Iceberg table);
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
   not use;
@@ -651,9 +648,8 @@ normal `remove_orphan_files` maintenance.
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-`FileIO`. (From Iceberg 1.6 on, Iceberg's own `SparkWrite.abort` skips cleanup unless a commit
-failed with a cleanable error, so on the stock path those files are left for
-`remove_orphan_files`. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -707,9 +703,8 @@ a data file but not what any reader computes from it:
   per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
   leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type the native writer accepts. On Iceberg 1.5.x,
-  which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
-  directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
+  partition type the native writer accepts. Earlier iceberg-java releases spelled `timestamp` and
+  `timestamptz` directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
   1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
   cases, and no reader parses these names: files are resolved through committed manifests.

@@ -118,7 +118,7 @@ natively on Spark 4.0.5+, 4.1.4+, and 4.2+. These releases treat `-0.0` and `0.0
 representation, as one value in these functions, including inside nested arrays and structs, and
 return the normalized value. Spark 4.2.0 normalizes the arguments in the plan (SPARK-54918), and
 4.0.5, 4.1.4, and 4.2.1 normalize while these functions evaluate (SPARK-59602). Comet normalizes
-the elements the same way. Spark 3.4, 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
+the elements the same way. Spark 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
 negative zero distinct in flat arrays, so on those versions these functions fall back to Spark.
 Other element types remain native on every version.
 

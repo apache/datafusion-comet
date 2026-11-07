@@ -156,7 +156,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/vector/**",
         "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
         "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
-        "spark/src/main/spark-3.4/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
         "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
@@ -198,34 +197,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/expressions/**",
         "spark/src/main/spark-*/**",
     ],
-    "spark_3_4": [
-        "native/**/src/**",
-        "native/**/Cargo.toml",
-        "native/Cargo.lock",
-        "common/src/main/**",
-        "common/pom.xml",
-        "spark/src/main/**",
-        "!spark/src/main/spark-3.5/**",
-        "!spark/src/main/spark-4.0/**",
-        "!spark/src/main/spark-4.1/**",
-        "!spark/src/main/spark-4.2/**",
-        "!spark/src/main/spark-4.x/**",
-        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
-        "spark/pom.xml",
-        "dev/diffs/3.4.3.diff",
-        "pom.xml",
-        "rust-toolchain.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/spark_sql_test_reusable.yml",
-        "dev/ci/spark-sql-modules.py",
-        ".github/actions/setup-builder/**",
-        ".github/actions/setup-spark-builder/**",
-        ".github/actions/upload-artifact-retry/**",
-        ".github/actions/download-artifact-retry/**",
-        ".github/actions/maven-bootstrap/**",
-        ".mvn/**",
-        "mvnw",
-    ],
     "spark_3_5": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -233,7 +204,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-4.0/**",
         "!spark/src/main/spark-4.1/**",
         "!spark/src/main/spark-4.2/**",
@@ -261,7 +231,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.1/**",
@@ -289,7 +258,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -317,7 +285,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -343,31 +310,6 @@ FILTERS = {
     # ci.yml folds the two outputs into the reusable workflow's `modules`
     # input. Populated below, after the dict, so the two lists cannot drift.
     "spark_4_1_hive": [],
-    "iceberg_1_8": [
-        "native/**/src/**",
-        "native/**/Cargo.toml",
-        "native/Cargo.lock",
-        "common/src/main/**",
-        "common/pom.xml",
-        "spark/src/main/**",
-        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
-        "spark/pom.xml",
-        "dev/diffs/iceberg/**",
-        "pom.xml",
-        "rust-toolchain.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/iceberg_spark_test_reusable.yml",
-        ".github/actions/setup-builder/**",
-        ".github/actions/setup-iceberg-builder/**",
-        "dev/ci/iceberg-test-shards.gradle",
-        "dev/ci/check-iceberg-shards.py",
-        "dev/ci/test-iceberg-shards.py",
-        ".github/actions/upload-artifact-retry/**",
-        ".github/actions/download-artifact-retry/**",
-        ".github/actions/maven-bootstrap/**",
-        ".mvn/**",
-        "mvnw",
-    ],
     "iceberg_1_9": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -514,8 +456,8 @@ FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
 # `schedule` only on the default branch. A tier there would not defer a suite,
 # it would drop it. And the tiers exist because of main's volume, which a
 # release branch does not have: branch-1.0 took 28 pull requests in its first
-# two months. "push" jobs (the site deploy) and label-only jobs (Spark 3.4)
-# keep their rules on a release branch.
+# two months. "push" jobs (the site deploy) and any label-only job keep their
+# rules on a release branch.
 POLICY = {
     # The one test job that also runs on push to main, and only because of
     # actions/cache scoping: a pull request can restore caches saved on its
@@ -573,11 +515,6 @@ POLICY = {
     # docs deploys to asf-site, so it must not run from a pull request or from
     # the queue's throwaway branch.
     "docs": ["push"],
-    # Spark 3.4 is deprecated, so it is the one test job outside the queue
-    # tier: a failure there no longer blocks a merge. It stays runnable on
-    # demand -- the label on a pull request, or a workflow_dispatch -- so
-    # anyone who wants to check a change against 3.4 still can.
-    "spark_3_4": ["label:run-spark-3.4-tests"],
     # Spark 4.1 is the default build profile and the one Spark SQL suite the
     # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
     # their label.
@@ -610,9 +547,8 @@ POLICY = {
     "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
     # the one Iceberg version every pull request and the queue run, for the
-    # same reason as Spark 4.1 above. The three older versions run nightly,
-    # and one label brings all three forward onto a pull request.
-    "iceberg_1_8": ["nightly", "label:run-iceberg-tests"],
+    # same reason as Spark 4.1 above. The two older versions run nightly,
+    # and one label brings both forward onto a pull request.
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_11": ["pr", "queue"],
@@ -730,7 +666,7 @@ def release_branch_allows(job, event):
     automatic = any(tier in tiers for tier in RELEASE_BRANCH_TIERS)
     # The opened/synchronize run already ran every automatic job at this
     # commit, so a `labeled` run adds only a job that nothing else runs there,
-    # which leaves the label-only Spark 3.4 suite.
+    # which leaves only the label-only jobs, of which there are currently none.
     if event.get("action") == "labeled":
         return not automatic and event.get("label") in gates
     return automatic or any(label in event.get("labels", []) for label in gates)

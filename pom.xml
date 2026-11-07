@@ -105,17 +105,16 @@ under the License.
     <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
     <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
          provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
-         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
+         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.5 profile overrides
          it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
     <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <!-- Delta Lake pairing for the contrib/delta-spark module (-Pdelta). Each Spark profile
-         in this pom sets delta.spark.version to its matching Delta release. Only spark-3.4
-         also sets delta.artifact, to delta-core, since Delta 2.x ships under that name and
-         3.x/4.x ship as delta-spark. The defaults match the default spark-4.1 profile and
-         only serve invocations that activate no Spark profile (e.g. `mvn -Pdelta
-         spotless:apply`). This is a separate property from `delta.version` (the in-tree
-         `-Pcontrib-delta` contrib) on purpose, so bumping one pairing cannot silently change
-         the other. -->
+         in this pom sets delta.spark.version to its matching Delta release. The delta.artifact
+         property names the Delta artifact (delta-spark for the 3.x/4.x lines). The defaults
+         match the default spark-4.1 profile and only serve invocations that activate no
+         Spark profile (e.g. `mvn -Pdelta spotless:apply`). This is a separate property from
+         `delta.version` (the in-tree `-Pcontrib-delta` contrib) on purpose, so bumping one
+         pairing cannot silently change the other. -->
     <delta.artifact>delta-spark</delta.artifact>
     <delta.spark.version>4.3.1</delta.spark.version>
     <!-- hadoop-azure, test scope, so the ABFS authentication tests run against the same
@@ -753,32 +752,6 @@ under the License.
       <properties>
         <platform>linux</platform>
         <arch>aarch64</arch>
-      </properties>
-    </profile>
-
-    <profile>
-      <id>spark-3.4</id>
-      <properties>
-        <scala.version>2.12.17</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.4.3</spark.version>
-        <spark.version.short>3.4</spark.version.short>
-        <hadoop-aws.version>3.3.4</hadoop-aws.version>
-        <hadoop-azure.version>3.3.4</hadoop-azure.version>
-        <parquet.version>1.13.1</parquet.version>
-        <semanticdb.version>4.8.8</semanticdb.version>
-        <slf4j.version>2.0.6</slf4j.version>
-        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
-        <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
-        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
-        <!-- Delta 2.4 (the last Spark 3.4 line, artifact delta-core) predates the 3.x
-             DeltaParquetFileFormat API the contrib compiles against; the delta profile is
-             NOT yet supported on spark-3.4 (compile fails). Shim work tracked as future. -->
-        <delta.artifact>delta-core</delta.artifact>
-        <delta.spark.version>2.4.0</delta.spark.version>
-        <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
       </properties>
     </profile>
 
