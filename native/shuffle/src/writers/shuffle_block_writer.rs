@@ -361,8 +361,8 @@ impl ShuffleBlockWriter {
             // longer tracks.
             codec_context.release_zstd();
         } else {
-            // Local shuffle reuses the context across blocks, but nothing reserves its
-            // memory: a high-level workspace (hundreds of MiB) must not outlive the block.
+            // Local shuffle reuses the context across blocks and charges only what it keeps:
+            // a workspace over the retention cap (high levels) must not outlive the block.
             codec_context.release_zstd_if_oversized();
         }
         encode_result?;

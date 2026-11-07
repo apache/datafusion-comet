@@ -21,6 +21,7 @@ use crate::writers::BufBatchWriter;
 use crate::ShuffleBlockWriter;
 use arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::execution::memory_pool::MemoryReservation;
 use datafusion::execution::runtime_env::RuntimeEnv;
 use datafusion::execution::SpillFile as DfSpillFile;
 use datafusion::execution::SpillWriter as DfSpillWriter;
@@ -67,6 +68,7 @@ impl PartitionedSpill {
 
     /// Appends partition `pid`'s batches to the spill file, each as its own block.
     /// `recycled_buffer` is left drained, including on error.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn write<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
         &mut self,
         pid: usize,
@@ -75,12 +77,13 @@ impl PartitionedSpill {
         runtime: &RuntimeEnv,
         metrics: &ShufflePartitionerMetrics,
         recycled_buffer: &mut Vec<u8>,
+        buffers: Option<&MemoryReservation>,
     ) -> datafusion::common::Result<()> {
         self.check_usable()?;
         let Some(batch) = iter.next() else {
             return Ok(());
         };
-        self.ensure_spill_file_created(runtime)?;
+        self.ensure_spill_file_created(runtime, buffers)?;
 
         let result = (|| {
             let mut buf_batch_writer = BufBatchWriter::new_for_partition(
@@ -194,15 +197,85 @@ impl PartitionedSpill {
     fn ensure_spill_file_created(
         &mut self,
         runtime: &RuntimeEnv,
+        buffers: Option<&MemoryReservation>,
     ) -> datafusion::common::Result<()> {
         if self.spill_file.is_none() {
             let temp_file = runtime
                 .disk_manager
                 .create_tmp_file("shuffle writer spill")?;
-            let writer = BufWriter::with_capacity(self.write_buffer_size, temp_file.open_writer()?);
+            // Open before charging, so a failed open leaves nothing on the reservation.
+            let file = temp_file.open_writer()?;
+            let capacity = match buffers {
+                Some(reservation) => super::reserve_buffer(reservation, self.write_buffer_size)?,
+                None => self.write_buffer_size,
+            };
+            let writer = BufWriter::with_capacity(capacity, file);
             self.spill_file = Some(ActiveSpillFile { temp_file, writer });
         }
         Ok(())
+    }
+
+    /// Grows the write buffer to `capacity` if `buffers` grants it, and never shrinks it. Buffered
+    /// bytes move to the new buffer; nothing is written to the file.
+    /// Errors other than a refusal are returned.
+    pub(crate) fn restore_buffer(
+        &mut self,
+        buffers: &MemoryReservation,
+        capacity: usize,
+    ) -> datafusion::common::Result<()> {
+        let current = self.buffer_capacity();
+        if self.failed || self.spill_file.is_none() || capacity <= current {
+            return Ok(());
+        }
+        match buffers.try_grow(capacity - current) {
+            Ok(()) => {
+                self.resize_buffer(capacity);
+                Ok(())
+            }
+            Err(error) if super::is_refusal(&error) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Writes the buffered bytes to the file and drops the write buffer, once nothing more will
+    /// be spilled.
+    pub(crate) fn release_buffer(&mut self) -> datafusion::common::Result<()> {
+        self.flush()?;
+        self.resize_buffer(0);
+        Ok(())
+    }
+
+    /// Rebuilds the write buffer at `capacity`, moving the buffered bytes into it. Callers make
+    /// sure they fit, so nothing is written to the file.
+    fn resize_buffer(&mut self, capacity: usize) {
+        let Some(ActiveSpillFile { temp_file, writer }) = self.spill_file.take() else {
+            return;
+        };
+        let (file, buffered) = writer.into_parts();
+        let buffered = match buffered {
+            Ok(buffered) => buffered,
+            Err(panicked) => {
+                // a write panicked partway, so the file may already hold some of these bytes
+                self.failed = true;
+                panicked.into_inner()
+            }
+        };
+        let mut writer = BufWriter::with_capacity(capacity, file);
+        if writer.write_all(&buffered).is_err() {
+            self.failed = true;
+        }
+        self.spill_file = Some(ActiveSpillFile { temp_file, writer });
+    }
+
+    /// Whether any partition has spilled bytes.
+    pub(crate) fn has_ranges(&self) -> bool {
+        self.len > 0
+    }
+
+    pub(crate) fn buffer_capacity(&self) -> usize {
+        self.spill_file
+            .as_ref()
+            .map_or(0, |spill_file| spill_file.writer.capacity())
     }
 
     #[cfg(test)]
@@ -298,6 +371,7 @@ mod tests {
     use crate::CompressionCodec;
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryConsumer, MemoryPool};
     use datafusion::physical_plan::metrics::ExecutionPlanMetricsSet;
     use std::sync::Arc;
 
@@ -334,7 +408,8 @@ mod tests {
                 &mut ShuffleCodecContext::default(),
                 &RuntimeEnv::default(),
                 &metrics(),
-                recycled
+                recycled,
+                None
             )
             .is_err());
     }
@@ -365,6 +440,7 @@ mod tests {
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut recycled,
+                None,
             )
             .expect_err("write after a failed write");
         assert!(
@@ -389,6 +465,7 @@ mod tests {
                     &runtime,
                     &metrics(),
                     &mut recycled,
+                    None,
                 )
                 .unwrap();
         }
@@ -417,6 +494,7 @@ mod tests {
                     &runtime,
                     &metrics(),
                     &mut recycled,
+                    None,
                 )
                 .unwrap();
         }
@@ -426,6 +504,134 @@ mod tests {
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         spill.flush().unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().len(), spilled);
+    }
+
+    /// `partitioned_spill`'s configured write buffer size.
+    const WRITE_BUFFER: usize = 1 << 20;
+
+    fn full_pool() -> (Arc<dyn MemoryPool>, MemoryReservation, MemoryReservation) {
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(WRITE_BUFFER));
+        let batches = MemoryConsumer::new("batches").register(&pool);
+        batches.grow(WRITE_BUFFER);
+        let buffers = MemoryConsumer::new("buffers").register(&pool);
+        (pool, batches, buffers)
+    }
+
+    fn write_with_buffers<I: Iterator<Item = datafusion::common::Result<RecordBatch>>>(
+        spill: &mut PartitionedSpill,
+        iter: &mut I,
+        buffers: &MemoryReservation,
+    ) -> datafusion::common::Result<()> {
+        spill.write(
+            0,
+            iter,
+            &mut ShuffleCodecContext::default(),
+            &RuntimeEnv::default(),
+            &metrics(),
+            &mut Vec::new(),
+            Some(buffers),
+        )
+    }
+
+    #[test]
+    fn restore_buffer_moves_buffered_bytes_without_writing() {
+        let fallback = super::super::FALLBACK_BUFFER_SIZE;
+        let (pool, batches, buffers) = full_pool();
+        let mut spill = partitioned_spill(&test_batch(), 1);
+        write_with_buffers(
+            &mut spill,
+            &mut vec![Ok(test_batch())].into_iter(),
+            &buffers,
+        )
+        .unwrap();
+        assert_eq!(
+            (spill.buffer_capacity(), buffers.size()),
+            (fallback, fallback)
+        );
+        let path = spill.path().unwrap().unwrap().to_path_buf();
+        let spilled = spill.ranges(0).unwrap()[0].end;
+        assert!(
+            spilled > 0 && spilled < fallback as u64,
+            "the bytes must sit in the buffer"
+        );
+
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
+        assert_eq!(
+            (spill.buffer_capacity(), buffers.size()),
+            (fallback, fallback),
+            "refused while the batches hold the pool"
+        );
+
+        batches.free();
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
+        assert_eq!(
+            (spill.buffer_capacity(), buffers.size(), pool.reserved()),
+            (WRITE_BUFFER, WRITE_BUFFER, WRITE_BUFFER)
+        );
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
+
+        spill.flush().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len() as u64, spilled);
+        let mut values = Vec::new();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
+            let batch = crate::read_ipc_compressed(&bytes[pos + 16..pos + 8 + len]).unwrap();
+            let column = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            values.extend_from_slice(column.values());
+            pos += 8 + len;
+        }
+        assert_eq!(values, (0..100).collect::<Vec<i64>>());
+    }
+
+    #[test]
+    fn restore_buffer_returns_errors_other_than_refusal() {
+        use super::super::erroring_pool::{external, refusal, ErroringPool};
+        let fallback = super::super::FALLBACK_BUFFER_SIZE;
+        let (_pool, _batches, buffers) = full_pool();
+        let mut spill = partitioned_spill(&test_batch(), 1);
+        write_with_buffers(
+            &mut spill,
+            &mut vec![Ok(test_batch())].into_iter(),
+            &buffers,
+        )
+        .unwrap();
+
+        for (error, is_refusal) in [
+            (refusal as fn() -> DataFusionError, true),
+            (external, false),
+        ] {
+            let pool: Arc<dyn MemoryPool> = Arc::new(ErroringPool::new(1 << 30, 0, error));
+            let reservation = MemoryConsumer::new("buffers").register(&pool);
+            let result = spill.restore_buffer(&reservation, WRITE_BUFFER);
+            assert_eq!(result.is_ok(), is_refusal, "{result:?}");
+            assert_eq!((spill.buffer_capacity(), reservation.size()), (fallback, 0));
+        }
+    }
+
+    #[test]
+    fn restore_buffer_skips_a_failed_spill_file() {
+        let fallback = super::super::FALLBACK_BUFFER_SIZE;
+        let (_pool, batches, buffers) = full_pool();
+        let mut spill = partitioned_spill(&test_batch(), 1);
+        let mut iter = vec![
+            Ok(test_batch()),
+            Err(DataFusionError::Execution("injected failure".to_string())),
+        ]
+        .into_iter();
+        assert!(write_with_buffers(&mut spill, &mut iter, &buffers).is_err());
+
+        batches.free();
+        spill.restore_buffer(&buffers, WRITE_BUFFER).unwrap();
+        assert_eq!(
+            (spill.buffer_capacity(), buffers.size()),
+            (fallback, fallback)
+        );
     }
 
     #[test]
@@ -439,6 +645,7 @@ mod tests {
                 &RuntimeEnv::default(),
                 &metrics(),
                 &mut Vec::new(),
+                None,
             )
             .unwrap();
         assert!(!spill.has_spill_file());
@@ -463,6 +670,7 @@ mod tests {
                 &pathless_backend::runtime(),
                 &metrics(),
                 &mut Vec::new(),
+                None,
             )
             .unwrap();
         assert!(spill.has_spill_file());
