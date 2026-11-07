@@ -166,49 +166,44 @@ configuration does not change the types inferred for those files. The inference 
 `ParquetToSparkSchemaConverter` and the `BINARY` cases of `ParquetFilters` are the same in every
 Spark version listed above.
 
-**Comet status.** Comet honors the configuration in the native Parquet scan. When enabled,
-its logical read schema uses Arrow `Binary` for top-level strings and a projection decodes those
-bytes to valid UTF-8. For unencrypted files, the reader derives a private field marker from each
-column's actual Parquet UTF8 annotation. The expression adapter uses that marker to remove the
-synthetic binary-to-string round trip for validated string columns. An Arrow `Utf8` type alone is
-not enough: JSON and an `ARROW:schema` string hint over unannotated BINARY do not imply validation.
-Encrypted scans retain the decode because rebuilding the footer would lose private decryption
-state in the pinned Parquet API. The default `false` continues to infer unannotated BINARY as
+**Comet status.** Comet honors the configuration in the native Parquet scan. When it is
+enabled, the scan reads every top-level string column as Arrow `Binary` and decodes it to valid
+UTF-8 at the scan boundary using Spark-compatible replacement semantics. Spark's schema doesn't
+say which file columns carry the UTF8 annotation, so annotated columns take the same path.
+arrow-rs validates UTF-8 only for Parquet columns annotated as strings, so decoding unannotated
+columns straight into Arrow `Utf8` would put invalid UTF-8 into a string array, which is undefined
+behavior. The default `false` value continues to return unannotated `BINARY` columns as
 `BinaryType`.
 
-The reader validates file conversions against Spark's original requested schema, before the
-intermediate binary type can admit a conversion Spark rejects. In particular, fixed-length byte
-arrays requested as strings fail at the first data-page request. Empty files and files discarded
-by format pruning do not trigger a deferred conversion error, while row filtering cannot hide one.
+**Filter pushdown.** While the configuration is enabled, the scan rewrites `=`, `IN` and
+`IS [NOT] NULL` on a top-level string column to compare raw bytes, so `value = 'one'` becomes
+`value = X'6F6E65'`. A valid value decodes to itself, and a malformed one to a string containing
+`U+FFFD`, so for a literal without `U+FFFD` the rewritten filter keeps exactly the rows the
+original keeps. For a file that annotates the column as a string, the expression adapter compares
+the column with the string literal directly, so the file's statistics still prune. Other filters
+on these columns stay above the scan, because decoding can reorder values: `"a\x80"` sorts below
+`"aé"` as bytes, but `"a\uFFFD"` sorts above it. That covers ranges, `LIKE`, function calls and
+literals containing `U+FFFD`. Spark's `Filter` above the scan re-evaluates every data filter, so
+results don't depend on what is pushed. Join and TopK dynamic filters accept only integer keys,
+so they never reach these columns.
 
-**Filter pushdown.** The scan rewrites `=`, `IN` and `IS [NOT] NULL` on a top-level string column
-to raw-byte comparisons where safe, so `value = 'one'` becomes `value = X'6F6E65'`. A malformed
-value decodes to a string containing `U+FFFD`, so equality and IN require literals without that
-character. The expression adapter restores direct string comparisons for annotated columns.
+Compared with Spark, Comet prunes more on unannotated columns and less on annotated ones. Spark
+pushes a filter only when the literal's type matches the column's Parquet type, so it doesn't push
+`=` or `IN` on an unannotated `BINARY` column, though it does push `IS NULL`. On an annotated
+column Spark also pushes ranges, which Comet keeps above the scan while the configuration is on.
 
-Other simple predicates, including ranges, `LIKE`, `NOT IN` and literals containing `U+FFFD`,
-reach the reader with the same decoding expression used by the output projection. Function calls
-remain above the scan to preserve their error behavior. On validated UTF8 columns,
-removing that expression exposes the original predicate to statistics pruning. On unannotated
-columns the decode remains, so a range cannot incorrectly prune using raw bytes whose ordering
-may differ from decoded strings. Row filters can evaluate the decoded predicate. Spark's Filter
-above the scan still re-evaluates every data filter. Join and TopK dynamic filters accept only
-integer keys; a filter pushed onto the scan's string output is mapped through its decoding
-projection in the same way.
-
-Compared with Spark, Comet can prune more on unannotated columns: Spark does not push string
-`=` or `IN` literals onto an unannotated BINARY column, though it pushes null checks. Annotated
-UTF8 columns in unencrypted files retain equality, range and LIKE pruning with the setting on.
-
-**Test coverage.** `ParquetReadV1Suite` covers inferred schemas, malformed bytes, native execution,
-partitioned files, annotated strings, filters, joins and top-k, with row filtering off and on. It
-also checks that an explicit string schema over fixed-length binary raises Spark's conversion
-error, while an explicit binary schema reads successfully. Native tests check row-group pruning
-for equality, ranges, LIKE, IN and NOT IN, decoded comparisons on malformed bytes, and mixed
-annotated/unannotated files. They cover fixed-length binary errors with and without row filters,
-including a filter that would discard every row, and the empty-file exception. Adapter and reader
-tests check that decode removal requires a marker derived from the Parquet annotation, rather
-than trusting an Arrow string hint or a marker supplied by the file.
+**Test coverage.** `ParquetReadV1Suite` writes raw Parquet files without Spark schema metadata
+and verifies the inferred schema under both configuration values, Spark answer parity and
+`CometNativeScanExec`, including a row containing invalid UTF-8 bytes and a projection that reads
+only a non-string column. A second test reads two partition directories holding a valid value,
+`0xff` and a null, and a Spark-written file, with row-filter pushdown off and on. It compares `=`,
+`IN`, `NOT IN`, `IS [NOT] NULL`, a range, an `OR`, a self-join on the string column and an
+`ORDER BY ... LIMIT` against Spark, and checks that `value = 'one'` reaches the row filter. Native
+tests in `parquet_exec.rs` check which row groups each filter prunes, for an unannotated and an
+annotated column, with and without row filters. They include `NOT IN`, a range and `U+FFFD`
+literals, none of which may prune. A native test in `schema_adapter.rs` checks that the adapter
+compares an annotated column directly for `NOT IN` as for `IN`, and leaves a filter with a null or
+invalid UTF-8 literal unchanged.
 
 **Known divergences.** Decoding is not byte-preserving, so the differences described in
 [Strings with non-UTF-8 bytes](../user-guide/latest/compatibility/index.md) apply to any

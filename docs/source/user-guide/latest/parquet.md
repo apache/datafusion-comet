@@ -211,18 +211,11 @@ page-index, and bloom-filter pruning happen regardless of this flag whenever Spa
 `spark.sql.parquet.filterPushdown` is on, except for filters that compare `FLOAT` or `DOUBLE` values,
 which do not prune while this flag is on (see [Floating-point Number Comparison](compatibility/floating-point.md)).
 
-With `spark.sql.parquet.binaryAsString=true`, the native scan uses a binary read schema for
-top-level string columns and decodes their bytes with replacement. For unencrypted files whose
-columns carry the UTF8 annotation, the per-file adapter removes that decode and uses the validated
-string column directly. Equality, range and `LIKE` filters retain their usual pruning on these
-columns. On unannotated columns, `=`, `IN` and `IS [NOT] NULL` can prune using raw bytes when string
-literals contain no `U+FFFD`. Other predicates compare decoded strings and cannot prune raw-byte
-statistics, though they can filter rows when row filtering is enabled. Function-call filters stay
-above the scan. Encrypted scans retain the
-decode because the reader cannot rewrite their schema metadata while preserving decryption state.
-
-The binary read schema does not broaden Spark's supported conversions: reading a
-`FIXED_LEN_BYTE_ARRAY` column as a string still raises a conversion error when data is decoded.
+With `spark.sql.parquet.binaryAsString=true`, the native scan reads every top-level string column
+as binary and decodes it after reading. Filters on those columns prune only for `=`, `IN` and
+`IS [NOT] NULL` against a literal without `U+FFFD`, which the scan compares as raw bytes. Other
+filters on them, such as ranges and `LIKE`, don't prune while the setting is on, even for columns
+the file annotates as strings.
 
 ### Row Group Assignment to Splits
 
