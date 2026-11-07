@@ -77,8 +77,7 @@ pub(crate) fn normalize_object_store_url(
     url_str: &str,
     object_store_configs: &HashMap<String, String>,
 ) -> Result<NormalizedObjectStoreUrl, ExecutionError> {
-    let url = Url::parse(url_str)
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {url_str}: {e}")))?;
+    let url = Url::parse(url_str).map_err(|e| parse_error(url_str, e))?;
     if is_hdfs_scheme(&url, object_store_configs) {
         return Ok(NormalizedObjectStoreUrl { url, is_hdfs: true });
     }
@@ -93,6 +92,25 @@ pub(crate) fn normalize_object_store_url(
         url: rewrite_alias_to_s3(url)?,
         is_hdfs: false,
     })
+}
+
+/// `url_str` may carry credentials, so the message names only its scheme. `ParseError` does not
+/// quote the input.
+fn parse_error(url_str: &str, e: url::ParseError) -> ExecutionError {
+    let message = match scheme_of_unparsed(url_str) {
+        Some(scheme) => format!("Error parsing {scheme} URL: {e}"),
+        None => format!("Error parsing URL: {e}"),
+    };
+    ExecutionError::GeneralError(message)
+}
+
+/// The text before `://` in a URL that failed to parse, if it is a valid scheme.
+fn scheme_of_unparsed(url_str: &str) -> Option<&str> {
+    let (scheme, _) = url_str.split_once("://")?;
+    let mut chars = scheme.chars();
+    let is_scheme = chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
+    is_scheme.then_some(scheme)
 }
 
 /// True if `scheme` is a configured s3-compliant alias (`fs.comet.s3Compliant.schemes`; empty or
@@ -135,7 +153,7 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
         let (bucket, key) = trimmed.split_once('/').unwrap_or((trimmed, ""));
         if bucket.is_empty() {
             return Err(ExecutionError::GeneralError(format!(
-                "{}:// URL is missing bucket name: {url}",
+                "{}:// URL is missing bucket name",
                 url.scheme()
             )));
         }
@@ -167,8 +185,7 @@ fn rewrite_alias_to_s3(mut url: Url) -> Result<Url, ExecutionError> {
 /// raw recorded string iceberg-rust matches positional/equality deletes against, so promotion
 /// cannot desync the two and silently drop deletes.
 pub(crate) fn promote_hostless_alias_url(path: &str) -> Result<Cow<'_, str>, ExecutionError> {
-    let url = Url::parse(path)
-        .map_err(|e| ExecutionError::GeneralError(format!("Error parsing URL {path}: {e}")))?;
+    let url = Url::parse(path).map_err(|e| parse_error(path, e))?;
     if url.host_str().is_some() {
         return Ok(Cow::Borrowed(path));
     }
@@ -301,6 +318,28 @@ mod tests {
             schemes.to_string(),
         );
         configs
+    }
+
+    #[test]
+    fn parse_errors_name_only_a_valid_scheme() {
+        let empty = HashMap::new();
+        let error = |url: &str| match normalize_object_store_url(url, &empty) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("{url} parsed"),
+        };
+        let err = error("s3a://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER");
+        assert!(
+            err.contains("Error parsing s3a URL: invalid port number"),
+            "{err}"
+        );
+        assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
+        // A leading digit, then an '@': neither is a scheme, so none of the input is echoed.
+        let err = error("1alice:SECRET@host://x");
+        assert!(err.contains("Error parsing URL: "), "{err}");
+        assert!(!err.contains("alice") && !err.contains("SECRET"), "{err}");
+        let err = error("alice@host://x");
+        assert!(err.contains("Error parsing URL: "), "{err}");
+        assert!(!err.contains("alice") && !err.contains("host"), "{err}");
     }
 
     #[test]
@@ -485,5 +524,31 @@ mod tests {
         // A hostless URL with no promotable first segment errors, so the scan fails loudly rather
         // than opening a bucketless URL. (The JVM gate already declines these; defense in depth.)
         assert!(promote_hostless_alias_url("blob:///").is_err());
+    }
+
+    #[test]
+    fn promote_errors_do_not_echo_the_url() {
+        let err =
+            promote_hostless_alias_url("blob://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER")
+                .unwrap_err()
+                .to_string();
+        for leaked in ["alice", "SECRET", "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+        assert!(
+            err.contains("Error parsing blob URL: invalid port number"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn missing_bucket_error_does_not_echo_the_query() {
+        let err = match normalize_object_store_url("blob:///?sig=SAS-MARKER", &configs_with("blob"))
+        {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("a URL with no bucket was normalized"),
+        };
+        assert!(!err.contains("SAS-MARKER"), "SAS-MARKER echoed: {err}");
+        assert!(err.contains("blob:// URL is missing bucket name"), "{err}");
     }
 }
