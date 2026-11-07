@@ -197,10 +197,10 @@ private[rules] object MakeDateEvaluation {
       .getOrElse(plan)
 
   /**
-   * Run before bottom-up conversion and join rewriting. Reasons propagate back to the consuming
-   * operator, keeping the row pipeline together instead of inserting an eager Arrow batch between
-   * a throwing projection and its lazy consumer. Exchanges materialize their input independently;
-   * local sorts and aggregates do so only after their consumer requests input.
+   * Run before bottom-up conversion. Reasons propagate back to the consuming operator, keeping
+   * the row pipeline together instead of inserting an eager Arrow batch between a throwing
+   * projection and its lazy consumer. Exchanges materialize their input independently; local
+   * sorts and aggregates do so only after their consumer requests input.
    */
   def preserve(plan: SparkPlan): SparkPlan = {
     if (!enabled(plan)) return plan

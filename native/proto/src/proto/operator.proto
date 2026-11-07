@@ -1255,6 +1255,11 @@ message Window {
   // The partition keys ascending, when Spark planned no sort below the window because its input
   // reports that order. Empty otherwise.
   repeated spark.spark_expression.Expr input_sort_orders = 5;
+  // The order the input reports and Spark relies on, when Comet cannot verify it, led by the
+  // window's PARTITION BY keys ascending and its ORDER BY keys in place of the reported keys they
+  // match. The native window sorts its input by it unless the input is already in that order.
+  // Never sent together with input_sort_orders.
+  repeated spark.spark_expression.Expr unverified_input_sort_orders = 6;
 }
 
 // Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec

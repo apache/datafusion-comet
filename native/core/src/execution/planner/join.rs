@@ -538,8 +538,9 @@ impl PhysicalPlanner {
     /// keeps it natively and says so, and a Comet leaf that reports one is a source this walk
     /// knows or declares its order itself, as the native range does. One that does not lands
     /// here with `plan` unchanged, and the join then moves its unmatched rows after Spark has
-    /// dropped the sort above it, or the window rejects its input. Nothing here can fall back at
-    /// that point, so the invariant is kept at the operator: see "Adding a New Operator" in the
+    /// dropped the sort above it, or the window sorts its input by its own keys only, which
+    /// loses any longer order Spark relies on above it. Nothing here can fall back at that
+    /// point, so the invariant is kept at the operator: see "Adding a New Operator" in the
     /// contributor guide.
     pub(super) fn with_declared_order(
         &self,
