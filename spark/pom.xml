@@ -668,10 +668,12 @@ under the License.
           <generateGitPropertiesFile>true</generateGitPropertiesFile>
           <generateGitPropertiesFilename>${project.build.outputDirectory}/comet-git-info.properties</generateGitPropertiesFilename>
           <commitIdGenerationMode>full</commitIdGenerationMode>
+          <dateFormatTimeZone>UTC</dateFormatTimeZone>
           <includeOnlyProperties>
             <includeOnlyProperty>^git.branch$</includeOnlyProperty>
             <includeOnlyProperty>^git.build.*$</includeOnlyProperty>
             <includeOnlyProperty>^git.commit.id.(abbrev|full)$</includeOnlyProperty>
+            <includeOnlyProperty>^git.commit.time$</includeOnlyProperty>
             <includeOnlyProperty>^git.remote.*$</includeOnlyProperty>
           </includeOnlyProperties>
         </configuration>
