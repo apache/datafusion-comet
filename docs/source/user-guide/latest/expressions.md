@@ -75,7 +75,7 @@ The file-metadata functions `input_file_name`, `input_file_block_start`, and `in
 
 Note that `median` and `mode` are supported: they are mainstream exact aggregates. `mode` runs natively only with `spark.comet.expression.Mode.allowIncompatible=true`. `approx_count_distinct` is supported because Comet ports Spark's `HyperLogLogPlusPlus` exactly, so its result is bit-identical to Spark.
 
-The Apache DataSketches HLL functions (`hll_sketch_agg`, `hll_union_agg`, `hll_sketch_estimate`, `hll_union`) are the one sketch family Comet does accelerate, on Spark 4.0+. The sketches are mutually readable with Spark's, but the point estimate can differ slightly after a merge, so the native path is off by default and opt-in per expression via `allowIncompatible` — see the rows below.
+The Apache DataSketches HLL functions (`hll_sketch_agg`, `hll_union_agg`, `hll_sketch_estimate`, `hll_union`) are the one sketch family Comet does accelerate, on Spark 4.0+. `hll_sketch_estimate` runs natively by default because its estimate matches Spark exactly. The other three return sketches in a compact byte layout where Spark writes the updatable one, and their estimates can differ slightly after a merge, so their native path is off by default and opt-in per expression via `allowIncompatible` — see the rows below.
 
 The tables below list every Spark built-in expression with its current status.
 
@@ -507,7 +507,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `current_schema` | ✅ | — | Alias of `current_database`; resolved to a literal by the analyzer |
 | `current_user` | ✅ | — | Resolved to a literal by the analyzer; same as `user` |
 | `equal_null` | ✅ | — | Lowers to `<=>` (`EqualNullSafe`) |
-| `hll_sketch_estimate` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
+| `hll_sketch_estimate` | ✅ | Native | Spark 4.0+ only ([details](compatibility/expressions/misc.md)) |
 | `hll_union` | ✅ | Native | Spark 4.0+ only; falls back by default, the native path is opt-in via allowIncompatible ([details](compatibility/expressions/misc.md)) |
 | `is_variant_null` | 🔜 | — | Requires `VariantType` support |
 | `monotonically_increasing_id` | ✅ | Native |  |

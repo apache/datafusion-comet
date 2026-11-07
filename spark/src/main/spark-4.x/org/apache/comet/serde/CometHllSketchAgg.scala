@@ -44,8 +44,8 @@ object CometHllSketchAgg extends CometAggregateExpressionSerde[HllSketchAgg] {
   private val inputTypeReason =
     "Only int, long, string, and binary input types are supported."
   private val incompatReason =
-    "Comet uses a Rust DataSketches port; HLL sketch bytes and estimates may differ " +
-      "slightly from Spark."
+    s"${CometHllReasons.sketchBytesReason} The estimate of a sketch merged from more than " +
+      "one partition can also differ from Spark by up to about 0.8%."
 
   override def getUnsupportedReasons(): Seq[String] =
     Seq(nonLiteralLgConfigKReason, lgConfigKRangeReason, inputTypeReason)

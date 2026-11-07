@@ -72,6 +72,22 @@
 - Performance (tuned 2026-09-09, PR [#5803](https://github.com/apache/datafusion-comet/pull/5803)): as for [collect_list](#collect-list), grouped `collect_set` no longer goes through `GroupsAccumulatorAdapter`. `CollectSetGroupsAccumulator` encodes each batch once for all of its groups and deduplicates against an open-addressed index over a shared arena, replacing one hash table plus one owned `Row` per distinct value per group. 60-93% faster ([#5797](https://github.com/apache/datafusion-comet/issues/5797)). Benchmark: `benches/collect.rs`.
 - `CometCollectSet` reports `Incompatible` for float and double input when `spark.comet.exec.strictFloatingPoint=true`, because the native distinct comparison treats `NaN == NaN` and collapses repeated `NaN`s into a single element while Spark keeps each one. The native path for floating-point input is then opt-in via `spark.comet.expression.CollectSet.allowIncompatible=true`. All other input types are `Compatible`.
 
+## hll_sketch_agg
+
+- Spark 3.5.9 (audited 2026-11-06): `HllSketchAgg(child, lgConfigK)` is a `TypedImperativeAggregate` over a DataSketches-Java `HllSketch` (`HLL_8`, `lgConfigK` 4-21, default 12). It accepts int, long, string and binary input, skips NULLs and empty strings or binaries, and returns `HllSketch.toUpdatableByteArray`. Comet registers its serdes only for Spark 4.x, so Spark 3.5 always falls back.
+- Spark 4.0.4 (audited 2026-11-06): adds collation support. Strings are hashed through `CollationFactory.getCollationKey(...).toString`, so invalid UTF-8 is replaced with U+FFFD before hashing. Comet hashes the raw bytes and differs only on invalid UTF-8 input. Bundles DataSketches-Java 6.1.1.
+- Spark 4.1.3 (audited 2026-11-06): `lgConfigK` must be foldable, and strings are hashed through the collation sort key. Bundles DataSketches-Java 6.2.0, whose `hll` package is identical to 6.1.1.
+- Spark 4.2.0 (audited 2026-11-06): only the expression group moves from `misc_funcs` to `sketch_funcs`.
+- Comet (datasketches crate 0.6.0): estimates of single-partition sketches are bit-identical to Spark across 4030 cases. Sketches still in LIST or SET mode are serialized in the compact layout where Spark writes the updatable one, so the bytes differ ([#7548](https://github.com/apache/datafusion-comet/issues/7548)), and merging partial sketches from more than one partition can change the estimate by up to 0.81%. The expression stays `Incompatible` ([#7396](https://github.com/apache/datafusion-comet/issues/7396)).
+
+## hll_union_agg
+
+- Spark 3.5.9 (audited 2026-11-06): `HllUnionAgg(child, allowDifferentLgConfigK)` unions binary sketches with a DataSketches-Java `Union` and returns the updatable bytes of the result. Different `lgConfigK` values raise `HLL_UNION_DIFFERENT_LG_K` unless `allowDifferentLgConfigK` is true, and an invalid buffer raises `HLL_INVALID_INPUT_SKETCH_BUFFER`. Spark 3.5 always falls back in Comet.
+- Spark 4.0.4 (audited 2026-11-06): catches more DataSketches exceptions as `HLL_INVALID_INPUT_SKETCH_BUFFER`. Bundles DataSketches-Java 6.1.1.
+- Spark 4.1.3 (audited 2026-11-06): identical to 4.0.4 apart from DataSketches-Java 6.2.0.
+- Spark 4.2.0 (audited 2026-11-06): only the expression group changes.
+- Comet: estimates of the result match Spark (integer estimates identical, doubles within 1e-9 at `lgConfigK` 21). The result bytes differ for LIST and SET sketches ([#7548](https://github.com/apache/datafusion-comet/issues/7548)), so the expression stays `Incompatible`. Errors fail on the same inputs as Spark but with a Comet error class ([#7549](https://github.com/apache/datafusion-comet/issues/7549)).
+
 ## listagg
 
 - Spark 3.4.3 (audited 2026-07-03): does not exist. `ListAgg` was added in Spark 4.0.
