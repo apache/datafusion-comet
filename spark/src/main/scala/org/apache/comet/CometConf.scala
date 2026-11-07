@@ -121,6 +121,17 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_PARTIAL_PUSHDOWN_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.partialPushdown.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan pushes supported conjuncts of a residual filter " +
+          "when the complete filter cannot be pushed. This can reduce reads, but adds reader " +
+          "filtering work when most rows match. When false, only residuals that convert in " +
+          "full are pushed. The filter above the scan evaluates the complete condition.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
