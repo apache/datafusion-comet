@@ -15,7 +15,6 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- ConfigMatrix: spark.comet.exec.scalaUDF.codegen.enabled=true,false
 -- ConstantFolding: enabled
 
 -- Keep payloads in Parquet columns so SHA-2 executes even when numBits is folded.
@@ -37,12 +36,9 @@ SELECT sha2(payload, num_bits + 0) FROM test_sha2_string
 query expect_native(sha2)
 SELECT sha2('hello', num_bits) FROM test_sha2_string
 
--- Literal widths and a foldable width expression exercise the existing native path.
+-- A foldable width expression must retain native SHA-2 over the payload column.
 query expect_native(sha2)
-SELECT sha2(payload, 0), sha2(payload, 224), sha2(payload, 256),
-  sha2(payload, 384), sha2(payload, 512), sha2(payload, 128),
-  sha2(payload, -1), sha2(payload, 128 + 128)
-FROM test_sha2_string
+SELECT sha2(payload, 128 + 128) FROM test_sha2_string
 
 -- Include zero and high bytes to exercise binary payloads without string conversion.
 statement

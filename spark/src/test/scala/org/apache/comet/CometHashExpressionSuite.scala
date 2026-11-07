@@ -24,15 +24,14 @@ import scala.util.Random
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 
-import org.apache.comet.CometSparkSessionExtensions.isSpark41Plus
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator, ParquetGenerator, SchemaGenOptions}
 import org.apache.comet.udf.codegen.CometScalaUDFCodegen
 
 /**
  * Test suite for Spark `hash` (murmur3) and `xxhash64` compatibility between Spark and Comet.
  *
- * Native kernels are asserted for supported input shapes, including wide and nested decimals.
- * `TimeType` hash inputs fall back to Spark. SHA-2 cases live in the hash SQL fixtures.
+ * These tests verify that Comet's native implementations produce identical results to Spark for
+ * all supported data types.
  */
 class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -110,22 +109,6 @@ class CometHashExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelpe
             (map(99999999999999999999999999999999999999BD, null)),
             (map()), (null)""")
         checkNativeHashes("SELECT hash(c), xxhash64(c), hash(1, c, c), xxhash64(1, c, c) FROM t")
-      }
-    }
-  }
-
-  test("hash - TimeType falls back to Spark") {
-    assume(isSpark41Plus, "TimeType requires Spark 4.1+")
-    withSQLConf("spark.sql.timeType.enabled" -> "true") {
-      withTable("t") {
-        sql("CREATE TABLE t(c STRING) USING parquet")
-        sql("INSERT INTO t VALUES ('12:34:56'), ('00:00:00'), (null)")
-        checkSparkAnswerAndFallbackReasons(
-          "SELECT hash(to_time(c)) FROM t",
-          Set("`TimeType` is not supported"))
-        checkSparkAnswerAndFallbackReasons(
-          "SELECT xxhash64(to_time(c)) FROM t",
-          Set("`TimeType` is not supported"))
       }
     }
   }

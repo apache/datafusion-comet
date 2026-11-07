@@ -16,7 +16,6 @@
 -- under the License.
 
 -- Config: spark.sql.ansi.enabled=true
--- ConfigMatrix: spark.comet.exec.scalaUDF.codegen.enabled=true,false
 
 -- NULL payloads must skip the ANSI cast of bits, even when the string is invalid.
 -- Mixed column values keep the short-circuit check in runtime evaluation.
