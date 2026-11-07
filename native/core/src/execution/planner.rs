@@ -25,6 +25,7 @@ mod literal;
 pub mod macros;
 mod merge_rows;
 pub mod operator_registry;
+mod scalar_expansion;
 mod shuffle;
 mod window;
 mod write;
@@ -1719,10 +1720,12 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
+                let input =
+                    self.bound_scalar_expansion(Arc::clone(&child.native_plan), [&predicate]);
                 // FilterExec merges its output up to its own batch size, 8192 rows by default.
                 // Use the session batch size so it doesn't build batches bigger than that.
                 let filter: Arc<dyn ExecutionPlan> = Arc::new(
-                    FilterExecBuilder::new(predicate, Arc::clone(&child.native_plan))
+                    FilterExecBuilder::new(predicate, input)
                         .with_batch_size(self.session_ctx.copied_config().batch_size())
                         .build()?,
                 );

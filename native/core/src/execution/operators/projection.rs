@@ -80,10 +80,11 @@ impl OperatorBuilder for ProjectionBuilder {
                 }
             }
         }
-        let projection = Arc::new(ProjectionExec::try_new(
-            exprs.iter().cloned(),
+        let input = planner.bound_scalar_expansion(
             Arc::clone(&child.native_plan),
-        )?);
+            exprs.iter().map(|expr| &expr.expr),
+        );
+        let projection = Arc::new(ProjectionExec::try_new(exprs.iter().cloned(), input)?);
 
         let spark_plan = if child.plan_id == spark_plan.plan_id {
             let mut additional_native_plans = vec![Arc::clone(&child.native_plan)];
