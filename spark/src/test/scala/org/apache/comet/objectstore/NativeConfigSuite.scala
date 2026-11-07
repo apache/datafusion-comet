@@ -25,6 +25,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 import org.apache.comet.objectstore.AbfsAuthResolver.{Keys, Markers, Providers}
@@ -554,6 +555,20 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       // ABFS keeps the container from the user info; WASB does not.
       Case(s"abfss://container@$account/k.parquet", "", "", s"abfss://container@$account", false),
       Case(s"abfs://container@$account/k.parquet", "", "", s"abfs://container@$account", false),
+      // The password never joins the key; credentials come from the configuration.
+      Case(
+        s"abfss://container:secret@$account/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account",
+        hdfs = false),
+      Case(s"abfss://:secret@$account/k.parquet", "", "", s"abfss://$account", hdfs = false),
+      Case(
+        s"abfss://container:secret@$account:8443/k.parquet",
+        "",
+        "",
+        s"abfss://container@$account:8443",
+        hdfs = false),
       Case(
         "wasbs://container@account.blob.core.windows.net/k.parquet",
         "",
@@ -716,6 +731,84 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       Seq(abfsFile("data", "accta", "a.parquet"), abfsFile("data", "acctb", "b.parquet")))
   }
 
+  test("extractScanObjectStoreOptions - a decline names ABFS stores without password or query") {
+    val hadoopConf = new Configuration()
+    hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
+    val uris = Seq("SECRET", "OTHER").map { password =>
+      new URI(s"abfss://data:$password@accta.dfs.core.windows.net/path/a.parquet?sig=SAS-MARKER")
+    }
+
+    def declineReason(uris: Seq[URI]): String =
+      NativeConfig.extractScanObjectStoreOptions(hadoopConf, uris) match {
+        case Left(reason) =>
+          Seq("SECRET", "OTHER", "SAS-MARKER", "/path").foreach { leaked =>
+            reason should not include leaked
+          }
+          reason
+        case Right(options) => fail(s"expected a decline, got $options")
+      }
+
+    declineReason(uris) should include(
+      "(abfss://data@accta.dfs.core.windows.net, with different user info)")
+    val otherContainer =
+      new URI("abfss://logs:OTHER@accta.dfs.core.windows.net/path/b.parquet?sig=SAS-MARKER")
+    declineReason(Seq(uris.head, otherContainer)) should include(
+      "(abfss://data@accta.dfs.core.windows.net and abfss://logs@accta.dfs.core.windows.net)")
+  }
+
+  test("authorityWithoutPassword - an authority without a password is returned as is") {
+    for (authority <- Seq("container@acct.dfs.core.windows.net", "container@acct:8443")) {
+      val uri = new URI(s"abfss://$authority/k.parquet")
+      NativeConfig.authorityWithoutPassword(uri) should be theSameInstanceAs uri.getRawAuthority
+    }
+    NativeConfig.authorityWithoutPassword(new URI("/tmp/t/k.parquet")) shouldBe ""
+  }
+
+  test("displayAuthority - lowercase scheme and no password, path or query") {
+    NativeConfig.displayAuthority(
+      new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
+      "abfss://data@acct.dfs.core.windows.net:8443"
+    NativeConfig.displayAuthority(new URI("/tmp/t/k.parquet")) shouldBe "file://"
+  }
+
+  test("displayPath - no password, query or fragment, and user info masked outside ABFS") {
+    val cases = Seq(
+      "s3a://alice:SECRET@bucket:9000/dir%0A/data?sig=SAS-MARKER#f" ->
+        "s3a://***@bucket:9000/dir%0A/data",
+      "s3a://alice@bucket/k.parquet" -> "s3a://***@bucket/k.parquet",
+      // The ABFS user is the container, which names the store, so it stays.
+      "abfss://data:SECRET@acct.dfs.core.windows.net/p%0A?sig=SAS-MARKER#f" ->
+        "abfss://data@acct.dfs.core.windows.net/p%0A",
+      "file:///tmp/dir%0A/data?sig=SAS-MARKER#f" -> "file:///tmp/dir%0A/data",
+      "s3a://alice:SECRET@[::1]:9000/p?sig=SAS-MARKER" -> "s3a://***@[::1]:9000/p",
+      // Opaque: there is no authority or path to tell apart from a secret.
+      "s3a:alice:SECRET@bucket/p?sig=SAS-MARKER" -> "s3a:")
+    for ((raw, shown) <- cases) {
+      val display = NativeConfig.displayPath(new URI(raw))
+      Seq("alice", "SECRET", "SAS-MARKER").foreach(marker => display should not include marker)
+      display shouldBe shown
+    }
+
+    // An underscore makes the authority registry-based: no parsed user info, but the raw
+    // authority still holds it.
+    val registryBased = new URI("s3a://alice:SECRET@my_bucket/p?sig=SAS-MARKER")
+    registryBased.getRawUserInfo shouldBe null
+    NativeConfig.displayPath(registryBased) shouldBe "s3a://***@my_bucket/p"
+
+    // Nothing to hide: the URI reads as before, spelling included.
+    val plain = Seq(
+      new URI("file:///tmp/dir%0A/data"),
+      new URI("hdfs://nn:8020/t"),
+      new URI("abfss://data@acct.dfs.core.windows.net/p"),
+      new Path(new Path("file:/tmp/table"), "part-00000\n.snappy.parquet").toUri)
+    plain.foreach(uri => NativeConfig.displayPath(uri) shouldBe uri.toString)
+    NativeConfig.displayPath(plain.last) shouldBe "file:/tmp/table/part-00000%0A.snappy.parquet"
+
+    // Hadoop's Path has no query: it encodes `?` into the path, which is kept like any path.
+    NativeConfig.displayPath(new Path("s3a://bucket/dir\n/data?sig=X").toUri) shouldBe
+      "s3a://bucket/dir%0A/data%3Fsig=X"
+  }
+
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {
     val hadoopConf = new Configuration()
     hadoopConf.set("fs.azure.account.key.accta.dfs.core.windows.net", "a2V5LWE=")
@@ -822,6 +915,17 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
     val userbound = AbfsAuthResolver.Declined("UserboundSASWithOAuth", None)
     AbfsAuthResolver.nativeFallbackReason(uri, userbound).get should include(
       "auth type UserboundSASWithOAuth")
+  }
+
+  test("nativeFallbackReason - renders the location as the resolver's other messages do") {
+    val uri =
+      new URI("ABFSS://data:pw-secret@acct.dfs.core.windows.net/dir/f.parquet?sig=SAS-MARKER")
+    val reason =
+      AbfsAuthResolver.nativeFallbackReason(uri, AbfsAuthResolver.Declined("Custom", None)).get
+    reason should include(NativeConfig.displayAuthority(uri))
+    reason should include("abfss://data@acct.dfs.core.windows.net")
+    reason should not include "pw-secret"
+    reason should not include "SAS-MARKER"
   }
 
   test("nativeStoreError - passes native's answer through") {
