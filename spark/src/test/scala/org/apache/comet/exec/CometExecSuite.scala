@@ -3994,6 +3994,62 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // https://github.com/apache/datafusion-comet/issues/7208
+  test("AQE does not split a skewed rebalance partition under operators that need clustering") {
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "true",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "200",
+      SQLConf.ADVISORY_PARTITION_SIZE_IN_BYTES.key -> "2k",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      SQLConf.ADAPTIVE_AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1") {
+      withTempPath { dir =>
+        spark
+          .range(0, 40000, 1, 8)
+          .selectExpr("CASE WHEN id % 10 = 0 THEN 0L ELSE id % 1000 END AS k", "id AS v")
+          .write
+          .parquet(dir.getCanonicalPath)
+
+        withParquetTable(dir.getCanonicalPath, "rebalance_t1") {
+          def checkNotSplit(query: String, expected: Class[_]*): Unit = {
+            val (_, cometPlan) = checkSparkAnswer(query)
+            expected.foreach { cls =>
+              assert(
+                collect(cometPlan) { case op if cls.isInstance(op) => op }.nonEmpty,
+                cometPlan)
+            }
+            val skewedReads = collect(cometPlan) {
+              case r: AQEShuffleReadExec if r.hasSkewedPartition => r
+            }
+            assert(skewedReads.isEmpty, cometPlan)
+          }
+
+          val rebalanced = "(SELECT /*+ REBALANCE(k) */ * FROM rebalance_t1)"
+          val window =
+            s"SELECT k, row_number() OVER (PARTITION BY k ORDER BY v) rn FROM $rebalanced"
+          checkNotSplit(s"SELECT k, sum(v), count(*) FROM $rebalanced GROUP BY k")
+          // operators between the shuffle and the aggregate pass its partitioning through
+          checkNotSplit(
+            s"SELECT k, sum(w) FROM (SELECT k, v + 1 AS w FROM $rebalanced WHERE v > 5) GROUP BY k")
+          checkNotSplit(window)
+          checkNotSplit(s"SELECT * FROM ($window) WHERE rn <= 2")
+
+          // The join is the only operator that needs the clustering, so it alone has to stop the
+          // split. The right side has one row per key, which keeps the join's output small.
+          withParquetTable((0 until 1000).map(i => (i.toLong, i.toLong)), "rebalance_t2") {
+            val rebalanced2 = "(SELECT /*+ REBALANCE(k) */ _1 AS k, _2 AS w FROM rebalance_t2)"
+            val join = s"SELECT a.k, a.v, b.w FROM $rebalanced a JOIN $rebalanced2 b ON a.k = b.k"
+            checkNotSplit(join, classOf[CometSortMergeJoinExec])
+            withSQLConf(
+              SQLConf.PREFER_SORTMERGEJOIN.key -> "false",
+              "spark.sql.join.forceApplyShuffledHashJoin" -> "true") {
+              checkNotSplit(join, classOf[CometHashJoinExec])
+            }
+          }
+        }
+      }
+    }
+  }
+
   // https://github.com/apache/spark/blob/v4.1.3/sql/core/src/test/scala/org/apache/spark/sql/execution/CoalesceShufflePartitionsSuite.scala#L466-L484
   test("AQE coalesces each branch of a union whose shuffles have different partition counts") {
     // Every leaf below the union is a shuffle stage, so Spark's rule coalesces its shuffles
