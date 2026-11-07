@@ -17,7 +17,6 @@
 
 -- MinSparkVersion: 4.0
 -- Config: spark.comet.expression.HllSketchAgg.allowIncompatible=true
--- Config: spark.comet.expression.HllSketchEstimate.allowIncompatible=true
 -- Config: spark.sql.files.openCostInBytes=134217728
 
 -- Until a group's sketch holds the register array, its estimate depends only on the coupons it

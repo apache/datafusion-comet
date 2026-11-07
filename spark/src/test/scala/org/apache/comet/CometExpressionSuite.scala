@@ -4377,15 +4377,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hll_sketch_agg and hll_sketch_estimate (incompatible, opt-in)") {
+  test("hll_sketch_agg falls back by default and hll_sketch_estimate runs natively") {
     assume(isSpark40Plus)
-    // HLL is approximate: Comet's Rust DataSketches estimator differs slightly from
-    // Spark's after a merge, so these functions are Incompatible. Opt in, assert the
-    // query runs natively (no fallback), and that the estimate is within HLL error of
-    // the TRUE distinct count (700). Do NOT compare bit-exactly to Spark.
-    withSQLConf(
-      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
-      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+    withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
+      // hll_sketch_agg stays Incompatible because its sketch bytes differ from Spark's. The
+      // sketches are written by Spark, and hll_sketch_estimate reads them natively.
+      withTable("sketches") {
+        sql(
+          "CREATE TABLE sketches USING parquet AS " +
+            "SELECT _1 % 3 AS g, hll_sketch_agg(_2) AS s FROM tbl GROUP BY _1 % 3")
+        checkSparkAnswerAndOperator("SELECT g, hll_sketch_estimate(s) FROM sketches")
+      }
+      checkSparkAnswerAndFallbackReason(
+        "SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl",
+        "compact layout")
+    }
+  }
+
+  test("hll_sketch_agg and hll_sketch_estimate (hll_sketch_agg opt-in)") {
+    assume(isSpark40Plus)
+    // hll_sketch_agg is Incompatible: its sketch bytes differ from Spark's, and the estimate
+    // can differ slightly after a merge. Opt in, assert the query runs natively (no fallback),
+    // and that the estimate is within HLL error of the TRUE distinct count (700). Do NOT
+    // compare bit-exactly to Spark.
+    withSQLConf("spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true") {
       withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
         def checkEstimate(query: String): Unit = {
           val df = sql(query)
@@ -4406,7 +4421,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assume(isSpark40Plus)
     withSQLConf(
       "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
-      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
       "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true",
       "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
       withParquetTable((0 until 1000).map(i => (i % 3, i)), "tbl") {
@@ -4485,7 +4499,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       "spark.sql.optimizer.excludedRules" ->
         "org.apache.spark.sql.catalyst.optimizer.NullPropagation",
       "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
-      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
       "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
       withParquetTable((0 until 300).map(i => (i % 2, i)), "tbl") {
         val query =
@@ -4513,9 +4526,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
     // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
     // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
-    withSQLConf(
-      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
-      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+    withSQLConf("spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true") {
       withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
         val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
         checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
