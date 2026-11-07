@@ -45,3 +45,33 @@ SELECT nested[idx] FROM test_get_array_item_complex
 
 query
 SELECT structs[idx] FROM test_get_array_item_complex
+
+-- Non-INT ordinals: Spark keeps the low 32 bits of a BIGINT
+statement
+CREATE TABLE test_get_array_item_ordinals(arr array<int>, b tinyint, s smallint, l bigint) USING parquet
+
+statement
+INSERT INTO test_get_array_item_ordinals VALUES
+  (array(10, 20, 30), 0, 1, 2),
+  (array(10, 20, 30), 2, 0, 1),
+  (array(10, 20, 30), 1, 2, 4294967296),
+  (array(10, 20, 30), 0, 1, 4294967298),
+  (array(10, 20, 30), 0, 0, -4294967296),
+  (array(10, 20, 30), 0, 0, -4294967294),
+  (array(10, 20, 30), -1, -1, 2147483648),
+  (array(10, 20, 30), 3, 3, 4294967295),
+  (array(10, 20, 30), 0, 0, 9223372036854775807),
+  (array(10, 20, 30), 0, 0, -9223372036854775808),
+  (NULL, 0, 0, 0),
+  (array(10, 20), NULL, NULL, NULL)
+
+query
+SELECT arr[b], arr[s], arr[l] FROM test_get_array_item_ordinals
+
+query
+SELECT arr[CAST(1 AS BIGINT)], arr[l - 1], arr[floor(l / 2)] FROM test_get_array_item_ordinals WHERE l BETWEEN 0 AND 2
+
+-- A median: floor(DOUBLE) returns a BIGINT ordinal
+query
+SELECT g, sort_array(collect_list(v))[floor(count(*) / 2)] FROM
+  (SELECT CAST(id % 3 AS INT) g, CAST(id AS INT) v FROM range(10)) GROUP BY g ORDER BY g

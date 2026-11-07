@@ -61,3 +61,26 @@ SELECT arr[-1] FROM ansi_array_oob
 -- literal array with a negative column index
 query expect_error([INVALID_ARRAY_INDEX])
 SELECT array(1, 2, 3)[negative_idx] FROM ansi_array_oob
+
+-- ============================================================================
+-- Non-INT ordinals
+-- ============================================================================
+
+statement
+CREATE TABLE ansi_array_ordinals(arr array<int>, b tinyint, s smallint, l bigint, l_oob bigint) USING parquet
+
+statement
+INSERT INTO ansi_array_ordinals VALUES (array(1, 2, 3), 2, 1, 4294967296, 4294967295)
+
+query
+SELECT arr[b], arr[s], arr[l], arr[l + 2], arr[-l] FROM ansi_array_ordinals
+
+query expect_error_class(INVALID_ARRAY_INDEX)
+SELECT arr[l_oob] FROM ansi_array_ordinals
+
+-- The error reports the narrowed index
+query expect_error(The index -1 is out of bounds)
+SELECT arr[l_oob] FROM ansi_array_ordinals
+
+query expect_error_class(INVALID_ARRAY_INDEX)
+SELECT arr[CAST(b - 3 AS TINYINT)] FROM ansi_array_ordinals
