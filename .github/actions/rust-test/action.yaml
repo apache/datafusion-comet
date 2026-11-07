@@ -45,6 +45,13 @@ runs:
         cd native
         cargo clippy --color=never -p datafusion-comet --all-targets --features python-udf -- -D warnings
 
+    # The JNI client for Comet Native Executors is off by default, so nothing above compiles it.
+    - name: Check native executors feature
+      shell: bash
+      run: |
+        cd native
+        cargo clippy --color=never -p datafusion-comet --all-targets --features native-executors -- -D warnings
+
     - name: Check compilation
       shell: bash
       run: |
@@ -105,6 +112,13 @@ runs:
         cd native
         export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
         RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features python-udf python_udf
+
+    - name: Run native executors client tests
+      shell: bash
+      run: |
+        cd native
+        export LD_LIBRARY_PATH=${JAVA_HOME}/lib/server:${LD_LIBRARY_PATH}
+        RUST_BACKTRACE=1 cargo nextest run -p datafusion-comet --lib --features native-executors native_executors
 
     # The steps above lint and test the accounting allocator over the system allocator. Lint and
     # test it over jemalloc too, since that is a different allocator backend and nothing else in CI

@@ -22,8 +22,9 @@ use std::sync::Arc;
 use arrow::array::{Array, AsArray, BinaryArray, RecordBatch, RecordBatchOptions, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, UInt32Type};
 use datafusion::common::tree_node::TreeNodeRecursion;
-use datafusion::common::{internal_datafusion_err, DataFusionError, Result};
+use datafusion::common::{internal_datafusion_err, plan_datafusion_err, DataFusionError, Result};
 use datafusion::datasource::memory::MemorySourceConfig;
+use datafusion::datasource::source::DataSourceExec;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::memory_pool::{MemoryPool, UnboundedMemoryPool};
 use datafusion::execution::TaskContext;
@@ -41,7 +42,9 @@ use datafusion_comet_proto::spark_operator::{Operator, SparkStructField};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 
-use crate::execution::jni_api::{comet_runtime_env, comet_session_context};
+use crate::execution::jni_api::{
+    comet_runtime_env, comet_session_context, NATIVE_EXECUTORS_FRAGMENT,
+};
 use crate::execution::planner::{
     align_shuffle_writer_input, convert_spark_types_to_arrow_schema, PhysicalPlanner,
 };
@@ -51,6 +54,14 @@ use crate::execution::spark_config::{
 };
 
 const DEFAULT_BATCH_SIZE: usize = 8192;
+
+/// The most partitions a stage or an exchange may have. A request names the counts, and the
+/// scheduler allocates for each partition, so a request can't ask for more than this. Spark's
+/// own default is 200 shuffle partitions, and large queries use a few thousand.
+pub const MAX_PARTITIONS: usize = 1 << 16;
+
+/// The largest `spark.comet.batchSize` a request may set. Each operator sizes its buffers by it.
+const MAX_BATCH_SIZE: usize = 1 << 20;
 
 fn descriptor_schema() -> SchemaRef {
     Arc::new(Schema::new(vec![
@@ -71,6 +82,11 @@ pub fn partition_descriptor(
     num_partitions: usize,
     plans: &[Vec<u8>],
 ) -> Result<Arc<dyn ExecutionPlan>> {
+    if num_partitions == 0 || num_partitions > MAX_PARTITIONS {
+        return Err(plan_datafusion_err!(
+            "A stage must have between 1 and {MAX_PARTITIONS} partitions, not {num_partitions}"
+        ));
+    }
     let schema = descriptor_schema();
     let partitions = (0..num_partitions)
         .map(|index| {
@@ -86,6 +102,29 @@ pub fn partition_descriptor(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(MemorySourceConfig::try_new_exec(&partitions, schema, None)?)
+}
+
+/// The partitions' own copies of the block in a fragment's partition `descriptor`, one per
+/// partition, or none when its partitions all run the fragment's block.
+pub fn partition_plans(descriptor: &Arc<dyn ExecutionPlan>) -> Result<Vec<Vec<u8>>> {
+    let memory = descriptor
+        .downcast_ref::<DataSourceExec>()
+        .and_then(|source| source.data_source().downcast_ref::<MemorySourceConfig>())
+        .ok_or_else(|| internal_datafusion_err!("Not a fragment's partition descriptor"))?;
+    let mut plans = Vec::new();
+    for partition in memory.partitions() {
+        let [batch] = partition.as_slice() else {
+            return Err(internal_datafusion_err!(
+                "A fragment's partition descriptor must have one row per partition"
+            ));
+        };
+        let column = batch.column(1).as_binary::<i32>();
+        if column.is_null(0) {
+            return Ok(vec![]);
+        }
+        plans.push(column.value(0).to_vec());
+    }
+    Ok(plans)
 }
 
 /// Runs a Comet native block for each partition of a stage.
@@ -126,15 +165,6 @@ impl CometFragmentExec {
             ));
         }
         let partitions = descriptor.output_partitioning().partition_count();
-        for (index, (input, broadcast)) in inputs.iter().zip(&fragment.broadcast).enumerate() {
-            let expected = if *broadcast { 1 } else { partitions };
-            let actual = input.output_partitioning().partition_count();
-            if actual != expected {
-                return Err(internal_datafusion_err!(
-                    "CometFragmentExec input {index} has {actual} partitions, expected {expected}"
-                ));
-            }
-        }
         let props = Arc::new(PlanProperties::new(
             EquivalenceProperties::new(fragment_schema(&fragment.output_schema)),
             Partitioning::UnknownPartitioning(partitions),
@@ -151,13 +181,41 @@ impl CometFragmentExec {
     pub fn fragment(&self) -> &Arc<Fragment> {
         &self.fragment
     }
+
+    /// Checks that each input's partitions line up with the descriptor's. This is checked when the
+    /// plan runs rather than when it is built, since an optimizer can rebuild the node with an
+    /// input whose exchange it has taken away and is about to put back.
+    fn check_inputs(&self) -> Result<()> {
+        let partitions = self.props.output_partitioning().partition_count();
+        if self.children.len() != self.fragment.broadcast.len() + 1 {
+            return Err(internal_datafusion_err!(
+                "CometFragmentExec has {} inputs but {} broadcast flags",
+                self.children.len() - 1,
+                self.fragment.broadcast.len()
+            ));
+        }
+        for (index, (input, broadcast)) in self.children[1..]
+            .iter()
+            .zip(&self.fragment.broadcast)
+            .enumerate()
+        {
+            let expected = if *broadcast { 1 } else { partitions };
+            let actual = input.output_partitioning().partition_count();
+            if actual != expected {
+                return Err(internal_datafusion_err!(
+                    "CometFragmentExec input {index} has {actual} partitions, expected {expected}"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The schema of a fragment's output: the types Spark declared for it, every column nullable.
 /// The cast to those types keeps a column nullable wherever the block's output is, even where
 /// Spark knows it has no nulls, such as a join key a filter has checked, so a fragment can't
 /// promise more. Nothing between stages relies on a column having no nulls.
-fn fragment_schema(output_schema: &[SparkStructField]) -> SchemaRef {
+pub fn fragment_schema(output_schema: &[SparkStructField]) -> SchemaRef {
     let declared = convert_spark_types_to_arrow_schema(output_schema);
     let fields: Vec<Field> = declared
         .fields()
@@ -193,10 +251,13 @@ impl ExecutionPlan for CometFragmentExec {
 
     /// The descriptor's and the partitioned inputs' partitions line up with this plan's, while a
     /// broadcast input is read whole by every partition, so a distributed engine must not split
-    /// it between tasks.
+    /// it between tasks. A stage with one partition reads every input as one partition, which
+    /// keeps an optimizer such as `EnsureRequirements` from removing the coalesce that gathers
+    /// it.
     fn input_distribution_requirements(&self) -> InputDistributionRequirements {
+        let single = self.props.output_partitioning().partition_count() == 1;
         let inputs = self.fragment.broadcast.iter().map(|broadcast| {
-            if *broadcast {
+            if *broadcast || single {
                 Distribution::SinglePartition
             } else {
                 Distribution::UnspecifiedDistribution
@@ -237,6 +298,7 @@ impl ExecutionPlan for CometFragmentExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
+        self.check_inputs()?;
         let descriptor = Arc::clone(&self.children[0]);
         let inputs = self.children[1..]
             .iter()
@@ -350,14 +412,16 @@ fn fragment_session(
 ) -> Result<Arc<SessionContext>> {
     let mut runtime = comet_runtime_env(memory_pool);
     runtime.disk_manager = disk_manager;
-    let session = comet_session_context(
-        runtime,
-        conf.get_usize(COMET_BATCH_SIZE, DEFAULT_BATCH_SIZE),
-        1,
-        conf,
-        spark_plan,
-    )
-    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+    let mut conf = conf.clone();
+    conf.insert(NATIVE_EXECUTORS_FRAGMENT.to_string(), "true".to_string());
+    let batch_size = conf.get_usize(COMET_BATCH_SIZE, DEFAULT_BATCH_SIZE);
+    if batch_size == 0 || batch_size > MAX_BATCH_SIZE {
+        return Err(plan_datafusion_err!(
+            "{COMET_BATCH_SIZE} must be between 1 and {MAX_BATCH_SIZE}, not {batch_size}"
+        ));
+    }
+    let session = comet_session_context(runtime, batch_size, 1, &conf, spark_plan)
+        .map_err(|e| DataFusionError::External(Box::new(e)))?;
     Ok(Arc::new(session))
 }
 
