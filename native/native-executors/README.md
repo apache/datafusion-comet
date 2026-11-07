@@ -29,6 +29,9 @@ This directory holds the cluster. The Spark driver side is in progress in
 [#7289](https://github.com/apache/datafusion-comet/pull/7289). It is its own Cargo workspace, so the
 main Comet build never depends on Ballista.
 
+**Security.** The scheduler and the executors have no authentication and no TLS, and a query names
+the files and object stores the executors read. Run a cluster only on a trusted network.
+
 ## The scheduler's Flight service
 
 A client runs a query through the scheduler's Arrow Flight service:
@@ -39,11 +42,16 @@ A client runs a query through the scheduler's Arrow Flight service:
    from another Comet build and plans each block with Comet's planner to check it. That builds no
    object store for the block's files, so the scheduler uses no storage credentials. It then
    builds a Ballista physical plan (`src/assembly.rs`), runs it on the Ballista scheduler it
-   wraps, and answers with one endpoint per result partition.
+   wraps, and answers with one endpoint per result partition. It refuses a request with more
+   partitions or a larger batch size than a cluster plausibly needs, a stage whose block reads a
+   different number of inputs than the stage declares, and a block that writes files.
 2. `DoGet` with each endpoint's ticket, at the endpoint's location: the executor that holds the
    partition. A query's results stay there for `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` after
    the query ends (five minutes by default), whether or not a client has read them, and each
    endpoint's expiration time says until when.
+
+The scheduler cancels a job whose client disconnects, or that runs longer than
+`COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS`.
 
 A stage that several other stages read runs once for each of them, since Ballista's planner
 doesn't share a stage between consumers yet.
@@ -60,8 +68,11 @@ for each partition. Ballista moves the data between stages:
 
 A stage that fails to plan is refused, not run wrongly or loaded with code it names:
 
-- A stage can't call into the JVM: scalar subqueries and JVM UDFs fail to plan, and a scan whose
-  object store needs a JVM credential provider fails when it runs.
+- A stage can't call into the JVM: JVM UDFs and a scalar subquery the driver has not replaced with
+  its value fail to plan, and a scan whose object store needs a JVM credential provider fails when
+  it runs.
+- A stage can't write files: a Parquet writer, an Iceberg write or a shuffle writer in a block is
+  refused. The cluster moves data between stages itself.
 - A stage can't load a native UDF library. These processes serve every client, and a plan names
   the library path, so a client would choose what the processes load.
 - A stage that reads files can't also read a hash exchange. Spark places the rows of a bucketed
@@ -77,7 +88,13 @@ native/target/debug/comet-executor &
 
 Sharing `native/target` with the main workspace saves building the common dependencies twice. Both
 binaries read their settings from environment variables, listed at the top of
-`src/bin/comet-scheduler.rs` and `src/bin/comet-executor.rs`.
+`src/bin/comet-scheduler.rs` and `src/bin/comet-executor.rs`. The scheduler's include:
+
+| Variable                                   | Meaning                                                              |
+| ------------------------------------------ | -------------------------------------------------------------------- |
+| `COMET_SCHEDULER_RESULT_RETENTION_SECONDS` | How long a query's results stay readable after it ends (default 300) |
+| `COMET_SCHEDULER_FLIGHT_MAX_REQUEST_BYTES` | The largest query the Flight service accepts (default 512 MiB)       |
+| `COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS`    | The longest a query may take (default 0: no limit)                   |
 
 ## Testing
 

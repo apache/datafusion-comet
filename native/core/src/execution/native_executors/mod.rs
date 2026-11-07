@@ -26,7 +26,7 @@
 
 mod fragment;
 
-pub use fragment::{block_schema, partition_descriptor, CometFragmentExec};
+pub use fragment::{block_schema, partition_descriptor, CometFragmentExec, MAX_PARTITIONS};
 
 /// The version of this Comet build. A Comet Native Executor cluster requires a driver's to match
 /// its own, together with [`datafusion_comet_proto::PROTO_FINGERPRINT`].

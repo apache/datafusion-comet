@@ -23,6 +23,7 @@
 //! also says when the partition goes: Ballista deletes a query's results a set time after the
 //! query ends, whether or not they have been read (see the comet-scheduler binary).
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -34,13 +35,14 @@ use arrow_flight::{
 use ballista_core::extension::SessionConfigExt;
 use ballista_core::serde::protobuf::{job_status, PartitionLocation, SuccessfulJob};
 use ballista_core::serde::scheduler::{Action as BallistaAction, ShuffleFileKind};
+use ballista_core::JobId;
 use ballista_scheduler::scheduler_server::SchedulerServer;
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::SessionConfig;
 use datafusion_comet_proto::spark_native_executors::QueryRequest;
 use datafusion_proto::protobuf::{LogicalPlanNode, PhysicalPlanNode};
 use futures::stream::BoxStream;
-use log::info;
+use log::{info, warn};
 use prost::Message;
 use prost_types::Timestamp;
 use tonic::{Request, Response, Status, Streaming};
@@ -51,15 +53,33 @@ use crate::assembly::{build_plan, check_version};
 /// executors cache a runtime per session, so sharing one lets queries share those runtimes.
 const SESSION_ID: &str = "comet";
 
+/// How long a query may run.
+#[derive(Clone, Debug, Default)]
+pub struct Limits {
+    /// The longest a query may take, from submission to its end. The scheduler fails and cancels a
+    /// query that runs longer. `None` waits for as long as it takes.
+    pub query_timeout: Option<Duration>,
+}
+
 /// The Flight service of a Comet scheduler, which runs queries on the Ballista scheduler it
 /// wraps.
 pub struct CometFlightService {
     scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    limits: Limits,
 }
 
 impl CometFlightService {
     pub fn new(scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>) -> Self {
-        Self { scheduler }
+        Self {
+            scheduler,
+            limits: Limits::default(),
+        }
+    }
+
+    /// The service with `limits` instead of the defaults.
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
     }
 
     /// Runs `plan` to completion and returns its result: where its output partitions are, in
@@ -79,27 +99,37 @@ impl CometFlightService {
             .await
             .map_err(|e| Status::internal(format!("Cannot submit the query: {e}")))?;
         info!("Submitted query as job {job_id}");
-        while let Some(status) = receiver.recv().await {
-            match status.status {
-                Some(job_status::Status::Successful(mut job)) => {
-                    job.partition_location.sort_by_key(|location| {
-                        let partition = location.partition_id.as_ref().map(|p| p.partition_id);
-                        (partition, location.map_partition_id)
-                    });
-                    return Ok(job);
+        let mut guard = JobGuard {
+            scheduler: self.scheduler.clone(),
+            job_id: Some(job_id.clone()),
+        };
+        let wait = async {
+            while let Some(status) = receiver.recv().await {
+                match status.status {
+                    Some(job_status::Status::Successful(mut job)) => {
+                        guard.finished();
+                        job.partition_location.sort_by_key(|location| {
+                            let partition = location.partition_id.as_ref().map(|p| p.partition_id);
+                            (partition, location.map_partition_id)
+                        });
+                        return Ok(job);
+                    }
+                    Some(job_status::Status::Failed(job)) => {
+                        guard.finished();
+                        return Err(Status::internal(format!(
+                            "Job {job_id} failed: {}",
+                            job.error
+                        )));
+                    }
+                    _ => {}
                 }
-                Some(job_status::Status::Failed(job)) => {
-                    return Err(Status::internal(format!(
-                        "Job {job_id} failed: {}",
-                        job.error
-                    )))
-                }
-                _ => {}
             }
-        }
-        Err(Status::internal(format!(
-            "Job {job_id} ended without a final status"
-        )))
+            guard.finished();
+            Err(Status::internal(format!(
+                "Job {job_id} ended without a final status"
+            )))
+        };
+        within(self.limits.query_timeout, &job_id, wait).await
     }
 
     /// When the executors delete the results of a query that ended at `ended_at`, in milliseconds
@@ -120,6 +150,58 @@ impl CometFlightService {
             .checked_add(Duration::from_secs(retention))
             .map(Timestamp::from)
     }
+}
+
+/// Cancels its job when dropped before [`finished`](Self::finished), as when the driver
+/// disconnects and the request's future is dropped, or a wait times out.
+struct JobGuard {
+    scheduler: SchedulerServer<LogicalPlanNode, PhysicalPlanNode>,
+    job_id: Option<JobId>,
+}
+
+impl JobGuard {
+    /// The job has ended, so there is nothing to cancel.
+    fn finished(&mut self) {
+        self.job_id = None;
+    }
+}
+
+impl Drop for JobGuard {
+    fn drop(&mut self) {
+        let Some(job_id) = self.job_id.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let scheduler = self.scheduler.clone();
+        runtime.spawn(async move {
+            info!("Cancelling job {job_id}, which nothing is waiting for");
+            if let Err(e) = scheduler.cancel_job(job_id.clone()).await {
+                warn!("Cannot cancel job {job_id}: {e}");
+            }
+        });
+    }
+}
+
+/// Waits for `wait`, the end of job `job_id`, for at most `timeout`.
+async fn within<T>(
+    timeout: Option<Duration>,
+    job_id: &JobId,
+    wait: impl Future<Output = Result<T, Status>>,
+) -> Result<T, Status> {
+    let Some(timeout) = timeout else {
+        return wait.await;
+    };
+    tokio::time::timeout(timeout, wait)
+        .await
+        .unwrap_or_else(|_| {
+            Err(Status::deadline_exceeded(format!(
+                "Job {job_id} did not finish within {} seconds \
+                 (COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS) and was cancelled",
+                timeout.as_secs()
+            )))
+        })
 }
 
 /// The Flight endpoint for a result partition: the executor's location, a ticket the executor's
@@ -255,5 +337,38 @@ impl FlightService for CometFlightService {
         _request: Request<Empty>,
     ) -> Result<Response<Self::ListActionsStream>, Status> {
         unimplemented("ListActions")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_wait_past_the_timeout_fails_as_deadline_exceeded() {
+        let job_id = JobId::new("job");
+        let status = within(
+            Some(Duration::from_millis(10)),
+            &job_id,
+            std::future::pending::<Result<(), Status>>(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status.code(), tonic::Code::DeadlineExceeded);
+        assert!(
+            status
+                .message()
+                .contains("COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS"),
+            "{status}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wait_within_the_timeout_or_without_one_returns_its_result() {
+        let job_id = JobId::new("job");
+        for timeout in [None, Some(Duration::from_secs(60))] {
+            let result = within(timeout, &job_id, async { Ok::<_, Status>(7) }).await;
+            assert_eq!(result.unwrap(), 7);
+        }
     }
 }
