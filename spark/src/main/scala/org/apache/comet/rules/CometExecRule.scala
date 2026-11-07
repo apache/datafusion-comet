@@ -1089,13 +1089,20 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    * window trusts that order. A Comet operator that may not keep the order it reports, such as a
    * native nested loop join (#6898), then hands the window rows out of order, and it groups them
    * wrongly.
+   *
+   * The sort is by the whole order the child reports, not only by the part the window needs, or
+   * by the window's own keys when the reported order does not cover them. The window passes that
+   * order on as its own, and Spark planned the operators above around it: a window or a sort
+   * above that needs a longer order got no sort of its own.
    */
   private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
     case window: WindowExecBase
         if window.requiredChildOrdering.head.nonEmpty &&
           CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
-      window.withNewChildren(
-        Seq(SortExec(window.requiredChildOrdering.head, global = false, child = window.child)))
+      val required = window.requiredChildOrdering.head
+      val reported = window.child.outputOrdering
+      val keys = if (SortOrder.orderingSatisfies(reported, required)) reported else required
+      window.withNewChildren(Seq(SortExec(keys, global = false, child = window.child)))
   }
 
   private def _apply(plan: SparkPlan): SparkPlan = {
