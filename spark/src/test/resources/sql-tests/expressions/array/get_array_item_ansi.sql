@@ -75,6 +75,13 @@ INSERT INTO ansi_array_ordinals VALUES (array(1, 2, 3), 2, 1, 4294967296, 429496
 query
 SELECT arr[b], arr[s], arr[l], arr[l + 2], arr[-l] FROM ansi_array_ordinals
 
+-- A literal array with a non-INT column index
+query
+SELECT array(1, 2, 3)[b], array(1, 2, 3)[s], array(1, 2, 3)[l] FROM ansi_array_ordinals
+
+query expect_error(The index -1 is out of bounds)
+SELECT array(1, 2, 3)[l_oob] FROM ansi_array_ordinals
+
 query expect_error_class(INVALID_ARRAY_INDEX)
 SELECT arr[l_oob] FROM ansi_array_ordinals
 

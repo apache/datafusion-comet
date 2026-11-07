@@ -71,6 +71,10 @@ SELECT arr[b], arr[s], arr[l] FROM test_get_array_item_ordinals
 query
 SELECT arr[CAST(1 AS BIGINT)], arr[l - 1], arr[floor(l / 2)] FROM test_get_array_item_ordinals WHERE l BETWEEN 0 AND 2
 
+-- A literal array with a non-INT column index
+query
+SELECT array(10, 20, 30)[b], array(10, 20, 30)[s], array(10, 20, 30)[l] FROM test_get_array_item_ordinals
+
 -- A median: floor(DOUBLE) returns a BIGINT ordinal
 query
 SELECT g, sort_array(collect_list(v))[floor(count(*) / 2)] FROM
