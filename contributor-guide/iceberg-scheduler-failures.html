@@ -769,8 +769,9 @@ stability, and retain each invocation’s evidence.</p>
 <section id="regression-checks">
 <h2>Regression checks<a class="headerlink" href="#regression-checks" title="Link to this heading">#</a></h2>
 <p>Compilation and formatting checks do not replace execution on the required cluster. An Iceberg
-write-path change also needs an upstream Iceberg regression verdict before merging, using the
-<code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label or an appropriate <code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span> <span class="pre">iceberg</span></code> shard as described in
+write-path change also needs an upstream Iceberg regression verdict before merging. Iceberg 1.11
+runs on every matching pull request. For the older versions, use the <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label
+(1.8, 1.9 and 1.10) or an appropriate <code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span> <span class="pre">iceberg</span></code> shard as described in
 <a class="reference internal" href="ci.html"><span class="std std-doc">Continuous Integration</span></a>. That regression run does not replace this scheduler suite.</p>
 </section>
 </section>

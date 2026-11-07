@@ -570,7 +570,7 @@ mechanics behind the configuration are documented in
 preflight checks first (license headers, Markdown formatting, workflow linting, the CI config
 checks), computes which heavy jobs the changed files are relevant to, and fans out to those jobs.
 Which jobs run also depends on the event:</p>
-<object data="../_images/mermaid-09341aca03757d9d3637a2eaff73472d472d0673.svg" type="image/svg+xml">
+<object data="../_images/mermaid-95fdb852c758af8d2ed0bc53c57ae9113670da94.svg" type="image/svg+xml">
             <p class="warning">flowchart LR
   PR([pull request]) --&gt; PRTIER
   PR -. with label .-&gt; QUEUE
@@ -581,8 +581,8 @@ Which jobs run also depends on the event:</p>
   CRON([schedule&lt;br&gt;06:00 UTC]) --&gt; NIGHTLY
   PUSH([push to main]) --&gt; CACHE
 
-  PRTIER[&quot;PR tier&lt;br&gt;Linux build, lint, Rust tests&lt;br&gt;TPC-H / TPC-DS&lt;br&gt;Comet suites, Spark 4.1&quot;]
-  QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1&lt;br&gt;Iceberg 1.11&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
+  PRTIER[&quot;PR tier&lt;br&gt;Linux build, lint, Rust tests&lt;br&gt;TPC-H / TPC-DS&lt;br&gt;Comet suites, Spark 4.1&lt;br&gt;Spark SQL, Spark 4.1 catalyst and sql_core&lt;br&gt;Iceberg 1.11&quot;]
+  QUEUE[&quot;Queue tier, on top of the PR tier&lt;br&gt;Spark SQL, Spark 4.1 sql_hive&lt;br&gt;macOS build and Comet suites&lt;br&gt;Benchmark check, Delta gate&lt;br&gt;PyArrow UDF, Spark 4.0 / 4.1 / 4.2&quot;]
   NIGHTLY[&quot;Nightly tier&lt;br&gt;Comet suites, Spark 3.4 / 3.5 / 4.0 / 4.2&lt;br&gt;Spark SQL, Spark 3.5 / 4.0 / 4.2&lt;br&gt;Iceberg 1.8 / 1.9 / 1.10&lt;br&gt;Delta contrib, Spark 3.5 / 4.0 / 4.1&quot;]
   S34[&quot;Neither tier&lt;br&gt;Spark SQL, Spark 3.4&quot;]
   CACHE[&quot;Cache-refresh-only mode&lt;br&gt;the three cache-writing jobs, plus Lint&quot;]</p></object>
@@ -607,7 +607,7 @@ Which jobs run also depends on the event:</p>
 <td><p>no</p></td>
 </tr>
 <tr class="row-even"><td><p>Spark SQL tests, Spark 4.1, catalyst and sql_core</p></td>
-<td><p>with label</p></td>
+<td><p>yes</p></td>
 <td><p>yes</p></td>
 <td><p>no</p></td>
 </tr>
@@ -617,7 +617,7 @@ Which jobs run also depends on the event:</p>
 <td><p>no</p></td>
 </tr>
 <tr class="row-even"><td><p>Iceberg Spark SQL tests, Iceberg 1.11</p></td>
-<td><p>with label</p></td>
+<td><p>yes</p></td>
 <td><p>yes</p></td>
 <td><p>no</p></td>
 </tr>
@@ -671,8 +671,9 @@ Which jobs run also depends on the event:</p>
 </div>
 <p>The <strong>PR tier</strong> is the fast feedback loop while a change is being iterated on. The <strong>queue
 tier</strong> is the authoritative gate: everything the PR tier runs plus the suites that must pass before
-a change lands, evaluated against the merge result rather than the pull request head. The queue
-runs one Spark version and one Iceberg version, the ones the default build profile targets. The
+a change lands, evaluated against the merge result rather than the pull request head. The pull
+request and the queue run the same Spark version and the same Iceberg version, the ones the default
+build profile targets, so a green pull request run predicts the queue’s verdict on them. The
 <strong>nightly tier</strong> runs the other Spark and Iceberg versions and every Delta contrib suite once a day
 against <code class="docutils literal notranslate"><span class="pre">main</span></code> as it stands;
 see <a class="reference internal" href="#nightly-runs">Nightly runs</a> below. Nothing in the queue tier runs again
@@ -715,8 +716,8 @@ the project spends on CI. So for a pull request from a fork into <code class="do
 fork’s</strong> GitHub runners, not on the Apache Software Foundation’s shared ones. What stays here is the
 preflight checks, <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code>, and any <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suite a maintainer opts the pull request
 into. The merge queue, which also stays here, runs the queue tier on the merge result before anything
-lands: the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and the other queue-tier suites in the
-table above. The nightly-only suites and the opt-in <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suites are not part of it, and path
+lands: the PR tier plus the Spark 4.1 <code class="docutils literal notranslate"><span class="pre">sql_hive</span></code> shards, macOS and the other queue-tier suites in
+the table above. The nightly-only suites and the opt-in <code class="docutils literal notranslate"><span class="pre">run-*</span></code> suites are not part of it, and path
 filters still apply. This is the arrangement <code class="docutils literal notranslate"><span class="pre">apache/datafusion</span></code> and <code class="docutils literal notranslate"><span class="pre">apache/arrow-rs</span></code> use.</p>
 <p>To get it working:</p>
 <ol class="arabic simple">
@@ -727,8 +728,9 @@ the ones in your branch, so a branch cut before this arrangement existed runs no
 <li><p><strong>Push your branch.</strong> Each push to a branch of your fork starts a <code class="docutils literal notranslate"><span class="pre">Comet</span> <span class="pre">CI</span> <span class="pre">(fork</span> <span class="pre">run)</span></code> in
 your fork’s <strong>Actions</strong> tab, and a newer push to the same branch cancels the run in flight. It runs
 the PR tier for the files your branch changes relative to upstream <code class="docutils literal notranslate"><span class="pre">main</span></code>, which is what the pull
-request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, and the Comet test suites
-against Spark 4.1. If that comparison cannot be made, it runs the whole tier.</p></li>
+request will show: the Linux build, lints, Rust tests, TPC-H and TPC-DS, the Comet test suites
+against Spark 4.1, and the Spark SQL (catalyst and sql_core) and Iceberg 1.11 suites when the
+change touches what they cover. If that comparison cannot be made, it runs the whole tier.</p></li>
 </ol>
 <p>On the pull request, a <code class="docutils literal notranslate"><span class="pre">CI</span> <span class="pre">(fork)</span></code> check links to that run and mirrors its result. It is first
 written when the upstream run finishes. After that, a pull request updated in the last six hours
@@ -750,7 +752,10 @@ fork’s default branch, and a run on your fork’s <code class="docutils litera
 <code class="docutils literal notranslate"><span class="pre">main</span></code> that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
 nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
 caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
-23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes.</p></li>
+23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
+routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their
+shards run in parallel with the Linux build’s test matrix, but the Spark SQL job first builds its
+own native library and test classes, which took 45 minutes.</p></li>
 <li><p><strong>Scheduled runs stay upstream.</strong> The nightly run, Miri, the stale-PR closer and the weekly
 CodeQL scan run in <code class="docutils literal notranslate"><span class="pre">apache/datafusion-comet</span></code> only. If your fork has scheduled workflows enabled they
 start no job. Miri can still be run on your fork by dispatching it.</p></li>
@@ -797,26 +802,23 @@ tier for you before the queue does, so a maintainer may ask you to reproduce a f
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-delta-tests</span></code></p></td>
 <td><p>Delta contrib tests against Spark 3.5, 4.0 and 4.1</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code></p></td>
-<td><p>Spark SQL tests against Spark 4.1, every module</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.1-hive-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.1, sql_hive only</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.4</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 3.5</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.0</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code></p></td>
 <td><p>Spark SQL tests against Spark 4.2</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
-<td><p>Iceberg Spark SQL tests against every Iceberg version</p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code></p></td>
+<td><p>Iceberg Spark SQL tests against 1.8, 1.9 and 1.10</p></td>
 </tr>
 </tbody>
 </table>
@@ -849,8 +851,9 @@ re-run the failed jobs from the Actions page, or remove and re-apply the label.<
 does not cover. Some examples:</p>
 <ul class="simple">
 <li><p>a change to the serde, the planner, or a native operator, where the Comet test suites pass but
-Spark’s own SQL suite is the thing that would catch a behavior difference; <code class="docutils literal notranslate"><span class="pre">run-spark-4.1-tests</span></code>
-runs it against the default profile</p></li>
+Spark’s own SQL suite is the thing that would catch a behavior difference; the PR tier runs it
+against the default profile, and <code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code> /
+<code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code> run it against the others</p></li>
 <li><p>code under <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-4.0/</span></code> or the shared <code class="docutils literal notranslate"><span class="pre">spark-3.x/</span></code>
 directory, or any change to <code class="docutils literal notranslate"><span class="pre">CometExprShim</span></code> and friends; <code class="docutils literal notranslate"><span class="pre">run-all-spark-profiles</span></code> runs the Comet
 test suites against every Spark version rather than 4.1 alone (the Lint Java matrix already

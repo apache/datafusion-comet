@@ -670,8 +670,9 @@ diff must be generated against its own tag.</p>
 <p>The <code class="docutils literal notranslate"><span class="pre">iceberg_1_8</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_9</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_10</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_1_11</span></code> jobs in <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> apply these diffs and
 run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
 Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. All four
-run earlier on a pull request labeled <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>; none runs on an unlabeled pull request. Each job
+Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.8.1, 1.9.1 and
+1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. Those three run earlier on a pull request labeled
+<code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>. Each job
 calls <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic. See
 <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>
 for how the pull-request, merge-queue and nightly tiers differ.</p>
@@ -697,8 +698,9 @@ and failure propagation. The fixture does not compile Spark or Iceberg.</p>
 <p>Apply the <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code> label to a pull request whenever it touches the Iceberg scan or write
 path, reflection code (<code class="docutils literal notranslate"><span class="pre">org.apache.comet.iceberg.IcebergReflection</span></code>), or other logic whose behavior
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg’s
-own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue’s, and the
-first verdict on the older Iceberg versions is the nightly run’s, after the change has landed.</p>
+own Spark tests, but the Iceberg 1.11 job does and every pull request gets its verdict. Without the
+label, the first verdict on the older Iceberg versions is the nightly run’s, after the change has
+landed.</p>
 <section id="which-writer-ran-each-iceberg-write">
 <h3>Which writer ran each Iceberg write<a class="headerlink" href="#which-writer-ran-each-iceberg-write" title="Link to this heading">#</a></h3>
 <p>A passing Iceberg job does not show that Comet’s native writer ran. <code class="docutils literal notranslate"><span class="pre">CometIcebergNativeWrite</span></code> falls back
