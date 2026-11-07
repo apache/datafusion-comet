@@ -359,8 +359,40 @@ abstract class ParquetReadSuite extends CometTestBase {
     }
   }
 
+  test("binaryAsString preserves fixed-length binary conversion errors") {
+    withTempDir { dir =>
+      val path = new Path(dir.toURI.toString, "fixed.parquet")
+      val schema = MessageTypeParser.parseMessageType(
+        "message root { optional fixed_len_byte_array(3) value; }")
+      val writer = createParquetWriter(schema, path)
+      val record = new SimpleGroup(schema)
+      record.add(0, Binary.fromString("one"))
+      writer.write(record)
+      writer.close()
+      Seq("false", "true").foreach { rowFilter =>
+        withSQLConf(
+          SQLConf.PARQUET_BINARY_AS_STRING.key -> "true",
+          CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> rowFilter) {
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            intercept[SparkException] {
+              spark.read.schema("value string").parquet(path.toString).collect()
+            }
+          }
+          val df = spark.read.schema("value string").parquet(path.toString)
+          assert(collect(df.queryExecution.executedPlan) { case _: CometNativeScanExec =>
+            true
+          }.nonEmpty)
+          val error = intercept[SparkException](df.collect())
+          assert(
+            causeChain(error).exists(_.isInstanceOf[SchemaColumnConvertNotSupportedException]))
+          checkSparkAnswerAndOperator(spark.read.schema("value binary").parquet(path.toString))
+        }
+      }
+    }
+  }
+
   // With binaryAsString, the native scan compares `=`, `IN` and `IS [NOT] NULL` on the raw bytes
-  // and keeps other string filters above the scan. Spark compares raw bytes too, so these queries
+  // and evaluates other string filters on decoded values. Spark compares raw bytes, so these queries
   // match it. A query that tells a malformed value apart from U+FFFD doesn't, as the
   // compatibility guide describes.
   test("spark.sql.parquet.binaryAsString filters, joins and top-k") {
@@ -409,6 +441,8 @@ abstract class ParquetReadSuite extends CometTestBase {
             "SELECT * FROM t WHERE value > 'o'",
             "SELECT * FROM t WHERE value = 'one' OR id = 21",
             "SELECT * FROM annotated WHERE value = 'one'",
+            "SELECT * FROM annotated WHERE value < 'two'",
+            "SELECT * FROM annotated WHERE value LIKE 'on%'",
             "SELECT * FROM annotated WHERE value IS NULL").foreach { query =>
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             assertNativeScan(plan)
