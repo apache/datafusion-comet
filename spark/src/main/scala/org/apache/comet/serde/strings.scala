@@ -26,7 +26,7 @@ import org.apache.spark.unsafe.types.UTF8String
 import org.apache.comet.CometConf
 import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
-import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
+import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, withNullShortCircuit}
 import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
@@ -392,6 +392,13 @@ object CometConcat
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
   override def getIncompatibleReasons(): Seq[String] = Seq(collationReason)
+
+  // Spark's generated code for Concat evaluates each argument only where every earlier one is not
+  // NULL, and the native concat returns NULL wherever an argument is NULL.
+  override def convert(expr: Concat, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
+    val proto = super.convert(expr, inputs, binding)
+    if (expr.children.length > 1) withNullShortCircuit(expr, proto) else proto
+  }
 
   override def getSupportLevel(expr: Concat): SupportLevel = {
     // Use isInstanceOf rather than `== DataTypes.StringType` so that collated strings (a

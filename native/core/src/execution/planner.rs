@@ -176,6 +176,8 @@ pub struct BinaryExprOptions {
     pub is_integral_div: bool,
     /// See `MathExpr.check_divide_overflow` in expr.proto
     pub check_divide_overflow: bool,
+    /// See `MathExpr.null_short_circuit` in expr.proto
+    pub null_short_circuit: bool,
 }
 
 pub const TEST_EXEC_CONTEXT_ID: i64 = -1;
@@ -827,8 +829,8 @@ impl PhysicalPlanner {
 
                 // WideDecimalBinaryExpr already handles overflow — skip redundant check
                 // but only if its output type matches CheckOverflow's declared type. A binary
-                // expression with query context is wrapped in CheckedBinaryExpr, so look
-                // through any such wrappers.
+                // expression with query context is wrapped in CheckedBinaryExpr, and one that
+                // skips its right operand in NullShortCircuit, so look through those wrappers.
                 let is_wide_decimal = unwrap_checked(&child)
                     .downcast_ref::<WideDecimalBinaryExpr>()
                     .is_some();
@@ -1363,29 +1365,6 @@ impl PhysicalPlanner {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn create_binary_expr(
-        &self,
-        spark_expr: &Expr,
-        left: &Expr,
-        right: &Expr,
-        return_type: Option<&spark_expression::DataType>,
-        op: DataFusionOperator,
-        input_schema: SchemaRef,
-        eval_mode: EvalMode,
-    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
-        self.create_binary_expr_with_options(
-            spark_expr,
-            left,
-            right,
-            return_type,
-            op,
-            input_schema,
-            BinaryExprOptions::default(),
-            eval_mode,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
     pub fn create_binary_expr_with_options(
         &self,
         spark_expr: &Expr,
@@ -1406,7 +1385,8 @@ impl PhysicalPlanner {
                 .map(to_arrow_datatype)
                 .ok_or_else(|| GeneralError(format!("Missing return type for {op:?} expression")))
         };
-        match (
+        // The expression over the operands, and whether to report its errors with the query context
+        let (expr, checked): (Arc<dyn PhysicalExpr>, bool) = match (
             &op,
             left.data_type(&input_schema),
             right.data_type(&input_schema),
@@ -1437,14 +1417,12 @@ impl PhysicalPlanner {
                     DataFusionOperator::Multiply => WideDecimalOp::Multiply,
                     _ => unreachable!(),
                 };
-                let expr: Arc<dyn PhysicalExpr> = Arc::new(WideDecimalBinaryExpr::new(
-                    left, right, wide_op, p_out, s_out, eval_mode,
-                ));
-                if query_context.is_some() {
-                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
-                } else {
-                    Ok(expr)
-                }
+                (
+                    Arc::new(WideDecimalBinaryExpr::new(
+                        left, right, wide_op, p_out, s_out, eval_mode,
+                    )),
+                    true,
+                )
             }
             (
                 DataFusionOperator::Divide,
@@ -1469,18 +1447,16 @@ impl PhysicalPlanner {
                     Some(options.check_divide_overflow),
                     eval_mode,
                 )?;
-                let expr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
-                    func_name,
-                    fun_expr,
-                    vec![left, right],
-                    Arc::new(Field::new(func_name, data_type, true)),
-                    Arc::new(ConfigOptions::default()),
-                ));
-                if query_context.is_some() {
-                    Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
-                } else {
-                    Ok(expr)
-                }
+                (
+                    Arc::new(ScalarFunctionExpr::new(
+                        func_name,
+                        fun_expr,
+                        vec![left, right],
+                        Arc::new(Field::new(func_name, data_type, true)),
+                        Arc::new(ConfigOptions::default()),
+                    )),
+                    true,
+                )
             }
             // Date +/- Int8/Int16/Int32: DataFusion 52's arrow-arith kernels only
             // support Date32 +/- Interval types, not raw integers. Use the Spark
@@ -1493,13 +1469,16 @@ impl PhysicalPlanner {
                 let udf = Arc::new(ScalarUDF::new_from_impl(
                     datafusion_spark::function::datetime::date_add::SparkDateAdd::new(),
                 ));
-                Ok(Arc::new(ScalarFunctionExpr::new(
-                    "date_add",
-                    udf,
-                    vec![left, right],
-                    Arc::new(Field::new("date_add", DataType::Date32, true)),
-                    Arc::new(ConfigOptions::default()),
-                )))
+                (
+                    Arc::new(ScalarFunctionExpr::new(
+                        "date_add",
+                        udf,
+                        vec![left, right],
+                        Arc::new(Field::new("date_add", DataType::Date32, true)),
+                        Arc::new(ConfigOptions::default()),
+                    )),
+                    false,
+                )
             }
             (
                 DataFusionOperator::Minus,
@@ -1509,13 +1488,16 @@ impl PhysicalPlanner {
                 let udf = Arc::new(ScalarUDF::new_from_impl(
                     datafusion_spark::function::datetime::date_sub::SparkDateSub::new(),
                 ));
-                Ok(Arc::new(ScalarFunctionExpr::new(
-                    "date_sub",
-                    udf,
-                    vec![left, right],
-                    Arc::new(Field::new("date_sub", DataType::Date32, true)),
-                    Arc::new(ConfigOptions::default()),
-                )))
+                (
+                    Arc::new(ScalarFunctionExpr::new(
+                        "date_sub",
+                        udf,
+                        vec![left, right],
+                        Arc::new(Field::new("date_sub", DataType::Date32, true)),
+                        Arc::new(ConfigOptions::default()),
+                    )),
+                    false,
+                )
             }
             _ => {
                 let data_type = required_return_type()?;
@@ -1541,23 +1523,36 @@ impl PhysicalPlanner {
                         None,
                         eval_mode,
                     )?;
-                    let scalar_expr = Arc::new(ScalarFunctionExpr::new(
-                        op_str,
-                        fun_expr,
-                        vec![left, right],
-                        Arc::new(Field::new(op_str, data_type, true)),
-                        Arc::new(ConfigOptions::default()),
-                    ));
-
-                    if query_context.is_some() {
-                        Ok(Arc::new(CheckedBinaryExpr::new(scalar_expr, query_context)))
-                    } else {
-                        Ok(scalar_expr)
-                    }
+                    (
+                        Arc::new(ScalarFunctionExpr::new(
+                            op_str,
+                            fun_expr,
+                            vec![left, right],
+                            Arc::new(Field::new(op_str, data_type, true)),
+                            Arc::new(ConfigOptions::default()),
+                        )),
+                        true,
+                    )
                 } else {
-                    Ok(Arc::new(BinaryExpr::new(left, op, right)))
+                    (Arc::new(BinaryExpr::new(left, op, right)), false)
                 }
             }
+        };
+        let expr = if options.null_short_circuit {
+            // Spark evaluates the divisor of a division first
+            let order: &[usize] = if op == DataFusionOperator::Divide {
+                &[1, 0]
+            } else {
+                &[0, 1]
+            };
+            NullShortCircuit::wrap_in_order(expr, order, &input_schema)?
+        } else {
+            expr
+        };
+        if checked && query_context.is_some() {
+            Ok(Arc::new(CheckedBinaryExpr::new(expr, query_context)))
+        } else {
+            Ok(expr)
         }
     }
 
@@ -2269,14 +2264,20 @@ impl PhysicalPlanner {
     }
 }
 
-/// Strip any [`CheckedBinaryExpr`] wrappers so callers can inspect the expression
-/// they decorate, however many context-wrapping layers the planner emitted.
+/// Strip any [`CheckedBinaryExpr`] and [`NullShortCircuit`] wrappers so callers can inspect the
+/// expression they decorate, however many layers the planner emitted. Neither changes the type or
+/// the values of the expression it wraps.
 fn unwrap_checked(expr: &Arc<dyn PhysicalExpr>) -> &Arc<dyn PhysicalExpr> {
     let mut current = expr;
-    while let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
-        current = checked.child();
+    loop {
+        if let Some(checked) = current.downcast_ref::<CheckedBinaryExpr>() {
+            current = checked.child();
+        } else if let Some(wrapper) = current.downcast_ref::<NullShortCircuit>() {
+            current = wrapper.inner();
+        } else {
+            return current;
+        }
     }
-    current
 }
 
 pub fn from_protobuf_eval_mode(value: i32) -> Result<EvalMode, prost::UnknownEnumValue> {
@@ -3179,7 +3180,7 @@ mod tests {
     use crate::execution::operators::ExecutionError;
     use crate::execution::planner::{
         convert_spark_types_to_arrow_schema, literal_to_array_ref,
-        parse_file_scan_tasks_from_common,
+        parse_file_scan_tasks_from_common, BinaryExprOptions,
     };
     use crate::execution::shuffle::CometPartitioning;
     use crate::parquet::parquet_support::SparkParquetOptions;
@@ -6277,7 +6278,7 @@ mod tests {
     }
 
     /// Builds two nullable columns of the same type and bound references to them, as inputs for
-    /// `create_binary_expr`.
+    /// `create_binary_expr_with_options`.
     fn binary_expr_inputs(
         arrow_type: DataType,
         proto_type: spark_expression::DataType,
@@ -6326,13 +6327,14 @@ mod tests {
         let (schema, left, right) = binary_expr_inputs(DataType::Int32, int32_proto_type());
 
         for eval_mode in [EvalMode::Try, EvalMode::Ansi] {
-            let result = planner.create_binary_expr(
+            let result = planner.create_binary_expr_with_options(
                 &left,
                 &left,
                 &right,
                 Some(&int32_proto_type()),
                 DataFusionOperator::Modulo,
                 Arc::clone(&schema),
+                BinaryExprOptions::default(),
                 eval_mode,
             );
             match result {
@@ -6376,13 +6378,14 @@ mod tests {
 
         for (arrow_type, proto_type, op) in cases {
             let (schema, left, right) = binary_expr_inputs(arrow_type.clone(), proto_type);
-            let result = planner.create_binary_expr(
+            let result = planner.create_binary_expr_with_options(
                 &left,
                 &left,
                 &right,
                 None,
                 op,
                 schema,
+                BinaryExprOptions::default(),
                 EvalMode::Legacy,
             );
             match result {
@@ -6394,6 +6397,88 @@ mod tests {
                 Ok(expr) => panic!("expected an error for {op:?} on {arrow_type}, got {expr:?}"),
             }
         }
+    }
+
+    /// `CheckOverflow` over a wide decimal add is dropped, since `WideDecimalBinaryExpr` checks
+    /// overflow itself, also when the add skips its right operand where the left one is NULL.
+    #[test]
+    fn test_check_overflow_skipped_over_short_circuited_wide_decimal() {
+        use super::unwrap_checked;
+        use arrow::array::{AsArray, Decimal128Array};
+        use arrow::datatypes::Decimal128Type;
+        use datafusion_comet_spark_expr::{NullShortCircuit, WideDecimalBinaryExpr};
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Decimal128(38, 0), true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        let bound = |index, datatype| Expr {
+            expr_struct: Some(Bound(spark_expression::BoundReference {
+                index,
+                datatype: Some(datatype),
+            })),
+            expr_id: None,
+            query_context: None,
+        };
+        let string_type = spark_expression::DataType {
+            type_id: 7, // STRING
+            type_info: None,
+        };
+        let ansi = spark_expression::EvalMode::Ansi as i32;
+        // CAST(s AS DECIMAL(38, 0)), which fails for "bad" under ANSI
+        let cast = Expr {
+            expr_struct: Some(ExprStruct::Cast(Box::new(spark_expression::Cast {
+                child: Some(Box::new(bound(1, string_type))),
+                datatype: Some(decimal_proto_type(38, 0)),
+                timezone: "UTC".to_string(),
+                eval_mode: ansi,
+                ..Default::default()
+            }))),
+            expr_id: None,
+            query_context: None,
+        };
+        let add = Expr {
+            expr_struct: Some(ExprStruct::Add(Box::new(spark_expression::MathExpr {
+                left: Some(Box::new(bound(0, decimal_proto_type(38, 0)))),
+                right: Some(Box::new(cast)),
+                return_type: Some(decimal_proto_type(38, 0)),
+                eval_mode: ansi,
+                check_divide_overflow: false,
+                null_short_circuit: true,
+            }))),
+            expr_id: None,
+            query_context: None,
+        };
+        let check_overflow = Expr {
+            expr_struct: Some(ExprStruct::CheckOverflow(Box::new(
+                spark_expression::CheckOverflow {
+                    child: Some(Box::new(add)),
+                    datatype: Some(decimal_proto_type(38, 0)),
+                    fail_on_error: true,
+                },
+            ))),
+            expr_id: None,
+            query_context: None,
+        };
+
+        let expr = PhysicalPlanner::default()
+            .create_expr(&check_overflow, Arc::clone(&schema))
+            .unwrap();
+        assert!(expr.is::<NullShortCircuit>(), "{expr}");
+        assert!(
+            unwrap_checked(&expr).is::<WideDecimalBinaryExpr>(),
+            "{expr}"
+        );
+
+        let a = Decimal128Array::from(vec![None, Some(2)])
+            .with_precision_and_scale(38, 0)
+            .unwrap();
+        let s = StringArray::from(vec!["bad", "3"]);
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(a), Arc::new(s)]).unwrap();
+        let result = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
+        let result = result.as_primitive::<Decimal128Type>();
+        assert!(result.is_null(0));
+        assert_eq!(result.value(1), 5);
     }
 
     /// Test that reproduces the "Cast error: Casting from Int8 to Date32 not supported" error
@@ -6468,6 +6553,7 @@ mod tests {
                 }),
                 eval_mode: 0, // Legacy mode
                 check_divide_overflow: false,
+                null_short_circuit: false,
             }))),
             expr_id: None,
             query_context: None,

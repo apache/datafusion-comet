@@ -518,3 +518,7 @@ harness = false
 [[bench]]
 name = "lazy_logical"
 harness = false
+
+[[bench]]
+name = "null_short_circuit"
+harness = false

@@ -16,18 +16,21 @@
 // under the License.
 
 use super::case_when::cannot_fail;
+use super::lazy_logical::is_deterministic;
+use crate::{Cast, CheckedBinaryExpr};
 use arrow::array::{new_null_array, Array, BooleanArray};
 use arrow::buffer::NullBuffer;
 use arrow::datatypes::{DataType, FieldRef, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::common::{internal_datafusion_err, internal_err, Result};
-use datafusion::logical_expr::ColumnarValue;
-use datafusion::physical_expr::expressions::{Column, Literal};
+use datafusion::logical_expr::{ColumnarValue, Operator};
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, Literal};
 use datafusion::physical_expr::utils::collect_columns;
-use datafusion::physical_expr::PhysicalExpr;
+use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Evaluates a function's arguments the way Spark evaluates those of a null-intolerant
@@ -41,10 +44,14 @@ use std::sync::Arc;
 /// Spark. An argument that can be evaluated for any row, such as a column, is evaluated for all of
 /// them.
 ///
-/// The function still sees every row, with NULL for each argument skipped there, so it has to
-/// return NULL wherever an argument other than the last is NULL. Its arguments have to be its
-/// children, in the order Spark evaluates them, and it has to compute its result from them alone.
-/// `ArrayInsert` evaluates its own arguments the same way.
+/// The function still sees every row. For an argument skipped there it sees NULL, or, when the
+/// argument is first tried over the whole batch, whatever that returned, so it has to return NULL
+/// wherever an argument other than the last one evaluated is NULL, without first checking the
+/// later ones, which may hold any value. Its arguments have
+/// to be its children, and it has to compute its result from them alone. They are evaluated in
+/// the order of the children unless [`NullShortCircuit::wrap_in_order`] gives another, as it does
+/// for a division, whose divisor Spark evaluates first. `ArrayInsert` evaluates its own arguments
+/// the same way.
 #[derive(Debug)]
 pub struct NullShortCircuit {
     /// The function over its arguments
@@ -52,7 +59,10 @@ pub struct NullShortCircuit {
     /// The function over the evaluated arguments, reading each one that is not a literal from a
     /// column of the batch that holds them
     body: Arc<dyn PhysicalExpr>,
+    /// The arguments, in the order of the children of `inner`
     args: Vec<Arg>,
+    /// The indices into `args` in the order Spark evaluates them
+    order: Vec<usize>,
 }
 
 impl NullShortCircuit {
@@ -62,12 +72,30 @@ impl NullShortCircuit {
         inner: Arc<dyn PhysicalExpr>,
         input_schema: &Schema,
     ) -> Result<Arc<dyn PhysicalExpr>> {
-        let masked = inner
-            .children()
-            .iter()
-            .enumerate()
-            .map(|(i, arg)| i > 0 && !cannot_fail(arg, input_schema))
-            .collect::<Vec<_>>();
+        let order = (0..inner.children().len()).collect::<Vec<_>>();
+        Self::wrap_in_order(inner, &order, input_schema)
+    }
+
+    /// Like [`NullShortCircuit::wrap`], but evaluates the arguments in `order`, the indices of the
+    /// children of `inner` in the order Spark evaluates them.
+    pub fn wrap_in_order(
+        inner: Arc<dyn PhysicalExpr>,
+        order: &[usize],
+        input_schema: &Schema,
+    ) -> Result<Arc<dyn PhysicalExpr>> {
+        let children = inner.children();
+        let mut sorted = order.to_vec();
+        sorted.sort_unstable();
+        if !sorted.iter().copied().eq(0..children.len()) {
+            return internal_err!(
+                "NullShortCircuit order {order:?} is not a permutation of {} arguments",
+                children.len()
+            );
+        }
+        let mut masked = vec![false; children.len()];
+        for &i in order.iter().skip(1) {
+            masked[i] = !cannot_fail(children[i], input_schema);
+        }
         if !masked.contains(&true) {
             return Ok(inner);
         }
@@ -76,22 +104,36 @@ impl NullShortCircuit {
             .into_iter()
             .zip(masked)
             .map(|(arg, masked)| {
+                let cheap = masked && is_cheap(arg, input_schema);
                 if arg.is::<Literal>() {
-                    return Ok((None, masked));
+                    return Ok(ArgPlan {
+                        field: None,
+                        masked,
+                        cheap,
+                    });
                 }
                 // A masked argument is NULL on the rows it is skipped for
                 let field = arg.return_field(input_schema)?;
-                Ok((
-                    Some(Arc::new(field.as_ref().clone().with_nullable(true))),
+                Ok(ArgPlan {
+                    field: Some(Arc::new(field.as_ref().clone().with_nullable(true))),
                     masked,
-                ))
+                    cheap,
+                })
             })
             .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(Self::try_new(inner, plans)?))
+        Ok(Arc::new(Self::try_new(inner, plans, order.to_vec())?))
     }
 
-    /// `plans` holds each argument's [`Arg::field`] and whether it is masked.
-    fn try_new(inner: Arc<dyn PhysicalExpr>, plans: Vec<(Option<FieldRef>, bool)>) -> Result<Self> {
+    /// The function over its arguments
+    pub fn inner(&self) -> &Arc<dyn PhysicalExpr> {
+        &self.inner
+    }
+
+    fn try_new(
+        inner: Arc<dyn PhysicalExpr>,
+        plans: Vec<ArgPlan>,
+        order: Vec<usize>,
+    ) -> Result<Self> {
         let children = inner.children();
         if children.len() != plans.len() {
             return internal_err!(
@@ -103,7 +145,7 @@ impl NullShortCircuit {
         let args = children
             .into_iter()
             .zip(plans)
-            .map(|(expr, (field, masked))| Arg::try_new(expr, field, masked))
+            .map(|(expr, plan)| Arg::try_new(expr, plan))
             .collect::<Result<Vec<_>>>()?;
         let mut body_children = Vec::with_capacity(args.len());
         let mut column = 0;
@@ -116,19 +158,25 @@ impl NullShortCircuit {
             }
         }
         let body = Arc::clone(&inner).with_new_children(body_children)?;
-        Ok(Self { inner, body, args })
+        Ok(Self {
+            inner,
+            body,
+            args,
+            order,
+        })
     }
 }
 
 impl Hash for NullShortCircuit {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.inner.hash(state);
+        self.order.hash(state);
     }
 }
 
 impl PartialEq for NullShortCircuit {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.eq(&other.inner)
+        self.inner.eq(&other.inner) && self.order == other.order
     }
 }
 
@@ -157,12 +205,12 @@ impl PhysicalExpr for NullShortCircuit {
         let num_rows = batch.num_rows();
         // The rows where an argument evaluated so far is NULL, or `None` while there are none
         let mut nulls: Option<NullBuffer> = None;
-        let mut fields = vec![];
-        let mut columns = vec![];
-        let last = self.args.len() - 1;
-        for (i, arg) in self.args.iter().enumerate() {
+        let mut values = vec![None; self.args.len()];
+        let last = self.order.len() - 1;
+        for (position, &i) in self.order.iter().enumerate() {
+            let arg = &self.args[i];
             let value = arg.evaluate(batch, nulls.as_ref())?;
-            if i < last {
+            if position < last {
                 let value_nulls = match &value {
                     ColumnarValue::Array(array) if array.len() != num_rows => {
                         return internal_err!(
@@ -185,7 +233,14 @@ impl PhysicalExpr for NullShortCircuit {
                     return Ok(ColumnarValue::Array(new_null_array(&data_type, num_rows)));
                 }
             }
+            values[i] = Some(value);
+        }
+        let mut fields = vec![];
+        let mut columns = vec![];
+        for (arg, value) in self.args.iter().zip(values) {
             if let Some(field) = &arg.field {
+                let value = value
+                    .ok_or_else(|| internal_datafusion_err!("{} was not evaluated", arg.expr))?;
                 let column = value.into_array(num_rows)?;
                 // The batch is checked against the types the arguments have at run time, which
                 // can differ from their planned types in the names and nullability of nested fields
@@ -220,9 +275,13 @@ impl PhysicalExpr for NullShortCircuit {
         let plans = self
             .args
             .iter()
-            .map(|arg| (arg.field.clone(), arg.masked.is_some()))
+            .map(|arg| ArgPlan {
+                field: arg.field.clone(),
+                masked: arg.masked.is_some(),
+                cheap: arg.cheap,
+            })
             .collect();
-        Ok(Arc::new(Self::try_new(inner, plans)?))
+        Ok(Arc::new(Self::try_new(inner, plans, self.order.clone())?))
     }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -232,6 +291,16 @@ impl PhysicalExpr for NullShortCircuit {
     fn is_volatile_node(&self) -> bool {
         self.inner.is_volatile_node()
     }
+}
+
+/// How an argument is evaluated, decided when it is planned.
+struct ArgPlan {
+    /// See [`Arg::field`]
+    field: Option<FieldRef>,
+    /// Whether the argument is evaluated for only the rows where no earlier argument is NULL
+    masked: bool,
+    /// See [`Arg::cheap`]
+    cheap: bool,
 }
 
 /// An argument, and how it is evaluated.
@@ -247,19 +316,31 @@ struct Arg {
     /// batch, even one with no NULL, because rebuilding the argument gave it its own copy of any
     /// state kept across batches, such as the random generator of `shuffle`
     masked: Option<(Vec<usize>, Arc<dyn PhysicalExpr>)>,
+    /// Whether a masked argument is first tried over the whole batch, as it would be without
+    /// masking, for a batch where at least half the rows need it, or for any batch if it is
+    /// [`Arg::cheap`]. Selecting the rows costs more than evaluating the skipped ones when they
+    /// are few, and less when they are many, and the crossover moves with the cost of the
+    /// argument, so half is where neither choice is much slower than the other for the costlier
+    /// arguments measured in `benches/null_short_circuit.rs`. Whatever it returns for a skipped
+    /// row is ignored, so it only matters if it fails there, and it requires an argument that
+    /// returns the same for a row whichever rows it sees. If it fails, the rows are selected
+    /// instead, here and for the batches after it.
+    speculate: AtomicBool,
+    /// Whether the argument is so cheap that evaluating it over the whole batch is about as fast
+    /// as selecting the rows that need it, however few they are, as [`is_cheap`] decides
+    cheap: bool,
 }
 
 impl Arg {
-    fn try_new(
-        expr: &Arc<dyn PhysicalExpr>,
-        field: Option<FieldRef>,
-        masked: bool,
-    ) -> Result<Self> {
-        let masked = masked.then(|| project(expr)).transpose()?;
+    fn try_new(expr: &Arc<dyn PhysicalExpr>, plan: ArgPlan) -> Result<Self> {
+        let masked = plan.masked.then(|| project(expr)).transpose()?;
+        let speculate = AtomicBool::new(masked.is_some() && is_deterministic(expr));
         Ok(Self {
             expr: Arc::clone(expr),
-            field,
+            field: plan.field,
             masked,
+            speculate,
+            cheap: plan.cheap,
         })
     }
 
@@ -269,9 +350,55 @@ impl Arg {
         let Some((projection, projected)) = &self.masked else {
             return self.expr.evaluate(batch);
         };
+        let worth_trying =
+            nulls.is_some_and(|nulls| self.cheap || nulls.null_count() * 2 <= nulls.len());
+        if worth_trying && self.speculate.load(Ordering::Relaxed) {
+            if let Ok(value) = evaluate_projected(projection, projected, batch, None) {
+                return Ok(value);
+            }
+            self.speculate.store(false, Ordering::Relaxed);
+        }
         let rows = nulls.map(|nulls| BooleanArray::new(nulls.inner().clone(), None));
         evaluate_projected(projection, projected, batch, rows.as_ref())
     }
+}
+
+/// Whether evaluating `expr` over the whole batch costs about as little as selecting the rows that
+/// need it, however few they are: a column, a literal, and integer and floating point `+`, `-` and
+/// `*`, as ANSI `checked_add`, `checked_sub` and `checked_mul` too, and casts to a wider number,
+/// over such expressions. `a * (b - c)` over longs, as in `benches/null_short_circuit.rs`,
+/// is never much slower speculated than with its rows selected, and much faster when most rows
+/// need it. Anything else, such as a cast that parses a string, decimal arithmetic and string
+/// functions, is treated as costlier. The list holds what has been measured, and can grow.
+fn is_cheap(expr: &Arc<dyn PhysicalExpr>, input_schema: &Schema) -> bool {
+    if let Some(short_circuit) = expr.downcast_ref::<NullShortCircuit>() {
+        return is_cheap(short_circuit.inner(), input_schema);
+    }
+    let node_is_cheap =
+        if expr.is::<Column>() || expr.is::<Literal>() || expr.is::<CheckedBinaryExpr>() {
+            true
+        } else if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
+            matches!(
+                binary.op(),
+                Operator::Plus | Operator::Minus | Operator::Multiply
+            ) && binary
+                .data_type(input_schema)
+                .is_ok_and(|t| t.is_integer() || t.is_floating())
+        } else if let Some(cast) = expr.downcast_ref::<Cast>() {
+            cast.is_infallible(input_schema)
+        } else if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
+            matches!(
+                function.name(),
+                "checked_add" | "checked_sub" | "checked_mul"
+            )
+        } else {
+            false
+        };
+    node_is_cheap
+        && expr
+            .children()
+            .into_iter()
+            .all(|child| is_cheap(child, input_schema))
 }
 
 /// Evaluates `projected`, an expression reading the `projection` columns of `batch` from a batch
@@ -626,6 +753,260 @@ mod tests {
             None,
         ]));
         assert_eq!(actual.as_ref(), expected.as_ref());
+    }
+
+    /// `CAST(s AS BIGINT) / d`, with an ANSI cast of `s`, and a batch where `s` is malformed
+    /// only on a row whose `d` is NULL, or, with `bad_divisor`, `d` is malformed on a row whose
+    /// `s` is NULL.
+    fn division(bad_divisor: bool) -> (Arc<dyn PhysicalExpr>, RecordBatch) {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let (dividends, divisors) = if bad_divisor {
+            (vec![None, Some("6")], vec![Some("bad"), Some("3")])
+        } else {
+            (vec![Some("bad"), Some("6")], vec![None, Some("3")])
+        };
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(dividends)),
+                Arc::new(StringArray::from(divisors)),
+            ],
+        )
+        .unwrap();
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        (divide, batch)
+    }
+
+    #[test]
+    fn divisor_is_evaluated_first() {
+        let (divide, batch) = division(false);
+        let schema = batch.schema();
+        // In the order of the children, the dividend comes first and fails on "bad"
+        let in_order = NullShortCircuit::wrap(Arc::clone(&divide), &schema).unwrap();
+        let error = evaluate(&in_order, &batch).unwrap_err().to_string();
+        assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
+
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let actual = evaluate(&guarded, &batch).unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, Some(2)]));
+        assert_eq!(actual.as_ref(), expected.as_ref());
+        // The order survives rebuilding the children
+        let children = guarded.children().into_iter().cloned().collect();
+        let rebuilt = Arc::clone(&guarded).with_new_children(children).unwrap();
+        assert_eq!(
+            evaluate(&rebuilt, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(rebuilt.eq(&guarded));
+    }
+
+    #[test]
+    fn divisor_still_fails_where_the_dividend_is_null() {
+        let (divide, batch) = division(true);
+        let schema = batch.schema();
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let error = evaluate(&guarded, &batch).unwrap_err().to_string();
+        assert!(error.contains("CAST_INVALID_INPUT"), "{error}");
+    }
+
+    #[test]
+    fn speculative_evaluation_falls_back_to_selected_rows() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let batch = |dividends: Vec<&str>| {
+            let divisors = vec![None, Some("3"), Some("3"), Some("3")];
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(StringArray::from(dividends)),
+                    Arc::new(StringArray::from(divisors)),
+                ],
+            )
+            .unwrap()
+        };
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let speculating = || {
+            guarded.downcast_ref::<NullShortCircuit>().unwrap().args[0]
+                .speculate
+                .load(Ordering::Relaxed)
+        };
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, Some(2), Some(1), Some(3)]));
+        // The dividend is tried over the whole batch first, and succeeds
+        let valid = batch(vec!["0", "6", "3", "9"]);
+        assert_eq!(
+            evaluate(&guarded, &valid).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(speculating());
+        // It fails on the row whose divisor is NULL, so that row is skipped
+        let failing = batch(vec!["bad", "6", "3", "9"]);
+        assert_eq!(
+            evaluate(&guarded, &failing).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        assert!(!speculating());
+        assert_eq!(
+            evaluate(&guarded, &valid).unwrap().as_ref(),
+            expected.as_ref()
+        );
+    }
+
+    #[test]
+    fn mostly_skipped_arguments_are_not_speculated() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("s", DataType::Utf8, true),
+            Field::new("d", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(StringArray::from(vec!["bad", "bad", "bad", "6"])),
+                Arc::new(StringArray::from(vec![None, None, None, Some("3")])),
+            ],
+        )
+        .unwrap();
+        let operand = |name| ansi_cast(col(name, &schema).unwrap(), DataType::Int64);
+        let divide = Arc::new(datafusion::physical_expr::expressions::BinaryExpr::new(
+            operand("s"),
+            datafusion::logical_expr::Operator::Divide,
+            operand("d"),
+        ));
+        let guarded = NullShortCircuit::wrap_in_order(divide, &[1, 0], &schema).unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, Some(2)]));
+        assert_eq!(
+            evaluate(&guarded, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        // Only one row in four needs the dividend, so it was never tried over the whole batch,
+        // which would have failed and stopped speculation for later batches
+        let arg = &guarded.downcast_ref::<NullShortCircuit>().unwrap().args[0];
+        assert!(!arg.cheap);
+        assert!(arg.speculate.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn cheap_arguments_are_speculated_however_many_rows_are_skipped() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", DataType::Int64, true),
+            Field::new("b", DataType::Int64, false),
+            Field::new("c", DataType::Int64, false),
+        ]));
+        let checked = |name: &str, left, right| {
+            let fun = crate::create_comet_physical_fun_with_eval_mode(
+                name,
+                DataType::Int64,
+                &datafusion::prelude::SessionContext::new().state(),
+                None,
+                EvalMode::Ansi,
+            )
+            .unwrap();
+            Arc::new(ScalarFunctionExpr::new(
+                name,
+                fun,
+                vec![left, right],
+                Arc::new(Field::new(name, DataType::Int64, true)),
+                Arc::new(ConfigOptions::default()),
+            )) as Arc<dyn PhysicalExpr>
+        };
+        // a * (b - c) under ANSI, whose subtraction overflows only on the rows where a is NULL
+        let difference = checked(
+            "checked_sub",
+            col("b", &schema).unwrap(),
+            col("c", &schema).unwrap(),
+        );
+        let product = checked("checked_mul", col("a", &schema).unwrap(), difference);
+        let guarded = NullShortCircuit::wrap(product, &schema).unwrap();
+        let arg = &guarded.downcast_ref::<NullShortCircuit>().unwrap().args[1];
+        assert!(arg.cheap);
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![
+                Arc::new(Int64Array::from(vec![None, None, None, Some(2)])),
+                Arc::new(Int64Array::from(vec![i64::MIN, i64::MIN, i64::MIN, 5])),
+                Arc::new(Int64Array::from(vec![1, 1, 1, 2])),
+            ],
+        )
+        .unwrap();
+        let expected: ArrayRef = Arc::new(Int64Array::from(vec![None, None, None, Some(6)]));
+        assert_eq!(
+            evaluate(&guarded, &batch).unwrap().as_ref(),
+            expected.as_ref()
+        );
+        // Only one row in four needs the difference, and it was still tried over the whole
+        // batch, where it overflowed, so the rows were selected instead
+        assert!(!arg.speculate.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn decimal_and_nested_short_circuited_arguments_are_speculated() {
+        use crate::CheckOverflow;
+        use datafusion::logical_expr::Operator;
+        use datafusion::physical_expr::expressions::BinaryExpr;
+
+        let decimal = DataType::Decimal128(10, 2);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("a", decimal.clone(), true),
+            Field::new("s", DataType::Utf8, true),
+        ]));
+        // a * CheckOverflow(CAST(s AS DECIMAL(10, 2)) - a), as Comet plans a decimal multiply
+        let difference = Arc::new(BinaryExpr::new(
+            ansi_cast(col("s", &schema).unwrap(), decimal.clone()),
+            Operator::Minus,
+            col("a", &schema).unwrap(),
+        ));
+        let difference_type = difference.data_type(&schema).unwrap();
+        let checked = Arc::new(CheckOverflow::new(
+            difference,
+            difference_type,
+            true,
+            None,
+            None,
+        ));
+        let nested = NullShortCircuit::wrap(
+            Arc::new(BinaryExpr::new(
+                col("a", &schema).unwrap(),
+                Operator::Minus,
+                ansi_cast(col("s", &schema).unwrap(), decimal),
+            )),
+            &schema,
+        )
+        .unwrap();
+        assert!(nested.is::<NullShortCircuit>());
+        for operand in [checked as Arc<dyn PhysicalExpr>, nested] {
+            let product = Arc::new(BinaryExpr::new(
+                col("a", &schema).unwrap(),
+                Operator::Multiply,
+                operand,
+            ));
+            let guarded = NullShortCircuit::wrap(product, &schema).unwrap();
+            let guarded = guarded.downcast_ref::<NullShortCircuit>().unwrap();
+            assert!(guarded.args[1].speculate.load(Ordering::Relaxed));
+        }
+    }
+
+    #[test]
+    fn order_must_be_a_permutation_of_the_arguments() {
+        let (divide, batch) = division(false);
+        let schema = batch.schema();
+        for order in [&[0, 0][..], &[1][..], &[0, 2][..]] {
+            assert!(NullShortCircuit::wrap_in_order(Arc::clone(&divide), order, &schema).is_err());
+        }
     }
 
     #[test]
