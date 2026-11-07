@@ -24,7 +24,7 @@ import java.io.FileNotFoundException
 import scala.util.matching.Regex
 
 import org.apache.spark.{QueryContext, SparkException, SparkIllegalArgumentException}
-import org.apache.spark.sql.errors.QueryExecutionErrors
+import org.apache.spark.sql.errors.{DataTypeErrors, QueryExecutionErrors}
 import org.apache.spark.sql.execution.datasources.{DataSourceUtils, SchemaColumnConvertNotSupportedException}
 import org.apache.spark.sql.execution.python.CometPythonException
 import org.apache.spark.sql.types._
@@ -129,6 +129,11 @@ trait ShimSparkErrorConverter {
         Some(
           QueryExecutionErrors
             .overflowInSumOfDecimalError(context.headOption.orNull, s"try_$functionName"))
+
+      case "NumericOutOfRange" =>
+        Some(
+          DataTypeErrors.outOfDecimalTypeRangeError(
+            UTF8String.fromString(params("value").toString)))
 
       case "NumericValueOutOfRange" =>
         // Use Java BigDecimal to avoid Scala BigDecimal's DECIMAL128 MathContext rewriting.
