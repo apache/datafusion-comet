@@ -159,6 +159,7 @@ The native shuffle implementation is its own workspace crate, `datafusion-comet-
 | `writers/partition_writer.rs`      | The `PartitionWriter` trait. Implemented by `LocalPartitionWriter` (`writers/local/`) and `RssPartitionWriter` (`writers/rss/`). |
 | `writers/buf_batch_writer.rs`      | `BufBatchWriter`. Coalesces sub-`batch_size` batches through Arrow's `BatchCoalescer` in the single-partition writer only.       |
 | `writers/local/spill.rs`           | `PartitionedSpill`, the one spill file shared by every output partition, and its per-partition byte ranges.                      |
+| `dictionary_split.rs`              | `dictionary_expansion_ranges`, the row ranges that keep expanded dictionary columns under 2 GiB.                                 |
 | `ipc.rs`                           | `read_ipc_compressed` and `read_ipc_compressed_validated`, the decode side used by the shuffle reader.                           |
 | `offsets_as_lengths.rs`            | Which IPC body buffers hold offsets, the rewrite of offsets as lengths in byte planes, and the `LENGTHS_TAG_FLAG` codec-tag bit. |
 
@@ -217,7 +218,8 @@ read time. See [Direct Read](#direct-read-shufflescan) below for how the choice 
    skips decoding entirely.
 2. `CometShuffleBlockIterator` hands the Rust side one compressed block at a time.
 3. The Rust `ShuffleScanExec` decodes each block with `read_ipc_compressed` and feeds the
-   resulting `RecordBatch` straight into the plan. No Arrow FFI export or import happens.
+   resulting `RecordBatch` into the plan, split into several batches when its dictionary columns
+   would expand past 2 GiB. No Arrow FFI export or import happens.
 
 For a direct local native shuffle feeding a broadcast exchange, the opt-in
 `spark.comet.exec.broadcastExchange.producerCoalesce.enabled` mode uses one decoder across the task's fetched
@@ -301,7 +303,11 @@ Two details matter when changing it:
 - `get_next_batch` is called from outside `poll_next`, because JNI calls cannot be made from tokio
   worker threads. A change that moves the JNI call into the stream's `poll_next` breaks this.
 - Dictionary-encoded columns are unpacked to their value type by `unpack_dictionary`, so the schema
-  the plan sees matches the declared `ShuffleScan` fields.
+  the plan sees matches the declared `ShuffleScan` fields. A small block can expand past the 2 GiB a
+  `Utf8` or `Binary` array holds, so `dictionary_expansion_ranges` first splits the decoded block
+  into row ranges that each expand within that limit, and `get_next_batch` emits one range per call.
+  It pulls the next block only after the last range, so a LIMIT that stops early reads no further
+  and a failure in one range is still reported against the stream that supplied the block.
 
 Blocks are validated before decoding when `CometShuffleBlockIterator.requiresValidation()` is true,
 which happens when the underlying stream implements `CometShuffleReadFailureHandler` so a corrupt
