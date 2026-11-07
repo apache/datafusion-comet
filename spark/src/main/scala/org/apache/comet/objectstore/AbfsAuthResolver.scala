@@ -147,7 +147,8 @@ private[comet] object AbfsAuthResolver extends Logging {
   }
 
   private val REDACTED = "<redacted>"
-  // Shorter values (`true`, a port) would mangle messages without protecting anything.
+  // Configured values shorter than this (`true`, a port) are not recorded as secrets: hiding them
+  // would mangle messages without protecting anything. URI secrets are hidden at any length.
   private val MIN_REDACTED_LENGTH = 8
   // `SimpleKeyProvider` (3.4.1+) puts the raw account key in its message as `key ="..."`.
   private val QUOTED_KEY_PATTERN = "key =\"[^\"]*\"".r
@@ -536,15 +537,14 @@ private[comet] object AbfsAuthResolver extends Logging {
     if (authType == AuthTypes.SAS) Markers.SAS_PROVIDER_CLASS else Markers.OAUTH_PROVIDER_CLASS
 
   /**
-   * Hides every `secret` of at least [[MIN_REDACTED_LENGTH]] characters in `message`, and the raw
-   * key a `SimpleKeyProvider` message quotes. Secrets are matched in the same text, so one that
-   * overlaps or contains another is hidden whole, and each run of hidden characters becomes one
-   * marker.
+   * Hides every non-empty `secret` in `message`, and the raw key a `SimpleKeyProvider` message
+   * quotes. Secrets are matched in the same text, so one that overlaps or contains another is
+   * hidden whole, and each run of hidden characters becomes one marker.
    */
   private[objectstore] def redact(message: String, secrets: Iterable[String]): String = {
     val text = QUOTED_KEY_PATTERN.replaceAllIn(message, "key =\"" + REDACTED + "\"")
     val hidden = new Array[Boolean](text.length)
-    secrets.filter(_.length >= MIN_REDACTED_LENGTH).foreach { secret =>
+    secrets.filter(_.nonEmpty).foreach { secret =>
       var i = text.indexOf(secret)
       while (i >= 0) {
         Arrays.fill(hidden, i, i + secret.length, true)
@@ -559,10 +559,19 @@ private[comet] object AbfsAuthResolver extends Logging {
     out.toString
   }
 
-  /** The parts of `uri` that can carry a credential: the password and the raw query. */
+  /**
+   * The parts of `uri` that can carry a credential: the password and the raw query. The password
+   * is read from the raw authority, which has one even when `getRawUserInfo` is null (an `_` in
+   * the host makes the authority registry-based). It is the text after the first `:` of the user
+   * part, which ends at the last `@` as in [[NativeConfig.authorityWithoutPassword]] and at the
+   * first `@` as in [[authorityParts]].
+   */
   private[objectstore] def uriSecrets(uri: URI): Seq[String] = {
-    val password = Option(uri.getRawUserInfo).map(_.dropWhile(_ != ':').drop(1))
-    (password ++ Option(uri.getRawQuery)).filter(_.nonEmpty).toSeq
+    val authority = Option(uri.getRawAuthority).getOrElse("")
+    val passwords = Seq(authority.lastIndexOf('@'), authority.indexOf('@'))
+      .filter(_ >= 0)
+      .map(at => authority.take(at).dropWhile(_ != ':').drop(1))
+    (passwords ++ Option(uri.getRawQuery)).filter(_.nonEmpty).distinct
   }
 
   // Messages reach native errors and logs, so they omit the password, path and query.

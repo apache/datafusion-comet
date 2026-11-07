@@ -20,6 +20,10 @@
 package org.apache.comet.objectstore
 
 import java.net.URI
+import java.nio.charset.StandardCharsets.UTF_8
+import java.nio.file.{Files, Path, Paths}
+import java.security.KeyStore
+import javax.crypto.spec.SecretKeySpec
 
 import scala.collection.mutable.ArrayBuffer
 import scala.util.{Failure, Success, Try}
@@ -32,6 +36,11 @@ import org.apache.hadoop.fs.azurebfs.AbfsConfiguration
 import org.apache.hadoop.fs.azurebfs.extensions.SASTokenProvider
 import org.apache.hadoop.fs.azurebfs.oauth2.{AccessTokenProvider, AzureADToken}
 import org.apache.hadoop.fs.azurebfs.services.KeyProvider
+import org.apache.hadoop.security.alias.CredentialProviderFactory
+import org.apache.logging.log4j.{Level, LogManager}
+import org.apache.logging.log4j.core.{LogEvent, Logger => CoreLogger}
+import org.apache.logging.log4j.core.appender.AbstractAppender
+import org.apache.logging.log4j.core.config.Property
 
 import org.apache.comet.objectstore.AbfsAuthResolver._
 import org.apache.comet.objectstore.AbfsReflection.Handles
@@ -76,6 +85,49 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
    */
   private def cyclic(key: String, other: String): Seq[(String, String)] =
     Seq(key -> ("${" + other + "}"), other -> ("${" + key + "}"))
+
+  /** A JCEKS keystore Hadoop can open whose one entry, `alias`, it cannot recover. */
+  private def unrecoverableKeystore(alias: String): Path = {
+    val storePassword = sys.env.getOrElse("HADOOP_CREDSTORE_PASSWORD", "none").toCharArray
+    val keyStore = KeyStore.getInstance("JCEKS")
+    keyStore.load(null, storePassword)
+    keyStore.setEntry(
+      alias,
+      new KeyStore.SecretKeyEntry(new SecretKeySpec("value".getBytes(UTF_8), "AES")),
+      new KeyStore.PasswordProtection("not-the-store-password".toCharArray))
+    val tmp = Files.createDirectories(Paths.get(System.getProperty("java.io.tmpdir")))
+    val path = Files.createTempFile(tmp, "abfs-unrecoverable", ".jceks")
+    path.toFile.deleteOnExit()
+    val out = Files.newOutputStream(path)
+    try keyStore.store(out, storePassword)
+    finally out.close()
+    path
+  }
+
+  /** The resolver's WARN messages logged while `f` runs, one per line. */
+  private def capturedWarnings(f: => Unit): String = {
+    val logger = LogManager
+      .getLogger(AbfsAuthResolver.getClass.getName.stripSuffix("$"))
+      .asInstanceOf[CoreLogger]
+    val messages = ArrayBuffer[String]()
+    val appender =
+      new AbstractAppender("AbfsAuthResolverSuite", null, null, false, Property.EMPTY_ARRAY) {
+        override def append(event: LogEvent): Unit = messages.synchronized {
+          if (event.getLevel == Level.WARN) messages += event.getMessage.getFormattedMessage
+        }
+      }
+    appender.start()
+    val originalLevel = logger.getLevel
+    logger.addAppender(appender)
+    logger.setLevel(Level.WARN)
+    try f
+    finally {
+      logger.removeAppender(appender)
+      logger.setLevel(originalLevel)
+      appender.stop()
+    }
+    messages.synchronized(messages.mkString("\n"))
+  }
 
   private def assertNoAzureKeys(options: Map[String, String]): Unit = {
     val leaked = options.keys.filter(_.startsWith("fs."))
@@ -373,6 +425,65 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     Seq("the-uri-password", "the-sas-signature").foreach(s => message should not include s)
   }
 
+  test("Failed - a URI password and query shorter than eight characters are scrubbed too") {
+    val shortUri = new URI(s"abfss://data:pw12345@$account/p?sig=abc")
+    val thrown = new ClassNotFoundException(s"no class for $shortUri")
+    val message = toOptions(resolve(conf(), shortUri, Failure(thrown)))(Markers.ERROR_MESSAGE)
+    message should include(s"no class for abfss://data:<redacted>@$account/p?<redacted>")
+    Seq("pw12345", "sig=abc").foreach(s => message should not include s)
+  }
+
+  /**
+   * The driver warnings from an OAuth client-credentials resolution of a URI on `host` with
+   * `password` in its user info, where Hadoop cannot read the container-scoped client secret from
+   * the keystore. The outcome must be a [[Failed]] that does not contain the password.
+   */
+  private def keystoreAliasWarnings(host: String, password: String): String = {
+    // On 3.4.2+ the container-scoped alias embeds the raw container, user info included, and
+    // Hadoop names the alias when it cannot recover the entry.
+    val secretUri = new URI(s"abfss://$container:$password@$host/path/file.parquet")
+    val keystore = unrecoverableKeystore(s"${Keys.CLIENT_SECRET}.$container:$password.$host")
+    val providerPath = s"jceks://file${keystore.toUri.getRawPath}"
+    def key(name: String): String = s"$name.$host"
+    capturedWarnings {
+      val outcome = resolve(
+        conf(
+          CredentialProviderFactory.CREDENTIAL_PROVIDER_PATH -> providerPath,
+          key(Keys.AUTH_TYPE) -> "OAuth",
+          key(Keys.OAUTH_PROVIDER_TYPE) -> Providers.CLIENT_CREDS,
+          key(Keys.CLIENT_ENDPOINT) -> "https://login.microsoftonline.com/tenant/oauth2/token",
+          key(Keys.CLIENT_ID) -> "client-123"),
+        secretUri)
+      outcome shouldBe a[Failed]
+      toOptions(outcome).values.foreach(v => v should not include password)
+    }
+  }
+
+  test("Failed - a short URI password in a keystore alias stays out of the driver warning") {
+    assume(handles.hasContainerScopedConfiguration, "no container-scoped keys before 3.4.2")
+    val warnings = keystoreAliasWarnings(account, "pw12345")
+    warnings should include(s"${Keys.CLIENT_SECRET}.$container:<redacted>.$account")
+    warnings should not include "pw12345"
+  }
+
+  test("Failed - a URI password is hidden when the host makes the authority registry-based") {
+    // An underscore in the host leaves java.net.URI without user info, but Hadoop still takes
+    // the container, password included, from the raw authority.
+    assume(handles.hasContainerScopedConfiguration, "no container-scoped keys before 3.4.2")
+    val host = "my_account.dfs.core.windows.net"
+    assert(new URI(s"abfss://$container:pw12345@$host/p").getRawUserInfo == null)
+    val warnings = keystoreAliasWarnings(host, "pw12345")
+    warnings should include(s"${Keys.CLIENT_SECRET}.$container:<redacted>.$host")
+    warnings should not include "pw12345"
+  }
+
+  test("Failed - a configured value shorter than eight characters is left readable") {
+    // `true` read as a client secret is too short to hide, so Hadoop's enum error still names it.
+    val outcome = resolveWith(acct(Keys.AUTH_TYPE) -> "true", acct(Keys.CLIENT_SECRET) -> "true")
+    outcome shouldBe a[Failed]
+    outcome.asInstanceOf[Failed].message should include("AuthType.true")
+  }
+
   test("Failed - a LinkageError from the reflection layer is an error marker, not a crash") {
     val outcome = resolve(conf(acct(Keys.ACCOUNT_KEY) -> "c2VjcmV0"), uri, Success(LinkageStub))
     outcome shouldBe a[Failed]
@@ -390,10 +501,18 @@ class AbfsAuthResolverSuite extends AnyFunSuite with Matchers {
     failed.message should include(AbfsReflection.ClassNames.ABFS_CONFIGURATION)
   }
 
-  test("redact - hides quoted keys and long secrets, leaves short values alone") {
-    val message = "Failure for acct key =\"c2VjcmV0c2VjcmV0\": token=the-secret-value port=8080"
-    redact(message, Seq("the-secret-value", "8080")) shouldBe
-      "Failure for acct key =\"<redacted>\": token=<redacted> port=8080"
+  test("uriSecrets - the password comes from the raw authority, at either `@` split") {
+    uriSecrets(new URI(s"abfss://data:pw@$account/p?sig=x")) shouldBe Seq("pw", "sig=x")
+    uriSecrets(new URI("abfss://data:pw@my_acct/p")) shouldBe Seq("pw")
+    uriSecrets(new URI("abfss://data:a@b@acct/p")) shouldBe Seq("a@b", "a")
+    uriSecrets(new URI(s"abfss://data@$account/p")) shouldBe empty
+    uriSecrets(new URI("abfss://data:@my_acct/p?")) shouldBe empty
+  }
+
+  test("redact - hides quoted keys and every non-empty secret, however short") {
+    val message = "Failure for acct key =\"c2VjcmV0c2VjcmV0\": token=the-secret-value pw=1234567"
+    redact(message, Seq("the-secret-value", "1234567", "")) shouldBe
+      "Failure for acct key =\"<redacted>\": token=<redacted> pw=<redacted>"
   }
 
   test("redact - overlapping, contained and adjacent secrets become one marker") {
