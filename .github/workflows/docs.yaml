@@ -27,15 +27,13 @@ jobs:
     name: Build docs
     if: ${{ startsWith(github.repository, 'apache/') }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - name: Checkout docs sources
         uses: actions/checkout@v7
-
-      - name: Checkout asf-site branch
-        uses: actions/checkout@v7
         with:
-          ref: asf-site
-          path: asf-site
+          persist-credentials: false
 
       - name: Setup Python
         uses: actions/setup-python@v7
@@ -101,6 +99,41 @@ jobs:
         # node, and a green build. This runs before the publish step for that reason.
         run: python3 dev/ci/check-mermaid.py --built docs/build/html
 
+      - name: Upload generated site
+        uses: ./.github/actions/upload-artifact-retry
+        with:
+          name: comet-docs-site
+          path: docs/build/html/
+          retention-days: 1
+          if-no-files-found: error
+
+  deploy-docs:
+    name: Deploy docs
+    needs: build-docs
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout asf-site branch
+        uses: actions/checkout@v7
+        with:
+          ref: asf-site
+          path: asf-site
+
+      - name: Checkout trusted site metadata
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+          sparse-checkout: .asf.yaml
+          persist-credentials: false
+
+      - name: Download generated site
+        uses: actions/download-artifact@v8
+        with:
+          name: comet-docs-site
+          path: site-output
+
       - name: Copy & push the generated HTML
         run: |
           set -x
@@ -108,10 +141,13 @@ jobs:
           rsync \
             -a \
             --delete \
-            --exclude '/.git/' \
-            ../docs/build/html/ \
+            --exclude '/.git' \
+            --exclude '/.asf.yaml' \
+            --exclude '/.nojekyll' \
+            ../site-output/ \
             ./
-          cp ../.asf.yaml .
+          rm -f .asf.yaml .nojekyll
+          cp ../trusted/.asf.yaml .
           touch .nojekyll
           git status --porcelain
           if [ "$(git status --porcelain)" != "" ]; then
