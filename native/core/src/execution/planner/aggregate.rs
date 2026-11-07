@@ -51,10 +51,11 @@ use datafusion_comet_proto::{
     spark_operator::{AggregateMode as ProtoAggregateMode, Operator},
 };
 use datafusion_comet_spark_expr::{
-    ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, CometCollectList, CometCollectSet,
-    Correlation, Covariance, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode, Regr,
-    RegrType, SparkBloomFilterVersion, SparkListAgg, SparkMinMax, SparkPercentile, SparkPivotFirst,
-    Stddev, SumDecimal, SumInteger, Variance, ZeroOrder,
+    ApproxPercentile, Avg, AvgDecimal, BloomFilterAgg, Cast, CometCollectList, CometCollectSet,
+    Correlation, Covariance, EvalMode, HllPlusPlus, HllSketchAgg, HllUnionAgg, MaxMinBy, Mode,
+    Regr, RegrType, SparkBloomFilterVersion, SparkCastOptions, SparkListAgg, SparkMinMax,
+    SparkPercentile, SparkPivotFirst, SparkStructMinMax, Stddev, SumDecimal, SumInteger, Variance,
+    ZeroOrder,
 };
 use jni::objects::{Global, JObject};
 
@@ -247,6 +248,34 @@ impl OperatorBuilder for HashAggBuilder {
             })
             .collect();
 
+        // DataFusion 55 runs Single over input sorted on some of its keys with the legacy
+        // GroupedHashAggregateStream, whose spill can fail against the fair limit (#6880). Final
+        // runs an OrderedFinalAggregateStream there, which spills, and which the fair pool exempts
+        // from that limit (`limited_to_its_share`). MergeAsPartial evaluates to its state under
+        // Final as under Single.
+        // Only partially sorted input switches: with fully sorted input Final has no spill path
+        // and would halve the limit of a sort below it. Final also reads states from the columns
+        // after the keys, so the input must be the keys followed by native states (Spark's binary
+        // collect buffers keep Single, and arrive unordered anyway).
+        // Drop this on DataFusion 56, where the stream is ClusteredFinalAggregateStream
+        // (apache/datafusion#24697), and update the name prefix in `spill_replay.rs` (#6410).
+        let mode = if proto_mode == ProtoAggregateMode::PartialMerge
+            && input_is_keys_then_states(agg, &aggr_expr, &schema)?
+            && {
+                let keys = group_by.input_exprs();
+                let sorted_on = child
+                    .native_plan
+                    .equivalence_properties()
+                    .find_longest_permutation(&keys)?
+                    .1;
+                // DataFusion's InputOrderMode is PartiallySorted when some, not all, keys match.
+                !sorted_on.is_empty() && sorted_on.len() < keys.len()
+            } {
+            DFAggregateMode::Final
+        } else {
+            mode
+        };
+
         let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
             datafusion::physical_plan::aggregates::AggregateExec::try_new(
                 mode,
@@ -309,6 +338,37 @@ impl OperatorBuilder for HashAggBuilder {
     }
 }
 
+/// Whether a PartialMerge's input is its grouping keys, in order, followed by the states of
+/// its MergeAsPartial aggregates in their native types, which DataFusion's Final assumes. A
+/// Spark partial aggregate's collect buffers, for example, arrive as binary.
+fn input_is_keys_then_states(
+    agg: &datafusion_comet_proto::spark_operator::HashAggregate,
+    aggr_expr: &[Arc<AggregateFunctionExpr>],
+    input_schema: &SchemaRef,
+) -> Result<bool, ExecutionError> {
+    let num_keys = agg.grouping_exprs.len();
+    let keys_lead = agg.initial_input_buffer_offset as usize == num_keys
+        && agg.grouping_exprs.iter().enumerate().all(|(idx, expr)| {
+            matches!(&expr.expr_struct, Some(ExprStruct::Bound(bound)) if bound.index as usize == idx)
+        });
+    if !keys_lead {
+        return Ok(false);
+    }
+    let mut input_types = input_schema
+        .fields()
+        .iter()
+        .skip(num_keys)
+        .map(|f| f.data_type());
+    for expr in aggr_expr {
+        for field in expr.state_fields()? {
+            if input_types.next() != Some(field.data_type()) {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(input_types.next().is_none())
+}
+
 impl PhysicalPlanner {
     /// Create a DataFusion physical aggregate expression from Spark physical aggregate expression
     fn create_agg_expr(
@@ -339,7 +399,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, false);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -353,7 +413,7 @@ impl PhysicalPlanner {
                 let child = self.create_expr(expr.child.as_ref().unwrap(), Arc::clone(&schema))?;
                 let datatype = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 let func = min_max_udaf(&datatype, true);
-                let child = Arc::new(CastExpr::new(child, datatype.clone(), None));
+                let child = Self::cast_min_max_child(child, &datatype, &schema)?;
 
                 AggregateExprBuilder::new(func, vec![child])
                     .schema(schema)
@@ -807,6 +867,38 @@ impl PhysicalPlanner {
         Ok(Arc::new(CastExpr::new(child, nullable_type, None)))
     }
 
+    /// Cast a min/max input to the aggregate's declared type. Native expressions such as
+    /// `struct(...)` can report nullable fields where Spark declares them non-nullable, and
+    /// DataFusion's `CastExpr` rejects that narrowing. For a struct, only nullability may differ:
+    /// Comet's `Cast` then relabels the fields without touching the data (and errors if a field
+    /// declared non-nullable holds a null), so the input matches the state that shuffle and scans
+    /// stamp with Spark's type. Any other difference is a planning error.
+    fn cast_min_max_child(
+        child: Arc<dyn PhysicalExpr>,
+        datatype: &DataType,
+        schema: &SchemaRef,
+    ) -> Result<Arc<dyn PhysicalExpr>, ExecutionError> {
+        if !matches!(datatype, DataType::Struct(_)) {
+            return Ok(Arc::new(CastExpr::new(child, datatype.clone(), None)));
+        }
+        let child_type = child.data_type(schema.as_ref())?;
+        if &child_type == datatype {
+            return Ok(child);
+        }
+        if !equal_ignoring_nullability(&child_type, datatype) {
+            return Err(GeneralError(format!(
+                "min/max input type {child_type} does not match the declared type {datatype}"
+            )));
+        }
+        Ok(Arc::new(Cast::new(
+            child,
+            datatype.clone(),
+            SparkCastOptions::new_without_timezone(EvalMode::Legacy),
+            None,
+            None,
+        )))
+    }
+
     pub(super) fn create_aggr_func_expr(
         name: &str,
         schema: SchemaRef,
@@ -820,6 +912,19 @@ impl PhysicalPlanner {
             .with_distinct(false)
             .build()
             .map_err(|e| e.into())
+    }
+}
+
+/// True if two types match apart from struct field nullability and metadata.
+fn equal_ignoring_nullability(a: &DataType, b: &DataType) -> bool {
+    match (a, b) {
+        (DataType::Struct(fa), DataType::Struct(fb)) => {
+            fa.len() == fb.len()
+                && fa.iter().zip(fb.iter()).all(|(x, y)| {
+                    x.name() == y.name() && equal_ignoring_nullability(x.data_type(), y.data_type())
+                })
+        }
+        _ => a == b,
     }
 }
 
@@ -870,13 +975,15 @@ fn make_all_fields_nullable(data_type: &DataType) -> DataType {
     }
 }
 
-/// `min` or `max` over `data_type`: Spark's version for floats, which DataFusion orders
-/// differently, and DataFusion's for every other type.
+/// `min` or `max` over `data_type`: Spark's version for floats and structs, which DataFusion
+/// orders differently, and DataFusion's for every other type.
 pub(super) fn min_max_udaf(data_type: &DataType, is_max: bool) -> Arc<AggregateUDF> {
     // Spark has only 32- and 64-bit floating-point types. Keep Float16 on DataFusion's path so
     // an internal plan using it does not reach SparkMinMax, whose accumulators reject that type.
     if matches!(data_type, DataType::Float32 | DataType::Float64) {
         Arc::new(AggregateUDF::new_from_impl(SparkMinMax::new(is_max)))
+    } else if matches!(data_type, DataType::Struct(_)) {
+        Arc::new(AggregateUDF::new_from_impl(SparkStructMinMax::new(is_max)))
     } else if is_max {
         max_udaf()
     } else {
@@ -896,5 +1003,55 @@ fn percentile_value(expr: &spark_expression::Expr) -> Result<f64, ExecutionError
         _ => Err(GeneralError(
             "Percentile value must be a non-null literal".to_string(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::datatypes::{Fields, TimeUnit};
+    use std::collections::HashMap;
+
+    #[test]
+    fn equal_ignoring_nullability_allows_only_nullability_and_metadata() {
+        let inner = |nullable| {
+            DataType::Struct(Fields::from(vec![Field::new(
+                "s",
+                DataType::Utf8,
+                nullable,
+            )]))
+        };
+        let outer = |nullable, ts_type: DataType| {
+            DataType::Struct(Fields::from(vec![
+                Field::new("ts", ts_type, nullable),
+                Field::new("inner", inner(nullable), nullable),
+            ]))
+        };
+        let ts = DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()));
+
+        assert!(equal_ignoring_nullability(
+            &outer(true, ts.clone()),
+            &outer(false, ts.clone())
+        ));
+
+        let with_metadata =
+            DataType::Struct(Fields::from(vec![Field::new("s", DataType::Utf8, true)
+                .with_metadata(HashMap::from([("k".to_string(), "v".to_string())]))]));
+        assert!(equal_ignoring_nullability(&with_metadata, &inner(false)));
+
+        // A different leaf type, timezone label or field name is not a relabel.
+        assert!(!equal_ignoring_nullability(
+            &outer(false, ts.clone()),
+            &outer(false, DataType::Int64)
+        ));
+        assert!(!equal_ignoring_nullability(
+            &outer(false, ts),
+            &outer(
+                false,
+                DataType::Timestamp(TimeUnit::Microsecond, Some("+05:30".into()))
+            )
+        ));
+        let renamed = DataType::Struct(Fields::from(vec![Field::new("t", DataType::Utf8, false)]));
+        assert!(!equal_ignoring_nullability(&renamed, &inner(false)));
     }
 }

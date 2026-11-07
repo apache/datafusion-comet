@@ -2465,6 +2465,30 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("make_date is not evaluated by empty IN predicates") {
+    assume(isSpark35Plus, "Spark 3.4 always uses legacy empty-IN evaluation")
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> OptimizeIn.ruleName) {
+      val data: Seq[Tuple1[Integer]] = Seq(Tuple1(13), Tuple1(null))
+      withParquetTable(data, "make_date_empty_in") {
+        val input = sql("SELECT make_date(2024, _1, 1) AS d FROM make_date_empty_in")
+        val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+        // Separate projections ensure one parent's fallback cannot mask a missing guard for
+        // the other. The fallback reason also proves the optimizer retained the empty predicate.
+        Seq("In" -> col("d").isin(), "InSet" -> getColumnFromExpression(emptySet)).foreach {
+          case (parent, predicate) =>
+            val df = input.select(predicate)
+            val _ = checkSparkAnswerAndFallbackReason(
+              df,
+              s"make_date requires Spark evaluation under $parent")
+            checkCometAnswer(df, Seq(Row(false), Row(false)))
+        }
+      }
+    }
+  }
+
   test("not") {
     Seq(false, true).foreach { dictionary =>
       withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
