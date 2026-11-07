@@ -77,11 +77,6 @@
 //! a `TIMESTAMP(NANOS)` leaf even without them, a deferred conversion failure is raised on the
 //! first data-page request. Footer, Bloom-filter and page-index reads still proceed, so format
 //! pruning can discard a file without decoding it, but row selection cannot hide the failure.
-//! Binary-as-string scans also validate the original requested types at that boundary, so an
-//! intermediate Binary read cannot admit fixed-length binary requested as StringType. For
-//! unencrypted opens, a per-open Arrow hint carries the raw UTF8 annotation to the expression
-//! adapter. It can then remove synthetic decoding for validated columns in projections and
-//! predicates. The shared cache keeps the original footer.
 //!
 //! With `with_next_file_metadata_prefetch`, readers also load the next file's metadata before
 //! DataFusion opens it. DataFusion's `FileStream` keeps one I/O outstanding and plans a file
@@ -102,7 +97,6 @@ use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
     check_file_conversions, RejectOnNonEmpty, NANOS_TIMESTAMP_KEY, REPEATED_PRIMITIVE_KEY,
-    UTF8_VALIDATED_KEY,
 };
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -235,7 +229,6 @@ pub struct EagerPageIndexReaderFactory {
     // Enable the footer workaround only for scans that project Variant.
     // https://github.com/apache/datafusion-comet/issues/5477
     spark_variant_schema: bool,
-    binary_as_string: bool,
     // Refuse a file whose Parquet schema carries no field id, as Spark's `ParquetReadSupport`
     // does when the requested schema carries one and `ignoreMissing` is not set.
     require_field_ids: bool,
@@ -271,7 +264,6 @@ impl EagerPageIndexReaderFactory {
             metadata_cache,
             scan_io_metrics,
             spark_variant_schema: false,
-            binary_as_string: false,
             require_field_ids: false,
             stamp_int96_leaves: false,
             conversion_check: None,
@@ -280,10 +272,9 @@ impl EagerPageIndexReaderFactory {
         }
     }
 
-    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation. When row
-    /// filters or binary-as-string reads are enabled, or the file has a `TIMESTAMP(NANOS)` leaf,
-    /// enforce deferred failures
-    /// at the first data-page read, after format pruning.
+    /// Retain raw LIST encoding and `TIMESTAMP(NANOS)` leaves for open-time validation.
+    /// Row filters, binary-as-string checks and `TIMESTAMP(NANOS)` defer failures until
+    /// the first data-page read, after format pruning.
     pub(crate) fn with_conversion_check(
         mut self,
         required: SchemaRef,
@@ -291,11 +282,6 @@ impl EagerPageIndexReaderFactory {
         row_filters: bool,
     ) -> Self {
         self.conversion_check = Some((required, options, row_filters));
-        self
-    }
-
-    pub(crate) fn with_binary_as_string(mut self, enabled: bool) -> Self {
-        self.binary_as_string = enabled;
         self
     }
 
@@ -384,7 +370,6 @@ impl ParquetFileReaderFactory for EagerPageIndexReaderFactory {
             metadata_cache: Arc::clone(&self.metadata_cache),
             metadata_size_hint,
             spark_variant_schema: self.spark_variant_schema,
-            binary_as_string: self.binary_as_string,
             require_field_ids: self.require_field_ids,
             stamp_int96_leaves: self.stamp_int96_leaves,
             conversion_check: self.conversion_check.clone(),
@@ -406,7 +391,6 @@ struct EagerPageIndexReader {
     metadata_cache: Arc<FileMetadataCache>,
     metadata_size_hint: Option<usize>,
     spark_variant_schema: bool,
-    binary_as_string: bool,
     require_field_ids: bool,
     stamp_int96_leaves: bool,
     conversion_check: Option<(SchemaRef, SparkParquetOptions, bool)>,
@@ -528,70 +512,6 @@ fn with_spark_arrow_schema(metadata: Arc<ParquetMetaData>) -> ParquetResult<Arc<
         });
     }
 
-    let file = FileMetaData::new(
-        file.version(),
-        file.num_rows(),
-        file.created_by().map(str::to_owned),
-        Some(key_values),
-        file.schema_descr_ptr(),
-        file.column_orders().cloned(),
-    );
-    Ok(Arc::new(
-        ParquetMetaDataBuilder::new(file)
-            .set_row_groups(metadata.row_groups().to_vec())
-            .set_column_index(metadata.column_index().cloned())
-            .set_offset_index(metadata.offset_index().cloned())
-            .build(),
-    ))
-}
-
-/// Carry the raw UTF8 annotation to the expression adapter. An Arrow Utf8 hint alone does not
-/// prove validation: JSON and an unannotated BINARY with an Arrow string hint also infer Utf8.
-/// Undo unannotated Arrow string hints so those columns remain binary until replacement decoding.
-/// JSON retains its decoder-inferred string type, but never receives the validated marker.
-/// Rebuild only this open's metadata; encrypted opens cannot be rebuilt without losing the decryptor.
-fn with_binary_as_string_schema(
-    metadata: Arc<ParquetMetaData>,
-) -> ParquetResult<Arc<ParquetMetaData>> {
-    let file = metadata.file_metadata();
-    let schema = parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
-    let fields = schema
-        .fields()
-        .iter()
-        .zip(file.schema_descr().root_schema().get_fields())
-        .map(|(field, parquet)| {
-            let validated = parquet.is_primitive()
-                && parquet.get_basic_info().converted_type() == ConvertedType::UTF8;
-            let mut metadata = field.metadata().clone();
-            metadata.remove(UTF8_VALIDATED_KEY);
-            if validated {
-                metadata.insert(UTF8_VALIDATED_KEY.to_string(), "true".to_string());
-            }
-            let mut field = field.as_ref().clone().with_metadata(metadata);
-            if !validated
-                && parquet.get_basic_info().converted_type() != ConvertedType::JSON
-                && matches!(
-                    field.data_type(),
-                    DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-                )
-            {
-                field = field.with_data_type(DataType::Binary);
-            }
-            Arc::new(field)
-        })
-        .collect::<Vec<_>>();
-    let schema = Schema::new_with_metadata(fields, schema.metadata().clone());
-    let mut key_values = file
-        .key_value_metadata()
-        .into_iter()
-        .flatten()
-        .filter(|kv| kv.key != ARROW_SCHEMA_META_KEY)
-        .cloned()
-        .collect::<Vec<_>>();
-    key_values.push(KeyValue::new(
-        ARROW_SCHEMA_META_KEY.to_string(),
-        encode_arrow_schema(&schema),
-    ));
     let file = FileMetaData::new(
         file.version(),
         file.num_rows(),
@@ -849,11 +769,6 @@ impl AsyncFileReader for EagerPageIndexReader {
             } else {
                 metadata
             };
-            let metadata = if self.binary_as_string && cache_enabled {
-                with_binary_as_string_schema(metadata)?
-            } else {
-                metadata
-            };
             if let Some((required, conversion_options, row_filters)) =
                 self.conversion_check.as_ref()
             {
@@ -863,7 +778,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                 // `TIMESTAMP(NANOS)` rejection is deferred from here even without row filters.
                 let has_nanos = columns.iter().any(is_nanos_timestamp);
                 let needs_check = *row_filters
-                    || self.binary_as_string
+                    || conversion_options.reject_fixed_binary_as_string
                     || has_nanos
                     || columns.iter().any(|column| {
                         column.self_type().get_basic_info().repetition()
@@ -875,12 +790,10 @@ impl AsyncFileReader for EagerPageIndexReader {
                 let schema =
                     parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata())?;
                 let schema = mark_parquet_leaves(&schema, file.schema_descr());
-                let mut conversion_options = conversion_options.clone();
-                conversion_options.reject_fixed_binary_as_string = self.binary_as_string;
                 let rejection = check_file_conversions(
                     Arc::clone(required),
                     Arc::new(schema),
-                    conversion_options,
+                    conversion_options.clone(),
                 )
                 .map_err(|e| match e {
                     // Keep structured Spark errors directly inside the Parquet wrapper so
@@ -888,7 +801,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters || self.binary_as_string || has_nanos {
+                if *row_filters || conversion_options.reject_fixed_binary_as_string || has_nanos {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),
@@ -2117,57 +2030,5 @@ mod tests {
             .await
             .expect("the metadata load in flight was not aborted");
         assert_eq!(metric(&metrics, "scan_io_metadata_prefetches"), 0);
-    }
-
-    #[test]
-    fn binary_as_string_schema_uses_parquet_annotation_not_arrow_hint() {
-        use arrow::datatypes::Field;
-        use parquet::schema::parser::parse_message_type;
-        let parquet = Arc::new(parse_message_type(
-            "message test { OPTIONAL BINARY raw; OPTIONAL BINARY text (UTF8); OPTIONAL BINARY json (JSON); }").unwrap());
-        let fields = ["raw", "text", "json"]
-            .into_iter()
-            .map(|name| {
-                Field::new(name, DataType::Utf8, true).with_metadata(HashMap::from([(
-                    UTF8_VALIDATED_KEY.to_string(),
-                    "true".to_string(),
-                )]))
-            })
-            .collect::<Vec<_>>();
-        let hint = Schema::new(fields);
-        let file = FileMetaData::new(
-            1,
-            0,
-            None,
-            Some(vec![KeyValue::new(
-                ARROW_SCHEMA_META_KEY.to_string(),
-                encode_arrow_schema(&hint),
-            )]),
-            Arc::new(SchemaDescriptor::new(parquet)),
-            None,
-        );
-        let original = Arc::new(ParquetMetaData::new(file, vec![]));
-        let rewritten = with_binary_as_string_schema(original.clone()).unwrap();
-        let file = rewritten.file_metadata();
-        let schema =
-            parquet_to_arrow_schema(file.schema_descr(), file.key_value_metadata()).unwrap();
-        assert_eq!(schema.field(0).data_type(), &DataType::Binary);
-        assert_eq!(schema.field(1).data_type(), &DataType::Utf8);
-        assert_eq!(schema.field(2).data_type(), &DataType::Utf8);
-        for index in [0, 2] {
-            assert!(!schema
-                .field(index)
-                .metadata()
-                .contains_key(UTF8_VALIDATED_KEY));
-        }
-        assert_eq!(
-            schema
-                .field(1)
-                .metadata()
-                .get(UTF8_VALIDATED_KEY)
-                .map(String::as_str),
-            Some("true")
-        );
-        assert_eq!(rewritten.row_groups(), original.row_groups());
     }
 }
