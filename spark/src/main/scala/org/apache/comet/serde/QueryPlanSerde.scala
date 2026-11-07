@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.expressions.xml.{XPathBoolean, XPathDouble, XPathFloat, XPathInt, XPathList, XPathLong, XPathShort, XPathString}
+import org.apache.spark.sql.catalyst.optimizer.NormalizeNaNAndZero
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.execution.{ScalarSubquery, SparkPlan}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
@@ -1393,6 +1394,72 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       }
     }
   }
+
+  /**
+   * Whether `expr` cannot raise an error for any row, so native execution may evaluate it for
+   * rows that Spark skips. It answers from Spark's semantics, independently of the native
+   * `cannot_fail` in `case_when.rs`, which judges the physical expressions it is given. It is
+   * conservative: an allowed expression whose children also cannot fail. Anything not listed is
+   * treated as able to fail.
+   */
+  def cannotFail(expr: Expression): Boolean = {
+    def numeric: Boolean = expr.dataType.isInstanceOf[NumericType]
+    def nonAnsiNumeric(evalMode: EvalMode.Value): Boolean = evalMode != EvalMode.ANSI && numeric
+    // Floating-point arithmetic never overflows into an error, even in ANSI mode
+    def floating: Boolean = expr.dataType == FloatType || expr.dataType == DoubleType
+    val nodeCannotFail = expr match {
+      case _: Attribute | _: BoundReference | _: Literal => true
+      case _: GetStructField => true
+      case _: BinaryComparison | _: And | _: Or | _: Not | _: IsNull | _: IsNotNull => true
+      case _: In | _: InSet | _: Greatest | _: Least => true
+      case _: If | _: CaseWhen | _: Coalesce | _: IsNaN | _: NaNvl => true
+      case _: KnownFloatingPointNormalized | _: NormalizeNaNAndZero => true
+      case _: Substring | _: Upper | _: Lower | _: Length | _: OctetLength | _: BitLength => true
+      case _: StringTrim | _: StringTrimLeft | _: StringTrimRight => true
+      case _: StringReplace | _: InitCap => true
+      // These fail only when the result would exceed 2GB, more than a row can hold
+      case _: ConcatWs => true
+      case c: Concat => c.children.nonEmpty && c.dataType == StringType
+      case _: Reverse => expr.dataType == StringType
+      case _: Year | _: Quarter | _: Month | _: DayOfMonth | _: DayOfWeek | _: WeekDay |
+          _: DayOfYear | _: Hour | _: Minute | _: Second =>
+        true
+      case _: Murmur3Hash | _: XxHash64 | _: Md5 | _: Sha1 | _: Sha2 | _: Crc32 => true
+      // Invalid input gives NaN or NULL, and a floating-point floor or ceil saturates to a long
+      case _: Floor | _: Ceil | _: Sqrt | _: Exp | _: Log | _: Signum => true
+      // Rounding an integer fails on overflow in ANSI mode; a decimal is never treated as safe
+      case r: Round => roundCannotFail(r.dataType, r.ansiEnabled)
+      case r: BRound => roundCannotFail(r.dataType, r.ansiEnabled)
+      case c: Cast => CometCast.cannotFail(c)
+      case _: UnaryPositive => true
+      case u: UnaryMinus => floating || (!u.failOnError && numeric)
+      case a: Abs => floating || (!a.failOnError && numeric)
+      case a: Add => floating || nonAnsiNumeric(a.evalMode)
+      case s: Subtract => floating || nonAnsiNumeric(s.evalMode)
+      case m: Multiply => floating || nonAnsiNumeric(m.evalMode)
+      case d: Divide => nonAnsiNumeric(d.evalMode)
+      case d: IntegralDivide => nonAnsiNumeric(d.evalMode)
+      case r: Remainder => nonAnsiNumeric(r.evalMode)
+      case p: Pmod => nonAnsiNumeric(p.evalMode)
+      case _ => false
+    }
+    nodeCannotFail && expr.children.forall(cannotFail)
+  }
+
+  private def roundCannotFail(dataType: DataType, ansiEnabled: Boolean): Boolean =
+    dataType match {
+      case FloatType | DoubleType => true
+      case ByteType | ShortType | IntegerType | LongType => !ansiEnabled
+      case _ => false
+    }
+
+  /**
+   * The first sort key after the first that can fail. Spark's ordering evaluates a sort key only
+   * for the rows whose earlier keys tie, but native execution evaluates every key over the whole
+   * batch, so such a key may raise on a row that Spark skips (#7246).
+   */
+  def laterSortKeyThatCanFail(sortOrder: Seq[SortOrder]): Option[SortOrder] =
+    sortOrder.drop(1).find(s => !cannotFail(s.child))
 
   /**
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
