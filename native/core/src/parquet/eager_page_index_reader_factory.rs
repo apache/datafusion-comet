@@ -96,7 +96,8 @@
 use crate::parquet::datetime_rebase::stamp_int96_leaves;
 use crate::parquet::parquet_support::SparkParquetOptions;
 use crate::parquet::schema_adapter::{
-    check_file_conversions, RejectOnNonEmpty, NANOS_TIMESTAMP_KEY, REPEATED_PRIMITIVE_KEY,
+    check_file_conversions, RejectOnNonEmpty, INT96_TIMESTAMP_KEY, NANOS_TIMESTAMP_KEY,
+    REPEATED_PRIMITIVE_KEY,
 };
 use arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use async_trait::async_trait;
@@ -540,10 +541,31 @@ fn is_nanos_timestamp(column: &ColumnDescPtr) -> bool {
     )
 }
 
+fn is_int96(column: &ColumnDescPtr) -> bool {
+    column.physical_type() == parquet::basic::Type::INT96
+}
+
+/// INT64 leaf with a timestamp logical / converted annotation (millis, micros, or nanos).
+fn is_annotated_int64_timestamp(column: &ColumnDescPtr) -> bool {
+    column.physical_type() == parquet::basic::Type::INT64
+        && (matches!(
+            column.logical_type_ref(),
+            Some(LogicalType::Timestamp(_))
+        ) || matches!(
+            column.converted_type(),
+            ConvertedType::TIMESTAMP_MILLIS | ConvertedType::TIMESTAMP_MICROS
+        ))
+}
+
 /// Arrow normalizes both standard and legacy LISTs to the same type, and gives INT96 and
-/// `TIMESTAMP(NANOS)` leaves the same nanosecond timestamp type. Carry the repeated primitive
-/// and `TIMESTAMP(NANOS)` distinctions in an ephemeral schema used by the conversion check,
-/// never in the shared footer cache or in the schema given to the decoder.
+/// `TIMESTAMP(NANOS)` leaves the same nanosecond timestamp type (and INT96 coercion later makes
+/// INT96 look like an INT64 timestamp). Carry the repeated primitive, `TIMESTAMP(NANOS)` and
+/// INT96 distinctions in an ephemeral schema used by the conversion check, never in the shared
+/// footer cache or in the schema given to the decoder.
+///
+/// Also rewrite an Arrow `Timestamp` restored by `ARROW:schema` over an unannotated INT64
+/// leaf back to `Int64`, matching Spark's Parquet-type reading. ArrowWriter stores
+/// `Timestamp(Second, _)` that way because Parquet has no second unit. See #7227.
 fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
     fn mark(field: &FieldRef, columns: &[ColumnDescPtr], index: &mut usize) -> FieldRef {
         let data_type = match field.data_type() {
@@ -570,14 +592,28 @@ fn mark_parquet_leaves(schema: &Schema, parquet: &SchemaDescriptor) -> Schema {
                         == parquet::basic::Repetition::REPEATED
                 });
                 let nanos = column.is_some_and(is_nanos_timestamp);
+                let int96 = column.is_some_and(is_int96);
                 let mut field = field.as_ref().clone();
-                if repeated || nanos {
+                // `ARROW:schema` can restore Timestamp over unannotated INT64 (ArrowWriter
+                // seconds). Spark reads the Parquet type, so the footer check must too.
+                if matches!(field.data_type(), DataType::Timestamp(_, _))
+                    && column.is_some_and(|column| {
+                        column.physical_type() == parquet::basic::Type::INT64
+                            && !is_annotated_int64_timestamp(column)
+                    })
+                {
+                    field = field.with_data_type(DataType::Int64);
+                }
+                if repeated || nanos || int96 {
                     let mut metadata = field.metadata().clone();
                     if repeated {
                         metadata.insert(REPEATED_PRIMITIVE_KEY.to_string(), "true".to_string());
                     }
                     if nanos {
                         metadata.insert(NANOS_TIMESTAMP_KEY.to_string(), "true".to_string());
+                    }
+                    if int96 {
+                        metadata.insert(INT96_TIMESTAMP_KEY.to_string(), "true".to_string());
                     }
                     field = field.with_metadata(metadata);
                 }
@@ -774,11 +810,14 @@ impl AsyncFileReader for EagerPageIndexReader {
             {
                 let file = metadata.file_metadata();
                 let columns = file.schema_descr().columns();
-                // Only this check sees the Parquet type of a nanosecond timestamp leaf, so a
-                // `TIMESTAMP(NANOS)` rejection is deferred from here even without row filters.
-                let has_nanos = columns.iter().any(is_nanos_timestamp);
+                // Only this check sees the Parquet type of a timestamp leaf, so the
+                // `TIMESTAMP(NANOS)` and INT96 rejections are deferred from here even without
+                // row filters.
+                let has_parquet_typed_leaf = columns
+                    .iter()
+                    .any(|column| is_nanos_timestamp(column) || is_int96(column));
                 let needs_check = *row_filters
-                    || has_nanos
+                    || has_parquet_typed_leaf
                     || columns.iter().any(|column| {
                         column.self_type().get_basic_info().repetition()
                             == parquet::basic::Repetition::REPEATED
@@ -800,7 +839,7 @@ impl AsyncFileReader for EagerPageIndexReader {
                     DataFusionError::External(source) => ParquetError::External(source),
                     other => ParquetError::External(Box::new(other)),
                 })?;
-                if *row_filters || has_nanos {
+                if *row_filters || has_parquet_typed_leaf {
                     if let Some(rejection) = &rejection {
                         self.deferred_rejections.lock().unwrap().insert(
                             object_meta.location.clone(),
