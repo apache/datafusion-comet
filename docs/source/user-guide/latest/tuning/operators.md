@@ -172,7 +172,7 @@ pruning does not require that setting.
 Set `spark.comet.exec.aggregate.skipPartial.enabled=true` to let Comet bypass partial hash
 aggregation for high-cardinality grouping when it is not reducing the number of rows enough. This
 experimental optimization is disabled by default. It currently applies only to fused native
-shuffle-writer plans whose partial aggregates are grouping-only or single-argument `COUNT`.
+shuffle-writer plans whose partial aggregates are grouping-only, single-argument `COUNT`, or `AVG` over non-decimal inputs.
 Low-cardinality inputs continue to aggregate normally. The SQL metric
 `rows bypassing partial aggregation` shows whether skipping occurred.
 
@@ -186,7 +186,7 @@ enabling it for a workload.
 
 Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
 Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
-`COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
+`COUNT`, `AVG` over decimal inputs, and other accumulators are not admitted. Distribution-required grouping-only stages
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
 
 To experiment with the thresholds, also enable `spark.comet.exec.respectDataFusionConfigs`,

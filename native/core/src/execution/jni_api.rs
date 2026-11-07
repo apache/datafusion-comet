@@ -61,6 +61,7 @@ use datafusion::{
 };
 use datafusion_comet_common::decode_string_arrays;
 use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_shuffle::decoded_batch_coalescer::DecodedBatchCoalescer;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
@@ -1035,6 +1036,14 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                         && agg.agg_exprs.iter().all(|expr| {
                             matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
                                 if count.children.len() == 1)
+                                // Only a DOUBLE result, which the planner builds as Comet's
+                                // Float64 AVG, can convert rows to states. A decimal result
+                                // is an `AvgDecimal`, which cannot.
+                                || matches!(&expr.expr_struct, Some(AggExprStruct::Avg(avg))
+                                    if avg.child.is_some()
+                                        && avg.datatype.as_ref().is_some_and(|datatype| {
+                                            datatype.type_id == DataTypeId::Double as i32
+                                        }))
                         })
                 }
                 // PartialMerge consumes states, not rows.
@@ -2713,7 +2722,12 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
-    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_expression::data_type::{
+        data_type_info::DatatypeStruct, DataTypeInfo, DecimalInfo,
+    };
+    use datafusion_comet_proto::spark_expression::{
+        AggExpr, Avg, Count, DataType as ProtoDataType, Expr, Sum,
+    };
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
     use std::future::Future;
@@ -2728,6 +2742,27 @@ mod tests {
         };
         let sum = AggExpr {
             expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let proto_type = |type_id: DataTypeId| ProtoDataType {
+            type_id: type_id as i32,
+            ..Default::default()
+        };
+        let decimal = ProtoDataType {
+            type_info: Some(Box::new(DataTypeInfo {
+                datatype_struct: Some(DatatypeStruct::Decimal(DecimalInfo {
+                    precision: 38,
+                    scale: 10,
+                })),
+            })),
+            ..proto_type(DataTypeId::Decimal)
+        };
+        let avg = |child: Option<Expr>, datatype: Option<ProtoDataType>| AggExpr {
+            expr_struct: Some(AggExprStruct::Avg(Avg {
+                child,
+                datatype,
+                ..Default::default()
+            })),
             ..Default::default()
         };
         let partial = HashAggregate {
@@ -2775,7 +2810,14 @@ mod tests {
                 ..partial.clone()
             },
             HashAggregate {
-                agg_exprs: vec![count.clone(), count],
+                agg_exprs: vec![
+                    count.clone(),
+                    avg(Some(Expr::default()), Some(proto_type(DataTypeId::Double))),
+                ],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), count.clone()],
                 ..partial.clone()
             },
         ] {
@@ -2796,6 +2838,32 @@ mod tests {
             },
             HashAggregate {
                 agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            // AVG without an input, without a result type, or with a result type other than
+            // DOUBLE is not admitted. A decimal result is an `AvgDecimal`, which cannot convert
+            // rows to partial states.
+            HashAggregate {
+                agg_exprs: vec![avg(None, Some(proto_type(DataTypeId::Double)))],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(Some(Expr::default()), None)],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(Some(Expr::default()), Some(decimal.clone()))],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![count.clone(), avg(Some(Expr::default()), Some(decimal))],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(
+                    Some(Expr::default()),
+                    Some(proto_type(DataTypeId::Float)),
+                )],
                 ..partial.clone()
             },
             HashAggregate {
