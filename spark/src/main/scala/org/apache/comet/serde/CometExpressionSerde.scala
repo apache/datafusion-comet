@@ -20,6 +20,9 @@
 package org.apache.comet.serde
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.types.CalendarIntervalType
+
+import org.apache.comet.serde.QueryPlanSerde.skipsSharedSubexpression
 
 /**
  * Trait for providing serialization logic for expressions.
@@ -112,7 +115,8 @@ trait CometExpressionSerde[T <: Expression] {
  * `Unsupported`, the expression always routes through the dispatcher -- the serde is declaring
  * "no native path exists for this case; run Spark's code in-pipeline." Spark fallback is reserved
  * for the case where the dispatcher itself cannot handle the expression (e.g. the global codegen
- * flag is off, or the kernel rejects the bound tree).
+ * flag is off, or the kernel rejects the bound tree), or an expression that
+ * `dispatchDeclineReason` declines.
  *
  * Contract for `Unsupported` reasons on a `CodegenDispatchFallback` serde: the case must be
  * something `Expression.doGenCode` can compile. If you mark something `Unsupported` because Spark
@@ -122,7 +126,43 @@ trait CometExpressionSerde[T <: Expression] {
  * dispatcher. Every other `Incompatible` expression falls back to Spark, and every other
  * `Unsupported` expression falls back to Spark.
  */
-trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] => }
+trait CodegenDispatchFallback extends NativeOptInAvailable { self: CometExpressionSerde[_] =>
+
+  /** Why `expr` must fall back to Spark rather than run through the dispatcher, or `None`. */
+  def dispatchDeclineReason(expr: Expression): Option[String] = None
+}
+
+/** Sends the two cases below, which the dispatcher would get wrong, to Spark. */
+trait GatedCodegenDispatchFallback extends CodegenDispatchFallback {
+  self: CometExpressionSerde[_] =>
+
+  override def dispatchDeclineReason(expr: Expression): Option[String] =
+    CalendarIntervalOutput
+      .declineReason(expr)
+      .orElse(SharedSubexpressionArgument.declineReason(expr))
+}
+
+/** See https://github.com/apache/datafusion-comet/issues/5279. */
+private[serde] object CalendarIntervalOutput {
+
+  private val reason: String =
+    "the result holds a calendar interval, whose microseconds overflow the dispatcher's Arrow " +
+      "nanoseconds beyond about 292 years"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (SupportLevel.containsType(expr.dataType, classOf[CalendarIntervalType])) Some(reason)
+    else None
+}
+
+private[serde] object SharedSubexpressionArgument {
+
+  private val reason: String =
+    "an argument this expression can skip holds a subexpression that the operator's other " +
+      "expressions share, which Spark evaluates for every row before this expression's NULL check"
+
+  def declineReason(expr: Expression): Option[String] =
+    if (skipsSharedSubexpression(expr)) Some(reason) else None
+}
 
 /**
  * Marker for serdes that have a native implementation the user can opt into. Normally these
