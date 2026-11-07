@@ -26,11 +26,15 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.iceberg.BaseMetastoreTableOperations
 import org.apache.iceberg.BaseTable
+import org.apache.iceberg.DataFile
 import org.apache.iceberg.DataFiles
+import org.apache.iceberg.FileFormat
+import org.apache.iceberg.ManifestFiles
 import org.apache.iceberg.PartitionSpec
 import org.apache.iceberg.PartitionSpecParser
 import org.apache.iceberg.Schema
 import org.apache.iceberg.TableMetadata
+import org.apache.iceberg.inmemory.InMemoryOutputFile
 import org.apache.iceberg.io.FileIO
 import org.apache.iceberg.types.Types
 
@@ -347,6 +351,66 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(
       IcebergReflection.executorReflectionUnresolved.isEmpty,
       IcebergReflection.executorReflectionUnresolved)
+  }
+
+  private val manifestTestSchema = new Schema(
+    Types.NestedField.required(1, "id", Types.LongType.get()),
+    Types.NestedField.required(2, "category", Types.StringType.get()))
+
+  /** Writes a V2 data manifest holding `dataFile`, the kind the native writer emits per task. */
+  private def writeDataManifest(spec: PartitionSpec, dataFile: DataFile): Array[Byte] = {
+    val out = new InMemoryOutputFile()
+    val writer = ManifestFiles.write(2, spec, out, java.lang.Long.valueOf(1L))
+    try writer.add(dataFile)
+    finally writer.close()
+    out.toByteArray
+  }
+
+  private def newDataFile(spec: PartitionSpec, path: String, partitionPath: String): DataFile = {
+    val builder = DataFiles
+      .builder(spec)
+      .withPath(path)
+      .withFormat(FileFormat.PARQUET)
+      .withFileSizeInBytes(10L)
+      .withRecordCount(3L)
+    (if (partitionPath.isEmpty) builder else builder.withPartitionPath(partitionPath)).build()
+  }
+
+  test(
+    "decodeManifestToDataFiles reads a partitioned manifest written under a non-zero spec id") {
+    // The task's spec id is whatever spec the write targets, so after partition evolution it is
+    // not 0. The decode must take the partition values from that spec.
+    val spec =
+      PartitionSpec.builderFor(manifestTestSchema).withSpecId(1).identity("category").build()
+    val path = "file:/tmp/table/data/category=a/00000-0-data.parquet"
+    val bytes = writeDataManifest(spec, newDataFile(spec, path, "category=a"))
+
+    val decoded = IcebergReflection.decodeManifestToDataFiles(bytes, spec.specId())
+
+    assert(decoded.size == 1)
+    val file = decoded.get(0).asInstanceOf[DataFile]
+    assert(IcebergReflection.extractFileLocation(file).contains(path))
+    assert(file.specId == 1)
+    assert(file.recordCount == 3L)
+    assert(file.partition.size == 1)
+    assert(file.partition.get(0, classOf[String]) == "a")
+  }
+
+  test("decodeManifestToDataFiles reads a manifest whose embedded spec has no fields") {
+    // For a V1 table whose spec has only void fields, the native writer embeds a spec with no
+    // fields under the table spec's id (`manifest_partition_spec` in iceberg_write.rs). The
+    // decode must read with that embedded spec, not look the id up among the table's specs.
+    val spec = PartitionSpec.builderFor(manifestTestSchema).withSpecId(2).build()
+    val path = "file:/tmp/table/data/00000-0-data.parquet"
+    val bytes = writeDataManifest(spec, newDataFile(spec, path, ""))
+
+    val decoded = IcebergReflection.decodeManifestToDataFiles(bytes, spec.specId())
+
+    assert(decoded.size == 1)
+    val file = decoded.get(0).asInstanceOf[DataFile]
+    assert(IcebergReflection.extractFileLocation(file).contains(path))
+    assert(file.specId == 2)
+    assert(file.partition.size == 0)
   }
 
   test("footer re-reads build parquet-mr's read options without a Hadoop Configuration") {
