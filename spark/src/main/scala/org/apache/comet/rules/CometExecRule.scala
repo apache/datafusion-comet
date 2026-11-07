@@ -974,7 +974,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             // requiring CometNativeExec here would leave the DPP subquery on a Spark broadcast
             // that ReuseExchangeAndSubquery can't match. Same check as the AQE path in
             // CometPlanAdaptiveDynamicPruningFilters.isNativeBuildSide.
-            if (cometChild.isInstanceOf[CometPlan] && cometChild.supportsColumnar) {
+            //
+            // With Comet broadcast exchange disabled, the join's broadcast stays on Spark, so the
+            // DPP subquery has to stay on Spark too for the two to match. The AQE path gets the
+            // same result by requiring a Comet join (isCometJoin).
+            if (CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.get(conf) &&
+              cometChild.isInstanceOf[CometPlan] && cometChild.supportsColumnar) {
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")

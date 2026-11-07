@@ -463,15 +463,59 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Writes a fact table partitioned on `fk` and two small dimension tables, registers them as
+  // dpp_shape_fact, dpp_shape_dim1 and dpp_shape_dim2, and runs `f` with AQE off and DPP limited
+  // to reusing a broadcast.
+  private def withDppShapeTables(extraConfs: (String, String)*)(f: => Unit): Unit = {
+    withTempDir { dir =>
+      val path = dir.getAbsolutePath
+      withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
+        spark
+          .range(100)
+          .selectExpr("cast(id % 10 as int) as fk", "id as v")
+          .write
+          .partitionBy("fk")
+          .parquet(s"$path/fact")
+        spark
+          .range(0, 5)
+          .selectExpr("cast(id as int) as value", "id as w")
+          .write
+          .parquet(s"$path/dim1")
+        spark
+          .range(5, 10)
+          .selectExpr("cast(id as int) as value", "id as w")
+          .write
+          .parquet(s"$path/dim2")
+      }
+
+      withSQLConf(
+        Seq(
+          SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+          SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") ++
+          extraConfs: _*) {
+        spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_shape_fact")
+        spark.read.parquet(s"$path/dim1").createOrReplaceTempView("dpp_shape_dim1")
+        spark.read.parquet(s"$path/dim2").createOrReplaceTempView("dpp_shape_dim2")
+        f
+      }
+    }
+  }
+
+  private val dppUnionDimSql =
+    "SELECT value FROM dpp_shape_dim1 WHERE w < 2 " +
+      "UNION ALL SELECT value FROM dpp_shape_dim2 WHERE w > 8"
+
+  private def dppShapeQuery(dimSql: String): DataFrame =
+    sql(s"""SELECT /*+ BROADCAST(d) */ f.v, f.fk
+        |FROM dpp_shape_fact f JOIN ($dimSql) d
+        |ON f.fk = d.value""".stripMargin)
+
   // Build sides whose top operator is a columnar Comet plan but not a CometNativeExec. The join
   // converts its broadcast to a CometBroadcastExchangeExec over each of them, so the DPP subquery
   // has to as well, or ReuseExchangeAndSubquery can't match the two exchanges (#6815).
   Seq(
-    (
-      "UNION ALL",
-      classOf[CometUnionExec],
-      "SELECT value FROM dpp_shape_dim1 WHERE w < 2 " +
-        "UNION ALL SELECT value FROM dpp_shape_dim2 WHERE w > 8"),
+    ("UNION ALL", classOf[CometUnionExec], dppUnionDimSql),
     (
       "COALESCE",
       classOf[CometCoalesceExec],
@@ -482,68 +526,70 @@ class CometExecSuite extends CometTestBase {
       "SELECT /*+ REPARTITION(2, value) */ value FROM dpp_shape_dim1 WHERE w < 2")).foreach {
     case (shape, buildClass, dimSql) =>
       test(s"non-AQE DPP: BHJ reuses broadcast exchange when the build side is $shape") {
-        withTempDir { dir =>
-          val path = dir.getAbsolutePath
-          withSQLConf(CometConf.COMET_EXEC_ENABLED.key -> "false") {
-            spark
-              .range(100)
-              .selectExpr("cast(id % 10 as int) as fk", "id as v")
-              .write
-              .partitionBy("fk")
-              .parquet(s"$path/fact")
-            spark
-              .range(0, 5)
-              .selectExpr("cast(id as int) as value", "id as w")
-              .write
-              .parquet(s"$path/dim1")
-            spark
-              .range(5, 10)
-              .selectExpr("cast(id as int) as value", "id as w")
-              .write
-              .parquet(s"$path/dim2")
+        withDppShapeTables() {
+          val (_, cometPlan) = checkSparkAnswer(dppShapeQuery(dimSql))
+
+          val broadcasts = collectWithSubqueries(cometPlan) {
+            case e: CometBroadcastExchangeExec => e
           }
+          assert(
+            broadcasts.size == 1,
+            "Expected exactly 1 CometBroadcastExchangeExec (other reused):\n" +
+              cometPlan.treeString)
+          // Without this the test could pass on a build side that was already native.
+          assert(
+            buildClass.isInstance(broadcasts.head.child),
+            s"Expected ${buildClass.getSimpleName} directly under the broadcast:\n" +
+              cometPlan.treeString)
 
-          withSQLConf(
-            SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
-            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-            SQLConf.DYNAMIC_PARTITION_PRUNING_REUSE_BROADCAST_ONLY.key -> "true") {
-            spark.read.parquet(s"$path/fact").createOrReplaceTempView("dpp_shape_fact")
-            spark.read.parquet(s"$path/dim1").createOrReplaceTempView("dpp_shape_dim1")
-            spark.read.parquet(s"$path/dim2").createOrReplaceTempView("dpp_shape_dim2")
-
-            val df = sql(s"""SELECT /*+ BROADCAST(d) */ f.v, f.fk
-                |FROM dpp_shape_fact f JOIN ($dimSql) d
-                |ON f.fk = d.value""".stripMargin)
-            val (_, cometPlan) = checkSparkAnswer(df)
-
-            val broadcasts = collectWithSubqueries(cometPlan) {
-              case e: CometBroadcastExchangeExec => e
-            }
-            assert(
-              broadcasts.size == 1,
-              "Expected exactly 1 CometBroadcastExchangeExec (other reused):\n" +
-                cometPlan.treeString)
-            // Without this the test could pass on a build side that was already native.
-            assert(
-              buildClass.isInstance(broadcasts.head.child),
-              s"Expected ${buildClass.getSimpleName} directly under the broadcast:\n" +
-                cometPlan.treeString)
-
-            val cometSubqueries = collectWithSubqueries(cometPlan) {
-              case s: CometSubqueryBroadcastExec => s
-            }
-            assert(
-              cometSubqueries.nonEmpty,
-              s"Expected CometSubqueryBroadcastExec for DPP:\n${cometPlan.treeString}")
-
-            val reused = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec => e }
-            assert(
-              reused.exists(_.child.canonicalized == broadcasts.head.canonicalized),
-              "Expected the DPP subquery to reuse the join's CometBroadcastExchangeExec:\n" +
-                cometPlan.treeString)
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
           }
+          assert(
+            cometSubqueries.nonEmpty,
+            s"Expected CometSubqueryBroadcastExec for DPP:\n${cometPlan.treeString}")
+
+          val reused = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec => e }
+          assert(
+            reused.exists(_.child.canonicalized == broadcasts.head.canonicalized),
+            "Expected the DPP subquery to reuse the join's CometBroadcastExchangeExec:\n" +
+              cometPlan.treeString)
         }
       }
+  }
+
+  test(
+    "non-AQE DPP: DPP subquery keeps the Spark broadcast when Comet broadcast exchange " +
+      "is disabled") {
+    // The join's broadcast stays on Spark, so the DPP subquery must too, or Spark can't reuse
+    // the join's broadcast and the dimension is broadcast twice.
+    withDppShapeTables(CometConf.COMET_EXEC_BROADCAST_EXCHANGE_ENABLED.key -> "false") {
+      val (_, cometPlan) = checkSparkAnswer(dppShapeQuery(dppUnionDimSql))
+
+      val cometBroadcasts = collectWithSubqueries(cometPlan) {
+        case e: CometBroadcastExchangeExec => e
+      }
+      assert(
+        cometBroadcasts.isEmpty,
+        s"Expected no CometBroadcastExchangeExec:\n${cometPlan.treeString}")
+
+      val sparkSubqueries = collectWithSubqueries(cometPlan) { case s: SubqueryBroadcastExec =>
+        s
+      }
+      assert(
+        sparkSubqueries.nonEmpty,
+        s"Expected a Spark SubqueryBroadcastExec for DPP:\n${cometPlan.treeString}")
+
+      val broadcasts = collectWithSubqueries(cometPlan) { case e: BroadcastExchangeExec => e }
+      assert(
+        broadcasts.size == 1,
+        s"Expected exactly 1 BroadcastExchangeExec (other reused):\n${cometPlan.treeString}")
+      val reused = collectWithSubqueries(cometPlan) { case e: ReusedExchangeExec => e }
+      assert(
+        reused.exists(_.child.canonicalized == broadcasts.head.canonicalized),
+        "Expected the DPP subquery to reuse the join's BroadcastExchangeExec:\n" +
+          cometPlan.treeString)
+    }
   }
 
   test("non-AQE DPP: non-atomic type (struct/array) join key") {
@@ -934,8 +980,7 @@ class CometExecSuite extends CometTestBase {
       }
 
       // Disable Comet broadcast exchange so the join keeps a Spark BroadcastExchangeExec.
-      // Query should still produce correct results whether or not the DPP subquery is
-      // converted.
+      // convertSubqueryBroadcasts then leaves the DPP subquery on Spark too.
       withSQLConf(
         SQLConf.USE_V1_SOURCE_LIST.key -> "parquet",
         SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
