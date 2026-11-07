@@ -125,6 +125,9 @@ pub struct SparkParquetOptions {
     /// resolution. Enabled by the Delta scan arm; the plain NativeScan keeps its documented
     /// no-rebase behavior (#5010). See `datetime_rebase.rs`.
     pub rebase_from_file_metadata: bool,
+    /// Check Spark Parquet's original StringType request before binaryAsString substitutes
+    /// Binary. Kept separate from Iceberg's UUID-to-string adaptation, which accepts fixed binary.
+    pub reject_fixed_binary_as_string: bool,
     /// Effective `spark.sql.parquet.datetimeRebaseModeInRead` (a `LegacyBehaviorPolicy` value),
     /// forwarded from the JVM at planning time. Consulted -- exactly like Spark's
     /// `DataSourceUtils.getRebaseSpec` `modeByConfig` fallback -- only for files whose footer
@@ -150,6 +153,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            reject_fixed_binary_as_string: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),
@@ -168,6 +172,7 @@ impl SparkParquetOptions {
             allow_type_promotion: false,
             allow_timestamp_ltz_to_ntz: false,
             checked_timestamp_overflow: true,
+            reject_fixed_binary_as_string: false,
             rebase_from_file_metadata: false,
             datetime_rebase_mode_in_read: String::new(),
             int96_rebase_mode_in_read: String::new(),

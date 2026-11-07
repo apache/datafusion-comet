@@ -211,6 +211,12 @@ page-index, and bloom-filter pruning happen regardless of this flag whenever Spa
 `spark.sql.parquet.filterPushdown` is on, except for filters that compare `FLOAT` or `DOUBLE` values,
 which do not prune while this flag is on (see [Floating-point Number Comparison](compatibility/floating-point.md)).
 
+With `spark.sql.parquet.binaryAsString=true`, the native scan reads every top-level string column
+as binary and decodes it after reading. Filters on those columns prune only for `=`, `IN` and
+`IS [NOT] NULL` against a literal without `U+FFFD`, which the scan compares as raw bytes. Other
+filters on them, such as ranges and `LIKE`, don't prune while the setting is on, even for columns
+the file annotates as strings.
+
 ### Row Group Assignment to Splits
 
 Spark and DataFusion's native Parquet scans use different rules to decide which row groups belong to a
@@ -291,11 +297,13 @@ for production, so do not turn it off to avoid an entry on this page.
 - **BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY column
   without the UTF8 annotation that is read as `string`, through the read schema or
   `spark.sql.parquet.binaryAsString=true`. Spark keeps the bytes. In a struct field, list element
-  or map value, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
-  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Top-level
-  values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
-  differ only in such bytes distinct: they match Spark in a release build, and a debug build
-  panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
+  or map value, and at the top level with `spark.sql.parquet.binaryAsString=true`, Comet replaces
+  each ill-formed sequence with `U+FFFD`, as described in
+  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Through a
+  read schema, top-level values reach an Arrow string array unchecked, as do map keys at any depth,
+  which keeps keys that differ only in such bytes distinct: they match Spark in a release build,
+  and a debug build panics on top-level values
+  ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top

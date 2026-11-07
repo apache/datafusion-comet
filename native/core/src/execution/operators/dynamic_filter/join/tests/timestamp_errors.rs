@@ -101,6 +101,7 @@ async fn assert_timestamp_overflow_preserved(nested: bool) {
             false,
             false,
             false,
+            false,
             &session,
             false,
             false,
