@@ -3924,8 +3924,9 @@ class CometInMemoryCacheSuite extends CometTestBase {
     // Spark plans no sort above a nested loop join that reports its streamed side's order, but
     // the native join emits its rows build row by build row (#6898), so the join stays in Spark.
     // A window above it, one without partition keys or one with a collated key, then sees the
-    // rows in order. One partition, so no exchange comes between the join and the window, with or
-    // without AQE.
+    // rows in order, with no sort of its own. It runs in Spark as well, since the join's rows
+    // have no way into a native plan. One partition, so no exchange comes between the join and
+    // the window, with or without AQE.
     Seq(false, true).foreach { aqe =>
       withConversions(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe.toString) {
         try {
@@ -3965,11 +3966,10 @@ class CometInMemoryCacheSuite extends CometTestBase {
               val finalPlan = stripAQEPlan(plan)
               assert(collect(finalPlan) { case j: BroadcastNestedLoopJoinExec => j }.nonEmpty)
               assert(collect(finalPlan) { case j: CometBroadcastNestedLoopJoinExec => j }.isEmpty)
-              val windows = collect(finalPlan) {
-                case w: WindowExec => w
-                case w: CometWindowExec => w
-              }
-              assert(windows.nonEmpty)
+              assert(collect(finalPlan) { case w: WindowExec => w }.size == 1)
+              assert(collect(finalPlan) { case w: CometWindowExec => w }.isEmpty)
+              val sorts = collect(finalPlan) { case s @ (_: CometSortExec | _: SortExec) => s }
+              assert(sorts.isEmpty)
             }
           }
         } finally {

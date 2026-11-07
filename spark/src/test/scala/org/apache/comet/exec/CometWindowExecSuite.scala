@@ -20,23 +20,25 @@
 package org.apache.comet.exec
 
 import scala.util.Random
+import scala.util.control.NonFatal
 
 import org.scalactic.source.Position
 import org.scalatest.Tag
 
 import org.apache.hadoop.fs.Path
-import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, Divide, Expression, MakeDecimal, WindowExpression}
+import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, BoundReference, Cast, Descending, Divide, Expression, MakeDecimal, NullsFirst, NullsLast, SortOrder, WindowExpression}
 import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeExec, CometNativeScanExec, CometSortExec, CometWindowExec, CometWindowGroupLimitExec}
 import org.apache.spark.sql.execution.{InputAdapter, SortExec, SparkPlan, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.window.{WindowExec => SparkWindowExec}
 import org.apache.spark.sql.expressions.Window
 import org.apache.spark.sql.functions.{count, expr, lead, sum}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.DecimalType
+import org.apache.spark.sql.types.{DecimalType, DoubleType, LongType}
 
 import org.apache.comet.{CometConf, CometExplainInfo, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus}
+import org.apache.comet.serde.OperatorOuterClass
 
 class CometWindowExecSuite extends CometTestBase {
 
@@ -116,6 +118,18 @@ class CometWindowExecSuite extends CometTestBase {
     }
     digits.toString()
   }
+
+  // Rows of (k, v, w), w unique, in two partitions by k, each sorted by k, `v` and w.
+  private def sortedCheckpoint(rows: Long, kMod: Int, vMod: Int, v: Column): DataFrame =
+    spark
+      .range(rows)
+      .selectExpr(
+        s"id % $kMod AS k",
+        s"CASE WHEN id % 7 = 0 THEN NULL ELSE id % $vMod END AS v",
+        "id AS w")
+      .repartition(2, $"k")
+      .sortWithinPartitions($"k", v, $"w")
+      .localCheckpoint(eager = true)
 
   for {
     orderColumn <- Seq("f", "d")
@@ -561,8 +575,250 @@ class CometWindowExecSuite extends CometTestBase {
           "sum(v) OVER (PARTITION BY k)")) {
         val (_, plan) = checkSparkAnswer(checkpoint.selectExpr("k", "v", s"$window AS r"))
         val context = s"$window\n$plan"
-        assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(windows.size == 1, context)
+        assert(windows.head.nativeOp.getWindow.getInputSortOrdersCount == 0, context)
+        assert(windows.head.nativeOp.getWindow.getUnverifiedInputSortOrdersCount == 2, context)
         assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, context)
+      }
+    }
+  }
+
+  test("stacked native windows over a sorted checkpoint order each by its own ORDER BY") {
+    // Spark plans no sort for either window, as the checkpoint reports (k, v, w). The native
+    // planner sorts the lower window's input, and the upper window relies on that sort.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+      val byV = "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r1"
+      val byVW = "row_number() OVER (PARTITION BY k ORDER BY v, w) AS r2"
+      val failures = scala.collection.mutable.ArrayBuffer.empty[String]
+      for {
+        (rows, kMod, vMod) <- Seq((2000L, 20, 50), (200000L, 4, 3))
+        windows <- Seq(Seq(byV, byVW), Seq(byVW, byV))
+      } {
+        val checkpoint = sortedCheckpoint(rows, kMod, vMod, $"v")
+        val context = s"rows=$rows k%$kMod v%$vMod windows=${windows.mkString(", ")}"
+        val df = checkpoint.selectExpr(Seq("k", "v", "w") ++ windows: _*)
+        val plan = df.queryExecution.executedPlan
+        val nativeWindows = collect(plan) { case w: CometWindowExec => w }
+        assert(
+          nativeWindows.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) == Seq(3, 3),
+          s"$context\n$plan")
+        assert(
+          collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+          s"$context\n$plan")
+        try {
+          checkSparkAnswer(df)
+        } catch {
+          case NonFatal(e) =>
+            val lines = String.valueOf(e.getMessage).linesIterator.toSeq
+            val diff =
+              lines.filter(l => l.startsWith("!") || l.contains("Expects PARTITION BY"))
+            val shown = if (diff.nonEmpty) diff else lines
+            failures += s"$context: ${e.getClass.getName}, ${diff.size} matching lines\n" +
+              shown.take(12).mkString("\n")
+        }
+      }
+      assert(failures.isEmpty, failures.mkString("\n\n"))
+    }
+  }
+
+  test("a native window over a sorted checkpoint keeps the order Spark dropped a sort for") {
+    // The window reports the checkpoint's order, so Spark plans no sort for the one above it, and
+    // the native window has to restore all of that order, not only its own keys.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
+      for {
+        (rows, kMod, vMod) <- Seq((2000L, 20, 50), (200000L, 4, 3))
+        (v, vOrder, direction, nulls) <- Seq(
+          ($"v", "v", Ascending, NullsFirst),
+          ($"v".desc_nulls_last, "v DESC NULLS LAST", Descending, NullsLast))
+      } {
+        val checkpoint = sortedCheckpoint(rows, kMod, vMod, v)
+        val window = s"dense_rank() OVER (PARTITION BY k ORDER BY $vOrder) AS r"
+        val df = checkpoint.selectExpr("k", "v", "w", window).sortWithinPartitions($"k", v, $"w")
+        val (_, plan) = checkSparkAnswer(df)
+        val context = s"rows=$rows $vOrder\n$plan"
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(
+          windows.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) == Seq(3),
+          context)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, context)
+        val column = (i: Int) => BoundReference(i, LongType, nullable = true)
+        val order = Seq(
+          SortOrder(column(0), Ascending),
+          SortOrder(column(1), direction, nulls, Seq.empty),
+          SortOrder(column(2), Ascending))
+        assert(partitionsInOrder(df, order: _*), context)
+      }
+    }
+  }
+
+  test("a native window keeps a checkpoint's order on a float key holding -0.0 and 0.0") {
+    // Spark sorts -0.0 and 0.0 as equal, then by w. So does the native sort, which normalizes its
+    // keys, so a float key before the last one stays native. f is -0.0 for a third of the rows
+    // and 0.0 for the rest. Spark writes the checkpoint.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "false") {
+      val checkpoint = spark
+        .range(2000)
+        .selectExpr("id % 4 AS k", "(id % 3 - 1) * 0.0D AS f", "id AS w")
+        .repartition(2, $"k")
+        .sortWithinPartitions("k", "f", "w")
+        .localCheckpoint(eager = true)
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        val df = checkpoint
+          .selectExpr("k", "f", "w", "dense_rank() OVER (PARTITION BY k ORDER BY f) AS r")
+          .sortWithinPartitions("k", "f", "w")
+        val (_, plan) = checkSparkAnswer(df)
+        val context = s"${checkpoint.queryExecution.executedPlan.outputOrdering}\n$plan"
+        val windows = collect(plan) { case w: CometWindowExec => w }
+        assert(
+          windows.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) == Seq(3),
+          context)
+        assert(collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty, context)
+        val order = Seq(LongType, DoubleType, LongType).zipWithIndex.map { case (t, i) =>
+          SortOrder(BoundReference(i, t, nullable = true), Ascending)
+        }
+        assert(partitionsInOrder(df, order: _*), context)
+      }
+    }
+  }
+
+  test("a native window sorts by its own key where the checkpoint reports an equal one") {
+    // The checkpoint reports the order of kk also for k, which kk is an alias of, and that of lk
+    // also for rk, the key it was joined on. A window by k or rk finds its partitions by that
+    // column, so its input has to be sorted by it, not by the twin. Each checkpoint is one
+    // partition, so the windows need no exchange. Spark writes the checkpoints.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.COMET_ENABLED.key -> "false") {
+      val sorted = spark
+        .range(2000)
+        .selectExpr(
+          "id % 20 AS k",
+          "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 50 END AS v",
+          "id AS w")
+        .coalesce(1)
+        .sortWithinPartitions("k", "v", "w")
+      val aliased = sorted.selectExpr("k", "k AS kk", "v", "w").localCheckpoint(eager = true)
+      val right = spark
+        .range(20)
+        .selectExpr("id AS rk", "id * 3 AS x")
+        .coalesce(1)
+        .sortWithinPartitions("rk")
+      val joined = sorted
+        .selectExpr("k AS lk", "v", "w")
+        .join(right, $"lk" === $"rk")
+        .localCheckpoint(eager = true)
+      val cases = Seq(
+        (
+          aliased,
+          "kk",
+          "k",
+          Seq(
+            "percent_rank() OVER (PARTITION BY k ORDER BY v)",
+            "cume_dist() OVER (PARTITION BY k ORDER BY v)",
+            "ntile(3) OVER (PARTITION BY k ORDER BY v)",
+            "row_number() OVER (PARTITION BY k ORDER BY v)"),
+          3),
+        (
+          joined,
+          "lk",
+          "rk",
+          Seq("count(*) OVER (PARTITION BY rk)", "sum(v) OVER (PARTITION BY rk)"),
+          1))
+      withSQLConf(CometConf.COMET_ENABLED.key -> "true") {
+        for ((checkpoint, twin, key, windows, claimed) <- cases; window <- windows) {
+          val reported = checkpoint.queryExecution.optimizedPlan.outputOrdering
+          val names = (es: Seq[Expression]) => es.flatMap(_.references.map(_.name))
+          val context = s"$window\n" + reported
+            .map(o => s"${o.sql} also ${names(o.sameOrderExpressions).mkString(", ")}")
+            .mkString("; ")
+          assert(names(Seq(reported.head.child)) == Seq(twin), context)
+          assert(names(reported.head.sameOrderExpressions) == Seq(key), context)
+          val (_, plan) = checkSparkAnswer(checkpoint.selectExpr("*", s"$window AS r"))
+          val nativeWindows = collect(plan) { case w: CometWindowExec => w }
+          assert(
+            nativeWindows.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) ==
+              Seq(claimed),
+            s"$context\n$plan")
+          assert(
+            collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
+            s"$context\n$plan")
+        }
+      }
+    }
+  }
+
+  test("a window falls back when the order Spark relies on cannot be fully expressed") {
+    // The checkpoint's order ends in a key Comet cannot express, so the native window could not
+    // restore it.
+    withSQLConf(
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true",
+      CometConf.getExprEnabledConfigKey("Abs") -> "false") {
+      val checkpoint = spark
+        .range(2000)
+        .selectExpr("id % 20 AS k", "id % 50 AS v", "id AS w")
+        .repartition(2, $"k")
+        .sortWithinPartitions($"k", $"v", expr("abs(w)"))
+        .localCheckpoint(eager = true)
+      val window = "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r"
+      val (_, plan) = checkSparkAnswerAndFallbackReason(
+        checkpoint.selectExpr("k", "v", "w", window),
+        "cannot be fully expressed natively")
+      assert(collect(plan) { case w: CometWindowExec => w }.isEmpty, plan)
+    }
+  }
+
+  test("a window falls back when the order Spark relies on ends in a collated string") {
+    assume(isSpark40Plus, "COLLATE requires Spark 4.0")
+    // The native sort compares strings byte by byte, so it could not restore an order that
+    // UTF8_LCASE breaks ties in, even on a key the window does not use. No scan hands a collated
+    // column to a native plan, so the serde is called on the window Spark plans over the
+    // checkpoint. One with a plain string key instead stays native.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      val reason = "the order of the window's input, which Spark relies on, cannot be fully " +
+        "expressed natively"
+      for (collation <- Seq("UTF8_BINARY", "UTF8_LCASE")) {
+        val checkpoint = spark
+          .range(2000)
+          .selectExpr(
+            "id % 20 AS k",
+            "id % 50 AS v",
+            s"concat(IF(id % 2 = 0, 'A', 'a'), id % 3) COLLATE $collation AS s")
+          .repartition(2, $"k")
+          .sortWithinPartitions("k", "v", "s")
+          .localCheckpoint(eager = true)
+        val df = checkpoint.selectExpr(
+          "k",
+          "v",
+          "s",
+          "dense_rank() OVER (PARTITION BY k ORDER BY v) AS r")
+        val plan = df.queryExecution.sparkPlan
+        val window = collect(plan) { case w: SparkWindowExec => w }.head
+        val context = s"$collation\n${window.child.outputOrdering.map(_.sql)}\n$plan"
+        assert(window.child.outputOrdering.size == 3, context)
+        val proto = CometWindowExec.convert(
+          window,
+          OperatorOuterClass.Operator.newBuilder(),
+          OperatorOuterClass.Operator.getDefaultInstance)
+        val reasons = window.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty)
+        if (collation == "UTF8_LCASE") {
+          assert(proto.isEmpty, context)
+          assert(reasons.contains(reason), s"$reasons\n$context")
+        } else {
+          assert(proto.map(_.getWindow.getUnverifiedInputSortOrdersCount).contains(3), context)
+          assert(reasons.isEmpty, s"$reasons\n$context")
+        }
       }
     }
   }

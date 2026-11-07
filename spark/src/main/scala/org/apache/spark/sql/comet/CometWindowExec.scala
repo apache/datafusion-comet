@@ -78,11 +78,13 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
     // Spark plans no sort below the window when its input already reports the order the window
     // needs. The native window relies on that order only when mayReportFalseOrder trusts it. A
     // window that runs in Spark over a doubted order gets its input sorted again by
-    // CometExecRule, since Spark's window would trust that order too.
+    // CometExecRule, since Spark's window would trust that order too. An order that does not
+    // cover the window's own keys cannot be sorted by alone, as a Comet operator can report less
+    // than the Spark operator it replaced.
     val requiredOrdering = op.requiredChildOrdering.head
+    val satisfiesRequired = SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering)
     val trustsInputOrder =
-      SortOrder.orderingSatisfies(op.child.outputOrdering, requiredOrdering) &&
-        !CometHashJoinExec.mayReportFalseInputOrder(op.child)
+      satisfiesRequired && !CometHashJoinExec.mayReportFalseInputOrder(op.child)
 
     // The native window finds partitions and peers by comparing keys byte by byte, so it would
     // tell apart collated strings that Spark treats as equal, as CometWindowGroupLimitExec notes.
@@ -131,12 +133,38 @@ object CometWindowExec extends CometOperatorSerde[WindowExec] {
         } else {
           Nil
         }
+      // Spark relies on the whole order the input reports, also above the window, which reports
+      // it too. When Comet cannot verify it, the native window sorts its input by all of it, so
+      // all of it has to be expressible. A reported key may match the window's key through an
+      // equal column only, an alias or the other key of an inner join, so the window's own keys
+      // replace the prefix they satisfy, which sorts the rows the same way.
+      val unverifiedInputSortOrders =
+        if (op.partitionSpec.nonEmpty && satisfiesRequired && !trustsInputOrder) {
+          val claim = requiredOrdering ++ op.child.outputOrdering.drop(requiredOrdering.length)
+          val orders = claim.iterator
+            .takeWhile(order => !hasNonDefaultStringCollation(order.dataType))
+            .map(exprToProto(_, op.child.output))
+            .takeWhile(_.isDefined)
+            .flatten
+            .toSeq
+          if (orders.length < claim.length) {
+            withFallbackReason(
+              op,
+              "the order of the window's input, which Spark relies on, cannot be fully " +
+                "expressed natively")
+            return None
+          }
+          orders
+        } else {
+          Nil
+        }
 
       val windowBuilder = OperatorOuterClass.Window.newBuilder()
       windowBuilder.addAllWindowExpr(windowExprProto.map(_.get).asJava)
       windowBuilder.addAllPartitionByList(partitionExprs.map(_.get).asJava)
       windowBuilder.addAllOrderByList(sortOrders.map(_.get).asJava)
       windowBuilder.addAllInputSortOrders(inputSortOrders.asJava)
+      windowBuilder.addAllUnverifiedInputSortOrders(unverifiedInputSortOrders.asJava)
       Some(builder.setWindow(windowBuilder).build())
     } else {
       // Whichever of the window / partition / order expressions failed has already recorded its

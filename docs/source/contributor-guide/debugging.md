@@ -261,8 +261,8 @@ so `spark.comet.debug.enabled` and `COMET_LOG_LEVEL` do not affect it.
 
 In `WindowBuilder::build` in `native/core/src/execution/planner/window.rs`,
 the window operator builds `window_agg` over `window_input`, the child plan
-with Spark's input order declared and sorted when it is still not ordered on
-every partition key, either a `BoundedWindowAggExec` or a
+with Spark's input order declared and sorted when it is not in the order the
+window relies on, either a `BoundedWindowAggExec` or a
 `WindowAggExec` depending on whether every window expression runs with bounded
 memory. It then optionally wraps `window_agg` in a casting `ProjectionExec` and
 builds the `SparkPlan` from either the projection or `window_agg`. To see the raw
@@ -292,12 +292,13 @@ let window_agg: Arc<dyn ExecutionPlan> = {
 };
 
 // ... the casting `ProjectionExec` is built from `window_agg`, and
-// `SparkPlan::new_with_additional(spark_plan.plan_id, projection, vec![child],
-// vec![window_agg])` wraps it. Without a cast, `SparkPlan::new` wraps `window_agg`.
+// `SparkPlan::new_with_additional` wraps it, with `window_agg` and any input
+// sort as additional plans. Without a cast, `SparkPlan::new_with_additional`
+// wraps `window_agg`, with any input sort as an additional plan.
 ```
 
 Wrapping `window_agg` leaves the rest of the builder unchanged. To see the
-output after the cast, wrap `projection` the same way just before the
+output after the cast, wrap `projection` the same way just before the first
 `SparkPlan::new_with_additional` call. The `let` rebinding is only compiled in
 when `debug_assertions` is on, so release builds use the original binding.
 

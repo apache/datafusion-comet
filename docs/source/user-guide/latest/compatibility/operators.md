@@ -240,7 +240,10 @@ native frame can treat the bound as the edge of the partition where Spark compar
 
 Spark drops the sort below a window when it believes the window's input is already ordered. For a window with
 `PARTITION BY` keys, when Comet cannot verify that order, as with rows read from a checkpoint, the native window sorts
-its input by the `PARTITION BY` keys and then the `ORDER BY` keys. The results match Spark, at the cost of a sort.
+its input by the whole order the input reports, since Spark also relies on that order above the window. The results
+match Spark, at the cost of a sort. When that order has a key Comet cannot serialize, or one with a non-default string
+collation, the window falls back to Spark with the reason "the order of the window's input, which Spark relies on,
+cannot be fully expressed natively".
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
 runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).

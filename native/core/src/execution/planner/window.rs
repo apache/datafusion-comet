@@ -33,6 +33,7 @@ use datafusion::{
         window::WindowExpr,
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
     },
+    physical_expr_common::physical_expr::format_physical_expr_list,
     physical_plan::{
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -67,6 +68,17 @@ use crate::{
 
 use ExecutionError::GeneralError;
 
+/// Whether `plan` is ordered on every one of `keys`, in any order of them.
+fn orders_every_key(
+    plan: &Arc<dyn ExecutionPlan>,
+    keys: &[Arc<dyn PhysicalExpr>],
+) -> Result<bool, ExecutionError> {
+    let (_, ordered) = plan
+        .equivalence_properties()
+        .find_longest_permutation(keys)?;
+    Ok(ordered.len() == keys.len())
+}
+
 /// Builder for `Window`.
 pub struct WindowBuilder;
 
@@ -99,34 +111,69 @@ impl OperatorBuilder for WindowBuilder {
         let sort_exprs = &sort_exprs?;
         let partition_exprs = &partition_exprs?;
 
-        // Declare the order Spark sent for the input, then sort it unless it is ordered on every
-        // PARTITION BY key; rows from the JVM declare no order unless Spark sent one. The check
-        // looks only at the PARTITION BY keys; the sort orders by them ascending with nulls
-        // first, then by the ORDER BY keys.
+        // Declare the order Spark sent for the input; rows from the JVM declare no order unless
+        // Spark sent one. A declared input is sorted unless it is ordered on every PARTITION BY
+        // key. Any other input with PARTITION BY keys is sorted unless it is already in the
+        // order to restore: the unverified order Spark relies on when sent, otherwise the
+        // PARTITION BY keys ascending with nulls first, then the ORDER BY keys.
+        if !wnd.input_sort_orders.is_empty() && !wnd.unverified_input_sort_orders.is_empty() {
+            return Err(GeneralError(format!(
+                "Window: input_sort_orders ({}) and unverified_input_sort_orders ({}) \
+                 are both set",
+                wnd.input_sort_orders.len(),
+                wnd.unverified_input_sort_orders.len()
+            )));
+        }
         let declared =
             planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
-        let (_, ordered) = declared
-            .equivalence_properties()
-            .find_longest_permutation(partition_exprs)?;
-        let required = partition_exprs
-            .iter()
-            .map(|e| {
-                PhysicalSortExpr::new(
-                    Arc::clone(e),
-                    SortOptions {
-                        descending: false,
-                        nulls_first: true,
-                    },
-                )
-            })
-            .chain(sort_exprs.iter().cloned());
-        let input_sort: Option<Arc<dyn ExecutionPlan>> = match LexOrdering::new(required) {
-            Some(ordering) if ordered.len() < partition_exprs.len() => {
+        let restore: Vec<PhysicalSortExpr> = if wnd.unverified_input_sort_orders.is_empty() {
+            partition_exprs
+                .iter()
+                .map(|e| {
+                    PhysicalSortExpr::new(
+                        Arc::clone(e),
+                        SortOptions {
+                            descending: false,
+                            nulls_first: true,
+                        },
+                    )
+                })
+                .chain(sort_exprs.iter().cloned())
+                .collect()
+        } else {
+            wnd.unverified_input_sort_orders
+                .iter()
+                .map(|expr| planner.create_sort_expr(expr, Arc::clone(&input_schema)))
+                .collect::<Result<_, _>>()?
+        };
+        let needs_sort = if partition_exprs.is_empty() {
+            false
+        } else if !wnd.input_sort_orders.is_empty() {
+            !orders_every_key(&declared, partition_exprs)?
+        } else {
+            !declared
+                .equivalence_properties()
+                .ordering_satisfy(restore.iter().cloned())?
+        };
+        let input_sort: Option<Arc<dyn ExecutionPlan>> = match LexOrdering::new(restore) {
+            Some(ordering) if needs_sort => {
                 Some(Arc::new(SortExec::new(ordering, Arc::clone(&declared))))
             }
             _ => None,
         };
         let window_input = input_sort.as_ref().map_or(declared, Arc::clone);
+        // The window finds its partitions by its own keys, so an input that is not ordered on
+        // all of them would be read as fewer partitions than it holds.
+        if !orders_every_key(&window_input, partition_exprs)? {
+            let ordering = window_input
+                .output_ordering()
+                .map_or_else(|| "none".to_string(), |o| format!("[{o}]"));
+            return Err(GeneralError(format!(
+                "Window: the input is not ordered on every PARTITION BY key {}, input ordering {}",
+                format_physical_expr_list(partition_exprs.iter()),
+                ordering
+            )));
+        }
 
         let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
             .window_expr

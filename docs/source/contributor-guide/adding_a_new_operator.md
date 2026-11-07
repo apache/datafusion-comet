@@ -372,9 +372,13 @@ So an operator that reports an ordering must keep it natively, and the native op
 by returning `true` from `maintains_input_order` for that child, as DataFusion's filter and
 projection do. The planner declares the order through an operator only when the operator says it
 keeps it. An operator that cannot keep the order natively must not report it, or has to be added to
-`mayReportFalseOrder` in `operators.scala`. The hash join and window serdes then send no order over
-it, an outer hash join above it that has to keep that order falls back to Spark, a native window
-above it sorts its input, and a window that runs in Spark above it gets its input sorted again.
+`mayReportFalseOrder` in `operators.scala`. The hash join and window serdes then declare no order
+over it, an outer hash join above it that has to keep that order falls back to Spark, and a window
+that runs in Spark above it gets its input sorted again. A native window with `PARTITION BY` keys
+above it sorts its input by the whole order it reports, since Spark relies on that order above the
+window too, and falls back to Spark when Comet cannot express all of it. The window's own keys
+lead that order, in place of the reported keys they match: a reported key can match one of them
+through an equal column only, such as an alias or the other key of an inner join.
 Comet's hash joins are the exception within one native plan: an outer hash join over one of them
 stays native, even over one that declared no order, since DataFusion keeps the order it can see
 there.

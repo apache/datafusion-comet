@@ -3667,7 +3667,10 @@ class CometJoinSuite extends CometTestBase {
             case j: CometBroadcastHashJoinExec => j
           }
           assert(joins.size == 1, context)
-          assert(collect(plan) { case w: CometWindowExec => w }.size == 1, context)
+          val windows = collect(plan) { case w: CometWindowExec => w }
+          assert(
+            windows.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) == Seq(2),
+            context)
           assert(
             collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
             context)
@@ -3696,6 +3699,42 @@ class CometJoinSuite extends CometTestBase {
             collect(plan) { case s @ (_: CometSortExec | _: SortExec) => s }.isEmpty,
             context)
           sameRowsAsSpark(df)
+        }
+      }
+    }
+  }
+
+  test("a native window over an outer hash join that may move rows restores the whole order") {
+    // The left outer join runs as DataFusion's right outer join over a native window, which
+    // declares no order on the join's probe input, so the order the join reports is doubted. The
+    // window above it partitions by k alone and the sort above it, which Spark drops, needs v too.
+    withParquetTable((0 until 2000).map(i => (i % 40, i)), "t") {
+      withParquetTable((0 until 40 by 2).map(k => (k, k * 10)), "d1") {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+          def df: DataFrame = sql("""SELECT k, v, rn, sum(x) OVER (PARTITION BY k) AS s
+              |FROM (SELECT w.k, w.v, w.rn, d1._2 AS x
+              |      FROM (SELECT k, v, row_number() OVER (PARTITION BY k ORDER BY v) AS rn
+              |            FROM (SELECT _1 AS k, _2 AS v FROM t)) w
+              |      LEFT JOIN d1 ON w.k = d1._1)""".stripMargin)
+            .sortWithinPartitions("k", "v")
+          val (_, plan) = checkSparkAnswer(df)
+          val joins = collect(plan) { case j: CometBroadcastHashJoinExec => j }
+          assert(joins.size == 1 && joins.head.joinType == LeftOuter, plan)
+          val upper = collect(plan) { case w: CometWindowExec if w.orderSpec.isEmpty => w }
+          assert(
+            upper.map(_.nativeOp.getWindow.getUnverifiedInputSortOrdersCount) == Seq(2),
+            plan)
+          assert(
+            collect(plan) {
+              case s @ (_: CometSortExec | _: SortExec)
+                  if s.find(_.isInstanceOf[CometBroadcastHashJoinExec]).isDefined =>
+                s
+            }.isEmpty,
+            plan)
+          val order = (0 to 1).map { i =>
+            SortOrder(BoundReference(i, IntegerType, nullable = true), Ascending)
+          }
+          assert(partitionsInOrder(df, order: _*), plan)
         }
       }
     }
