@@ -57,6 +57,16 @@ Treat setting one of these keys as a temporary measure. If you find you cannot s
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.
 
+## Upgrading to Comet 1.3.0
+
+Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The change below
+needs none either, but check whether it applies to your deployment.
+
+Comet `1.3.0` no longer builds or publishes support for Spark 3.4. Spark 3.4 has been deprecated
+since Comet `1.0.0`. If you run Spark 3.4, stay on the last Comet release that publishes
+`comet-spark-spark3.4_*`. See [Installing Comet](installation.md) for the supported Java, Scala,
+and Spark versions.
+
 ## Upgrading to Comet 1.2.0
 
 Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below

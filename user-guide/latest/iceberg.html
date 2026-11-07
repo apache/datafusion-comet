@@ -546,19 +546,6 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
-</ul>
-</details></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
@@ -1534,9 +1521,8 @@ normal <code class="docutils literal notranslate"><span class="pre">remove_orpha
 <p>When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task’s commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. (From Iceberg 1.6 on, Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> skips cleanup unless a commit
-failed with a cleanable error, so on the stock path those files are left for
-<code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
+<code class="docutils literal notranslate"><span class="pre">FileIO</span></code>. (Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code> skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for <code class="docutils literal notranslate"><span class="pre">remove_orphan_files</span></code>.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine <code class="docutils literal notranslate"><span class="pre">SparkWrite$TaskCommit</span></code> objects, so Iceberg’s own <code class="docutils literal notranslate"><span class="pre">SparkWrite.abort</span></code>
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -1589,9 +1575,8 @@ batch, so the boundaries land on different rows.</p></li>
 per task. The native writer zero-pads the task attempt id and counts from <code class="docutils literal notranslate"><span class="pre">00000</span></code>; iceberg-java
 leaves the id unpadded and counts from <code class="docutils literal notranslate"><span class="pre">00001</span></code>.</p></li>
 <li><p>Partition directory names match iceberg-java 1.8+’s <code class="docutils literal notranslate"><span class="pre">PartitionSpec.partitionToPath</span></code> for every
-partition type the native writer accepts. On Iceberg 1.5.x,
-which the Spark 3.4 profile pins, iceberg-java itself spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and <code class="docutils literal notranslate"><span class="pre">timestamptz</span></code>
-directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
+partition type the native writer accepts. Earlier iceberg-java releases spelled <code class="docutils literal notranslate"><span class="pre">timestamp</span></code> and
+<code class="docutils literal notranslate"><span class="pre">timestamptz</span></code> directories with <code class="docutils literal notranslate"><span class="pre">LocalDateTime.toString()</span></code> / <code class="docutils literal notranslate"><span class="pre">OffsetDateTime.toString()</span></code>
 (<code class="docutils literal notranslate"><span class="pre">ts=1969-12-31T23:59:58.500Z</span></code>) and left the partition field name unescaped; Comet uses the
 1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
 cases, and no reader parses these names: files are resolved through committed manifests.</p></li>

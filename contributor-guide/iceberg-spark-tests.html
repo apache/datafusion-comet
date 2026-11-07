@@ -608,8 +608,8 @@ and Scala versions the Iceberg tests will run against. The example below matches
 <p>Clone Apache Iceberg locally and apply the diff file from Comet against the matching tag.</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>git@github.com:apache/iceberg.git<span class="w"> </span>apache-iceberg
 <span class="nb">cd</span><span class="w"> </span>apache-iceberg
-git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.8.1
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git<span class="w"> </span>checkout<span class="w"> </span>apache-iceberg-1.9.1
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 </pre></div>
 </div>
 </section>
@@ -651,27 +651,27 @@ in no particular order, so the CI jobs and <code class="docutils literal notrans
 <p>To update a diff (e.g. after modifying test configuration), apply the existing diff, make changes, then
 regenerate:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nb">cd</span><span class="w"> </span>apache-iceberg
-git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>clean<span class="w"> </span>-fd
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git<span class="w"> </span>reset<span class="w"> </span>--hard<span class="w"> </span>apache-iceberg-1.9.1<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>git<span class="w"> </span>clean<span class="w"> </span>-fd
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 
 <span class="c1"># Make changes, then run spotless to fix formatting</span>
 ./gradlew<span class="w"> </span>spotlessApply
 
 <span class="c1"># Stage any new or deleted files, then generate the diff</span>
 git<span class="w"> </span>add<span class="w"> </span>-A
-git<span class="w"> </span>diff<span class="w"> </span>apache-iceberg-1.8.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git<span class="w"> </span>diff<span class="w"> </span>apache-iceberg-1.9.1<span class="w"> </span>&gt;<span class="w"> </span>../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 </pre></div>
 </div>
-<p>Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
+<p>Repeat for each Iceberg version (1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
 diff must be generated against its own tag.</p>
 </section>
 <section id="running-tests-in-ci">
 <h2>Running Tests in CI<a class="headerlink" href="#running-tests-in-ci" title="Link to this heading">#</a></h2>
-<p>The <code class="docutils literal notranslate"><span class="pre">iceberg_1_8</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_9</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_10</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_1_11</span></code> jobs in <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> apply these diffs and
-run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
-Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.8.1, 1.9.1 and
-1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. Those three run earlier on a pull request labeled
+<p>The <code class="docutils literal notranslate"><span class="pre">iceberg_1_9</span></code>, <code class="docutils literal notranslate"><span class="pre">iceberg_1_10</span></code> and <code class="docutils literal notranslate"><span class="pre">iceberg_1_11</span></code> jobs in <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> apply these diffs and
+run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.9.1 and 1.10.0 run
+against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
+Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.9.1 and
+1.10.0 run once a night against <code class="docutils literal notranslate"><span class="pre">main</span></code>. Those two run earlier on a pull request labeled
 <code class="docutils literal notranslate"><span class="pre">run-iceberg-tests</span></code>. Each job
 calls <code class="docutils literal notranslate"><span class="pre">iceberg_spark_test_reusable.yml</span></code>, which holds the build and test job logic. See
 <a class="reference external" href="https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md">.github/workflows/README.md</a>

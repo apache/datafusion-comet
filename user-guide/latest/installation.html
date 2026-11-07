@@ -546,19 +546,6 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
-</ul>
-</details></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
@@ -943,12 +930,6 @@ in the <a class="reference internal" href="compatibility/index.html"><span class
 <p>We recommend only using Comet with Spark versions where we currently have both Comet and Spark tests enabled in CI.
 Other versions may work well enough for development and evaluation purposes.</p>
 <p>Comet requires JDK 17 or later. JDK 11 is no longer supported as of the 1.1.0 release.</p>
-<div class="admonition warning">
-<p class="admonition-title">Warning</p>
-<p>Spark 3.4 support is deprecated as of the 1.0.0 release and will be removed in a future release.
-Apache Spark’s own SQL test suite no longer runs against Spark 3.4 automatically; it runs only on
-demand. We recommend moving to Spark 3.5 or later.</p>
-</div>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Spark Version</p></th>
@@ -959,31 +940,25 @@ demand. We recommend moving to Spark 3.5 or later.</p>
 </tr>
 </thead>
 <tbody>
-<tr class="row-even"><td><p>3.4.3</p></td>
-<td><p>17</p></td>
-<td><p>2.12/2.13</p></td>
-<td><p>Nightly</p></td>
-<td><p>On demand</p></td>
-</tr>
-<tr class="row-odd"><td><p>3.5.9</p></td>
+<tr class="row-even"><td><p>3.5.9</p></td>
 <td><p>17</p></td>
 <td><p>2.12/2.13</p></td>
 <td><p>Nightly</p></td>
 <td><p>Nightly</p></td>
 </tr>
-<tr class="row-even"><td><p>4.0.4</p></td>
+<tr class="row-odd"><td><p>4.0.4</p></td>
 <td><p>17/21</p></td>
 <td><p>2.13</p></td>
 <td><p>Nightly</p></td>
 <td><p>Nightly</p></td>
 </tr>
-<tr class="row-odd"><td><p>4.1.3</p></td>
+<tr class="row-even"><td><p>4.1.3</p></td>
 <td><p>17/21</p></td>
 <td><p>2.13</p></td>
 <td><p>Before merge</p></td>
 <td><p>Before merge</p></td>
 </tr>
-<tr class="row-even"><td><p>4.2.0</p></td>
+<tr class="row-odd"><td><p>4.2.0</p></td>
 <td><p>17</p></td>
 <td><p>2.13</p></td>
 <td><p>Nightly</p></td>
@@ -995,9 +970,7 @@ demand. We recommend moving to Spark 3.5 or later.</p>
 <p>Note that we do not test the full matrix of supported Java and Scala versions in CI for every Spark version.</p>
 <p>“Before merge” in the table above means the suite must pass before a change is merged. “Nightly” means
 the suite runs once a day against the <code class="docutils literal notranslate"><span class="pre">main</span></code> branch, so a regression it finds is caught after the change
-has been merged rather than before. “On demand” means the suite does not run automatically at all. A
-contributor can still run it against an individual pull request, but Spark 3.4 is no longer covered by
-default.</p>
+has been merged rather than before.</p>
 <p>Note that Comet may not fully work with proprietary forks of Apache Spark such as the Spark versions offered by
 Cloud Service Providers.</p>
 </section>
@@ -1018,7 +991,6 @@ version, <code class="docutils literal notranslate"><span class="pre">1.3.0-SNAP
 records the commit each snapshot was built from.</p>
 <p>The following artifacts are published:</p>
 <ul class="simple">
-<li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.4_2.12</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.5_2.12</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark4.0_2.13</span></code></p></li>
 <li><p><code class="docutils literal notranslate"><span class="pre">comet-spark-spark4.1_2.13</span></code></p></li>

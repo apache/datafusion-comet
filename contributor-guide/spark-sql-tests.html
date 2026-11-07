@@ -576,11 +576,11 @@ default <code class="docutils literal notranslate"><span class="pre">spark.sql.c
 Comet’s cache format although it is disabled by default. The serializer has to be a default for the whole JVM
 because Spark keeps the first cache serializer it loads for the rest of the JVM</p></li>
 </ul>
-<p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.</p>
+<p>Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.5.9 for this example.</p>
 <p><code class="docutils literal notranslate"><span class="pre">dev/local-ci.sh</span></code> runs all of the steps below the way CI runs them:</p>
 <div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>dev/local-ci.sh<span class="w"> </span>spark<span class="w">                </span><span class="c1"># every matrix row</span>
 dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span>catalyst<span class="w">       </span><span class="c1"># one row</span>
-dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span><span class="m">3</span>.4<span class="w"> </span>catalyst<span class="w">   </span><span class="c1"># a non-default Spark version</span>
+dev/local-ci.sh<span class="w"> </span>spark<span class="w"> </span><span class="m">3</span>.5<span class="w"> </span>catalyst<span class="w">   </span><span class="c1"># a non-default Spark version</span>
 </pre></div>
 </div>
 <p>See <a class="reference internal" href="ci.html#reproducing-a-suite-failure-locally"><span class="std std-ref">Continuous Integration</span></a>. The manual steps below
@@ -588,7 +588,7 @@ are still the reference, and are what you want when creating or updating a diff 
 <section id="install-comet">
 <h2>1. Install Comet<a class="headerlink" href="#install-comet" title="Link to this heading">#</a></h2>
 <p>Run <code class="docutils literal notranslate"><span class="pre">make</span> <span class="pre">release</span></code> in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.4"</span><span class="w"> </span>make<span class="w"> </span>release
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span><span class="nv">PROFILES</span><span class="o">=</span><span class="s2">"-Pspark-3.5"</span><span class="w"> </span>make<span class="w"> </span>release
 </pre></div>
 </div>
 </section>
@@ -596,9 +596,9 @@ are still the reference, and are what you want when creating or updating a diff 
 <h2>2. Clone Spark and Apply Diff<a class="headerlink" href="#clone-spark-and-apply-diff" title="Link to this heading">#</a></h2>
 <p>Clone Apache Spark locally and apply the diff file from Comet.</p>
 <p>Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">'v3.4.3'</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
+<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>-b<span class="w"> </span><span class="s1">'v3.5.9'</span><span class="w"> </span>--single-branch<span class="w"> </span>--depth<span class="w"> </span><span class="m">1</span><span class="w"> </span>git@github.com:apache/spark.git<span class="w"> </span>apache-spark
 <span class="nb">cd</span><span class="w"> </span>apache-spark
-git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/3.4.3.diff
+git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/diffs/3.5.9.diff
 </pre></div>
 </div>
 </section>
@@ -647,7 +647,7 @@ git<span class="w"> </span>apply<span class="w"> </span>../datafusion-comet/dev/
 <li><p>Set <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET=true</span></code> and <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP=true</span></code> in environment variables. Without
 <code class="docutils literal notranslate"><span class="pre">ENABLE_COMET_ONHEAP</span></code>, Comet stays disabled, because the tests do not enable off-heap memory.
 <img alt="img.png" src="../_images/img.png" /></p></li>
-<li><p>After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-3.4&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>)</p></li>
+<li><p>After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (<code class="docutils literal notranslate"><span class="pre">PROFILES=&quot;-Pspark-3.5&quot;</span> <span class="pre">make</span> <span class="pre">release</span></code>)</p></li>
 </ol>
 </section>
 </section>
@@ -717,18 +717,6 @@ the sql_hive shards; <code class="docutils literal notranslate"><span class="pre
 the <code class="docutils literal notranslate"><span class="pre">run-spark-3.5-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.0-tests</span></code> / <code class="docutils literal notranslate"><span class="pre">run-spark-4.2-tests</span></code> label. Apply the 3.5, 4.0
 or 4.2 label when a change could behave differently on those versions,
 since without it the first verdict is the nightly run’s, after the change has landed.</p>
-<p>Spark 3.4 is deprecated and is not run by the merge queue. It runs only when a pull request carries
-the <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label, or when <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> is dispatched manually from the Actions page.
-Apply the label if your change touches <code class="docutils literal notranslate"><span class="pre">spark/src/main/spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">dev/diffs/3.4.3.diff</span></code>, or
-shared code whose Spark 3.4 behavior you are unsure of:</p>
-<div class="highlight-shell notranslate"><div class="highlight"><pre><span></span>gh<span class="w"> </span>pr<span class="w"> </span>edit<span class="w"> </span>&lt;number&gt;<span class="w"> </span>--add-label<span class="w"> </span>run-spark-3.4-tests
-</pre></div>
-</div>
-<p>The run that command starts is advisory: it reports under <code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span> <span class="pre">(label</span> <span class="pre">run)</span></code>, not the
-<code class="docutils literal notranslate"><span class="pre">Required</span> <span class="pre">Checks</span></code> status <code class="docutils literal notranslate"><span class="pre">main</span></code> requires, so a Spark 3.4 failure there does not block the merge on
-its own. The label stays applied, so the next push you make runs Spark 3.4 as part of the required
-verdict. Read the label run’s result before merging — with Spark 3.4 out of the merge queue,
-nothing else will.</p>
 <p>See <a class="reference internal" href="ci.html"><span class="std std-doc">Continuous Integration</span></a> for how the tiers and labels work. When bringing up a new Spark
 version, the version needs its own job in <code class="docutils literal notranslate"><span class="pre">.github/workflows/ci.yml</span></code> plus entries in <code class="docutils literal notranslate"><span class="pre">FILTERS</span></code> and
 <code class="docutils literal notranslate"><span class="pre">POLICY</span></code> in <code class="docutils literal notranslate"><span class="pre">dev/ci/compute-changes.py</span></code>.</p>

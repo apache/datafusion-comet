@@ -546,19 +546,6 @@ under the License.
 <li class="toctree-l2"><a class="reference internal" href="compatibility/regex.html">Regular Expressions</a></li>
 <li class="toctree-l2"><a class="reference internal" href="compatibility/operators.html">Operator Compatibility</a></li>
 <li class="toctree-l2 has-children"><a class="reference internal" href="compatibility/expressions/index.html">Expression Compatibility</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.4/index.html">Spark 3.4</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/aggregate.html">Aggregate Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/array.html">Array Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/datetime.html">Date/Time Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/map.html">Map Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/math.html">Math Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/misc.html">Miscellaneous Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/string.html">String Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/struct.html">Struct Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/url.html">URL Expressions</a></li>
-<li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.4/cast.html">Cast</a></li>
-</ul>
-</details></li>
 <li class="toctree-l3 has-children"><a class="reference internal" href="compatibility/expressions/spark-3.5/index.html">Spark 3.5</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/aggregate.html">Aggregate Expressions</a></li>
 <li class="toctree-l4"><a class="reference internal" href="compatibility/expressions/spark-3.5/array.html">Array Expressions</a></li>
@@ -938,6 +925,15 @@ which point the newer behavior becomes unconditional.</p>
 legacy behavior, please open an issue describing your use case so it can be considered before the
 key is removed.</p>
 </section>
+<section id="upgrading-to-comet-1-3-0">
+<h2>Upgrading to Comet 1.3.0<a class="headerlink" href="#upgrading-to-comet-1-3-0" title="Link to this heading">#</a></h2>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.3.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key. The change below
+needs none either, but check whether it applies to your deployment.</p>
+<p>Comet <code class="docutils literal notranslate"><span class="pre">1.3.0</span></code> no longer builds or publishes support for Spark 3.4. Spark 3.4 has been deprecated
+since Comet <code class="docutils literal notranslate"><span class="pre">1.0.0</span></code>. If you run Spark 3.4, stay on the last Comet release that publishes
+<code class="docutils literal notranslate"><span class="pre">comet-spark-spark3.4_*</span></code>. See <a class="reference internal" href="installation.html"><span class="std std-doc">Installing Comet</span></a> for the supported Java, Scala,
+and Spark versions.</p>
+</section>
 <section id="upgrading-to-comet-1-2-0">
 <h2>Upgrading to Comet 1.2.0<a class="headerlink" href="#upgrading-to-comet-1-2-0" title="Link to this heading">#</a></h2>
 <p>Comet <code class="docutils literal notranslate"><span class="pre">1.2.0</span></code> makes no behavior changes that need a <code class="docutils literal notranslate"><span class="pre">spark.comet.legacy.*</span></code> key. The changes below
@@ -1229,6 +1225,7 @@ release, review the release notes for the versions in between.</p>
   <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="visible nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#legacy-configuration-keys">Legacy Configuration Keys</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-3-0">Upgrading to Comet 1.3.0</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upgrading-to-comet-1-2-0">Upgrading to Comet 1.2.0</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#deprecated-and-removed-settings">Deprecated and Removed Settings</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-writes">Iceberg Writes</a></li>

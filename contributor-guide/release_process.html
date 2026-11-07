@@ -730,7 +730,7 @@ match a bare version too. Prefer patterns such as <code class="docutils literal 
 The release branch has the same CI workflows as <code class="docutils literal notranslate"><span class="pre">main</span></code>, so a <code class="docutils literal notranslate"><span class="pre">-SNAPSHOT</span></code>-only glob in a test harness or script
 fails only after the release branch is cut. The version bump pull request is where it shows up. It changes the
 <code class="docutils literal notranslate"><span class="pre">pom.xml</span></code> files, so it runs the suites that find the jar by file name or version, such as the PyArrow UDF tests and
-the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only with the <code class="docutils literal notranslate"><span class="pre">run-spark-3.4-tests</span></code> label.</p>
+the Spark SQL and Iceberg suites.</p>
 </section>
 <section id="update-version-in-main">
 <h3>Update Version in main<a class="headerlink" href="#update-version-in-main" title="Link to this heading">#</a></h3>
@@ -822,8 +822,7 @@ change log file into <code class="docutils literal notranslate"><span class="pre
 <h3>Run the Full CI Suite<a class="headerlink" href="#run-the-full-ci-suite" title="Link to this heading">#</a></h3>
 <p>Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
 against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
-the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
-labeled, and Miri, which runs only on a schedule on <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
+the branch with all of them merged. Pull requests there also skip Miri, which runs only on a schedule on <code class="docutils literal notranslate"><span class="pre">main</span></code>.</p>
 <p>A dispatch runs every job in the release branch’s own <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>, including <code class="docutils literal notranslate"><span class="pre">docs</span></code>, which publishes the website. So
 first check that the branch limits that job to <code class="docutils literal notranslate"><span class="pre">main</span></code>: the <code class="docutils literal notranslate"><span class="pre">if:</span></code> this prints must require
 <code class="docutils literal notranslate"><span class="pre">github.ref</span> <span class="pre">==</span> <span class="pre">'refs/heads/main'</span></code>. A branch without that guard publishes its own docs over the site.</p>
@@ -837,7 +836,7 @@ gh<span class="w"> </span>workflow<span class="w"> </span>run<span class="w"> </
 </pre></div>
 </div>
 <p>A dispatched <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code> run ignores the tiers and the path filters. It runs every suite in the
-<a class="reference internal" href="ci.html#three-tiers"><span class="std std-ref">tier table</span></a>, including the Spark SQL suite for Spark 3.4, which sits outside every tier.
+<a class="reference internal" href="ci.html#three-tiers"><span class="std std-ref">tier table</span></a>.
 <code class="docutils literal notranslate"><span class="pre">miri.yml</span></code> runs the unsafe code checks, which are not part of <code class="docutils literal notranslate"><span class="pre">ci.yml</span></code>. Expect the runs to take a few hours.</p>
 <p>A failed dispatched run does not open a <code class="docutils literal notranslate"><span class="pre">ci-nightly-failure</span></code> issue, so check the result yourself. This prints the
 latest dispatched run of each workflow on the branch:</p>
