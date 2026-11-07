@@ -1073,6 +1073,241 @@ class CometIcebergNativeSuite
     }
   }
 
+  for (precision <- Seq(9, 18, 38)) {
+    test(s"decimal residual page pruning - decimal($precision,2) matches Spark") {
+      assume(icebergAvailable, "Iceberg not available in classpath")
+      withTempIcebergDir { warehouseDir =>
+        withSQLConf(
+          "spark.sql.catalog.test_cat" -> "org.apache.iceberg.spark.SparkCatalog",
+          "spark.sql.catalog.test_cat.type" -> "hadoop",
+          "spark.sql.catalog.test_cat.warehouse" -> warehouseDir.getAbsolutePath,
+          CometConf.COMET_ENABLED.key -> "true",
+          CometConf.COMET_EXEC_ENABLED.key -> "true",
+          CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+          import org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName
+          import org.apache.spark.sql.types.MetadataBuilder
+
+          val tableName = s"test_cat.db.decimal_pages_$precision"
+          val numRows = 300000L
+          val max = "9" * (precision - 2) + ".99"
+          spark.sql("CREATE NAMESPACE IF NOT EXISTS test_cat.db")
+          spark.sql(s"""
+            CREATE TABLE $tableName (id BIGINT, amount DECIMAL($precision, 2)) USING iceberg
+            TBLPROPERTIES (
+              'write.parquet.row-group-size-bytes' = '536870912',
+              'write.parquet.page-row-limit' = '1000',
+              'write.parquet.compression-codec' = 'uncompressed'
+            )
+          """)
+
+          // Spark's Parquet writer makes the physical representation explicit: INT32, INT64,
+          // FIXED_LEN_BYTE_ARRAY. Register that file in Iceberg with matching field IDs. This
+          // avoids depending on an Iceberg writer version's choice of decimal representation.
+          val parquetPath = new java.io.File(warehouseDir, s"decimal_input_$precision").toString
+          withSQLConf(
+            CometConf.COMET_ENABLED.key -> "false",
+            "spark.sql.parquet.writeLegacyFormat" -> "false",
+            "spark.sql.parquet.fieldId.write.enabled" -> "true") {
+            val bulk = spark
+              .range(numRows)
+              .selectExpr(
+                "id",
+                s"CASE WHEN id % 4096 = 0 THEN CAST(NULL AS DECIMAL($precision, 2)) " +
+                  s"ELSE CAST(CAST((id DIV 2) - ${numRows / 4} AS DECIMAL(9, 0)) / " +
+                  s"CAST(100 AS DECIMAL(3, 0)) AS DECIMAL($precision, 2)) END AS amount")
+            // Real precision boundaries, including 38-digit unscaled coefficients, both signs,
+            // duplicate bulk values and nulls. No fixture values pass through floating point.
+            val extra = spark.sql(s"""
+              SELECT $numRows AS id, CAST('$max' AS DECIMAL($precision, 2)) AS amount
+              UNION ALL SELECT ${numRows + 1}, CAST('-$max' AS DECIMAL($precision, 2))
+              UNION ALL SELECT ${numRows + 2}, CAST(NULL AS DECIMAL($precision, 2))
+            """)
+            val data = bulk.union(extra)
+            val schema = StructType(data.schema.fields.zipWithIndex.map { case (field, index) =>
+              field.copy(metadata =
+                new MetadataBuilder().putLong("parquet.field.id", (index + 1).toLong).build())
+            })
+            spark
+              .createDataFrame(data.rdd, schema)
+              .repartition(1)
+              .sortWithinPartitions("amount", "id")
+              .write
+              .option("compression", "uncompressed")
+              .option("parquet.block.size", "536870912")
+              .option("parquet.page.size", "16384")
+              .option("parquet.page.row.count.limit", "1000")
+              .option("parquet.enable.dictionary", "false")
+              .parquet(parquetPath)
+          }
+          val directory = new org.apache.hadoop.fs.Path(parquetPath)
+          val fs = directory.getFileSystem(spark.sessionState.newHadoopConf())
+          val files = fs.listStatus(directory).filter(_.getPath.getName.endsWith(".parquet"))
+          assert(files.length == 1, s"expected one data file: ${files.toSeq}")
+          val file = files.head
+          val table = loadIcebergTable(spark, "test_cat", "db", s"decimal_pages_$precision")
+            .asInstanceOf[org.apache.iceberg.Table]
+          table
+            .newAppend()
+            .appendFile(
+              org.apache.iceberg.DataFiles
+                .builder(table.spec())
+                .withPath(file.getPath.toString)
+                .withFormat(org.apache.iceberg.FileFormat.PARQUET)
+                .withFileSizeInBytes(file.getLen)
+                .withRecordCount(numRows + 3)
+                .build())
+            .commit()
+          spark.sql(s"REFRESH TABLE $tableName")
+
+          val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
+            org.apache.parquet.hadoop.util.HadoopInputFile
+              .fromPath(file.getPath, spark.sessionState.newHadoopConf()))
+          val (pages, pageMin, pageMax) =
+            try {
+              val physical =
+                reader.getFooter.getFileMetaData.getSchema.getFields.asScala
+                  .find(_.getName == "amount")
+                  .getOrElse(fail("missing decimal field"))
+                  .asPrimitiveType()
+              val expected = precision match {
+                case 9 => PrimitiveTypeName.INT32
+                case 18 => PrimitiveTypeName.INT64
+                case 38 => PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY
+                case _ => fail(s"unexpected decimal precision $precision")
+              }
+              assert(physical.getPrimitiveTypeName == expected, s"$physical")
+              assert(physical.getId.intValue() == 2, s"missing Iceberg field id: $physical")
+              val groups = reader.getRowGroups
+              assert(groups.size == 1, s"expected one row group, got ${groups.size}")
+              assert(groups.get(0).getRowCount == numRows + 3)
+              val chunk = groups
+                .get(0)
+                .getColumns
+                .asScala
+                .find(_.getPath.toDotString == "amount")
+                .getOrElse(fail("missing decimal chunk"))
+              val offsets = reader.readOffsetIndex(chunk)
+              val index = reader.readColumnIndex(chunk)
+              assert(offsets != null && index != null, "fixture must have a page index")
+              val pageCount = offsets.getPageCount
+              assert(pageCount > 50, s"expected many decimal pages, got $pageCount")
+              val page = pageCount / 2
+              assert(!index.getNullPages.get(page), "middle page must contain non-null decimals")
+              def bound(buffer: java.nio.ByteBuffer): String = {
+                val bytes = buffer.duplicate().order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                val unscaled = expected match {
+                  case PrimitiveTypeName.INT32 =>
+                    java.math.BigInteger.valueOf(bytes.getInt.toLong)
+                  case PrimitiveTypeName.INT64 => java.math.BigInteger.valueOf(bytes.getLong)
+                  case PrimitiveTypeName.FIXED_LEN_BYTE_ARRAY =>
+                    val value = new Array[Byte](bytes.remaining())
+                    bytes.get(value)
+                    new java.math.BigInteger(value)
+                  case _ => fail(s"unexpected physical type $expected")
+                }
+                new java.math.BigDecimal(unscaled, 2).toPlainString
+              }
+              (
+                pageCount,
+                bound(index.getMinValues.get(page)),
+                bound(index.getMaxValues.get(page)))
+            } finally {
+              reader.close()
+            }
+
+          def nativeScan(query: String): CometIcebergNativeScanExec = {
+            val (_, plan) = checkSparkAnswer(query)
+            val scans = collectIcebergNativeScans(plan)
+            assert(scans.size == 1, s"expected a native scan: $plan")
+            scans.head
+          }
+          def decimalLiterals(
+              p: OperatorOuterClass.IcebergPredicate): Seq[OperatorOuterClass.IcebergLiteral] = {
+            if (p.hasBinary) Seq(p.getBinary.getValue)
+            else if (p.hasSet) p.getSet.getValuesList.asScala.toSeq
+            else if (p.hasAnd)
+              decimalLiterals(p.getAnd.getLeft) ++ decimalLiterals(p.getAnd.getRight)
+            else if (p.hasOr)
+              decimalLiterals(p.getOr.getLeft) ++ decimalLiterals(p.getOr.getRight)
+            else if (p.hasNot) decimalLiterals(p.getNot)
+            else Seq.empty
+          }
+          def pushedValues(scan: CometIcebergNativeScanExec): Set[java.math.BigInteger] = {
+            val common = OperatorOuterClass.IcebergScanCommon.parseFrom(scan.commonData)
+            val tasks = scan.perPartitionData.toSeq.flatMap(bytes =>
+              OperatorOuterClass.IcebergScan.parseFrom(bytes).getFileScanTasksList.asScala)
+            assert(tasks.size == 1, s"file planning must retain the one data file: $tasks")
+            val task = tasks.head
+            assert(task.getDataFilePath == file.getPath.toString)
+            assert(task.hasResidualIdx, "task must reference the pushed residual")
+            val literals = decimalLiterals(common.getResidualPool(task.getResidualIdx))
+            assert(literals.nonEmpty, "a unary NOT NULL alone is not decimal literal pushdown")
+            literals.map { literal =>
+              assert(literal.hasDecimalVal, s"expected decimal literal: $literal")
+              val decimal = literal.getDecimalVal
+              assert(decimal.getPrecision == precision && decimal.getScale == 2)
+              new java.math.BigInteger(decimal.getUnscaled.toByteArray)
+            }.toSet
+          }
+
+          // Identical decimal-only projections prevent row filtering of a cheap predicate column
+          // from explaining byte savings on an unread payload column. Metadata-only count cannot
+          // satisfy either query. One file and one row group isolate page skipping.
+          val full = nativeScan(s"SELECT amount FROM $tableName")
+          val selective =
+            nativeScan(s"SELECT amount FROM $tableName WHERE amount BETWEEN -0.05 AND 0.05")
+          assert(
+            pushedValues(selective) == Set(
+              new java.math.BigInteger("-5"),
+              new java.math.BigInteger("5")))
+          assert(full.metrics("output_rows").value == numRows + 3)
+          assert(selective.metrics("output_rows").value == 22)
+          assert(
+            full.metrics("num_splits").value == 1 && selective.metrics("num_splits").value == 1)
+          val fullBytes = full.metrics("bytes_scanned").value
+          val selectiveBytes = selective.metrics("bytes_scanned").value
+          info(
+            s"decimal($precision,2): pages=$pages, fullBytes=$fullBytes, selectiveBytes=$selectiveBytes")
+          assert(fullBytes > 0 && selectiveBytes > 0)
+          assert(
+            selectiveBytes * 2 < fullBytes,
+            s"decimal page skipping must read under half the full read: $selectiveBytes / $fullBytes")
+
+          val predicates = Seq(
+            "amount > 0 AND amount <= 0.10",
+            "amount < 0 AND amount >= -0.10",
+            "amount = 123.45",
+            s"amount = CAST(123.450 AS DECIMAL($precision, 2))",
+            "amount BETWEEN -10.00 AND 10.00",
+            "amount IN (-123.45, 0.00, 123.45)",
+            "amount != 0.00 AND amount BETWEEN -0.10 AND 0.10",
+            "NOT(amount < 0 OR amount > 0.10)",
+            "(amount BETWEEN -0.10 AND -0.05) OR (amount BETWEEN 0.05 AND 0.10)",
+            s"amount IN ($pageMin, $pageMax)",
+            s"amount = $max",
+            s"amount = -$max")
+          predicates.foreach { predicate =>
+            withClue(s"decimal($precision,2): $predicate: ") {
+              val scan = nativeScan(s"SELECT id, amount FROM $tableName WHERE $predicate")
+              pushedValues(scan)
+            }
+          }
+          // Some Spark versions retain a column cast when comparing a precision-38 decimal
+          // with a scale-3 literal, so only NOT NULL reaches the scan. Check its SQL answers
+          // separately; the explicit literal cast above must push on every tested version.
+          checkIcebergNativeScan(s"SELECT id, amount FROM $tableName WHERE amount = 123.450")
+          Seq("amount IS NULL", "amount IS NOT NULL").foreach { predicate =>
+            checkIcebergNativeScan(s"SELECT id, amount FROM $tableName WHERE $predicate")
+          }
+          // Spark may simplify this to an empty local relation before the scan. The direct serde
+          // tests cover rejection of non-exact residual literals; this only pins SQL correctness.
+          checkSparkAnswer(s"SELECT id, amount FROM $tableName WHERE amount = 123.456")
+          spark.sql(s"DROP TABLE $tableName")
+        }
+      }
+    }
+  }
+
   test("MOR table with EQUALITY deletes - verify deletes are applied") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4211,11 +4446,9 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Reproducer for the iceberg-rust FIXED_LEN_BYTE_ARRAY page-index gap (comet#4982), mirroring
-  // Iceberg's TestSparkReaderWithBloomFilter: a table with decimal columns (stored as
-  // FIXED_LEN_BYTE_ARRAY), bloom filters, tiny row groups (so Parquet writes a page index), and a
-  // wide AND filter that includes decimal equalities. Getting this to fail lets us instrument why a
-  // predicate reaches iceberg-rust's PageIndexEvaluator on a decimal column.
+  // Regression for the former decimal page-index gap (comet#4982), mirroring Iceberg's
+  // TestSparkReaderWithBloomFilter: decimal columns, bloom filters, tiny row groups and a wide
+  // AND filter. Decimal equalities now reach iceberg-rust at all precisions and must stay native.
   test("filter on a table with a decimal column does not fail the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4285,13 +4518,9 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Iceberg stores uuid as Parquet FIXED_LEN_BYTE_ARRAY(16), the same physical layout as decimal
-  // and fixed. iceberg-rust's page-index evaluator does not support FIXED_LEN_BYTE_ARRAY, so a
-  // predicate pushed over such a column fails the native scan during page-index pruning. The scan
-  // must drop the residual and stay native, leaving the filter to the post-scan CometFilter.
-  // The trigger is IS NOT NULL (a unary predicate): it binds without a literal and reaches the
-  // page-index read. An equality would push a string literal that iceberg-rust cannot bind to a
-  // UUID field (Datum bind does not coerce), dropping the whole residual before any page probe.
+  // UUID page indexes are still skipped by iceberg-rust, and string literals cannot bind to UUID
+  // fields. Comet retains the UUID column gate, including for unary IS NOT NULL, while a supported
+  // conjunct on another column may push independently. The post-scan filter enforces the UUID term.
   test("filter on a table with a uuid column does not fail the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4342,10 +4571,8 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Iceberg stores fixed[N] as Parquet FIXED_LEN_BYTE_ARRAY(N). As with uuid and decimal,
-  // iceberg-rust's page-index evaluator does not support that physical type, so the IS NOT NULL
-  // pushed over the fixed column (added by Iceberg for any filtered column) would fail the native
-  // scan. The residual must be dropped so the scan stays native and CometFilter enforces it.
+  // iceberg-rust skips fixed[N] page indexes. Comet retains the fixed column gate, including
+  // unary null checks, while supported conjuncts may push. CometFilter enforces the fixed term.
   test("filter on a table with a fixed column does not fail the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4393,12 +4620,9 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Iceberg stores binary as Parquet BYTE_ARRAY. Unlike the FIXED_LEN_BYTE_ARRAY types above,
-  // iceberg-rust's page-index evaluator accepts BYTE_ARRAY but decodes its column-index min/max as
-  // UTF-8 (String::from_utf8(..).unwrap()), so non-UTF-8 bounds panic the native scan. The decode
-  // happens in calc_row_selection before the null-count closure runs, so even a bare IS NOT NULL
-  // (added by Iceberg for any filtered column) triggers it. Binary must therefore be gated like the
-  // FIXED_LEN_BYTE_ARRAY types: the residual is dropped and CometFilter enforces the filter.
+  // Binary page bounds are now decoded safely as bytes, but Comet retains the binary column gate
+  // because it does not serialize binary predicate literals. Non-UTF-8 values and null checks must
+  // stay native, with the binary predicate enforced by CometFilter.
   test("filter on a table with a binary column does not fail the native scan") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4422,8 +4646,7 @@ class CometIcebergNativeSuite
           )
         """)
 
-        // Prepend a 0xFF byte (never valid UTF-8) so the column-index min/max for `b` cannot decode
-        // as a UTF-8 string, which is what makes iceberg-rust's page-index evaluator panic.
+        // Retain non-UTF-8 bounds from the original panic reproducer.
         spark.sql("""
           INSERT INTO test_cat.db.binary_filter_test
           SELECT CAST(id AS INT), concat(X'FF', CAST(CAST(id AS STRING) AS BINARY))
@@ -4438,13 +4661,10 @@ class CometIcebergNativeSuite
     }
   }
 
-  // A residual can arrive as NOT over an AND that mixes a supported conjunct with an unsupported
-  // (FIXED_LEN_BYTE_ARRAY) one. Dropping only the unsupported conjunct is safe in positive
-  // position (it weakens the pruning predicate), but under a NOT it strengthens it: NOT(id < 200
-  // AND d = 100.00) is really id >= 200 OR d != 100.00, yet dropping the decimal conjunct and
-  // negating leaves id >= 200, which prunes pages holding id < 200 rows that satisfy the filter
-  // via d != 100.00. The residual must not be pushed partially in that case. This asserts results
-  // match Spark; d is stored as decimal so its predicate is dropped by the page-index gate.
+  // Dropping an unsupported conjunct under NOT can strengthen the predicate and lose rows.
+  // NOT(id < 200 AND d = X'313030') must retain id < 200 rows whose binary value is not "100".
+  // Binary stays gated, so this still exercises a partially supported expression after enabling
+  // decimal pushdown. The exact post-scan filter must see every potentially matching row.
   test("NOT over a partially supported AND does not drop rows") {
     assume(icebergAvailable, "Iceberg not available in classpath")
 
@@ -4460,7 +4680,7 @@ class CometIcebergNativeSuite
         spark.sql("""
           CREATE TABLE test_cat.db.not_partial_residual_test (
             id INT,
-            d DECIMAL(10, 2)
+            d BINARY
           ) USING iceberg
           TBLPROPERTIES (
             'format-version' = '2',
@@ -4472,13 +4692,13 @@ class CometIcebergNativeSuite
         // predicate would prune the id < 200 groups entirely.
         spark.sql("""
           INSERT INTO test_cat.db.not_partial_residual_test
-          SELECT CAST(id AS INT), CAST(id AS DECIMAL(10, 2))
+          SELECT CAST(id AS INT), CAST(CAST(id AS STRING) AS BINARY)
           FROM range(30, 330)
         """)
 
         checkIcebergNativeScan(
           "SELECT * FROM test_cat.db.not_partial_residual_test " +
-            "WHERE NOT(id < 200 AND d = 100.00)")
+            "WHERE NOT(id < 200 AND d = X'313030')")
 
         spark.sql("DROP TABLE test_cat.db.not_partial_residual_test")
       }

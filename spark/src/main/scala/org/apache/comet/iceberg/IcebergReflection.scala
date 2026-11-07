@@ -1182,15 +1182,12 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Top-level column names whose Iceberg type iceberg-rust's page-index evaluator cannot prune
-   * over, so callers must not push a residual predicate on them, not even the IS NOT NULL that
-   * Iceberg adds for every filtered column. Two physical layouts fail (page_index_evaluator.rs):
-   *   - FIXED_LEN_BYTE_ARRAY (decimal, uuid, fixed): rejected outright as an unsupported index
-   *     type, which fails the native scan.
-   *   - BYTE_ARRAY backing a binary column: the evaluator decodes column-index min/max as UTF-8
-   *     (String::from_utf8(..).unwrap()) before the predicate closure runs, so non-UTF-8 bounds
-   *     panic the native scan even for a bare IS [NOT] NULL. Extend this set as Iceberg adds
-   *     types with either layout (e.g. geometry).
+   * Top-level columns excluded from residual pushdown, including the IS NOT NULL that Iceberg
+   * adds for filtered columns. iceberg-rust skips page indexes for UUID and fixed columns, and
+   * UUID string literals cannot bind to UUID fields. Binary stays conservatively gated because
+   * this serde does not model binary predicate literals, although iceberg-rust can now decode
+   * binary page bounds safely. Decimal predicates are supported at every precision, including the
+   * FIXED_LEN_BYTE_ARRAY layout used by wide decimals.
    */
   def pageIndexUnsupportedColumns(schema: Any): Set[String] = {
     import scala.jdk.CollectionConverters._
@@ -1201,8 +1198,7 @@ object IcebergReflection extends Logging {
       columns.asScala.flatMap { column =>
         val name = getMethod(column.getClass, "name").invoke(column).asInstanceOf[String]
         val typeStr = getMethod(column.getClass, "type").invoke(column).toString
-        if (typeStr.startsWith("decimal(") || typeStr == "uuid" || typeStr.startsWith("fixed[") ||
-          typeStr == "binary") {
+        if (typeStr == "uuid" || typeStr.startsWith("fixed[") || typeStr == "binary") {
           Some(name)
         } else {
           None
