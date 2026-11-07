@@ -37,12 +37,14 @@ use datafusion::physical_plan::{
 /// sorted before it was cached for instance, but the `ScanExec` it arrives through declares none,
 /// and DataFusion's hash join keeps the unmatched probe rows of a right outer join in place only
 /// when the probe input declares an order. Otherwise it moves them after the matched rows of each
-/// batch, which loses an order Spark has already dropped a sort for. The planner puts this on a
-/// hash join's probe input, with the order Spark reports for it, when the rows reach that input
-/// from the JVM or a file scan through operators that keep their order, and on the native range,
-/// whose order is real, so that the join and the operators above it in the native plan see the
-/// order: an aggregate grouped by the key runs in sorted, streaming mode, a window finds the order
-/// it requires, a sort aggregate takes the order as already satisfied, and a top-k sort whose keys
+/// batch, which loses an order Spark has already dropped a sort for. A window sorts an input
+/// that declares no order on its partition keys, a sort Spark has already left out. The planner
+/// puts this on a hash join's probe input or a window's input, with the order Spark reports for
+/// it, when the rows reach that input from the JVM or a file scan through operators that keep
+/// their order, and on the native range, whose order is real. The join and the window keep the
+/// order in their own output, so the operators above them in the native plan see it too: an
+/// aggregate grouped by the key runs in sorted, streaming mode, a window finds the order it
+/// requires, a sort aggregate takes the order as already satisfied, and a top-k sort whose keys
 /// start with it stops reading early. A wrong order would therefore give wrong groups or wrong
 /// rows, not only rows out of order.
 #[derive(Debug)]

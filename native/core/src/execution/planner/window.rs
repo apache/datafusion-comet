@@ -99,12 +99,13 @@ impl OperatorBuilder for WindowBuilder {
         let sort_exprs = &sort_exprs?;
         let partition_exprs = &partition_exprs?;
 
-        // Sort the input unless it is already ordered on every PARTITION BY key; rows from the
-        // JVM declare no order even when Spark reports them as sorted. The check looks only at
-        // the PARTITION BY keys; the sort orders by them ascending with nulls first, then by the
-        // ORDER BY keys.
-        let (_, ordered) = child
-            .native_plan
+        // Declare the order Spark sent for the input, then sort it unless it is ordered on every
+        // PARTITION BY key; rows from the JVM declare no order unless Spark sent one. The check
+        // looks only at the PARTITION BY keys; the sort orders by them ascending with nulls
+        // first, then by the ORDER BY keys.
+        let declared =
+            planner.with_declared_order(Arc::clone(&child.native_plan), &wnd.input_sort_orders)?;
+        let (_, ordered) = declared
             .equivalence_properties()
             .find_longest_permutation(partition_exprs)?;
         let required = partition_exprs
@@ -120,14 +121,12 @@ impl OperatorBuilder for WindowBuilder {
             })
             .chain(sort_exprs.iter().cloned());
         let input_sort: Option<Arc<dyn ExecutionPlan>> = match LexOrdering::new(required) {
-            Some(ordering) if ordered.len() < partition_exprs.len() => Some(Arc::new(
-                SortExec::new(ordering, Arc::clone(&child.native_plan)),
-            )),
+            Some(ordering) if ordered.len() < partition_exprs.len() => {
+                Some(Arc::new(SortExec::new(ordering, Arc::clone(&declared))))
+            }
             _ => None,
         };
-        let window_input = input_sort
-            .as_ref()
-            .map_or_else(|| Arc::clone(&child.native_plan), Arc::clone);
+        let window_input = input_sort.as_ref().map_or(declared, Arc::clone);
 
         let window_expr: Result<Vec<Arc<dyn WindowExpr>>, ExecutionError> = wnd
             .window_expr
@@ -162,6 +161,7 @@ impl OperatorBuilder for WindowBuilder {
         // trigger a retract call.
         let window_expr = window_expr?;
         let all_bounded = window_expr.iter().all(|e| e.uses_bounded_memory());
+
         let window_agg: Arc<dyn ExecutionPlan> = if all_bounded {
             Arc::new(BoundedWindowAggExec::try_new(
                 window_expr,
