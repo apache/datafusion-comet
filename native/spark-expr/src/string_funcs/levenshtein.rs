@@ -180,96 +180,24 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         return -1;
     }
 
+    // Fast path for ASCII strings: operate directly on raw bytes without
+    // allocating `char` vectors.
     if s.is_ascii() && t.is_ascii() {
-        let s_bytes = s.as_bytes();
-        let t_bytes = t.as_bytes();
-        let m = s_bytes.len();
-        let n = t_bytes.len();
-
-        if (m as i32 - n as i32).abs() > threshold {
-            return -1;
-        }
-        if m == 0 {
-            return if n as i32 <= threshold { n as i32 } else { -1 };
-        }
-        if n == 0 {
-            return if m as i32 <= threshold { m as i32 } else { -1 };
-        }
-
-        let (s_bytes, t_bytes, m, n) = if m > n {
-            (t_bytes, s_bytes, n, m)
-        } else {
-            (s_bytes, t_bytes, m, n)
-        };
-
-        if (n as i32 - m as i32) > threshold {
-            return -1;
-        }
-
-        // The Levenshtein distance between strings of length m and n (where m <= n)
-        // cannot exceed n. Capping threshold at n prevents integer overflow when threshold
-        // is i32::MAX, while preserving identical Spark semantics.
-        let effective_threshold = threshold.min(n as i32);
-        let out_of_band = effective_threshold + 1;
-
-        return with_scratch_buffers(m + 1, out_of_band, |prev, curr| {
-            for (i, val) in prev.iter_mut().enumerate() {
-                *val = if i as i32 <= effective_threshold {
-                    i as i32
-                } else {
-                    out_of_band
-                };
-            }
-
-            for (j, &t_byte) in t_bytes.iter().enumerate().take(n) {
-                let j_1 = (j + 1) as i32;
-                curr[0] = if j_1 <= effective_threshold {
-                    j_1
-                } else {
-                    out_of_band
-                };
-
-                let min_i = if j_1 > effective_threshold {
-                    ((j_1 - effective_threshold) as usize).max(1)
-                } else {
-                    1
-                };
-                let max_i = (j_1 as usize)
-                    .saturating_add(effective_threshold as usize)
-                    .min(m);
-
-                if min_i > 1 {
-                    curr[min_i - 1] = out_of_band;
-                }
-
-                assert!(prev.len() > m && curr.len() > m);
-                assert!(s_bytes.len() >= m);
-
-                for i in min_i..=max_i {
-                    let cost = if s_bytes[i - 1] == t_byte { 0 } else { 1 };
-                    curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
-                }
-
-                if max_i < m {
-                    curr[max_i + 1] = out_of_band;
-                }
-
-                std::mem::swap(prev, curr);
-            }
-
-            let result = prev[m];
-            if result <= threshold {
-                result
-            } else {
-                -1
-            }
-        });
+        banded_levenshtein(s.as_bytes(), t.as_bytes(), threshold)
+    } else {
+        let s_chars: Vec<char> = s.chars().collect();
+        let t_chars: Vec<char> = t.chars().collect();
+        banded_levenshtein(&s_chars, &t_chars, threshold)
     }
+}
 
-    let s_chars: Vec<char> = s.chars().collect();
-    let t_chars: Vec<char> = t.chars().collect();
-    let m = s_chars.len();
-    let n = t_chars.len();
+/// Computes the banded Levenshtein distance between two element slices, up to
+/// `threshold`. Shared by the ASCII (`u8`) and Unicode (`char`) paths of
+/// [`levenshtein_distance_with_threshold`] so that band bounds, out-of-band
+/// handling and threshold capping only need to be maintained in one place.
+fn banded_levenshtein<T: PartialEq + Copy>(s: &[T], t: &[T], threshold: i32) -> i32 {
+    let m = s.len();
+    let n = t.len();
 
     if (m as i32 - n as i32).abs() > threshold {
         return -1;
@@ -281,16 +209,15 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
         return if m as i32 <= threshold { m as i32 } else { -1 };
     }
 
-    let (s_chars, t_chars, m, n) = if m > n {
-        (t_chars, s_chars, n, m)
-    } else {
-        (s_chars, t_chars, m, n)
-    };
+    let (s, t, m, n) = if m > n { (t, s, n, m) } else { (s, t, m, n) };
 
     if (n as i32 - m as i32) > threshold {
         return -1;
     }
 
+    // The Levenshtein distance between strings of length m and n (where m <= n)
+    // cannot exceed n. Capping threshold at n prevents integer overflow when threshold
+    // is i32::MAX, while preserving identical Spark semantics.
     let effective_threshold = threshold.min(n as i32);
     let out_of_band = effective_threshold + 1;
 
@@ -303,7 +230,7 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
             };
         }
 
-        for (j, &t_char) in t_chars.iter().enumerate().take(n) {
+        for (j, &t_elem) in t.iter().enumerate().take(n) {
             let j_1 = (j + 1) as i32;
             curr[0] = if j_1 <= effective_threshold {
                 j_1
@@ -325,10 +252,10 @@ fn levenshtein_distance_with_threshold(s: &str, t: &str, threshold: i32) -> i32 
             }
 
             assert!(prev.len() > m && curr.len() > m);
-            assert!(s_chars.len() >= m);
+            assert!(s.len() >= m);
 
             for i in min_i..=max_i {
-                let cost = if s_chars[i - 1] == t_char { 0 } else { 1 };
+                let cost = if s[i - 1] == t_elem { 0 } else { 1 };
                 curr[i] = (prev[i] + 1).min(curr[i - 1] + 1).min(prev[i - 1] + cost);
             }
 
