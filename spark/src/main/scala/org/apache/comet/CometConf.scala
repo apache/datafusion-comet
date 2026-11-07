@@ -725,6 +725,18 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(false)
 
+  // Used on native side. Check spark_config.rs how the config is used
+  val COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED: ConfigEntry[Boolean] =
+    conf(s"$COMET_EXEC_CONFIG_PREFIX.cacheOutputSchema.enabled")
+      .category(CATEGORY_EXEC)
+      .doc(
+        "Whether a native plan sends the JVM the Arrow schema of its output batches only when " +
+          "it changes, rather than with every batch. Batches with a dictionary-encoded column " +
+          "always carry their schema. This is an internal config for benchmarking.")
+      .internal()
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
       .category(CATEGORY_EXEC)

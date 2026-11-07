@@ -30,6 +30,8 @@ pub(crate) const COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED: &str =
     "spark.comet.exec.aggregate.skipPartial.enabled";
 pub(crate) const COMET_EXEC_SPILL_COMPRESSION_CODEC: &str =
     "spark.comet.exec.spill.compression.codec";
+pub(crate) const COMET_EXEC_CACHE_OUTPUT_SCHEMA_ENABLED: &str =
+    "spark.comet.exec.cacheOutputSchema.enabled";
 pub(crate) const COMET_NATIVE_UDF_ENABLED: &str = "spark.comet.nativeUdf.enabled";
 pub(crate) const COMET_NATIVE_UDF_ALLOWED_PATHS: &str = "spark.comet.nativeUdf.allowedPaths";
 /// A Spark task passes the batch size to native code apart from the other configs, so only a host

@@ -27,8 +27,8 @@ Comet transfers Arrow data across the JVM/native boundary in two directions:
    [Arrow C Stream Interface](https://arrow.apache.org/docs/format/CStreamInterface.html). The JVM exports each
    per-partition iterator once as an `ArrowArrayStream`, and native pulls every batch through a single C callback.
 2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`, via the
-   [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray`/`ArrowSchema`
-   pair per column of each batch).
+   [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray` per column of
+   each batch, and one `ArrowSchema` per column whenever the output schema changes).
 
 The following diagram shows an example of the end-to-end flow for a query stage.
 
@@ -196,8 +196,8 @@ When the JVM needs results from native execution:
          │ produces RecordBatch
          ▼
 ┌─────────────────┐
-│ prepare_output  │ ── fills one ArrowArray/ArrowSchema pair per column
-│  (Rust/native)  │
+│  export_batch   │ ── fills one ArrowArray per column, and one ArrowSchema
+│  (Rust/native)  │    per column when the output schema changes
 └────────┬────────┘
          │ Arrow C Data Interface
          │ (structs allocated by the JVM, filled by native)
@@ -216,24 +216,36 @@ When the JVM needs results from native execution:
 
 ### Transfer Process
 
-`CometExecIterator.hasNext` fetches each batch through `NativeUtil.getNextBatch`, with one JNI call per batch:
+`CometExecIterator.hasNext` fetches each batch through `NativeUtil.getNextPlanBatch`, with one JNI call per batch:
 
-1. `NativeUtil.getNextBatch` allocates one empty `ArrowArray`/`ArrowSchema` pair per output column from
-   `CometArrowAllocator` and passes their memory addresses to
-   `Native.executePlan(stage, partition, plan, arrayAddrs, schemaAddrs)`.
+1. `getNextPlanBatch` allocates one empty `ArrowArray` per output column from `CometArrowAllocator`, and passes
+   their memory addresses to `Native.executePlan(stage, partition, plan, arrayAddrs, schemaAddrs)`, together with
+   those of one empty `ArrowSchema` per column, which it keeps across batches.
 2. `executePlan` (in `jni_api.rs`) polls the native plan for its next `RecordBatch`, and `prepare_output` exports
-   each column into its pair with `move_to_spark` (in `execution/utils.rs`). `move_to_spark` zeroes the column's
-   offsets (see [Array Offsets](#array-offsets)), then writes an `FFI_ArrowArray` over the result, and an
-   `FFI_ArrowSchema` built from its data type and field metadata, into the JVM-allocated structs. `executePlan`
-   returns the batch's row count, or `-1` at the end of the output. With `spark.comet.debug.enabled` set,
+   each column into its `ArrowArray` with `move_array_to_spark` (in `execution/utils.rs`), which zeroes the
+   column's offsets (see [Array Offsets](#array-offsets)) and writes an `FFI_ArrowArray` over the result. When the
+   batch carries its schema, `move_to_spark` also writes an `FFI_ArrowSchema` built from the column's data type and
+   field metadata into its `ArrowSchema`. `executePlan` returns the batch's row count, with `OUTPUT_SCHEMA_EXPORTED`
+   (bit 32) set when the schema went too, or `-1` at the end of the output. With `spark.comet.debug.enabled` set,
    `prepare_output` first runs `validate_full` on every column.
-3. At the end of the output, `NativeUtil` releases the unused structs. Otherwise `NativeUtil.importVector` imports
-   each column with `ArrowImporter.importVector`, wraps it with `CometVector.getVector`, and returns the vectors as
-   a `ColumnarBatch`.
+3. At the end of the output, `NativeUtil` releases the unused structs. Otherwise `NativeUtil` imports each column
+   with `ArrowImporter.importVector`, from its schema when the schema came too and with the column's field from the
+   last schema otherwise, wraps it with `CometVector.getVector`, and returns the vectors as a `ColumnarBatch`.
+
+`NativeUtil.getNextBatch` does the same for decoded shuffle blocks, which always carry their schema, with new schema
+structs for each block.
 
 `ArrowImporter` (in `spark/src/main/java/org/apache/arrow/c/`) imports every column through one shared
 `SchemaImporter`. Arrow Java's own `Data.importField` creates a new `SchemaImporter` for each field, and each one
 numbers dictionaries from 0, so two dictionary-encoded columns would collide in the shared `CDataDictionaryProvider`.
+
+### Sending the Output Schema Once
+
+A batch carries its schema only when the schema changed. `OutputSchemaCache` (in `jni_api.rs`) records each output
+column's data type and field metadata as it last exported them, and while the next batch matches, only the arrays
+go. A batch with a dictionary-encoded column always carries its schema, because the JVM gives each dictionary it
+imports a new id, and `NativeUtil` keeps no fields from such a batch. With the internal config
+`spark.comet.exec.cacheOutputSchema.enabled` off, every batch carries its schema.
 
 ### Array Offsets
 
@@ -242,9 +254,8 @@ Arrow Java's C Data import ignores `ArrowArray.offset` at every level
 folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
 exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
 `zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
-level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
-`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
-or sliced booleans reach the JVM misaligned
+level and shares every other buffer. `move_array_to_spark`, which `move_to_spark` also goes through, applies it to
+executed batches and decoded shuffle blocks, and `JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too, or sliced booleans reach the JVM misaligned
 ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 
 `zero_offsets` leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
@@ -264,8 +275,8 @@ Python runner rebases the same way before it sends a batch to the worker. All th
 
 Native allocates the data, and the JVM references it without copying:
 
-- The `FFI_ArrowArray` that `move_to_spark` writes holds a reference to the column's native buffers, and its release
-  callback drops that reference.
+- The `FFI_ArrowArray` that `move_to_spark` or `move_array_to_spark` writes holds a reference to the column's native
+  buffers, and its release callback drops that reference.
 - On import, Arrow Java wraps each native buffer in an `ArrowBuf`. Closing the last `ArrowBuf` over an imported
   column runs its release callback, and native frees the buffers once no Rust reference to them remains.
 - `CometExecIterator` closes the batch it returned when the consumer next calls `hasNext` or `next`, and on
