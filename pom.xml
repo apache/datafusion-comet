@@ -43,6 +43,8 @@ under the License.
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <!-- Also passed to the integration checker to honor intentional source-JAR skips. -->
+    <maven.source.skip>false</maven.source.skip>
     <java.version>17</java.version>
     <!--
       Default Delta dep version for the in-tree `-Pcontrib-delta` contrib, which
