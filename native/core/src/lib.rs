@@ -61,6 +61,7 @@ pub mod alloc_accounting;
 pub mod cloud;
 pub mod comet_native_udf_bridge;
 pub mod execution;
+mod local;
 pub mod parquet;
 // this module is for non release only. Intended for debugging/profiling purposes
 #[cfg(debug_assertions)]
