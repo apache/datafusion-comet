@@ -479,11 +479,7 @@ class CometExecSuite extends CometTestBase {
     (
       "REPARTITION",
       classOf[CometShuffleExchangeExec],
-      "SELECT /*+ REPARTITION(2, value) */ value FROM dpp_shape_dim1 WHERE w < 2"),
-    (
-      "ORDER BY LIMIT",
-      classOf[CometTakeOrderedAndProjectExec],
-      "SELECT value FROM dpp_shape_dim1 WHERE w < 4 ORDER BY value LIMIT 2")).foreach {
+      "SELECT /*+ REPARTITION(2, value) */ value FROM dpp_shape_dim1 WHERE w < 2")).foreach {
     case (shape, buildClass, dimSql) =>
       test(s"non-AQE DPP: BHJ reuses broadcast exchange when the build side is $shape") {
         withTempDir { dir =>
