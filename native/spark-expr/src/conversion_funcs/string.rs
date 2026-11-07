@@ -1373,6 +1373,30 @@ pub(crate) fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
     Some(days_from_civil(year, month, day))
 }
 
+/// chrono 0.4.45 NaiveDate year bounds (`MIN_YEAR` / `MAX_YEAR`).
+const CHRONO_MIN_YEAR: i64 = -262143;
+const CHRONO_MAX_YEAR: i64 = 262142;
+
+/// Offset (local − UTC) in seconds at `naive` in `tz`.
+///
+/// Fall-back overlap picks the earlier (pre-transition) offset, matching Spark.
+/// Spring-forward gaps probe three hours earlier with a checked subtract so extreme
+/// NaiveDateTimes cannot panic; a second `None` yields `None` (caller may treat as UTC).
+fn offset_secs_at<T: TimeZone>(tz: &T, naive: chrono::NaiveDateTime) -> Option<i64> {
+    match tz.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => Some(dt.offset().fix().local_minus_utc() as i64),
+        LocalResult::Ambiguous(dt, _) => Some(dt.offset().fix().local_minus_utc() as i64),
+        LocalResult::None => {
+            let pre = naive.checked_sub_signed(chrono::Duration::hours(3))?;
+            match tz.from_local_datetime(&pre) {
+                LocalResult::Single(dt) => Some(dt.offset().fix().local_minus_utc() as i64),
+                LocalResult::Ambiguous(dt, _) => Some(dt.offset().fix().local_minus_utc() as i64),
+                LocalResult::None => None,
+            }
+        }
+    }
+}
+
 fn parse_timestamp_to_micros<T: TimeZone>(
     timestamp_info: &TimeStampInfo,
     tz: &T,
@@ -1411,14 +1435,15 @@ fn parse_timestamp_to_micros<T: TimeZone>(
             // Java's ZonedDateTime.of() advances by the gap length, which is equivalent to
             //   utc = local_naive − pre_gap_offset
             LocalResult::None => {
-                let probe = local_naive - chrono::Duration::hours(3);
-                let pre_offset = match tz.from_local_datetime(&probe) {
-                    LocalResult::Single(dt) => dt.offset().fix(),
-                    LocalResult::Ambiguous(dt, _) => dt.offset().fix(),
-                    LocalResult::None => return Ok(None),
+                let offset_secs = match offset_secs_at(tz, local_naive) {
+                    Some(s) => s,
+                    None => return Ok(None),
                 };
-                let offset_secs = pre_offset.local_minus_utc() as i64;
-                let utc_naive = local_naive - chrono::Duration::seconds(offset_secs);
+                let utc_naive =
+                    match local_naive.checked_sub_signed(chrono::Duration::seconds(offset_secs)) {
+                        Some(n) => n,
+                        None => return Ok(None),
+                    };
                 Some(utc_naive.and_utc().timestamp_micros())
             }
         };
@@ -1427,13 +1452,14 @@ fn parse_timestamp_to_micros<T: TimeZone>(
     } else {
         // NaiveDate::from_ymd_opt returned None. This means either:
         //   (a) invalid calendar date (Feb 29 on non-leap year, month 13, etc.)
-        //   (b) year outside chrono's representable range (> 262143 or < -262144)
+        //   (b) year outside chrono's representable range (chrono 0.4.45: outside
+        //       [-262143, 262142])
         //
         // For case (b) we fall back to Howard Hinnant's direct arithmetic, which works
         // for any year that fits in i64.  This covers the Long.MaxValue / Long.MinValue
         // boundary timestamps (year 294247 / -290308).
         let year = timestamp_info.year as i64;
-        if (-262144..=262143).contains(&year) {
+        if (CHRONO_MIN_YEAR..=CHRONO_MAX_YEAR).contains(&year) {
             // Year is in chrono's range but date was rejected -> truly invalid date.
             return Ok(None);
         }
@@ -1443,18 +1469,36 @@ fn parse_timestamp_to_micros<T: TimeZone>(
                 Some(days) => days,
                 None => return Ok(None),
             };
-        // Compute the timezone offset using epoch as a surrogate probe point.
-        // Extreme-year timestamps are only valid with a UTC-like fixed offset (any DST
-        // zone would overflow).  Using epoch gives us the standard offset.
-        let epoch_probe = NaiveDate::from_ymd_opt(1970, 1, 1)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap();
-        let tz_offset_secs: i64 = match tz.from_local_datetime(&epoch_probe) {
-            LocalResult::Single(dt) => dt.offset().fix().local_minus_utc() as i64,
-            LocalResult::Ambiguous(dt, _) => dt.offset().fix().local_minus_utc() as i64,
-            LocalResult::None => 0,
+        // Look up the zone offset at the same local civil time on a year inside chrono's
+        // range that is congruent modulo the 400-year Gregorian cycle (leap days match).
+        // Far-past and far-future need different eras: a single 1600..=1999 window can
+        // land after a zone's LMT→standard transition (e.g. LA 1883, Tokyo ~1888) for
+        // some far-past residues, and still in the LMT era for far-future residues
+        // (262543 → 1743), disagreeing with Spark/Java which use the first offset before
+        // any transition and the permanent/final standard offset for post-horizon dates.
+        //   far-past  → 400..=799   (before every IANA transition we care about → LMT)
+        //   far-future → 2400..=2799 (past temporary historical standard-offset regimes
+        //                such as Asia/Colombo +06:00 in 1996–2006; a 2000+rem probe for
+        //                year 262400 landed on 2000 and was 1800s early vs Spark/Java
+        //                +05:30. Summer DST after chrono-tz's last timespan remains #6816)
+        // Both bases are multiples of 400 so the probe year has the same leap-ness as the
+        // input year (e.g. 262400-02-29 → 2400-02-29; a 2200 base would give the invalid
+        // 2200-02-29).
+        // Fixed offsets and UTC are unchanged either way.
+        let rem = year.rem_euclid(400);
+        let probe_year = if year > CHRONO_MAX_YEAR {
+            (2400 + rem) as i32
+        } else {
+            (400 + rem) as i32
         };
+        let probe_date =
+            NaiveDate::from_ymd_opt(probe_year, timestamp_info.month, timestamp_info.day)
+                .expect("month/day valid across a 400-year shift");
+        let probe_naive = probe_date.and_time(naive_time);
+        // None/Ambiguous are rare for this probe (it lands before every transition or
+        // after chrono-tz's last timespan for most zones), but the helper covers DST gaps
+        // if the congruent civil time falls in one. A second None falls back to UTC (0).
+        let tz_offset_secs = offset_secs_at(tz, probe_naive).unwrap_or(0);
         // Compute seconds since epoch via direct calendar arithmetic.
         // Use i128 for the intermediate multiply-by-1_000_000 step: the seconds value can be
         // just outside the i64 range while the final microseconds result is still within range
@@ -3089,6 +3133,116 @@ mod tests {
             timestamp_parser("-290308-12-21T19:59:05.224191Z", EvalMode::Legacy, tz, true).unwrap(),
             None,
         );
+    }
+
+    #[test]
+    fn extreme_year_session_tz_uses_historic_offset() {
+        // Session-TZ (no zone suffix) extremes: far-past uses historic / LMT offset;
+        // far-future uses permanent/final standard offset (matching Spark/Java
+        // ZoneRules). Spark's America/Los_Angeles uses LMT -07:52:58 before 1883 and
+        // -08:00 in January after; Asia/Tokyo uses LMT +09:18:59 then +09:00. A
+        // single 1600+rem probe mixed those eras; a 2000+rem far-future probe still
+        // hit Asia/Colombo's temporary +06:00 (1996–2006) for year 262400
+        // (issue #7210 / review on #7255). Spark-backed coverage lives in
+        // CometDateTimeUtilsSuite.
+        let la = &Tz::from_str("America/Los_Angeles").unwrap();
+        let tokyo = &Tz::from_str("Asia/Tokyo").unwrap();
+        let colombo = &Tz::from_str("Asia/Colombo").unwrap();
+        // Far-past Long.MinValue civil: LMT -07:52:58 → +28378s vs UTC parse.
+        assert_eq!(
+            timestamp_parser("-290308-12-21 19:59:05.224192", EvalMode::Legacy, la, true).unwrap(),
+            Some(-9223372008476775808),
+        );
+        // Far-past residue that lands after 1883 under a 1600+rem probe (1900) must
+        // still get LMT, not PST/JST.
+        assert_eq!(
+            timestamp_parser("-262500-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(-8345867069222000000),
+        );
+        assert_eq!(
+            timestamp_parser("-262500-01-01", EvalMode::Legacy, tokyo, true).unwrap(),
+            Some(-8345867131139000000),
+        );
+        assert_eq!(
+            timestamp_parser("-262544-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(-8347255603622000000),
+        );
+        // Far-future January: permanent/final standard (-08:00 / +09:00), not LMT.
+        assert_eq!(
+            timestamp_parser("262543-01-01", EvalMode::Legacy, la, true).unwrap(),
+            Some(8222889686400000000),
+        );
+        assert_eq!(
+            timestamp_parser("262543-01-01", EvalMode::Legacy, tokyo, true).unwrap(),
+            Some(8222889625200000000),
+        );
+        // Asia/Colombo: year 262400 ≡ 2000 (mod 400). A 2000+rem probe used the
+        // temporary +06:00 standard (1996–2006); Spark/Java use permanent +05:30.
+        // 2400+rem lands on 2400 → +05:30 (19800s), 1800s later than the +06:00 probe.
+        assert_eq!(
+            timestamp_parser("262400-01-01", EvalMode::Legacy, colombo, true).unwrap(),
+            Some(8218376965800000000),
+        );
+        // Leap day in a far-future leap year: 262400 ≡ 0 (mod 400) is a leap year, so the
+        // probe must be too (2400-02-29). A 2200 base produced 2200-02-29, which is not a
+        // valid date, and panicked even in UTC. Spark 4.1.3 returns 8218382083200000000 in
+        // UTC.
+        let utc = &Tz::from_str("UTC").unwrap();
+        assert_eq!(
+            timestamp_parser("262400-02-29 00:00:00", EvalMode::Legacy, utc, true).unwrap(),
+            Some(8218382083200000000),
+        );
+        assert_eq!(
+            timestamp_parser("262400-02-29 00:00:00", EvalMode::Legacy, colombo, true).unwrap(),
+            Some(8218382083200000000 - 19800 * 1_000_000),
+        );
+        assert_eq!(
+            timestamp_parser("-262400-02-29 00:00:00", EvalMode::Legacy, utc, true).unwrap(),
+            Some(ymd_to_epoch_day(-262400, 2, 29).unwrap() * 86400 * 1_000_000),
+        );
+        let plus2 = &Tz::from_str("+02:00").unwrap();
+        // Local = UTC+2, so the UTC instant is 2h earlier than the UTC-session parse.
+        assert_eq!(
+            timestamp_parser(
+                "294247-01-10 04:00:54.775807",
+                EvalMode::Legacy,
+                plus2,
+                true
+            )
+            .unwrap(),
+            Some(i64::MAX - 2 * 3600 * 1_000_000),
+        );
+    }
+
+    #[test]
+
+    fn extreme_year_chrono_bound_neighbours_do_not_panic() {
+        // chrono 0.4.45 accepts [-262143, 262142]. Years just outside that used to
+        // land on 262143 / -262144 after the old while-loop shift and panic in
+        // from_ymd_opt.expect. rem_euclid keeps the probe inside the range.
+        let utc = &Tz::from_str("UTC").unwrap();
+        for (s, year) in [
+            ("262543-01-01", 262543i64),
+            ("262542-01-01", 262542),
+            ("262143-01-01", 262143),
+            ("262142-01-01", 262142),
+            ("-262544-01-01", -262544),
+            ("-262543-01-01", -262543),
+            ("-262144-01-01", -262144),
+            ("-262143-01-01", -262143),
+        ] {
+            let days = ymd_to_epoch_day(year, 1, 1).unwrap();
+            let expected = days
+                .checked_mul(86400)
+                .unwrap()
+                .checked_mul(1_000_000)
+                .unwrap();
+            assert_eq!(
+                timestamp_parser(s, EvalMode::Legacy, utc, true).unwrap(),
+                Some(expected),
+                "{s}"
+            );
+        }
     }
 
     #[test]
