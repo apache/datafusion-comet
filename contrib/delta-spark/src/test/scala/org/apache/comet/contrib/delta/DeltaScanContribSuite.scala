@@ -362,12 +362,22 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       DeltaScanSupport
         .objectStoreRejectedPathReason(Seq(new URI("hdfs://nn/dir%0A/data")), Set("hdfs"))
         .isEmpty)
-    // Userinfo is masked in the reason (redactedAuthority's invariant); the path is kept.
+    // Userinfo is masked in the reason (NativeConfig.displayPath); the path is kept.
     val withUserInfo = DeltaScanSupport.objectStoreRejectedPathReason(
       Seq(new URI("s3a://key:secret@bucket/dir%0A/data")),
       Set("hdfs"))
     assert(withUserInfo.exists(_.contains("'s3a://***@bucket/dir%0A/data'")), s"$withUserInfo")
     assert(!withUserInfo.exists(_.contains("secret")))
+  }
+
+  test("objectStoreRejectedPathReason drops the query and fragment of the named path") {
+    // The `%0A` is what makes object_store reject the path; the query is where a SAS token or a
+    // presigned signature would be.
+    val uri = new URI("file:///tmp/dir%0A/data?sig=SAS-MARKER#frag")
+    assert(!CometScanRule.objectStoreAcceptsPath(uri))
+    val reason = DeltaScanSupport.objectStoreRejectedPathReason(Seq(uri), Set("hdfs"))
+    assert(reason.exists(_.contains("cannot open path 'file:///tmp/dir%0A/data'")), s"$reason")
+    Seq("SAS-MARKER", "frag").foreach(marker => assert(!reason.exists(_.contains(marker))))
   }
 
   test(

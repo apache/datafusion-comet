@@ -25,6 +25,7 @@ import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
 import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
 
 import org.apache.comet.CometConf.{COMET_LIBHDFS_SCHEMES_KEY, COMET_S3_COMPLIANT_SCHEMES_KEY}
 import org.apache.comet.objectstore.AbfsAuthResolver.{Keys, Markers, Providers}
@@ -768,6 +769,44 @@ class NativeConfigSuite extends AnyFunSuite with Matchers {
       new URI("ABFSS://data:SECRET@acct.dfs.core.windows.net:8443/p?sig=SAS-MARKER")) shouldBe
       "abfss://data@acct.dfs.core.windows.net:8443"
     NativeConfig.displayAuthority(new URI("/tmp/t/k.parquet")) shouldBe "file://"
+  }
+
+  test("displayPath - no password, query or fragment, and user info masked outside ABFS") {
+    val cases = Seq(
+      "s3a://alice:SECRET@bucket:9000/dir%0A/data?sig=SAS-MARKER#f" ->
+        "s3a://***@bucket:9000/dir%0A/data",
+      "s3a://alice@bucket/k.parquet" -> "s3a://***@bucket/k.parquet",
+      // The ABFS user is the container, which names the store, so it stays.
+      "abfss://data:SECRET@acct.dfs.core.windows.net/p%0A?sig=SAS-MARKER#f" ->
+        "abfss://data@acct.dfs.core.windows.net/p%0A",
+      "file:///tmp/dir%0A/data?sig=SAS-MARKER#f" -> "file:///tmp/dir%0A/data",
+      "s3a://alice:SECRET@[::1]:9000/p?sig=SAS-MARKER" -> "s3a://***@[::1]:9000/p",
+      // Opaque: there is no authority or path to tell apart from a secret.
+      "s3a:alice:SECRET@bucket/p?sig=SAS-MARKER" -> "s3a:")
+    for ((raw, shown) <- cases) {
+      val display = NativeConfig.displayPath(new URI(raw))
+      Seq("alice", "SECRET", "SAS-MARKER").foreach(marker => display should not include marker)
+      display shouldBe shown
+    }
+
+    // An underscore makes the authority registry-based: no parsed user info, but the raw
+    // authority still holds it.
+    val registryBased = new URI("s3a://alice:SECRET@my_bucket/p?sig=SAS-MARKER")
+    registryBased.getRawUserInfo shouldBe null
+    NativeConfig.displayPath(registryBased) shouldBe "s3a://***@my_bucket/p"
+
+    // Nothing to hide: the URI reads as before, spelling included.
+    val plain = Seq(
+      new URI("file:///tmp/dir%0A/data"),
+      new URI("hdfs://nn:8020/t"),
+      new URI("abfss://data@acct.dfs.core.windows.net/p"),
+      new Path(new Path("file:/tmp/table"), "part-00000\n.snappy.parquet").toUri)
+    plain.foreach(uri => NativeConfig.displayPath(uri) shouldBe uri.toString)
+    NativeConfig.displayPath(plain.last) shouldBe "file:/tmp/table/part-00000%0A.snappy.parquet"
+
+    // Hadoop's Path has no query: it encodes `?` into the path, which is kept like any path.
+    NativeConfig.displayPath(new Path("s3a://bucket/dir\n/data?sig=X").toUri) shouldBe
+      "s3a://bucket/dir%0A/data%3Fsig=X"
   }
 
   test("extractScanObjectStoreOptions - files in one container keep the first file's options") {

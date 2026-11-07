@@ -555,8 +555,8 @@ object DeltaScanSupport {
    * is uncached but is a plain native URL parse with no I/O
    * ([[CometScanRule.objectStoreAcceptsPath]]), so callers pass every complete selected path
    * (root paths, data files and deletion vectors) once per distinct URI; a converted table can
-   * carry the rejected character in a file basename. The reason masks any userinfo in the named
-   * URI ([[redactedAuthority]]).
+   * carry the rejected character in a file basename. The reason names the URI without its
+   * password, query or fragment (`NativeConfig.displayPath`).
    */
   private[delta] def objectStoreRejectedPathReason(
       uris: Seq[URI],
@@ -568,11 +568,8 @@ object DeltaScanSupport {
         !CometScanRule.objectStoreAcceptsPath(uri)
       }
       .map { uri =>
-        // Mask userinfo (see redactedAuthority); the raw path keeps its percent encoding so the
-        // reason shows the rejected sequence as written.
-        val shown =
-          if (uriUserInfo(uri).isEmpty) uri.toString
-          else s"${redactedAuthority(uri)}${Option(uri.getRawPath).getOrElse("")}"
+        // The raw path keeps its percent encoding, so the reason shows the rejected sequence.
+        val shown = NativeConfig.displayPath(uri)
         s"Native Delta scan cannot open path '$shown': object_store rejects it " +
           "(e.g. an unsupported character in the path)"
       }
