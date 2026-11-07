@@ -589,6 +589,13 @@ the native columnar shuffle. See the
 compatibility guide for the user-visible behavior, including the cases where decoding diverges from
 Spark.
 
+#### Calendar dates past chrono's range
+
+`chrono` stops at year 262142, but Spark and Iceberg values reach further. For proleptic Gregorian
+conversions between a date and a day count, use `datafusion_comet_common::days_from_civil` and
+`civil_from_days` (defined in `native/common/src/calendar.rs`) rather than writing the arithmetic
+again.
+
 ### API Differences Between Spark Versions
 
 If the expression you're adding has different behavior across different Spark versions, you'll need to account for that in your implementation. There are two tools at your disposal to help with this:
