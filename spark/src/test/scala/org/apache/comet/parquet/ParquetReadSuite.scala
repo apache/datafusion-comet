@@ -392,7 +392,7 @@ abstract class ParquetReadSuite extends CometTestBase {
   }
 
   // With binaryAsString, the native scan compares `=`, `IN` and `IS [NOT] NULL` on the raw bytes
-  // and evaluates other string filters on decoded values. Spark compares raw bytes, so these queries
+  // and keeps other string filters above the scan. Spark compares raw bytes too, so these queries
   // match it. A query that tells a malformed value apart from U+FFFD doesn't, as the
   // compatibility guide describes.
   test("spark.sql.parquet.binaryAsString filters, joins and top-k") {
@@ -441,8 +441,6 @@ abstract class ParquetReadSuite extends CometTestBase {
             "SELECT * FROM t WHERE value > 'o'",
             "SELECT * FROM t WHERE value = 'one' OR id = 21",
             "SELECT * FROM annotated WHERE value = 'one'",
-            "SELECT * FROM annotated WHERE value < 'two'",
-            "SELECT * FROM annotated WHERE value LIKE 'on%'",
             "SELECT * FROM annotated WHERE value IS NULL").foreach { query =>
             val (_, plan) = checkSparkAnswerAndOperator(sql(query))
             assertNativeScan(plan)

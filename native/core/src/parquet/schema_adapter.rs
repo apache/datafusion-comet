@@ -63,7 +63,6 @@ pub struct SparkPhysicalExprAdapterFactory {
     /// Default values for columns that may be missing from the physical schema.
     /// The key is the Column (containing name and index).
     default_values: Option<HashMap<Column, ScalarValue>>,
-    binary_as_string: bool,
 }
 
 impl SparkPhysicalExprAdapterFactory {
@@ -75,14 +74,7 @@ impl SparkPhysicalExprAdapterFactory {
         Self {
             parquet_options,
             default_values,
-            binary_as_string: false,
         }
-    }
-
-    /// Elide the scan's synthetic decode only when the reader stamped the physical UTF8 field.
-    pub(crate) fn with_binary_as_string(mut self, enabled: bool) -> Self {
-        self.binary_as_string = enabled;
-        self
     }
 }
 
@@ -1137,7 +1129,6 @@ impl PhysicalExprAdapterFactory for SparkPhysicalExprAdapterFactory {
             physical_file_schema: adapted_physical_schema,
             parquet_options: self.parquet_options.clone(),
             default_values: self.default_values.clone(),
-            binary_as_string: self.binary_as_string,
             default_adapter,
             logical_to_physical_names,
             original_physical_dup_check,
@@ -1168,7 +1159,6 @@ struct SparkPhysicalExprAdapter {
     default_values: Option<HashMap<Column, ScalarValue>>,
     /// The default DataFusion adapter to delegate standard handling to
     default_adapter: Arc<dyn PhysicalExprAdapter>,
-    binary_as_string: bool,
     /// Mapping from logical column names to original physical column names,
     /// used for case-insensitive mode where names differ in casing.
     /// After the default adapter rewrites expressions using the remapped
@@ -1229,8 +1219,6 @@ impl PhysicalExprAdapter for SparkPhysicalExprAdapter {
                 // - CometCastColumnExpr (for Struct/List/Map, uses spark_parquet_convert)
                 // - Spark Cast (for simple scalar types)
                 rewritten
-                    .transform(|e| self.unwrap_binary_as_string_cast(e))
-                    .data()?
                     .transform(|e| self.unwrap_cast_to_binary_comparison(e))
                     .data()?
                     .transform(|e| self.replace_with_spark_cast(e))
@@ -1455,36 +1443,6 @@ impl SparkPhysicalExprAdapter {
             Ok(Transformed::no(e))
         })
         .data()
-    }
-
-    /// The reader identifies columns whose Parquet UTF8 annotation makes arrow-rs validate the
-    /// bytes. On those columns, decode(CAST(s AS Binary)) is identity. Run before replacing the
-    /// adapter's CastExpr so both projections and predicates can expose the original column.
-    fn unwrap_binary_as_string_cast(
-        &self,
-        expr: Arc<dyn PhysicalExpr>,
-    ) -> DataFusionResult<Transformed<Arc<dyn PhysicalExpr>>> {
-        if self.binary_as_string {
-            if let Some(decode) = expr.downcast_ref::<Cast>() {
-                if decode.data_type == DataType::Utf8 && decode.cast_options.is_adapting_schema {
-                    if let Some((column, DataType::Utf8)) =
-                        self.column_cast_to_binary(&decode.child)
-                    {
-                        let index = column.downcast_ref::<Column>().unwrap().index();
-                        if self
-                            .physical_file_schema
-                            .field(index)
-                            .metadata()
-                            .get(UTF8_VALIDATED_KEY)
-                            .is_some_and(|value| value == "true")
-                        {
-                            return Ok(Transformed::yes(column));
-                        }
-                    }
-                }
-            }
-        }
-        Ok(Transformed::no(expr))
     }
 
     /// A `binaryAsString` scan reads string columns as Binary, so for a file that annotates one
@@ -1812,9 +1770,6 @@ impl SparkPhysicalExprAdapter {
     }
 }
 
-/// Private field hint derived from the raw footer, never trusted from an input file's Arrow hint.
-pub(crate) const UTF8_VALIDATED_KEY: &str = "comet.parquet.utf8_validated";
-
 /// Private, in-memory hint used only while checking the raw footer's LIST encoding.
 pub(crate) const REPEATED_PRIMITIVE_KEY: &str = "comet.parquet.repeated_primitive";
 
@@ -1966,7 +1921,7 @@ pub(crate) mod test {
     use crate::parquet::parquet_support::SparkParquetOptions;
     use crate::parquet::schema_adapter::{
         check_conversion, check_field_conversion, is_pure_structural_narrowing, ConversionCheck,
-        SparkPhysicalExprAdapterFactory, NANOS_TIMESTAMP_KEY, UTF8_VALIDATED_KEY,
+        SparkPhysicalExprAdapterFactory, NANOS_TIMESTAMP_KEY,
     };
     use arrow::array::cast::AsArray;
     use arrow::array::UInt32Array;
@@ -1993,7 +1948,7 @@ pub(crate) mod test {
     use datafusion::physical_expr::PhysicalExpr;
     use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
     use datafusion_comet_spark_expr::test_common::file_util::get_temp_filename;
-    use datafusion_comet_spark_expr::{Cast, EvalMode, SparkCastOptions};
+    use datafusion_comet_spark_expr::EvalMode;
     use datafusion_physical_expr_adapter::PhysicalExprAdapterFactory;
     use futures::StreamExt;
     use parquet::arrow::ArrowWriter;
@@ -5744,57 +5699,6 @@ pub(crate) mod test {
         }
     }
 
-    #[test]
-    fn binary_as_string_decode_elision_requires_reader_validation() {
-        let logical = Arc::new(Schema::new(vec![Field::new("s", DataType::Binary, true)]));
-        for validated in [false, true] {
-            let metadata = if validated {
-                HashMap::from([(UTF8_VALIDATED_KEY.to_string(), "true".to_string())])
-            } else {
-                HashMap::new()
-            };
-            let physical = Arc::new(Schema::new(vec![
-                Field::new("s", DataType::Utf8, true).with_metadata(metadata)
-            ]));
-            let adapter = SparkPhysicalExprAdapterFactory::new(
-                SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
-                None,
-            )
-            .with_binary_as_string(true)
-            .create(logical.clone(), physical)
-            .unwrap();
-            let mut options = SparkCastOptions::new(EvalMode::Legacy, "UTC");
-            options.is_adapting_schema = true;
-            let decode: Arc<dyn PhysicalExpr> = Arc::new(Cast::new(
-                Arc::new(Column::new("s", 0)),
-                DataType::Utf8,
-                options,
-                None,
-                None,
-            ));
-            let rewritten = adapter.rewrite(decode).unwrap();
-            assert_eq!(rewritten.downcast_ref::<Column>().is_some(), validated);
-            let range = Arc::new(BinaryExpr::new(
-                rewritten,
-                Operator::Lt,
-                Arc::new(Literal::new(ScalarValue::Utf8(Some("two".to_string())))),
-            )) as Arc<dyn PhysicalExpr>;
-            let batch = RecordBatch::try_new(
-                Arc::new(Schema::new(vec![Field::new("s", DataType::Utf8, true)])),
-                vec![Arc::new(StringArray::from(vec![
-                    Some("one"),
-                    Some("two"),
-                    None,
-                ]))],
-            )
-            .unwrap();
-            let result = range.evaluate(&batch).unwrap().into_array(3).unwrap();
-            assert_eq!(
-                result.as_boolean().iter().collect::<Vec<_>>(),
-                vec![Some(true), Some(false), None]
-            );
-        }
-    }
     #[test]
     fn binary_as_string_conversion_check_keeps_iceberg_uuid_adaptation() {
         let physical = Arc::new(Schema::new(vec![Field::new(
