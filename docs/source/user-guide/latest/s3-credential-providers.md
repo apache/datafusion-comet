@@ -86,7 +86,7 @@ This provider resolves credentials the way `S3FileIO` does, through Iceberg's `A
 Comet selects this provider automatically for native Iceberg scans when all of these hold:
 
 - The FileIO properties carry `client.refresh-credentials-endpoint`, and `client.refresh-credentials-enabled` is not `false`.
-- The endpoint is absolute, or the properties carry the catalog `uri` it is relative to.
+- The properties carry the catalog `uri`, whether the endpoint is relative or absolute.
 - No provider is configured for the catalog.
 - On the driver, Comet's class loader and the thread context class loader see the same AWS SDK v2. Comet logs at `INFO` when they don't.
 

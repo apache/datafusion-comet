@@ -164,7 +164,7 @@ Comet ships three SPI implementations under `org.apache.comet.cloud.s3`, so stan
 - `AwsSdkCredentialProviderAdapter` wraps a raw AWS SDK provider named in `fs.s3a.comet.credential.adapter.class`.
 - `IcebergVendedS3CredentialProvider` resolves REST-vended Iceberg credentials through Iceberg's `AwsClientProperties`, as `S3FileIO` does, and refreshes them through `client.refresh-credentials-endpoint`. It exists only in the spark-4.x source set. `CometIcebergNativeScan.withVendedCredentialProvider` selects it for the native Iceberg scan, not the writer, when the catalog returns a refresh endpoint and a `uri` and no provider is configured.
 
-Each adapter has a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
+The two Hadoop and AWS SDK adapters each have a spark-3.x (SDK v1) and a spark-4.x (SDK v2) body under the same FQCN, selected by the `shims.majorVerSrc` source set, so each Comet build compiles against exactly the one AWS SDK its Hadoop line ships. `IcebergVendedS3CredentialProvider` has only the spark-4.x (SDK v2) body, so Spark 3.x builds don't ship it and never select it. The SDK and `hadoop-aws` are `provided` scope only (see the `hadoop-aws.version` property in the root `pom.xml`), so Comet does not bundle a second copy.
 
 ## Returns or throws, not a fall-through value
 
