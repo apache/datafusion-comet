@@ -16,7 +16,7 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::field_resolver::FieldResolver;
+use crate::parquet::field_resolver::{FieldMatches, FieldResolver};
 use crate::parquet::name_fold::fold_names;
 use arrow::array::{
     make_array, BooleanBufferBuilder, FixedSizeBinaryArray, GenericListViewArray, MapArray,
@@ -101,9 +101,9 @@ pub struct SparkParquetOptions {
     /// non-null parents keep their structure with all-null leaves. Comet sets it to true
     /// on Spark 3.4 through 4.0, which always use the legacy behavior.
     pub return_null_struct_if_all_fields_missing: bool,
-    /// When true, resolve fields by parquet.field.id metadata instead of name
-    /// (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`). Only takes effect
-    /// when both physical and logical fields actually carry IDs.
+    /// When true, requested fields carrying parquet.field.id metadata resolve only by id;
+    /// an absent file id never falls back to a name match. Requested fields without ids
+    /// still resolve by name (mirrors Spark's `spark.sql.parquet.fieldId.read.enabled`).
     pub use_field_id: bool,
     /// Whether type promotion (schema evolution) is allowed, e.g. INT32 -> INT64,
     /// FLOAT -> DOUBLE. Mirrors spark.comet.schemaEvolution.enabled.
@@ -503,12 +503,14 @@ pub(crate) fn field_id(field: &arrow::datatypes::Field) -> Option<i32> {
         .and_then(|v| v.parse::<i32>().ok())
 }
 
-/// Resolve each requested (`to`) struct field to the index of the file (`from`) field it reads
-/// from, or `None` when the file holds no such field, with Spark's `clipParquetGroupFields` rules
-/// as [`FieldResolver::resolve`] applies them: an id-bearing requested field matches only by id
+/// Resolve each requested (`to`) struct field independently and record value ownership,
+/// with Spark's `clipParquetGroupFields` rules
+/// as [`FieldResolver::resolve_all`] applies them: an id-bearing requested field matches only by id
 /// when `use_field_id` is set, and every other field matches by name, folded with the same
 /// `toLowerCase(Locale.ROOT)` fold the top-level schema adapter uses when `case_sensitive` is
-/// false. A requested field that selects more than one file field is rejected.
+/// false. A requested field that selects more than one file field is rejected. Each file field
+/// belongs to its strongest claimant only. Keep losing selections for schema validation;
+/// runtime conversion masks them with [`FieldMatches::into_owned`] so they read NULL.
 ///
 /// Shared by the runtime convert (`parquet_convert_struct_to_struct`) and the plan-time
 /// conversion check in `schema_adapter`, so both resolve nested fields identically.
@@ -516,7 +518,7 @@ pub(crate) fn match_struct_fields(
     from_fields: &[FieldRef],
     to_fields: &[FieldRef],
     parquet_options: &SparkParquetOptions,
-) -> DataFusionResult<Vec<Option<usize>>> {
+) -> DataFusionResult<FieldMatches> {
     // Fold the file (`from`) and requested (`to`) field names once via the JVM's
     // `toLowerCase(Locale.ROOT)` (the same fold the top-level schema adapter uses), so
     // nested case-insensitive matching is byte-for-byte consistent with the top level.
@@ -534,9 +536,7 @@ pub(crate) fn match_struct_fields(
         parquet_options.case_sensitive,
         parquet_options.use_field_id,
     );
-    (0..to_fields.len())
-        .map(|to_pos| resolver.resolve(to_pos))
-        .collect()
+    resolver.resolve_all()
 }
 
 /// Cast between struct types based on logic in
@@ -551,7 +551,8 @@ fn parquet_convert_struct_to_struct(
 ) -> DataFusionResult<(ArrayRef, bool)> {
     match (from_type, to_type) {
         (DataType::Struct(from_fields), DataType::Struct(to_fields)) => {
-            let from_indices = match_struct_fields(from_fields, to_fields, parquet_options)?;
+            let from_indices =
+                match_struct_fields(from_fields, to_fields, parquet_options)?.into_owned();
 
             let mut field_overlap = false;
             let mut cast_fields: Vec<ArrayRef> = Vec::with_capacity(to_fields.len());

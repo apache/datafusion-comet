@@ -20,7 +20,7 @@ use crate::parquet::datetime_rebase::{
     resolve_file_rebase_policies, wrap_datetime_rebase, FileRebasePolicies, RebaseReadMode,
     SessionRebaseModes,
 };
-use crate::parquet::field_resolver::{duplicate_name_error, FieldResolver, Selection};
+use crate::parquet::field_resolver::{duplicate_name_error, FieldClaim, FieldResolver};
 use crate::parquet::name_fold::{fold_name, fold_names, fold_schema_names};
 use crate::parquet::parquet_support::{
     duplicate_parquet_field_error, field_id, match_struct_fields, spark_parquet_convert,
@@ -123,6 +123,7 @@ fn is_pure_structural_narrowing(
                 .iter()
                 .map(|f| fold_name(f.name(), parquet_options.case_sensitive))
                 .collect::<DataFusionResult<_>>()?;
+            // Read schemas with duplicate sibling names are declined by the JVM scan checks.
             for target_field in target_fields {
                 // DataFusion's retained `CastExpr` resolves struct fields by *exact* name, so
                 // keeping it is only sound when Spark's configured resolver would pick the same
@@ -183,77 +184,6 @@ fn is_pure_structural_narrowing(
     })
 }
 
-/// What the root remap does with one file column, strongest claim first. Spark's
-/// `clipParquetGroupFields` resolves every requested field on its own, but a rename gives a file
-/// column one name. A column that more than one requested field claims therefore takes the
-/// strongest claim, and between equal claims the earliest requested field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RootResolution {
-    /// Requested field `.0` selects the column by Parquet field id (Spark's `matchIdField`).
-    /// The column takes that field's name.
-    IdMatch(usize),
-    /// The column has the folded name of an id-bearing requested field that did not select it.
-    /// `matchIdField` never compares names, so the column takes a placeholder name (Spark's
-    /// `generateFakeColumnName`), which keeps DataFusion's name lookup from reaching it.
-    Shadowed,
-    /// Requested field `.0`, which carries no id or reads with id matching off, selects the
-    /// column by folded name. The column takes that field's name, which differs from the file
-    /// name at most in case.
-    NameMatch(usize),
-    /// No requested field claims the column. It keeps its file name.
-    Unchanged,
-}
-
-impl RootResolution {
-    fn strength(self) -> u8 {
-        match self {
-            RootResolution::IdMatch(_) => 3,
-            RootResolution::Shadowed => 2,
-            RootResolution::NameMatch(_) => 1,
-            RootResolution::Unchanged => 0,
-        }
-    }
-
-    /// Keep `claim` if it is stronger than the current resolution. Requested fields claim in
-    /// order, so the earliest one wins a tie.
-    fn claim(&mut self, claim: RootResolution) {
-        if claim.strength() > self.strength() {
-            *self = claim;
-        }
-    }
-}
-
-/// Resolve every root file column against the requested root fields. Raises Spark's
-/// `_LEGACY_ERROR_TEMP_2094` "Found duplicate field(s)" when an id-bearing logical field would
-/// resolve to more than one physical field. That check covers every logical field, which is the
-/// whole data schema rather than the projection, so it also fails a read that never references
-/// the field, where Spark reads the file (#7006). An ambiguous name fails only for a referenced
-/// column (see `check_duplicate_columns`).
-fn resolve_root_fields(resolver: &FieldResolver) -> DataFusionResult<Vec<RootResolution>> {
-    let mut resolutions = vec![RootResolution::Unchanged; resolver.file_fields().len()];
-    for requested in 0..resolver.requested_fields().len() {
-        match resolver.select(requested)? {
-            Selection::ById(matched) => {
-                if let Some(file) = matched {
-                    resolutions[file].claim(RootResolution::IdMatch(requested));
-                }
-                // All ID-bearing targets resolve by ID, even when a different file column has
-                // the requested name. Hide that shadowing column after giving its own ID match
-                // precedence, whether the target's ID was missing or resolved elsewhere.
-                for &file in resolver.name_matches(requested) {
-                    resolutions[file].claim(RootResolution::Shadowed);
-                }
-            }
-            Selection::ByName(matches) => {
-                for &file in matches {
-                    resolutions[file].claim(RootResolution::NameMatch(requested));
-                }
-            }
-        }
-    }
-    Ok(resolutions)
-}
-
 /// `field` under `name`, keeping everything else the file says about it.
 fn renamed_field(field: &FieldRef, name: impl Into<String>) -> FieldRef {
     Arc::new(field.as_ref().clone().with_name(name))
@@ -274,8 +204,9 @@ fn rename_to_logical(
 }
 
 /// Remap physical schema field names to match logical schema field names. Mirrors Spark's
-/// `clipParquetGroupFields`: prefer ID match for any logical field that carries a
-/// `PARQUET:field_id`, fall back to case-insensitive name match otherwise. `resolver` resolves
+/// `clipParquetGroupFields`: when id matching is enabled, a logical field carrying
+/// `PARQUET:field_id` resolves only by id, never falling back to name if the id is missing.
+/// Other fields resolve by name using the configured case sensitivity. `resolver` resolves
 /// the logical root fields against the physical ones.
 ///
 /// The remap only changes top-level field NAMES so that `DefaultPhysicalExprAdapter`'s
@@ -285,14 +216,14 @@ fn rename_to_logical(
 fn remap_physical_schema(
     resolver: &FieldResolver,
 ) -> DataFusionResult<(SchemaRef, HashMap<String, String>)> {
-    let resolutions = resolve_root_fields(resolver)?;
+    let resolutions = resolver.file_claims()?;
 
     // Placeholder names for shadowed file columns, Spark's `generateFakeColumnName`. A
     // placeholder skips every folded logical and physical name, the names downstream lookups
     // compare, so no requested column can reach a shadowed column through its placeholder, even
     // one whose name differs from the placeholder only in case. Most reads shadow nothing, so
     // the reserved names are gathered only when one does.
-    let reserved: HashSet<&str> = if resolutions.contains(&RootResolution::Shadowed) {
+    let reserved: HashSet<&str> = if resolutions.contains(&FieldClaim::Shadowed) {
         resolver
             .requested_folded()
             .iter()
@@ -317,12 +248,12 @@ fn remap_physical_schema(
         .iter()
         .zip(resolutions)
         .map(|(field, resolution)| match resolution {
-            RootResolution::IdMatch(logical) | RootResolution::NameMatch(logical) => {
+            FieldClaim::IdMatch(logical) | FieldClaim::NameMatch(logical) => {
                 let logical_name = resolver.requested_fields()[logical].name();
                 rename_to_logical(field, logical_name, &mut name_map)
             }
-            RootResolution::Shadowed => renamed_field(field, placeholder()),
-            RootResolution::Unchanged => Arc::clone(field),
+            FieldClaim::Shadowed => renamed_field(field, placeholder()),
+            FieldClaim::Unchanged => Arc::clone(field),
         })
         .collect();
 
@@ -757,8 +688,9 @@ fn check_conversion(
 /// encoding used by Spark. Legacy or custom group names cannot be recovered from this schema.
 /// Requested struct fields resolve to file fields with the same field-id / case-fold rules the runtime
 /// convert uses ([`match_struct_fields`]); requested fields missing from the file are skipped
-/// (they read as null / default, as before). A pair Spark rejects when it opens the file is an
-/// error, and sibling verdicts combine as in [`combine_checks`].
+/// (they read as null / default, as before). Independently selected losing fields still undergo
+/// open-time shape validation and deferred leaf checks, like Spark's `getUpdater`. Only runtime
+/// conversion masks their values with NULL. Sibling verdicts combine as in [`combine_checks`].
 ///
 /// `physical_field` may carry [`NANOS_TIMESTAMP_KEY`].
 fn check_field_conversion(
@@ -797,18 +729,21 @@ fn check_nested_conversion(
     match (physical_type, target_type) {
         (DataType::Struct(physical_fields), DataType::Struct(target_fields)) => {
             let physical_indices = match_struct_fields(physical_fields, target_fields, options)?;
-            combine_checks(target_fields.iter().zip(physical_indices).filter_map(
-                |(target_field, physical_index)| {
-                    let physical_field = &physical_fields[physical_index?];
-                    Some(check_nested_conversion(
-                        physical_field.data_type(),
-                        target_field.data_type(),
-                        &format!("{column}, {}", physical_field.name()),
-                        options,
-                        is_nanos_timestamp(physical_field),
-                    ))
-                },
-            ))
+            combine_checks(
+                target_fields
+                    .iter()
+                    .zip(physical_indices.iter())
+                    .filter_map(|(target_field, (physical_index, _))| {
+                        let physical_field = &physical_fields[physical_index?];
+                        Some(check_nested_conversion(
+                            physical_field.data_type(),
+                            target_field.data_type(),
+                            &format!("{column}, {}", physical_field.name()),
+                            options,
+                            is_nanos_timestamp(physical_field),
+                        ))
+                    }),
+            )
         }
         (
             DataType::List(physical_item)
@@ -3796,6 +3731,87 @@ pub(crate) mod test {
         Ok(())
     }
 
+    /// Losing name claims read NULL, but a nested leaf must still pass Spark's conversion
+    /// check. Root losing-field validation is tracked separately in #7207.
+    #[tokio::test]
+    async fn conflicting_field_claims_validate_losing_fields_at_every_depth(
+    ) -> Result<(), DataFusionError> {
+        use arrow::buffer::NullBuffer;
+
+        for depth in 0..=2 {
+            for reverse in [false, true] {
+                for losing_type in [DataType::Int64, DataType::Int32] {
+                    let values: ArrayRef =
+                        Arc::new(Int64Array::from(vec![Some(11), Some(22), None, Some(44)]));
+                    let mut batch = RecordBatch::try_new(
+                        Arc::new(Schema::new(vec![
+                            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1"))
+                        ])),
+                        vec![Arc::clone(&values)],
+                    )?;
+                    let mut fields = vec![
+                        Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                        Field::new("a", losing_type.clone(), true),
+                    ];
+                    let mut columns = vec![values, new_null_array(&losing_type, 4)];
+                    if reverse {
+                        fields.reverse();
+                        columns.reverse();
+                    }
+                    let mut expected =
+                        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns)?;
+                    for level in 0..depth {
+                        let wrap = |batch: RecordBatch| -> Result<RecordBatch, DataFusionError> {
+                            let array = StructArray::try_new(
+                                batch.schema().fields().clone(),
+                                batch.columns().to_vec(),
+                                Some(NullBuffer::from(vec![true, false, true, true])),
+                            )?;
+                            Ok(RecordBatch::try_new(
+                                Arc::new(Schema::new(vec![Field::new(
+                                    format!("s{level}"),
+                                    array.data_type().clone(),
+                                    true,
+                                )])),
+                                vec![Arc::new(array)],
+                            )?)
+                        };
+                        batch = wrap(batch)?;
+                        expected = wrap(expected)?;
+                    }
+                    let mut options = SparkParquetOptions::new(EvalMode::Legacy, "UTC");
+                    options.use_field_id = true;
+                    let mut stream = scan_parquet(&batch, expected.schema(), options)?;
+                    let read = stream.next().await.unwrap();
+                    if depth > 0 && losing_type == DataType::Int32 {
+                        let error = read.expect_err("losing nested leaf must still be validated");
+                        let message = error.to_string();
+                        let column = (0..depth)
+                            .rev()
+                            .map(|level| format!("s{level}"))
+                            .chain(std::iter::once("A".to_string()))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        assert!(
+                            message.contains(&format!("Column: [[{column}]]")),
+                            "{message}"
+                        );
+                        assert!(message.contains("Expected: int"), "{message}");
+                        assert!(message.contains("Found: INT64"), "{message}");
+                        continue;
+                    }
+                    let read = read?;
+                    assert_eq!(
+                        read, expected,
+                        "depth={depth}, reverse={reverse}, losing_type={losing_type}"
+                    );
+                    assert!(stream.next().await.is_none());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Disallowed widening (`INT32 -> bigint` with `allow_type_promotion` off) inside a
     /// struct defers to `RejectOnNonEmpty`, like the top level: a non-empty file fails ...
     #[tokio::test]
@@ -3883,6 +3899,62 @@ pub(crate) mod test {
                 let err = stream.next().await.unwrap().expect_err(&label);
                 let column = if nested { "[[s, x]]" } else { "[[s]]" };
                 assert!(err.to_string().contains(column), "{label}: {err}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A losing leaf's rejection is deferred too: neither an empty file nor a pruned row
+    /// group may raise it before any rows are decoded.
+    #[tokio::test]
+    async fn losing_field_claim_rejection_passes_for_empty_and_pruned_reads(
+    ) -> Result<(), DataFusionError> {
+        let nested = struct_batch(
+            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+            Arc::new(Int64Array::from(vec![7])),
+        )?;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                nested.schema().field(0).clone(),
+                Field::new("id", DataType::Int32, false),
+            ])),
+            vec![
+                Arc::clone(nested.column(0)),
+                Arc::new(Int32Array::from(vec![1])),
+            ],
+        )?;
+        for reverse in [false, true] {
+            let mut fields = vec![
+                Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                Field::new("a", DataType::Int32, true),
+            ];
+            if reverse {
+                fields.reverse();
+            }
+            let required = Arc::new(Schema::new(vec![
+                struct_schema(fields).field(0).clone(),
+                Field::new("id", DataType::Int32, false),
+            ]));
+            let mut options = default_options();
+            options.use_field_id = true;
+            let id_is_100: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+                Arc::new(Column::new("id", 1)),
+                Operator::Eq,
+                Arc::new(Literal::new(ScalarValue::Int32(Some(100)))),
+            ));
+            for (input, predicate) in [
+                (RecordBatch::new_empty(batch.schema()), None),
+                (batch.clone(), Some(id_is_100)),
+            ] {
+                let mut stream = scan_parquet_with_predicate(
+                    &input,
+                    Arc::clone(&required),
+                    options.clone(),
+                    predicate,
+                )?;
+                while let Some(read) = stream.next().await {
+                    assert_eq!(read?.num_rows(), 0, "reverse={reverse}");
+                }
             }
         }
         Ok(())
@@ -4207,6 +4279,171 @@ pub(crate) mod test {
         }
     }
 
+    #[test]
+    fn absent_container_selections_do_not_add_conversion_errors() -> Result<(), DataFusionError> {
+        let physical = DataType::Struct(
+            vec![Arc::new(
+                Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+            )]
+            .into(),
+        );
+        for (case_sensitive, missing_id) in [(true, false), (false, true)] {
+            let mut options = default_options();
+            options.use_field_id = true;
+            options.case_sensitive = case_sensitive;
+            let mut absent = Field::new("a", struct_type(vec![("v", DataType::Int64)]), true);
+            if missing_id {
+                absent = absent.with_metadata(id_meta("2"));
+            }
+            let target = DataType::Struct(
+                vec![
+                    Arc::new(Field::new("x", DataType::Int64, true).with_metadata(id_meta("1"))),
+                    Arc::new(absent),
+                ]
+                .into(),
+            );
+            assert!(matches!(
+                check_conversion(&physical, &target, "s", &options)?,
+                ConversionCheck::Accept
+            ));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wide_field_id_struct_preserves_values_and_parent_nulls_across_batches(
+    ) -> Result<(), DataFusionError> {
+        use arrow::buffer::NullBuffer;
+
+        let rows = 16_401;
+        let fields = (1..=64)
+            .map(|id| {
+                Arc::new(
+                    Field::new(format!("file_{id}"), DataType::Int32, true)
+                        .with_metadata(id_meta(&id.to_string())),
+                )
+            })
+            .collect::<Vec<_>>();
+        let columns = (1..=64)
+            .map(|id| {
+                Arc::new(Int32Array::from(
+                    (0..rows)
+                        .map(|row| (row % 11 != 0).then_some(id * 100_000 + row as i32))
+                        .collect::<Vec<_>>(),
+                )) as ArrayRef
+            })
+            .collect::<Vec<_>>();
+        let nulls = Some(NullBuffer::from(
+            (0..rows).map(|row| row % 7 != 0).collect::<Vec<_>>(),
+        ));
+        let input = StructArray::new(fields.into(), columns.clone(), nulls.clone());
+        let requested = (1..=64)
+            .rev()
+            .map(|id| {
+                Arc::new(
+                    Field::new(format!("requested_{id}"), DataType::Int32, true)
+                        .with_metadata(id_meta(&id.to_string())),
+                )
+            })
+            .collect::<Vec<_>>();
+        let expected =
+            StructArray::new(requested.into(), columns.into_iter().rev().collect(), nulls);
+        let wrap = |array: StructArray| {
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new(
+                    "s",
+                    array.data_type().clone(),
+                    true,
+                )])),
+                vec![Arc::new(array)],
+            )
+        };
+        let input = wrap(input)?;
+        let expected = wrap(expected)?;
+        let mut options = default_options();
+        options.use_field_id = true;
+        let mut stream = scan_parquet(&input, expected.schema(), options)?;
+        let mut offset = 0;
+        let mut batches = 0;
+        while let Some(batch) = stream.next().await {
+            let batch = batch?;
+            assert_eq!(batch, expected.slice(offset, batch.num_rows()));
+            offset += batch.num_rows();
+            batches += 1;
+        }
+        assert_eq!(offset, rows);
+        assert!(batches > 1);
+        Ok(())
+    }
+
+    /// Losing selections preserve both open-time shape errors and deferred leaf rejections.
+    #[test]
+    fn losing_field_claims_preserve_open_and_deferred_errors() -> Result<(), DataFusionError> {
+        let mut options = default_options();
+        options.use_field_id = true;
+        for reverse in [false, true] {
+            for wrap in 0..4 {
+                for losing_type in [
+                    DataType::Int32,
+                    struct_type(vec![("v", DataType::Int64)]),
+                    list_type(struct_type(vec![("v", DataType::Int64)])),
+                    map_type(struct_type(vec![("v", DataType::Int64)])),
+                ] {
+                    let physical = DataType::Struct(
+                        vec![Arc::new(
+                            Field::new("A", DataType::Int64, true).with_metadata(id_meta("1")),
+                        )]
+                        .into(),
+                    );
+                    let mut requested = vec![
+                        Arc::new(
+                            Field::new("x", DataType::Int64, true).with_metadata(id_meta("1")),
+                        ),
+                        Arc::new(Field::new("a", losing_type.clone(), true)),
+                    ];
+                    if reverse {
+                        requested.reverse();
+                    }
+                    let target = DataType::Struct(requested.into());
+                    let (physical, target) = match wrap {
+                        0 => (physical, target),
+                        1 => (list_type(physical), list_type(target)),
+                        2 => (map_type(physical), map_type(target)),
+                        _ => (
+                            DataType::Dictionary(Box::new(DataType::Int32), Box::new(physical)),
+                            target,
+                        ),
+                    };
+                    let result = check_conversion(&physical, &target, "s", &options);
+                    if matches!(losing_type, DataType::Int32) {
+                        assert!(matches!(
+                            result?,
+                            ConversionCheck::RejectOnNonEmpty {
+                                column,
+                                physical_type: DataType::Int64,
+                                target_type: DataType::Int32,
+                            } if column.ends_with(", A")
+                        ));
+                    } else {
+                        let error = result
+                            .err()
+                            .expect("losing container must still be clipped");
+                        let message = error.to_string();
+                        assert!(message.contains("INT64"), "{message}");
+                        assert!(message.contains("A"), "{message}");
+                        let required = Arc::new(Schema::new(vec![Field::new("s", target, true)]));
+                        let physical = Arc::new(Schema::new(vec![Field::new("s", physical, true)]));
+                        assert!(
+                            super::check_file_conversions(required, physical, options.clone())
+                                .is_err()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Positive: `INT32 -> bigint` inside a struct still converts when type promotion is
     /// allowed (Spark 4.x behaviour).
     #[tokio::test]
@@ -4353,7 +4590,9 @@ pub(crate) mod test {
         assert!(!error.contains("case-insensitive"), "{error}");
         // A case-sensitive read compares exact names, so `Dup` resolves to itself alone.
         assert_eq!(
-            super::match_struct_fields(&fields, &fields[2..], &options).unwrap(),
+            super::match_struct_fields(&fields, &fields[2..], &options)
+                .unwrap()
+                .into_owned(),
             vec![Some(2)]
         );
     }
@@ -4778,24 +5017,6 @@ pub(crate) mod test {
             field_names(&remapped),
             ["x", "__comet_unmatched_field_id_1", "C", "d"]
         );
-    }
-
-    /// Between equal claims the earliest requested field wins, for an id match and for a name
-    /// match alike.
-    #[test]
-    fn root_resolution_earliest_requested_field_wins_a_tie() {
-        let logical = Arc::new(Schema::new(vec![
-            Field::new("x", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("y", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("Ab", DataType::Int32, true),
-            Field::new("aB", DataType::Int32, true),
-        ]));
-        let physical = Arc::new(Schema::new(vec![
-            Field::new("p", DataType::Int32, true).with_metadata(id_meta("1")),
-            Field::new("AB", DataType::Int32, true),
-        ]));
-        let (remapped, _name_map) = remap(&logical, &physical, false, true);
-        assert_eq!(field_names(&remapped), ["x", "Ab"]);
     }
 
     /// Field-id precedence in the case-insensitive duplicate check: an explicit `ω` (id 2)
