@@ -16,14 +16,16 @@ ruleset in `.asf.yaml`. That splits CI into three tiers:
 
 - **PR tier** (`pr`): fast feedback while a change is being iterated on.
   The Linux build, with the Comet test suites run against the default Spark
-  profile (4.1) only, and nothing else. For a pull request from a fork this
+  profile (4.1) only, plus one Spark version and one Iceberg version: Spark
+  SQL on Spark 4.1 (catalyst and sql_core) and Iceberg 1.11, the default
+  profile's. For a pull request from a fork this
   tier runs on the contributor's fork instead of here; see
   [Fork runs](#fork-runs).
 - **Queue tier** (`queue`): the authoritative gate. The PR tier plus the
   macOS build, the benchmark compile check, the Delta contrib build gate, the
-  PyArrow UDF suite, Spark SQL on Spark 4.1 and Iceberg 1.11, evaluated
-  against the merge result rather than against the PR head. One Spark version
-  and one Iceberg version, both the default profile's.
+  PyArrow UDF suite and the Spark 4.1 `sql_hive` shards, evaluated against
+  the merge result rather than against the PR head. It runs the same Spark and
+  Iceberg versions as the PR tier and no others.
 - **Nightly tier** (`nightly`): the regression sweep of everything else, once
   a day against `main` as it stands. The Comet test suites against the other
   three Spark profiles, Spark SQL on Spark 3.5, 4.0 and 4.2, Iceberg
@@ -104,12 +106,10 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
   ---------------                     -----------------         ---------------------------
   pr_build_linux (+ push, cache only) docs                      pr_build_macos      run-macos-tests
     (Spark 4.1 profile only)                                      (+ push, cache only)
-                                                                pr_benchmark_check  run-benchmark-check
-                                                                delta_build_gate    run-delta-build-gate
+  spark_4_1 (catalyst, sql_core)                                pr_benchmark_check  run-benchmark-check
+  iceberg_1_11                                                  delta_build_gate    run-delta-build-gate
                                                                 pyarrow_udf_test    run-pyarrow-udf-tests
-                                                                spark_4_1           run-spark-4.1-tests
                                                                 spark_4_1 sql_hive  run-spark-4.1-hive-tests
-                                                                iceberg_1_11        run-iceberg-tests
                                       nightly tier, or PR with label
                                       ------------------------------
                                       pr_build_linux      run-all-spark-profiles
@@ -163,10 +163,10 @@ tiers partition the list and that the `pr` tier is exactly the default profile.
 | `delta_4_1`          | nightly, **or** PR with `run-delta-tests`                                                                                                                                                                                                              | Delta contrib and native sources    |
 | `docs`               | push to main, paths matched, **or** dispatch on `main`                                                                                                                                                                                                 | `.asf.yaml`, `docs/**`, `docs.yaml` |
 | `spark_3_5`          | nightly, **or** PR with `run-spark-3.5-tests`                                                                                                                                                                                                          | Spark 3.5 sources                   |
-| `spark_4_1`          | merge group, **or** PR with `run-spark-4.1-tests`; the `sql_hive` shards alone with `run-spark-4.1-hive-tests`                                                                                                                                         | Spark 4.1 sources                   |
+| `spark_4_1`          | PR or merge group for catalyst and `sql_core`; the `sql_hive` shards in the merge group, **or** PR with `run-spark-4.1-hive-tests`                                                                                                                     | Spark 4.1 sources                   |
 | `spark_4_0`          | nightly, **or** PR with `run-spark-4.0-tests`                                                                                                                                                                                                          | Spark 4.0 sources                   |
 | `spark_4_2`          | nightly, **or** PR with `run-spark-4.2-tests`                                                                                                                                                                                                          | Spark 4.2 sources                   |
-| `iceberg_1_11`       | merge group, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                        | Iceberg sources                     |
+| `iceberg_1_11`       | PR or merge group, paths matched                                                                                                                                                                                                                       | Iceberg sources                     |
 | `iceberg_1_9`        | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `iceberg_1_10`       | nightly, **or** PR with `run-iceberg-tests`                                                                                                                                                                                                            | Iceberg sources                     |
 | `required_checks`    | always, after every job above except `docs`                                                                                                                                                                                                            | none (always runs)                  |
@@ -193,7 +193,7 @@ largest share of the runner-hours CI spends (about 60% in the week to
 2026-10-28, label runs included). A fork pull request therefore does not run
 the PR tier on ASF's runners. The contributor's fork runs it, and the merge
 queue, which stays on ASF, runs the queue tier on the merge result before
-anything lands. That is the PR tier plus Spark SQL on 4.1, Iceberg 1.11, macOS and
+anything lands. That is the PR tier plus the Spark 4.1 `sql_hive` shards, macOS and
 the other queue-tier jobs, with path filters still applied; the nightly-only and
 label-only suites are not part of it. The design follows `apache/datafusion` (#25591) and `apache/arrow-rs`
 (#11788). Three files carry it:
@@ -314,12 +314,11 @@ These rules keep those runs from corrupting the PR's status:
   still going. Skipping the job would not help either, since a skipped check
   run still carries the name and still counts as passing.
 
-`run-spark-4.1-tests` and `run-spark-4.1-hive-tests` both feed the single
-`spark_4_1` call. The first sets both of its POLICY outputs and runs every
-module; the second sets only `spark_4_1_hive` and runs only the `sql_hive`
-shards. Adding the hive label to a pull request that already carries the suite
-label re-runs just the hive rows, since a `labeled` run selects what the new
-label gates.
+Two POLICY outputs feed the single `spark_4_1` call. `spark_4_1` is in the PR
+tier and covers catalyst and the `sql_core` shards; `spark_4_1_hive` is in the
+queue tier and covers the `sql_hive` shards. `run-spark-4.1-hive-tests` sets
+the second on a pull request; on a `labeled` run that is the only output set,
+so the call runs only the hive rows.
 
 The opt-in labels have to exist in repository settings before they can be
 applied; `contains()` on a label nobody can add is simply always false, which

@@ -525,21 +525,23 @@ POLICY = {
     # their label.
     "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
     "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
-    # No Spark SQL suite runs on a plain pull request. Spark 4.1 was the last
-    # one in the PR tier, first whole (issue #5870 pulled the sql_hive shards
-    # out) and then catalyst and sql_core alone. What changed is how often a
-    # pull request is pushed: with agent-driven review and agent-driven
-    # replies to review, a PR now goes through several more rounds before it
-    # is queued, and each round paid for the whole 4.1 build. The queue still
-    # runs every shard before anything lands; the two labels bring the run
-    # forward. `run-spark-4.1-tests` selects the whole suite, so it appears on
-    # both outputs; `run-spark-4.1-hive-tests` selects only the hive shards.
-    "spark_4_1": ["queue", "label:run-spark-4.1-tests"],
-    "spark_4_1_hive": [
-        "queue",
-        "label:run-spark-4.1-tests",
-        "label:run-spark-4.1-hive-tests",
-    ],
+    # Spark 4.1 is the default build profile, and its catalyst and sql_core
+    # shards are the one Spark SQL suite every pull request runs. For a pull
+    # request from a fork that is the fork's runners, not ASF's: the PR tier
+    # runs there (see UPSTREAM below). The suite was out of the PR tier while
+    # the PR tier ran upstream, because agent-driven review rounds meant each
+    # pull request paid for the whole 4.1 build several times over. On a fork
+    # that repetition costs ASF nothing, and running the suite there means a
+    # contributor sees a 4.1 failure before the queue does, rather than having
+    # to ask for a label. The queue runs the same shards again on the merge
+    # result, and it stays the gate.
+    #
+    # The sql_hive shards stay in the queue alone. They are four more shards
+    # on every push for a surface few changes touch, and the queue still runs
+    # them before anything lands; `run-spark-4.1-hive-tests` brings them
+    # forward onto a pull request.
+    "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
     # Spark 4.2 support is experimental, but the suite passes, so it sits in
     # the nightly tier with the other non-default versions rather than being
     # reachable only on demand. Nightly is the right tier for it twice over:
@@ -549,11 +551,12 @@ POLICY = {
     # until someone thinks to ask for it.
     "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
     # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
-    # the one Iceberg version the queue runs; the older versions run
-    # nightly. One label opts a pull request into all three.
+    # the one Iceberg version every pull request and the queue run, for the
+    # same reason as Spark 4.1 above. The two older versions run nightly,
+    # and one label brings both forward onto a pull request.
     "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
     "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
-    "iceberg_1_11": ["queue", "label:run-iceberg-tests"],
+    "iceberg_1_11": ["pr", "queue"],
     # The Delta contrib suites all run nightly. The PR tier's strict warnings
     # job compiles the contrib against Spark 3.5, so a change that breaks its
     # build on Spark 3.5 fails on its own pull request. One label opts a pull

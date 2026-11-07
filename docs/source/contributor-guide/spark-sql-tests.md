@@ -188,10 +188,11 @@ git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 ## Running Tests in CI
 
 The easiest way to run the tests is to open a pull request against Comet and let CI run them. Spark
-4.1 runs in the merge queue; Spark 3.5, 4.0 and 4.2 run once a night against `main`. Each also runs
-earlier on a pull request carrying the `run-spark-3.5-tests` / `run-spark-4.0-tests` /
-`run-spark-4.1-tests` / `run-spark-4.2-tests` label. No Spark SQL suite runs on an unlabeled pull
-request. Apply the 3.5, 4.0 or 4.2 label when a change could behave differently on those versions,
+4.1 (catalyst and sql_core) runs on every pull request and again in the merge queue, which also runs
+the sql_hive shards; `run-spark-4.1-hive-tests` brings those forward onto a pull request. Spark 3.5,
+4.0 and 4.2 run once a night against `main`, and each also runs earlier on a pull request carrying
+the `run-spark-3.5-tests` / `run-spark-4.0-tests` / `run-spark-4.2-tests` label. Apply the 3.5, 4.0
+or 4.2 label when a change could behave differently on those versions,
 since without it the first verdict is the nightly run's, after the change has landed.
 
 See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
