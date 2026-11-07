@@ -30,6 +30,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -268,6 +269,14 @@ public final class CometS3CredentialDispatcher {
    */
   static void setCloserForTesting(Executor executor) {
     closer = executor == null ? DEFAULT_CLOSER : executor;
+  }
+
+  /**
+   * Visible for tests: waits until the dispatcher's own thread has run every close queued before
+   * this call. Its executor runs one task at a time, in order, so a no-op queued now runs last.
+   */
+  static void awaitQueuedClosesForTesting() throws Exception {
+    DEFAULT_CLOSER.submit(() -> {}).get(10, TimeUnit.SECONDS);
   }
 
   /** Visible for tests: the number of providers the dispatcher holds. */

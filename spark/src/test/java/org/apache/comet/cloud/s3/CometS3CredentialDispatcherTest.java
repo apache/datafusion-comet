@@ -50,9 +50,11 @@ public class CometS3CredentialDispatcherTest {
   private static final int WRITE = CometS3AccessMode.WRITE.ordinal();
 
   @Before
-  public void resetTestProvider() {
+  public void resetTestProvider() throws Exception {
     // Each test starts with an empty dispatcher cache so providers and counters from prior tests
-    // do not leak through closeAll() / initCount / closeCount assertions.
+    // do not leak through closeAll() / initCount / closeCount assertions. A close still queued on
+    // the dispatcher's thread would count against this test, so those finish first.
+    CometS3CredentialDispatcher.awaitQueuedClosesForTesting();
     CometS3CredentialDispatcher.closeAll();
     TestCometS3CredentialProvider.reset();
     // Close released providers on the releasing thread, so counts are checked right after release.
@@ -60,8 +62,9 @@ public class CometS3CredentialDispatcherTest {
   }
 
   @After
-  public void restoreCloser() {
+  public void restoreCloser() throws Exception {
     CometS3CredentialDispatcher.setCloserForTesting(null);
+    CometS3CredentialDispatcher.awaitQueuedClosesForTesting();
   }
 
   private long init() {
