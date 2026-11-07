@@ -78,8 +78,11 @@ use iceberg::ErrorKind;
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 use parquet::basic::{BrotliLevel, Compression, GzipLevel, ZstdLevel};
 use parquet::file::properties::{EnabledStatistics, WriterProperties};
+use parquet::schema::types::ColumnPath;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use datafusion_comet_proto::spark_operator::IcebergColumnBloomFilterProps;
 use datafusion_comet_proto::spark_operator::{
     CompressionCodec as ProtoCompressionCodec, IcebergParquetWriteSettings, IcebergWrite,
     IcebergWriteCommon, IcebergWriterMode as ProtoIcebergWriterMode,
@@ -2299,7 +2302,7 @@ fn build_output_batch(
 /// the JVM re-derives from the footer with Iceberg's own `MetricsConfig` logic before commit.
 fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<WriterProperties> {
     let compression = compression_from_proto(settings.compression, settings.compression_level)?;
-    Ok(WriterProperties::builder()
+    let mut builder = WriterProperties::builder()
         .set_compression(compression)
         .set_created_by(settings.created_by.clone())
         .set_max_row_group_bytes(Some(settings.row_group_size_bytes as usize))
@@ -2310,8 +2313,147 @@ fn build_writer_properties(settings: &IcebergParquetWriteSettings) -> DFResult<W
         .set_dictionary_page_size_limit(settings.dict_size_bytes as usize)
         .set_data_page_row_count_limit(settings.page_row_limit as usize)
         .set_statistics_enabled(EnabledStatistics::Page)
-        .set_statistics_truncate_length(None)
-        .build())
+        .set_statistics_truncate_length(None);
+    for bloom_filter in &settings.bloom_filters {
+        let path = parquet_column_path(&bloom_filter.parquet_path);
+        let fpp = bloom_filter.fpp;
+        let ndv = bloom_filter.ndv;
+        let max_bytes = settings.bloom_filter_max_bytes as usize;
+        validate_bloom_filter_inputs(fpp, max_bytes)?;
+        let target_bytes = parquet_mr_bloom_filter_bytes(ndv, fpp, max_bytes);
+        let synthetic_ndv = synthetic_ndv_for_bloom_filter_bytes(target_bytes, fpp)?;
+        builder = builder
+            .set_column_bloom_filter_enabled(path.clone(), true)
+            .set_column_bloom_filter_fpp(path.clone(), fpp)
+            .set_column_bloom_filter_max_ndv(path, synthetic_ndv);
+    }
+    Ok(builder.build())
+}
+
+/// Convert the dot-separated physical path supplied by Iceberg Java into parquet-rs path parts.
+/// `ColumnPath::from(&str)` creates one literal part and therefore cannot represent nested leaves.
+fn parquet_column_path(path: &str) -> ColumnPath {
+    ColumnPath::from(path.split('.').map(str::to_owned).collect::<Vec<_>>())
+}
+
+// Match Apache Parquet Java's BlockSplitBloomFilter implementation bounds:
+// https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L40-L50
+const BLOOM_FILTER_MIN_BYTES: usize = 32;
+const BLOOM_FILTER_MAX_BYTES: usize = 128 * 1024 * 1024;
+const BLOOM_FILTER_HASH_PROBES: f64 = 8.0;
+#[cfg(test)]
+const ICEBERG_DEFAULT_BLOOM_FILTER_FPP: f64 = 0.01;
+#[cfg(test)]
+const ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES: usize = 1024 * 1024;
+
+/// The positive denominator obtained by solving the Bloom-filter false-positive equation
+/// `fpp = (1 - exp(-k * ndv / bits))^k` for `bits`, with the Parquet SBBF's `k = 8` probes.
+///
+/// See the Apache Arrow Rust `parquet` implementation and its cited paper:
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L363-L376
+/// http://algo2.iti.kit.edu/documents/cacheefficientbloomfilters-jea.pdf
+fn bloom_filter_fpp_denominator(fpp: f64) -> f64 {
+    -(1.0 - fpp.powf(1.0 / BLOOM_FILTER_HASH_PROBES)).ln()
+}
+
+/// Reproduce parquet-mr's non-adaptive allocation decision before translating the resulting
+/// power-of-two byte size into parquet-rs's NDV-shaped API. An absent NDV requests the full cap;
+/// an explicit NDV sizes from NDV/FPP and then applies the cap. The native eligibility gate only
+/// admits representable power-of-two caps.
+///
+/// Apache Parquet Java implementation:
+/// https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L277-L301
+/// https://github.com/apache/parquet-java/blob/78a8d3230eb4769db93de5f2f2e18363c04cae81/parquet-column/src/main/java/org/apache/parquet/column/values/bloomfilter/BlockSplitBloomFilter.java#L195-L218
+fn parquet_mr_bloom_filter_bytes(ndv: Option<u64>, fpp: f64, max_bytes: usize) -> usize {
+    let Some(ndv) = ndv else {
+        return max_bytes;
+    };
+
+    let calculated = BLOOM_FILTER_HASH_PROBES * ndv as f64 / bloom_filter_fpp_denominator(fpp);
+    let mut num_bits = calculated as i32;
+    let upper_bits = (BLOOM_FILTER_MAX_BYTES * 8) as i32;
+    if num_bits > upper_bits || calculated < 0.0 {
+        num_bits = upper_bits;
+    }
+    // This deliberately mirrors parquet-mr 1.17's integer expression, including its unusual
+    // mask, so allocation thresholds remain compatible rather than merely mathematically close.
+    num_bits = (num_bits + 255) & !256;
+    num_bits = num_bits.max((BLOOM_FILTER_MIN_BYTES * 8) as i32);
+    let requested = (num_bits as usize) / 8;
+    let allocated = requested
+        .clamp(BLOOM_FILTER_MIN_BYTES, BLOOM_FILTER_MAX_BYTES)
+        .next_power_of_two();
+    // The eligibility gate excludes max=32 when this cap would change parquet-mr's allocation.
+    allocated.min(max_bytes)
+}
+
+/// Mirror the initial NDV/FPP sizing and power-of-two allocation used by version 59.3.0 of the
+/// Apache Arrow Rust `parquet` crate. Its source derives the formula from the standard
+/// Bloom-filter false-positive equation with eight hash probes and links the underlying
+/// cache-efficient Bloom-filter paper. After values are inserted, the 59.3.0 writer folds a
+/// sparse allocation to the smallest power-of-two size that maintains the target FPP:
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L363-L395
+/// https://github.com/apache/arrow-rs/blob/59.3.0/parquet/src/bloom_filter/mod.rs#L618-L623
+fn parquet_rs_bloom_filter_bytes(ndv: u64, fpp: f64) -> usize {
+    let num_bits =
+        (BLOOM_FILTER_HASH_PROBES * ndv as f64 / bloom_filter_fpp_denominator(fpp)) as usize;
+    (num_bits / 8)
+        .clamp(BLOOM_FILTER_MIN_BYTES, BLOOM_FILTER_MAX_BYTES)
+        .next_power_of_two()
+}
+
+/// Encode an exact initial power-of-two allocation using parquet-rs 59.3.0's public max-NDV/FPP
+/// setters. The writer may subsequently fold that allocation based on the values inserted.
+///
+/// A target `B > 32` is selected by every raw byte count in `(B/2, B]`. Aim at `3B/4`, far from
+/// either floating-point boundary, and verify using the exact parquet-rs sizing expression. The
+/// binary-search fallback covers unusual but still representable FPP values without relying on
+/// the inverse formula landing on a particular floating-point integer.
+fn synthetic_ndv_for_bloom_filter_bytes(target_bytes: usize, fpp: f64) -> DFResult<u64> {
+    let fpp_denominator = bloom_filter_fpp_denominator(fpp);
+    // Any raw size in (B / 2, B] rounds up to the target power-of-two allocation B. Choose the
+    // midpoint of that interval to stay away from floating-point boundaries at either end.
+    let raw_target_bytes = target_bytes as f64 * 3.0 / 4.0;
+    let candidate = ((raw_target_bytes * fpp_denominator).round() as u64).max(1);
+    if parquet_rs_bloom_filter_bytes(candidate, fpp) == target_bytes {
+        return Ok(candidate);
+    }
+
+    // Rust's standard binary-search helpers operate on materialized slices; this is a lower-bound
+    // search over the implicit NDV domain `1..=u64::MAX / 8`, so keep the numeric search explicit.
+    let mut low = 1_u64;
+    let mut high = u64::MAX >> 3;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        if parquet_rs_bloom_filter_bytes(mid, fpp) < target_bytes {
+            low = mid.saturating_add(1);
+        } else {
+            high = mid;
+        }
+    }
+    if parquet_rs_bloom_filter_bytes(low, fpp) == target_bytes {
+        Ok(low)
+    } else {
+        Err(DataFusionError::Internal(format!(
+            "FPP {fpp} cannot represent a {target_bytes}-byte parquet-rs Bloom filter"
+        )))
+    }
+}
+
+fn validate_bloom_filter_inputs(fpp: f64, bytes: usize) -> DFResult<()> {
+    if !fpp.is_finite() || !(fpp > 0.0 && fpp < 1.0) {
+        return Err(DataFusionError::Internal(format!(
+            "Bloom filter FPP must be finite and strictly between 0 and 1, got {fpp}"
+        )));
+    }
+    if !(BLOOM_FILTER_MIN_BYTES..=BLOOM_FILTER_MAX_BYTES).contains(&bytes)
+        || !bytes.is_power_of_two()
+    {
+        return Err(DataFusionError::Internal(format!(
+            "Bloom filter byte size must be a power of two in [{BLOOM_FILTER_MIN_BYTES}, {BLOOM_FILTER_MAX_BYTES}], got {bytes}"
+        )));
+    }
+    Ok(())
 }
 
 fn compression_from_proto(codec: i32, level: Option<i32>) -> DFResult<Compression> {
@@ -2472,6 +2614,17 @@ mod tests {
     }
     use datafusion_comet_proto::spark_operator::CompressionCodec as ProtoCodec;
 
+    // Keep this table in sync with the cases in IcebergWriteProtoTranslationSuite. These fixed
+    // expectations make JVM planning and native task sizing fail independently if either drifts.
+    const BLOOM_FILTER_SIZING_CASES: &[(Option<u64>, f64, usize, usize)] = &[
+        (None, 0.01, 1024 * 1024, 1024 * 1024),
+        (Some(1), 0.01, 1024 * 1024, 32),
+        (Some(1_000), 0.01, 1024 * 1024, 2 * 1024),
+        (Some(1_000), 0.005, 1024 * 1024, 2 * 1024),
+        (Some(1_000_000), 0.0001, 64, 64),
+        (Some(100_000_000), 0.01, 4 * 1024, 4 * 1024),
+    ];
+
     fn base_settings() -> IcebergParquetWriteSettings {
         IcebergParquetWriteSettings {
             compression: ProtoCodec::Zstd as i32,
@@ -2481,6 +2634,8 @@ mod tests {
             dict_size_bytes: 2 * 1024 * 1024,
             page_row_limit: 20_000,
             created_by: "Apache Iceberg (Comet test)".to_string(),
+            bloom_filters: Vec::new(),
+            bloom_filter_max_bytes: ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES as u64,
         }
     }
 
@@ -2558,6 +2713,169 @@ mod tests {
         settings.created_by = "Apache Iceberg 1.7.1 (Comet 0.16.0)".to_string();
         let props = build_writer_properties(&settings).unwrap();
         assert_eq!(props.created_by(), "Apache Iceberg 1.7.1 (Comet 0.16.0)");
+    }
+
+    #[test]
+    fn enables_bloom_filters_only_for_configured_columns() {
+        let mut settings = base_settings();
+        settings.bloom_filters = vec![
+            IcebergColumnBloomFilterProps {
+                parquet_path: "id".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
+            IcebergColumnBloomFilterProps {
+                parquet_path: "tags.list.element".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
+            IcebergColumnBloomFilterProps {
+                parquet_path: "attrs.key_value.value".to_string(),
+                fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                ndv: None,
+            },
+        ];
+        let props = build_writer_properties(&settings).unwrap();
+        assert!(props
+            .bloom_filter_properties(&parquet_column_path("id"))
+            .is_some());
+        assert!(props
+            .bloom_filter_properties(&parquet_column_path("tags.list.element"))
+            .is_some());
+        assert!(props
+            .bloom_filter_properties(&parquet_column_path("attrs.key_value.value"))
+            .is_some());
+        assert!(props
+            .bloom_filter_properties(&parquet_column_path("other"))
+            .is_none());
+    }
+
+    #[test]
+    fn bloom_filter_defaults_match_iceberg() {
+        // Iceberg's documented write-property defaults:
+        // https://iceberg.apache.org/docs/latest/configuration/#write-properties
+        let mut settings = base_settings();
+        settings.bloom_filters = vec![IcebergColumnBloomFilterProps {
+            parquet_path: "id".to_string(),
+            fpp: ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+            ndv: None,
+        }];
+        let props = build_writer_properties(&settings).unwrap();
+        let bloom = props.bloom_filter_properties(&"id".into()).unwrap();
+        assert_eq!(bloom.fpp(), ICEBERG_DEFAULT_BLOOM_FILTER_FPP);
+        assert_eq!(
+            parquet_rs_bloom_filter_bytes(bloom.ndv(), bloom.fpp()),
+            ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn bloom_sizing_arithmetic_stays_aligned_with_jvm_planning() {
+        for &(ndv, fpp, max_bytes, expected_bytes) in BLOOM_FILTER_SIZING_CASES {
+            assert_eq!(
+                parquet_mr_bloom_filter_bytes(ndv, fpp, max_bytes),
+                expected_bytes,
+                "ndv={ndv:?} fpp={fpp} max_bytes={max_bytes}"
+            );
+            let synthetic_ndv = synthetic_ndv_for_bloom_filter_bytes(expected_bytes, fpp).unwrap();
+            assert_eq!(
+                parquet_rs_bloom_filter_bytes(synthetic_ndv, fpp),
+                expected_bytes,
+                "ndv={ndv:?} fpp={fpp} max_bytes={max_bytes}"
+            );
+        }
+    }
+
+    #[test]
+    fn synthetic_ndv_hits_every_supported_size_away_from_float_boundaries() {
+        for fpp in [0.0001, ICEBERG_DEFAULT_BLOOM_FILTER_FPP, 0.05, 0.5, 0.99] {
+            let mut bytes = BLOOM_FILTER_MIN_BYTES;
+            while bytes <= BLOOM_FILTER_MAX_BYTES {
+                let ndv = synthetic_ndv_for_bloom_filter_bytes(bytes, fpp).unwrap();
+                assert_eq!(parquet_rs_bloom_filter_bytes(ndv, fpp), bytes);
+                bytes *= 2;
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_ndv_controls_requested_size_and_max_only_caps_it() {
+        let small = parquet_mr_bloom_filter_bytes(
+            Some(10),
+            ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+            64 * 1024 * 1024,
+        );
+        assert!(small < 64 * 1024 * 1024);
+
+        let capped = parquet_mr_bloom_filter_bytes(
+            Some(100_000_000),
+            ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+            ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES,
+        );
+        assert_eq!(capped, ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES);
+        let uncapped =
+            parquet_mr_bloom_filter_bytes(None, ICEBERG_DEFAULT_BLOOM_FILTER_FPP, 64 * 1024 * 1024);
+        assert_eq!(uncapped, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn minimum_bloom_filter_size_is_representable() {
+        assert_eq!(
+            parquet_mr_bloom_filter_bytes(
+                Some(1),
+                ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+                BLOOM_FILTER_MIN_BYTES,
+            ),
+            BLOOM_FILTER_MIN_BYTES
+        );
+        let ndv = synthetic_ndv_for_bloom_filter_bytes(
+            BLOOM_FILTER_MIN_BYTES,
+            ICEBERG_DEFAULT_BLOOM_FILTER_FPP,
+        )
+        .unwrap();
+        assert_eq!(
+            parquet_rs_bloom_filter_bytes(ndv, ICEBERG_DEFAULT_BLOOM_FILTER_FPP),
+            BLOOM_FILTER_MIN_BYTES
+        );
+    }
+
+    #[test]
+    fn impossible_synthetic_ndv_is_rejected() {
+        let err = synthetic_ndv_for_bloom_filter_bytes(
+            ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES,
+            f64::MIN_POSITIVE,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("cannot represent"));
+    }
+
+    #[test]
+    fn binary_search_finds_representable_ndv_when_inverse_candidate_misses() {
+        const FPP_WITH_ROUNDING_SENSITIVE_INVERSE: f64 = f64::from_bits(0x3c6e_f871_5805_0dee);
+        const TARGET_BYTES: usize = 256;
+
+        let denominator = bloom_filter_fpp_denominator(FPP_WITH_ROUNDING_SENSITIVE_INVERSE);
+        let inverse_candidate =
+            ((TARGET_BYTES as f64 * 3.0 / 4.0 * denominator).round() as u64).max(1);
+        assert_ne!(
+            parquet_rs_bloom_filter_bytes(inverse_candidate, FPP_WITH_ROUNDING_SENSITIVE_INVERSE),
+            TARGET_BYTES
+        );
+
+        let searched =
+            synthetic_ndv_for_bloom_filter_bytes(TARGET_BYTES, FPP_WITH_ROUNDING_SENSITIVE_INVERSE)
+                .unwrap();
+        assert_eq!(
+            parquet_rs_bloom_filter_bytes(searched, FPP_WITH_ROUNDING_SENSITIVE_INVERSE),
+            TARGET_BYTES
+        );
+    }
+
+    #[test]
+    fn rejects_zero_bloom_filter_fpp() {
+        let err =
+            validate_bloom_filter_inputs(0.0, ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES).unwrap_err();
+        assert!(format!("{err}").contains("strictly between 0 and 1"));
     }
 
     #[test]
@@ -3035,6 +3353,8 @@ mod tests {
                 dict_size_bytes: 2 * 1024 * 1024,
                 page_row_limit: 20_000,
                 created_by: "Apache Iceberg (Comet integration test)".to_string(),
+                bloom_filters: Vec::new(),
+                bloom_filter_max_bytes: ICEBERG_DEFAULT_BLOOM_FILTER_MAX_BYTES as u64,
             };
             Arc::new(IcebergWriteCommon {
                 catalog_properties: HashMap::new(),
