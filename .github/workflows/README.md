@@ -378,18 +378,19 @@ exist in repository settings, like the `run-*` labels above.
 These workflows have their own triggers because they fire on events the
 umbrella doesn't watch, or operate independently of the rest of CI:
 
-| File                   | Why standalone                                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| `pr_title_check.yml`   | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push. |
-| `codeql.yml`           | Security scanner; weekly schedule + on every push/PR.                                                |
-| `miri.yml`             | Nightly Miri safety checks.                                                                          |
-| `publish_snapshot.yml` | Nightly SNAPSHOT jars to repository.apache.org; skips when main has not changed. `dry_run` dispatch. |
-| `stale.yml`            | Daily stale-PR closer.                                                                               |
-| `take.yml`             | Issue-comment trigger for `take` / `untake`.                                                         |
-| `label_new_issues.yml` | Issue trigger to apply `requires-triage`.                                                            |
-| `label_prs.yml`        | Runs on `pull_request_target` so it can label pull requests opened from forks.                       |
-| `ci_fork.yml`          | Runs `ci.yml` on a push to a fork's branch; skipped upstream. See [Fork runs](#fork-runs).           |
-| `fork_ci_status.yml`   | Mirrors a fork's run onto its pull request as `CI (fork)`. See [Fork runs](#fork-runs).              |
+| File                    | Why standalone                                                                                          |
+| ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `pr_title_check.yml`    | Fires on `pull_request.types: [edited]` so it re-runs when a PR title is edited without a code push.    |
+| `codeql.yml`            | Security scanner; weekly schedule + on every push/PR.                                                   |
+| `miri.yml`              | Nightly Miri safety checks.                                                                             |
+| `publish_snapshot.yml`  | Nightly SNAPSHOT jars to repository.apache.org; skips when main has not changed. `dry_run` dispatch.    |
+| `stale.yml`             | Daily stale-PR closer.                                                                                  |
+| `take.yml`              | Issue-comment trigger for `take` / `untake`.                                                            |
+| `label_new_issues.yml`  | Issue trigger to apply `requires-triage`.                                                               |
+| `label_prs_trigger.yml` | Fires on `pull_request` with a read-only token and does nothing; its completion starts `label_prs.yml`. |
+| `label_prs.yml`         | Runs on `workflow_run` from the default branch so it can label pull requests opened from forks.         |
+| `ci_fork.yml`           | Runs `ci.yml` on a push to a fork's branch; skipped upstream. See [Fork runs](#fork-runs).              |
+| `fork_ci_status.yml`    | Mirrors a fork's run onto its pull request as `CI (fork)`. See [Fork runs](#fork-runs).                 |
 
 ## Reusable workflows (called by `ci.yml`)
 
