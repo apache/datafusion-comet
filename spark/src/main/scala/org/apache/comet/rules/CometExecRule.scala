@@ -967,7 +967,14 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
                 }
               case other => other
             }
-            if (cometChild.isInstanceOf[CometNativeExec]) {
+            // Accept any Comet plan with columnar output, not only CometNativeExec. The join's
+            // own broadcast converts to CometBroadcastExchangeExec over CometUnionExec,
+            // CometCoalesceExec, CometTakeOrderedAndProjectExec or CometShuffleExchangeExec
+            // (each is wrapped in a native placeholder while the join is converted), so
+            // requiring CometNativeExec here would leave the DPP subquery on a Spark broadcast
+            // that ReuseExchangeAndSubquery can't match. Same check as the AQE path in
+            // CometPlanAdaptiveDynamicPruningFilters.isNativeBuildSide.
+            if (cometChild.isInstanceOf[CometPlan] && cometChild.supportsColumnar) {
               logInfo(
                 "Converting SubqueryBroadcastExec to " +
                   "CometSubqueryBroadcastExec for DPP exchange reuse")
