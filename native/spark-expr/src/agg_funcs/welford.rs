@@ -15,13 +15,13 @@
 // specific language governing permissions and limitations
 // under the License.
 
-//! Welford-style online update/merge math shared by the per-row
+//! Statistical update, merge and finalization shared by the per-row
 //! `Accumulator` and the vectorized `GroupsAccumulator` implementations of
-//! variance/stddev/covariance/correlation. Counts are `f64` to match
+//! variance/stddev/covariance/correlation/regression. Counts are `f64` to match
 //! Spark's wire-format state.
 
 use arrow::buffer::NullBuffer;
-use datafusion::common::DataFusionError;
+use datafusion::common::{DataFusionError, Result};
 use datafusion::physical_expr::expressions::StatsType;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -250,4 +250,39 @@ pub(crate) fn covariance_merge(
     let new_mean2 = mean2_a + delta2_n * count_b;
     let new_c = c_a + c_b + delta1 * delta2_n * count_a * count_b;
     (new_count, new_mean1, new_mean2, new_c)
+}
+
+/// Spark RegrR2's result rule, shared by scalar and grouped accumulation.
+/// SPARK-55969 swapped the constant-x/constant-y cases. Their guards precede
+/// division, including in ANSI mode; Corr's count guards do not apply here.
+pub(super) fn r2_value(
+    ck: f64,
+    m2_y: f64,
+    m2_x: f64,
+    constant_dependent_is_perfect_fit: bool,
+    zero_divisor: &ZeroDivisor,
+) -> Result<Option<f64>> {
+    let (null_case, perfect_fit_case) = if constant_dependent_is_perfect_fit {
+        (m2_x == 0.0, m2_y == 0.0)
+    } else {
+        (m2_y == 0.0, m2_x == 0.0)
+    };
+    if null_case {
+        Ok(None)
+    } else if perfect_fit_case {
+        Ok(Some(1.0))
+    } else {
+        // Nonzero moments can still have a product that underflows to zero.
+        let product = m2_y * m2_x;
+        if product == 0.0 {
+            return match zero_divisor.error() {
+                Some(error) => Err(error),
+                None => Ok(None),
+            };
+        }
+        // Preserve Spark's rounding and overflow behavior: dividing first and
+        // then squaring differs from (ck * ck) / (m2_y * m2_x).
+        let corr = ck / product.sqrt();
+        Ok(Some(corr * corr))
+    }
 }
