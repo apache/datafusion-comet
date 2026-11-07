@@ -22,6 +22,7 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.spark.SparkThrowable
+import org.apache.spark.api.java.JavaRDD
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row, SaveMode}
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.catalyst.expressions.{Days, Hours, Literal}
@@ -59,7 +60,52 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       .getOrElse(
         fail(s"No SparkThrowable in cause chain: ${causeChain(error).map(_.getClass.getName)}"))
 
-  test("make_date does not evaluate an invalid row beyond a partial consumer") {
+  test("make_date preserves partial consumption through the PySpark RDD bridge") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+      CometConf.COMET_BATCH_SIZE.key -> "8192") {
+      withTempPath { path =>
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark
+            .range(0L, 4096L, 1L, 1)
+            .selectExpr("CAST(IF(id = 4095, 6000000, 2024) AS INT) AS y", "id")
+            .write
+            .parquet(path.getCanonicalPath)
+        }
+        def frame: DataFrame = spark.read
+          .parquet(path.getCanonicalPath)
+          .selectExpr(
+            "unix_date(make_date(y, 1, 1)) AS d",
+            "repeat(sha2(CAST(id AS STRING), 512), 512) AS padding")
+
+        def firstPythonBatch(df: DataFrame): Seq[Byte] = {
+          // PySpark calls this JVM method, which uses QueryExecution.toRdd rather than
+          // Dataset.rdd's object-producing plan. Its Scala visibility is private[sql].
+          df.getClass
+            .getMethod("javaToPython")
+            .invoke(df)
+            .asInstanceOf[JavaRDD[Array[Byte]]]
+            .take(1)
+            .get(0)
+            .toSeq
+        }
+
+        var expected = Seq.empty[Byte]
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          expected = firstPythonBatch(frame)
+        }
+        assert(expected.nonEmpty)
+        for (df <- Seq(frame, frame.limit(4096))) {
+          // Preparing a plan (for example with explain()) must not change a later RDD action.
+          val _ = df.queryExecution.executedPlan
+          assert(firstPythonBatch(df) == expected)
+        }
+      }
+    }
+  }
+
+  test("make_date does not evaluate errors beyond a partial consumer") {
     import testImplicits._
 
     withSQLConf(
@@ -75,7 +121,8 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
             .coalesce(1)
             .selectExpr(
               "CAST(CASE WHEN id = 0 THEN 1 ELSE 13 END AS INT) AS m",
-              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text")
+              "CASE WHEN id = 0 THEN '2024' ELSE 'bad' END AS year_text",
+              "CAST(CASE WHEN id = 0 THEN 2024 ELSE 6000000 END AS INT) AS y")
             .write
             .parquet(path.getCanonicalPath)
         }
@@ -114,6 +161,25 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                   }
                   assert(expected == Seq(Row(19723)))
                   assert(consume(sql(unlimited)) == expected)
+                }
+              }
+
+              // Date32 overflow throws even with ANSI off, but only on rows Spark consumes.
+              for (ansi <- Seq(false, true)) {
+                withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi.toString) {
+                  val overflow = "SELECT unix_date(make_date(y, 1, 1)) FROM make_date_limit"
+                  checkSparkAnswerAndOperator(
+                    sql(overflow + " LIMIT 1"),
+                    includeClasses = Seq(classOf[CometProjectExec], classOf[CometLocalLimitExec]))
+                  partialConsumers.foreach { case (name, consume) =>
+                    withClue(s"$name ansi=$ansi codegen=$codegen: ") {
+                      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                        expected = consume(sql(overflow))
+                      }
+                      assert(expected == Seq(Row(19723)))
+                      assert(consume(sql(overflow)) == expected)
+                    }
+                  }
                 }
               }
 
@@ -158,8 +224,9 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
                 joinedYearPlan.collect { case join: BroadcastHashJoinExec => join }.size == 1,
                 joinedYearPlan.treeString)
 
+              // An exchange materializes the date before any external row consumer can stop.
               // A full collection must still evaluate the second row in the native expression.
-              val full = sql(unlimited)
+              val full = sql(unlimited).repartition(1)
               checkCometOperators(stripAQEPlan(full.queryExecution.executedPlan))
               val (sparkError, cometError) = checkSparkAnswerMaybeThrows(full)
               Seq("Spark" -> sparkError, "Comet" -> cometError).foreach { case (engine, error) =>
@@ -183,11 +250,11 @@ class CometTemporalExpressionSuite extends CometTestBase with AdaptiveSparkPlanH
       Seq(
         "SELECT next_day(date('2024-01-01'), 'NOT_A_DAY')",
         "SELECT make_date(2024, 13, 1)",
-        // 999999999 instead overflows the epoch-day conversion as a plain ArithmeticException.
+        // 999999999 instead raises ARITHMETIC_OVERFLOW during the epoch-day conversion.
         "SELECT make_date(1000000000, 1, 1)",
         "SELECT make_date(1000000000, 13, 0)")
         .foreach { query =>
-          val df = sql(query)
+          val df = sql(query).repartition(1)
           checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
 
           val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)

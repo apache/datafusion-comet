@@ -23,7 +23,7 @@ import scala.jdk.CollectionConverters._
 
 import org.apache.hadoop.fs.Path
 import org.apache.spark.internal.Logging
-import org.apache.spark.sql.catalyst.expressions.Literal
+import org.apache.spark.sql.catalyst.expressions.{Literal, MakeDate}
 import org.apache.spark.sql.comet.{CometScanExec, DeltaPlanDataInjector}
 import org.apache.spark.sql.delta.DeltaParquetFileFormat
 import org.apache.spark.sql.delta.RowIndexFilterType
@@ -34,6 +34,7 @@ import org.apache.spark.sql.types.{ByteType, LongType, MetadataBuilder, StructFi
 
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.objectstore.NativeConfig
+import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.QueryPlanSerde.{exprToProto, serializeDataType}
@@ -166,6 +167,9 @@ object CometDeltaNativeScan
     }
 
     commonOpt.map { commonBuilder =>
+      commonBuilder.setDisableRowFilterPushdown(
+        scanExec.getTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG).isDefined ||
+          scanExec.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
       // Already forced by declineReason on this claim; reused rather than deserialized again.
       val dvDescriptors = memo.dvDescriptors
       // Union object-store options over every authority a partition of this scan may need a
@@ -353,11 +357,13 @@ object CometDeltaNativeScan
           case s: ExecScalarSubquery =>
             Literal.create(s.eval(null), s.dataType)
         }
-        val proto = exprToProto(resolved, output)
-        if (proto.isEmpty) {
-          logWarning(s"Could not serialize resolved scalar subquery filter: $resolved")
+        CometNativeScan.filterForParquetPushdown(resolved, conf).flatMap { pushable =>
+          val proto = exprToProto(pushable, output)
+          if (proto.isEmpty) {
+            logWarning(s"Could not serialize resolved scalar subquery filter: $pushable")
+          }
+          proto
         }
-        proto
       }
     ResolvedSubqueryFilters(hasResolvedFilters = true, protos)
   }
@@ -432,6 +438,7 @@ object CometDeltaNativeScan
       val dataColIds = output.take(strippedLen).map(_.exprId).toSet
       val filterProtos = scanHelper.supportedDataFilters
         .filter(_.references.forall(r => dataColIds.contains(r.exprId)))
+        .flatMap(CometNativeScan.filterForParquetPushdown(_, scanExec.conf))
         .flatMap(f => exprToProto(f, output))
       commonBuilder.addAllDataFilters(filterProtos.asJava)
     }

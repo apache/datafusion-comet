@@ -30,6 +30,7 @@ import org.apache.spark.sql.comet.execution.shuffle.CometShuffleExchangeExec
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.{BroadcastQueryStageExec, QueryStageExec}
 import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregateExec, ObjectHashAggregateExec}
+import org.apache.spark.sql.execution.datasources.WriteFilesExec
 import org.apache.spark.sql.execution.exchange.{Exchange, ReusedExchangeExec}
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec}
 import org.apache.spark.sql.types.{ByteType, IntegerType, ShortType}
@@ -43,6 +44,7 @@ private[rules] object MakeDateEvaluation {
   private val sparkEvaluation = TreeNodeTag[String]("comet.makeDateSparkEvaluation")
   private val collectProjectionLimit = TreeNodeTag[Int]("comet.makeDateCollectProjectionLimit")
   private val collectLimitReason = "make_date requires Spark evaluation below LIMIT"
+  private val externalRowConsumer = "an external row iterator"
 
   // Return a copy: failed cap conversion must leave the original guarded pipeline untouched.
   def collectLimitProjection(project: ProjectExec, limit: Int): Option[ProjectExec] =
@@ -94,6 +96,8 @@ private[rules] object MakeDateEvaluation {
   // deferred producer, so argument lineage and sibling provenance must be tracked separately.
   private def canEvaluateProjectionEagerly(expression: Expression): Boolean = expression match {
     case Alias(child, _) => canEvaluateProjectionEagerly(child)
+    case _: UnixDate | _: IsNull | _: IsNotNull =>
+      expression.children.forall(canEvaluateProjectionEagerly)
     case date: MakeDate if !date.failOnError =>
       val boundedYear = date.year match {
         case Literal(year: Int, IntegerType) =>
@@ -240,8 +244,17 @@ private[rules] object MakeDateEvaluation {
         case broadcast: CometBroadcastExchangeExec => broadcast.originalPlan
         case _ => node
       }
-      val evaluatesDate = containsMakeDate(original.expressions)
+      val evaluatedExpressions = original match {
+        // Residual data filters run in the enclosing FilterExec, not in the reader.
+        case scan: FileSourceScanExec => scan.partitionFilters
+        case _ => original.expressions
+      }
+      val evaluatesDate = containsMakeDate(evaluatedExpressions)
       val exchange = original.isInstanceOf[Exchange]
+      // File writers consume the complete input before producing a result. Spark 3.x replaces
+      // the whole command, so its native write no longer has a WriteFilesExec child.
+      val fileWrite = original.isInstanceOf[WriteFilesExec] ||
+        node.isInstanceOf[CometNativeWriteExec]
       val join = original.isInstanceOf[BaseJoinExec]
       // Broadcast joins can inline streamed expressions into their consumer. Their build side
       // materializes rows; shuffled hash and sort-merge joins also isolate the streamed input.
@@ -267,7 +280,7 @@ private[rules] object MakeDateEvaluation {
         case _ => false
       }
       val childDemand = original match {
-        case _ if exchange => None
+        case _ if exchange || fileWrite => None
         // A join can leave a local sort or aggregate completely unpolled.
         case _ if join || rowDemand.contains("JOIN") => Some("JOIN")
         case _ if startsLimit => Some("LIMIT")
@@ -333,7 +346,7 @@ private[rules] object MakeDateEvaluation {
                 guardedChildInputs,
                 dateInputs))
           }
-        case _ if exchange || localMaterialization => None
+        case _ if exchange || localMaterialization || fileWrite => None
         case _ => projectionDemand
       }
       val childCollectLimit = original match {
@@ -371,7 +384,7 @@ private[rules] object MakeDateEvaluation {
       })
       // Date provenance flows up through aliases while deferred evaluation flows down. This
       // also finds a skipped sibling computed in a projection above the date's producer.
-      val dateDerivedOutputs = if (exchange || localMaterialization) {
+      val dateDerivedOutputs = if (exchange || localMaterialization || fileWrite) {
         AttributeSet.empty
       } else {
         original match {
@@ -393,7 +406,9 @@ private[rules] object MakeDateEvaluation {
         case _ => false
       }
       val rowReason = if (evaluatesDate && !exchange && !safeProjection) {
-        rowDemand.map(boundary => s"make_date requires Spark evaluation below $boundary")
+        rowDemand
+          .filterNot(boundary => boundary == externalRowConsumer && localMaterialization)
+          .map(boundary => s"make_date requires Spark evaluation below $boundary")
       } else None
       // A safe date producer can remain native, but its NULL output can still hide a throwing
       // arithmetic operand in the consumer. The expression serde only sees an attribute here.
@@ -464,14 +479,19 @@ private[rules] object MakeDateEvaluation {
       (rebuilt, fallbackReason, dateDerivedOutputs)
     }
 
-    // Dataset.rdd adds an object-producing root, and its caller may read only a few objects.
-    // EliminateSerialization can leave a typed operator, filter, or project at that root.
-    def producesObjects(op: SparkPlan): Boolean = op match {
-      case _: ObjectProducerExec => true
-      case _: FilterExec | _: ProjectExec => producesObjects(op.children.head)
+    // QueryExecution.toRdd (also used by PySpark's DataFrame.rdd) exposes this plan's row
+    // iterator without adding Dataset.rdd's object-producing root. Its caller can stop early,
+    // even if explain() or another action has already prepared the physical plan.
+    // A one-row collect limit can retain its native input cap: producing its only row cannot
+    // skip another row inside that cap. Larger limits and OFFSET do not provide that guarantee.
+    def isSingleRowCollect(op: SparkPlan): Boolean = op match {
+      case limit: CollectLimitExec => limit.limit == 1 && limit.offset == 0
+      case native: CometExec => isSingleRowCollect(native.originalPlan)
+      case _: ColumnarToRowExec | _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec =>
+        isSingleRowCollect(op.children.head)
       case _ => false
     }
-    val rootDemand = if (producesObjects(plan)) Some("code reading Dataset.rdd") else None
+    val rootDemand = if (isSingleRowCollect(plan)) None else Some(externalRowConsumer)
     visit(plan, rootDemand, None)._1
   }
 }

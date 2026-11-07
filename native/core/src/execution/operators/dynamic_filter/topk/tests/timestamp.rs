@@ -98,6 +98,7 @@ fn timestamp_input(
         false,
         "CORRECTED",
         "CORRECTED",
+        false,
     )
     .unwrap();
     (file, scan)

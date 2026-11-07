@@ -32,12 +32,13 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, DynamicPruningExpression, Expression, GenericInternalRow, InputFileBlockLength, InputFileBlockStart, InputFileName, MakeDate}
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreeNodeTag
 import org.apache.spark.sql.catalyst.util.{sideBySide, ArrayBasedMapData, DateTimeUtils, GenericArrayData, MetadataColumnHelper}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometScanExec, CometScanUtils}
-import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
+import org.apache.spark.sql.execution.{FileSourceScanExec, FilterExec, InSubqueryExec, ProjectExec, SparkPlan, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.HadoopFsRelation
 import org.apache.spark.sql.execution.datasources.v2.BatchScanExec
 import org.apache.spark.sql.execution.datasources.v2.csv.CSVScan
@@ -82,6 +83,8 @@ case class CometScanRule(session: SparkSession)
     // would still rewrite scans to CometScanExec in a streaming plan.
     if (ShimCometStreaming.isStreamingPlan(plan)) return plan
 
+    tagScansWithMakeDateFilters(plan)
+
     def isSupportedScanNode(plan: SparkPlan): Boolean = plan match {
       case _: FileSourceScanExec => true
       case _: BatchScanExec => true
@@ -125,6 +128,35 @@ case class CometScanRule(session: SparkSession)
     plan.transform {
       case scan if isSupportedScanNode(scan) => transformScan(scan)
     }
+  }
+
+  /**
+   * Spark omits partition-column and nondeterministic predicates from a V1 scan's data filters.
+   * Preserve the enclosing filter's make_date guard before core or contrib scans are converted.
+   */
+  private def tagScansWithMakeDateFilters(plan: SparkPlan): Unit = {
+    def tagScan(scan: FileSourceScanExec, hasMakeDateFilter: Boolean): Unit = {
+      // Parent context can change when Spark replans: do not retain a previous walk's guard.
+      scan.unsetTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG)
+      if (hasMakeDateFilter) {
+        scan.setTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG, ())
+      }
+    }
+
+    def visit(node: SparkPlan, hasMakeDateFilter: Boolean): Unit = node match {
+      case scan: FileSourceScanExec => tagScan(scan, hasMakeDateFilter)
+      case scan: CometScanExec => tagScan(scan.wrapped, hasMakeDateFilter)
+      case filter: FilterExec =>
+        visit(
+          filter.child,
+          hasMakeDateFilter || filter.condition.exists(_.isInstanceOf[MakeDate]))
+      case project: ProjectExec => visit(project.child, hasMakeDateFilter)
+      // Only the same filter/project pipeline shares predicate evaluation order. Joins and
+      // materializing operators must not propagate this guard into unrelated scans.
+      case _ => node.children.foreach(visit(_, hasMakeDateFilter = false))
+    }
+
+    visit(plan, hasMakeDateFilter = false)
   }
 
   /**
@@ -1367,6 +1399,11 @@ object CometScanRule extends Logging {
    */
   val SKIP_COMET_SCAN_TAG: org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit] =
     org.apache.spark.sql.catalyst.trees.TreeNodeTag[Unit]("comet.skipCometScan")
+
+  // Owned by a V1 scan until serialization. Core and Delta consume this guard even when Spark
+  // omitted an enclosing make_date predicate from the scan's dataFilters.
+  private[comet] val DISABLE_ROW_FILTER_PUSHDOWN_TAG: TreeNodeTag[Unit] =
+    TreeNodeTag[Unit]("comet.disableRowFilterPushdown")
 
   /**
    * Schemes Comet's native Iceberg scan can open, loaded from the native storage factory over JNI
