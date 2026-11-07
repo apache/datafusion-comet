@@ -62,6 +62,11 @@ key is removed.
 Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
 need none either, but check whether any of them applies to your deployment.
 
+Comet `1.3.0` no longer builds or publishes support for Spark 3.4. Spark 3.4 has been deprecated
+since Comet `1.0.0`. If you run Spark 3.4, stay on the last Comet release that publishes
+`comet-spark-spark3.4_*`. See [Installing Comet](installation.md) for the supported Java, Scala,
+and Spark versions.
+
 ### Deprecated and Removed Settings
 
 `spark.comet.exec.columnarToRow.native.enabled` is deprecated and will be removed in a future major
