@@ -1714,10 +1714,6 @@ that iceberg-java reads as written
 <section id="reads-that-fail-where-spark-succeeds">
 <h3>Reads that fail where Spark succeeds<a class="headerlink" href="#reads-that-fail-where-spark-succeeds" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>A data file that omits an optional nested field.</strong> The native scan fails on a data file that
-lacks an optional struct field, which a write with <code class="docutils literal notranslate"><span class="pre">write.spark.accept-any-schema=true</span></code> can
-produce without any schema change
-(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7033">#7033</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">VERSION</span> <span class="pre">AS</span> <span class="pre">OF</span></code> reads of a column whose type was promoted after the snapshot</strong>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6993">#6993</a>).</p></li>
 <li><p><strong>Column names that only newer Unicode case data folds together</strong>, such as a pair of Vithkuqi

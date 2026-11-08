@@ -827,10 +827,6 @@ The physical differences that every native data file has, and why they are safe,
 
 ### Reads that fail where Spark succeeds
 
-- **A data file that omits an optional nested field.** The native scan fails on a data file that
-  lacks an optional struct field, which a write with `write.spark.accept-any-schema=true` can
-  produce without any schema change
-  ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
 - **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
