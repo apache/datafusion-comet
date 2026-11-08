@@ -50,7 +50,7 @@ class CacheBatchCoalescerSuite extends AnyFunSuite {
   private def withCoalescer(limit: Long, inputs: Seq[ColumnarBatch], target: Int)(
       f: CacheBatchCoalescer => Unit): Long = {
     val allocator = new RootAllocator(limit)
-    val coalescer = new CacheBatchCoalescer(inputs.iterator, attrs, target, allocator)
+    val coalescer = new CacheBatchCoalescer(inputs.iterator, attrs, target, target, allocator)
     try {
       f(coalescer)
     } finally {

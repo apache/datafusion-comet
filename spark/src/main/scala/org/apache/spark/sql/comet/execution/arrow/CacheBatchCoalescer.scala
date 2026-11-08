@@ -42,14 +42,16 @@ import org.apache.comet.vector.NativeUtil
  * and statistics row, and every read of the cache pays for the batch count.
  *
  * A batch the writer can store as it stands, Arrow-backed and laid out the way the reader reads
- * it, is passed through when it holds at least half of `targetRows`, so full native batches are
- * still written without a copy. Every other batch is copied into batches of `targetRows` rows,
- * the size the row path cuts at, and split where it crosses that size. A small batch is worth the
- * copy, and a batch the writer cannot store as it stands has to be copied into Arrow anyway, so
- * combining it costs nothing more. The copy reads each column through the `ColumnVector`
- * interface, as `ArrowWriter.writeColumns` does for any input, so it handles dictionary-encoded
- * and nested columns, and offsets that do not start at zero, as a native producer's sliced arrays
- * can have. Arrow's `VectorAppender` assumes they start at zero.
+ * it, is passed through when it holds at least half of the smaller of `targetRows` and
+ * `fullBatchRows`, the rows a Comet operator puts in a full batch. A full native batch is
+ * therefore still written without a copy, whichever of the two sizes is the larger. Every other
+ * batch is copied into batches of `targetRows` rows, the size the row path cuts at, and split
+ * where it crosses that size. A small batch is worth the copy, and a batch the writer cannot
+ * store as it stands has to be copied into Arrow anyway, so combining it costs nothing more. The
+ * copy reads each column through the `ColumnVector` interface, as `ArrowWriter.writeColumns` does
+ * for any input, so it handles dictionary-encoded and nested columns, and offsets that do not
+ * start at zero, as a native producer's sliced arrays can have. Arrow's `VectorAppender` assumes
+ * they start at zero.
  *
  * Row order is kept: the rows copied so far are emitted before a batch that passes through. A
  * large input is copied one output batch at a time, as the consumer asks for them, so the batches
@@ -65,17 +67,19 @@ private[arrow] class CacheBatchCoalescer(
     input: Iterator[ColumnarBatch],
     attrs: Seq[Attribute],
     targetRows: Int,
+    fullBatchRows: Int,
     allocator: BufferAllocator)
     extends Iterator[ColumnarBatch] {
 
   require(targetRows > 0, s"The target batch size must be positive, but was $targetRows")
+  require(fullBatchRows > 0, s"The full batch size must be positive, but was $fullBatchRows")
 
   private val arrowSchema =
     Utils.toArrowSchema(Utils.fromAttributes(attrs), CometArrowStream.NATIVE_TIMEZONE)
   private val readerFields = arrowSchema.getFields.asScala.toIndexedSeq
 
   // A batch at least this large that the writer can store as it stands is not copied.
-  private val passThroughRows = math.max(1, targetRows / 2)
+  private val passThroughRows = math.max(1, math.min(targetRows, fullBatchRows) / 2)
 
   // The batch being filled.
   private var pending: VectorSchemaRoot = null

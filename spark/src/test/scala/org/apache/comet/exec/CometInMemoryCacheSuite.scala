@@ -2286,6 +2286,39 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
+  test("Comet in-memory cache stores a full native batch as it stands whatever its size") {
+    // A native operator puts spark.comet.batchSize rows in a full batch, so a batch of that size
+    // is not small even when it is under half of the cache's batch size. At a cache batch size
+    // of 1000, 300-row batches are small while a native batch holds 8192 rows, and are stored as
+    // they stand once a native batch holds 300 (#6950).
+    val input = Seq(300 -> true, 300 -> true, 300 -> true, 100 -> true)
+    val attrs = Seq(AttributeReference("id", LongType)(), AttributeReference("s", StringType)())
+    val serializer = new ArrowCachedBatchSerializer
+
+    def cachedSizes(nativeBatchSize: Int): Seq[Int] = {
+      var sizes = Seq.empty[Int]
+      withSQLConf(
+        SQLConf.COLUMN_BATCH_SIZE.key -> "1000",
+        CometConf.COMET_BATCH_SIZE.key -> nativeBatchSize.toString) {
+        sizes = serializer
+          .convertColumnarBatchToCachedBatch(
+            spark.sparkContext
+              .parallelize(Seq(0), 1)
+              .mapPartitions(_ => new ReleasingBatches(input)),
+            attrs,
+            StorageLevel.MEMORY_ONLY,
+            SQLConf.get)
+          .map(_.numRows)
+          .collect()
+          .toSeq
+      }
+      sizes
+    }
+
+    assert(cachedSizes(nativeBatchSize = 8192) == Seq(1000))
+    assert(cachedSizes(nativeBatchSize = 300) == Seq(300, 300, 300, 100))
+  }
+
   test("Comet in-memory cache combines the small batches of a shuffle read") {
     // A shuffle read returns at least one batch per map output block, so a relation cached
     // straight from a shuffle over 20 map tasks into 2 partitions arrives in 40 batches of about
@@ -2330,9 +2363,11 @@ class CometInMemoryCacheSuite extends CometTestBase {
     }
   }
 
-  test("Comet in-memory cache keeps a sorted cache sorted when it combines its batches") {
-    // A cache reports the order of the plan it was built from, so the rows of the batches it
-    // combines have to keep their order. The native sort emits batches of 100 rows here.
+  test("Comet in-memory cache keeps a sorted cache sorted whatever the size of its batches") {
+    // A cache reports the order of the plan it was built from, so its batches have to keep their
+    // order. The native sort emits batches of 100 rows here, which is a full batch, so they are
+    // stored as they stand. The rows of batches that are combined keep their order too, as
+    // "combines small columnar batches in order" checks.
     withTempPath { path =>
       withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
         spark.range(0, 20000, 1, 4).selectExpr("id", "id % 97 AS k").write.parquet(path.toString)
@@ -2347,12 +2382,6 @@ class CometInMemoryCacheSuite extends CometTestBase {
         df.cache()
         try {
           assert(df.count() == 20000)
-          val relation = spark.sharedState.cacheManager.lookupCachedData(df).get
-          val sizes =
-            relation.cachedRepresentation.cacheBuilder.cachedColumnBuffers
-              .map(_.numRows)
-              .collect()
-          assert(sizes.length <= 4, sizes.mkString(", "))
           val sorted = df.rdd
             .mapPartitions { rows =>
               val ids = rows.map(_.getLong(0)).toArray

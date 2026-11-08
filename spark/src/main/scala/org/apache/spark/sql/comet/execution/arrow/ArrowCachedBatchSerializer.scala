@@ -532,7 +532,8 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
   // Comet-writable here.
   //
   // Small input batches are combined first, up to spark.sql.inMemoryColumnarStorage.batchSize
-  // rows, the size the row path cuts at; see CacheBatchCoalescer.
+  // rows, the size the row path cuts at. A batch is small when it holds less than half of that
+  // or of spark.comet.batchSize, whichever is fewer; see CacheBatchCoalescer.
   override def convertColumnarBatchToCachedBatch(
       input: RDD[ColumnarBatch],
       schema: Seq[Attribute],
@@ -540,11 +541,12 @@ class ArrowCachedBatchSerializer extends SimpleMetricsCachedBatchSerializer {
       conf: SQLConf): RDD[CachedBatch] = {
 
     val batchSize = conf.columnBatchSize
+    val nativeBatchSize = CometConf.COMET_BATCH_SIZE.get(conf)
     val settings = writeSettings(conf)
 
     input.mapPartitions { batches =>
       encodeBatches(
-        new CacheBatchCoalescer(batches, schema, batchSize, CometArrowAllocator),
+        new CacheBatchCoalescer(batches, schema, batchSize, nativeBatchSize, CometArrowAllocator),
         schema,
         settings)
     }
