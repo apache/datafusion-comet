@@ -21,6 +21,7 @@ package org.apache.comet.exec
 
 import java.io.{ByteArrayInputStream, IOException}
 import java.nio.{ByteBuffer, ByteOrder}
+import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -35,13 +36,14 @@ import org.apache.arrow.memory.ArrowBuf
 import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.arrow.vector.types.pojo.{Field, Schema}
 import org.apache.hadoop.fs.Path
-import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.logging.log4j.Level
+import org.apache.spark.{SparkEnv, SparkException, TaskContext}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Dataset, Row}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, AttributeReference, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.Final
 import org.apache.spark.sql.catalyst.plans.logical.LocalRelation
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, RangePartitioning}
-import org.apache.spark.sql.comet.{CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.{CometBroadcastExchangeExec, CometCollectLimitExec, CometExec, CometHashAggregateExec, CometLocalTableScanExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometScanWrapper, CometSparkToColumnarExec, CometTakeOrderedAndProjectExec}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.comet.execution.shuffle.{CometColumnarShuffle, CometNativeShuffle, CometShuffleExchangeExec}
 import org.apache.spark.sql.execution.{FileSourceScanExec, LocalTableScanExec, SparkPlan}
@@ -72,6 +74,64 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
   }
 
   import testImplicits._
+
+  test("broadcast producer batching combines local native shuffle blocks with and without AQE") {
+    withSQLConf(
+      CometConf.COMET_BATCH_SIZE.key -> "4096",
+      SQLConf.SHUFFLE_PARTITIONS.key -> "4",
+      SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "true",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_NUM.key -> "1",
+      SQLConf.COALESCE_PARTITIONS_MIN_PARTITION_SIZE.key -> "1") {
+      for (adaptive <- Seq(false, true)) {
+        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+          val streams = scala.collection.mutable.ArrayBuffer.empty[Long]
+          Seq(false, true).foreach { enabled =>
+            withSQLConf(
+              CometConf.COMET_BROADCAST_PRODUCER_COALESCE_ENABLED.key -> enabled.toString) {
+              val build = spark
+                .range(0, 512, 1, 16)
+                .selectExpr(
+                  "CAST(id AS INT) AS k",
+                  "CASE WHEN id % 3 = 0 THEN NULL ELSE concat('v', id) END AS v",
+                  "CASE WHEN id % 5 = 0 THEN NULL ELSE id + 4294967296 END AS l",
+                  "CASE WHEN id % 7 = 0 THEN NULL ELSE id % 2 = 0 END AS b",
+                  "CASE WHEN id % 11 = 0 THEN NULL ELSE CAST(concat('b', id) AS BINARY) END AS bytes")
+                .repartition(col("k"))
+              val probe = spark.range(0, 512, 1, 2).selectExpr("CAST(id AS INT) AS k")
+              val df = probe.join(broadcast(build), "k")
+              checkAnswer(
+                df,
+                (0 until 512).map { i =>
+                  Row(
+                    i,
+                    if (i % 3 == 0) null else s"v$i",
+                    if (i % 5 == 0) null else i.toLong + 4294967296L,
+                    if (i % 7 == 0) null else i % 2 == 0,
+                    if (i % 11 == 0) null else s"b$i".getBytes(UTF_8))
+                })
+              val plan = df.queryExecution.executedPlan
+              val exchanges = collect(plan) { case exchange: CometBroadcastExchangeExec =>
+                exchange
+              }
+              assert(exchanges.size == 1, plan.treeString)
+              val exchange = exchanges.head
+              assert(exchange.metrics("numOutputRows").value == 512L)
+              assert(
+                collect(plan) {
+                  case shuffle: CometShuffleExchangeExec
+                      if shuffle.shuffleType == CometNativeShuffle =>
+                    shuffle
+                }.nonEmpty,
+                plan.treeString)
+              streams += exchange.metrics("numCoalescedBatches").value
+              ()
+            }
+          }
+          assert(streams(1) > 0L && streams(1) < streams(0), s"AQE=$adaptive, batches=$streams")
+        }
+      }
+    }
+  }
 
   /**
    * Runs `f` with nested hash partitioning keys enabled. The config is disabled by default, so
@@ -1980,6 +2040,101 @@ class CometNativeShuffleSuite extends CometTestBase with AdaptiveSparkPlanHelper
         assert(count == 1000)
         // Ensure test df evaluated by Comet
         checkSparkAnswerAndOperator(testDF)
+      }
+    }
+  }
+
+  // https://github.com/apache/datafusion-comet/issues/7301: a job launched from a query's RDD
+  // runs outside a SQL execution, so Spark passes no configs to its map tasks.
+  private def withSessionConfsOutsideSqlExecution(f: String => Unit): Unit = {
+    withTempPath { dir =>
+      spark
+        .range(0, 1000, 1, 4)
+        .selectExpr("id % 10 as k", "id as v")
+        .write
+        .parquet(dir.toString)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
+        CometConf.COMET_OFFHEAP_MEMORY_POOL_TYPE.key -> "greedy_unified") {
+        f(dir.toString)
+      }
+    }
+  }
+
+  /** Runs `df` from its RDD and checks that every native plan got the session's memory pool. */
+  private def checkNativePlansUseSessionConfs(df: DataFrame): Unit = {
+    val appender = new LogAppender("native plan memory pools")
+    appender.setThreshold(Level.DEBUG)
+    withLogAppender(appender, Seq(classOf[CometExecIterator].getName), Some(Level.DEBUG)) {
+      df.queryExecution.toRdd.foreach(_ => ())
+    }
+    val pools = appender.loggingEvents
+      .map(_.getMessage.getFormattedMessage)
+      .filter(_.startsWith("memoryPoolType="))
+      .map(_.stripPrefix("memoryPoolType=").takeWhile(_ != ','))
+    assert(pools.nonEmpty)
+    assert(pools.forall(_ == "greedy_unified"), pools)
+  }
+
+  test("native shuffle writer outside a SQL execution uses the session's Comet configs") {
+    withSessionConfsOutsideSqlExecution { path =>
+      val df = spark.read.parquet(path).repartition(2, col("k"))
+      checkCometExchange(df, 1, native = true)
+      checkNativePlansUseSessionConfs(df)
+    }
+  }
+
+  test("native plan in a map stage outside a SQL execution uses the session's Comet configs") {
+    withSessionConfsOutsideSqlExecution { path =>
+      withSQLConf(CometConf.COMET_SHUFFLE_MODE.key -> "jvm") {
+        val df = spark.read.parquet(path).where(col("v") > 10).repartition(2, col("k"))
+        checkCometExchange(df, 1, native = false)
+        checkNativePlansUseSessionConfs(df)
+      }
+    }
+  }
+
+  test("native limit outside a SQL execution uses the session's Comet configs") {
+    withSessionConfsOutsideSqlExecution { path =>
+      val df = spark.read.parquet(path).limit(500)
+      assert(
+        find(df.queryExecution.executedPlan)(_.isInstanceOf[CometCollectLimitExec]).isDefined)
+      checkNativePlansUseSessionConfs(df)
+    }
+  }
+
+  test("native top-K outside a SQL execution uses the session's Comet configs") {
+    withSessionConfsOutsideSqlExecution { path =>
+      val df = spark.read.parquet(path).orderBy(col("v")).limit(50)
+      assert(
+        find(df.queryExecution.executedPlan)(
+          _.isInstanceOf[CometTakeOrderedAndProjectExec]).isDefined)
+      checkNativePlansUseSessionConfs(df)
+    }
+  }
+
+  test("shuffle read outside a SQL execution uses the session's Comet configs") {
+    withSessionConfsOutsideSqlExecution { path =>
+      // Only the shuffle reader reads this setting, and 0 fails its check, so the job fails only
+      // if the read sees the session's value. Spark's aggregate and project read the Comet
+      // shuffle in an intermediate stage, with no native plan above the read.
+      withSQLConf(
+        CometConf.COMET_SHUFFLE_MODE.key -> "jvm",
+        CometConf.COMET_EXEC_AGGREGATE_ENABLED.key -> "false",
+        CometConf.COMET_EXEC_PROJECT_ENABLED.key -> "false",
+        CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.key -> "0") {
+        val df = spark.read
+          .parquet(path)
+          .groupBy("k")
+          .agg(sum("v").as("s"))
+          .repartition(3, col("s"))
+          .groupBy((col("s") % 7).as("b"))
+          .count()
+        assert(collect(df.queryExecution.executedPlan) {
+          case e: CometShuffleExchangeExec if e.shuffleType == CometColumnarShuffle => e
+        }.nonEmpty)
+        val e = intercept[SparkException](df.queryExecution.toRdd.foreach(_ => ()))
+        assert(e.getMessage.contains(CometConf.COMET_SHUFFLE_READ_BUFFER_SIZE.key), e)
       }
     }
   }

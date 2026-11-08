@@ -108,7 +108,7 @@ use super::name_fold::fold_names;
 use super::parquet_support::field_id;
 
 /// Footer key naming the Spark release that wrote the file; absent for non-Spark writers.
-const SPARK_VERSION_METADATA_KEY: &str = "org.apache.spark.version";
+pub(crate) const SPARK_VERSION_METADATA_KEY: &str = "org.apache.spark.version";
 /// Present (empty value) when the file's dates and INT64 timestamps were written with
 /// `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY`.
 const SPARK_LEGACY_DATETIME_KEY: &str = "org.apache.spark.legacyDateTime";

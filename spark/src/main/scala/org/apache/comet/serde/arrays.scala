@@ -1066,16 +1066,24 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
+    // a NULL child must give NULL. The guard serializes the child twice, which would run an
+    // expensive child such as a Scala UDF twice per row.
+    if (expr.legacySizeOfNull || !expr.child.nullable) {
+      return scalarFunctionExprToProto("size", arrayExprProto)
+    }
+
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, IntegerType), inputs, binding)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExprProto)
         .addThen(sizeScalarExprProto)
-        .setElseExpr(emptyLiteralExprProto)
+        .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
@@ -1093,11 +1101,6 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-  }
-
-  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
-    val value = if (legacySizeOfNull) -1 else null
-    exprToProtoInternal(Literal(value, IntegerType), Seq.empty, binding = true)
   }
 
 }
@@ -1333,6 +1336,23 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   override def getUnsupportedReasons(): Seq[String] =
     Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 " +
+      "and later return its elements (SPARK-58821), and earlier releases raise " +
+      "`INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor " +
+      "build that reports an older version but includes SPARK-58821, Comet raises the error " +
+      "where Spark returns the elements.")
+
+  /**
+   * The native variant for a Spark version. Where SparkFixes.sequenceRecomputesOverflowedLength
+   * holds (SPARK-58821), Spark returns the exact length when `stop - start` overflows a long but
+   * the length is small, and `spark_sequence_recomputed` does the same. Earlier releases raise
+   * INTERNAL_ERROR("Unreachable code reached.") there, as `spark_sequence` does.
+   */
+  def nativeFunction(version: String): String =
+    if (SparkFixes.sequenceRecomputesOverflowedLength(version)) "spark_sequence_recomputed"
+    else "spark_sequence"
+
   override def convert(
       expr: Sequence,
       inputs: Seq[Attribute],
@@ -1344,7 +1364,7 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
     val argProtos = Seq(startExprProto, stopExprProto) ++
       expr.stepOpt.map(exprToProtoInternal(_, inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
-      "spark_sequence",
+      nativeFunction(SPARK_VERSION),
       expr.dataType,
       failOnError = false,
       argProtos: _*)

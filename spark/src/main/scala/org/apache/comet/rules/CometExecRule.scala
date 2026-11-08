@@ -52,8 +52,8 @@ import org.apache.spark.sql.execution.datasources.v2.json.JsonScan
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
 import org.apache.spark.sql.execution.datasources.v2.text.TextScan
 import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, BroadcastExchangeLike, Exchange, ReusedExchangeExec, ShuffleExchangeExec, ShuffleExchangeLike}
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, ShuffledHashJoinExec, SortMergeJoinExec}
-import org.apache.spark.sql.execution.window.WindowExec
+import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -120,6 +120,7 @@ object CometExecRule {
       classOf[BroadcastNestedLoopJoinExec] -> CometBroadcastNestedLoopJoinExec,
       classOf[ShuffledHashJoinExec] -> CometHashJoinExec,
       classOf[SortMergeJoinExec] -> CometSortMergeJoinExec,
+      classOf[CartesianProductExec] -> CometCartesianProductExec,
       classOf[SortExec] -> CometSortExec,
       classOf[LocalTableScanExec] -> CometLocalTableScanExec,
       classOf[RangeExec] -> CometRangeExec,
@@ -141,6 +142,7 @@ object CometExecRule {
     Map(
       classOf[CoalesceExec] -> CometCoalesceExec,
       classOf[CollectLimitExec] -> CometCollectLimitExec,
+      classOf[CollectMetricsExec] -> CometCollectMetricsExec,
       classOf[TakeOrderedAndProjectExec] -> CometTakeOrderedAndProjectExec,
       classOf[UnionExec] -> CometUnionExec)
 
@@ -445,6 +447,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     }
 
     def convertNode(op: SparkPlan): SparkPlan = op match {
+      case op if MakeDateEvaluation.reason(op).isDefined =>
+        withFallbackReason(op, MakeDateEvaluation.reason(op).get)
+
       // Scan marker produced by an optional, out-of-tree scan contrib (e.g. contrib/delta).
       // Matched by trait (no compile-time dependency on the contrib) and present only when that
       // contrib is on the classpath. The marker carries its own serde handler and typically wraps
@@ -532,6 +537,15 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       // because it carries its scan's logical link. Wrap it again so re-planned parents convert.
       case c: CometSparkToColumnarExec =>
         convertToComet(c, CometScanWrapper).getOrElse(c)
+
+      // AQE may revisit an observation between native blocks. Keep its Spark accumulator and
+      // expose the columnar output as a fresh native input rather than skipping its counters.
+      case c: CometCollectMetricsExec =>
+        if (c.getTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION).contains(true)) {
+          c.toSpark
+        } else {
+          convertToComet(c, CometCollectMetricsExec).getOrElse(c)
+        }
 
       // A leaf with its own enabled Comet operator, such as RangeExec, uses that operator. The
       // Spark-to-Arrow conversion is the fallback for a leaf the operator declines.
@@ -751,6 +765,25 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    */
   private def limitCollectProjectionInput(op: SparkPlan): SparkPlan = op match {
     case limit: CollectLimitExec if limit.limit >= 0 =>
+      def capProjection(project: SparkPlan, original: SparkPlan): Option[SparkPlan] = {
+        val input = project.children.head
+        val cap = input match {
+          case bounded: CometLocalLimitExec if bounded.limit <= limit.limit => Some(bounded)
+          case _ => convertToComet(LocalLimitExec(limit.limit, input), CometLocalLimitExec)
+        }
+        for {
+          bounded <- cap
+          rebuilt <- convertToComet(original.withNewChildren(Seq(bounded)), CometProjectExec)
+        } yield {
+          // AQE can link the current projection to a materialized logical query stage.
+          // Its originalPlan may have an older link; preserve the current direct/inherited tags.
+          Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { tag =>
+            project.getTagValue(tag).foreach(rebuilt.setTagValue(tag, _))
+          }
+          rebuilt
+        }
+      }
+
       limit.child match {
         case project: CometProjectExec =>
           // Selecting or renaming columns cannot throw. Keep Project -> Filter adjacent so
@@ -766,29 +799,18 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
           if (onlyColumns || alreadyCapped) {
             op
           } else {
-            // Use normal config and serde gating for the synthetic limit. If conversion fails,
-            // its fallback tags are discarded with it and the original plan is retained.
-            val bounded = for {
-              cap <- convertToComet(
-                LocalLimitExec(limit.limit, project.child),
-                CometLocalLimitExec)
-              rebuilt <- convertToComet(
-                project.originalPlan.withNewChildren(Seq(cap)),
-                CometProjectExec)
-            } yield {
-              // AQE can link the current projection to a materialized logical query stage.
-              // Its originalPlan may have an older link; serde also adds tags, so copyTagsFrom
-              // (which only copies into an empty tag map) would not preserve the current link.
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_TAG, link)
-              }
-              project.getTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG).foreach { link =>
-                rebuilt.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, link)
-              }
-              limit.withNewChildren(Seq(rebuilt))
-            }
-            bounded.getOrElse(op)
+            capProjection(project, project.originalPlan)
+              .map(rebuilt => limit.withNewChildren(Seq(rebuilt)))
+              .getOrElse(op)
           }
+        case project: ProjectExec =>
+          // The date guard stays in place until both the cap and projection convert. This
+          // candidate excludes other lazy consumers and guarded producers below the projection.
+          MakeDateEvaluation
+            .collectLimitProjection(project, limit.limit)
+            .flatMap(candidate => capProjection(candidate, candidate))
+            .map(rebuilt => MakeDateEvaluation.withCappedProjection(limit, rebuilt))
+            .getOrElse(op)
         case _ => op
       }
     case _ => op
@@ -1021,6 +1043,61 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     newPlan
   }
 
+  /** A batch observer must not count rows that a short-circuiting consumer would never read. */
+  private def preserveCollectMetricsRowConsumption(plan: SparkPlan): Unit = {
+    def visit(node: SparkPlan, requiresRowConsumption: Boolean): Unit = {
+      val original = node match {
+        case comet: CometExec => comet.originalPlan
+        case other => other
+      }
+      val childRequiresRowConsumption = original match {
+        // A join can finish when one input is exhausted without draining the other input.
+        case _: BaseJoinExec => true
+        // User functions can consume only part of the partition iterator.
+        case _: MapPartitionsExec => true
+        // Nonpositive Poisson sampling may return an empty iterator without reading its input.
+        case sample: SampleExec
+            if sample.withReplacement && sample.upperBound - sample.lowerBound <= 0.0 =>
+          true
+        case _: CollectLimitExec | _: LocalLimitExec | _: GlobalLimitExec |
+            _: TakeOrderedAndProjectExec =>
+          true
+        case windowLimit
+            if ShimCometWindowGroupLimit.windowGroupLimitClass.exists(
+              _.isInstance(windowLimit)) =>
+          true
+        case _: ShuffleExchangeLike | _: BroadcastExchangeLike | _: QueryStageExec =>
+          false
+        // Even a sort or aggregate may never be polled by an external iterator consumer.
+        case _ => requiresRowConsumption
+      }
+      node match {
+        case observation: CollectMetricsExec if requiresRowConsumption =>
+          observation.setTagValue(CometCollectMetricsExec.REQUIRES_ROW_CONSUMPTION, true)
+        case _ =>
+      }
+      node.children.foreach(visit(_, childRequiresRowConsumption))
+    }
+    // External actions such as foreachPartition or RDD.take can stop reading without adding a
+    // physical-plan node. Require a materializing exchange before enabling batch observation.
+    visit(plan, requiresRowConsumption = true)
+  }
+
+  /**
+   * Sorts the input of a window that runs in Spark, a Python one included, when its order may be
+   * false. Spark plans no sort below a window whose child reports the order it needs, and its
+   * window trusts that order. A Comet operator that may not keep the order it reports, such as a
+   * native nested loop join (#6898), then hands the window rows out of order, and it groups them
+   * wrongly.
+   */
+  private def sortDoubtedWindowInputs(plan: SparkPlan): SparkPlan = plan.transformUp {
+    case window: WindowExecBase
+        if window.requiredChildOrdering.head.nonEmpty &&
+          CometHashJoinExec.mayReportFalseInputOrder(window.child) =>
+      window.withNewChildren(
+        Seq(SortExec(window.requiredChildOrdering.head, global = false, child = window.child)))
+  }
+
   private def _apply(plan: SparkPlan): SparkPlan = {
     // We shouldn't transform Spark query plan if Comet is not loaded.
     if (!isCometLoaded(conf)) {
@@ -1041,15 +1118,17 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         plan
       }
     } else {
+      val planWithDateEvaluation = MakeDateEvaluation.preserve(plan)
+      preserveCollectMetricsRowConsumption(planWithDateEvaluation)
       // The rewrite removes the sorts of each join it converts, so put back any sort a kept
       // operator above still needs. This runs before transform(), which converts the sorts it
       // adds like any other SortExec.
       val planWithJoinRewritten = if (CometConf.COMET_FORCE_SHJ.get()) {
-        RewriteJoin.restoreRequiredOrdering(plan.transformUp { case p =>
-          RewriteJoin.rewrite(p, conf)
+        RewriteJoin.restoreRequiredOrdering(planWithDateEvaluation.transformUp { case p =>
+          if (MakeDateEvaluation.reason(p).isDefined) p else RewriteJoin.rewrite(p, conf)
         })
       } else {
-        plan
+        planWithDateEvaluation
       }
 
       // Tag Partial aggregates that must not be converted to Comet because a
@@ -1070,7 +1149,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       if (clearWastedBuildSideBridges(transformed)) {
         transformed = transform(planWithJoinRewritten)
       }
-      var newPlan = revertUnsafePartialAggregates(transformed)
+      var newPlan = sortDoubtedWindowInputs(revertUnsafePartialAggregates(transformed))
 
       // if the plan cannot be run fully natively then explain why (when appropriate
       // config is enabled)
