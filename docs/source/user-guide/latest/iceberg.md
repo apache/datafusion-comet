@@ -473,13 +473,18 @@ boundary, allowing native writes without a shuffle.
 
 For a partitioned clustered writer, this new conversion also requires a Spark sort to fully consume
 each writer partition before writing; only local or global limits may wrap that sort. Unsorted or
-otherwise deferred row input keeps the iceberg-java writer, preserving an earlier partition-order
-error ahead of a later Spark expression failure. Unpartitioned and fanout writers do not require
-this additional condition.
+otherwise deferred row input keeps the iceberg-java writer. For example, a row that violates
+partition order must fail before a later row's NOT NULL assertion; filling an Arrow batch first
+could reverse those errors. Unpartitioned and fanout writers do not require this additional
+condition.
 
 Writes with `fixed(N)` fields, including nested fields, keep iceberg-java when this row conversion
-would be needed, even with a sort. This preserves Java's fixed-width validation failures; writes
-that already supply native Arrow input retain their existing eligibility.
+would be needed, even with a sort. A row with the wrong byte length must still report the Java
+writer's validation failure before a later assertion or Arrow conversion error. These restrictions
+preserve the exception type and meaningful message for this newly enabled row conversion. They do
+not guarantee identical errors for every existing native write: writes that already supply Arrow
+batches retain their eligibility and can report an Arrow cast error instead of iceberg-java's
+Parquet error.
 
 This conversion requires proof that string values, including nested strings, contain valid UTF-8.
 For example, it accepts native input with recognized Spark projections that preserve those strings

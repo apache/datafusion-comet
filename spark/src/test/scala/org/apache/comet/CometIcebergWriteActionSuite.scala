@@ -181,12 +181,61 @@ class CometIcebergWriteActionSuite
       }
     }
 
+    test(s"native Iceberg writer: required input keeps writer fallback reasons, AQE=$adaptive") {
+      assume(icebergAvailable && isSpark35Plus)
+      withSQLConf(
+        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+        EXTENDED_EXPLAIN_PROVIDERS_KEY -> "org.apache.comet.ExtendedExplainInfo") {
+        withIcebergCatalog { _ =>
+          withTempPath { path =>
+            sql("SELECT 1 AS id").write.parquet(path.toString)
+            withTempView("required_fallback_source") {
+              val input = spark.read.parquet(path.toString)
+              assert(input.schema("id").nullable)
+              input.createOrReplaceTempView("required_fallback_source")
+              val table = s"required_fallback_$adaptive"
+              sql(s"""CREATE TABLE cat.db.$table (id INT NOT NULL) USING iceberg
+                |TBLPROPERTIES ('write.distribution-mode'='none',
+                |'write.parquet.row-group-check-min-record-count'='500')""".stripMargin)
+              val insert = s"INSERT INTO cat.db.$table SELECT * FROM required_fallback_source"
+              withNativeEnabled {
+                val explained = sql(s"EXPLAIN EXTENDED $insert").collect().mkString("\n")
+                val reason = "write.parquet.row-group-check-min-record-count=500"
+                assert(explained.contains(reason), explained)
+                val snapshot = captureWrite(table)(sql(insert))
+                assertExactlyOneCommit(snapshot)
+                val writers = snapshot.plans.flatMap(p =>
+                  collectWithSubqueries(p) { case w: IcebergWriteExec => w })
+                assert(writers.nonEmpty && writers.forall(hasRequiredProjection))
+                assert(snapshot.plans.forall(p =>
+                  collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.isEmpty))
+                assert(
+                  snapshot.plans.exists(p =>
+                    new ExtendedExplainInfo().generateExtendedInfo(p).contains(reason)),
+                  snapshot.plans.mkString("\n"))
+
+                // Removing only the declined setting must enable the same projection's bridge.
+                sql(s"ALTER TABLE cat.db.$table UNSET TBLPROPERTIES " +
+                  "('write.parquet.row-group-check-min-record-count')")
+                val native = captureWrite(table)(sql(insert))
+                assert(native.snapshotDelta == 1)
+                assertSparkRequiredWrite(native.plans)
+              }
+              checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq(Row(1), Row(1)))
+            }
+          }
+        }
+      }
+    }
+
     Seq(false, true).foreach { sorted =>
       test(
         s"native Iceberg writer: required input with array and map, sorted=$sorted, " +
           s"AQE=$adaptive") {
         assume(icebergAvailable && isSpark35Plus)
-        withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString) {
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> adaptive.toString,
+          CometConf.COMET_BATCH_SIZE.key -> "3") {
           withIcebergCatalog { _ =>
             withTempPath { path =>
               spark
@@ -196,7 +245,18 @@ class CometIcebergWriteActionSuite
                   "CAST(id AS INT) AS id",
                   "CAST(id % 4 AS STRING) AS region",
                   "array(CAST(id AS INT), CAST(NULL AS INT)) AS items",
-                  "map('value', IF(id % 2 = 0, CAST(id AS INT), CAST(NULL AS INT))) AS attrs")
+                  "map('value', IF(id % 2 = 0, CAST(id AS INT), CAST(NULL AS INT))) AS attrs",
+                  "array(named_struct('v', CAST(id AS INT)), " +
+                    "CAST(NULL AS STRUCT<v: INT>), named_struct('v', CAST(NULL AS INT))) " +
+                    "AS struct_items",
+                  "array(array(CAST(id AS INT), CAST(NULL AS INT)), " +
+                    "CAST(array() AS ARRAY<INT>), CAST(NULL AS ARRAY<INT>)) AS nested_items",
+                  "map('present', named_struct('v', CAST(id AS INT)), " +
+                    "'null_struct', CAST(NULL AS STRUCT<v: INT>), " +
+                    "'null_field', named_struct('v', CAST(NULL AS INT))) AS struct_values",
+                  "map('present', array(CAST(id AS INT), CAST(NULL AS INT)), " +
+                    "'empty', CAST(array() AS ARRAY<INT>), " +
+                    "'null_array', CAST(NULL AS ARRAY<INT>)) AS array_values")
                 .write
                 .parquet(path.toString)
               val partition = if (sorted) "PARTITIONED BY (region)" else ""
@@ -204,13 +264,16 @@ class CometIcebergWriteActionSuite
               val reference = s"${nativeTable}_jvm"
               Seq(nativeTable, reference).foreach { table =>
                 sql(s"""CREATE TABLE cat.db.$table
-                  |(id INT NOT NULL, region STRING, items ARRAY<INT>, attrs MAP<STRING, INT>)
+                  |(id INT NOT NULL, region STRING, items ARRAY<INT>, attrs MAP<STRING, INT>,
+                  |struct_items ARRAY<STRUCT<v: INT>>, nested_items ARRAY<ARRAY<INT>>,
+                  |struct_values MAP<STRING, STRUCT<v: INT>>, array_values MAP<STRING, ARRAY<INT>>)
                   |USING iceberg $partition TBLPROPERTIES
                   |('write.distribution-mode'='none', 'write.spark.fanout.enabled'='false')
                   |""".stripMargin)
                 if (sorted) sql(s"ALTER TABLE cat.db.$table WRITE ORDERED BY id")
               }
               val input = spark.read.parquet(path.toString)
+              assert(input.schema.fields.forall(_.nullable))
               val snapshot = withNativeEnabled {
                 captureWrite(nativeTable) {
                   input
@@ -236,10 +299,11 @@ class CometIcebergWriteActionSuite
               }
               withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
                 input.writeTo(s"cat.db.$reference").option("distribution-mode", "none").append()
+                checkAnswer(sql(s"SELECT * FROM cat.db.$nativeTable"), input)
+                checkAnswer(
+                  sql(s"SELECT * FROM cat.db.$nativeTable"),
+                  sql(s"SELECT * FROM cat.db.$reference"))
               }
-              checkAnswer(
-                sql(s"SELECT * FROM cat.db.$nativeTable"),
-                sql(s"SELECT * FROM cat.db.$reference"))
             }
           }
         }
@@ -406,11 +470,46 @@ class CometIcebergWriteActionSuite
                 |USING iceberg TBLPROPERTIES
                 |('write.distribution-mode'='none', 'write.target-file-size-bytes'='1',
                 |'write.parquet.page-row-limit'='1000')""".stripMargin)
+              sql(s"INSERT INTO cat.db.$table VALUES (-1L, -1L)")
             }
+            val snapshots = tables.map(table => table -> countSnapshots(table)).toMap
+            val committed = tables.map { table =>
+              val root = dataDir(table).toPath
+              val files = IcebergTestFiles.regularFiles(root)
+              assert(files.nonEmpty, "seed write did not create a data file")
+              table -> files
+                .map(file => file -> Files.readAllBytes(root.resolve(file)).toSeq)
+                .toMap
+            }.toMap
+            def referencedFiles(table: String): Set[String] =
+              sql(s"SELECT file_path FROM cat.db.$table.files")
+                .collect()
+                .map(_.getString(0))
+                .toSet
+            val references = tables.map(table => table -> referencedFiles(table)).toMap
             val (nativeError, jvmError) =
               failedWrites(tables.head, tables.last, checkSparkAssertions = true) { table =>
                 withSQLConf(CometConf.COMET_ENABLED.key -> (table == tables.head).toString) {
-                  spark.read.parquet(path.toString).writeTo(s"cat.db.$table").append()
+                  val location = dataDir(table).getAbsolutePath
+                  val existing = committed(table).keySet
+                  spark.udf.register(
+                    "verify_required_write_prefix",
+                    (value: java.lang.Long) => {
+                      if (value == null) {
+                        val created = IcebergTestFiles.parquetFiles(new File(location).toPath) --
+                          existing
+                        // An unpartitioned writer has at most one open file, so one is finalized.
+                        require(
+                          created.size >= 2,
+                          s"no finalized prefix before assertion: $created")
+                      }
+                      value
+                    })
+                  spark.read
+                    .parquet(path.toString)
+                    .selectExpr("a", "verify_required_write_prefix(b) AS b")
+                    .writeTo(s"cat.db.$table")
+                    .append()
                 }
               }
             val expected = requiredFieldError(jvmError)
@@ -418,9 +517,16 @@ class CometIcebergWriteActionSuite
             assert(actual.getClass == expected.getClass)
             assert(actual.getMessage == expected.getMessage)
             tables.foreach { table =>
-              assert(countSnapshots(table) == 0)
-              assert(parquetFiles(dataDir(table)).isEmpty)
-              checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq.empty[Row])
+              assert(countSnapshots(table) == snapshots(table))
+              val root = dataDir(table).toPath
+              assert(IcebergTestFiles.regularFiles(root) == committed(table).keySet)
+              assert(referencedFiles(table) == references(table))
+              committed(table).foreach { case (file, bytes) =>
+                assert(Files.readAllBytes(root.resolve(file)).toSeq == bytes)
+              }
+              withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+                checkAnswer(sql(s"SELECT * FROM cat.db.$table"), Seq(Row(-1L, -1L)))
+              }
             }
           }
         }
@@ -4658,9 +4764,8 @@ class CometIcebergWriteActionSuite
             val expected = causeChain(referenceFailure).last
             assert(expected.isInstanceOf[IllegalArgumentException], expected.toString)
             assert(
-              expected.getStackTrace.exists(frame =>
-                frame.getClassName.endsWith(".FixedLenByteArrayPlainValuesWriter") &&
-                  frame.getMethodName == "writeBytes"),
+              expected.getMessage.contains("Fixed Binary size 3") &&
+                expected.getMessage.contains("field type length 4"),
               expected.toString)
             val actual = causeChain(candidateFailure).last
             assert(

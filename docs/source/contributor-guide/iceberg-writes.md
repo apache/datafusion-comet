@@ -129,14 +129,18 @@ below that conversion, and Spark evaluates the assertions and their child expres
 For partitioned clustered writers, `isRowInputEvaluationSupported` also requires Spark to
 materialize each writer partition before conversion. It accepts `SortExec`, optionally wrapped
 only in `LocalLimitExec` or `GlobalLimitExec` (and planning placeholders). Unsorted or otherwise
-deferred row input keeps the JVM writer so an earlier partition-order error cannot be overtaken
-by a later Spark expression failure during batch read-ahead. This condition does not apply to
-unpartitioned or fanout writers.
+deferred row input keeps the JVM writer: if one row violates partition order and a later row
+violates a required-field assertion, batch read-ahead must not report the assertion first. This
+condition does not apply to unpartitioned or fanout writers.
 
 This new row conversion also keeps writes with `fixed(N)` fields, including nested fields, on the
 JVM writer even when sorted. `SparkWrite.writeSchema` retains the fixed width that Spark's
-`BinaryType` cannot enforce, so the gate preserves the JVM writer's fixed-width validation
-failures. Existing native input paths remain eligible for fixed fields.
+`BinaryType` cannot enforce. A row with the wrong byte length must still fail in the JVM writer
+before a later assertion or Arrow conversion error replaces it. These two restrictions preserve
+the observable failure behavior of the newly enabled row conversion, including the exception type
+and meaningful message. They do not promise identical errors for every existing native write:
+inputs that already supply Arrow batches remain eligible for fixed fields and can report an Arrow
+cast error instead of iceberg-java's Parquet error.
 
 The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
 string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows

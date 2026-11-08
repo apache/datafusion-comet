@@ -638,7 +638,12 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
             rowConversionReasons.foreach(reason => withFallbackReason(op, reason))
             op
           }
-        convertToComet(prepared, CometIcebergNativeWrite).getOrElse(op)
+        convertToComet(prepared, CometIcebergNativeWrite).getOrElse {
+          prepared
+            .getTagValue(CometExplainInfo.FALLBACK_REASONS)
+            .foreach(reasons => withFallbackReasons(op, reasons))
+          op
+        }
 
       // For AQE broadcast stage on a Comet broadcast exchange
       case s @ BroadcastQueryStageExec(_, _: CometBroadcastExchangeExec, _) =>
