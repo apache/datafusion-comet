@@ -21,7 +21,7 @@ package org.apache.spark
 
 import java.{util => ju}
 import java.util.Collections
-import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicReference}
 
 import scala.collection.mutable
 import scala.util.Try
@@ -123,7 +123,8 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
     CometDriverPlugin.registerIcebergWriteReport(sc.conf)
 
     CometDriverPlugin.warnIfExecutorMemoryOverheadUnset(sc.getConf)
-    CometDriverPlugin.warnIfMemoryPoolFractionSet(sc.getConf)
+    CometDriverPlugin.warnIfMemoryPoolFractionSet(
+      sc.getConf.getOption(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key))
 
     extraConfs
   }
@@ -324,9 +325,14 @@ object CometDriverPlugin extends Logging {
   // for the native memory that Comet does not reserve. It cannot: Spark hands out the whole pool
   // to the tasks that ask for it, and the fraction only caps each task's total under
   // fair_unified. Users who set it for that purpose need to size the memory overhead instead.
-  private[apache] def warnIfMemoryPoolFractionSet(conf: SparkConf): Unit = {
+  // The driver plugin checks the SparkConf, and CometExecRule checks the session conf of each
+  // query, which also covers SET, spark.conf.set and sessions that register the extension
+  // without the plugin. The warning is logged once per JVM.
+  private[apache] val memoryPoolFractionWarned = new AtomicBoolean(false)
+
+  private[apache] def warnIfMemoryPoolFractionSet(setTo: Option[String]): Unit = {
     val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
-    conf.getOption(key).foreach { value =>
+    setTo.filter(_ => memoryPoolFractionWarned.compareAndSet(false, true)).foreach { value =>
       logWarning(
         s"$key=$value is deprecated and will be removed in a future major release. It does " +
           "not leave room in spark.memory.offHeap.size for native memory that Comet's memory " +

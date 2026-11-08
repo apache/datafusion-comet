@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 import scala.collection.mutable.ListBuffer
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.CometDriverPlugin
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, Expression, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateMode, Final, Partial, PartialMerge}
@@ -1104,6 +1105,9 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
       explainSparkReadsOfCometCache(plan, "Comet is disabled")
       return plan
     }
+
+    CometDriverPlugin.warnIfMemoryPoolFractionSet(
+      Option(conf.getConfString(CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key, null)))
 
     // Comet does not support structured streaming. Fall back to Spark for any plan that
     // belongs to a streaming query (detected via StreamSourceAwareSparkPlan.getStream).

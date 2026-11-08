@@ -278,25 +278,41 @@ class CometPluginsMemoryOverheadWarningSuite extends CometTestBase {
 
 class CometPluginsMemoryPoolFractionWarningSuite extends CometTestBase {
 
-  private val warning = "spark.comet.exec.memoryPool.fraction=0.8 is deprecated"
+  private val key = CometConf.COMET_OFFHEAP_MEMORY_POOL_FRACTION.key
+  private val warning = s"$key=0.8 is deprecated"
 
-  private def warningsFor(conf: SparkConf): Seq[String] = {
+  private def warningsDuring(f: => Unit): Seq[String] = {
     // Logging derives the logger name by stripping the object's trailing '$'
     val logger = CometDriverPlugin.getClass.getName.stripSuffix("$")
     val appender = new LogAppender("memory pool fraction warning")
-    withLogAppender(appender, Seq(logger), Some(Level.WARN)) {
-      CometDriverPlugin.warnIfMemoryPoolFractionSet(conf)
-    }
+    CometDriverPlugin.memoryPoolFractionWarned.set(false)
+    withLogAppender(appender, Seq(logger), Some(Level.WARN))(f)
     appender.loggingEvents.map(_.getMessage.getFormattedMessage).toSeq
   }
 
-  test("warns when the memory pool fraction is set") {
-    val conf = new SparkConf().set("spark.comet.exec.memoryPool.fraction", "0.8")
-    assert(warningsFor(conf).exists(_.contains(warning)))
+  test("warns when the memory pool fraction is set in the SparkConf") {
+    val conf = new SparkConf().set(key, "0.8")
+    val warnings =
+      warningsDuring(CometDriverPlugin.warnIfMemoryPoolFractionSet(conf.getOption(key)))
+    assert(warnings.exists(_.contains(warning)))
   }
 
   test("does not warn when the memory pool fraction is unset") {
-    assert(!warningsFor(new SparkConf()).exists(_.contains("memoryPool.fraction")))
+    val warnings = warningsDuring {
+      CometDriverPlugin.warnIfMemoryPoolFractionSet(new SparkConf().getOption(key))
+      sql("SELECT 1").collect()
+    }
+    assert(!warnings.exists(_.contains("memoryPool.fraction")))
+  }
+
+  test("warns once when the memory pool fraction is set on the session") {
+    val warnings = warningsDuring {
+      withSQLConf(key -> "0.8") {
+        sql("SELECT 1").collect()
+        sql("SELECT 2").collect()
+      }
+    }
+    assert(warnings.count(_.contains(warning)) == 1)
   }
 }
 
