@@ -67,12 +67,12 @@ import org.apache.comet.iceberg.IcebergReflection
  *     down.
  *
  * Which profiles run it. The cluster needs the `hadoop-client-minicluster` that `pom.xml` pins
- * per Spark profile (`hadoop.version`: 3.4 -> 3.3.4, 3.5 -> 3.3.4, 4.0 -> 3.4.1, 4.1 -> 3.4.2,
- * 4.2 -> 3.5.0) to match the `hadoop-client-api`/`runtime` Spark supplies. Measured by running
- * the scan tests on every profile:
- *   - Spark 3.4, 3.5, 4.0 and 4.1: the cluster starts and every test runs, none canceled. A
- *     cluster that fails to start there is a broken fixture, so `beforeAll` fails the suite with
- *     the cause instead of cancelling the tests.
+ * per Spark profile (`hadoop.version`: 3.5 -> 3.3.4, 4.0 -> 3.4.1, 4.1 -> 3.4.2, 4.2 -> 3.5.0) to
+ * match the `hadoop-client-api`/`runtime` Spark supplies. Measured by running the scan tests on
+ * every profile:
+ *   - Spark 3.5, 4.0 and 4.1: the cluster starts and every test runs, none canceled. A cluster
+ *     that fails to start there is a broken fixture, so `beforeAll` fails the suite with the
+ *     cause instead of cancelling the tests.
  *   - Spark 4.2: nothing runs (all tests are cancelled), for two independent reasons. There is no
  *     Iceberg runtime for 4.2 (`icebergAvailable` is false there), and the cluster cannot start
  *     either: `MiniDFSCluster.Builder` throws `NoClassDefFoundError:
