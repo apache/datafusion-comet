@@ -24,10 +24,10 @@ import scala.jdk.CollectionConverters._
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.hadoop.conf.Configuration
-import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, Contains, EndsWith, EqualTo, GreaterThan, In, InSet, IsNull, Literal, MakeDate, Not, Or, StartsWith, UnixDate}
+import org.apache.spark.sql.catalyst.expressions.{And, AttributeReference, EqualTo, GreaterThan, Literal, MakeDate, Or, UnixDate}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, IntegerType, LongType, MetadataBuilder, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{IntegerType, LongType, MetadataBuilder, StringType, StructField, StructType}
 
 import org.apache.comet.parquet.CometParquetUtils
 
@@ -110,32 +110,7 @@ class CometNativeScanSuite extends AnyFunSuite {
     assert(fields.map(_.name) == Seq(colliding + "__"))
   }
 
-  test("Parquet pushdown settings preserve eligible conjunctions without weakening NOT") {
-    val conf = new SQLConf
-    conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED, false)
-    val date = AttributeReference("date", DateType)()
-    val id = AttributeReference("id", IntegerType)()
-    val disabled = EqualTo(date, Literal.create(0, DateType))
-    val enabled = EqualTo(id, Literal(1))
-    val predicates = Seq(
-      disabled -> None,
-      IsNull(date) -> None,
-      And(disabled, enabled) -> Some(enabled),
-      And(enabled, disabled) -> Some(enabled),
-      Or(disabled, enabled) -> None,
-      Or(And(disabled, enabled), enabled) -> Some(Or(enabled, enabled)),
-      Not(And(disabled, enabled)) -> None,
-      Not(enabled) -> Some(Not(enabled)))
-    predicates.foreach { case (predicate, expected) =>
-      assert(CometNativeScan.filterForParquetPushdown(predicate, conf) == expected)
-    }
-    conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED, true)
-    val combined = Not(And(disabled, enabled))
-    assert(CometNativeScan.filterForParquetPushdown(combined, conf).contains(combined))
-  }
-
-  test("Parquet pushdown excludes make_date before rewriting predicates") {
-    val conf = new SQLConf
+  test("Parquet pushdown excludes whole make_date predicates and preserves independent filters") {
     val year = AttributeReference("year", IntegerType)()
     val a = AttributeReference("a", IntegerType)()
     val b = AttributeReference("b", IntegerType)()
@@ -144,32 +119,8 @@ class CometNativeScanSuite extends AnyFunSuite {
       Literal(0))
     val predicate = Or(And(date, EqualTo(a, Literal(1))), EqualTo(b, Literal(1)))
     val independent = EqualTo(AttributeReference("keep", IntegerType)(), Literal(1))
-    Seq(false, true).foreach { datePushdown =>
-      conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_DATE_ENABLED, datePushdown)
-      assert(
-        Seq(predicate, independent).flatMap(CometNativeScan.filterForParquetPushdown(_, conf)) ==
-          Seq(independent))
-    }
-  }
-
-  test("Parquet pushdown settings apply to string and IN predicates") {
-    val conf = new SQLConf
-    conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_STRING_PREDICATE_ENABLED, false)
-    val str = AttributeReference("str", StringType)()
-    Seq(StartsWith(str, Literal("a")), EndsWith(str, Literal("a")), Contains(str, Literal("a")))
-      .foreach { predicate =>
-        assert(CometNativeScan.filterForParquetPushdown(predicate, conf).isEmpty)
-      }
-    val id = AttributeReference("id", IntegerType)()
-    val predicates = Seq(In(id, Seq(Literal(1), Literal(2))), InSet(id, Set[Any](1, 2)))
-    conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_INFILTERTHRESHOLD, 0)
-    predicates.foreach { predicate =>
-      assert(CometNativeScan.filterForParquetPushdown(predicate, conf).isEmpty)
-    }
-    conf.setConf(SQLConf.PARQUET_FILTER_PUSHDOWN_INFILTERTHRESHOLD, 1)
-    predicates.foreach { predicate =>
-      assert(CometNativeScan.filterForParquetPushdown(predicate, conf).contains(predicate))
-      assert(CometNativeScan.filterForParquetPushdown(Not(predicate), conf).isEmpty)
-    }
+    assert(
+      Seq(predicate, independent).flatMap(CometNativeScan.filterForParquetPushdown) ==
+        Seq(independent))
   }
 }

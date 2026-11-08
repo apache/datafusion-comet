@@ -32,6 +32,7 @@ import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
 import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
 import org.apache.spark.sql.comet.CometDeltaNativeScanExec
+import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -89,6 +90,47 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
       val df = spark.read.format("delta").load(path)
       checkSparkAnswer(df)
       assert(deltaNativeScans(df).nonEmpty)
+    }
+  }
+
+  test("make_date filters preserve Spark's reader before the Delta scan claim") {
+    withSQLConf(
+      "spark.sql.ansi.enabled" -> "false",
+      "spark.sql.adaptive.enabled" -> "false",
+      CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED.key -> "true") {
+      withTempPath { dir =>
+        val path = dir.getAbsolutePath
+        spark
+          .range(0, 3, 1, 1)
+          .selectExpr("id", "CAST(id + 2024 AS INT) AS y", "IF(id = 1, 13, 1) AS m")
+          .write
+          .format("delta")
+          .save(path)
+
+        for (deletionVectors <- Seq(false, true)) {
+          if (deletionVectors) {
+            spark.sql(
+              s"ALTER TABLE delta.`$path` SET TBLPROPERTIES ('delta.enableDeletionVectors' = 'true')")
+            spark.sql(s"DELETE FROM delta.`$path` WHERE id = 2")
+            assert(
+              DeltaLog
+                .forTable(spark, path)
+                .update()
+                .allFiles
+                .collect()
+                .exists(_.deletionVector != null))
+          }
+          val input = spark.read.format("delta").load(path)
+          val guarded = input.filter("unix_date(make_date(y, m, 1)) > 0")
+          checkSparkAnswer(guarded)
+          assert(deltaNativeScans(guarded).isEmpty)
+          assert(
+            collectByName(guarded.queryExecution.executedPlan, "FileSourceScanExec").nonEmpty)
+
+          // A bounded ANSI-off year is safe, including the invalid month that returns NULL.
+          checkDeltaNativeScanAnswer(input.filter("unix_date(make_date(2024, m, 1)) > 0"))
+        }
+      }
     }
   }
 

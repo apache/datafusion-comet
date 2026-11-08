@@ -25,20 +25,19 @@ import scala.jdk.CollectionConverters._
 import org.apache.hadoop.conf.Configuration
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.Resolver
-import org.apache.spark.sql.catalyst.expressions.{And, Attribute, AttributeReference, Contains, EndsWith, Expression, In, InSet, Literal, MakeDate, Not, Or, StartsWith}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, Expression, Literal, MakeDate}
 import org.apache.spark.sql.catalyst.util.ResolveDefaultColumns.getExistenceDefaultValues
 import org.apache.spark.sql.comet.{CometNativeExec, CometNativeScanExec, CometScanExec, CometScanUtils}
 import org.apache.spark.sql.execution.{FileSourceScanExec, InSubqueryExec, SubqueryAdaptiveBroadcastExec}
 import org.apache.spark.sql.execution.datasources.parquet.ParquetUtils
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DateType, DecimalType, MetadataBuilder, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{MetadataBuilder, StructField, StructType}
 
 import org.apache.comet.{CometConf, ConfigEntry, DataTypeSupport}
 import org.apache.comet.CometConf.COMET_EXEC_ENABLED
 import org.apache.comet.CometSparkSessionExtensions.{hasFallbackReason, isSpark35Plus, isSpark41Plus, withFallbackReason}
 import org.apache.comet.objectstore.NativeConfig
 import org.apache.comet.parquet.CometParquetUtils
-import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{CometOperatorSerde, CometTimeZone, Compatible, OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.OperatorOuterClass.Operator
@@ -309,11 +308,6 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
       hadoopConf = hadoopConf,
       conf = scan.conf) match {
       case Some(commonBuilder) =>
-        // Original filters include unsupported expressions and unresolved subqueries omitted
-        // from native predicates. A pushed sibling must not hide their make_date errors.
-        commonBuilder.setDisableRowFilterPushdown(
-          scan.wrapped.getTagValue(CometScanRule.DISABLE_ROW_FILTER_PUSHDOWN_TAG).isDefined ||
-            scan.dataFilters.exists(_.exists(_.isInstanceOf[MakeDate])))
         // Sink operators don't have children
         builder.clearChildren()
         val nativeScanBuilder = OperatorOuterClass.NativeScan.newBuilder()
@@ -333,61 +327,9 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     }
   }
 
-  /**
-   * Apply Spark's Parquet pushdown settings before serializing scan predicates. Unsupported
-   * conjuncts may be dropped, including inside OR, but never below NOT: weakening a negated
-   * predicate could prune rows Spark would read and hide an error in the enclosing filter.
-   *
-   * Public because execution-time scalar-subquery filters are serialized from Spark's package.
-   */
-  def filterForParquetPushdown(filter: Expression, conf: SQLConf): Option[Expression] = {
-    // Exclude the whole predicate before rewriting: removing make_date could leave a metadata
-    // filter that skips its required overflow. Independent predicates remain eligible.
-    if (filter.exists(_.isInstanceOf[MakeDate])) {
-      return None
-    }
-
-    val pushDownDate = conf.parquetFilterPushDownDate
-    val pushDownTimestamp = conf.parquetFilterPushDownTimestamp
-    val pushDownDecimal = conf.parquetFilterPushDownDecimal
-    val pushDownStringPredicate = conf.parquetFilterPushDownStringPredicate
-    val inFilterThreshold = conf.parquetFilterPushDownInFilterThreshold
-
-    def usesDisabledSetting(expression: Expression): Boolean = expression.exists {
-      case _: StartsWith | _: EndsWith | _: Contains => !pushDownStringPredicate
-      case e =>
-        e.dataType match {
-          case DateType => !pushDownDate
-          case TimestampType | TimestampNTZType => !pushDownTimestamp
-          case _: DecimalType => !pushDownDecimal
-          case _ => false
-        }
-    }
-
-    def select(expression: Expression, canPartialPushDown: Boolean): Option[Expression] =
-      expression match {
-        case And(left, right) =>
-          (select(left, canPartialPushDown), select(right, canPartialPushDown)) match {
-            case (Some(l), Some(r)) => Some(And(l, r))
-            case (l, r) if canPartialPushDown => l.orElse(r)
-            case _ => None
-          }
-        case Or(left, right) =>
-          for {
-            l <- select(left, canPartialPushDown)
-            r <- select(right, canPartialPushDown)
-          } yield Or(l, r)
-        case Not(child) => select(child, canPartialPushDown = false).map(Not)
-        case other if usesDisabledSetting(other) => None
-        case _: In | _: InSet if inFilterThreshold <= 0 => None
-        // Spark only pushes large IN predicates where partial pushdown is allowed.
-        case In(_, values) if !canPartialPushDown && values.size > inFilterThreshold => None
-        case InSet(_, values) if !canPartialPushDown && values.size > inFilterThreshold => None
-        case other => Some(other)
-      }
-
-    select(filter, canPartialPushDown = true)
-  }
+  /** Keep each make_date predicate above the scan, without weakening its Boolean structure. */
+  def filterForParquetPushdown(filter: Expression): Option[Expression] =
+    if (filter.exists(_.isInstanceOf[MakeDate])) None else Some(filter)
 
   /**
    * Build the `NativeScanCommon` proto shared by the core parquet scan and contrib scans that
@@ -428,7 +370,7 @@ object CometNativeScan extends CometOperatorSerde[CometScanExec] with CometTypeS
     if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
       commonBuilder.setHasDataFilters(dataFilters.nonEmpty)
       val filterProtos = new ListBuffer[Expr]()
-      for (filter <- dataFilters.flatMap(filterForParquetPushdown(_, conf))) {
+      for (filter <- dataFilters.flatMap(filterForParquetPushdown)) {
         exprToProto(filter, output) match {
           case Some(proto) => filterProtos += proto
           case _ =>

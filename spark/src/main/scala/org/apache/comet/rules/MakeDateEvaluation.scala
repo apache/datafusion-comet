@@ -90,24 +90,28 @@ private[rules] object MakeDateEvaluation {
     cast.dataType == IntegerType &&
       (cast.child.dataType == ByteType || cast.child.dataType == ShortType)
 
+  // An attribute can name a deferred producer; callers must also preserve its evaluation.
+  def canEvaluateMakeDateEagerly(date: MakeDate): Boolean = {
+    val boundedYear = date.year match {
+      case Literal(year: Int, IntegerType) =>
+        year >= firstCompleteYear && year <= lastCompleteYear
+      case cast: Cast if isSmallIntegerWidening(cast) => true
+      case _ => false
+    }
+    !date.failOnError && boundedYear && date.children.forall {
+      case cast: Cast if isSmallIntegerWidening(cast) =>
+        CometMakeDate.canEvaluateEagerly(cast.child)
+      case child => CometMakeDate.canEvaluateEagerly(child)
+    }
+  }
+
   // This only describes computations over their input values. An attribute may still name a
   // deferred producer, so argument lineage and sibling provenance must be tracked separately.
   private def canEvaluateProjectionEagerly(expression: Expression): Boolean = expression match {
     case Alias(child, _) => canEvaluateProjectionEagerly(child)
     case _: UnixDate | _: IsNull | _: IsNotNull =>
       expression.children.forall(canEvaluateProjectionEagerly)
-    case date: MakeDate if !date.failOnError =>
-      val boundedYear = date.year match {
-        case Literal(year: Int, IntegerType) =>
-          year >= firstCompleteYear && year <= lastCompleteYear
-        case cast: Cast if isSmallIntegerWidening(cast) => true
-        case _ => false
-      }
-      boundedYear && date.children.forall {
-        case cast: Cast if isSmallIntegerWidening(cast) =>
-          CometMakeDate.canEvaluateEagerly(cast.child)
-        case child => CometMakeDate.canEvaluateEagerly(child)
-      }
+    case date: MakeDate => canEvaluateMakeDateEagerly(date)
     case _ => CometMakeDate.canEvaluateEagerly(expression)
   }
 

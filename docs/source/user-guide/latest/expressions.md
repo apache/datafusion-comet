@@ -763,19 +763,20 @@ Exchanges materialize their inputs and partition keys independently, so an outer
 not force an eager date partition key to Spark. Local sorts and aggregates can also separate
 date evaluation from an outer limit.
 
-Predicates containing `make_date` stay above the Parquet scan. Comet disables row-level filter
-pushdown for that scan so predicates cannot be reordered or hide a required date error, and
-Spark's structured error is preserved. This safeguard uses Spark's original predicates, including
-those that cannot be serialized for native execution. Other predicates can still use metadata to
-skip row groups and pages when `spark.sql.parquet.filterPushdown` is enabled. That setting also
-applies to filters resolved from scalar subqueries at execution time.
+Parquet scans below a filter whose `make_date` can throw use Spark's reader. This preserves
+Spark's dictionary and metadata pruning, which determine whether an overflowing date is read,
+as well as its predicate order and structured errors. The safeguard inspects complete filters,
+including projected date arguments and predicates absent from the native scan's data filters.
+ANSI-off dates with bounded years and safe arguments can retain the native reader and sibling
+row filtering. Predicates containing `make_date` remain above a native scan without weakening
+their Boolean structure. Other native scans retain their existing pruning behavior.
 
 Users who accept eagerly evaluating dates, projected arguments, and sibling expressions can set
 `spark.comet.exec.makeDate.operatorFallback.enabled=false` to allow native operators for
 these shapes. The default is `true`. Disabling it can expose invalid-date or argument errors
 that Spark would skip, including Date32 overflow with ANSI disabled. This setting does not change
-`make_date`'s invalid-date handling or the expression-level safeguards for skipped
-arguments and operands. For example, an empty `IN` predicate containing `make_date`
+`make_date`'s invalid-date handling, the Spark-reader safeguard, or the expression-level safeguards
+for skipped arguments and operands. For example, an empty `IN` predicate containing `make_date`
 still falls back when needed.
 
 ## See also

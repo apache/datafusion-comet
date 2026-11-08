@@ -89,7 +89,6 @@ fn scan(
         false,
         "CORRECTED",
         "CORRECTED",
-        false,
     )
     .unwrap()
 }

@@ -30,7 +30,6 @@ import org.apache.spark.sql.comet.shims.ShimStreamSourceAwareSparkPlan
 import org.apache.spark.sql.execution.{ScalarSubquery => ExecScalarSubquery, _}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.SerializableConfiguration
@@ -184,11 +183,8 @@ case class CometNativeScanExec(
     // (DataSourceScanExec.scala), which resolves ScalarSubquery -> Literal at execution time.
     val commonBytes = {
       val base = nativeOp.getNativeScan.getCommon
-      val scalarSubqueryFilters = if (conf.getConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED)) {
-        dataFilters.filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
-      } else {
-        Seq.empty
-      }
+      val scalarSubqueryFilters = dataFilters
+        .filter(_.exists(_.isInstanceOf[ExecScalarSubquery]))
       scalarSubqueryFilters.foreach { f =>
         f.foreach {
           case s: ExecScalarSubquery =>
@@ -203,8 +199,7 @@ case class CometNativeScanExec(
       if (resolvedFilters.nonEmpty) {
         val commonBuilder = base.toBuilder
         commonBuilder.setHasDataFilters(true)
-        for (filter <- resolvedFilters.flatMap(
-            CometNativeScan.filterForParquetPushdown(_, conf))) {
+        for (filter <- resolvedFilters.flatMap(CometNativeScan.filterForParquetPushdown)) {
           exprToProto(filter, output) match {
             case Some(proto) => commonBuilder.addDataFilters(proto)
             case _ =>
