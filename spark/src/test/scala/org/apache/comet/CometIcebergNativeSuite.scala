@@ -26,10 +26,14 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
 import scala.jdk.CollectionConverters._
+import scala.util.Using
 
+import org.apache.hadoop.fs.Path
 import org.apache.iceberg.data.IcebergGenerics
 import org.apache.iceberg.expressions.Expressions
 import org.apache.iceberg.spark.Spark3Util
+import org.apache.parquet.hadoop.ParquetFileReader
+import org.apache.parquet.hadoop.util.HadoopInputFile
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
@@ -161,6 +165,12 @@ class CometIcebergNativeSuite
     }
     count
   }
+
+  /** Opens the Parquet footer of the file at `path`, runs `f` on it, and always closes it. */
+  private def withParquetReader[T](path: String)(f: ParquetFileReader => T): T =
+    Using.resource(
+      ParquetFileReader.open(
+        HadoopInputFile.fromPath(new Path(path), spark.sessionState.newHadoopConf())))(f)
 
   test("create and query simple Iceberg table with Hadoop catalog") {
     assume(icebergAvailable, "Iceberg not available in classpath")
@@ -1021,24 +1031,17 @@ class CometIcebergNativeSuite
 
         // Check the fixture shape in the footer so it cannot silently degrade into a layout
         // where file-level or row-group-level pruning would explain the byte savings.
-        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
-          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
-            new org.apache.hadoop.fs.Path(dataFilePath),
-            spark.sessionState.newHadoopConf()))
-        val idPages =
-          try {
-            val rowGroups = reader.getRowGroups
-            assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
-            val idChunk = rowGroups
-              .get(0)
-              .getColumns
-              .asScala
-              .find(_.getPath.toDotString == "id")
-              .getOrElse(fail("id column chunk not found"))
-            reader.readOffsetIndex(idChunk).getPageCount
-          } finally {
-            reader.close()
-          }
+        val idPages = withParquetReader(dataFilePath) { reader =>
+          val rowGroups = reader.getRowGroups
+          assert(rowGroups.size == 1, s"expected one row group, got ${rowGroups.size}")
+          val idChunk = rowGroups
+            .get(0)
+            .getColumns
+            .asScala
+            .find(_.getPath.toDotString == "id")
+            .getOrElse(fail("id column chunk not found"))
+          reader.readOffsetIndex(idChunk).getPageCount
+        }
         assert(idPages > 50, s"expected more than 50 id pages, got $idPages")
 
         def runAndCollectScan(sql: String): (CometIcebergNativeScanExec, Long) = {
@@ -2235,6 +2238,61 @@ class CometIcebergNativeSuite
         // A read that does not project those columns, or whose struct kept a field, stays native.
         checkIcebergNativeScan(s"SELECT id FROM $table ORDER BY id")
         checkIcebergNativeScan(s"SELECT id, partial FROM $table ORDER BY id")
+
+        spark.sql(s"DROP TABLE $table")
+      }
+    }
+  }
+
+  // No schema change, so the schema evolution fallback does not apply.
+  test("data file that omits an optional nested field stays native") {
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    withHadoopCatalog("test_cat") {
+      withSQLConf(
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+        val table = "test_cat.db.omitted_nested"
+        spark.sql(s"""
+          CREATE TABLE $table (id INT, s STRUCT<a: INT, b: INT>, l ARRAY<STRUCT<x: INT, y: INT>>)
+          USING iceberg
+        """)
+        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+          spark.sql(s"""
+            INSERT INTO $table VALUES
+              (1, named_struct('a', 1, 'b', 10), array(named_struct('x', 1, 'y', 100)))
+          """)
+          // Set after the insert: accept-any-schema matches columns by name.
+          spark.sql(
+            s"ALTER TABLE $table SET TBLPROPERTIES ('write.spark.accept-any-schema' = 'true')")
+          // This file has no s.b and no l.element.y.
+          spark
+            .sql("""
+              SELECT 2 AS id, named_struct('a', 2) AS s, array(named_struct('x', 20)) AS l
+              UNION ALL
+              SELECT 3, CAST(NULL AS STRUCT<a: INT>), CAST(NULL AS ARRAY<STRUCT<x: INT>>)
+            """)
+            .writeTo(table)
+            .append()
+        }
+
+        // Check the footers, so the test fails if a writer starts filling in the missing fields.
+        val fileLeaves = spark.sql(s"SELECT file_path FROM $table.files").collect().map { row =>
+          withParquetReader(row.getString(0)) { reader =>
+            reader.getFooter.getFileMetaData.getSchema.getColumns.asScala
+              .map(_.getPath.mkString("."))
+              .toSet
+          }
+        }
+        val omitted = Set("s.b", "l.list.element.y")
+        // Check the paths against the full-schema file first, or a wrong path makes the next
+        // assert always pass.
+        assert(fileLeaves.exists(omitted.subsetOf), s"leaves: ${fileLeaves.mkString(", ")}")
+        assert(fileLeaves.exists(!_.exists(omitted)), s"leaves: ${fileLeaves.mkString(", ")}")
+
+        checkPrunedAndFullReads(s"SELECT * FROM $table ORDER BY id")
+        checkPrunedAndFullReads(s"SELECT id, s.b FROM $table WHERE s.b IS NULL ORDER BY id")
 
         spark.sql(s"DROP TABLE $table")
       }
@@ -4691,11 +4749,7 @@ class CometIcebergNativeSuite
         assert(parquetFiles.nonEmpty, "Expected at least one Parquet file")
 
         val parquetFile = parquetFiles.head
-        val reader = org.apache.parquet.hadoop.ParquetFileReader.open(
-          org.apache.parquet.hadoop.util.HadoopInputFile.fromPath(
-            new org.apache.hadoop.fs.Path(parquetFile.getAbsolutePath),
-            spark.sessionState.newHadoopConf()))
-        try {
+        withParquetReader(parquetFile.getAbsolutePath) { reader =>
           val parquetSchema = reader.getFooter.getFileMetaData.getSchema
           val int96Columns = parquetSchema.getColumns.asScala
             .filter(_.getPrimitiveType.getPrimitiveTypeName ==
@@ -4705,8 +4759,6 @@ class CometIcebergNativeSuite
           assert(
             int96Columns.size >= 4,
             s"Expected at least 4 INT96 columns but found ${int96Columns.size}: ${int96Columns.mkString(", ")}")
-        } finally {
-          reader.close()
         }
 
         // Create an unpartitioned Iceberg table and import the Parquet files
@@ -6849,8 +6901,6 @@ class CometIcebergNativeSuite
   // Spark's V2 path.
   test("AQE DPP - V2 broadcast query stage creation order (SPARK-34637)") {
     assume(icebergAvailable, "Iceberg not available")
-    // https://github.com/apache/datafusion-comet/issues/7422
-    assume(isSpark35Plus, "Spark 3.4 fails the DPP build side, see #7422")
     withTempIcebergDir { warehouseDir =>
       withSQLConf(
         "spark.sql.catalog.aqe_cat" -> "org.apache.iceberg.spark.SparkCatalog",
@@ -6886,12 +6936,14 @@ class CometIcebergNativeSuite
 
         assertNoLeftoverCSAB(cometPlan)
 
-        val cometSubqueries = collectWithSubqueries(cometPlan) {
-          case s: CometSubqueryBroadcastExec => s
+        if (isSpark35Plus) {
+          val cometSubqueries = collectWithSubqueries(cometPlan) {
+            case s: CometSubqueryBroadcastExec => s
+          }
+          assert(
+            cometSubqueries.nonEmpty,
+            s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
         }
-        assert(
-          cometSubqueries.nonEmpty,
-          s"Expected CometSubqueryBroadcastExec for DPP, got 0:\n${cometPlan.treeString}")
 
         spark.sql("DROP TABLE aqe_cat.db.q34637_fact")
       }
