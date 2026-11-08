@@ -200,9 +200,12 @@ class CometIcebergWriteActionSuite
                 |'write.parquet.row-group-check-min-record-count'='500')""".stripMargin)
               val insert = s"INSERT INTO cat.db.$table SELECT * FROM required_fallback_source"
               withNativeEnabled {
-                val explained = sql(s"EXPLAIN EXTENDED $insert").collect().mkString("\n")
                 val reason = "write.parquet.row-group-check-min-record-count=500"
-                assert(explained.contains(reason), explained)
+                // Spark 3.5 does not invoke extended explain providers unless it is backported.
+                if (supportsExtendedExplainInfo(input.queryExecution)) {
+                  val explained = sql(s"EXPLAIN EXTENDED $insert").collect().mkString("\n")
+                  assert(explained.contains(reason), explained)
+                }
                 val snapshot = captureWrite(table)(sql(insert))
                 assertExactlyOneCommit(snapshot)
                 val writers = snapshot.plans.flatMap(p =>
