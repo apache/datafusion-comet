@@ -23,7 +23,7 @@ import java.nio.charset.StandardCharsets.UTF_8
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.arrow.memory.RootAllocator
+import org.apache.arrow.memory.{OutOfMemoryException, RootAllocator}
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
 import org.apache.spark.sql.execution.vectorized.OnHeapColumnVector
 import org.apache.spark.sql.types.StringType
@@ -40,6 +40,16 @@ class CacheBatchCoalescerSuite extends AnyFunSuite {
     val columns = (0 until numColumns).map { c =>
       val vector = new OnHeapColumnVector(rows, StringType)
       (0 until rows).foreach(i => vector.putByteArray(i, s"c${c}r${first + i}".getBytes(UTF_8)))
+      vector: ColumnVector
+    }
+    new ColumnarBatch(columns.toArray, rows)
+  }
+
+  // Like sparkBatch, with every value `width` bytes long.
+  private def wideBatch(rows: Int, width: Int): ColumnarBatch = {
+    val columns = (0 until numColumns).map { _ =>
+      val vector = new OnHeapColumnVector(rows, StringType)
+      (0 until rows).foreach(i => vector.putByteArray(i, Array.fill[Byte](width)('x'.toByte)))
       vector: ColumnVector
     }
     new ColumnarBatch(columns.toArray, rows)
@@ -103,6 +113,49 @@ class CacheBatchCoalescerSuite extends AnyFunSuite {
         sizes += out.numRows()
       }
       assert(sizes.result() == Seq(10, 10, 10, 10, 10, 10, 2))
+    }
+  }
+
+  test("closing a coalescer after one batch releases the batch handed out") {
+    // The input is only partly copied, so the coalescer still holds the root behind the batch
+    // `next` returned, which it releases when the consumer asks for more.
+    withCoalescer(Long.MaxValue, Seq(sparkBatch(0, 25)), 10) { coalescer =>
+      assert(coalescer.next().numRows() == 10)
+    }
+  }
+
+  test("closing a coalescer after hasNext releases the batch that was ready") {
+    // hasNext builds the next output batch, and nothing has taken it.
+    withCoalescer(Long.MaxValue, Seq(sparkBatch(0, 25)), 10) { coalescer =>
+      assert(coalescer.hasNext)
+    }
+  }
+
+  test("a closed coalescer has no more batches") {
+    // More input is left when it closes, so a coalescer that kept reading would have a batch.
+    withCoalescer(Long.MaxValue, Seq(sparkBatch(0, 25), sparkBatch(25, 25)), 10) { coalescer =>
+      coalescer.next()
+      coalescer.close()
+      assert(!coalescer.hasNext)
+      intercept[NoSuchElementException](coalescer.next())
+      // Closing again releases nothing twice.
+      coalescer.close()
+    }
+  }
+
+  test("a failure while starting an output batch releases the vectors it allocated") {
+    // Each variable-width column allocates about 49 KiB up front, so this limit lets two of the
+    // four columns through and fails on the third.
+    withCoalescer(100L * 1024, Seq(sparkBatch(0, 25)), 10) { coalescer =>
+      intercept[OutOfMemoryException](coalescer.hasNext)
+    }
+  }
+
+  test("a failure while copying rows releases the batch being filled") {
+    // The four columns allocate about 200 KiB up front and fit, and then 10 rows of 8 KiB each
+    // outgrow the data buffers.
+    withCoalescer(400L * 1024, Seq(wideBatch(25, 8 * 1024)), 10) { coalescer =>
+      intercept[OutOfMemoryException](coalescer.hasNext)
     }
   }
 
