@@ -17,9 +17,6 @@
 
 -- Config: spark.sql.ansi.enabled=false
 
--- Materialize potentially throwing expression results before exposing a row iterator.
--- Bounded ANSI-off dates can still execute natively without a materialization barrier.
-
 statement
 CREATE TABLE test_make_date(year int, month int, day int) USING parquet
 
@@ -37,7 +34,7 @@ INSERT INTO test_make_date VALUES
 
 -- column arguments
 query
-SELECT /*+ REPARTITION(1) */ year, month, day, make_date(year, month, day) FROM test_make_date ORDER BY year, month, day
+SELECT year, month, day, make_date(year, month, day) FROM test_make_date ORDER BY year, month, day
 
 -- literal year, column month and day
 query
@@ -45,11 +42,11 @@ SELECT make_date(2023, month, day) FROM test_make_date ORDER BY month, day
 
 -- column year, literal month and day
 query
-SELECT /*+ REPARTITION(1) */ make_date(year, 6, 15) FROM test_make_date ORDER BY year
+SELECT make_date(year, 6, 15) FROM test_make_date ORDER BY year
 
 -- column year and month, literal day
 query
-SELECT /*+ REPARTITION(1) */ make_date(year, month, 1) FROM test_make_date ORDER BY year, month
+SELECT make_date(year, month, 1) FROM test_make_date ORDER BY year, month
 
 -- literal values
 query
@@ -60,7 +57,7 @@ SELECT make_date(1970, 1, 1)
 
 -- null handling with literals
 query
-SELECT /*+ REPARTITION(1) */ make_date(NULL, 1, 1)
+SELECT make_date(NULL, 1, 1)
 
 query
 SELECT make_date(2023, NULL, 1)
@@ -193,7 +190,7 @@ INSERT INTO make_date_bounds VALUES
   (NULL, 13, 32), (6000000, NULL, 1), (6000000, 1, NULL)
 
 query expect_native(make_date)
-SELECT /*+ REPARTITION(1) */ unix_date(make_date(y, m, d)) FROM make_date_bounds
+SELECT unix_date(make_date(y, m, d)) FROM make_date_bounds
 
 -- Valid calendar dates just outside Date32 must overflow, regardless of ANSI mode.
 statement
@@ -203,16 +200,16 @@ statement
 INSERT INTO make_date_overflow VALUES (5881580, 7, 12), (-5877641, 6, 22)
 
 query expect_error_class(ARITHMETIC_OVERFLOW)
-SELECT /*+ REPARTITION(1) */ make_date(y, m, d) FROM make_date_overflow WHERE y > 0
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y > 0
 
 query expect_error_class(ARITHMETIC_OVERFLOW)
-SELECT /*+ REPARTITION(1) */ make_date(y, m, d) FROM make_date_overflow WHERE y < 0
+SELECT make_date(y, m, d) FROM make_date_overflow WHERE y < 0
 
 -- An empty input must not evaluate overflowing scalar arguments.
 query expect_native(make_date)
-SELECT /*+ REPARTITION(1) */ make_date(6000000, 1, 1) FROM make_date_overflow WHERE y = 0
+SELECT make_date(6000000, 1, 1) FROM make_date_overflow WHERE y = 0
 
 -- Calendar validation precedes the checked epoch-day conversion.
 query
-SELECT /*+ REPARTITION(1) */ make_date(6000000, 13, 32), make_date(6000000, 2, 30),
+SELECT make_date(6000000, 13, 32), make_date(6000000, 2, 30),
        make_date(1000000000, 1, 1), make_date(-1000000000, 1, 1)

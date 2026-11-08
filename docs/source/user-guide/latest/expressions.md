@@ -727,8 +727,7 @@ before the consuming operator decides which rows it needs.
 
 By default, Comet keeps affected operators in Spark to preserve skipped date evaluation.
 This applies to date projections below `LIMIT`, `SAMPLE`, `FILTER`, joins,
-`mapPartitions`, and external row iterators, including Scala's `Dataset.rdd` and PySpark's
-`DataFrame.rdd`; date expressions inside joins, aggregates,
+`mapPartitions`, and `Dataset.rdd` consumers; date expressions inside joins, aggregates,
 and ordered limits; and projections below a window group limit. A parent projection can
 also defer a date output when an `IF`, `COALESCE`, or NULL-skipping operand does not need
 it. Comet preserves that evaluation across projections while allowing eager date consumers,
@@ -740,10 +739,6 @@ These safeguards also cover required arguments, such as a computed year, on inpu
 the join rejects before producing an output row.
 Selecting the date eagerly does not force conditionally used sibling expressions; those
 computations also retain Spark evaluation when needed.
-
-The physical plan can be reused by a later RDD consumer, so uncapped root date projections
-also retain these safeguards, even when the current action collects the complete result.
-Materializing exchanges, sorts, and aggregates can still allow native date evaluation below them.
 
 With ANSI disabled, a direct date projection can remain native below these consumers when
 all its computations are safe to evaluate early. This includes `make_date(2024, month, day)`
@@ -760,10 +755,8 @@ because Spark checks that argument on every input row. Filtered counts and count
 multiple arguments retain the safeguard when they can skip date evaluation.
 
 Only affected parts of the plan fall back. An ordinary native scan can remain native.
-An adjacent `LIMIT 1` without `OFFSET` and date projection can also stay native: Comet caps
-the projection's input before evaluating dates, so unread rows cannot raise errors. Larger
-root limits retain the safeguard because an RDD caller can stop before reaching the limit.
-The cap requires a supported
+An adjacent collect limit and date projection can also stay native: Comet caps the projection's
+input before evaluating dates, so unread rows cannot raise errors. This requires a supported
 native local limit; otherwise the Spark safeguard remains. The cap does not bypass safeguards
 for a lower argument-producing projection or intervening filters and joins.
 Exchanges materialize their inputs and partition keys independently, so an outer limit does
