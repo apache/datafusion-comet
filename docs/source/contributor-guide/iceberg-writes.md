@@ -145,7 +145,9 @@ cast error instead of iceberg-java's Parquet error.
 The conversion accepts the recursive types supported by `RowArrowReader` and requires proof that
 string outputs, including nested strings, contain valid UTF-8. `isRowConversionSupported` follows
 native inputs through preserving Spark operators and projections, including attributes, struct
-fields and construction, `If` branches, assertions, and validated string literals. Unproven row
+fields and construction, `If` branches, assertions, and validated string literals. It also accepts
+`MapKeys` over proven map input and `MapFromArrays` when both arrays preserve valid strings; Spark
+uses these to rebuild maps whose struct values need field alignment. Unproven row
 sources or other string-producing expressions, including string-bearing collection transforms,
 keep the JVM writer: importing invalid UTF-8 into Arrow could change the stored bytes. The writer's
 table and schema eligibility checks still apply.

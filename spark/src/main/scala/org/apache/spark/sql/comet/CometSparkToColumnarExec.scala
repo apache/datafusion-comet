@@ -27,7 +27,7 @@ import org.apache.arrow.vector.ipc.ArrowReader
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CreateNamedStruct, Expression, GetStructField, If, Literal, SortOrder}
+import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeSet, CreateNamedStruct, Expression, GetStructField, If, Literal, MapFromArrays, MapKeys, SortOrder}
 import org.apache.spark.sql.catalyst.expressions.objects.AssertNotNull
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource, RowArrowReader, SparkColumnarArrowReader}
@@ -190,6 +190,10 @@ object CometSparkToColumnarExec extends CometSink[SparkPlan] with DataTypeSuppor
         case assertion: AssertNotNull => preservesValidStrings(assertion.child, input)
         case field: GetStructField => preservesValidStrings(field.child, input)
         case struct: CreateNamedStruct => struct.valExprs.forall(preservesValidStrings(_, input))
+        // Spark aligns struct-valued maps by rebuilding them with their existing keys.
+        case keys: MapKeys => preservesValidStrings(keys.child, input)
+        case map: MapFromArrays =>
+          preservesValidStrings(map.left, input) && preservesValidStrings(map.right, input)
         case conditional: If =>
           preservesValidStrings(conditional.trueValue, input) &&
           preservesValidStrings(conditional.falseValue, input)

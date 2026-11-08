@@ -35,6 +35,7 @@ import scala.util.control.NonFatal
 import org.json4s.{DefaultFormats, Formats}
 import org.json4s.jackson.JsonMethods.parse
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{Path => HadoopPath}
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
@@ -498,10 +499,20 @@ class CometIcebergWriteActionSuite
                       if (value == null) {
                         val created = IcebergTestFiles.parquetFiles(new File(location).toPath) --
                           existing
-                        // An unpartitioned writer has at most one open file, so one is finalized.
-                        require(
-                          created.size >= 2,
-                          s"no finalized prefix before assertion: $created")
+                        // Java opens the next physical file lazily; verify a completed footer.
+                        val finalized = created.exists { file =>
+                          try {
+                            val reader = ParquetFileReader.open(
+                              HadoopInputFile.fromPath(
+                                new HadoopPath(new File(location, file).toURI),
+                                new Configuration()))
+                            try reader.getFooter.getBlocks.asScala.exists(_.getRowCount > 0)
+                            finally reader.close()
+                          } catch {
+                            case NonFatal(_) => false // The current file may still be open.
+                          }
+                        }
+                        require(finalized, s"no finalized prefix before assertion: $created")
                       }
                       value
                     })
@@ -606,7 +617,7 @@ class CometIcebergWriteActionSuite
     }
   }
 
-  Seq("text", "binary_cast").foreach { source =>
+  Seq("text", "binary_cast", "binary_map_key", "binary_map_value").foreach { source =>
     test(s"native Iceberg writer: unproven $source strings preserve invalid UTF-8 on Spark") {
       assume(icebergAvailable && isSpark35Plus)
       withSQLConf(
@@ -617,9 +628,11 @@ class CometIcebergWriteActionSuite
           withTempPath { path =>
             val table = s"required_utf8_$source"
             val reference = s"${table}_jvm"
-            val schema =
-              if (source == "text") "value STRING NOT NULL"
-              else "id INT NOT NULL, value STRING"
+            val schema = source match {
+              case "text" => "value STRING NOT NULL"
+              case "binary_cast" => "id INT NOT NULL, value STRING"
+              case _ => "id INT NOT NULL, value MAP<STRING, STRING>"
+            }
             Seq(table, reference).foreach { name =>
               sql(s"""CREATE TABLE cat.db.$name ($schema) USING iceberg
                 |TBLPROPERTIES ('write.distribution-mode'='none')""".stripMargin)
@@ -628,8 +641,16 @@ class CometIcebergWriteActionSuite
               Files.write(path.toPath, Array(0xff.toByte, '\n'.toByte))
               spark.read.text(path.toString)
             } else {
-              sql("SELECT 1 AS id, X'FF' AS bytes").write.parquet(path.toString)
-              spark.read.parquet(path.toString).selectExpr("id", "CAST(bytes AS STRING) AS value")
+              sql("SELECT 1 AS id, X'FF' AS bytes, array('valid') AS valid").write.parquet(
+                path.toString)
+              val value = source match {
+                case "binary_map_key" =>
+                  "map_from_arrays(array(CAST(bytes AS STRING)), valid)"
+                case "binary_map_value" =>
+                  "map_from_arrays(valid, array(CAST(bytes AS STRING)))"
+                case _ => "CAST(bytes AS STRING)"
+              }
+              spark.read.parquet(path.toString).selectExpr("id", s"$value AS value")
             }
             withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
               input.writeTo(s"cat.db.$reference").append()
@@ -642,8 +663,13 @@ class CometIcebergWriteActionSuite
             assert(snapshot.snapshotDelta == 1)
             // Read bytes through Spark too: a native reader could normalize both results.
             withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-              val expected = sql(s"SELECT hex(CAST(value AS BINARY)) FROM cat.db.$reference")
-              val actual = sql(s"SELECT hex(CAST(value AS BINARY)) FROM cat.db.$table")
+              val value = source match {
+                case "binary_map_key" => "map_keys(value)[0]"
+                case "binary_map_value" => "map_values(value)[0]"
+                case _ => "value"
+              }
+              val expected = sql(s"SELECT hex(CAST($value AS BINARY)) FROM cat.db.$reference")
+              val actual = sql(s"SELECT hex(CAST($value AS BINARY)) FROM cat.db.$table")
               checkAnswer(expected, Seq(Row("FF")))
               checkAnswer(actual, expected)
             }
@@ -655,7 +681,7 @@ class CometIcebergWriteActionSuite
               snapshot.plans.forall(p =>
                 collectWithSubqueries(p) { case w: CometIcebergWriteExec => w }.isEmpty),
               snapshot.plans.mkString("\n"))
-            if (source == "binary_cast") {
+            if (source != "text") {
               assert(
                 writers.exists(w =>
                   collectWithSubqueries(w) {

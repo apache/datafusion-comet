@@ -488,8 +488,10 @@ Parquet error.
 
 This conversion requires proof that string values, including nested strings, contain valid UTF-8.
 For example, it accepts native input with recognized Spark projections that preserve those strings
-or use validated literals. Unproven sources or string-producing expressions, such as Spark text
-input, Spark binary-to-string casts, or string-bearing collection transforms, keep the iceberg-java
+or use validated literals. Extracting existing map keys and rebuilding a map from arrays whose
+strings are already proven valid also qualify. Unproven sources or string-producing expressions,
+such as Spark text input, Spark binary-to-string casts, or unproven string-bearing collection
+transforms, keep the iceberg-java
 writer to preserve the original bytes. The same table and schema eligibility checks apply.
 
 A write fed directly by a local relation, such as `INSERT ... VALUES` or
