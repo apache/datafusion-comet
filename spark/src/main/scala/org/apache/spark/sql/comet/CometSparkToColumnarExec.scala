@@ -43,7 +43,7 @@ import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.operator.CometSink
 import org.apache.comet.shims.CometTypeShim
 
-case class CometSparkToColumnarExec(child: SparkPlan)
+case class CometSparkToColumnarExec(child: SparkPlan, batchSize: Option[Int] = None)
     extends RowToColumnarTransition
     with CometPlan
     with CometNativeArrowSource {
@@ -89,7 +89,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val conversionTime = longMetric("conversionTime")
-    val maxRecordsPerBatch = CometConf.COMET_BATCH_SIZE.get(conf)
+    val maxRecordsPerBatch = batchSize.getOrElse(CometConf.COMET_BATCH_SIZE.get(conf))
     val sparkSchema = child.schema
     val onConversionNs: Long => Unit = ns => {
       conversionTime += ns
@@ -97,7 +97,6 @@ case class CometSparkToColumnarExec(child: SparkPlan)
     }
 
     if (child.supportsColumnar) {
-      val maxBatchInt = maxRecordsPerBatch.toInt
       child.executeColumnar().mapPartitionsInternal { sparkBatches =>
         val arrowSchema = Utils.toArrowSchema(sparkSchema, CometArrowStream.NATIVE_TIMEZONE)
         consume(
@@ -109,7 +108,7 @@ case class CometSparkToColumnarExec(child: SparkPlan)
               .countingIterator(
                 sparkBatches,
                 (b: ColumnarBatch) => numInputRows.add(b.numRows().toLong)),
-            maxBatchInt,
+            maxRecordsPerBatch,
             onConversionNs))
       }
     } else {

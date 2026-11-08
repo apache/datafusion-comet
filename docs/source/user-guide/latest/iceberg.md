@@ -217,10 +217,18 @@ The following scenarios will fall back to the JVM Iceberg reader:
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Scans that read a struct, array, or map column with a nested field that schema evolution added
-  or renamed. The native reader cannot yet match such a field to data files written before the
-  change. The check uses the table's schema history, so the fallback stays after those files are
-  rewritten
+- Scans that read a struct column, or a struct inside an array or map, whose fields were all added
+  by schema evolution after some data file was written. For such a file the native reader returns a
+  struct of NULLs or NULL, depending on what else the scan reads, where Spark does not. The check
+  uses the table's schema history, so the fallback stays after those files are rewritten
+- Scans that read a struct, array, or map column from a table with
+  `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
+  `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
+  does not apply name mappings to nested fields. Queries that read only primitive columns can
+  still run natively. The fallback remains while the property is set, even if the data files
+  have since been rewritten with field IDs. Iceberg's nullness rules are separate from the
+  Parquet legacy setting; [#6934](https://github.com/apache/datafusion-comet/issues/6934) tracks
+  the reader update and review of this fallback
 - Scans where no schema in the table's history gives a partition source or equality-delete key a
   name that the scan's other columns don't use (every task of a native scan must give such a
   column the same name)
@@ -663,9 +671,8 @@ normal `remove_orphan_files` maintenance.
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-`FileIO`. (From Iceberg 1.6 on, Iceberg's own `SparkWrite.abort` skips cleanup unless a commit
-failed with a cleanable error, so on the stock path those files are left for
-`remove_orphan_files`. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -719,9 +726,8 @@ a data file but not what any reader computes from it:
   per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
   leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type the native writer accepts. On Iceberg 1.5.x,
-  which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
-  directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
+  partition type the native writer accepts. Earlier iceberg-java releases spelled `timestamp` and
+  `timestamptz` directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
   1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
   cases, and no reader parses these names: files are resolved through committed manifests.
@@ -812,14 +818,9 @@ Which entries apply depends on which native paths are enabled:
 
 ### Reads that differ from Spark
 
-- **Migrated tables that use a name mapping.** The `migrate`, `snapshot` and `add_files`
-  procedures set `schema.name-mapping.default` for files without Iceberg field ids. When a query
-  also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-  fields, list elements and map values). Filters on those fields then select the wrong rows
-  ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The fix needs an iceberg-rust
-  upgrade ([#6934](https://github.com/apache/datafusion-comet/issues/6934)).
 - **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
-  a file as NULL, and the native scan returns the values stored in the file
+  a file as NULL, and the native scan returns the values stored in the file. A read of only some
+  of a struct's fields fails instead
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values
@@ -846,10 +847,6 @@ The physical differences that every native data file has, and why they are safe,
 
 ### Reads that fail where Spark succeeds
 
-- **A data file that omits an optional nested field.** The native scan fails on a data file that
-  lacks an optional struct field, which a write with `write.spark.accept-any-schema=true` can
-  produce without any schema change
-  ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
 - **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi

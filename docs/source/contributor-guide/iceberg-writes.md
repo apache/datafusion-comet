@@ -479,8 +479,8 @@ the writer: run the write suites and the Iceberg Spark tests. The pin policy is 
 | `CometIcebergWriteBenchmark`                                         | Native versus iceberg-java for unpartitioned, clustered, fanout and copy-on-write delete writes. It checks each arm's plan before timing it.                                                                                   |
 | `CometIcebergEndToEndBenchmark`                                      | An Iceberg read, hash repartition and Iceberg write against stock Spark, over primitive, struct, array, map and nested columns. It checks each arm's plan and the rows it wrote before timing it.                              |
 
-The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.5.2
-for Spark 3.4, 1.8.1 for 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is published
+The Comet suites run against the Iceberg version each Spark profile pins in `spark/pom.xml`: 1.8.1
+for Spark 3.5, 1.10.0 for 4.0, and 1.11.0 for 4.1. No Iceberg runtime is published
 for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg suites skip there
 (`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions

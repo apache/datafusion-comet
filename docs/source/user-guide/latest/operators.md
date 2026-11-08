@@ -53,7 +53,6 @@ The following operator families fall back to Spark and are not on the current ro
 omitted from the tables below and may be reconsidered based on demand:
 
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
-- **Cartesian / cross joins** (`CartesianProductExec`): rare and expensive, with little acceleration benefit.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
 - **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do natively. The operators above them can still run natively: set `spark.comet.convert.typedDataset.enabled=true` and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.
 
@@ -70,11 +69,12 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Projection and filtering
 
-| Operator      | Status | Notes                                                                                        |
-| ------------- | ------ | -------------------------------------------------------------------------------------------- |
-| `ProjectExec` | ✅     |                                                                                              |
-| `FilterExec`  | ✅     |                                                                                              |
-| `SampleExec`  | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md). |
+| Operator             | Status | Notes                                                                                                                                                     |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProjectExec`        | ✅     |                                                                                                                                                           |
+| `FilterExec`         | ✅     |                                                                                                                                                           |
+| `SampleExec`         | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md).                                                              |
+| `CollectMetricsExec` | ✅     | Spark evaluates observation counters while Comet forwards Arrow batches to native consumers. See [Observations](compatibility/operators.md#observations). |
 
 ## Sorting and limiting
 
@@ -96,12 +96,13 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Joins
 
-| Operator                      | Status | Notes                                                                                                                                                                         |
-| ----------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `BroadcastHashJoinExec`       | ✅     | Falls back to Spark for a `NOT IN` (null-aware anti join) whose streamed side reports an ordering.                                                                            |
-| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                               |
-| `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                               |
-| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)). |
+| Operator                      | Status | Notes                                                                                                                                                                                   |
+| ----------------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BroadcastHashJoinExec`       | ✅     | Falls back to Spark for a `NOT IN` (null-aware anti join) whose streamed side reports an ordering.                                                                                      |
+| `ShuffledHashJoinExec`        | ✅     |                                                                                                                                                                                         |
+| `SortMergeJoinExec`           | ✅     | Supports `BINARY` join keys. Nested-type (struct, array, map) and collated-string join keys fall back to Spark.                                                                         |
+| `BroadcastNestedLoopJoinExec` | ✅     | Falls back to Spark when the preserved side is broadcast (for example LEFT OUTER with BROADCAST on the left) ([#4429](https://github.com/apache/datafusion-comet/pull/4429)).           |
+| `CartesianProductExec`        | ⚠️     | Opt-in (`spark.comet.exec.cartesianProduct.enabled`). Runs natively only without a join condition and when each input reports exactly one partition. Row order can differ from Spark's. |
 
 `ExistenceJoin` (produced when `EXISTS` / `IN` is combined with another predicate via `OR`) runs
 natively on `BroadcastHashJoinExec` and `ShuffledHashJoinExec`. Existence sort-merge joins, residual
@@ -135,8 +136,8 @@ combined with `OR`, which Spark plans as an existence `BroadcastNestedLoopJoinEx
 
 | Operator                                                                                                           | Status | Notes                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------------------------------------------------------------------ | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `WriteFilesExec`                                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set.                                                                                                                                                                                                                                          |
-| `DataWritingCommandExec`                                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support.                                                                                                                                                                                                                                                       |
+| `WriteFilesExec`                                                                                                   | ⚠️     | Spark 4.0+. Experimental native Parquet writes, disabled by default (opt-in). Non-partitioned, non-bucketed writes only, and not when `spark.sql.files.maxRecordsPerFile` is set. See [Parquet](parquet.md#writing).                                                                                                                                                                                                       |
+| `DataWritingCommandExec`                                                                                           | ⚠️     | Spark 3.4/3.5 only. Experimental native Parquet writes, disabled by default (opt-in). Replaced by `WriteFilesExec` on Spark 4.0+ and removed with Spark 3.x support. See [Parquet](parquet.md#writing).                                                                                                                                                                                                                    |
 | Iceberg writes: `AppendDataExec`, `OverwriteByExpressionExec`, `OverwritePartitionsDynamicExec`, `ReplaceDataExec` | ⚠️     | Disabled by default (opt-in). `spark.comet.write.iceberg.enabled=true` plans the write as `IcebergWrite` and `IcebergCommit` and writes eligible data files natively (`CometIcebergWrite`). Other writes use Iceberg's Java writer. Covers `INSERT INTO`, `INSERT OVERWRITE`, and copy-on-write `DELETE` / `UPDATE` / `MERGE`. Merge-on-read writes (`WriteDeltaExec`) fall back. See [Iceberg Writes](iceberg.md#writes). |
 | `MergeRowsExec`                                                                                                    | ⚠️     | Spark 3.5+. Experimental, disabled by default (`spark.comet.exec.mergeRows.enabled`). On Spark 4.1+, stock V2 writers retain Spark MergeRowsExec; Comet's split Iceberg path can run it natively while preserving MergeSummary. See [MERGE INTO](compatibility/operators.md#merge-into-mergerowsexec).                                                                                                                     |
 
