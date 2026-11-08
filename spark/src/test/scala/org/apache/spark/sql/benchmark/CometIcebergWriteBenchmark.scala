@@ -668,6 +668,9 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
       // single file open without erroring when a partition it already closed would reappear.
       if (workload.requiredFields) {
         spark.sql(s"ALTER TABLE $targetTable WRITE ORDERED BY $col")
+        // WRITE ORDERED BY also switches distribution to range; keep only its local sort.
+        spark.sql(
+          s"ALTER TABLE $targetTable SET TBLPROPERTIES ('write.distribution-mode'='none')")
       } else {
         spark.sql(
           s"ALTER TABLE $targetTable WRITE DISTRIBUTED BY PARTITION LOCALLY ORDERED BY $col")
