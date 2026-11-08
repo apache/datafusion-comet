@@ -55,7 +55,6 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, Broadcast
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.window.{WindowExec, WindowExecBase}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types._
 
 import org.apache.comet.{CometConf, CometExplainInfo, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometConf.{COMET_SPARK_TO_ARROW_ENABLED, COMET_SPARK_TO_ARROW_SUPPORTED_OPERATOR_LIST}
@@ -2107,8 +2106,10 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
    *
    * WARNING: this intentionally mirrors the predicate checks in `CometBaseAggregate.doConvert`
    * (operators.scala). Any change to the convertibility rules there must be reflected here or
-   * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag). A
-   * shared predicate helper would be preferable.
+   * this tagging pass will drift and either crash (missed tag) or over-disable (spurious tag).
+   * The grouping key type checks are shared through
+   * `CometBaseAggregate.unsupportedGroupingReason`; the remaining checks still have to be kept in
+   * sync by hand.
    */
   private[rules] def canAggregateBeConverted(
       agg: BaseAggregateExec,
@@ -2136,8 +2137,7 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
     val aggregateExpressions = agg.aggregateExpressions
     val groupingExpressions = agg.groupingExpressions
 
-    if (groupingExpressions.exists(e =>
-        SupportLevel.containsType(e.dataType, classOf[MapType]))) {
+    if (CometBaseAggregate.unsupportedGroupingReason(groupingExpressions).isDefined) {
       return false
     }
 
