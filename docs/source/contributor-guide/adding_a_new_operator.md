@@ -452,6 +452,12 @@ Support levels:
 
 Note that Comet will treat an operator as incompatible if any of the child expressions are incompatible.
 
+An operator that can return `Incompatible()` must register its
+`spark.comet.operator.<OperatorName>.allowIncompatible` key in `CometConf` with
+`createOperatorIncompatConfig` (a contrib registers a config entry for it through
+`CometConfigProvider`).
+Otherwise Comet warns that the key is not recognized when a user sets it.
+
 ### Step 3: Register the Operator
 
 Add your operator to the appropriate map in `CometExecRule.scala`:

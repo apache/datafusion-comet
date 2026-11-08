@@ -36,7 +36,7 @@ import org.apache.spark.sql.comet.execution.shuffle.{CometCelebornShuffleManager
 import org.apache.spark.sql.internal.StaticSQLConf
 import org.apache.spark.util.{Clock, SystemClock}
 
-import org.apache.comet.{COMET_VERSION, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
+import org.apache.comet.{COMET_VERSION, CometConfValidator, CometExecIterator, CometExecutorMemoryUsage, CometSparkSessionExtensions, NativeBase}
 import org.apache.comet.{CometConf, ConfigEntry}
 import org.apache.comet.CometConf.{COMET_ICEBERG_WRITE_REPORT_DIR, COMET_METRICS_ENABLED, COMET_ONHEAP_ENABLED}
 import org.apache.comet.CometExecIterator.MemoryUsageSummary
@@ -103,6 +103,9 @@ class CometDriverPlugin private[spark] (clock: Clock) extends DriverPlugin with 
     // before the off-heap check below so the version is reported even when Comet is otherwise
     // disabled.
     sc.conf.set(CometDriverPlugin.COMET_VERSION_CONFIG, COMET_VERSION)
+
+    // Before the off-heap check, since a misspelled key can be why Comet is disabled
+    CometConfValidator.warnUnrecognized(sc.getConf.getAll.map(_._1).toSeq)
 
     if (!CometSparkSessionExtensions.isOffHeapEnabled(sc.getConf) &&
       !sc.getConf.getBoolean(COMET_ONHEAP_ENABLED.key, false)) {

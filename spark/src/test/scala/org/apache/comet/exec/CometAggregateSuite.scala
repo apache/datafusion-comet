@@ -2032,7 +2032,6 @@ class CometAggregateSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
       withSQLConf(
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
-        "spark.comet.exec.shuffle.fallbackToColumnar" -> "false",
         "spark.comet.enabled" -> "true") {
         spark.read.parquet(dir.getAbsolutePath).createOrReplaceTempView("t2")
         checkSparkAnswerAndOperator("SELECT i, sum(v1), count(distinct v) FROM t2 group by i")
