@@ -402,6 +402,12 @@ object CometIcebergWriteBenchmark extends CometBenchmarkBase {
           s"Spark=${spark.version}, Comet=${org.apache.comet.COMET_VERSION}, " +
             s"revision=${org.apache.comet.COMET_REVISION}, rows=$values, partitions=$sourceFiles")
         benchmark.out.println(
+          s"master=${spark.sparkContext.master}, " +
+            s"defaultParallelism=${spark.sparkContext.defaultParallelism}, " +
+            s"maxHeapBytes=${Runtime.getRuntime.maxMemory()}, " +
+            s"offHeapEnabled=${spark.conf.get("spark.memory.offHeap.enabled")}, " +
+            s"offHeapSize=${spark.conf.get("spark.memory.offHeap.size")}")
+        benchmark.out.println(
           s"Settings: ${commonConfs.mkString(", ")}; " +
             s"properties=${workload.properties.mkString(", ")}; compression=snappy")
         val samples = writerArms.map(arm => arm.name -> mutable.ArrayBuffer.empty[Double]).toMap
