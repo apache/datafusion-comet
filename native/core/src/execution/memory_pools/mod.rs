@@ -37,7 +37,7 @@ use unified_pool::CometUnifiedMemoryPool;
 
 pub(crate) use config::*;
 pub(crate) use plan_pool::PlanMemoryPool;
-pub(crate) use task_shared::*;
+use task_shared::{acquire_task_shared_pool, RunningTasks};
 
 /// Creates the memory pool for a native plan.
 ///
@@ -48,16 +48,34 @@ pub(crate) fn create_memory_pool(
     comet_task_memory_manager: Arc<Global<JObject<'static>>>,
     task_attempt_id: i64,
 ) -> Arc<dyn MemoryPool> {
-    create_pool(memory_pool_config, task_attempt_id, || {
+    create_executor_pool(memory_pool_config, task_attempt_id, || {
         SparkMemory::new(comet_task_memory_manager, task_attempt_id)
     })
 }
 
-/// Creates the pool that [`create_memory_pool`] does, with `spark` connecting it to Spark's memory
-/// manager, so that tests can connect it to a fake instead.
+/// Creates the pool that [`create_memory_pool`] does, counting the task among the tasks of this
+/// executor that run native plans, with `spark` connecting it to Spark's memory manager, so that
+/// tests can connect it to a fake instead.
+fn create_executor_pool(
+    memory_pool_config: &MemoryPoolConfig,
+    task_attempt_id: i64,
+    spark: impl FnOnce() -> SparkMemory,
+) -> Arc<dyn MemoryPool> {
+    create_pool(
+        memory_pool_config,
+        task_attempt_id,
+        RunningTasks::of_executor(),
+        spark,
+    )
+}
+
+/// Creates the pool that [`create_memory_pool`] does, counting the task in `running_tasks` and
+/// with `spark` connecting it to Spark's memory manager, so that tests can use their own count and
+/// connect it to a fake instead.
 fn create_pool(
     memory_pool_config: &MemoryPoolConfig,
     task_attempt_id: i64,
+    running_tasks: &RunningTasks,
     spark: impl FnOnce() -> SparkMemory,
 ) -> Arc<dyn MemoryPool> {
     const NUM_TRACKED_CONSUMERS: usize = 10;
@@ -71,20 +89,30 @@ fn create_pool(
 
     let pool_type = memory_pool_config.pool_type;
     let pool_size = memory_pool_config.pool_size;
+    let off_heap_size = memory_pool_config.off_heap_size;
 
     match pool_type {
-        MemoryPoolType::GreedyUnified => acquire_task_shared_pool(task_attempt_id, || {
-            Arc::new(SpillReplayPool::new(
-                task_attempt_id,
-                tracked(CometUnifiedMemoryPool::with_spark(spark())),
-            ))
-        }),
-        MemoryPoolType::FairUnified => acquire_task_shared_pool(task_attempt_id, || {
-            Arc::new(SpillReplayPool::new(
-                task_attempt_id,
-                tracked(CometFairMemoryPool::with_spark(spark(), pool_size)),
-            ))
-        }),
+        MemoryPoolType::GreedyUnified => {
+            acquire_task_shared_pool(task_attempt_id, running_tasks, || {
+                Arc::new(SpillReplayPool::new(
+                    task_attempt_id,
+                    tracked(CometUnifiedMemoryPool::with_spark(spark())),
+                ))
+            })
+        }
+        MemoryPoolType::FairUnified => {
+            acquire_task_shared_pool(task_attempt_id, running_tasks, || {
+                Arc::new(SpillReplayPool::new(
+                    task_attempt_id,
+                    tracked(CometFairMemoryPool::with_spark(
+                        spark(),
+                        pool_size,
+                        off_heap_size,
+                        running_tasks.clone(),
+                    )),
+                ))
+            })
+        }
         MemoryPoolType::Unbounded => Arc::new(UnboundedMemoryPool::default()),
     }
 }
@@ -105,7 +133,8 @@ pub(crate) fn overcommit(pool: &Arc<dyn MemoryPool>) -> usize {
     }
 }
 
-/// [`create_memory_pool`], connected to a fake Spark that grants at most `limit` bytes.
+/// [`create_memory_pool`] for a task that runs alone, connected to a fake Spark that grants at most
+/// `limit` bytes.
 #[cfg(test)]
 pub(crate) fn create_memory_pool_with_fake_spark(
     memory_pool_config: &MemoryPoolConfig,
@@ -113,11 +142,17 @@ pub(crate) fn create_memory_pool_with_fake_spark(
     limit: usize,
 ) -> Arc<dyn MemoryPool> {
     let fake = spark_memory::fake::FakeSpark::with(limit);
-    create_pool(memory_pool_config, task_attempt_id, || fake.memory())
+    create_pool(
+        memory_pool_config,
+        task_attempt_id,
+        &RunningTasks::default(),
+        || fake.memory(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
+    use super::testing::spillable;
     use super::*;
     use datafusion::execution::memory_pool::MemoryConsumer;
 
@@ -143,6 +178,46 @@ mod tests {
             drop(reservation);
             assert_eq!(overcommit(&pool), 0, "{name}");
         }
+    }
+
+    /// The tasks of an executor share one count, which `create_memory_pool` takes from
+    /// [`RunningTasks::of_executor`]. A pool created with a count of its own would see only its
+    /// own task and give it the whole pool. No other test counts tasks in the executor's count.
+    #[test]
+    fn the_tasks_of_an_executor_share_one_count() {
+        let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
+        let fair = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 100);
+        let greedy = MemoryPoolConfig::new(MemoryPoolType::GreedyUnified, 0);
+        let pool = create_executor_pool(&fair, -3007, || fake.memory());
+        let other_task = create_executor_pool(&greedy, -3008, || fake.memory());
+        let sort = spillable("ExternalSorter[0]", &pool);
+
+        // Two tasks share the 100-byte pool, the other one's pool type notwithstanding.
+        sort.try_grow(50).unwrap();
+        assert!(sort.try_grow(1).is_err());
+
+        // Once the other task finishes, this one has it to itself.
+        drop(other_task);
+        sort.try_grow(50).unwrap();
+        assert!(sort.try_grow(1).is_err());
+    }
+
+    #[test]
+    fn the_fraction_limits_a_task_that_shares_the_off_heap_pool() {
+        // `spark.comet.exec.memoryPool.fraction` at 0.1 of a 1000-byte off-heap pool, which two
+        // running tasks share.
+        let tasks = RunningTasks::default();
+        let _other_task = tasks.start();
+        let fake = spark_memory::fake::FakeSpark::with(usize::MAX);
+        let config = MemoryPoolConfig::with_off_heap_size(MemoryPoolType::FairUnified, 100, 1000);
+        let pool = create_pool(&config, -3006, &tasks, || fake.memory());
+        let sort = spillable("ExternalSorter[0]", &pool);
+        let merge = MemoryConsumer::new("ExternalSorterMerge[0]").register(&pool);
+
+        // The task's share of the off-heap pool is 500 bytes, but the fraction limits it to 100.
+        sort.try_grow(100).unwrap();
+        assert!(sort.try_grow(1).is_err());
+        assert!(merge.try_grow(1).is_err());
     }
 
     #[test]

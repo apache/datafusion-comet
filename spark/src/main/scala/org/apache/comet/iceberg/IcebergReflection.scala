@@ -1283,6 +1283,24 @@ object IcebergReflection extends Logging {
     columns.asScala.flatMap(walkFieldForDefault).toList
   }
 
+  /**
+   * [[columnsWithInitialDefault]] for only the top-level columns of `schema` whose ids are in
+   * `columnIds`. A scan reads every nested field of such a column that its schema holds, so this
+   * is for the schema the scan reads when that is wider than the query's, as the table's is while
+   * nested schema pruning is off.
+   */
+  def columnsWithInitialDefault(schema: Any, columnIds: Set[Int]): List[String] = {
+    import scala.jdk.CollectionConverters._
+    val columns =
+      getMethod(schema.getClass, "columns").invoke(schema).asInstanceOf[java.util.List[_]]
+    columns.asScala
+      .filter(column => columnIds.contains(fieldIdOf(column)))
+      .flatMap {
+        walkFieldForDefault
+      }
+      .toList
+  }
+
   private def walkFieldForDefault(field: Any): List[String] = {
     import scala.jdk.CollectionConverters._
     val name = getMethod(field.getClass, "name").invoke(field).asInstanceOf[String]
@@ -1304,15 +1322,15 @@ object IcebergReflection extends Logging {
   }
 
   /**
-   * Returns the nested fields of the `fieldIds` columns of `schema` that some schema in the
-   * table's history (`table.schemas()`) lacks or names differently. Each is a dotted path with
-   * the change, for example `items.element.z (renamed from a)`. A data file written under that
-   * older schema lacks the field, or has it under the old name. Fields are matched by id at every
-   * level (struct fields, list elements, map keys and values), so a reorder or a type promotion
-   * is not a change, and an older schema that lacks the column itself is skipped. Throws on
+   * Returns the structs under the `fieldIds` columns of `schema`, at any depth and including the
+   * columns themselves, that share none of their fields with the same struct in some schema in
+   * the table's history (`table.schemas()`). Each is a dotted path, for example
+   * `items.element.s`. A data file written under that older schema has none of the struct's
+   * current fields. Structs are matched by field id at every level (struct fields, list elements,
+   * map keys and values), so an older schema that lacks the column itself is skipped. Throws on
    * reflection failure so the caller can fall back.
    */
-  def nestedFieldsAddedOrRenamed(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
+  def structsWithNoFieldsInCommon(table: Any, schema: Any, fieldIds: Set[Int]): Seq[String] = {
     import scala.jdk.CollectionConverters._
     val findField = getMethod(schema.getClass, "findField", classOf[Int])
     def fieldById(s: Any, id: Int): Option[Any] =
@@ -1324,29 +1342,31 @@ object IcebergReflection extends Logging {
       .asScala
       .toSeq
     fieldIds.toSeq.flatMap { id =>
-      fieldById(schema, id).filter(childFields(_).nonEmpty).toSeq.flatMap { field =>
+      fieldById(schema, id).toSeq.flatMap { field =>
         history.flatMap(fieldById(_, id)).flatMap { older =>
-          childFieldsChangedFrom(field, older, fieldName(field))
+          structsWithNoFieldsInCommon(field, older, fieldName(field))
         }
       }
     }.distinct
   }
 
-  /** The nested fields under `field`, at any depth, that `older` lacks or names differently. */
-  private def childFieldsChangedFrom(field: Any, older: Any, path: String): Seq[String] = {
+  /** `field` if it is a struct sharing no field with `older`, plus the same for its children. */
+  private def structsWithNoFieldsInCommon(field: Any, older: Any, path: String): Seq[String] = {
+    val children = childFields(field)
     val olderChildren = childFields(older).map(child => fieldIdOf(child) -> child).toMap
-    childFields(field).flatMap { child =>
-      val name = fieldName(child)
-      val childPath = s"$path.$name"
-      olderChildren.get(fieldIdOf(child)) match {
-        case Some(olderChild) =>
-          val olderName = fieldName(olderChild)
-          val renamed =
-            if (olderName != name) Seq(s"$childPath (renamed from $olderName)") else Nil
-          renamed ++ childFieldsChangedFrom(child, olderChild, childPath)
-        case None => Seq(s"$childPath (added)")
+    val disjoint = isStruct(field) && children.nonEmpty &&
+      !children.exists(child => olderChildren.contains(fieldIdOf(child)))
+    val here = if (disjoint) Seq(path) else Nil
+    here ++ children.flatMap { child =>
+      olderChildren.get(fieldIdOf(child)).toSeq.flatMap { olderChild =>
+        structsWithNoFieldsInCommon(child, olderChild, s"$path.${fieldName(child)}")
       }
     }
+  }
+
+  private def isStruct(field: Any): Boolean = {
+    val fieldType = getMethod(field.getClass, "type").invoke(field)
+    getMethod(fieldType.getClass, "isStructType").invoke(fieldType).asInstanceOf[Boolean]
   }
 
   /** A struct's fields, a list's element, or a map's key and value. Empty for other types. */
@@ -2425,7 +2445,7 @@ object IcebergReflection extends Logging {
  * @param metadataLocation
  *   Path to the table metadata file
  * @param nameMapping
- *   Optional name mapping from table properties (for schema evolution)
+ *   Name mapping from successfully read table properties, or None when not configured
  * @param tasks
  *   List of FileScanTask objects from Iceberg planning
  * @param scanSchema
@@ -2509,16 +2529,10 @@ object CometIcebergNativeScanMetadata extends Logging {
       table <- getTable(scan)
       scanSchema <- getExpectedSchema(scan)
       tableSchema <- getSchema(table)
+      // Reading properties must succeed; only the mapping key is optional.
+      properties <- getTableProperties(table).filter(_ != null)
     } yield {
-      // nameMapping is optional - if it fails we just use None
-      val nameMapping = getTableProperties(table).flatMap { properties =>
-        val nameMappingKey = "schema.name-mapping.default"
-        if (properties.containsKey(nameMappingKey)) {
-          Some(properties.get(nameMappingKey))
-        } else {
-          None
-        }
-      }
+      val nameMapping = Option(properties.get("schema.name-mapping.default"))
 
       val globalFieldIdMapping = buildFieldIdMapping(scanSchema)
       val (prunedTaskSchema, fullTaskSchema) =

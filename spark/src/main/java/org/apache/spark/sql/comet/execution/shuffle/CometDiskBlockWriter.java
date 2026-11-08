@@ -75,8 +75,22 @@ public final class CometDiskBlockWriter {
   // Copied from Spark `org.apache.spark.shuffle.sort.PackedRecordPointer.MAXIMUM_PAGE_SIZE_BYTES`
   static final int MAXIMUM_PAGE_SIZE_BYTES = 1 << 27;
 
+  /**
+   * The size of the first page a partition writer takes for each batch. A task runs one writer per
+   * partition, and a writer holds at least one page as soon as it has a row, so this is what a
+   * partition costs before its rows need more. Each further page of the batch is twice the size of
+   * the one before, up to the writer's maximum page size.
+   */
+  static final long INITIAL_PAGE_SIZE_BYTES = 64 * 1024;
+
   /** The Comet allocator used to allocate pages. */
   private final CometShuffleMemoryAllocatorTrait allocator;
+
+  /** The size of the first page of each batch, which `allocator` rounds every request up to. */
+  private final long initialPageSize;
+
+  /** The largest page this writer asks for when it grows, unless a single row needs more. */
+  private final long maxPageSize;
 
   /** The serializer used to write rows to memory page. */
   private final SerializerInstance serializer;
@@ -127,6 +141,8 @@ public final class CometDiskBlockWriter {
   CometDiskBlockWriter(
       File file,
       CometShuffleMemoryAllocatorTrait allocator,
+      long initialPageSize,
+      long maxPageSize,
       TaskContext taskContext,
       SerializerInstance serializer,
       StructType schema,
@@ -137,6 +153,8 @@ public final class CometDiskBlockWriter {
     this.nativeLib = new Native();
     this.currentWriters = taskWriters;
     this.allocator = allocator;
+    this.initialPageSize = Math.min(initialPageSize, maxPageSize);
+    this.maxPageSize = maxPageSize;
     this.taskContext = taskContext;
     this.serializer = serializer;
     this.schema = schema;
@@ -323,6 +341,18 @@ public final class CometDiskBlockWriter {
       // Copy the record (row) data from serialized buffer to page
       Platform.copyMemory(recordBase, recordOffset, base, pageCursor, length);
       pageCursor += length;
+    }
+
+    /**
+     * Starts each batch on a small page and doubles each further page, so a partition with few rows
+     * costs little, and a batch of {@code n} bytes takes O(log n) pages. Spark fails a task that
+     * holds more than 8,192 pages, and fixed small pages could reach that across many partitions.
+     * The pages held are this batch's, since writing a batch out frees them.
+     */
+    @Override
+    protected long nextPageRequest(int required) {
+      int doublings = Math.min(allocatedPages.size(), 32);
+      return Math.max(required, Math.min(maxPageSize, initialPageSize << doublings));
     }
 
     int numRecords() {

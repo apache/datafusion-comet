@@ -21,17 +21,19 @@ package org.apache.comet.serde
 
 import scala.jdk.CollectionConverters._
 
+import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expression, Literal}
-import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
+import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, PartialMerge, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
+import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
 import org.apache.comet.CometConf.COMET_EXEC_STRICT_FLOATING_POINT
 import org.apache.comet.CometSparkSessionExtensions.{isSpark41Plus, isSpark42Plus, withFallbackReason}
 import org.apache.comet.expressions.CometEvalMode
-import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, isStringCollationType, serializeDataType}
+import org.apache.comet.serde.QueryPlanSerde.{evalModeToProto, exprToProto, serializeDataType}
 import org.apache.comet.shims.{CometCollectShim, CometEvalModeUtil, CometTypeShim}
 
 object CometMin extends CometAggregateExpressionSerde[Min] {
@@ -227,48 +229,20 @@ object CometCount extends CometAggregateExpressionSerde[Count] {
 
 object CometAverage extends CometAggregateExpressionSerde[Average] {
 
-  // Keep the default native-to-Spark restriction until #5420: an untouched native AVG emits
-  // (null, 0), but Spark's merge needs (0.0, 0).
-
-  override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
-    // Non-decimal AVG has a (sum: double, count: long) buffer matching Spark. Decimal AVG is
-    // deferred (overflow nulls count differently) and stays unsafe for mixed execution.
+  // Non-decimal AVG emits Spark's (sum: double, count: long) buffer, including (0.0, 0) for
+  // empty partials. Decimal AVG nulls count differently on overflow and remains unsafe to mix.
+  override def supportsNativePartialToSparkFinal(fn: Average): Boolean =
     !fn.child.dataType.isInstanceOf[DecimalType]
 
-  private val rescaledSumOverflowReason =
-    "a large sum of a DECIMAL with precision 25 or more overflows when the native average " +
-      "rescales it, which returns NULL " +
-      "(https://github.com/apache/datafusion-comet/issues/7007)"
+  override def supportsSparkPartialToNativeFinal(fn: Average): Boolean =
+    !fn.child.dataType.isInstanceOf[DecimalType]
 
   override def getUnsupportedReasons(): Seq[String] = Seq(
     "YearMonthIntervalType and DayTimeIntervalType inputs are not supported")
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "For a `DECIMAL` input with precision 25 or more, other than `DECIMAL(38, 38)`, the native " +
-      "average rescales the sum within 38 digits before dividing it by the count, so a large " +
-      "sum returns `NULL` where Spark returns the average. Under ANSI, an average that Spark " +
-      "rejects with `NUMERIC_VALUE_OUT_OF_RANGE` also returns `NULL` " +
-      "([#7007](https://github.com/apache/datafusion-comet/issues/7007)).")
-
-  /**
-   * Whether the native average can overflow when it rescales the sum to the result scale. It
-   * multiplies the sum, which holds up to `sumDataType.precision` digits, by 10 to the power of
-   * the scale difference in an `i128`, which holds 38 digits, before dividing by the count, while
-   * Spark divides with `BigDecimal`. That covers input precision 25 and up, except scale 38,
-   * which needs no rescale.
-   */
-  private def rescaledSumCanOverflow(expr: Average): Boolean =
-    (expr.sumDataType, expr.dataType) match {
-      case (sum: DecimalType, result: DecimalType) =>
-        sum.precision + result.scale - sum.scale > DecimalType.MAX_PRECISION
-      case _ => false
-    }
-
   override def getSupportLevel(expr: Average): SupportLevel =
     if (!AggSerde.avgDataTypeSupported(expr.dataType)) {
       Unsupported(Some(s"Unsupported data type: ${expr.dataType}"))
-    } else if (rescaledSumCanOverflow(expr)) {
-      Incompatible(Some(rescaledSumOverflowReason))
     } else {
       Compatible()
     }
@@ -734,6 +708,21 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
   private val descendingReason =
     "Descending order in `WITHIN GROUP (ORDER BY ... DESC)` is not supported."
   private val inputTypeReason = "Only numeric input types are supported."
+  private val signedZeroKeysNote =
+    "Before Spark 3.5.2, Spark can merge `0.0` and `-0.0` into one key and drop the count of " +
+      "one of them (SPARK-45599). Comet keeps every value, so when `FLOAT` or `DOUBLE` input " +
+      "holds both zeros the result can differ from Spark's."
+  // The replay models Spark's hash-based aggregation only; see
+  // `spark_iterates_negative_zero_first` in native/spark-expr for what it leaves out.
+  private val zeroOrderNote =
+    "From Spark 3.5.2, when `FLOAT` or `DOUBLE` input holds both `0.0` and `-0.0`, Spark " +
+      "ranks first the one its hash table reaches first. Comet replays those tables for each " +
+      "task's partial buffer and each merge stage, but not Spark's sort-based fallback once a " +
+      "task holds `spark.sql.objectHashAggregate.sortBased.fallbackThreshold` groups, nor " +
+      "Comet's own aggregates emitting groups early or spilling under memory pressure, where a " +
+      "spill inside a merge stage nests that stage's partials one level deeper than Spark does. " +
+      "In those cases Comet's zero can differ from Spark's."
+  override def getCompatibleNotes(): Seq[String] = Seq(signedZeroKeysNote, zeroOrderNote)
   override def getUnsupportedReasons(): Seq[String] = Seq(
     arrayOfPercentagesReason,
     nonLiteralPercentageReason,
@@ -759,6 +748,9 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       return Unsupported(Some(descendingReason))
     }
     expr.child.dataType match {
+      case FloatType | DoubleType if !keepsSignedZeroKeys(SPARK_VERSION) =>
+        Compatible(Some(signedZeroKeysNote))
+      case FloatType | DoubleType => Compatible(Some(zeroOrderNote))
       case _: NumericType => Compatible()
       case _ => Unsupported(Some(inputTypeReason))
     }
@@ -780,6 +772,15 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       val builder = ExprOuterClass.Percentile.newBuilder()
       builder.setChild(childExpr.get)
       builder.setPercentage(percentageExpr.get)
+      val floatingInput = percentile.child.dataType match {
+        case FloatType | DoubleType => true
+        case _ => false
+      }
+      builder.setFloatInput(percentile.child.dataType == FloatType)
+      // Only floating-point input can hold both zeros; the native side tracks Spark's partial
+      // buffers only when this is set.
+      builder.setSignedZeroKeys(floatingInput && keepsSignedZeroKeys(SPARK_VERSION))
+      builder.setMergeStage(aggExpr.mode == PartialMerge)
       // DoubleType always serializes successfully.
       builder.setDatatype(serializeDataType(DoubleType).get)
       Some(
@@ -791,6 +792,13 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       None
     }
   }
+
+  // Spark 3.5.2 keeps 0.0 and -0.0 as separate keys in the percentile buffer (SPARK-45599).
+  // Earlier releases can merge the two, which the native percentile does not reproduce.
+  def keepsSignedZeroKeys(version: String): Boolean =
+    Utils.majorMinorPatchVersion(version).exists { case (major, minor, patch) =>
+      major > 3 || (major == 3 && (minor > 5 || (minor == 5 && patch >= 2)))
+    }
 }
 
 object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePercentile] {
@@ -1206,7 +1214,9 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
         "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
           "implementation always drops null inputs.")
     } else {
-      Nil
+      Seq(
+        "`collect_set` over FLOAT or DOUBLE in a PartialMerge chain (for example, beside " +
+          "`count(DISTINCT ...)`) falls back to Spark to preserve signed-zero and NaN semantics.")
     }
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
@@ -1236,6 +1246,16 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Declining the merge also keeps its buffer producers in Spark via the unsafe-partial pass.
+    if (!isSpark42Plus && aggExpr.mode == PartialMerge &&
+      (expr.child.dataType == FloatType || expr.child.dataType == DoubleType)) {
+      withFallbackReason(
+        aggExpr,
+        "collect_set on FLOAT/DOUBLE in PartialMerge requires Spark 4.2 or later " +
+          "to preserve signed-zero and NaN semantics")
+      return None
+    }
+
     val child = aggExpr.mode match {
       // Spark 4.2 (SPARK-57298) normalizes NaN and -0.0 inside CollectSet's buffer conversion
       // (`convertToBufferElement`/`eval` in collect.scala), so the normalization is invisible in
@@ -1359,8 +1379,7 @@ object CometApproxCountDistinct extends CometAggregateExpressionSerde[HyperLogLo
   // Types that Comet's native `xxhash64` hashes identically to Spark's `XxHash64Function`.
   // `StringType` here is the default UTF8_BINARY collation; a collated `StringType(collationId)`
   // falls through to the `case _` because Spark hashes those via the collation sort key.
-  // `DecimalType` is limited to precision <= 18, since Spark hashes wider decimals through
-  // `BigDecimal` (two's-complement big-endian bytes), which the native `i128` path does not match.
+  // Wide decimals remain unsupported here pending HLL register compatibility tests.
   private def hashableType(dt: DataType): Boolean = dt match {
     case BooleanType => true
     case ByteType | ShortType | IntegerType | LongType => true
@@ -1582,7 +1601,7 @@ object CometPivotFirst extends CometAggregateExpressionSerde[PivotFirst] with Co
   }
 }
 
-object AggSerde {
+object AggSerde extends CometTypeShim {
   import org.apache.spark.sql.types._
 
   def minMaxDataTypeSupported(dt: DataType): Boolean = {
@@ -1632,14 +1651,55 @@ object AggSerde {
       Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
     // DataFusion's grouped hash aggregate under-reports the memory these values hold (#6936).
     case _: StringType | BinaryType => Compatible()
+    case st: StructType => minMaxStructSupportLevel(st)
     case _ if minMaxDataTypeSupported(dt) => Compatible()
     case _ => Unsupported(Some(s"Unsupported data type: $dt"))
+  }
+
+  /**
+   * The native accumulator compares structs by their Arrow row encoding, ascending with nulls
+   * first, which orders fields the way Spark does, a null field below every value included. The
+   * encoding orders floats by IEEE total order, which differs from Spark for -0.0 and NaN with
+   * the sign bit set, so float and double fields fall back.
+   */
+  private def minMaxStructSupportLevel(st: StructType): SupportLevel = {
+    if (st.fields.isEmpty) {
+      Unsupported(Some("Struct min/max over an empty struct"))
+    } else if (hasNonDefaultStringCollation(st)) {
+      Unsupported(Some(ComparisonUtils.nonDefaultCollationReason("min/max")))
+    } else if (SupportLevel.containsType(st, classOf[FloatType], classOf[DoubleType])) {
+      Unsupported(
+        Some(
+          "Struct min/max over a float or double field. Comet orders -0.0 below 0.0 and" +
+            " a NaN with the sign bit set below every value, while Spark treats -0.0 and 0.0" +
+            " as equal and every NaN as the largest value"))
+    } else {
+      unsupportedStructLeaf(st) match {
+        case Some(dt) => Unsupported(Some(s"Struct min/max over a field of type $dt"))
+        case None => Compatible()
+      }
+    }
+  }
+
+  /** The first leaf type of a struct that native min/max cannot compare, if any. */
+  private def unsupportedStructLeaf(dt: DataType): Option[DataType] = dt match {
+    case st: StructType if st.fields.isEmpty => Some(st)
+    case st: StructType =>
+      st.fields.view.flatMap(f => unsupportedStructLeaf(f.dataType)).headOption
+    case _ =>
+      minMaxSupportLevel(dt) match {
+        case _: Compatible => None
+        case _ => Some(dt)
+      }
   }
 
   /** The inputs that `minMaxSupportLevel` rejects, for the generated compatibility guide. */
   val minMaxUnsupportedReasons: Seq[String] = Seq(
     "Input of a type other than boolean, integral, floating-point, decimal, date, timestamp," +
-      " string or binary, such as timestamp without time zone, intervals, arrays and structs.",
+      " string or binary, such as timestamp without time zone, intervals, arrays and maps." +
+      " A struct is supported only if all of its fields are of supported types other than" +
+      " float and double, since Comet orders -0.0 and NaN with the sign bit set" +
+      " differently from Spark inside a struct.",
     "A string with a non-default collation (Spark 4.0+), which Spark orders by its collation" +
       " while Comet compares raw bytes.")
 
