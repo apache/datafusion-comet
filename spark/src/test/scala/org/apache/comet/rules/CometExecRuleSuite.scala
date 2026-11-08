@@ -29,7 +29,7 @@ import org.scalatest.PrivateMethodTester._
 import org.apache.logging.log4j.Level
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.{FunctionIdentifier, InternalRow}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Ascending, Attribute, AttributeReference, BoundReference, CreateArray, Descending, ElementAt, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, RuntimeReplaceable, SortOrder, UnixDate}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, Ascending, Attribute, AttributeReference, BoundReference, Cast, Cos, CreateArray, Descending, ElementAt, Expression, ExpressionInfo, GreaterThan, In, InSet, KnownFloatingPointNormalized, Literal, MakeDate, Not, Rand, RuntimeReplaceable, Sin, SortOrder, Unevaluable, UnixDate}
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, BloomFilterAggregate, Count, Final, Min, Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.expressions.objects.{Invoke, StaticInvoke}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, NormalizeNaNAndZero}
@@ -48,7 +48,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ReusedExc
 import org.apache.spark.sql.execution.joins.{BaseJoinExec, BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashedRelationBroadcastMode, SortMergeJoinExec}
 import org.apache.spark.sql.functions.expr
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{DataTypes, DoubleType, FloatType, StructField, StructType}
+import org.apache.spark.sql.types.{DataType, DataTypes, DoubleType, FloatType, StructField, StructType}
 
 import org.apache.comet.{CometConf, CometCoverageStats, CometExplainInfo, CometSparkSessionExtensions, ConfigEntry, ExtendedExplainInfo}
 import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark42Plus, withFallbackReason}
@@ -397,6 +397,57 @@ class CometExecRuleSuite extends CometTestBase {
           case scan: FileSourceScanExec => scan
         }.get
         assertReader(scanRule(guarded), sparkReader = false)
+      }
+    }
+  }
+
+  test("make_date scan fallback visits shared projection dependencies without expanding them") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "false",
+      SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withParquetTable(Seq(Tuple1(2024)), "make_date_scan_dependencies") {
+        val source =
+          createSparkPlan(spark, "SELECT * FROM make_date_scan_dependencies").collectFirst {
+            case scan: FileSourceScanExec => scan
+          }.get
+        var expressionVisits = 0
+        case class CountedExpression(child: Expression) extends Expression with Unevaluable {
+          override def children: Seq[Expression] = {
+            expressionVisits += 1
+            assert(
+              expressionVisits <= 10000,
+              "Scan analysis expanded shared projection dependencies")
+            Seq(child)
+          }
+          override def nullable: Boolean = true
+          override def dataType: DataType = DoubleType
+          override protected def withNewChildrenInternal(
+              newChildren: IndexedSeq[Expression]): Expression = copy(child = newChildren.head)
+        }
+        val findScans =
+          PrivateMethod[Map[Int, FileSourceScanExec]](Symbol("scansRequiringSparkForMakeDate"))
+        val scanRule = CometScanRule(spark)
+        for (throwingDate <- Seq(false, true)) {
+          val input = if (throwingDate) {
+            UnixDate(MakeDate(source.output.head, Literal(1), Literal(1), failOnError = false))
+          } else {
+            source.output.head
+          }
+          var project =
+            ProjectExec(Seq(Alias(CountedExpression(Cast(input, DoubleType)), "x")()), source)
+          for (level <- 0 until 20) {
+            val previous = project.output.head
+            val expression = Add(Add(Sin(previous), Cos(previous)), Rand(Literal(level.toLong)))
+            // Count every layer so alias expansion fails before building an exponential tree.
+            project = ProjectExec(Seq(Alias(CountedExpression(expression), "x")()), project)
+          }
+          val filter = FilterExec(GreaterThan(project.output.head, Literal(0.0)), project)
+          expressionVisits = 0
+          withClue(s"throwingDate=$throwingDate: ") {
+            val scans = scanRule invokePrivate findScans(filter)
+            assert(scans.keySet == (if (throwingDate) Set(source.id) else Set.empty[Int]))
+          }
+        }
       }
     }
   }
