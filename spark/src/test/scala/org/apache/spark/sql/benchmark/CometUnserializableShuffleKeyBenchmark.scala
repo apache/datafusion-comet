@@ -147,11 +147,15 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Fails unless each case really produces the exchange it is named for, and unless the
-   * exchange's key is one the removed check rejected. The exchange's node name alone does not
-   * establish the second: `GROUP BY f(x)` yields a `CometColumnarExchange` whose key is a plain
-   * attribute, which the old check admitted, so timing it would measure Comet's columnar shuffle
-   * against Spark's rather than anything this PR changes.
+   * Fails unless the exchange this benchmark is about -- the one whose partition key the removed
+   * check rejected -- is routed the way the case is named for. Both properties have to hold of
+   * the same exchange: the aggregate query has a second exchange for the final aggregate, so
+   * asking separately whether any exchange is columnar and whether any exchange has a rejected
+   * key would pass even if the two were different nodes and the measured one fell back.
+   *
+   * The key check matters on its own, too. `GROUP BY f(x)` yields a `CometColumnarExchange` whose
+   * key is a plain attribute that the old check admitted, so timing it would compare Comet's
+   * columnar shuffle with Spark's rather than anything this PR changes.
    */
   private def checkPlans(): Unit = {
     for (query <- queries; c <- cases) {
@@ -160,21 +164,22 @@ object CometUnserializableShuffleKeyBenchmark extends CometBenchmarkBase {
         df.noop()
         val plan = stripAQEPlan(df.queryExecution.executedPlan)
         val exchanges = exchangesOf(plan)
-        val names = exchanges.map(_.nodeName)
-        val comet = names.count(_.startsWith("CometColumnarExchange"))
-        val sparkShuffles = names.count(_ == "Exchange")
+        val gated = exchanges.filter(meetsRemovedCheck)
 
-        if (if (c.cometShuffle) comet < 1 else comet > 0 || sparkShuffles < 1) {
-          throw new IllegalStateException(
-            s"${c.label}: expected ${if (c.cometShuffle) "a Comet columnar" else "a Spark"} " +
-              s"exchange but found $names in:\n$plan")
-        }
-
-        if (!exchanges.exists(meetsRemovedCheck)) {
+        if (gated.isEmpty) {
           throw new IllegalStateException(
             s"${c.label}: no exchange here has a partition key the removed check rejected, so " +
               "this case does not exercise the change. Partitionings: " +
               s"${exchanges.map(_.outputPartitioning)} in:\n$plan")
+        }
+
+        val expected = if (c.cometShuffle) "CometColumnarExchange" else "Exchange"
+        val misrouted = gated.filterNot(_.nodeName == expected)
+        if (misrouted.nonEmpty) {
+          throw new IllegalStateException(
+            s"${c.label}: the exchange whose key the removed check rejected is " +
+              s"${misrouted.map(_.nodeName)}, not $expected, so this case does not measure " +
+              s"what it claims. All exchanges: ${exchanges.map(_.nodeName)} in:\n$plan")
         }
       }
     }
