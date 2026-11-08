@@ -1148,4 +1148,202 @@ mod tests {
             "a dictionary child must keep the per-element path"
         );
     }
+
+    /// `create_hashes_internal!` specialises maps of (Utf8, Int32), (Int32, Utf8), (Utf8, Utf8)
+    /// and (Int32, Int32), each with a loop for input without nulls and a null-aware loop. Covers
+    /// both loops of every pair for both hashes. The null shape has a null map that still owns an
+    /// entry, which must not be hashed, and a null value, which is skipped while its key is not.
+    /// Expected values are Spark 4.1.3's `hash` and `xxhash64` (seed 42) on the same rows.
+    #[test]
+    fn test_specialised_map_pairs_match_spark() {
+        use crate::hash_funcs::create_xxhash64_hashes;
+        use arrow::array::{Array, MapArray, StructArray};
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::{DataType, Field, Fields};
+
+        const STR_KEYS: [&str; 7] = ["a", "b", "", "日本", "x", "yz", "hidden"];
+        const INT_KEYS: [i32; 7] = [1, -1, 0, i32::MAX, i32::MIN, 7, 99];
+        const STR_VALUES: [&str; 7] = ["v1", "", "é", "w", "long value", "z", "hidden"];
+        const INT_VALUES: [i32; 7] = [10, -20, 0, i32::MIN, i32::MAX, 3, 99];
+
+        // The first `len` entries of a pool, with entry `null_at` null.
+        fn column(
+            utf8: bool,
+            strs: &[&str],
+            ints: &[i32],
+            len: usize,
+            null_at: Option<usize>,
+        ) -> ArrayRef {
+            let valid = |i: usize| Some(i) != null_at;
+            if utf8 {
+                Arc::new(
+                    (0..len)
+                        .map(|i| valid(i).then(|| strs[i]))
+                        .collect::<StringArray>(),
+                )
+            } else {
+                Arc::new(
+                    (0..len)
+                        .map(|i| valid(i).then(|| ints[i]))
+                        .collect::<Int32Array>(),
+                )
+            }
+        }
+
+        fn map(key_utf8: bool, value_utf8: bool, shape: Shape) -> ArrayRef {
+            let (lengths, valid, null_value) = shape;
+            let len = lengths.iter().sum();
+            let keys = column(key_utf8, &STR_KEYS, &INT_KEYS, len, None);
+            let values = column(value_utf8, &STR_VALUES, &INT_VALUES, len, null_value);
+            let entry_fields = Fields::from(vec![
+                Field::new("key", keys.data_type().clone(), false),
+                Field::new("value", values.data_type().clone(), true),
+            ]);
+            let entries = StructArray::new(entry_fields.clone(), vec![keys, values], None);
+            Arc::new(MapArray::new(
+                Arc::new(Field::new("entries", DataType::Struct(entry_fields), false)),
+                OffsetBuffer::from_lengths(lengths.iter().copied()),
+                entries,
+                valid
+                    .contains(&false)
+                    .then(|| NullBuffer::from(valid.to_vec())),
+                false,
+            ))
+        }
+
+        // Entries per row, map validity per row, and the entry whose value is null.
+        type Shape = (&'static [usize], &'static [bool], Option<usize>);
+        const NO_NULLS: Shape = (&[2, 0, 1, 3], &[true; 4], None);
+        const WITH_NULLS: Shape = (&[2, 0, 1, 1, 3], &[true, true, false, true, true], Some(3));
+
+        // (pair, key is Utf8, value is Utf8, [murmur3, xxhash64] without nulls, the same with nulls)
+        #[allow(clippy::type_complexity)]
+        let cases: [(&str, bool, bool, (Vec<u32>, Vec<u64>), (Vec<u32>, Vec<u64>)); 4] = [
+            (
+                "(Utf8, Int32)",
+                true,
+                false,
+                (
+                    vec![3288614090, 42, 1143746540, 1469223585],
+                    vec![
+                        16199279146299526733,
+                        42,
+                        5333022629466737987,
+                        15207678792763831826,
+                    ],
+                ),
+                (
+                    vec![3288614090, 42, 42, 3957984087, 1744167621],
+                    vec![
+                        16199279146299526733,
+                        42,
+                        42,
+                        5255273406210089560,
+                        16676937219889378977,
+                    ],
+                ),
+            ),
+            (
+                "(Int32, Utf8)",
+                false,
+                true,
+                (
+                    vec![1068297432, 42, 1717481135, 1646871340],
+                    vec![
+                        13466461121694723808,
+                        42,
+                        16077654192821606961,
+                        17948578375700070194,
+                    ],
+                ),
+                (
+                    vec![1068297432, 42, 42, 133916647, 875077848],
+                    vec![
+                        13466461121694723808,
+                        42,
+                        42,
+                        1508894993788531228,
+                        9457576377036667231,
+                    ],
+                ),
+            ),
+            (
+                "(Utf8, Utf8)",
+                true,
+                true,
+                (
+                    vec![1683018132, 42, 3012288645, 4099452303],
+                    vec![
+                        1797794113556310671,
+                        42,
+                        16912867548531066337,
+                        14603930852260307069,
+                    ],
+                ),
+                (
+                    vec![1683018132, 42, 42, 3957984087, 3217183214],
+                    vec![
+                        1797794113556310671,
+                        42,
+                        42,
+                        5255273406210089560,
+                        8443180452608933595,
+                    ],
+                ),
+            ),
+            (
+                "(Int32, Int32)",
+                false,
+                false,
+                (
+                    vec![687953397, 42, 59727262, 2213068787],
+                    vec![
+                        7748255741582956578,
+                        42,
+                        1151812168208346021,
+                        15758038786609148653,
+                    ],
+                ),
+                (
+                    vec![687953397, 42, 42, 133916647, 1774145214],
+                    vec![
+                        7748255741582956578,
+                        42,
+                        42,
+                        1508894993788531228,
+                        11654931606597058066,
+                    ],
+                ),
+            ),
+        ];
+
+        for (pair, key_utf8, value_utf8, no_nulls, with_nulls) in cases {
+            for (shape, (murmur3, xxhash64)) in [(NO_NULLS, no_nulls), (WITH_NULLS, with_nulls)] {
+                let array = map(key_utf8, value_utf8, shape);
+                let has_nulls = shape.2.is_some();
+                let label = format!(
+                    "{pair} {}",
+                    if has_nulls {
+                        "with nulls"
+                    } else {
+                        "without nulls"
+                    }
+                );
+
+                // Each shape must reach the loop it is meant to cover.
+                let map_array = array.as_any().downcast_ref::<MapArray>().unwrap();
+                let null_count = map_array.null_count()
+                    + map_array.keys().null_count()
+                    + map_array.values().null_count();
+                assert_eq!(null_count > 0, has_nulls, "{label}");
+
+                let mut hashes = vec![42u32; murmur3.len()];
+                create_murmur3_hashes(&[Arc::clone(&array)], &mut hashes).unwrap();
+                assert_eq!(hashes, murmur3, "murmur3 of {label}");
+                let mut hashes = vec![42u64; xxhash64.len()];
+                create_xxhash64_hashes(&[array], &mut hashes).unwrap();
+                assert_eq!(hashes, xxhash64, "xxhash64 of {label}");
+            }
+        }
+    }
 }
