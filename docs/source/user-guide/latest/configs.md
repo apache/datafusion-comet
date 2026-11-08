@@ -21,6 +21,10 @@ under the License.
 
 Comet provides the following configuration settings.
 
+When a `spark.comet.*` key is set that Comet does not recognize, the driver logs a warning once
+for that key, and suggests the closest known key when one is close. `spark.comet.datafusion.*`
+keys are passed to DataFusion as they are and are not checked.
+
 ## Scan Configuration Settings
 
 <!--BEGIN:CONFIG_TABLE[scan]-->

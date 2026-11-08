@@ -48,7 +48,6 @@ class CometWindowExecSuite extends CometTestBase {
       withSQLConf(
         CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
         CometConf.COMET_EXEC_WINDOW_ENABLED.key -> "true",
-        "spark.comet.operator.WindowExec.allowIncompatible" -> "true",
         "spark.comet.explain.fallback.enabled" -> "true",
         "spark.comet.explain.fallback.log.enabled" -> "true",
         "spark.comet.exec.localTableScan.enabled" -> "true") {

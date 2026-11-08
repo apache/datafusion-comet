@@ -296,4 +296,66 @@ class CometConfSuite extends AnyFunSuite {
 
     assert(CometConf.COMET_EXPLAIN_FALLBACK_LOG_ENABLED.get(conf))
   }
+
+  test("unrecognized keys are reported with the closest known key as a suggestion") {
+    assert(
+      CometConfValidator.findUnrecognized(
+        Seq(
+          "spark.comet.exec.enabeld",
+          "spark.comet.Exec.enabled",
+          "spark.comet.expression.Castt.enabled",
+          "spark.comet.foo.bar")) == Seq(
+        "spark.comet.Exec.enabled" -> Some("spark.comet.exec.enabled"),
+        "spark.comet.exec.enabeld" -> Some("spark.comet.exec.enabled"),
+        "spark.comet.expression.Castt.enabled" -> Some("spark.comet.expression.Cast.enabled"),
+        "spark.comet.foo.bar" -> None))
+  }
+
+  test("registered keys, alternatives and Comet-set keys are recognized") {
+    assert(
+      CometConfValidator
+        .findUnrecognized(
+          Seq(
+            CometConf.COMET_EXEC_ENABLED.key,
+            "spark.comet.exec.shuffle.enabled",
+            "spark.comet.version"))
+        .isEmpty)
+  }
+
+  test("expression keys are recognized only for expressions Comet has a serde for") {
+    assert(
+      CometConfValidator
+        .findUnrecognized(Seq(
+          "spark.comet.expression.Cast.enabled",
+          "spark.comet.expression.Cast.allowIncompatible",
+          "spark.comet.expression.Sum.enabled",
+          "spark.comet.expression.Sum.allowIncompatible"))
+        .isEmpty)
+    assert(
+      CometConfValidator
+        .findUnrecognized(Seq("spark.comet.expression.NoSuchExpression.enabled"))
+        .map(_._1) == Seq("spark.comet.expression.NoSuchExpression.enabled"))
+  }
+
+  test("operator keys are recognized only when registered") {
+    assert(
+      CometConfValidator
+        .findUnrecognized(Seq("spark.comet.operator.DataWritingCommandExec.allowIncompatible"))
+        .isEmpty)
+    assert(
+      CometConfValidator
+        .findUnrecognized(Seq("spark.comet.operator.WindowExec.allowIncompatible"))
+        .map(_._1) == Seq("spark.comet.operator.WindowExec.allowIncompatible"))
+  }
+
+  test("DataFusion pass-through keys and keys outside spark.comet are not checked") {
+    assert(
+      CometConfValidator
+        .findUnrecognized(
+          Seq(
+            "spark.comet.datafusion.execution.batch_size",
+            "spark.sql.shuffle.partitions",
+            "spark.cometx.foo"))
+        .isEmpty)
+  }
 }
