@@ -536,6 +536,51 @@ class CometNativeColumnarToRowSuite extends CometTestBase with AdaptiveSparkPlan
     }
   }
 
+  test("large-offset string and binary columns") {
+    import java.nio.charset.StandardCharsets
+
+    import org.apache.arrow.vector.{LargeVarBinaryVector, LargeVarCharVector}
+    import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
+
+    import org.apache.comet.CometArrowAllocator
+    import org.apache.comet.vector.CometPlainVector
+
+    // A PyArrow UDF can return large_string or large_binary. exportBatch hands them over with
+    // 64-bit offsets, and the converter casts them to the Utf8 and Binary it plans for.
+    val values = Seq("hello", null, "", "w\u00f6rld")
+    val schema = new StructType().add("s", StringType).add("b", BinaryType)
+    val strings = new LargeVarCharVector("s", CometArrowAllocator)
+    val binaries = new LargeVarBinaryVector("b", CometArrowAllocator)
+    val converter = new NativeColumnarToRowConverter(schema, values.length)
+    try {
+      Seq(strings, binaries).foreach { vector =>
+        vector.allocateNew(values.length)
+        values.zipWithIndex.foreach { case (value, i) =>
+          if (value != null) vector.setSafe(i, value.getBytes(StandardCharsets.UTF_8))
+        }
+        vector.setValueCount(values.length)
+      }
+      val batch = new ColumnarBatch(
+        Array[ColumnVector](new CometPlainVector(strings), new CometPlainVector(binaries)),
+        values.length)
+
+      val rows = converter
+        .convert(batch)
+        .map { row =>
+          val s = if (row.isNullAt(0)) null else row.getUTF8String(0).toString
+          val b =
+            if (row.isNullAt(1)) null else new String(row.getBinary(1), StandardCharsets.UTF_8)
+          (s, b)
+        }
+        .toList
+      assert(rows == values.map(v => (v, v)))
+    } finally {
+      converter.close()
+      strings.close()
+      binaries.close()
+    }
+  }
+
   /**
    * Helper to create a parquet table from a DataFrame and run a function with it.
    */
