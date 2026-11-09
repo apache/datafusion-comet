@@ -1866,6 +1866,10 @@ class CometNativeCastSuite
         "2020-01-01T12:34:56-08:00",
         // Single-digit hour offset (extract_offset_suffix supports ±H:MM)
         "2020-01-01T12:34:56+5:30",
+        // Second-precision offsets, the forms Java's ZoneOffset.of accepts
+        "2020-01-01T12:34:56+08:00:30",
+        "2020-01-01T12:34:56-01:30:15",
+        "2020-01-01T12:34:56+080030",
         // T-prefixed time-only with colon
         "T12:34",
         "T12:34:56",
@@ -1959,6 +1963,8 @@ class CometNativeCastSuite
           "2020-06-15T12:30:00+05:30",
           "2020-06-15T12:30:00-08:00",
           "2020-06-15T12:30:00 UTC",
+          "2020-06-15T12:30:00+08:00:30",
+          "2020-06-15T12:30:00-01:30:15",
           "2024-03-10 02:30:00",
           "2024-11-03 01:30:00",
           "not a timestamp",
