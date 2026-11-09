@@ -963,14 +963,8 @@ private[comet] object RegrSparkVersions {
   private def isAfterMinor(major: Int, minor: Int, thanMajor: Int, thanMinor: Int): Boolean =
     major > thanMajor || (major == thanMajor && minor > thanMinor)
 
-  // Spark's VersionUtils is private to its packages, so parse the leading major.minor.patch
-  // here; a missing patch reads as 0 and a suffix such as -SNAPSHOT is ignored.
-  private val versionPattern = """^(\d+)\.(\d+)(?:\.(\d+))?""".r
-
   private def majorMinorPatch(sparkVersion: String): Option[(Int, Int, Int)] =
-    versionPattern.findFirstMatchIn(sparkVersion).map { m =>
-      (m.group(1).toInt, m.group(2).toInt, Option(m.group(3)).map(_.toInt).getOrElse(0))
-    }
+    Utils.majorMinorPatchVersion(sparkVersion)
 }
 
 /**
