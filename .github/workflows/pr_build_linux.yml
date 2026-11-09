@@ -164,9 +164,6 @@ jobs:
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
@@ -666,6 +663,7 @@ jobs:
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
+              org.apache.spark.sql.comet.execution.arrow.CometZstdCompressionCodecSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |

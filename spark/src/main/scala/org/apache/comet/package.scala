@@ -107,4 +107,5 @@ package object comet {
   val COMET_BUILD_USER_NAME: String = getProp("git.build.user.email")
   val COMET_REPO_URL: String = getProp("git.remote.origin.url")
   val COMET_BUILD_TIMESTAMP: String = getProp("git.build.time")
+  val COMET_COMMIT_TIMESTAMP: String = getProp("git.commit.time")
 }
