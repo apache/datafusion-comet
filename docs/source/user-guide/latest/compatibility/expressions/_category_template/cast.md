@@ -87,6 +87,16 @@ checks the value against the target type. Comet does the same: the result is `NU
 `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, Spark does not apply this limit, and neither
 does Comet.
 
+Under ANSI mode, a value that parses but is too large for the target type can raise
+`CAST_INVALID_INPUT` where Spark raises `NUMERIC_VALUE_OUT_OF_RANGE`, when scaling it to the target
+type needs more than 38 digits. Examples are `'1e37'` cast to `DECIMAL(10,2)`, and `'6E+38'` cast to
+`DECIMAL(10,2)` with the setting above
+([#7576](https://github.com/apache/datafusion-comet/issues/7576)). A string whose digits do not
+fit in an `i128`, which is about 38 of them with the fractional digits included, and that the limit
+above does not reject, is not parsed at all. Comet returns `NULL`, or raises `CAST_INVALID_INPUT`
+under ANSI mode, where Spark returns the value or raises `NUMERIC_VALUE_OUT_OF_RANGE`
+([#7581](https://github.com/apache/datafusion-comet/issues/7581)).
+
 ## String to Date
 
 Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years

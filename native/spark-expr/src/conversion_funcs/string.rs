@@ -704,7 +704,12 @@ fn is_special_value(trimmed: &str) -> bool {
 /// Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed it,
 /// with NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, whatever the target type. It does not with
 /// `spark.sql.legacy.allowNegativeScaleOfDecimal`, and `skip_integral_digit_limit` is set then.
-/// The value fails the target type's precision check like any other that is too large.
+/// Spark rescales the value like any other, and it fails the target type's precision check if it
+/// is too large, with NUMERIC_VALUE_OUT_OF_RANGE under ANSI. Two shapes still report
+/// CAST_INVALID_INPUT under ANSI instead: a scale adjustment to the target type over 38, which
+/// returns `Ok(None)` below (https://github.com/apache/datafusion-comet/issues/7576), and more
+/// digits than an i128 holds, which `parse_decimal_str` rejects
+/// (https://github.com/apache/datafusion-comet/issues/7581).
 fn parse_string_to_decimal(
     input_str: &str,
     precision: u8,
@@ -3049,6 +3054,22 @@ mod tests {
                 );
             }
         }
+        // Two shapes that are too large for the target type but still do not report
+        // NUMERIC_VALUE_OUT_OF_RANGE as Spark does: a scale adjustment over 38 returns `None`,
+        // which the cast reports as CAST_INVALID_INPUT under ANSI (#7576), and more digits than
+        // an i128 holds are rejected as an invalid input (#7581).
+        assert_eq!(
+            parse_string_to_decimal("6E+38", 10, 2, false, true).unwrap(),
+            None
+        );
+        let forty_digits = format!("1{}", "0".repeat(39));
+        let err = parse_string_to_decimal(&forty_digits, 10, 2, false, true).unwrap_err();
+        assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
+        // The scale adjustment of "6E+38" to a negative-scale target is 8, so it is a value.
+        assert_eq!(
+            parse_string_to_decimal("6E+38", 10, -30, false, true).unwrap(),
+            Some(600_000_000)
+        );
         // The setting changes nothing for a value within the limit.
         for s in ["123", "-1.005", "1e-50", "12345678901", "1e30"] {
             for zero_any_exponent in [false, true] {
@@ -3190,6 +3211,24 @@ mod tests {
                     );
                 } else {
                     assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
+                }
+            }
+
+            // Two shapes the setting leaves as they were. Spark reports NUMERIC_VALUE_OUT_OF_RANGE
+            // under ANSI for both, and Comet reports CAST_INVALID_INPUT: a scale adjustment over
+            // 38 (#7576) and more digits than an i128 holds (#7581). NULL matches in the other modes.
+            for s in ["6E+38".to_string(), format!("1{}", "0".repeat(39))] {
+                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                    let result = cast_one(&s, &to_type, eval_mode, true);
+                    if eval_mode == EvalMode::Ansi {
+                        let err = result.unwrap_err().to_string();
+                        assert!(
+                            err.contains("CAST_INVALID_INPUT"),
+                            "{s} to {to_type}: {err}"
+                        );
+                    } else {
+                        assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
+                    }
                 }
             }
 
