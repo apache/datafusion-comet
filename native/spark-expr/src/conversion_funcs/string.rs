@@ -1550,8 +1550,21 @@ fn timestamp_parser<T: TimeZone>(
                     parse_timestamp_pattern(stripped, stripped_pattern, eval_mode, &suffix_tz)?;
                 // Arrow's `Tz` holds whole minutes, so an offset such as `+08:00:30` arrives as
                 // the `+08:00` zone plus a 30-second residual. Subtract the residual to land on
-                // the exact instant Spark computes.
-                return Ok(parsed.map(|micros| micros - i64::from(residual_secs) * 1_000_000));
+                // the exact instant Spark computes. An instant pushed below the representable
+                // range is out of range, which Spark reports like any other invalid value.
+                let adjusted = parsed
+                    .and_then(|micros| micros.checked_sub(i64::from(residual_secs) * 1_000_000));
+                return match adjusted {
+                    Some(micros) => Ok(Some(micros)),
+                    None if eval_mode == EvalMode::Ansi => {
+                        Err(SparkError::InvalidInputInCastToDatetime {
+                            value: value.to_string(),
+                            from_type: "STRING".to_string(),
+                            to_type: "TIMESTAMP".to_string(),
+                        })
+                    }
+                    None => Ok(None),
+                };
             }
         }
     }
@@ -1570,7 +1583,7 @@ fn timestamp_parser<T: TimeZone>(
 ///   "+HHMM"   -> +H*3600+M*60  (4 digits, no colon)
 ///   "+H:M"    -> same (with colon, any digit count 1-2 each)
 ///   "+HH:MM"  -> same
-///   "+H:M:S"  -> +H*3600+M*60+S  (Java's `ZoneOffset.of` accepts the seconds form)
+///   "+H:MM:SS" -> +H*3600+M*60+S  (the hour may be short, the minute and second may not)
 ///   "+HH:MM:SS" -> same
 ///   "+HHMMSS" -> same (6 digits, no colon)
 ///   (negative with '-' analogously)
@@ -1598,23 +1611,26 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
             return None;
         }
         let h: i32 = h_str.parse().ok()?;
-        // Either "+HH:MM" or "+HH:MM:SS"; each segment is one or two digits.
+        // Either "+HH:MM" or "+HH:MM:SS". Spark normalizes a one-digit hour or a one-digit
+        // final minute segment before calling `ZoneId.of`, but not when a seconds segment
+        // follows, so only the hour may stay short once seconds are present.
         let (m_str, s_str) = match tail.find(':') {
             Some(second_colon) => (&tail[..second_colon], Some(&tail[second_colon + 1..])),
             None => (tail, None),
         };
-        if !(1..=2).contains(&m_str.len()) {
-            return None;
-        }
-        let m: i32 = m_str.parse().ok()?;
-        let sec: i32 = match s_str {
+        let (m, sec) = match s_str {
             Some(s_str) => {
-                if !(1..=2).contains(&s_str.len()) {
+                if m_str.len() != 2 || s_str.len() != 2 {
                     return None;
                 }
-                s_str.parse().ok()?
+                (m_str.parse().ok()?, s_str.parse().ok()?)
             }
-            None => 0,
+            None => {
+                if !(1..=2).contains(&m_str.len()) {
+                    return None;
+                }
+                (m_str.parse().ok()?, 0)
+            }
         };
         (h, m, sec)
     } else {
@@ -4289,7 +4305,7 @@ mod tests {
             ("+1800", 64_800),
             ("-1800", -64_800),
             ("+08:00:30", 28_830),
-            ("+8:0:3", 28_803),
+            ("+8:00:30", 28_830),
             ("-01:30:15", -5_415),
             ("+080030", 28_830),
             ("+180000", 64_800),
@@ -4308,6 +4324,10 @@ mod tests {
             "+8:",
             "+08:00:",
             "+08:00:60",
+            "+8:0:3",
+            "+8:0:30",
+            "+08:0:30",
+            "+08:00:3",
             "+08:000:30",
             "+18:00:01",
             "+0800 30",
@@ -4320,6 +4340,27 @@ mod tests {
         ] {
             assert_eq!(parse_sign_offset(input), None, "{input:?}");
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_parser_rejects_residual_offset_underflow() {
+        let tz = &Tz::from_str("UTC").unwrap();
+        // `i64::MIN` microseconds is the earliest representable instant, so a positive residual
+        // pushes it out of range. Spark returns null there instead of wrapping.
+        for mode in [EvalMode::Legacy, EvalMode::Try] {
+            assert_eq!(
+                timestamp_parser("-290308-12-21T19:59:05.224192+00:00:30", mode, tz, true).unwrap(),
+                None
+            );
+        }
+        assert!(timestamp_parser(
+            "-290308-12-21T19:59:05.224192+00:00:30",
+            EvalMode::Ansi,
+            tz,
+            true
+        )
+        .is_err());
     }
 
     #[test]

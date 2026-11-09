@@ -1870,6 +1870,8 @@ class CometNativeCastSuite
         "2020-01-01T12:34:56+08:00:30",
         "2020-01-01T12:34:56-01:30:15",
         "2020-01-01T12:34:56+080030",
+        // Spark rejects a short minute or second segment once seconds are present
+        "2020-01-01T12:34:56+8:0:3",
         // T-prefixed time-only with colon
         "T12:34",
         "T12:34:56",
