@@ -206,54 +206,25 @@ fn spark_read_side_padding2(
                     )))
                 }
             };
-            let num_rows = match length {
-                ColumnarValue::Array(array) => Some(array.len()),
-                ColumnarValue::Scalar(_) => None,
-            };
-            let len = num_rows.unwrap_or(1);
-            let result = match string {
-                ScalarValue::Utf8(value) | ScalarValue::LargeUtf8(value) => {
-                    let value = value.as_deref();
-                    // A scalar contributes no capacity floor: reserving its bytes for every
-                    // row could exceed the 32-bit offsets of the output.
-                    let strings = std::iter::repeat_n(value, len);
-                    let ascii = value.is_none_or(str::is_ascii);
-                    if matches!(string, ScalarValue::Utf8(_)) {
-                        pad_strings::<i32, _>(
-                            strings,
-                            ascii,
-                            0,
-                            truncate,
-                            length.clone(),
-                            pad_string,
-                            is_left_pad,
-                        )?
-                    } else {
-                        pad_strings::<i64, _>(
-                            strings,
-                            ascii,
-                            0,
-                            truncate,
-                            length.clone(),
-                            pad_string,
-                            is_left_pad,
-                        )?
-                    }
-                }
-                other => {
-                    return Err(DataFusionError::Internal(format!(
-                        "Unsupported data type {:?} for function rpad/lpad/read_side_padding",
-                        other.data_type()
-                    )))
-                }
-            };
-            match num_rows {
-                Some(_) => Ok(result),
-                // Every argument was a scalar, so the result is one too.
-                None => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
-                    &result.to_array(1)?,
-                    0,
-                )?)),
+            match string {
+                ScalarValue::Utf8(value) => spark_read_side_padding_scalar::<i32>(
+                    value.as_deref(),
+                    truncate,
+                    length,
+                    pad_string,
+                    is_left_pad,
+                ),
+                ScalarValue::LargeUtf8(value) => spark_read_side_padding_scalar::<i64>(
+                    value.as_deref(),
+                    truncate,
+                    length,
+                    pad_string,
+                    is_left_pad,
+                ),
+                other => Err(DataFusionError::Internal(format!(
+                    "Unsupported data type {:?} for function rpad/lpad/read_side_padding",
+                    other.data_type()
+                ))),
             }
         }
         other => Err(DataFusionError::Internal(format!(
@@ -270,7 +241,7 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
     is_left_pad: bool,
 ) -> Result<ColumnarValue, DataFusionError> {
     let string_array = as_generic_string_array::<T>(array)?;
-    pad_strings::<T, _>(
+    Ok(ColumnarValue::Array(pad_strings::<T, _>(
         string_array.iter(),
         string_array.is_ascii(),
         string_array.value_data().len(),
@@ -278,11 +249,44 @@ fn spark_read_side_padding_internal<T: OffsetSizeTrait>(
         pad_type,
         pad_string,
         is_left_pad,
-    )
+    )?))
 }
 
-/// Pads each of `strings`. `ascii` says every string is ASCII, and `min_capacity` is a floor
-/// for the output's data buffer, covering rows that pass through untruncated.
+fn spark_read_side_padding_scalar<T: OffsetSizeTrait>(
+    value: Option<&str>,
+    truncate: bool,
+    pad_type: &ColumnarValue,
+    pad_string: &str,
+    is_left_pad: bool,
+) -> Result<ColumnarValue, DataFusionError> {
+    let num_rows = match pad_type {
+        ColumnarValue::Array(array) => Some(array.len()),
+        ColumnarValue::Scalar(_) => None,
+    };
+    // A scalar contributes no capacity floor: reserving its bytes for every row could
+    // exceed the 32-bit offsets of the output.
+    let result = pad_strings::<T, _>(
+        std::iter::repeat_n(value, num_rows.unwrap_or(1)),
+        value.is_none_or(str::is_ascii),
+        0,
+        truncate,
+        pad_type.clone(),
+        pad_string,
+        is_left_pad,
+    )?;
+    match num_rows {
+        Some(_) => Ok(ColumnarValue::Array(result)),
+        // Every argument was a scalar, so the result is one too.
+        None => Ok(ColumnarValue::Scalar(ScalarValue::try_from_array(
+            &result, 0,
+        )?)),
+    }
+}
+
+/// Pads each of `strings`. `ascii` says every string is ASCII. When `pad_type` is an array,
+/// `min_capacity` is a floor for the output's data buffer, covering rows that pass through
+/// untruncated. When `pad_type` is a scalar, the buffer is sized from the length alone and
+/// `min_capacity` is ignored.
 fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a str>>>(
     strings: I,
     ascii: bool,
@@ -291,7 +295,7 @@ fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a st
     pad_type: ColumnarValue,
     pad_string: &str,
     is_left_pad: bool,
-) -> Result<ColumnarValue, DataFusionError> {
+) -> Result<ArrayRef, DataFusionError> {
     match pad_type {
         ColumnarValue::Array(array_int) => {
             let int_pad_array = array_int.as_primitive::<Int32Type>();
@@ -333,7 +337,7 @@ fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a st
                     _ => builder.append_null(),
                 }
             }
-            Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+            Ok(Arc::new(builder.finish()))
         }
         ColumnarValue::Scalar(const_pad_length) => {
             let length = 0.max(i32::try_from(const_pad_length)?) as usize;
@@ -355,7 +359,7 @@ fn pad_strings<'a, T: OffsetSizeTrait, I: ExactSizeIterator<Item = Option<&'a st
                     _ => builder.append_null(),
                 }
             }
-            Ok(ColumnarValue::Array(Arc::new(builder.finish())))
+            Ok(Arc::new(builder.finish()))
         }
     }
 }
