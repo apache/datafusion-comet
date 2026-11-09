@@ -651,9 +651,8 @@ normal `remove_orphan_files` maintenance.
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-`FileIO`. (From Iceberg 1.6 on, Iceberg's own `SparkWrite.abort` skips cleanup unless a commit
-failed with a cleanable error, so on the stock path those files are left for
-`remove_orphan_files`. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -707,9 +706,8 @@ a data file but not what any reader computes from it:
   per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
   leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type the native writer accepts. On Iceberg 1.5.x,
-  which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
-  directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
+  partition type the native writer accepts. Earlier iceberg-java releases spelled `timestamp` and
+  `timestamptz` directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
   1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
   cases, and no reader parses these names: files are resolved through committed manifests.
@@ -829,10 +827,6 @@ The physical differences that every native data file has, and why they are safe,
 
 ### Reads that fail where Spark succeeds
 
-- **A data file that omits an optional nested field.** The native scan fails on a data file that
-  lacks an optional struct field, which a write with `write.spark.accept-any-schema=true` can
-  produce without any schema change
-  ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
 - **Iceberg tables whose metadata location has no host.** The native Iceberg scan skips the
