@@ -143,7 +143,8 @@ object IcebergWriteProtoTranslation {
   def compressesWithBrotli(props: Map[String, String]): Boolean =
     nativeCodec(codecName(props)).contains(CompressionCodec.Brotli)
 
-  private def configuredBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
+  private[operator] def configuredBloomFilterColumnNames(
+      props: Map[String, String]): Seq[String] =
     props.iterator
       .collect {
         case (key, _) if key.startsWith(Keys.ParquetBloomFilterColumnEnabledPrefix) =>
