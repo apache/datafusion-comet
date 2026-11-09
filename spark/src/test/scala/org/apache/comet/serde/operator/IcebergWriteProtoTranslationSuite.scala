@@ -44,11 +44,9 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty,
       Set.empty)
     Seq("unknown", "", "vendor-build", "1.8.bad", "1.10", "2.0.0").foreach { version =>
-      val error = intercept[IllegalArgumentException] {
-        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), resolution, version)
-      }
-      assert(error.getMessage.contains("Cannot determine Iceberg Bloom column-name convention"))
-      assert(error.getMessage.contains(s"'$version'"))
+      assert(
+        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("tags.a"), resolution, version) ==
+          Left(s"Cannot determine Iceberg Bloom column-name convention for version '$version'"))
     }
   }
 
@@ -65,7 +63,7 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
         CometIcebergNativeWrite.bloomFilterParquetPaths(
           Seq("tags.element.a", "tags.a"),
           resolution,
-          version) == Map("tags.element.a" -> physicalPath))
+          version) == Right(Map("tags.element.a" -> physicalPath)))
     }
   }
 
@@ -87,17 +85,18 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty,
       Set.empty)
     Seq("id", "id.", "id..").foreach { name =>
-      assert(CometIcebergNativeWrite
-        .bloomFilterParquetPaths(Seq(name, "missing"), resolution, "1.5.2") == Map(name -> "id"))
+      assert(
+        CometIcebergNativeWrite
+          .bloomFilterParquetPaths(Seq(name, "missing"), resolution, "1.5.2") == Right(
+          Map(name -> "id")))
     }
     assert(
       CometIcebergNativeWrite
         .bloomFilterParquetPaths(Seq("tags.list.element.a."), resolution, "1.5.2") ==
-        Map("tags.list.element.a." -> "tags.list.element.a"))
-    val error = intercept[IllegalArgumentException] {
-      CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("id", "id."), resolution, "1.5.2")
-    }
-    assert(error.getMessage.contains("same Parquet leaf"))
+        Right(Map("tags.list.element.a." -> "tags.list.element.a")))
+    assert(
+      CometIcebergNativeWrite.bloomFilterParquetPaths(Seq("id", "id."), resolution, "1.5.2") ==
+        Left("Multiple Bloom column names resolve to the same Parquet leaf: id (id, id.)"))
   }
 
   test("legacy list and map aliases resolve by field ID and colliding spellings use Java") {
@@ -122,16 +121,13 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       case (short, canonical, physical) =>
         assert(
           CometIcebergNativeWrite
-            .bloomFilterParquetPaths(Seq(short, "missing"), resolution, "1.8.1", schema) == Map(
-            short -> physical))
-        val error = intercept[IllegalArgumentException] {
-          CometIcebergNativeWrite.bloomFilterParquetPaths(
-            Seq(short, canonical),
-            resolution,
-            "1.8.1",
-            schema)
-        }
-        assert(error.getMessage.contains("same Parquet leaf"))
+            .bloomFilterParquetPaths(Seq(short, "missing"), resolution, "1.8.1", schema) ==
+            Right(Map(short -> physical)))
+        assert(
+          CometIcebergNativeWrite
+            .bloomFilterParquetPaths(Seq(short, canonical), resolution, "1.8.1", schema) == Left(
+            s"Multiple Bloom column names resolve to the same Parquet leaf: $physical " +
+              s"(${Seq(short, canonical).sorted.mkString(", ")})"))
     }
   }
 
@@ -143,10 +139,9 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
       Set.empty,
       Set.empty)
     Seq("1.8.1", "1.9.1").foreach { version =>
-      val error = intercept[IllegalArgumentException] {
-        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq(""), resolution, version)
-      }
-      assert(error.getMessage.contains("Empty Bloom column name"))
+      assert(
+        CometIcebergNativeWrite.bloomFilterParquetPaths(Seq(""), resolution, version) ==
+          Left("Empty Bloom column name requires Java validation"))
     }
     class MissingSchema {
       def findField(name: String): AnyRef = {
@@ -156,8 +151,8 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     }
     assert(
       CometIcebergNativeWrite
-        .bloomFilterParquetPaths(Seq("missing"), resolution, "1.8.1", new MissingSchema)
-        .isEmpty)
+        .bloomFilterParquetPaths(Seq("missing"), resolution, "1.8.1", new MissingSchema) ==
+        Right(Map.empty))
     class FailingSchema {
       def findField(name: String): AnyRef =
         throw new IllegalArgumentException(s"lookup failed: $name")
