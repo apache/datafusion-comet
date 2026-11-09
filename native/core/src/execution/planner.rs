@@ -29,6 +29,8 @@ mod shuffle;
 mod window;
 mod write;
 
+pub(crate) use shuffle::align_shuffle_writer_input;
+
 // Glue that wires the optional Delta integration into core's plan-tree builder.
 // Compiled only under `--features contrib-delta`; default builds carry zero Delta
 // surface. The bulk of the Delta logic lives in the `comet-contrib-delta` crate --
@@ -50,10 +52,11 @@ use crate::execution::operators::TopKReaderFilterExec;
 #[cfg(feature = "python-udf")]
 use crate::execution::operators::{ArrowPythonUdfExec, ArrowPythonUdfSpec};
 use crate::execution::{
-    operators::{ExecutionError, ScanExec, ShuffleScanExec},
+    operators::{schema_from_data_types, ExecutionError, ScanExec, ShuffleScanExec},
     planner::expression_registry::ExpressionRegistry,
     planner::operator_registry::OperatorRegistry,
     serde::{to_arrow_datatype, to_arrow_field},
+    shuffle::SchemaAlignExec,
 };
 use crate::jvm_bridge::{jni_call, JVMClasses, OutputStreamSink, ShufflePartitionPusher};
 use arrow::compute::CastOptions;
@@ -106,7 +109,7 @@ use arrow::array::{
     NullArray, StringBuilder, TimestampMicrosecondArray,
 };
 use arrow::buffer::{BooleanBuffer, NullBuffer, OffsetBuffer};
-use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::filter::FilterExecBuilder;
 use datafusion::physical_plan::limit::GlobalLimitExec;
 use datafusion_comet_proto::spark_expression::ListLiteral;
 use datafusion_comet_proto::spark_operator::SparkFilePartition;
@@ -127,7 +130,10 @@ use jni::objects::{Global, JObject};
 use log::warn;
 use num::{BigInt, ToPrimitive};
 use object_store::path::Path;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 pub type PlanCreationResult =
     Result<(Vec<ScanExec>, Vec<ShuffleScanExec>, Arc<SparkPlan>), ExecutionError>;
@@ -207,6 +213,18 @@ pub struct PhysicalPlanner {
     /// Whether a boundary that would cast a timestamp's timezone label to the declared one fails
     /// instead. Test-only; see `spark.comet.testing.strictTimestampLabels.enabled`.
     strict_timestamp_labels: bool,
+    /// What feeds the block's input leaves (`Scan` and `ShuffleScan`) in place of the JVM. Set
+    /// when Comet runs outside a Spark executor, which also means there is no JVM to call; see
+    /// [`crate::execution::native_executors`].
+    native_inputs: Option<Arc<NativeInputs>>,
+}
+
+/// What feeds a block's input leaves when Comet runs outside a Spark executor.
+enum NativeInputs {
+    /// The plans left to feed the leaves, in the order the planner meets them.
+    Plans(Mutex<VecDeque<Arc<dyn ExecutionPlan>>>),
+    /// Nothing: the block is planned without its data. See [`PhysicalPlanner::without_data`].
+    Empty,
 }
 
 impl Default for PhysicalPlanner {
@@ -229,6 +247,7 @@ impl PhysicalPlanner {
             output_stream: None,
             float_operands: FloatOperands::Normalize,
             strict_timestamp_labels: false,
+            native_inputs: None,
         }
     }
 
@@ -319,6 +338,107 @@ impl PhysicalPlanner {
     pub fn with_strict_timestamp_labels(mut self, strict: bool) -> Self {
         self.strict_timestamp_labels = strict;
         self
+    }
+
+    /// Feeds the block's input leaves from `inputs` instead of the JVM, one per leaf in the order
+    /// the planner meets them. Each input's output is cast to the types Spark declared for its
+    /// leaf. Expressions that call into the JVM fail to plan, since there is no JVM, and so do
+    /// native UDFs, which load a library from a path in the plan.
+    pub fn with_native_inputs(mut self, inputs: Vec<Arc<dyn ExecutionPlan>>) -> Self {
+        self.native_inputs = Some(Arc::new(NativeInputs::Plans(Mutex::new(inputs.into()))));
+        self
+    }
+
+    /// Like [`Self::with_native_inputs`], but plans a block without its data, to check it and
+    /// learn its schema: each input leaf is empty, and each file scan is planned with its files
+    /// but builds no object store for them, since nothing reads them. Planning then uses no
+    /// storage credentials.
+    pub fn without_data(mut self) -> Self {
+        self.native_inputs = Some(Arc::new(NativeInputs::Empty));
+        self
+    }
+
+    /// Whether the planner plans the block without its data; see [`Self::without_data`].
+    fn plans_without_data(&self) -> bool {
+        matches!(self.native_inputs.as_deref(), Some(NativeInputs::Empty))
+    }
+
+    /// Registers the object store a scan reads `file` through, configured by `options`, and
+    /// returns its URL and backend. When planning without data, the scan gets the local file
+    /// system instead, which is always registered, and no store is built.
+    fn scan_store(
+        &self,
+        file: &str,
+        options: &HashMap<String, String>,
+    ) -> Result<(ObjectStoreUrl, ObjectStoreBackend), ExecutionError> {
+        if self.plans_without_data() {
+            return Ok((
+                ObjectStoreUrl::local_filesystem(),
+                ObjectStoreBackend::Local,
+            ));
+        }
+        let (url, _, backend) = prepare_object_store_with_configs(
+            self.session_ctx.runtime_env(),
+            file.to_string(),
+            options,
+        )?;
+        Ok((url, backend))
+    }
+
+    /// Plans `spark_plan` as the next native input when it is an input leaf and the planner has
+    /// native inputs. `None` otherwise.
+    fn native_input_leaf(
+        &self,
+        spark_plan: &Operator,
+    ) -> Result<Option<Arc<SparkPlan>>, ExecutionError> {
+        let Some(native_inputs) = &self.native_inputs else {
+            return Ok(None);
+        };
+        let fields = match spark_plan.op_struct.as_ref() {
+            Some(OpStruct::Scan(scan)) => &scan.fields,
+            Some(OpStruct::ShuffleScan(scan)) => &scan.fields,
+            _ => return Ok(None),
+        };
+        let data_types = fields.iter().map(to_arrow_datatype).collect_vec();
+        let schema = schema_from_data_types(&data_types);
+        let input = match native_inputs.as_ref() {
+            NativeInputs::Plans(plans) => {
+                let input = plans.lock().unwrap().pop_front().ok_or_else(|| {
+                    GeneralError("The plan has more input leaves than native inputs".to_string())
+                })?;
+                SchemaAlignExec::try_new_or_passthrough(input, &schema)?
+            }
+            NativeInputs::Empty => Arc::new(EmptyExec::new(schema)),
+        };
+        Ok(Some(Arc::new(SparkPlan::new(
+            spark_plan.plan_id,
+            input,
+            vec![],
+        ))))
+    }
+
+    /// Fails to plan `what`, which calls into the JVM, when the plan runs without one.
+    fn require_jvm(&self, what: &str) -> Result<(), ExecutionError> {
+        if self.native_inputs.is_some() {
+            return Err(GeneralError(format!(
+                "{what} calls into the JVM, so it cannot run on Comet Native Executors"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fails to plan `what`, which loads code from a path the plan names, when the plan runs on a
+    /// Comet Native Executor. Those processes are shared by every client, and the policy that
+    /// would restrict the path comes from the client's own configuration, so a plan could load any
+    /// library the process can read.
+    fn refuse_on_native_executor(&self, what: &str) -> Result<(), ExecutionError> {
+        if self.native_inputs.is_some() {
+            return Err(GeneralError(format!(
+                "{what} loads code from a path in the plan, so it cannot run on Comet Native \
+                 Executors"
+            )));
+        }
+        Ok(())
     }
 
     pub(crate) fn strict_timestamp_labels(&self) -> bool {
@@ -507,7 +627,7 @@ impl PhysicalPlanner {
         partition_files: &SparkFilePartition,
     ) -> Result<(ObjectStoreUrl, ObjectStoreBackend, Vec<PartitionedFile>), ExecutionError> {
         let one_file = match partition_files.partitioned_file.first() {
-            Some(f) => f.file_path.clone(),
+            Some(f) => f.file_path.as_str(),
             None => {
                 // Empty partition: no store to resolve; the URL and backend are unused because
                 // the file group is empty and build_parquet_scan_plan returns EmptyExec.
@@ -523,11 +643,8 @@ impl PhysicalPlanner {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let (object_store_url, _, object_store_backend) = prepare_object_store_with_configs(
-            self.session_ctx.runtime_env(),
-            one_file,
-            &object_store_options,
-        )?;
+        let (object_store_url, object_store_backend) =
+            self.scan_store(one_file, &object_store_options)?;
         let files = self.get_partitioned_files(partition_files, &object_store_options)?;
         Ok((object_store_url, object_store_backend, files))
     }
@@ -857,6 +974,7 @@ impl PhysicalPlanner {
                 Ok(Arc::new(CastExpr::new(child, data_type, None)))
             }
             ExprStruct::Subquery(expr) => {
+                self.require_jvm("A scalar subquery")?;
                 let id = expr.id;
                 let data_type = to_arrow_datatype(expr.datatype.as_ref().unwrap());
                 Ok(Arc::new(Subquery::new(self.exec_context_id, id, data_type)))
@@ -1023,6 +1141,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::JvmScalarUdf(udf) => {
+                self.require_jvm(&format!("The JVM UDF {}", udf.class_name))?;
                 let args = udf
                     .args
                     .iter()
@@ -1053,6 +1172,7 @@ impl PhysicalPlanner {
                 )))
             }
             ExprStruct::NativeScalarUdf(call) => {
+                self.refuse_on_native_executor(&format!("The native UDF {}", call.name))?;
                 let arg_exprs: Vec<Arc<dyn PhysicalExpr>> = call
                     .args
                     .iter()
@@ -1524,6 +1644,10 @@ impl PhysicalPlanner {
         inputs: &mut Vec<Arc<Global<JObject<'static>>>>,
         partition_count: usize,
     ) -> PlanCreationResult {
+        if let Some(input) = self.native_input_leaf(spark_plan)? {
+            return Ok((vec![], vec![], input));
+        }
+
         // Try to use the modular registry first - this automatically handles any registered operator types
         if OperatorRegistry::global().can_handle(spark_plan) {
             return OperatorRegistry::global().create_plan(
@@ -1595,10 +1719,13 @@ impl PhysicalPlanner {
                 let predicate =
                     self.create_expr(filter.predicate.as_ref().unwrap(), child.schema())?;
 
-                let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(
-                    predicate,
-                    Arc::clone(&child.native_plan),
-                )?);
+                // FilterExec merges its output up to its own batch size, 8192 rows by default.
+                // Use the session batch size so it doesn't build batches bigger than that.
+                let filter: Arc<dyn ExecutionPlan> = Arc::new(
+                    FilterExecBuilder::new(predicate, Arc::clone(&child.native_plan))
+                        .with_batch_size(self.session_ctx.copied_config().batch_size())
+                        .build()?,
+                );
 
                 Ok((
                     scans,
@@ -1776,14 +1903,7 @@ impl PhysicalPlanner {
                 // Build the store from this partition's files; other partitions may read
                 // from a different one.
                 let object_store_url = match partition.partitioned_file.first() {
-                    Some(file) => {
-                        prepare_object_store_with_configs(
-                            self.session_ctx.runtime_env(),
-                            file.file_path.clone(),
-                            &object_store_options,
-                        )?
-                        .0
-                    }
+                    Some(file) => self.scan_store(&file.file_path, &object_store_options)?.0,
                     None => ObjectStoreUrl::local_filesystem(),
                 };
                 let files = self.get_partitioned_files(partition, &object_store_options)?;
@@ -3812,6 +3932,34 @@ mod tests {
         assert_eq!(0, filter_exec.additional_native_plans.len());
     }
 
+    fn batch_size_planner(batch_size: usize) -> PhysicalPlanner {
+        let config = SessionConfig::new().with_batch_size(batch_size);
+        PhysicalPlanner::new(Arc::new(SessionContext::new_with_config(config)), 0)
+    }
+
+    /// The filter merges its output up to the session batch size and no further. Without it, the
+    /// filter merges up to 8192 rows, which can exceed Arrow's 2 GiB limit for large string values.
+    #[tokio::test]
+    async fn filter_output_respects_session_batch_size() {
+        let planner = batch_size_planner(2);
+        let op = create_filter(create_scan(), 7);
+        let (mut scans, _, planned) = planner.create_plan(&op, &mut vec![], 1).unwrap();
+
+        // Five single-row batches that all pass the filter.
+        let mut inputs = [(0..5)
+            .map(|_| InputBatch::Batch(vec![Arc::new(Int32Array::from(vec![7])) as ArrayRef], 1))
+            .chain(std::iter::once(InputBatch::EOF))
+            .collect::<Vec<_>>()
+            .into_iter()];
+        let stream = planned
+            .native_plan
+            .execute(0, SessionContext::new().task_ctx())
+            .unwrap();
+        let batches = collect_with_inputs(stream, &mut scans, &mut inputs).await;
+        let sizes: Vec<_> = batches.iter().map(|batch| batch.num_rows()).collect();
+        assert_eq!(sizes, vec![2, 2, 1]);
+    }
+
     /// Comparisons follow Spark's float ordering without normalizing their operands, except in the
     /// data filters that a scan pushes into the Parquet reader, where pruning has to see a plain
     /// comparison of the column.
@@ -4015,8 +4163,10 @@ mod tests {
                 "col_0@0 ASC",
                 probe.properties().output_ordering().unwrap().to_string()
             );
-            // The join keeps the order in its own output, so the operators above it see it too.
+            // The join keeps the order in its own output, so the operators above it see it too,
+            // and an order declared above it holds, such as a window's for an alias of the key.
             assert!(planned.native_plan.properties().output_ordering().is_some());
+            assert!(PhysicalPlanner::keeps_source_order(&planned.native_plan));
         }
     }
 
@@ -4184,6 +4334,48 @@ mod tests {
         assert!(!PhysicalPlanner::keeps_source_order(&scan(2)));
     }
 
+    #[test]
+    fn declared_order_extends_an_order_the_input_declares() {
+        // An order is declared over an empty bucket, and next to the order the input declares,
+        // unless an operator in between may have moved rows.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("col_0", DataType::Int32, true),
+            Field::new("col_1", DataType::Int32, true),
+        ]));
+        let planner = PhysicalPlanner::default();
+        let declare = |plan: &Arc<dyn ExecutionPlan>, index: i32| {
+            planner
+                .with_declared_order(
+                    Arc::clone(plan),
+                    &[create_sort_order(index, 3, false, true)],
+                )
+                .unwrap()
+        };
+        let empty: Arc<dyn ExecutionPlan> =
+            Arc::new(datafusion::physical_plan::empty::EmptyExec::new(schema));
+        let by_col_0 = declare(&empty, 0);
+        assert_eq!("SortedInputExec", by_col_0.name());
+        assert!(Arc::ptr_eq(&declare(&by_col_0, 0), &by_col_0));
+
+        let both = declare(&by_col_0, 1);
+        assert!(Arc::ptr_eq(both.children()[0], &by_col_0));
+        for index in 0..2 {
+            let partition_by: Vec<Arc<dyn PhysicalExpr>> =
+                vec![Arc::new(Column::new(&format!("col_{index}"), index))];
+            let ordered = get_ordered_partition_by_indices(&partition_by, &both).unwrap();
+            assert_eq!(1, ordered.len(), "col_{index}");
+        }
+
+        let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(
+            LexOrdering::new(vec![PhysicalSortExpr::new_default(Arc::new(Column::new(
+                "col_0", 0,
+            )))])
+            .unwrap(),
+            empty,
+        ));
+        assert!(Arc::ptr_eq(&declare(&sort, 1), &sort));
+    }
+
     #[tokio::test]
     async fn spark_plan_dynamic_filter_preserves_metrics() {
         use crate::execution::metrics::utils::to_native_metric_node;
@@ -4251,24 +4443,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn window_cast_projection_reports_window_time() {
-        use crate::execution::metrics::utils::to_native_metric_node;
+    /// `func() OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)`, returning
+    /// `result_type`.
+    fn window_function_expr(
+        func: &str,
+        result_type: Option<spark_expression::DataType>,
+    ) -> spark_operator::WindowExpr {
         use spark_operator::{
             lower_window_frame_bound::LowerFrameBoundStruct,
             upper_window_frame_bound::UpperFrameBoundStruct, CurrentRow, LowerWindowFrameBound,
             UnboundedPreceding, UpperWindowFrameBound, WindowExpr, WindowFrame, WindowFrameType,
             WindowSpecDefinition,
         };
-
-        let session = Arc::new(SessionContext::new());
-        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
-        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
-        // casting projection above the window.
-        let row_number = WindowExpr {
+        WindowExpr {
             built_in_window_function: Some(Expr {
                 expr_struct: Some(ScalarFunc(spark_expression::ScalarFunc {
-                    func: "row_number".to_string(),
+                    func: func.to_string(),
                     ..Default::default()
                 })),
                 query_context: None,
@@ -4290,9 +4480,20 @@ mod tests {
                 }),
                 ..Default::default()
             }),
-            result_type: Some(create_proto_datatype()),
+            result_type,
             ..Default::default()
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn window_cast_projection_reports_window_time() {
+        use crate::execution::metrics::utils::to_native_metric_node;
+
+        let session = Arc::new(SessionContext::new());
+        let planner = PhysicalPlanner::new(Arc::clone(&session), 0);
+        // `row_number` returns UInt64 natively and Spark expects Int32, so the planner adds a
+        // casting projection above the window.
+        let row_number = window_function_expr("row_number", Some(create_proto_datatype()));
         let operator = Operator {
             children: vec![create_scan()],
             op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
@@ -4345,6 +4546,45 @@ mod tests {
             metrics.metrics["elapsed_compute"],
             window_time + projection_time
         );
+    }
+
+    #[test]
+    fn window_declares_input_order_on_a_scan() {
+        // Both window operators need their partition keys' order, which a `ScanExec` declares
+        // only through the order Spark sent. `percent_rank` runs in `WindowAggExec`.
+        let partition_by: Vec<Arc<dyn PhysicalExpr>> = vec![Arc::new(Column::new("col_0", 0))];
+        for (func, operator) in [
+            ("row_number", "BoundedWindowAggExec"),
+            ("percent_rank", "WindowAggExec"),
+        ] {
+            let window_input = |input_sort_orders| {
+                let window = Operator {
+                    children: vec![create_scan()],
+                    op_struct: Some(OpStruct::Window(Box::new(spark_operator::Window {
+                        window_expr: vec![window_function_expr(func, None)],
+                        partition_by_list: vec![create_bound_reference(0)],
+                        order_by_list: vec![create_sort_order(0, 3, false, true)],
+                        input_sort_orders,
+                        ..Default::default()
+                    }))),
+                    ..Default::default()
+                };
+                let (_, _, planned) = PhysicalPlanner::default()
+                    .create_plan(&window, &mut vec![], 1)
+                    .unwrap();
+                assert_eq!(operator, planned.native_plan.name());
+                Arc::clone(planned.native_plan.children()[0])
+            };
+            let input = window_input(vec![create_sort_order(0, 3, false, true)]);
+            assert_eq!("SortedInputExec", input.name());
+            let ordered = get_ordered_partition_by_indices(&partition_by, &input).unwrap();
+            assert_eq!(1, ordered.len(), "{func}");
+
+            let input = window_input(vec![]);
+            assert_eq!("ScanExec", input.name());
+            let ordered = get_ordered_partition_by_indices(&partition_by, &input).unwrap();
+            assert!(ordered.is_empty(), "{func}");
+        }
     }
 
     #[test]
@@ -4900,12 +5140,14 @@ mod tests {
                     })),
                     ..Default::default()
                 };
-                let planner = PhysicalPlanner::default();
+                let planner = batch_size_planner(5);
                 let (mut scans, _, planned) =
                     planner.create_plan(&project, &mut vec![], 1).unwrap();
                 let filter_plan = &planned.native_plan.children()[0];
                 let filter = filter_plan.downcast_ref::<FilterExec>().unwrap();
                 assert_eq!(filter.projection().as_deref(), output.as_deref());
+                // The filter keeps the session batch size, whether or not pruning rebuilt it.
+                assert_eq!(filter.batch_size(), 5);
                 assert_eq!(filter.input().schema().fields().len(), 4);
                 for (index, field) in planned.schema().fields().iter().enumerate() {
                     assert_eq!(field.name(), &format!("col_{index}"));
@@ -6964,6 +7206,35 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![ids]).unwrap();
         let out = expr.evaluate(&batch).unwrap().into_array(2).unwrap();
         assert_eq!(out.data_type(), &promised);
+    }
+
+    /// A Comet Native Executor is shared by every client, so it doesn't load a library a plan names.
+    #[test]
+    fn native_scalar_udf_is_refused_on_native_executors() {
+        let call = Expr {
+            expr_struct: Some(NativeScalarUdf(spark_expression::NativeScalarUdf {
+                name: "add_one_c".to_string(),
+                library_path: "/no/such/library.so".to_string(),
+                args: vec![],
+                return_type: Some(spark_expression::DataType {
+                    type_id: 4, // INT64
+                    type_info: None,
+                }),
+                deterministic: true,
+            })),
+            ..Default::default()
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, true)]));
+        for planner in [
+            PhysicalPlanner::default().without_data(),
+            PhysicalPlanner::default().with_native_inputs(vec![]),
+        ] {
+            let err = planner.create_expr(&call, Arc::clone(&schema)).unwrap_err();
+            assert!(
+                err.to_string().contains("Comet Native Executors"),
+                "unexpected: {err}"
+            );
+        }
     }
 
     /// The executor applies the native UDF policy to the library path in the plan, whatever the
