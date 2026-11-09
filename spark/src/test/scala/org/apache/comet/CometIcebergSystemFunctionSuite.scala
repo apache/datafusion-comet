@@ -396,6 +396,9 @@ class CometIcebergSystemFunctionSuite
         .getUnsupportedReasons()
         .exists(_.contains(CometIcebergTruncate.DecimalNote)),
       "the decimal truncate note is missing from CometStaticInvoke.getUnsupportedReasons")
+    assert(
+      CometStaticInvoke.getUnsupportedReasons().exists(_.contains("width above 1073741824")),
+      "the wide integer truncate note is missing from CometStaticInvoke.getUnsupportedReasons")
 
     // CometStaticInvoke dispatches on (functionName, class name), so the same expressions reach
     // the Iceberg handlers from there too.

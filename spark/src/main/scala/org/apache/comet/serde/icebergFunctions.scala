@@ -261,7 +261,13 @@ object CometIcebergTruncate
     "Iceberg's `truncate(width, value)` system function on a `decimal` column. " + DecimalNote +
       " Truncating `-99999999999999.9999` in a `decimal(18,4)` column by a width of 10 is one " +
       "such value: the result has 19 digits. The other `truncate` input types, and `bucket` on " +
-      "decimals, are unaffected.")
+      "decimals, are unaffected.",
+    "Iceberg's `truncate(width, value)` system function on an `int`, `date`, `tinyint` or " +
+      "`smallint` column with a width above 1073741824. At those widths Iceberg Java's " +
+      "`(v % W) + W` overflows a 32-bit `int`, while the format spec and iceberg-rust compute " +
+      "`v - (v % W)`. Every Iceberg release through 1.12.0 overflows, so the expected answer " +
+      "depends on the Iceberg jar the user runs and Spark evaluates those calls. Long, string " +
+      "and binary truncation is unaffected.")
 }
 
 /**
