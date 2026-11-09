@@ -7748,7 +7748,7 @@ class CometIcebergNativeSuite
             checkIcebergNativeScan(
               s"SELECT id, transform(variants, v -> to_json(v)) FROM $table ORDER BY id")
             checkIcebergNativeScan(
-              s"SELECT id, transform_values(variants_by_key, (k, v) -> to_json(v)) " +
+              "SELECT id, transform_values(variants_by_key, (k, v) -> to_json(v)) " +
                 s"FROM $table ORDER BY id")
           }
 
