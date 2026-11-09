@@ -226,8 +226,8 @@ object CometIcebergTruncate
    * Largest integer `truncate` width whose `(v % W) + W` cannot overflow a Java `int`.
    *
    * Above it the result depends on the Iceberg jar the user runs: every release through 1.12.0
-   * wraps, while a release carrying apache/iceberg#18112 returns the spec's `v - (v % W)`.
-   * Spark decides the expected answer, so those widths stay with Spark.
+   * wraps, while a release carrying apache/iceberg#18112 returns the spec's `v - (v % W)`. Spark
+   * decides the expected answer, so those widths stay with Spark.
    * https://github.com/apache/datafusion-comet/issues/7442
    */
   private val MaxSafeIntegerWidth: Int = 1 << 30
@@ -251,10 +251,9 @@ object CometIcebergTruncate
             CometIcebergSystemFunctions
               .positiveIntLiteral(parameter)
               .exists(_ > MaxSafeIntegerWidth) =>
-        Unsupported(
-          Some(
-            s"truncate width above $MaxSafeIntegerWidth overflows Iceberg's int arithmetic, and " +
-              "the result depends on the Iceberg jar the user runs"))
+        Unsupported(Some(
+          s"truncate width above $MaxSafeIntegerWidth overflows Iceberg's int arithmetic, and " +
+            "the result depends on the Iceberg jar the user runs"))
       case _ => super.getSupportLevel(expr)
     }
 

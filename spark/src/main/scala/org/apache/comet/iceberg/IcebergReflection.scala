@@ -924,8 +924,8 @@ object IcebergReflection extends Logging {
   private val TruncateTransform = """^truncate\[(\d+)\]$""".r
 
   /**
-   * The names of the `truncate[W]` partition fields of `spec` whose source type is an integer
-   * (or a date) and whose width is above 2^30.
+   * The names of the `truncate[W]` partition fields of `spec` whose source type is an integer (or
+   * a date) and whose width is above 2^30.
    *
    * At those widths Iceberg Java's `TruncateUtil` overflows in `(v % W) + W`, while the format
    * spec and iceberg-rust compute `v - (v % W)`. A native write would therefore produce a
