@@ -136,10 +136,9 @@ fn criterion_benchmark(c: &mut Criterion) {
         &create_list_array(rows, 64, true),
     );
 
-    // No-null shape: `CometSize.convert` wraps size() in a `CASE WHEN isnotnull(child)`
-    // that filters null rows out before the THEN branch runs, so in a real Comet plan
-    // spark_size_list_like only ever sees a null-free array. This shape measures that
-    // path.
+    // No-null shape: an array without nulls, such as the one `CometSize.convert`'s
+    // `CASE WHEN isnotnull(child)` guard passes on when `legacySizeOfNull` is off,
+    // takes spark_size_list_like's fast path. This shape measures that path.
     bench(
         "spark_size: list, no nulls",
         &create_list_array(rows, 5, false),
