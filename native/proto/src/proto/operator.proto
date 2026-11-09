@@ -71,6 +71,7 @@ message Operator {
     RangeScan range_scan = 121;
     MergeRows merge_rows = 122;
     ArrowPythonUdf arrow_python_udf = 123;
+    CrossJoin cross_join = 124;
     // Extension point for optional, out-of-tree contrib scans (Delta, Lance, ...). The concrete
     // scan message (e.g. `DeltaScan`) is packed into this envelope on the JVM side and dispatched
     // by `type_url` on the native side. Using a single permanent field -- rather than a new oneof
@@ -1163,6 +1164,10 @@ message BroadcastNestedLoopJoin {
   optional spark.spark_expression.Expr condition = 3;
 }
 
+// Spark's CartesianProductExec without a condition (one with a condition falls back to Spark).
+message CrossJoin {
+}
+
 enum JoinType {
   Inner = 0;
   LeftOuter = 1;
@@ -1247,6 +1252,9 @@ message Window {
   repeated spark.spark_expression.Expr order_by_list = 2;
   repeated spark.spark_expression.Expr partition_by_list = 3;
   Operator child = 4;
+  // The partition keys ascending, when Spark planned no sort below the window because its input
+  // reports that order. Empty otherwise.
+  repeated spark.spark_expression.Expr input_sort_orders = 5;
 }
 
 // Top-K rows per partition group. Corresponds to Spark's WindowGroupLimitExec
