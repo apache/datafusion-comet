@@ -440,7 +440,10 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           properties = Some(
             s"'write.parquet.bloom-filter-enabled.column.'='$enabled', " +
               "'write.parquet.bloom-filter-fpp.column.'='0.01'"))
-        assertUnsupportedContainsAllowingWriteFailure(table, "Empty Bloom column name")
+        assert(
+          CometIcebergNativeWrite.getSupportLevel(
+            insertWriteExec(table, allowWriteFailure = true)) ==
+            Unsupported(Some("Empty Bloom column name requires Java validation")))
       }
     }
   }
@@ -456,7 +459,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           properties = Some(
             "'write.parquet.bloom-filter-enabled.column.id'='true', " +
               s"'write.parquet.bloom-filter-enabled.column.id.'='$enabled'"))
-        assertUnsupportedContains(table, "same Parquet leaf")
+        assert(
+          CometIcebergNativeWrite.getSupportLevel(insertWriteExec(table)) == Unsupported(
+            Some("Multiple Bloom column names resolve to the same Parquet leaf: id (id, id.)")))
       }
     }
   }
