@@ -1499,6 +1499,28 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("fall-back: integer truncate partition width above 2^30") {
+    // Above this width Iceberg Java's `(v % W) + W` overflows an `int`, while the format spec
+    // and iceberg-rust compute `v - (v % W)`. The user's Iceberg jar decides the value that
+    // belongs in the table, so the native writer cannot pick one.
+    // https://github.com/apache/datafusion-comet/issues/7442
+    withDetectionCatalog { _ =>
+      createTable(
+        "part_truncate_wide",
+        partitionSpec = "PARTITIONED BY (truncate(2000000000, id))")
+      assertUnsupportedContains("part_truncate_wide", "truncate width above 2^30")
+    }
+  }
+
+  test("Compatible when partitioned by an integer truncate at the maximum safe width") {
+    withDetectionCatalog { _ =>
+      createTable(
+        "part_truncate_max",
+        partitionSpec = "PARTITIONED BY (truncate(1073741824, id))")
+      assertSupportLevelIs[Compatible]("part_truncate_max")
+    }
+  }
+
   test("Compatible when partitioned by identity on a string column") {
     withDetectionCatalog { _ =>
       createTable("part_string", partitionSpec = "PARTITIONED BY (region)")

@@ -135,6 +135,23 @@ class CometIcebergSystemFunctionSuite
     }
   }
 
+  test("integer truncate widths above 2^30 fall back to Spark") {
+    withSourceTable {
+      // Iceberg Java's `(v % W) + W` overflows a 32-bit `int` above this width, while the format
+      // spec and iceberg-rust compute `v - (v % W)`. Every Iceberg release through 1.12.0
+      // overflows and a release carrying apache/iceberg#18112 does not, so Spark's expected
+      // answer depends on the user's Iceberg jar. Comet leaves the expression to Spark.
+      // https://github.com/apache/datafusion-comet/issues/7442
+      checkSparkAnswerAndFallbackReason(
+        s"SELECT $catalog.system.truncate(2000000000, i32) FROM $source",
+        "truncate width above")
+      // Long, string and binary truncation does not overflow at any int width.
+      checkSparkAnswerAndOperator(
+        s"SELECT $catalog.system.truncate(2000000000, i64), " +
+          s"$catalog.system.truncate(2000000000, str) FROM $source")
+    }
+  }
+
   test("truncate on a decimal falls back to Spark") {
     withSourceTable {
       // Iceberg's `TruncateDecimal` can return a value wider than the column's precision, which
@@ -340,6 +357,19 @@ class CometIcebergSystemFunctionSuite
       Class.forName("org.apache.iceberg.spark.functions.TruncateFunction$TruncateInt")
     assert(level(CometIcebergTruncate, truncateInt, Literal(10), value) == Compatible())
     assert(level(CometIcebergTruncate, truncateInt, Literal(10), date).isInstanceOf[Unsupported])
+
+    // Widths above 2^30 overflow Iceberg Java's `int` arithmetic; widths up to it are safe.
+    assert(level(CometIcebergTruncate, truncateInt, Literal(1 << 30), value) == Compatible())
+    assert(
+      level(CometIcebergTruncate, truncateInt, Literal((1 << 30) + 1), value)
+        .isInstanceOf[Unsupported])
+    // Long truncation uses long arithmetic, so the same width stays native.
+    val truncateLong =
+      Class.forName("org.apache.iceberg.spark.functions.TruncateFunction$TruncateLong")
+    val longValue = AttributeReference("l", LongType)()
+    assert(
+      level(CometIcebergTruncate, truncateLong, Literal((1 << 30) + 1), longValue) ==
+        Compatible())
 
     // A decimal value reports its own reason, but only once the width is valid: a zero width has
     // to keep reporting the width, since that is what decides whether Iceberg's own

@@ -6140,12 +6140,21 @@ mod iceberg_rust_transform_parity {
         }
     }
 
-    /// `i32::MIN`, `i64::MIN`, and widths above 2^30 are left out: Java's `TruncateUtil` wraps
-    /// there and iceberg-rust does not (`truncate_i32` uses `rem_euclid`, `truncate_i64` and the
-    /// decimal kernel subtract without wrapping and overflow in a debug build). That is an
-    /// iceberg-rust bug affecting the writer's own partition values, independent of these
-    /// kernels -- apache/iceberg-rust#3141. The wrapping cases are pinned against the JVM in the
-    /// kernel's own unit tests; add them here once that issue is fixed.
+    /// `i32::MIN`, `i64::MIN`, and widths above 2^30 are left out because the two sides
+    /// intentionally disagree there.
+    ///
+    /// Widths above 2^30 are a bug in Java, not in iceberg-rust: the format spec defines integer
+    /// truncation as `v - (v % W)` with a positive remainder, and Java's `(v % W) + W` overflows
+    /// a 32-bit `int`. apache/iceberg#18111 tracks the Java bug and apache/iceberg#18112 the fix.
+    /// Comet's kernel reproduces Java so the expression path matches every Iceberg release
+    /// through 1.12.0; `CometIcebergTruncate` leaves these widths to Spark, and native writes
+    /// fall back when the partition spec has such a field
+    /// (https://github.com/apache/datafusion-comet/issues/7442).
+    ///
+    /// `i32::MIN` and `i64::MIN` are the opposite case: the result does not fit the type, the
+    /// spec is silent, Java wraps, and iceberg-rust panics in a debug build. That is
+    /// apache/iceberg-rust#3141. The wrapping cases are pinned against the JVM in the kernel's
+    /// own unit tests; add them here once that issue is fixed.
     #[test]
     fn truncate_agrees_with_iceberg_rust() {
         let inputs: Vec<(&str, ArrayRef)> = vec![

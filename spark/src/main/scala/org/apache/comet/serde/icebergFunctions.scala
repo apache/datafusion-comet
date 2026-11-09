@@ -222,6 +222,22 @@ object CometIcebergTruncate
       "Decimal128(precision, scale) array cannot carry that intermediate, so a native kernel " +
       "would null it during evaluation and change what an enclosing predicate or hash sees."
 
+  /**
+   * Largest integer `truncate` width whose `(v % W) + W` cannot overflow a Java `int`.
+   *
+   * Above it the result depends on the Iceberg jar the user runs: every release through 1.12.0
+   * wraps, while a release carrying apache/iceberg#18112 returns the spec's `v - (v % W)`.
+   * Spark decides the expected answer, so those widths stay with Spark.
+   * https://github.com/apache/datafusion-comet/issues/7442
+   */
+  private val MaxSafeIntegerWidth: Int = 1 << 30
+
+  /** Types whose truncation Iceberg evaluates with Java `int` arithmetic. */
+  private def usesIntArithmetic(dataType: DataType): Boolean = dataType match {
+    case ByteType | ShortType | IntegerType | DateType => true
+    case _ => false
+  }
+
   // Ordered after the parameter check so that `truncate(0, decimal_col)` still reports the width
   // problem, which is the one that changes whether Iceberg's own ArithmeticException is raised.
   override def getSupportLevel(expr: Expression): SupportLevel =
@@ -230,6 +246,13 @@ object CometIcebergTruncate
           if value.dataType.isInstanceOf[DecimalType] &&
             CometIcebergSystemFunctions.positiveIntLiteral(parameter).isDefined =>
         Unsupported(Some(DecimalNote))
+      case Some((Seq(parameter, value), _))
+          if usesIntArithmetic(value.dataType) &&
+            CometIcebergSystemFunctions.positiveIntLiteral(parameter).exists(_ > MaxSafeIntegerWidth) =>
+        Unsupported(
+          Some(
+            s"truncate width above $MaxSafeIntegerWidth overflows Iceberg's int arithmetic, and " +
+              "the result depends on the Iceberg jar the user runs"))
       case _ => super.getSupportLevel(expr)
     }
 

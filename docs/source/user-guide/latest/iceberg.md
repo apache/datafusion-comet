@@ -290,6 +290,16 @@ value back unchanged and Spark turns it into null only when the row is materiali
 would have to null it during evaluation, which changes what an enclosing predicate or hash sees.
 Every other `truncate` input type, and `bucket` on decimals, runs natively.
 
+An integer `truncate` with a width above 2^30 (`1073741824`) also falls back to Spark. At those
+widths Iceberg Java's `(v % W) + W` overflows a 32-bit `int`, while the [format
+spec](https://github.com/apache/iceberg/blob/main/format/spec.md) defines the result as
+`v - (v % W)` with a positive remainder. Every Iceberg release through 1.12.0 overflows, and a
+release carrying apache/iceberg#18112 returns the spec value, so the correct answer depends on
+the Iceberg jar the user runs, not on the Spark version. Comet cannot pick a shim from the Spark
+profile, so it leaves those widths to Spark. The same width limit applies to native writes whose
+partition spec has an integer `truncate[W]` field: the native writer computes the spec value,
+which would differ from the value the user's Iceberg jar writes into the same table.
+
 This matters most for writes. A partitioned table with the default `write.distribution-mode`
 (`hash`) is planned with a shuffle and a local sort keyed on the partition transforms, and with
 these functions native the whole sub-plan feeding the [native Iceberg writer](#writes)
