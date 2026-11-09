@@ -117,7 +117,8 @@ object IcebergWriteProtoTranslation {
       }
     }
 
-  private def configuredBloomFilterColumnNames(props: Map[String, String]): Seq[String] =
+  private[operator] def configuredBloomFilterColumnNames(
+      props: Map[String, String]): Seq[String] =
     props.iterator
       .collect {
         case (key, _) if key.startsWith(Keys.ParquetBloomFilterColumnEnabledPrefix) =>

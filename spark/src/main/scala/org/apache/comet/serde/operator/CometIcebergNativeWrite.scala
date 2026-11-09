@@ -655,10 +655,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     // entry, a positive, parseable maximum cannot affect the file and must not force an
     // otherwise-compatible write onto the classic path. Keep rejecting malformed and
     // non-positive values because Iceberg validates them even with no Bloom column.
-    val configured = properties.iterator.collect {
-      case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
-        key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
-    }.toSeq
+    val configured = IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(properties)
     if (configured.isEmpty) {
       malformedMaxRejection
     } else {
@@ -767,15 +764,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
-  private def configuredBloomColumns(properties: Map[String, String]): Seq[String] =
-    properties.iterator.collect {
-      case (key, _) if key.startsWith(PropertyKeys.BloomFilterColumnEnabledPrefix) =>
-        key.substring(PropertyKeys.BloomFilterColumnEnabledPrefix.length)
-    }.toSeq
-
   private val requireSupportedBloomFilterPaths: TriggerRule = ctx => {
     // Resolve disabled entries too: a second spelling can disable or change the same leaf.
-    val columns = configuredBloomColumns(ctx.properties)
+    val columns = IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(ctx.properties)
     if (columns.nonEmpty) {
       val schema = IcebergReflection
         .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
@@ -1462,7 +1453,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
           return None
         }
-        val configuredColumns = configuredBloomColumns(effectiveProperties)
+        val configuredColumns = IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(effectiveProperties)
         val enabledColumns =
           IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties).toSet
         val resolvedPaths =
