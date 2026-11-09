@@ -248,7 +248,9 @@ object CometIcebergTruncate
         Unsupported(Some(DecimalNote))
       case Some((Seq(parameter, value), _))
           if usesIntArithmetic(value.dataType) &&
-            CometIcebergSystemFunctions.positiveIntLiteral(parameter).exists(_ > MaxSafeIntegerWidth) =>
+            CometIcebergSystemFunctions
+              .positiveIntLiteral(parameter)
+              .exists(_ > MaxSafeIntegerWidth) =>
         Unsupported(
           Some(
             s"truncate width above $MaxSafeIntegerWidth overflows Iceberg's int arithmetic, and " +
