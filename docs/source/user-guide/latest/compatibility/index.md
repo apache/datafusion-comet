@@ -135,8 +135,8 @@ a result:
   `spark.comet.shuffle.mode=native`. All three are needed: with only the first two, the aggregate
   runs in Spark, but Comet's columnar shuffle still decodes its partial results. These settings are
   not enough when the cast is in a projection below the aggregate, for example
-  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because Comet runs that projection
-  in Comet and decodes the bytes before the aggregate sees them.
+  `SELECT min(s) FROM (SELECT CAST(b AS STRING) AS s FROM t)`, because that projection runs in
+  Comet and decodes the bytes before the aggregate sees them.
 
 Consistent handling of invalid UTF-8 across all of Comet's string paths is tracked by
 [#4764](https://github.com/apache/datafusion-comet/issues/4764).

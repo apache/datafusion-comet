@@ -84,9 +84,9 @@ works but is deprecated, like naming `Range`, `InMemoryTableScan`, `RDDScan`, `O
 `spark.comet.convert.text.enabled` instead.
 
 One case is converted automatically: when the build (broadcast) side of a broadcast join is a file
-or V2 scan Comet cannot replace - for example a small ORC lookup table - and every scan on
-the probe side is already a Comet scan, Comet converts that build-side scan to Arrow so the whole
-join runs in Comet over the large probe. This is controlled by
+or V2 scan that Comet has no native scan for - for example a small ORC lookup table - and every
+scan on the probe side is already a native scan, Comet converts that build-side scan to Arrow so
+the whole join runs in Comet over the large probe. This is controlled by
 `spark.comet.convert.broadcastBuildSide.enabled`, which is **on by default**, unlike the switches
 above. The build side is usually small, but an explicit `BROADCAST` hint or a selective filter above
 the scan can make the copied volume larger, and with dynamic partition pruning the dimension is read

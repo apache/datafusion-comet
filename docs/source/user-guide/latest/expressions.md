@@ -124,9 +124,9 @@ The tables below list every Spark built-in expression with its current status.
 | `percentile_cont` | ✅ | — | Spark 4.0+ `WITHIN GROUP (ORDER BY ...)`; ascending only runs in Comet, `DESC` falls back to Spark |
 | `percentile_disc` | 🔜 | — | Percentile aggregate |
 | `pivot_first` | ✅ | Native | Internal aggregate for the optimized `PIVOT` fast path. Value type must be in `PivotFirst.supportsDataType` (Boolean, Byte, Short, Int, Long, Float, Double, Decimal); other types keep Spark's standard filtered-aggregate path. Binary, array and struct pivot columns (including pivots on more than one column), non-default collations and pivot lists with duplicate values fall back to Spark |
-| `regr_avgx` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_avgy` | ✅ | — | Native: Spark rewrites to `Average` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
-| `regr_count` | ✅ | — | Native: Spark rewrites to `Count` (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_avgx` | ✅ | — | Spark rewrites to `Average`, which runs in Rust (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_avgy` | ✅ | — | Spark rewrites to `Average`, which runs in Rust (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
+| `regr_count` | ✅ | — | Spark rewrites to `Count`, which runs in Rust (tests in [#4551](https://github.com/apache/datafusion-comet/pull/4551)) |
 | `regr_intercept` | ✅ | Native |  |
 | `regr_r2` | ✅ | Native |  |
 | `regr_slope` | ✅ | Native |  |
@@ -176,7 +176,7 @@ The tables below list every Spark built-in expression with its current status.
 | `get` | ✅ | — |  |
 | `sequence` | ✅ | Hybrid | Integral types run in Rust; date/timestamp sequences use codegen dispatch |
 | `shuffle` | ✅ | Native | Binary/struct/map elements fall back |
-| `slice` | ✅ | Native | Native ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
+| `slice` | ✅ | Native | Runs in Rust ([#4149](https://github.com/apache/datafusion-comet/pull/4149)) |
 | `sort_array` | ✅ | Hybrid | Struct, nested-array, floating-point, and null elements run in Rust; other element types (for example intervals) route through the JVM codegen dispatcher |
 
 ---
@@ -592,7 +592,7 @@ to Spark ([#2837](https://github.com/apache/datafusion-comet/issues/2837)). Enab
 | `lower` | ✅ | Hybrid |  |
 | `lpad` | ✅ | Hybrid | String inputs run in Rust with a column string and literal padding; literal strings and column padding use codegen dispatch. Binary inputs use codegen dispatch. |
 | `ltrim` | ✅ | Hybrid | Non-UTF8_BINARY collated input with a trim string routes through the JVM codegen dispatcher; other input runs in Rust |
-| `luhn_check` | ✅ | — | Native via `StaticInvoke` (tests: luhn_check.sql) |
+| `luhn_check` | ✅ | — | Runs in Rust via `StaticInvoke` (tests: luhn_check.sql) |
 | `mask` | ✅ | — | Routed through the JVM codegen dispatcher |
 | `octet_length` | ✅ | Native |  |
 | `overlay` | ✅ | Codegen dispatch |  |

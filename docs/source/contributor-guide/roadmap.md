@@ -50,7 +50,7 @@ does not yet use; it's not yet known whether their semantics are Spark-compatibl
 DataFusion's implementations can replace the JVM codegen-dispatch bridge to remove that round-trip and let
 these expressions benefit from vectorized execution in Rust.
 
-## Rust Implementations for Codegen-Dispatched Expressions
+## Native Coverage for Codegen-Dispatched Expressions
 
 Beyond lambda bodies, a number of built-in Spark scalar expressions (some regular expression, JSON, and datetime
 functions, for example) route through the same JVM codegen-dispatch bridge by default, either because their native

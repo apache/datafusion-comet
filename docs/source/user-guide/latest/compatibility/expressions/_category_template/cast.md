@@ -98,16 +98,16 @@ Supported input formats match Spark exactly:
 
 ## Date to Timestamp
 
-Comet's native `CAST(date AS TIMESTAMP)` implementation is compatible with Spark. The cast
+Comet's native implementation of `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast
 interprets each date as midnight in the session timezone and converts to a UTC epoch value. DST
-transitions are handled correctly, including spring-forward gaps (where midnight may not exist) and
-fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
+transitions are handled correctly, including spring-forward gaps (where midnight may not exist)
+and fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
 `LocalDate.atStartOfDay(zoneId)` behavior).
 
 ## Date to TimestampNTZ
 
-Comet's native `CAST(date AS TIMESTAMP_NTZ)` implementation is compatible with Spark. The cast is
-timezone-independent: each date is converted to midnight as pure arithmetic
+Comet's native implementation of `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The
+cast is timezone-independent: each date is converted to midnight as pure arithmetic
 (`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
 is the same regardless of the session timezone setting.
 
@@ -155,8 +155,8 @@ the same result regardless of the session timezone.
 
 ## Date to String
 
-Comet's native `CAST(date AS STRING)` implementation is compatible with Spark. Years below 1000 are
-zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
+Comet's native implementation of `CAST(date AS STRING)` is compatible with Spark. Years below
+1000 are zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
 rendered without truncation. The cast is timezone-independent.
 
 ## Decimal with Negative Scale to String

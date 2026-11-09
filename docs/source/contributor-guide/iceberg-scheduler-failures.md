@@ -27,12 +27,12 @@ The suite adds test instrumentation without changing Iceberg commit or cleanup s
 
 ## Test scenarios
 
-| Scenario                               | Required scheduler evidence                                                                                         | Storage expectation                                                                                           |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| Original attempt wins speculation      | Two attempts on distinct hosts finish payload handoff; the original succeeds and its message is accepted            | Only accepted winner files are referenced; no orphan or missing files                                         |
-| Speculative attempt wins               | Two attempts on distinct hosts finish payload handoff; the speculative attempt succeeds and its message is accepted | Only accepted winner files are referenced; no orphan or missing files                                         |
-| Executor-loss task replacement         | Executor removal, `ExecutorLostFailure`, and successful replacement of the affected partition on another executor   | Only accepted winner files are referenced; every orphan belongs to a known rejected attempt; no missing files |
-| Executor loss with shuffle-output loss | The task-replacement evidence, plus `FetchFailed` and a higher writer `stageAttemptId`                              | The same storage assertions as executor-loss task replacement                                                 |
+| Scenario                               | Required scheduler evidence                                                                                       | Storage expectation                                                                                           |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Original attempt wins speculation      | Two attempts on distinct hosts finish handoff; the original succeeds and its message is accepted                  | Only accepted winner files are referenced; no orphan or missing files                                         |
+| Speculative attempt wins               | Two attempts on distinct hosts finish handoff; the speculative attempt succeeds and its message is accepted       | Only accepted winner files are referenced; no orphan or missing files                                         |
+| Executor-loss task replacement         | Executor removal, `ExecutorLostFailure`, and successful replacement of the affected partition on another executor | Only accepted winner files are referenced; every orphan belongs to a known rejected attempt; no missing files |
+| Executor loss with shuffle-output loss | The task-replacement evidence, plus `FetchFailed` and a higher writer `stageAttemptId`                            | The same storage assertions as executor-loss task replacement                                                 |
 
 An increased task attempt number alone does not prove stage re-execution. The shuffle-output-loss
 case fails if the cluster only replaces the task without the required stage and fetch-failure events.
@@ -45,7 +45,7 @@ Every scenario writes to a new empty table and asserts:
   complete expected ID multiset, rather than relying on counts alone.
 - Exactly one new snapshot, one commit operator, and one successful commit marker.
 - One driver-accepted message per logical writer partition. Each message's complete file set
-  identifies exactly one payload handoff attempt with a scheduler `Success` event.
+  identifies exactly one handoff attempt with a scheduler `Success` event.
 - Manifest references equal the complete union of accepted winner files. Files reported by
   rejected attempts must not be referenced.
 - Every referenced file exists under the data location.
@@ -60,7 +60,7 @@ missing = manifest-referenced files - physical files
 
 For speculation, both sets must be empty after the losing attempt terminates and cleanup finishes.
 For executor loss, `missing` must be empty and `orphan` must be a subset of `rejectedFiles`, the
-paths observed through attempt-unique file-name prefixes or payload handoff, belonging to
+paths observed through attempt-unique file-name prefixes or handoff, belonging to
 attempts whose messages were not accepted. Unknown orphan files fail the test. This checks the storage state even when readers see the correct table rows.
 
 `SIGKILL` bypasses executor-side cleanup, so known rejected-attempt orphans do not by themselves
@@ -111,8 +111,8 @@ captured in task closures, so executors do not depend on a driver-installed JVM 
 `IcebergCommitExec` records messages actually accepted by Spark's `runJob` result handler and
 records the successful commit. Duplicate accepted messages or commit markers fail the probe.
 
-`CometIcebergWriteExec` installs per-attempt gates before parent input iteration and after the Rust
-writer's payload handoff. `IcebergSchedulerProbeRDD` wraps the JVM input iterator and pauses before
+`CometIcebergWriteExec` installs per-attempt gates before parent input iteration and after the
+native writer's handoff. `IcebergSchedulerProbeRDD` wraps the JVM input iterator and pauses before
 pulling another batch after the configured row threshold. The native writer pulls this input
 through `CometArrowStream.inputObjects`. It can prefetch a batch while a write awaits I/O,
 so the row count measures supplied input rather than completed writes. The pause occurs before
@@ -124,12 +124,12 @@ hook. JSON markers are published atomically under unique run/task-attempt direct
 ### Speculative attempts
 
 Four source Parquet files contain disjoint ID ranges. The original attempt for writer partition 0
-is held after payload handoff while other partitions finish, allowing Spark to launch a speculative
+is held after handoff while other partitions finish, allowing Spark to launch a speculative
 attempt on another host. Both attempts must report nonempty, disjoint file sets for the same
 stage, stage attempt and partition.
 
 The tests control each winner direction by releasing only the selected attempt and requiring its
-scheduler `Success` and accepted message. Both attempts completing payload handoff does not mean
+scheduler `Success` and accepted message. Both attempts completing handoff does not mean
 both succeed in the scheduler: Spark cancels the loser after accepting the winner.
 
 ### Executor process loss
@@ -141,7 +141,7 @@ per task. The smaller page permits early file rolling. The 4,000-row input thres
 room for the writer's input prefetch and asynchronous file creation before the JVM iterator pauses.
 The row threshold alone is not evidence of physical write progress.
 Before termination, the test independently requires physical bytes at a writer-owned path, no
-payload handoff or terminal task event for the target, and progress on another writer partition
+handoff or terminal task event for the target, and progress on another writer partition
 in a different executor process.
 
 The ordinary loss case targets partition 0. The shuffle-output-loss case selects an active writer

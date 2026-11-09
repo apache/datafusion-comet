@@ -27,12 +27,12 @@ you are investigating.
 
 | Tool                                                                           | JVM Frames | Native (Rust) Frames | Install Required | Best For                                                                       |
 | ------------------------------------------------------------------------------ | ---------- | -------------------- | ---------------- | ------------------------------------------------------------------------------ |
-| [async-profiler](https://github.com/async-profiler/async-profiler)             | Yes        | Yes                  | Yes              | End-to-end Comet profiling with unified JVM + Rust flame graphs                |
+| [async-profiler](https://github.com/async-profiler/async-profiler)             | Yes        | Yes                  | Yes              | End-to-end Comet profiling with unified JVM + native flame graphs              |
 | [Java Flight Recorder (JFR)](https://docs.oracle.com/en/java/javase/17/jfapi/) | Yes        | No                   | No (JDK 11+)     | GC pressure, allocations, thread contention, I/O — any JVM-level investigation |
 | [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph)                | No         | Yes                  | Yes              | Isolated Rust micro-benchmarks without a JVM                                   |
 
 **Recommendation:** Use **async-profiler** when profiling Spark queries with Comet enabled —
-it is the only tool that shows both JVM and Rust frames in a single flame graph.
+it is the only tool that shows both JVM and native frames in a single flame graph.
 Use **JFR** when you need rich JVM event data (GC, locks, I/O) without installing anything.
 Use **cargo-flamegraph** when working on native code in isolation via `cargo bench`.
 
@@ -289,7 +289,7 @@ cd native
 cargo flamegraph --root --bench <benchmark_name>
 ```
 
-### Correlating JVM and Rust frames
+### Correlating JVM and native frames
 
 In async-profiler flame graphs, native Rust frames appear below JNI entry points like
 `Java_org_apache_comet_Native_*`. Look for these transition points to understand how

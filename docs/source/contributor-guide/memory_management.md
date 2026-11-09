@@ -103,7 +103,7 @@ allocates the bytes and in who is able to see them.
 
 **The budget is shared even though the memory is not.** `memory_limit` is derived from
 `spark.memory.offHeap.size` (see [Where Comet's budget comes from](#where-comets-budget-comes-from)),
-and in both off-heap pool types every reservation is forwarded to Spark's off-heap execution
+and in both off-heap pool types every native reservation is forwarded to Spark's off-heap execution
 pool over JNI. A native allocation therefore consumes the same accounting budget as a Tungsten page
 while occupying entirely different memory. Raising `spark.memory.offHeap.size` raises the ceiling
 for both at once, and raises the pod's memory request by the same amount.
@@ -205,7 +205,7 @@ rules below are why it is written the way it is. Each is easy to break by accide
 **`getUsed` and `spill` must stay lock-free.** Spark calls both while already holding the
 `TaskMemoryManager` monitor, which is why `NativeMemoryConsumer.getUsed` reads an `AtomicLong` and
 `spill` returns without touching guarded state. A consumer that took a monitor of its own in either
-method would risk a deadlock: a reservation arriving over JNI on a Comet Tokio worker holds
+method would risk a deadlock: a native reservation arriving over JNI on a Comet Tokio worker holds
 Spark's monitor and would wait for the consumer's, while whatever held the consumer's waited for
 Spark's. For the same reason, nothing reachable from a `spill` callback may allocate memory that
 routes back through the same consumer.
@@ -234,7 +234,7 @@ that grant, and the only figure available for doing so is the task-wide one abov
 entry when its balance reaches zero, and an acquire that was waiting in `lock.wait()` and wakes
 afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant
 ([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)). Releases take no task monitor,
-so another Rust thread or plan, or a JVM consumer of the same task, can empty the balance while an
+so another native thread or plan, or a JVM consumer of the same task, can empty the balance while an
 acquire waits. Both of Comet's consumers that ask Spark directly, `CometTaskMemoryManager` and the
 JVM shuffle allocator, retry that one case through `MissingTaskEntryRetry`. A missing entry means
 the task held nothing from Spark at that moment, so the failed call has no partial grant to
@@ -611,7 +611,7 @@ diverge for several structural reasons:
   `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
   allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
-  Imported JVM batches are reserved only while a reserving operator holds them, and exported Rust
+  Imported JVM batches are reserved only while a reserving operator holds them, and exported native
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
 - **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
@@ -687,7 +687,7 @@ flowchart TB
 
 Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
 heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
-allocated. A Comet reservation is a number an operator declared before allocating: `try_grow`
+allocated. A native reservation is a number an operator declared before allocating: `try_grow`
 succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
 the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
 on them. The second group is outside every accounting layer.
@@ -718,7 +718,7 @@ has bounds _declared reservations_, and the sections above describe several stru
 declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
 much they matter:
 
-- **Real memory usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
+- **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
   handed out, and each executor logs that count next to the pools' reservations. Nothing reads it
   at runtime, though: no operator, metric, or policy responds to it, so an executor that outgrows
   its container is still stopped only by the kill.

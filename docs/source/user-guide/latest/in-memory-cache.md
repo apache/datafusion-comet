@@ -42,8 +42,8 @@ It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet's
 serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled` are enabled at that point
-too, because an application that starts without Comet operators could not scan Comet's format in
-Comet. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
+too, because an application that starts with Comet operators disabled could not scan Comet's
+format. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
 not one of Comet's shuffle managers, since Comet then disables itself, and when Kryo would reject
 Comet's format; see [Kryo](#kryo).
 

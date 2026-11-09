@@ -780,10 +780,10 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.nativeUdf.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether Rust UDF libraries may be loaded. A Rust UDF is a shared library that " +
+        "Whether UDF shared libraries may be loaded. A UDF library is a shared library that " +
           "runs with the full privileges of the JVM process, so an operator who does not want " +
           "any can turn the feature off. When false, `CometNativeUDF.register` fails on the " +
-          "driver, and a plan that names a Rust UDF library fails on the executor rather " +
+          "driver, and a plan that names a UDF library fails on the executor rather " +
           "than loading it.")
       .booleanConf
       .createWithDefault(true)
@@ -793,7 +793,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.nativeUdf.allowedPaths")
       .category(CATEGORY_EXEC)
       .doc(
-        "A comma-separated list of directories that Rust UDF libraries may be loaded from. " +
+        "A comma-separated list of directories that UDF shared libraries may be loaded from. " +
           "When set, a library is loaded only if its path is absolute and, after symlinks and " +
           "`..` are resolved, lies under one of these directories, which are themselves " +
           "resolved the same way. A path outside them fails on the driver at registration and " +
@@ -1203,7 +1203,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide a tree representation of " +
-          "the DataFusion query plan before execution and again after execution, with " +
+          "the Rust plan before execution and again after execution, with " +
           "metrics.")
       .booleanConf
       .createWithDefault(false)
@@ -1261,7 +1261,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
-          "could otherwise have converted (all children are already Rust-implemented) without " +
+          "could otherwise have converted (all children are already Comet operators) without " +
           "recording a fallback reason on the operator or on any of its expressions. Without " +
           "this check, a serde that returns `None` and forgets to state a reason silently " +
           "produces a generic '<operator> is not supported' message instead of a visible " +

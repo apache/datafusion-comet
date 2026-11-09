@@ -62,9 +62,9 @@ Example trace visualization:
 
 ## Analyzing Memory Usage
 
-The `analyze_trace` tool parses a trace log and compares the process-wide Rust allocation counter against
+The `analyze_trace` tool parses a trace log and compares the process-wide native allocation counter against
 the total memory reserved by Comet's memory pools. This is useful for detecting untracked native memory
-growth where Rust allocations exceed what the memory pools account for.
+growth where native allocations exceed what the memory pools account for.
 
 Build and run:
 
@@ -125,7 +125,7 @@ WARNING: native_allocated exceeded pool reservation at 87 sampled points:
   Total: 245.8 MB
 ```
 
-A steady excess is expected, since not every Rust allocation goes through a pool (Arrow IPC buffers, for
+A steady excess is expected, since not every native allocation goes through a pool (Arrow IPC buffers, for
 instance), and `jemalloc_allocated` additionally includes the allocator's own metadata and fragmentation. An
 excess that grows over the run, as it does from 26 MB to 171 MB above, is the signal worth chasing: that is
 memory the pool is not accounting for.

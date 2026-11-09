@@ -164,7 +164,7 @@ outer hash join whose own probe input was not a scan
 join can already be out of order when it reaches the join
 ([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
 
-When the order Comet cannot check comes only from another Comet hash join in the same Rust plan, the
+When the order Comet cannot check comes only from another Comet hash join in the same plan, the
 join does not fall back. It runs in Comet and declares no order, since DataFusion keeps the order
 it can see there.
 

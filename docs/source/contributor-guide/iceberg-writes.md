@@ -214,10 +214,10 @@ text dump, secrets included, into `explain()`, the SQL UI and the event log. Kee
 adding fields.
 
 On Spark 4.x, copy-on-write `DELETE`/`UPDATE`/`MERGE` rows arrive with an operation code and file
-metadata columns around the data columns. `dropNonDataColumns` inserts a `Projection` into the
-native plan that keeps only the write schema's columns. This is only equivalent to the JVM writer
-while the write schema has no row lineage columns. On a format-version 3 table, iceberg-java 1.10+
-adds `_row_id` and `_last_updated_sequence_number` to the write schema of copy-on-write DML and
+metadata columns around the data columns. `dropNonDataColumns` inserts a native `Projection` that
+keeps only the write schema's columns. This is only equivalent to the JVM writer while the write
+schema has no row lineage columns. On a format-version 3 table, iceberg-java 1.10+ adds `_row_id`
+and `_last_updated_sequence_number` to the write schema of copy-on-write DML and
 `rewrite_data_files`, and fills them from those metadata columns. The gate's
 `requireNoMetadataColumns` declines any write schema with a field id in the range the spec
 reserves for metadata columns, so those writes stay on iceberg-java.
@@ -378,7 +378,7 @@ per file.
 
 A failed attempt must leave no data files behind, as iceberg-java's `DataWriter.abort()` does, and a
 failed job must not commit anything. Cleanup must never have an ownership gap. During the handoff,
-the Rust guard intentionally stays armed after the JVM takes the locations and is disarmed only
+the native guard intentionally stays armed after the JVM takes the locations and is disarmed only
 when the JVM polls the output stream to EOF:
 
 | Phase                                                               | Owner                        | Mechanism                                                                                                                                       |

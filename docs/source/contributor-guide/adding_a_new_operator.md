@@ -30,12 +30,13 @@ implementing Comet operators depending on where they execute and how they integr
 
 `CometExecRule` maintains two distinct maps of operators:
 
-#### 1. Rust-Implemented Operators (`nativeExecs` map)
+#### 1. Operators in the `nativeExecs` Map
 
 Most of these operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. They
-are registered in the `nativeExecs` map in `CometExecRule.scala`.
+are registered in the `nativeExecs` map in `CometExecRule.scala`. `LocalTableScanExec`, `InMemoryTableScanExec` and
+`EmptyRelationExec` are the exceptions: they become JVM-side Comet scans that feed Arrow batches into a native plan.
 
-Key characteristics of these operators:
+Key characteristics of the Rust-implemented operators:
 
 - They are converted to their corresponding protobuf representation
 - They execute as DataFusion operators in Rust
@@ -86,7 +87,7 @@ apply the global TopK twice. A single input partition uses a final limit and pro
 multiple input partitions still require a final TopK after the shuffle.
 
 With `spark.comet.exec.topK.dynamicFilter.enabled`, only the local sort sets the protobuf
-`Sort.dynamic_filter_enabled` flag. The Rust planner wraps an eligible sort in
+`Sort.dynamic_filter_enabled` flag. The native planner wraps an eligible sort in
 `TopKReaderFilterExec`. Its permanent plan contains an unexecuted sort template; each execution
 creates a fresh sort and live predicate, then attaches that predicate to the Parquet reader when
 eligible. The stream owns the heap and predicate until completion, error, or cancellation. The
@@ -456,7 +457,7 @@ Note that Comet will treat an operator as incompatible if any of the child expre
 
 Add your operator to the appropriate map in `CometExecRule.scala`:
 
-#### For Rust-Implemented Operators
+#### For Operators in the `nativeExecs` Map
 
 Add to the `nativeExecs` map (`CometExecRule.scala`):
 

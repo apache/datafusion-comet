@@ -120,9 +120,9 @@ Follow these rules when wiring scalar expressions:
 
 #### When to set the return type explicitly
 
-`CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the Rust planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
+`CometScalarFunction(name)` and the lower-level `scalarFunctionExprToProto(name, args)` helper both produce a protobuf `ScalarFunc` message **without** a `return_type` field. That is fine when the function name does not collide with a DataFusion built-in, or when it does collide and the Spark and DataFusion versions take the same arity and types. In that case the native planner consults DataFusion's UDF registry only to resolve the return type, then swaps in Comet's UDF for execution.
 
-It is **not** fine when the Spark function and the DataFusion built-in differ in arity or input types. The Rust planner calls `coerce_types` and `return_field_from_args` on DataFusion's UDF before Comet's UDF is selected, and a signature mismatch fails the query at execution time with an error like:
+It is **not** fine when the Spark function and the DataFusion built-in differ in arity or input types. The native planner calls `coerce_types` and `return_field_from_args` on DataFusion's UDF before Comet's UDF is selected, and a signature mismatch fails the query at execution time with an error like:
 
 ```
 org.apache.comet.CometNativeException: Error from DataFusion:
@@ -150,7 +150,7 @@ object CometLevenshtein extends CometExpressionSerde[Levenshtein] {
 }
 ```
 
-When the return type is set on the proto, the Rust planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
+When the return type is set on the proto, the native planner skips the registry lookup entirely and routes straight to the Comet UDF registered in `create_comet_physical_fun_with_eval_mode`.
 
 #### Arguments that Spark skips after a NULL
 
@@ -598,7 +598,7 @@ If the expression you're adding has different behavior across different Spark ve
 
 #### Name the behavior, not the Spark version
 
-When native code has to match a behavior that differs between Spark versions, decide which behavior applies in Scala and pass the result to native code under a name that describes the behavior, not the Spark version that introduced it. This covers protobuf fields, Rust function arguments, and Rust function names. For example, `TruncTimestamp` carries a `wrap_second_millisecond_overflow` flag, which the serde sets from `!isSpark42Plus`. It is not called `spark_420_plus`. The `filter_var_by_pair_nulls` field of `Regr` is another example.
+When native code has to match a behavior that differs between Spark versions, decide which behavior applies in Scala and pass the result to native code under a name that describes the behavior, not the Spark version that introduced it. This covers protobuf fields, native function arguments, and native function names. For example, `TruncTimestamp` carries a `wrap_second_millisecond_overflow` flag, which the serde sets from `!isSpark42Plus`. It is not called `spark_420_plus`. The `filter_var_by_pair_nulls` field of `Regr` is another example.
 
 Set the flag in one place on the Scala side, in a shim or in the serde, so that a fork overrides only that. A helper such as `isSpark42Plus` is enough when the behavior changed in a minor release. When Spark changed it in patch releases, compare the full version in a named predicate, because a check on the minor version is wrong for every earlier patch. `RegrSparkVersions.r2DegenerateCasesSwapped` in `serde/aggregates.scala` is the model. It resolves SPARK-55969, which shipped in 3.5.9, 4.0.3, 4.1.2, and 4.2.0.
 

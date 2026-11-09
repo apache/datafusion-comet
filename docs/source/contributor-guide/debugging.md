@@ -237,7 +237,7 @@ logger.cometTaskMemoryManager.name = org.apache.spark.CometTaskMemoryManager
 logger.cometTaskMemoryManager.level = debug
 ```
 
-### Dumping native plan output with the `debug` module
+### Dumping native stream output with the `debug` module
 
 The `native/core/src/debug/` module ships small wrappers that print every
 `RecordBatch` (and, at expression granularity, every `ColumnarValue`) flowing

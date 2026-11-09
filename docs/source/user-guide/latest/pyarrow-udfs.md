@@ -172,7 +172,7 @@ and competes for the interpreter lock until then
 ([#6811](https://github.com/apache/datafusion-comet/issues/6811)). A failing UDF raises Spark's
 `PythonException` with its Python traceback, which PySpark raises as
 `pyspark.errors.PythonException`. Errors outside the UDF's own code, such as a result of the wrong
-length or type, are still reported as Comet errors. The operator reports the time spent in
+length or type, are still reported as `CometNativeException`. The operator reports the time spent in
 Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in

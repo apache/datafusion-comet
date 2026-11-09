@@ -20,9 +20,11 @@
 # Spark Operator Support
 
 This page is the complete reference for how Apache Comet handles each Spark physical operator.
-Comet replaces supported operators with Comet operators. Comet runs whole subtrees of
-Rust-implemented operators together, so if a query stage contains an operator Comet does not
-support, that stage falls back to regular Spark execution. Results are unaffected.
+Comet replaces supported operators with Comet operators and runs adjacent Rust-implemented
+operators together as one plan. An operator that Comet does not support stays a Spark operator,
+with transitions between Spark and Comet around it. You can also have Comet return a stage that
+needs too many transitions to Spark (see [Transitions](tuning/transitions.md)). Results are
+unaffected.
 
 Operators marked ✅ Supported are enabled by default. Each can be turned off individually with
 `spark.comet.exec.OPERATOR.enabled=false` (for example `spark.comet.exec.sort.enabled=false`), and
@@ -54,7 +56,7 @@ omitted from the tables below and may be reconsidered based on demand:
 
 - **Structured Streaming operators** (`StateStoreSaveExec`, `StateStoreRestoreExec`, `StreamingSymmetricHashJoinExec`, and similar): Comet targets batch execution.
 - **Pickled (non-Arrow) Python UDFs** (`BatchEvalPythonExec`): Comet accelerates Arrow-based Python UDFs only ([#4234](https://github.com/apache/datafusion-comet/pull/4234)).
-- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, which Comet cannot do in Rust. The operators above them can still run in Comet: set `spark.comet.convert.typedDataset.enabled=true` and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.
+- **Typed Dataset operators** (`DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`, `MapGroupsExec`, `CoGroupExec`, `AppendColumnsExec`, and similar): produced by `map`, `mapPartitions`, `groupByKey`, `cogroup`, and other typed `Dataset` transformations. They exist to run user JVM functions on JVM objects, so they stay in Spark. The operators above them can still run in Comet: set `spark.comet.convert.typedDataset.enabled=true` and Comet converts the output of a typed operation to Arrow. This is disabled by default because it can be slower than Spark when the operators above do little work, such as an aggregate over a few groups, which Spark compiles together with the typed operation into one loop.
 
 ## Scans
 
@@ -69,12 +71,12 @@ omitted from the tables below and may be reconsidered based on demand:
 
 ## Projection and filtering
 
-| Operator             | Status | Notes                                                                                                                                                                            |
-| -------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ProjectExec`        | ✅     |                                                                                                                                                                                  |
-| `FilterExec`         | ✅     |                                                                                                                                                                                  |
-| `SampleExec`         | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md).                                                                                     |
-| `CollectMetricsExec` | ✅     | Spark evaluates observation counters while Comet forwards Arrow batches to the Rust-implemented operators above it. See [Observations](compatibility/operators.md#observations). |
+| Operator             | Status | Notes                                                                                                                                                                 |
+| -------------------- | ------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProjectExec`        | ✅     |                                                                                                                                                                       |
+| `FilterExec`         | ✅     |                                                                                                                                                                       |
+| `SampleExec`         | ⚠️     | Sampling without replacement only. See [Operator Compatibility](compatibility/operators.md).                                                                          |
+| `CollectMetricsExec` | ✅     | Spark evaluates observation counters while Comet forwards Arrow batches to the Comet operators above it. See [Observations](compatibility/operators.md#observations). |
 
 ## Sorting and limiting
 

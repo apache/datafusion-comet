@@ -117,7 +117,7 @@ normalized and the output keeps the original values.
 - `create_normalized_key_expr` in `native/core/src/execution/planner.rs` normalizes sort keys,
   window order and partition keys, and the partition keys of `WindowGroupLimit`, so that Arrow's
   sort orders them the Spark way.
-- `spark_comparison` in `native/spark-expr/src/array_funcs/nested_comparison.rs` builds every Rust
+- `spark_comparison` in `native/spark-expr/src/array_funcs/nested_comparison.rs` builds every native
   `=`, `<>`, `<=>`, `<`, `<=`, `>`, `>=` and `IS DISTINCT FROM`, whichever operator evaluates it. It
   compares the operands as they are, without normalized copies: `FLOAT` and `DOUBLE` with
   `compare_float_arrays` and `compare_float_array_scalar`, and arrays and structs with

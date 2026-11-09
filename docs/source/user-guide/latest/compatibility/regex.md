@@ -28,7 +28,7 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
   default (`spark.comet.exec.scalaUDF.codegen.enabled=true`); if the dispatcher is disabled, regex
   expressions fall back to Spark. This is the default for every regex expression except an
   in-subset `rlike` literal (see below).
-- **Native (rust) engine** — the Rust [`regex`] crate, which runs with no JNI overhead. It is
+- **Rust engine** — the Rust [`regex`] crate, which runs with no JNI overhead. It is
   faster but has different semantics from Java regex (see below). For `rlike`, a plan-time
   analyzer admits a conservative subset of `UTF8_BINARY` literal patterns and runs those in Rust
   **by default**. Out-of-subset default-collation literals still require
@@ -37,7 +37,7 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
   expression still requires its own `allowIncompatible` flag. `regexp_instr` has no native
   implementation and always runs through the codegen dispatcher.
 
-| SQL                  | Native (rust) opt-in config                                 |
+| SQL                  | Rust engine opt-in config                                   |
 | -------------------- | ----------------------------------------------------------- |
 | `rlike`              | `spark.comet.expression.RLike.allowIncompatible`            |
 | `regexp_replace`     | `spark.comet.expression.RegExpReplace.allowIncompatible`    |
