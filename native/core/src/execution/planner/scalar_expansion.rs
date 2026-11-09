@@ -34,8 +34,8 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::common::ScalarValue;
-use datafusion::logical_expr::{ColumnarValue, Volatility};
-use datafusion::physical_expr::expressions::{Column, InListExpr};
+use datafusion::logical_expr::{ColumnarValue, Operator, Volatility};
+use datafusion::physical_expr::expressions::{BinaryExpr, Column, InListExpr};
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion_comet_operators::BatchSplitExec;
@@ -93,19 +93,24 @@ impl PhysicalPlanner {
     /// here on a one-row batch: `repeat(<subquery>, 8)` is wider than the subquery result it is
     /// built from. A subtree that is not a scalar is evaluated per row, so only the scalars
     /// among its children count. A subtree that fails to evaluate counts nothing, so that its
-    /// error surfaces where Spark's would, at execution. A constant member of an `IN` list is
-    /// compared and never expanded; a member computed per row counts the scalars it contains.
+    /// error surfaces where Spark's would, at execution. A scalar that a comparison or an `IN`
+    /// list takes as a constant is compared and never expanded; an operand computed per row
+    /// counts the scalars it contains.
     fn expanded_scalar_bytes(&self, expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> usize {
         if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
-            // A member that IN compares as a constant is not expanded. One computed per row is,
-            // along with the scalars it contains.
-            let members: usize = in_list
-                .list()
-                .iter()
-                .filter(|member| !self.is_scalar(member))
-                .map(|member| self.expanded_scalar_bytes(member, schema))
-                .sum();
-            return self.expanded_scalar_bytes(in_list.expr(), schema) + members;
+            // The tested value is expanded to the batch's length. A member that IN compares as
+            // a constant is not; one computed per row is, along with the scalars it contains.
+            return self.expanded_scalar_bytes(in_list.expr(), schema)
+                + self.per_row_operand_bytes(in_list.list().iter(), schema);
+        }
+        if let Some(comparison) = expr
+            .downcast_ref::<BinaryExpr>()
+            .filter(|binary| compares_as_datum(binary.op()))
+        {
+            return self.per_row_operand_bytes(
+                [comparison.left(), comparison.right()].into_iter(),
+                schema,
+            );
         }
         if !self.is_scalar(expr) {
             return expr
@@ -144,6 +149,39 @@ impl PhysicalPlanner {
             _ => 0,
         }
     }
+
+    /// The bytes of the scalars inside the `operands` computed per row. An operand that is a
+    /// scalar is compared as it is.
+    fn per_row_operand_bytes<'a>(
+        &self,
+        operands: impl Iterator<Item = &'a Arc<dyn PhysicalExpr>>,
+        schema: &Schema,
+    ) -> usize {
+        operands
+            .filter(|operand| !self.is_scalar(operand))
+            .map(|operand| self.expanded_scalar_bytes(operand, schema))
+            .sum()
+    }
+}
+
+/// Whether DataFusion's `BinaryExpr` evaluates `op` with `apply_cmp`, which takes a scalar
+/// operand as a `Datum` instead of expanding it to the batch's length.
+fn compares_as_datum(op: &Operator) -> bool {
+    matches!(
+        op,
+        Operator::Eq
+            | Operator::NotEq
+            | Operator::Lt
+            | Operator::LtEq
+            | Operator::Gt
+            | Operator::GtEq
+            | Operator::IsDistinctFrom
+            | Operator::IsNotDistinctFrom
+            | Operator::LikeMatch
+            | Operator::ILikeMatch
+            | Operator::NotLikeMatch
+            | Operator::NotILikeMatch
+    )
 }
 
 impl PhysicalPlanner {
@@ -340,5 +378,31 @@ mod tests {
         assert_eq!(8192, split_at(&[lit("abcd")]));
         let wide = lit("x".repeat(256 * 1024));
         assert_eq!(2048, split_at(&[Arc::clone(&wide), wide]));
+    }
+
+    #[test]
+    fn skips_a_scalar_that_a_comparison_takes_as_a_datum() {
+        let schema = schema();
+        let wide = lit("x".repeat(256 * 1024));
+        for op in [
+            Operator::Eq,
+            Operator::NotEq,
+            Operator::Lt,
+            Operator::IsNotDistinctFrom,
+        ] {
+            let direct =
+                binary(col("s", &schema).unwrap(), op, Arc::clone(&wide), &schema).unwrap();
+            assert_eq!(bytes(direct), 0, "{op}");
+            // An operand computed per row still expands the scalar it contains.
+            let per_row = binary(
+                Arc::clone(&wide),
+                Operator::StringConcat,
+                col("s", &schema).unwrap(),
+                &schema,
+            )
+            .unwrap();
+            let compared = binary(col("s", &schema).unwrap(), op, per_row, &schema).unwrap();
+            assert_eq!(bytes(compared), 256 * 1024, "{op}");
+        }
     }
 }

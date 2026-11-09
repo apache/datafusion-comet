@@ -85,3 +85,7 @@ SELECT sum(length(c)) FROM (SELECT concat(repeat((SELECT max(s) FROM test_large_
 query
 SELECT sum(CASE WHEN CAST(id AS STRING) IN (concat(repeat('x', 262144), CAST(id AS STRING)), 'foo') THEN 1 ELSE 0 END)
 FROM range(0, 8192, 1, 1)
+
+-- a sort key evaluated per batch by the TopK under the limit
+query
+SELECT id FROM range(0, 8192, 1, 1) ORDER BY concat(repeat('x', 262144), CAST(id AS STRING)) LIMIT 1

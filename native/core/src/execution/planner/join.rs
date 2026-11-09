@@ -1002,7 +1002,8 @@ mod tests {
         }
     }
 
-    /// A filter on `column = 'x'`: the string scalar puts a batch split under the filter.
+    /// A filter on `concat(column, 'x') = 'yx'`: the scalar inside the concatenation puts a
+    /// batch split under the filter. A scalar compared directly is never expanded.
     fn string_filter(child: Operator, allowed: bool) -> Operator {
         let column = Expr {
             expr_struct: Some(ExprStruct::Bound(spark_expression::BoundReference {
@@ -1011,11 +1012,22 @@ mod tests {
             })),
             ..Default::default()
         };
-        let literal = Expr {
+        let literal = |value: &str| Expr {
             expr_struct: Some(ExprStruct::Literal(spark_expression::Literal {
-                value: Some(spark_expression::literal::Value::StringVal("x".to_string())),
+                value: Some(spark_expression::literal::Value::StringVal(
+                    value.to_string(),
+                )),
                 datatype: Some(string_type()),
                 is_null: false,
+            })),
+            ..Default::default()
+        };
+        let concatenated = Expr {
+            expr_struct: Some(ExprStruct::ScalarFunc(spark_expression::ScalarFunc {
+                func: "concat".to_string(),
+                args: vec![column, literal("x")],
+                return_type: Some(string_type()),
+                ..Default::default()
             })),
             ..Default::default()
         };
@@ -1025,8 +1037,8 @@ mod tests {
             op_struct: Some(OpStruct::Filter(spark_operator::Filter {
                 predicate: Some(Expr {
                     expr_struct: Some(ExprStruct::Eq(Box::new(spark_expression::BinaryExpr {
-                        left: Some(Box::new(column)),
-                        right: Some(Box::new(literal)),
+                        left: Some(Box::new(concatenated)),
+                        right: Some(Box::new(literal("yx"))),
                     }))),
                     ..Default::default()
                 }),

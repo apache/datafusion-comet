@@ -678,11 +678,11 @@ class CometJoinSuite extends CometTestBase {
               } else {
                 "dynamic_residual_probe p JOIN dynamic_residual_build b"
               }
-              // A string scalar in the residual puts a batch split under the native filter,
-              // which must keep the filter's permission and let the reader filter through.
+              // A string scalar that the residual expands puts a batch split under the native
+              // filter, which must keep the filter's permission and let the reader filter through.
               for (residual <- Seq(
                   "pmod(p.payload, 7) > 0",
-                  "CAST(p.payload AS STRING) <> '2506'")) {
+                  "concat(CAST(p.payload AS STRING), '!') <> '2506!'")) {
                 val query = "SELECT /*+ BROADCAST(b) */ p.probe_key, p.payload FROM " + from +
                   s" ON p.probe_key = b._1 WHERE $residual"
                 var unfilteredBytes = 0L
