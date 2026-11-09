@@ -24,7 +24,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 import org.apache.comet.DataTypeSupport.isComplexType
-import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, withNullShortCircuit}
+import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, hasNonDefaultStringCollation, scalarFunctionExprToProto, uncertainSharedSubexpressionReason, withNullShortCircuit}
 import org.apache.comet.shims.CometTypeShim
 
 /**
@@ -121,7 +121,8 @@ object CometMapExtract
     extends CometExpressionSerde[GetMapValue]
     with GatedCodegenDispatchFallback {
 
-  override def getUnsupportedReasons(): Seq[String] = MapKeySupport.reasons
+  override def getUnsupportedReasons(): Seq[String] =
+    uncertainSharedSubexpressionReason +: MapKeySupport.reasons
 
   override def getSupportLevel(expr: GetMapValue): SupportLevel = expr.child.dataType match {
     case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)

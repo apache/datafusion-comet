@@ -39,6 +39,8 @@ object CometArrayRemove
     with CometExprShim
     with ArraysBase {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
+
   override def getSupportLevel(expr: ArrayRemove): SupportLevel = childTypesSupportLevel(expr)
 
   override def convert(
@@ -213,6 +215,8 @@ object CometArrayContains
     extends CometExpressionSerde[ArrayContains]
     with CometTypeShim
     with CodegenDispatchFallback {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
 
   override def hasConditionalNativeDefault: Boolean = true
 
@@ -444,6 +448,8 @@ object CometArraysOverlap
     extends CometExpressionSerde[ArraysOverlap]
     with CodegenDispatchFallback {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
+
   override def hasConditionalNativeDefault: Boolean = true
 
   override def getIncompatibleReasons(): Seq[String] =
@@ -659,6 +665,9 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
 }
 
 object CometSlice extends CometExpressionSerde[Slice] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
+
   override def convert(
       expr: Slice,
       inputs: Seq[Attribute],
@@ -775,6 +784,9 @@ object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
+
   override def getIncompatibleReasons(): Seq[String] =
     ArraySetSupport.incompatibleReasons("array_union")
 
@@ -839,10 +851,17 @@ object CometCreateArray extends CometExpressionSerde[CreateArray] with ArraysBas
 
 object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
 
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
+
   override def convert(
       expr: GetArrayItem,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val shortCircuit = canShortCircuitNulls(expr)
+    if (skipsUncertainSharedSubexpression(shortCircuit)) {
+      withFallbackReason(expr, uncertainSharedSubexpressionReason)
+      return None
+    }
     val childExpr = exprToProtoInternal(expr.child, inputs, binding)
     val ordinalExpr = exprToProtoInternal(expr.ordinal, inputs, binding)
 
@@ -854,7 +873,7 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
         .setOneBased(false)
         .setFailOnError(expr.failOnError)
         // Spark evaluates the ordinal only where the array is not NULL, see withNullShortCircuit
-        .setNullShortCircuit(canShortCircuitNulls(expr))
+        .setNullShortCircuit(shortCircuit)
 
       Some(
         ExprOuterClass.Expr
@@ -1118,6 +1137,8 @@ object CometSize extends CometExpressionSerde[Size] with GatedCodegenDispatchFal
 }
 
 object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with ArraysBase {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(uncertainSharedSubexpressionReason)
 
   override def getSupportLevel(expr: ArrayPosition): SupportLevel = {
     if (expr.children.forall(_.foldable)) {

@@ -678,7 +678,7 @@ object CometShuffleExchangeExec
             s"${CometConf.COMET_SHUFFLE_NATIVE_HASH_PARTITIONING_ENABLED.key} is disabled"
         }
         // The same scope as CometNativeShuffleWriter, which serializes the keys as one projection
-        QueryPlanSerde.withSharedSubexpressions(expressions) {
+        QueryPlanSerde.withSharedSubexpressions(expressions, certain = true) {
           for (expr <- expressions) {
             if (QueryPlanSerde.exprToProto(expr, inputs).isEmpty) {
               reasons += s"unsupported hash partitioning expression: $expr"
@@ -721,7 +721,7 @@ object CometShuffleExchangeExec
           return reasons.toSeq
         }
         // As for hash partitioning, the same scope as CometNativeShuffleWriter
-        QueryPlanSerde.withSharedSubexpressions(orderings.map(_.child)) {
+        QueryPlanSerde.withSharedSubexpressions(orderings.map(_.child), certain = true) {
           for (o <- orderings) {
             val (result, expressionReasons) =
               QueryPlanSerde.exprToProtoWithFallbackReasons(o, inputs)

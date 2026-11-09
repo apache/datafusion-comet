@@ -51,8 +51,10 @@ SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 
--- Two rows miss both lookups, so `x` breaks the tie.
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+-- Two rows miss both lookups, so `x` breaks the tie. A sort compares its keys one by one without
+-- sharing a subexpression across its keys, so the dispatcher may skip each key on a NULL map as
+-- Spark's sort does.
+query expect_dispatch(element_at)
 SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D)), x
@@ -77,7 +79,7 @@ SELECT x
 FROM test_map_lookup_shared_ops
 DISTRIBUTE BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+query expect_dispatch(element_at)
 SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x), x

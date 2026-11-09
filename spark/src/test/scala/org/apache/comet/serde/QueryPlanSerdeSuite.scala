@@ -32,7 +32,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -216,13 +216,42 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     assert(canShortCircuitNulls(ArrayContains(array, value)))
     // Something serialized outside an operator's conversion might share the cast
     assert(!canShortCircuitNulls(contains))
-    withSharedSubexpressions(Seq(contains)) {
+    withSharedSubexpressions(Seq(contains), certain = true) {
       assert(canShortCircuitNulls(contains))
     }
-    withSharedSubexpressions(Seq(contains, position)) {
+    withSharedSubexpressions(Seq(contains, position), certain = true) {
       assert(!canShortCircuitNulls(contains))
       assert(!canShortCircuitNulls(position))
     }
+  }
+
+  test("an uncertain scope sends a function that skips a shared subexpression to Spark") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val cast = Cast(AttributeReference("s", StringType)(), IntegerType, None, ansiEnabled = true)
+    val contains = ArrayContains(array, cast)
+    val position = ArrayPosition(array, cast)
+    def uncertain: Boolean = skipsUncertainSharedSubexpression(canShortCircuitNulls(contains))
+    val proto =
+      scalarFunctionExprToProto("array_contains", Some(ExprOuterClass.Expr.newBuilder().build()))
+    def shortCircuit: Option[Boolean] =
+      withNullShortCircuit(contains, proto).map(_.getScalarFunc.getNullShortCircuit)
+
+    withSharedSubexpressions(Seq(contains, position), certain = false) {
+      assert(uncertain)
+      assert(shortCircuit.isEmpty)
+    }
+    // Nothing shared, so the call still skips the cast
+    withSharedSubexpressions(Seq(contains), certain = false) {
+      assert(!uncertain)
+      assert(shortCircuit.contains(true))
+    }
+    // Where Spark shares the cast for every row, so does native execution
+    withSharedSubexpressions(Seq(contains, position), certain = true) {
+      assert(!uncertain)
+      assert(shortCircuit.contains(false))
+    }
+    assert(!uncertain)
+    assert(shortCircuit.contains(false))
   }
 
   test("canShortCircuitNulls follows subexpression elimination except in aggregates") {
@@ -241,10 +270,10 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     }
 
     withSubexpressionElimination(enabled = false) {
-      withSharedSubexpressions(shared) {
+      withSharedSubexpressions(shared, certain = true) {
         assert(canShortCircuitNulls(contains))
       }
-      withSharedSubexpressions(shared, alwaysShared = true) {
+      withSharedSubexpressions(shared, alwaysShared = true, certain = true) {
         assert(!canShortCircuitNulls(contains))
       }
       // Outside an operator's conversion what they share is still unknown
@@ -266,14 +295,14 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       val conf = new SQLConf
       conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
       SQLConf.withExistingConf(conf) {
-        withSharedSubexpressions(Seq(contains, position), alwaysShared) {
+        withSharedSubexpressions(Seq(contains, position), alwaysShared, certain = true) {
           val canSkip = !(enabled || alwaysShared)
           assert(canSkipEvaluation(Seq(cast)) == canSkip)
           assert(canSkipEvaluation(Seq(promoted)) == canSkip)
           assert(canShortCircuitNulls(contains) == canSkip)
           assert(canShortCircuitNulls(DecimalPrecision.promote(contains)) == canSkip)
         }
-        withSharedSubexpressions(Seq(contains), alwaysShared) {
+        withSharedSubexpressions(Seq(contains), alwaysShared, certain = true) {
           assert(canSkipEvaluation(Seq(cast)))
           assert(canSkipEvaluation(Seq(promoted)))
         }
