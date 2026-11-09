@@ -129,7 +129,8 @@ class CometIcebergSystemFunctionSuite
     withSourceTable {
       truncateColumns.foreach { column =>
         val truncated =
-          Seq(1, 3, 10, 1000, Int.MaxValue).map(w => s"$catalog.system.truncate($w, $column)")
+          // Widths above 2^30 stay with Spark; the fallback has its own test below.
+          Seq(1, 3, 10, 1000, 1 << 30).map(w => s"$catalog.system.truncate($w, $column)")
         checkSparkAnswerAndOperator(s"SELECT $column, ${truncated.mkString(", ")} FROM $source")
       }
     }
@@ -147,8 +148,8 @@ class CometIcebergSystemFunctionSuite
         "truncate width above")
       // Long, string and binary truncation does not overflow at any int width.
       checkSparkAnswerAndOperator(
-        s"SELECT $catalog.system.truncate(2000000000, i64), " +
-          s"$catalog.system.truncate(2000000000, str) FROM $source")
+        s"SELECT $catalog.system.truncate(${Int.MaxValue}, i64), " +
+          s"$catalog.system.truncate(${Int.MaxValue}, str) FROM $source")
     }
   }
 
@@ -365,7 +366,7 @@ class CometIcebergSystemFunctionSuite
         .isInstanceOf[Unsupported])
     // Long truncation uses long arithmetic, so the same width stays native.
     val truncateLong =
-      Class.forName("org.apache.iceberg.spark.functions.TruncateFunction$TruncateLong")
+      Class.forName("org.apache.iceberg.spark.functions.TruncateFunction$TruncateBigInt")
     val longValue = AttributeReference("l", LongType)()
     assert(
       level(CometIcebergTruncate, truncateLong, Literal((1 << 30) + 1), longValue) ==
