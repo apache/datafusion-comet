@@ -1257,13 +1257,12 @@ On Spark 4.1+, the native MergeRows path also preserves the semantic counters re
 summary-aware writer commit contract.</p>
 <p>For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
 analyzer emits operation-coded rows that Comet’s writer dispatches through <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code>’s
-projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+projections, while on Spark 3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.</p>
 <p>Merge-on-read uses Spark’s <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>, and Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code> writes its rows under
 either plan, so it keeps Spark’s stock write plan. On Spark 3.5+ the testing setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> plans it as the split plan, with the same driver
-commit and reporting path, but <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> is never used for position-delta rows.
-Spark 3.4 always leaves <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> on Spark’s stock write plan.</p>
+commit and reporting path, but <code class="docutils literal notranslate"><span class="pre">CometIcebergWriteExec</span></code> is never used for position-delta rows.</p>
 <p>On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer’s commit (Iceberg 1.11+ records them in the snapshot summary), and
 cached catalog tables are recached by name after a write so cache entries survive schema
@@ -1282,8 +1281,6 @@ is not on;</p></li>
 <li><p>the write is neither an Iceberg <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> nor a supported Iceberg position-delta write;</p></li>
 <li><p>the table uses merge-on-read (<code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code>), unless the testing setting
 <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is on with Spark 3.5+;</p></li>
-<li><p>the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
-3.5+ those statements re-plan their inner append, which is intercepted normally;</p></li>
 <li><p>the write is a streaming write (<code class="docutils literal notranslate"><span class="pre">writeStream</span></code> into an Iceberg table);</p></li>
 <li><p>the write requires Spark’s commit coordinator, which Comet’s per-task commit protocol does
 not use;</p></li>

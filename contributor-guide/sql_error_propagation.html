@@ -919,8 +919,8 @@ calls into the native engine for the next batch of data, it catches
 </section>
 <section id="shimsparkerrorconverter-calls-the-real-spark-api">
 <h3><code class="docutils literal notranslate"><span class="pre">ShimSparkErrorConverter</span></code> calls the real Spark API<a class="headerlink" href="#shimsparkerrorconverter-calls-the-real-spark-api" title="Link to this heading">#</a></h3>
-<p>Because Spark’s <code class="docutils literal notranslate"><span class="pre">QueryExecutionErrors</span></code> API changes between Spark versions (3.4, 3.5, and the 4.x line),
-there is a separate implementation per branch (in <code class="docutils literal notranslate"><span class="pre">spark-3.4/</span></code>, <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code>, and <code class="docutils literal notranslate"><span class="pre">spark-4.x/</span></code>, which is
+<p>Because Spark’s <code class="docutils literal notranslate"><span class="pre">QueryExecutionErrors</span></code> API changes between Spark versions (3.5 and the 4.x line),
+there is a separate implementation per branch (in <code class="docutils literal notranslate"><span class="pre">spark-3.5/</span></code> and <code class="docutils literal notranslate"><span class="pre">spark-4.x/</span></code>, which is
 shared by Spark 4.0, 4.1, and 4.2).</p>
 <p><img alt="Shim pattern for per-version Spark API bridging" src="../_images/shim_pattern.svg" /></p>
 <div class="highlight-scala notranslate"><div class="highlight"><pre><span></span><span class="c1">// spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimSparkErrorConverter.scala</span>

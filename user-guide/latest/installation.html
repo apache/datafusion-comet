@@ -1075,7 +1075,7 @@ WARN<span class="w"> </span>CometExecRule:<span class="w"> </span>Comet<span cla
 <span class="w">   </span>+-<span class="w">  </span>LocalTableScan<span class="w"> </span><span class="o">[</span>COMET:<span class="w"> </span>Native<span class="w"> </span>support<span class="w"> </span><span class="k">for</span><span class="w"> </span>operator<span class="w"> </span>LocalTableScanExec<span class="w"> </span>is<span class="w"> </span>disabled.<span class="w"> </span>Set<span class="w"> </span>spark.comet.exec.localTableScan.enabled<span class="o">=</span><span class="nb">true</span><span class="w"> </span>to<span class="w"> </span><span class="nb">enable</span><span class="w"> </span>it.<span class="o">]</span>
 </pre></div>
 </div>
-<p>On Spark 3.4 and 3.5 the native writer replaces the whole write command rather than just the
+<p>On Spark 3.5 the native writer replaces the whole write command rather than just the
 per-task write, so the same message appears on <code class="docutils literal notranslate"><span class="pre">Execute</span> <span class="pre">InsertIntoHadoopFsRelationCommand</span></code> and
 names <code class="docutils literal notranslate"><span class="pre">DataWritingCommandExec</span></code>.</p>
 <p>Query the data from the test source and check:</p>

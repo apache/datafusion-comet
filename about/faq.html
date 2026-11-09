@@ -548,7 +548,7 @@ for one platform only.</p>
 <h2>Running Comet<a class="headerlink" href="#running-comet" title="Link to this heading">#</a></h2>
 <section id="why-do-i-get-a-classnotfoundexception-for-cometshufflemanager">
 <h3>Why do I get a <code class="docutils literal notranslate"><span class="pre">ClassNotFoundException</span></code> for <code class="docutils literal notranslate"><span class="pre">CometShuffleManager</span></code>?<a class="headerlink" href="#why-do-i-get-a-classnotfoundexception-for-cometshufflemanager" title="Link to this heading">#</a></h3>
-<p>Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.4 and 3.5,
+<p>Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.5,
 executors create the shuffle manager before they load jars passed with <code class="docutils literal notranslate"><span class="pre">--jars</span></code> or <code class="docutils literal notranslate"><span class="pre">--packages</span></code>, so
 the jar must be on the startup classpath. Either copy it into <code class="docutils literal notranslate"><span class="pre">$SPARK_HOME/jars</span></code> on every machine, or
 set <code class="docutils literal notranslate"><span class="pre">spark.driver.extraClassPath</span></code> and <code class="docutils literal notranslate"><span class="pre">spark.executor.extraClassPath</span></code> to its path, as the

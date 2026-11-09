@@ -628,7 +628,7 @@ the commit.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteStrategy</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark/src/main/scala/org/apache/comet/iceberg/</span></code></p></td>
-<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> (and Iceberg’s own <code class="docutils literal notranslate"><span class="pre">ReplaceIcebergData</span></code>, which Iceberg 1.5.2 plans on Spark 3.4), plus Spark 3.5+ Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> under the testing split flag.</p></td>
+<td><p>Planner strategy. Matches <code class="docutils literal notranslate"><span class="pre">AppendData</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwriteByExpression</span></code>, <code class="docutils literal notranslate"><span class="pre">OverwritePartitionsDynamic</span></code>, <code class="docutils literal notranslate"><span class="pre">ReplaceData</span></code> plus Iceberg <code class="docutils literal notranslate"><span class="pre">WriteDelta</span></code> under the testing split flag.</p></td>
 </tr>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">IcebergWriteLogical</span></code></p></td>
 <td><p>same</p></td>
@@ -664,12 +664,12 @@ so it can delete their files.</p></li>
 <li><p><strong>Commit-coordinator writes are not intercepted.</strong> Iceberg’s current <code class="docutils literal notranslate"><span class="pre">SparkWrite</span></code> and
 position-delta write do not ask for one; the checks in <code class="docutils literal notranslate"><span class="pre">buildTwoOp</span></code> and <code class="docutils literal notranslate"><span class="pre">buildDeltaTwoOp</span></code>
 are defensive.</p></li>
-<li><p><strong>WriteDelta stays JVM-backed.</strong> Spark 3.5+ merge-on-read commands are intercepted by the split
+<li><p><strong>WriteDelta stays JVM-backed.</strong> Spark 3.5 and later merge-on-read commands are intercepted by the split
 plan only when the testing flag <code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.splitOperator.enabled</span></code> is on, and then
 <code class="docutils literal notranslate"><span class="pre">IcebergWriteExec</span></code> delegates their rows to Iceberg’s JVM <code class="docutils literal notranslate"><span class="pre">DeltaWriter</span></code>; the native Iceberg writer
 is explicitly declined. Since the split plan gives such a write nothing over Spark’s operator,
-<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> alone leaves it on Spark’s plan, as does Spark 3.4.</p></li>
-<li><p><strong>What is not intercepted:</strong> streaming writes and CTAS/RTAS on Spark 3.4. Those keep Spark’s plan.</p></li>
+<code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code> alone leaves it on Spark’s plan.</p></li>
+<li><p><strong>What is not intercepted:</strong> streaming writes. Those keep Spark’s plan.</p></li>
 </ul>
 <p>On Spark 4.1+, <code class="docutils literal notranslate"><span class="pre">IcebergWriteSummaryShim</span></code> finds either Spark’s <code class="docutils literal notranslate"><span class="pre">MergeRowsExec</span></code> or
 <code class="docutils literal notranslate"><span class="pre">CometMergeRowsExec</span></code> in the executed query and forwards its eight action counters to
