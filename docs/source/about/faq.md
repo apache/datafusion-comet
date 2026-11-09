@@ -103,10 +103,10 @@ driver or an executor.
 ### How much memory does Comet need?
 
 Comet needs Spark's off-heap memory: without `spark.memory.offHeap.enabled=true`, Comet disables
-itself and logs a warning. Comet's operators share the off-heap pool, sized by
-`spark.memory.offHeap.size`, with Spark. When the pool runs out, operators that can spill, such as
-sorts, aggregations, and shuffle writes, spill to disk, and operators that cannot spill fail the
-task.
+itself and logs a warning. Comet's Rust-implemented operators and its JVM shuffle share the
+off-heap pool, sized by `spark.memory.offHeap.size`, with Spark. When the pool runs out, operators
+that can spill, such as sorts, aggregations, and shuffle writes, spill to disk, and operators that
+cannot spill fail the task.
 
 Comet also uses memory that the pool does not track, which has to fit in
 `spark.executor.memoryOverhead`. If the cluster manager kills executors for exceeding their memory

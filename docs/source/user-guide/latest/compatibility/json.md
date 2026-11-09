@@ -28,7 +28,7 @@ Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`,
   batch. This rides the codegen dispatcher
   (`spark.comet.exec.scalaUDF.codegen.enabled`, enabled by default); if the
   dispatcher is disabled, the operator falls back to Spark.
-- **Rust path:** the DataFusion implementation. Faster, but has
+- **Rust path:** Comet's Rust implementation. Faster, but has
   known compatibility gaps with Spark on certain inputs, so it is **opt-in per
   expression** via the expression's `allowIncompatible` config. Any expression or
   input case with no native implementation routes through the codegen dispatcher.

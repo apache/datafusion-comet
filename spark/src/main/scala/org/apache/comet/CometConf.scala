@@ -331,7 +331,7 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
-      "Whether to enable Comet operators for Spark. This controls whether " +
+      "Whether to enable Comet operators other than shuffle for Spark. This controls whether " +
         "Spark should convert operators into their Comet counterparts and run them in " +
         "Comet. Note: each operator is associated with a separate config in the " +
         "format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the " +

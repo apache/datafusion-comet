@@ -276,9 +276,9 @@ handled inside reqwest are not counted.
 
 Only scans using Comet's Rust S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
 HDFS scans always report zero, which does not mean their requests were never retried. This also
-applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a scan through that
-connector, `scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the
-number of GETs after range coalescing.
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a scan through Comet's
+Rust S3 connector, `scan_io_http_observed_gets` normally matches
+`scan_io_object_store_get_calls`, the number of GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 

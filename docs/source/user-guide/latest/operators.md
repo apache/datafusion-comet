@@ -22,9 +22,10 @@
 This page is the complete reference for how Apache Comet handles each Spark physical operator.
 Comet replaces supported operators with Comet operators and runs adjacent Rust-implemented
 operators together as one plan. An operator that Comet does not support stays a Spark operator,
-with transitions between Spark and Comet around it. You can also have Comet return a stage that
-needs too many transitions to Spark (see [Transitions](tuning/transitions.md)). Results are
-unaffected.
+with transitions between Spark and Comet around it. With
+`spark.comet.exec.transitionRevert.enabled=true`, Comet instead returns a whole stage to Spark when
+it would need too many columnar-to-row transitions (see [Transitions](tuning/transitions.md)).
+Results are unaffected.
 
 Operators marked ✅ Supported are enabled by default. Each can be turned off individually with
 `spark.comet.exec.OPERATOR.enabled=false` (for example `spark.comet.exec.sort.enabled=false`), and
