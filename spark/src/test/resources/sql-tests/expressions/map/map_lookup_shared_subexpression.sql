@@ -274,12 +274,12 @@ SELECT element_at(m1, 1.0D / x + 1.0D / x) FROM test_map_lookup_shared
 query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x) FROM test_map_lookup_shared
 
--- The decline does not depend on ANSI mode
+-- Without ANSI the shared divide cannot fail, so the dispatcher may skip it
 statement
 SET spark.sql.subexpressionElimination.enabled=true
 
 statement
 SET spark.sql.ansi.enabled=false
 
-query expect_fallback(holds a subexpression that the operator's other expressions share)
+query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x) FROM test_map_lookup_shared

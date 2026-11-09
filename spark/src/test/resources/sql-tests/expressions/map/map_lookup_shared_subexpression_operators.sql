@@ -70,7 +70,8 @@ SELECT element_at(m1, 1.0D / (x + 1.0D)), element_at(m2, 1.0D / (x + 1.0D))
 FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10
 
--- The decline does not depend on ANSI mode
+-- Without ANSI the shared divide cannot fail: the keys evaluate without error in either shuffle,
+-- and the sort and the projection dispatch their lookups
 statement
 SET spark.sql.ansi.enabled=false
 
@@ -84,7 +85,7 @@ SELECT x
 FROM test_map_lookup_shared_ops
 ORDER BY element_at(m1, 1.0D / x), element_at(m2, 1.0D / x), x
 
-query expect_fallback(unsupported projection)
+query expect_dispatch(element_at)
 SELECT element_at(m1, 1.0D / x), element_at(m2, 1.0D / x)
 FROM (SELECT m1, m2, x FROM test_map_lookup_shared_ops ORDER BY x)
 LIMIT 10

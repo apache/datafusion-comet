@@ -25,6 +25,7 @@ import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
 import scala.util.DynamicVariable
+import scala.util.control.NonFatal
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -1408,27 +1409,110 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       "depends on how Spark runs this operator"
 
   /**
-   * Whether native execution may skip the arguments of `expr` after the first on the rows where
-   * an earlier argument is NULL, as Spark's evaluation of a null-intolerant `BinaryExpression` or
-   * `TernaryExpression` does. Not if one of them holds a subexpression that the operator's
-   * expressions share and Spark eliminates: Spark evaluates that for every row, and raises if it
-   * fails on a row whose array is NULL. Nor outside `withSharedSubexpressions`, where what they
-   * share is unknown.
+   * The arguments of `expr` that Spark's evaluation of a null-intolerant `BinaryExpression` or
+   * `TernaryExpression` skips on a row where an earlier one is NULL: those after the first
+   * nullable argument other than the last.
    */
-  def canShortCircuitNulls(expr: Expression): Boolean = canSkipEvaluation(expr.children.tail)
+  private def skippableArguments(expr: Expression): Seq[Expression] = {
+    val firstNullable = expr.children.init.indexWhere(_.nullable)
+    if (firstNullable < 0) Nil else expr.children.drop(firstNullable + 1)
+  }
+
+  /**
+   * Whether native execution may skip the arguments of `expr` that Spark skips after a NULL one.
+   * Not if one of them holds a subexpression that can fail and that the operator's expressions
+   * share and Spark eliminates: Spark evaluates that for every row, and raises if it fails on a
+   * row whose array is NULL. Nor, unless they cannot fail, outside `withSharedSubexpressions`,
+   * where what they share is unknown.
+   */
+  def canShortCircuitNulls(expr: Expression): Boolean =
+    canSkipEvaluation(skippableArguments(expr))
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
    * some rows, unevaluated on the rows Spark skips. Not if one of them holds a subexpression that
-   * the operator's expressions share and Spark eliminates, nor outside
-   * `withSharedSubexpressions`; see `canShortCircuitNulls`. Normalize both sides with decimal
-   * promotion so callers may pass either original or already-promoted trees.
+   * can fail and that the operator's expressions share and Spark eliminates, nor outside
+   * `withSharedSubexpressions` unless none of them can fail; see `canShortCircuitNulls`.
+   * Normalize both sides with decimal promotion so callers may pass either original or
+   * already-promoted trees.
    */
   def canSkipEvaluation(skippable: Seq[Expression]): Boolean = {
-    // Subexpression elimination never shares a leaf, such as a column or a literal
-    skippable.forall(_.isInstanceOf[LeafExpression]) || sharedSubexpressions.value.exists { s =>
-      !holdsSharedSubexpression(skippable, s)
+    // Skipping what cannot fail is unobservable, and subexpression elimination never shares a
+    // leaf, such as a column or a literal
+    skippable.forall(e => e.isInstanceOf[LeafExpression] || !canFail(e)) ||
+    sharedSubexpressions.value.exists { s =>
+      !holdsSharedSubexpression(skippable, s, canFail)
     }
+  }
+
+  private def canFail(expr: Expression): Boolean = expr.exists(canFailNode)
+
+  /**
+   * Whether evaluating the node `expr`, apart from its children, may raise an error.
+   * Conservative: only columns, literals, comparisons, NULL checks, boolean logic, conditionals,
+   * array and struct constructors, struct field access, hashes, case conversion, trim, substring
+   * and length of a string, the year, month and day of a date, widening casts other than to a
+   * timestamp, casts of a literal that evaluate, decimal overflow checks that return NULL, and
+   * casts and numeric arithmetic that return NULL instead of failing cannot. A string `concat`
+   * can exceed the size limit, so it is not on the list.
+   */
+  private def canFailNode(expr: Expression): Boolean = expr match {
+    case _: Attribute | _: BoundReference | _: Literal => false
+    case _: CreateArray | _: CreateNamedStruct => false
+    case _: EqualTo | _: EqualNullSafe | _: LessThan | _: LessThanOrEqual | _: GreaterThan |
+        _: GreaterThanOrEqual =>
+      false
+    case _: IsNull | _: IsNotNull | _: And | _: Or | _: Not => false
+    case _: Coalesce | _: If | _: CaseWhen | _: GetStructField | _: Murmur3Hash | _: XxHash64 =>
+      false
+    case _: Lower | _: Upper | _: Substring | _: StringTrim | _: StringTrimLeft |
+        _: StringTrimRight | _: Length | _: Year | _: Month | _: DayOfMonth =>
+      false
+    case c: Cast if c.child.isInstanceOf[Literal] => !evaluates(c)
+    // Widening a date or timestamp to a timestamp overflows on extreme values in any mode
+    case c: Cast if Cast.canUpCast(c.child.dataType, c.dataType) => holdsTimestamp(c.dataType)
+    case c: Cast =>
+      c.evalMode == EvalMode.ANSI || !castsWithoutFailing(c.child.dataType) ||
+      !castsWithoutFailing(c.dataType)
+    case c: CheckOverflow => !c.nullOnOverflow
+    // Each class's own `evalMode`, as `BinaryArithmetic.evalMode` is protected before Spark 4.1
+    case a: Add => arithmeticCanFail(a, a.evalMode)
+    case a: Subtract => arithmeticCanFail(a, a.evalMode)
+    case a: Multiply => arithmeticCanFail(a, a.evalMode)
+    case a: Divide => arithmeticCanFail(a, a.evalMode)
+    case a: IntegralDivide => arithmeticCanFail(a, a.evalMode)
+    case a: Remainder => arithmeticCanFail(a, a.evalMode)
+    case a: Pmod => arithmeticCanFail(a, a.evalMode)
+    case u: UnaryMinus => u.failOnError || !u.dataType.isInstanceOf[NumericType]
+    case a: Abs => a.failOnError || !a.dataType.isInstanceOf[NumericType]
+    case _ => true
+  }
+
+  private def arithmeticCanFail(expr: Expression, evalMode: EvalMode.Value): Boolean =
+    evalMode == EvalMode.ANSI || !expr.dataType.isInstanceOf[NumericType]
+
+  private def holdsTimestamp(dataType: DataType): Boolean = dataType match {
+    case TimestampType | TimestampNTZType => true
+    case a: ArrayType => holdsTimestamp(a.elementType)
+    case m: MapType => holdsTimestamp(m.keyType) || holdsTimestamp(m.valueType)
+    case s: StructType => s.fields.exists(f => holdsTimestamp(f.dataType))
+    case _ => false
+  }
+
+  /** Whether evaluating `expr`, which has no input, succeeds. */
+  private def evaluates(expr: Expression): Boolean =
+    try {
+      expr.eval()
+      true
+    } catch {
+      // Failing here, even for want of a time zone, counts as able to fail
+      case NonFatal(_) => false
+    }
+
+  /** Types a cast outside ANSI mode converts between without failing, returning NULL instead. */
+  private def castsWithoutFailing(dataType: DataType): Boolean = dataType match {
+    case _: NumericType | _: StringType | BooleanType => true
+    case _ => false
   }
 
   /**
@@ -1457,14 +1541,17 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           case _ => node.children.drop(1)
         }
         !skippable.forall(_.isInstanceOf[LeafExpression]) &&
-        holdsSharedSubexpression(skippable, s, e => !repeated.exists(_.semanticEquals(e)))
+        holdsSharedSubexpression(
+          skippable,
+          s,
+          e => canFail(e) && !repeated.exists(_.semanticEquals(e)))
       }
     }
 
   private def holdsSharedSubexpression(
       exprs: Seq[Expression],
       shared: SharedSubexpressions,
-      counts: Expression => Boolean = _ => true): Boolean =
+      counts: Expression => Boolean): Boolean =
     // Avoid decimal promotion when Spark shares nothing.
     shared.common.nonEmpty && exprs.exists { expr =>
       DecimalPrecision

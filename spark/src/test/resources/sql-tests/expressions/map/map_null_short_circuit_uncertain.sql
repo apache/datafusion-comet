@@ -66,6 +66,11 @@ query expect_fallback(depends on how Spark runs this operator)
 SELECT i FROM map_null_short_circuit_uncertain
 WHERE (a1[CAST((i + 1) div 2 AS INT)] + a2[CAST((i + 1) div 2 AS INT)]) IS NULL
 
+-- array(...) cannot be NULL, so array_contains never skips the shared key
+query expect_native(array_contains)
+SELECT i FROM map_null_short_circuit_uncertain
+WHERE array_contains(array(1, 2), (i + 1) div 2) OR array_contains(array(3), (i + 1) div 2)
+
 -- The join condition is shared only without whole-stage codegen
 query expect_fallback(depends on how Spark runs this operator)
 SELECT /*+ BROADCAST(u) */ t.i
@@ -105,3 +110,12 @@ SET spark.sql.codegen.wholeStage=true
 query expect_fallback(depends on how Spark runs this operator)
 SELECT a1[CAST(1 div i AS INT)] + a2[CAST(1 div i AS INT)]
 FROM map_null_short_circuit_uncertain GROUP BY a1, a2, i
+
+-- Without ANSI `element_at` can still fail, on an index of 0, so a filter sharing it falls back.
+-- The index here is never 0, so Spark returns the same rows whether it shares or not.
+statement
+SET spark.sql.ansi.enabled=false
+
+query expect_fallback(depends on how Spark runs this operator)
+SELECT i FROM map_null_short_circuit_uncertain
+WHERE (m1[element_at(array(1), i + 1)] + m2[element_at(array(1), i + 1)]) IS NULL
