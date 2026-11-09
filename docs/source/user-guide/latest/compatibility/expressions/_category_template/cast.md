@@ -81,6 +81,12 @@ under ANSI mode. Comet chooses the behavior by the Spark version number. On a ve
 reports an older version but includes SPARK-60118, Comet returns `NULL` (or raises) where Spark
 returns `0`.
 
+A string whose integral part has more than 38 digits, such as `'6E+38'`, is rejected before Spark
+checks the value against the target type. Comet does the same: the result is `NULL`, or
+`NUMERIC_OUT_OF_SUPPORTED_RANGE` under ANSI mode, whatever the target type. With
+`spark.sql.legacy.allowNegativeScaleOfDecimal=true`, Spark does not apply this limit, and neither
+does Comet.
+
 ## String to Date
 
 Comet's native `CAST(string AS DATE)` implementation matches Apache Spark's behavior for years
