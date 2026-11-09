@@ -61,8 +61,9 @@ while Comet runs; see [Sizing the Overhead from the Memory Usage Log].
 
 `spark.comet.exec.memoryPool.fraction` is deprecated and does not leave room for it. Spark hands out all of
 `spark.memory.offHeap.size` to the tasks that ask for it, whatever the fraction. The `fair_unified` pool applies the
-fraction to each task separately, where Spark's own limit of an even share of the pool per running task is tighter
-unless the fraction is below one over the number of running tasks, and the `greedy_unified` pool ignores it.
+fraction to each task separately, limiting each task to the fraction times `spark.memory.offHeap.size`, where Spark's
+own limit of an even share of the pool per running task is tighter unless the fraction is below one over the number
+of running tasks, and the `greedy_unified` pool ignores it.
 
 For more details about Spark off-heap memory mode, please refer to [Spark documentation].
 
