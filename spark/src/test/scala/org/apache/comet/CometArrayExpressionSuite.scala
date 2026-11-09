@@ -19,6 +19,8 @@
 
 package org.apache.comet
 
+import java.util.concurrent.atomic.AtomicLong
+
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
@@ -36,6 +38,11 @@ import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plu
 import org.apache.comet.DataTypeSupport.isComplexType
 import org.apache.comet.serde.{ArrayElementEqualitySupport, ArraySetSupport, CometArrayDistinct, CometArrayExcept, CometArrayJoin, CometArrayRemove, CometArrayReverse, CometArraysOverlap, CometArrayUnion, CometFlatten, CometSequence, Compatible, ExprOuterClass, Incompatible, SparkFixes}
 import org.apache.comet.testing.{DataGenOptions, ParquetGenerator, SchemaGenOptions}
+
+/** Counts calls to a test UDF. Comet tests run in local mode, so tasks see this object. */
+object SizeChildCounter {
+  val calls = new AtomicLong(0)
+}
 
 class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -1342,6 +1349,45 @@ class CometArrayExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelp
         SQLConf.LEGACY_SIZE_OF_NULL.key -> "true",
         SQLConf.ANSI_ENABLED.key -> "false") {
         checkSparkAnswerAndOperator(sql(s"select size(col) from $table"))
+      }
+    }
+  }
+
+  test("size evaluates its child once") {
+    // A NULL guard around size serializes the child a second time, so a UDF child would be
+    // called once for the guard and again for every row whose array is not NULL.
+    spark.udf.register(
+      "splitOrNull",
+      (s: String) => {
+        SizeChildCounter.calls.incrementAndGet()
+        if (s == null) null else s.split(",", -1).toSeq
+      })
+    // `udf` alone names the org.apache.comet.udf package here on Scala 2.12.
+    val splitOrEmpty = org.apache.spark.sql.functions.udf { (s: String) =>
+      SizeChildCounter.calls.incrementAndGet()
+      if (s == null) Seq.empty[String] else s.split(",", -1).toSeq
+    }
+    spark.udf.register("splitOrEmpty", splitOrEmpty.asNonNullable())
+    // Each call plans the query anew, so it runs with the configuration in effect.
+    def calls(query: String): Long = {
+      SizeChildCounter.calls.set(0)
+      sql(query).collect()
+      SizeChildCounter.calls.get()
+    }
+    withParquetTable(Seq("a,b,c", null, "", "x,y").map(Tuple1(_)), "tbl") {
+      // The two shapes that need no NULL guard: legacy size of NULL and a non-nullable child.
+      Seq("true" -> "splitOrNull", "false" -> "splitOrEmpty").foreach { case (legacy, split) =>
+        withSQLConf(
+          SQLConf.LEGACY_SIZE_OF_NULL.key -> legacy,
+          SQLConf.ANSI_ENABLED.key -> "false") {
+          val query = s"SELECT size($split(_1)) FROM tbl"
+          checkSparkAnswerAndOperator(query)
+          var sparkCalls = 0L
+          withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+            sparkCalls = calls(query)
+          }
+          assert(calls(query) == sparkCalls)
+        }
       }
     }
   }
