@@ -70,6 +70,16 @@ class CometVariantProjectionSuite extends CometTestBase {
     val plan = checkVariantAnswer(df, expected.getOrElse(sparkRows(df)))
     checkCometOperators(plan, classOf[ColumnarToRowExec])
     assert(collect(plan) { case scan: CometNativeScanExec => scan }.nonEmpty, plan.toString)
+    if (Utils.containsVariantType(plan.schema)) {
+      // Comet cannot convert Variant columns to rows, so Spark's ColumnarToRowExec stays and
+      // records why.
+      assert(
+        new ExtendedExplainInfo()
+          .getFallbackReasons(plan)
+          .exists(
+            _.contains("Comet columnar-to-row conversion does not support type VariantType")),
+        plan.toString)
+    }
   }
 
   private def checkScanFallbackPlan(df: DataFrame, reason: String): Unit = {
