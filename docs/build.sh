@@ -53,7 +53,7 @@ TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 # docs/source/user-guide/latest/compatibility/expressions/.
 # Every run also rewrites the shared configs.md and expressions.md pages, so the last
 # entry decides their content. Keep the default build profile (spark-4.1) last.
-SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.2 spark-4.1)
+SPARK_PROFILES=(spark-3.5 spark-4.0 spark-4.2 spark-4.1)
 
 for profile in "${SPARK_PROFILES[@]}"; do
   echo "Generating compatibility pages for ${profile}..."
