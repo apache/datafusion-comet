@@ -440,7 +440,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireNativeSupportedBloomFilterProperties,
     requireSupportedBloomFilterPaths,
     requireBloomFilterFoldingOptIn,
-    requireNoFloatingPointBloomFilters,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
@@ -767,23 +766,41 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val requireSupportedBloomFilterPaths: TriggerRule = ctx => {
     // Resolve disabled entries too: a second spelling can disable or change the same leaf.
     val columns = IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(ctx.properties)
-    if (columns.nonEmpty) {
+    if (columns.isEmpty) {
+      None
+    } else {
       val schema = IcebergReflection
         .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
         .getOrElse(throw new IllegalStateException("Could not resolve Bloom write schema"))
       val resolution = IcebergReflection
         .getParquetPathResolution(schema)
         .getOrElse(throw new IllegalStateException("Could not resolve Bloom Parquet paths"))
-      val _ = bloomFilterParquetPaths(columns, resolution, schema = schema)
+      bloomFilterParquetPaths(columns, resolution, schema = schema) match {
+        case Left(reason) => Some(reason)
+        case Right(paths) =>
+          val properties = interpretedBloomFilterProperties(ctx.properties)
+          val enabled = IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(properties)
+          val affected = enabled.filter { column =>
+            paths.get(column).exists(resolution.floatingPointPhysicalPaths.contains)
+          }
+          if (affected.isEmpty) {
+            None
+          } else {
+            // SQL-equal NaNs can have different payloads. Preserve Java's writer until the
+            // native writer canonicalizes these values before hashing them.
+            Some(
+              s"Bloom filters on FLOAT/DOUBLE columns ${affected.sorted.mkString(", ")} " +
+                "require the Java writer to preserve NaN equality")
+          }
+      }
     }
-    None
   }
 
   private[operator] def bloomFilterParquetPaths(
       configuredColumns: Seq[String],
       resolution: IcebergReflection.ParquetPathResolution,
       icebergVersion: String = IcebergReflection.icebergVersion(),
-      schema: Any = null): Map[String, String] = {
+      schema: Any = null): Either[String, Map[String, String]] = {
     val paths = bloomFilterVersion(icebergVersion) match {
       case Some((1, minor)) if minor >= 5 && minor < 8 =>
         // ColumnPath.fromDotString uses Java split's trailing-empty-component removal. Keep
@@ -793,9 +810,9 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           if (resolution.physicalPaths.contains(path)) Some(name -> path) else None
         }.toMap
       case Some((1, minor)) if minor >= 8 && minor < 10 =>
-        require(
-          configuredColumns.forall(_.nonEmpty),
-          "Empty Bloom column name requires Java validation")
+        if (configuredColumns.exists(_.isEmpty)) {
+          return Left("Empty Bloom column name requires Java validation")
+        }
         configuredColumns.flatMap { name =>
           IcebergReflection
             .findFieldIdByName(schema, name)
@@ -807,7 +824,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           configuredColumns.contains(column)
         }
       case _ =>
-        throw new IllegalArgumentException(
+        return Left(
           bloomFilterRuntimeRejection(icebergVersion)
             .getOrElse(s"Unsupported Iceberg Bloom naming convention: $icebergVersion"))
     }
@@ -815,40 +832,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       case (path, entries) if entries.size > 1 =>
         s"$path (${entries.map(_._1).sorted.mkString(", ")})"
     }
-    require(
-      collisions.isEmpty,
-      s"Multiple Bloom column names resolve to the same Parquet leaf: ${collisions.mkString("; ")}")
-    paths
-  }
-
-  // A floating-point Bloom filter can reject a SQL-equal NaN with a different bit payload.
-  // Until native writes canonicalize these values, preserve Java's writer for affected leaves.
-  private val requireNoFloatingPointBloomFilters: TriggerRule = ctx => {
-    val properties = interpretedBloomFilterProperties(ctx.properties)
-    val columns = IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(properties)
-    if (columns.isEmpty) {
-      None
+    if (collisions.isEmpty) {
+      Right(paths)
     } else {
-      val schema = IcebergReflection
-        .getWriteSchemaFromSparkWrite(ctx.sparkWrite)
-        .getOrElse(
-          throw new IllegalStateException("could not resolve schema for Bloom type checking"))
-      val resolution = IcebergReflection
-        .getParquetPathResolution(schema)
-        .getOrElse(
-          throw new IllegalStateException(
-            "could not resolve Parquet paths for Bloom type checking"))
-      val paths = bloomFilterParquetPaths(columns, resolution, schema = schema)
-      val affected = columns.filter { column =>
-        paths.get(column).exists(resolution.floatingPointPhysicalPaths.contains)
-      }
-      if (affected.isEmpty) {
-        None
-      } else {
-        Some(
-          s"Bloom filters on FLOAT/DOUBLE columns ${affected.sorted.mkString(", ")} " +
-            "require the Java writer to preserve NaN equality")
-      }
+      Left(
+        "Multiple Bloom column names resolve to the same Parquet leaf: " +
+          collisions.toSeq.sorted.mkString("; "))
     }
   }
 
@@ -1453,11 +1442,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
           withFallbackReason(op, "Could not resolve physical Parquet paths for Bloom filters")
           return None
         }
-        val configuredColumns = IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(effectiveProperties)
+        val configuredColumns =
+          IcebergWriteProtoTranslation.configuredBloomFilterColumnNames(effectiveProperties)
         val enabledColumns =
           IcebergWriteProtoTranslation.enabledBloomFilterColumnNames(effectiveProperties).toSet
         val resolvedPaths =
-          bloomFilterParquetPaths(configuredColumns, resolution, schema = writeSchema)
+          bloomFilterParquetPaths(configuredColumns, resolution, schema = writeSchema) match {
+            case Left(reason) =>
+              withFallbackReason(op, reason)
+              return None
+            case Right(paths) => paths
+          }
         val renamedColumns = resolvedPaths.collect {
           case (configuredName, path)
               if enabledColumns.contains(configuredName) &&
