@@ -52,7 +52,7 @@ not documented, please [file an issue](https://github.com/apache/datafusion-come
 
 ### Which Spark and Java versions does Comet support?
 
-Spark 3.4, 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. Spark 3.4 is deprecated. The
+Spark 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. The
 [installation guide](../user-guide/latest/installation.md#supported-spark-versions) lists the exact
 Spark, Java, and Scala versions, and the
 [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page lists known
