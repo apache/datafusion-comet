@@ -88,7 +88,7 @@ object CometConf extends ShimCometConf {
     .category(CATEGORY_EXEC)
     .doc(
       "Whether to enable Comet extension for Spark. When this is turned on, Spark will use " +
-        "Comet to read Parquet data source. Note that to enable native vectorized execution, " +
+        "Comet to read Parquet data source. Note that to run queries in Comet, " +
         "both this config and `spark.comet.exec.enabled` need to be enabled.")
     .booleanConf
     .createWithEnvVarOrDefault("ENABLE_COMET", true)
@@ -105,7 +105,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "Whether to enable native Parquet write through Comet. When enabled, " +
-          "Comet will intercept Parquet write operations and execute them natively. This " +
+          "Comet will intercept Parquet write operations and execute them in Rust. This " +
           "feature is highly experimental and only partially implemented. It should not " +
           "be used in production.")
       .booleanConf
@@ -116,7 +116,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SCAN)
       .doc(
         "Whether to enable native Iceberg table scan using iceberg-rust. When enabled, " +
-          "Iceberg tables are read directly through native execution, bypassing Spark's " +
+          "Iceberg tables are read directly in Rust, bypassing Spark's " +
           "DataSource V2 API for better performance.")
       .booleanConf
       .createWithDefault(true)
@@ -135,7 +135,7 @@ object CometConf extends ShimCometConf {
   val COMET_ICEBERG_NATIVE_WRITE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.enabled")
       .category(CATEGORY_EXEC)
-      .doc("Whether Comet plans Iceberg writes and writes their data files natively. When " +
+      .doc("Whether Comet plans Iceberg writes and writes their data files in Rust. When " +
         "enabled, Comet replaces Spark's combined V2 write operator with a file writer " +
         "(inside AQE) under a committer (outside AQE), and writes the data files of each " +
         "eligible write with its native (iceberg-rust) writer. Other writes use Iceberg's own " +
@@ -184,7 +184,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.scan.csv.v2.enabled")
       .category(CATEGORY_TESTING)
       .doc(
-        "Whether to use the native Comet V2 CSV reader for improved performance. " +
+        "Whether to use Comet's native V2 CSV reader for improved performance. " +
           "Default: false (uses standard Spark CSV reader) " +
           "Experimental: Performance benefits are workload-dependent.")
       .booleanConf
@@ -222,7 +222,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.parquet.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "When enabled, data from Spark (non-native) Parquet v1 and v2 scans will be converted to " +
+        "When enabled, data from Spark (non-Comet) Parquet v1 and v2 scans will be converted to " +
           "Arrow format.")
       .booleanConf
       .createWithDefault(false)
@@ -231,7 +231,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.json.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "When enabled, data from Spark (non-native) JSON v1 and v2 scans will be converted to " +
+        "When enabled, data from Spark (non-Comet) JSON v1 and v2 scans will be converted to " +
           "Arrow format.")
       .booleanConf
       .createWithDefault(false)
@@ -239,9 +239,8 @@ object CometConf extends ShimCometConf {
   val COMET_CONVERT_FROM_CSV_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.csv.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "When enabled, data from Spark (non-native) CSV v1 and v2 scans will be converted to " +
-          "Arrow format.")
+      .doc("When enabled, data from Spark (non-Comet) CSV v1 and v2 scans will be converted to " +
+        "Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -249,7 +248,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.text.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "When enabled, data from Spark (non-native) Text v1 and v2 scans will be converted to " +
+        "When enabled, data from Spark (non-Comet) Text v1 and v2 scans will be converted to " +
           "Arrow format. Arrow strings must be valid UTF-8, so Comet replaces bytes that are " +
           "not valid UTF-8, for example in a Latin-1 file, with U+FFFD, and results that " +
           "depend on the original bytes can differ from Spark. Enable this only for Text " +
@@ -262,7 +261,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "When enabled, the rows of `spark.range` and SQL `range()` that Comet does not generate " +
-          "natively (see `spark.comet.exec.range.enabled`) will be converted to Arrow format.")
+          "in Rust (see `spark.comet.exec.range.enabled`) will be converted to Arrow format.")
       .booleanConf
       .createWithDefault(false)
 
@@ -270,7 +269,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.convert.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "When enabled, data from in-memory cached tables that Comet's native cache scan does " +
+        "When enabled, data from in-memory cached tables that Comet's cache scan does " +
           "not read (see `spark.comet.exec.inMemoryCache.enabled`), such as tables cached in " +
           "Spark's default format, will be converted to Arrow format.")
       .booleanConf
@@ -309,7 +308,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("When enabled, the output of typed Dataset operations, such as `map`, `flatMap`, " +
         "`mapPartitions` and `groupByKey(...).mapGroups`, will be converted to Arrow format so " +
-        "that the operators above them can run natively. The user function still runs in " +
+        "that the operators above them can run in Comet. The user function still runs in " +
         "Spark. This pays off when the operators above do enough work, such as an " +
         "aggregation over many groups, and can be slower when they are cheap, such as an " +
         "aggregation over a few groups after a selective filter.")
@@ -332,12 +331,12 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_ENABLED: ConfigEntry[Boolean] = conf(s"$COMET_EXEC_CONFIG_PREFIX.enabled")
     .category(CATEGORY_EXEC)
     .doc(
-      "Whether to enable Comet native vectorized execution for Spark. This controls whether " +
-        "Spark should convert operators into their Comet counterparts and execute them in " +
-        "native space. Note: each operator is associated with a separate config in the " +
+      "Whether to enable Comet operators for Spark. This controls whether " +
+        "Spark should convert operators into their Comet counterparts and run them in " +
+        "Comet. Note: each operator is associated with a separate config in the " +
         "format of `spark.comet.exec.<operator_name>.enabled` at the moment, and both the " +
-        "config and this need to be turned on, in order for the operator to be executed in " +
-        "native.")
+        "config and this need to be turned on, in order for the operator to run in " +
+        "Comet.")
     .booleanConf
     .createWithDefault(true)
 
@@ -345,10 +344,11 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.makeDate.operatorFallback.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Keep affected make_date operators in Spark when native batching can evaluate rows " +
-          "that Spark skips. When false, allow native operators even if make_date can raise " +
-          "an error on a row Spark would not evaluate. This does not disable expression-level " +
-          "evaluation safeguards or change make_date's invalid-date handling.")
+        "Keep affected make_date operators in Spark when Comet, which evaluates whole batches, " +
+          "can evaluate rows that Spark skips. When false, allow Comet operators even if " +
+          "make_date can raise an error on a row Spark would not evaluate. This does not " +
+          "disable expression-level evaluation safeguards or change make_date's invalid-date " +
+          "handling.")
       .booleanConf
       .createWithDefault(true)
 
@@ -378,7 +378,7 @@ object CometConf extends ShimCometConf {
       defaultValue = false,
       notes = Some(
         "Opt-in: DataFusion's CrossJoinExec buffers the left input and cannot spill " +
-          "(https://github.com/apache/datafusion/issues/26383). Runs natively only without a " +
+          "(https://github.com/apache/datafusion/issues/26383). Runs in Comet only without a " +
           "join condition and when each input reports exactly one partition"))
   val COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.sortMergeJoin.rightKeyReduction.enabled")
@@ -392,7 +392,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.existenceJoin.enabled")
       .category(CATEGORY_ENABLE_EXEC)
       .doc(
-        "Whether to enable native ExistenceJoin, produced when EXISTS / NOT EXISTS / IN is " +
+        "Whether to run ExistenceJoin in Comet, produced when EXISTS / NOT EXISTS / IN is " +
           "combined with another predicate via OR. Sort-merge joins, residual (non-equi) join " +
           "conditions, computed (non-column) join keys, and NOT IN combined with OR fall back " +
           "to Spark.")
@@ -425,8 +425,8 @@ object CometConf extends ShimCometConf {
       "range",
       defaultValue = false,
       notes = Some(
-        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in native " +
-          "code, so the operators above them can run natively. It is off by default because " +
+        "When enabled, Comet generates the rows of `spark.range` and SQL `range()` in Rust, " +
+          "so the operators above them can run in Comet. It is off by default because " +
           "it can be slower than Spark when those operators are only cheap expressions, such " +
           "as a filter, which Spark compiles together with the range into one loop"))
   val COMET_EXEC_EMPTY_RELATION_ENABLED: ConfigEntry[Boolean] =
@@ -439,41 +439,40 @@ object CometConf extends ShimCometConf {
       defaultValue = false,
       notes = Some(
         "Only takes effect on Spark 3.5 and later. Spark 3.4 has no MergeRowsExec. On Spark " +
-          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; native " +
+          "4.1 and later, stock V2 writers retain Spark MergeRowsExec for MergeSummary; Comet's " +
           "MergeRows is used only where the enclosing Comet write path preserves that contract."))
 
   val COMET_EXEC_IN_MEMORY_CACHE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.exec.inMemoryCache.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether to enable Comet native scans and fused Spark reads of in-memory cached tables. " +
-          "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
-          "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
-          "Comet writes the rows straight into Arrow batches for the cache instead of " +
-          "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
-          "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
-          "At startup, this setting also decides " +
-          "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
-          "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
-          "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
-          "shuffle managers while Comet shuffle is enabled. " +
-          "Because spark.sql.cache.serializer is a " +
-          "static config, the cached format is fixed for the application, and disabling this " +
-          "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
-          "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
-          "support are always cached in Spark's default " +
-          "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
-          "compression, and a scan copies out only the buffers of the columns it " +
-          "projected, so the unselected ones are never decompressed. Eligible Spark " +
-          "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
-          "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
-          "costs can still make wide numeric reads slower than Spark's default cache. With " +
-          "spark.kryo.registrationRequired=true, the plugin installs it only if Kryo has " +
-          "registered Comet's cached batch, as " +
-          "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
-          "creating the SparkContext, because Kryo would otherwise reject a cached block as " +
-          "soon as it is serialized, including the disk half of the default " +
-          "MEMORY_AND_DISK storage level.")
+      .doc("Whether to enable Comet scans and fused Spark reads of in-memory cached tables. " +
+        "Requires spark.comet.enabled=true. On Spark 4.0 and later, it also decides how an " +
+        "adaptive cached plan is built: when the final stage ends in a Spark row operator, " +
+        "Comet writes the rows straight into Arrow batches for the cache instead of " +
+        "having Spark fill its own column vectors first. On Spark 3.4, AQE cannot coalesce the " +
+        "shuffle partitions of a union that Comet runs with a cached relation in one branch. " +
+        "At startup, this setting also decides " +
+        "whether CometDriverPlugin installs Comet's cache serializer, which stores cached " +
+        "data in Arrow format. The plugin installs it only if spark.comet.enabled and " +
+        "spark.comet.exec.enabled are also enabled at startup, and only with one of Comet's " +
+        "shuffle managers while Comet shuffle is enabled. " +
+        "Because spark.sql.cache.serializer is a " +
+        "static config, the cached format is fixed for the application, and disabling this " +
+        "or spark.comet.enabled at runtime sends cached scans back to Spark's execution path " +
+        "without the fused reader. Relations whose schema Comet's Arrow writer does not " +
+        "support are always cached in Spark's default " +
+        "format. Each cached batch is stored as one Arrow IPC record batch with per-buffer " +
+        "compression, and a scan copies out only the buffers of the columns it " +
+        "projected, so the unselected ones are never decompressed. Eligible Spark " +
+        "whole-stage codegen consumers read cached vectors directly when vectorized cache " +
+        "reading is enabled; other Spark row consumers use a reusable row buffer. Decoding " +
+        "costs can still make wide numeric reads slower than Spark's default cache. With " +
+        "spark.kryo.registrationRequired=true, the plugin installs it only if Kryo has " +
+        "registered Comet's cached batch, as " +
+        "spark.kryo.registrator=org.apache.comet.CometKryoRegistrator does when set before " +
+        "creating the SparkContext, because Kryo would otherwise reject a cached block as " +
+        "soon as it is serialized, including the disk half of the default " +
+        "MEMORY_AND_DISK storage level.")
       .booleanConf
       .createWithDefault(false)
 
@@ -522,9 +521,9 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.columnarToRow.native.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether to enable native columnar to row conversion. When enabled, Comet will use " +
+        "Whether to enable columnar to row conversion in Rust. When enabled, Comet will use " +
           "native Rust code to convert Arrow columnar data to Spark UnsafeRow format instead " +
-          "of the JVM implementation. The native conversion carries a fixed JNI cost per batch " +
+          "of the JVM implementation. The Rust conversion carries a fixed JNI cost per batch " +
           "and is slower than the JVM implementation for small batches.")
       .booleanConf
       .createWithDefault(false)
@@ -579,9 +578,9 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.nativeArrowPythonUDF.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental: execute Spark 4.1+ scalar @arrow_udf functions inside the Comet native " +
-          "pipeline via PyO3. Requires a native library built with the python-udf Cargo feature " +
-          "and a compatible Python/PyArrow installation on every executor.")
+        "Experimental: execute Spark 4.1+ scalar @arrow_udf functions inside a Rust-implemented " +
+          "Comet plan via PyO3. Requires a native library built with the python-udf Cargo " +
+          "feature and a compatible Python/PyArrow installation on every executor.")
       .booleanConf
       .createWithDefault(false)
 
@@ -594,9 +593,10 @@ object CometConf extends ShimCometConf {
   val COMET_MEMORY_LOG_INTERVAL: ConfigEntry[Long] = conf("spark.comet.memory.logInterval")
     .category(CATEGORY_TUNING)
     .doc(
-      "How often each executor logs its native memory usage at INFO level while Comet native " +
-        "plans are running: the bytes the native allocator has handed out, the bytes reserved " +
-        "in Comet's memory pools, and the Arrow memory Comet holds on the JVM side. The " +
+      "How often each executor logs its native memory usage at INFO level while Comet's " +
+        "Rust-implemented plans are running: the bytes the Rust allocator has handed out, " +
+        "the bytes reserved in Comet's memory pools, and the Arrow memory Comet holds on the " +
+        "JVM side. The " +
         "difference between the first two is native memory that the pools are not accounting " +
         "for. The executor logs one line per interval however many tasks are " +
         "running, and one more after the last plan finishes. It logs a warning when the " +
@@ -605,7 +605,7 @@ object CometConf extends ShimCometConf {
         "executor also sends its samples to the driver, which writes the one with the most " +
         "untracked memory and the last of every minute to the event log, as " +
         "CometExecutorMemoryUsage events. This is an " +
-        "executor setting, read when an executor starts its first Comet native plan, so it " +
+        "executor setting, read when an executor starts its first Rust-implemented plan, so it " +
         "must be set when the application is submitted. An invalid value disables the log " +
         s"with a warning. Set to 0 to disable. $TUNING_GUIDE.")
     .timeConf(TimeUnit.MILLISECONDS)
@@ -621,7 +621,7 @@ object CometConf extends ShimCometConf {
           "Note that this requires setting `spark.shuffle.manager` to " +
           "`org.apache.spark.sql.comet.execution.shuffle.CometShuffleManager` or " +
           "`org.apache.spark.sql.comet.execution.shuffle.CometCelebornShuffleManager`. " +
-          "Celeborn requires explicit native mode and compatible application settings. " +
+          "Celeborn requires explicit `native` mode and compatible application settings. " +
           "`spark.shuffle.manager` must be set before starting the Spark application and " +
           "cannot be changed during the application.")
       .booleanConf
@@ -632,8 +632,8 @@ object CometConf extends ShimCometConf {
       .withAlternative(s"$COMET_EXEC_CONFIG_PREFIX.shuffle.directRead.enabled")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "When enabled, native operators that consume shuffle output will read " +
-          "compressed shuffle blocks directly in native code, bypassing Arrow FFI. " +
+        "When enabled, Rust-implemented operators that consume shuffle output will read " +
+          "compressed shuffle blocks directly in Rust, bypassing Arrow FFI. " +
           "Applies to both native shuffle and JVM columnar shuffle. " +
           "Requires spark.comet.shuffle.enabled to be true.")
       .booleanConf
@@ -655,7 +655,7 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.broadcast.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether to force enabling broadcasting for Comet native operators. " +
+        "Whether to force enabling broadcasting for Comet operators. " +
           "Comet broadcast feature will be enabled automatically by " +
           "Comet extension. But for unit tests, we need this feature to force enabling it " +
           "for invalid cases. So this config is only used for unit test.")
@@ -715,7 +715,7 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.aggregate.skipPartial.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental opt-in: let a native partial aggregate stop aggregating once its input " +
+        "Experimental opt-in: let a Comet partial aggregate stop aggregating once its input " +
           "looks mostly distinct, and send the rest of the task's rows to the shuffle " +
           "unaggregated. Only applies to partial aggregates that feed Comet native shuffle " +
           "and whose aggregate functions, if any, are all single-argument COUNT. The check " +
@@ -728,13 +728,12 @@ object CometConf extends ShimCometConf {
   val COMET_EXEC_JOIN_DYNAMIC_FILTER_ENABLED: ConfigEntry[Boolean] =
     conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Experimental opt-in: use a completed native hash join build's key domain to prune " +
-          "eligible native Parquet row groups and filter probe batches before the hash probe. " +
-          "Supports inner joins with one direct signed integer key and one native partition " +
-          "per input, including both Spark build sides. The probe filter remains active " +
-          "when reader pruning is unavailable. Unsupported joins retain their existing " +
-          "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
+      .doc("Experimental opt-in: use a completed Comet hash join build's key domain to prune " +
+        "eligible row groups in native Parquet scans and filter probe batches before the hash " +
+        "probe. Supports inner joins with one direct signed integer key and one DataFusion " +
+        "partition per input, including both Spark build sides. The probe filter remains " +
+        "active when reader pruning is unavailable. Unsupported joins retain their existing " +
+        "execution path. Filters do not cross Spark exchanges or JVM/Arrow boundaries.")
       .booleanConf
       .createWithDefault(false)
 
@@ -742,7 +741,7 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.join.dynamicFilter.allowDeterministicFilterPushdown")
       .category(CATEGORY_EXEC)
       .doc(
-        "Allow native join runtime filters to reach Parquet readers through deterministic " +
+        "Allow Comet's join runtime filters to reach Parquet readers through deterministic " +
           "residual predicates. Requires spark.comet.exec.join.dynamicFilter.enabled. " +
           "This can skip expression errors on rows eliminated before the residual runs, " +
           "including division-by-zero and ANSI cast errors. Errors on retained rows and " +
@@ -757,10 +756,10 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.topK.fusion.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Experimental opt-in: run an eligible local TopK in the same native execution as its " +
-          "Parquet scan. Supports one direct signed integer sort key. This changes the local " +
-          "execution pipeline and can reduce scan/TopK overlap, so it may be slower for some " +
-          "workloads.")
+        "Experimental opt-in: run an eligible local TopK in the same Rust-implemented plan as " +
+          "its Parquet scan. Supports one direct signed integer sort key. This changes the " +
+          "local execution pipeline and can reduce scan/TopK overlap, so it may be slower for " +
+          "some workloads.")
       .booleanConf
       .createWithDefault(false)
 
@@ -769,9 +768,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Experimental opt-in: use a local TopK heap's improving threshold to prune " +
-          "eligible native Parquet input. Requires spark.comet.exec.topK.fusion.enabled. " +
+          "eligible native Parquet scan input. Requires spark.comet.exec.topK.fusion.enabled. " +
           "Supports one direct signed integer sort key. Thresholds are local to each " +
-          "native execution and do not cross Spark exchanges or JVM/Arrow boundaries. " +
+          "Rust-implemented plan and do not cross Spark exchanges or JVM/Arrow boundaries. " +
           "Unsupported readers retain ordinary TopK execution.")
       .booleanConf
       .createWithDefault(false)
@@ -781,10 +780,10 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.nativeUdf.enabled")
       .category(CATEGORY_EXEC)
       .doc(
-        "Whether native UDF libraries may be loaded. A native UDF is a shared library that " +
+        "Whether Rust UDF libraries may be loaded. A Rust UDF is a shared library that " +
           "runs with the full privileges of the JVM process, so an operator who does not want " +
           "any can turn the feature off. When false, `CometNativeUDF.register` fails on the " +
-          "driver, and a plan that names a native UDF library fails on the executor rather " +
+          "driver, and a plan that names a Rust UDF library fails on the executor rather " +
           "than loading it.")
       .booleanConf
       .createWithDefault(true)
@@ -794,7 +793,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.nativeUdf.allowedPaths")
       .category(CATEGORY_EXEC)
       .doc(
-        "A comma-separated list of directories that native UDF libraries may be loaded from. " +
+        "A comma-separated list of directories that Rust UDF libraries may be loaded from. " +
           "When set, a library is loaded only if its path is absolute and, after symlinks and " +
           "`..` are resolved, lies under one of these directories, which are themselves " +
           "resolved the same way. A path outside them fails on the driver at registration and " +
@@ -812,9 +811,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc("Whether to route Spark `ScalaUDF` expressions through Comet's " +
         "Arrow-direct codegen dispatcher. When enabled, a supported ScalaUDF is compiled into " +
-        "a per-batch kernel that reads and writes Arrow vectors directly from native " +
-        "execution. When disabled, plans containing a ScalaUDF fall back to Spark for the " +
-        "enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
+        "a per-batch kernel that reads and writes Arrow vectors directly from inside a " +
+        "Rust-implemented plan. When disabled, plans containing a ScalaUDF fall back to " +
+        "Spark for the enclosing operator. The same dispatcher backs the regex family (`rlike`, " +
         "`regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`) so " +
         "those route through it by default as well.")
       .booleanConf
@@ -833,13 +832,13 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_SHUFFLE)
       .doc(
         "Whether to allow nested types (struct, array, map) as hash partitioning keys in " +
-          "Comet native shuffle. Comet's native Murmur3 kernel hashes nested types " +
+          "Comet native shuffle. Comet's Rust Murmur3 kernel hashes nested types " +
           "recursively and shares that kernel, and Spark's seed, with the `hash` expression, " +
           "so partition assignment matches Spark. A map key additionally requires the " +
           "`mapsort` normalization that Spark 4.0 and later insert, so maps are rejected on " +
           "earlier versions. Disabled by default until the performance of the nested hashing " +
           "paths has been measured: shapes whose leaves are not primitives, such as " +
-          "`array<struct<...>>`, fall back to a per-element code path in the native hasher " +
+          "`array<struct<...>>`, fall back to a per-element code path in the Rust hasher " +
           "rather than a vectorized one.")
       .booleanConf
       .createWithDefault(false)
@@ -931,7 +930,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "When enabled, Comet will convert a Spark `ShuffleExchangeExec` to a Comet columnar " +
           "shuffle even when its child is a non-Comet (Spark) plan. Disable to leave such " +
-          "shuffles as native Spark shuffles, restricting Comet shuffle to cases where the " +
+          "shuffles as Spark's built-in shuffles, restricting Comet shuffle to cases where the " +
           "child is already a Comet plan.")
       .booleanConf
       .createWithDefault(true)
@@ -1051,9 +1050,9 @@ object CometConf extends ShimCometConf {
       .withAlternative("spark.comet.columnar.shuffle.batch.size")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Batch size when writing out sorted spill files on the native side. A value larger " +
+        "Batch size when writing out sorted spill files on the Rust side. A value larger " +
           "than the batch size (i.e., `spark.comet.batchSize`) is capped at the batch size, so " +
-          "that the native operators after the shuffle do not receive larger batches than " +
+          "that the Comet operators after the shuffle do not receive larger batches than " +
           "expected.")
       .intConf
       .checkValue(v => v > 0, "Batch size must be positive")
@@ -1148,14 +1147,14 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.shuffle.rss.maxInFlightBytes")
       .category(CATEGORY_SHUFFLE)
       .doc(
-        "Maximum shuffle bytes admitted concurrently by native Comet map attempts sharing " +
-          "an executor-side remote shuffle client. Admission includes native encoding " +
-          "scratch and overlapping native, JNI, and remote shuffle frame copies. " +
+        "Maximum shuffle bytes admitted concurrently by Comet native shuffle map attempts " +
+          "sharing an executor-side remote shuffle client. Admission includes Rust-side " +
+          "encoding scratch and overlapping Rust, JNI, and remote shuffle frame copies. " +
           "A frame must fit its codec and Arrow workspace as well as its encoded bytes; " +
           "ordinary uncompressed frames need approximately seven times their size plus " +
           "schema and transport overhead. Compressed frames also reserve workspace for " +
           "their uncompressed data. Admission is acquired before encoding. " +
-          "Encrypted native RSS is not supported; " +
+          "Encrypted native shuffle to a remote shuffle service is not supported; " +
           "use ordinary Spark shuffle when spark.io.encryption.enabled is true.")
       .bytesConf(ByteUnit.BYTE)
       .checkValue(
@@ -1167,12 +1166,11 @@ object CometConf extends ShimCometConf {
   val COMET_DEBUG_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.debug.enabled")
       .category(CATEGORY_EXEC)
-      .doc(
-        "Whether to enable debug mode for Comet. " +
-          "When enabled, Comet will do additional checks for debugging purpose. For example, " +
-          "validating array when importing arrays from JVM at native side. Note that these " +
-          "checks may be expensive in performance and should only be enabled for debugging " +
-          "purpose.")
+      .doc("Whether to enable debug mode for Comet. " +
+        "When enabled, Comet will do additional checks for debugging purpose. For example, " +
+        "validating arrays on the Rust side before exporting them to the JVM. Note that these " +
+        "checks may be expensive in performance and should only be enabled for debugging " +
+        "purpose.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1205,7 +1203,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide a tree representation of " +
-          "the native query plan before execution and again after execution, with " +
+          "the DataFusion query plan before execution and again after execution, with " +
           "metrics.")
       .booleanConf
       .createWithDefault(false)
@@ -1232,7 +1230,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When this setting is enabled, Comet will provide logging explaining the reason(s) " +
-          "why a query stage cannot be executed natively. Set this to false to " +
+          "why a query stage cannot run in Comet. Set this to false to " +
           "reduce the amount of logging.")
       .booleanConf
       .createWithDefault(false)
@@ -1252,9 +1250,9 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC_EXPLAIN)
       .doc(
         "When enabled, Comet logs the plan it would have executed, with a coverage " +
-          "summary, to the driver log and then lets Spark execute the query unchanged. Native " +
-          "planning failures are not detected, so the coverage can be optimistic. Requires " +
-          "`spark.comet.exec.enabled=true`.")
+          "summary, to the driver log and then lets Spark execute the query unchanged. " +
+          "Planning failures on the Rust side are not detected, so the coverage can be " +
+          "optimistic. Requires `spark.comet.exec.enabled=true`.")
       .booleanConf
       .createWithDefault(false)
 
@@ -1263,11 +1261,11 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TESTING)
       .doc(
         "Test-only. When enabled, Comet throws if it declines to convert an operator that it " +
-          "could otherwise have converted (all children are already native) without recording a " +
-          "fallback reason on the operator or on any of its expressions. Without this check, a " +
-          "serde that returns `None` and forgets to state a reason silently produces a generic " +
-          "'<operator> is not supported' message instead of a visible failure. Enabled for all " +
-          "Comet test suites via `CometTestBase`.")
+          "could otherwise have converted (all children are already Rust-implemented) without " +
+          "recording a fallback reason on the operator or on any of its expressions. Without " +
+          "this check, a serde that returns `None` and forgets to state a reason silently " +
+          "produces a generic '<operator> is not supported' message instead of a visible " +
+          "failure. Enabled for all Comet test suites via `CometTestBase`.")
       .internal()
       .booleanConf
       .createWithDefault(false)
@@ -1276,15 +1274,15 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.testing.strictTimestampLabels.enabled")
       .category(CATEGORY_TESTING)
       .doc(
-        "Test-only. When enabled, Comet fails a query whose native plan labels a timestamp " +
-          "with a different timezone than Comet's convention, which is `UTC` for " +
-          "`TimestampType` and no timezone for `TimestampNTZType`. Every native output batch " +
-          "is checked against the Spark output types, and the casts that scans and the native " +
-          "shuffle writer would otherwise apply to repair a label fail instead. A label never " +
-          "changes the values, so comparing results cannot detect it, but inside a native plan " +
-          "a wrong label breaks comparisons and type coercion, and a missing one makes kernels " +
-          "read the values as wall-clock time. Enabled for all Comet test suites via " +
-          "`CometTestBase`.")
+        "Test-only. When enabled, Comet fails a query whose Rust-implemented plan labels a " +
+          "timestamp with a different timezone than Comet's convention, which is `UTC` for " +
+          "`TimestampType` and no timezone for `TimestampNTZType`. Every output batch of such " +
+          "a plan is checked against the Spark output types, and the casts that scans and the " +
+          "native shuffle writer would otherwise apply to repair a label fail instead. A label " +
+          "never changes the values, so comparing results cannot detect it, but inside a " +
+          "Rust-implemented plan a wrong label breaks comparisons and type coercion, and a " +
+          "missing one makes kernels read the values as wall-clock time. Enabled for all " +
+          "Comet test suites via `CometTestBase`.")
       .internal()
       .booleanConf
       .createWithDefault(false)
@@ -1318,7 +1316,7 @@ object CometConf extends ShimCometConf {
     conf("spark.comet.exec.memoryPool")
       .category(CATEGORY_TUNING)
       .doc(
-        "The type of memory pool to be used for Comet native execution when running Spark in " +
+        "The type of memory pool to be used by Comet's Rust code when running Spark in " +
           "off-heap mode. Available pool types are `greedy_unified` and `fair_unified`. " +
           s"$TUNING_GUIDE.")
       .stringConf
@@ -1373,7 +1371,7 @@ object CometConf extends ShimCometConf {
       .doc("Test-only. When set, the Comet driver plugin registers a query listener that " +
         "records every Iceberg write the application runs, the writer that ran it (Comet's " +
         "native writer, the JVM writer behind Comet's split operator, or Spark's own V2 write) " +
-        "and the reasons Comet recorded for not writing natively, as JSON lines in this " +
+        "and the reasons Comet recorded for not using its native writer, as JSON lines in this " +
         "directory. `dev/ci/summarize-iceberg-writes.py` summarizes them. The Iceberg Spark " +
         "test jobs set it through the environment variable so the Iceberg diffs need no change.")
       .stringConf
@@ -1410,15 +1408,16 @@ object CometConf extends ShimCometConf {
   val COMET_CONVERT_BROADCAST_BUILD_SIDE_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.convert.broadcastBuildSide.enabled")
       .category(CATEGORY_EXEC)
-      .doc("When enabled, Comet converts a file or V2 scan that it cannot scan natively (for " +
+      .doc("When enabled, Comet converts a file or V2 scan that it has no native scan for (for " +
         "example an ORC source) to Arrow when that scan feeds a broadcast join's build side and " +
-        "every scan on the probe side is already native, so the broadcast join runs natively " +
-        "over the large probe. The build side is usually small (auto-broadcasts are capped by " +
-        "the broadcast threshold), so the row to Arrow copy is usually cheap - though an " +
-        "explicit BROADCAST hint or a selective filter above the scan can make it larger. With " +
-        "dynamic partition pruning the dimension is also read a second time for the pruning " +
-        "subquery. Parquet, JSON, CSV and Text scans are converted only by their own " +
-        "`spark.comet.convert` configs. Set this to false to keep such build sides on Spark.")
+        "every scan on the probe side is already a native scan, so the broadcast join runs in " +
+        "Comet over the large probe. The build side is usually small (auto-broadcasts are " +
+        "capped by the broadcast threshold), so the row to Arrow copy is usually cheap - " +
+        "though an explicit BROADCAST hint or a selective filter above the scan can make it " +
+        "larger. With dynamic partition pruning the dimension is also read a second time for " +
+        "the pruning subquery. Parquet, JSON, CSV and Text scans are converted only by their " +
+        "own `spark.comet.convert` configs. Set this to false to keep such build sides on " +
+        "Spark.")
       .booleanConf
       .createWithDefault(true)
 
@@ -1437,7 +1436,7 @@ object CometConf extends ShimCometConf {
         "Parquet files may contain unsigned 8-bit integers (UINT_8) which Spark maps to " +
           "ShortType. When this config is true (default), Comet falls back to Spark for " +
           "ShortType columns because we cannot distinguish signed INT16 (safe) from unsigned " +
-          "UINT_8 (may produce different results). Set to false to allow native execution of " +
+          "UINT_8 (may produce different results). Set to false to allow Comet to read " +
           "ShortType columns if you know your data does not contain unsigned UINT_8 columns " +
           s"from improperly encoded Parquet files. $COMPAT_GUIDE.")
       .booleanConf
@@ -1482,7 +1481,7 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_EXEC)
       .doc(
         "Whether to enable Comet metrics reporting through Spark's external monitoring system. " +
-          "When enabled, Comet exposes metrics such as native operators, Spark operators, " +
+          "When enabled, Comet exposes metrics such as Comet operators, Spark operators, " +
           "queries planned, transitions, and acceleration ratio. These metrics can be " +
           "visualized through tools like Grafana when a metrics sink (e.g., Prometheus) is " +
           "configured. Disabled by default because Spark plan traversal adds overhead and " +
@@ -1500,11 +1499,11 @@ object CometConf extends ShimCometConf {
     conf(s"spark.hadoop.$COMET_LIBHDFS_SCHEMES_KEY")
       .category(CATEGORY_SCAN)
       .doc(
-        "Defines filesystem schemes (e.g., hdfs, webhdfs) that the native side accesses " +
+        "Defines filesystem schemes (e.g., hdfs, webhdfs) that Comet's Rust code accesses " +
           "via libhdfs, separated by commas. Valid only when built with hdfs-opendal feature " +
           "enabled. Read from the Hadoop configuration, so it must be set before the " +
-          "SparkSession is created. A scheme listed only through a reader option is not read " +
-          "natively. libhdfs reads the settings of a listed scheme, such as " +
+          "SparkSession is created. A native scan does not read a scheme listed only through " +
+          "a reader option. libhdfs reads the settings of a listed scheme, such as " +
           "`fs.<scheme>.impl`, from the executor's `core-site.xml`.")
       .stringConf
       .createOptional
@@ -1533,8 +1532,8 @@ object CometConf extends ShimCometConf {
       .category(CATEGORY_TUNING)
       .doc(
         "The maximum amount of data (in bytes) stored inside the temporary directories " +
-          "used by native operators when spilling. Applied to each Comet native plan " +
-          "separately, and a Spark task can run more than one native plan at a time, so an " +
+          "used by Rust-implemented operators when spilling. Applied to each Rust-implemented " +
+          "plan separately, and a Spark task can run more than one such plan at a time, so an " +
           "executor running N concurrent tasks may use more than N times this value on shared " +
           "local disks. Once the limit is reached, further spills will fail and the query will " +
           "error out.")
@@ -1546,9 +1545,9 @@ object CometConf extends ShimCometConf {
     conf(s"$COMET_EXEC_CONFIG_PREFIX.spill.compression.codec")
       .category(CATEGORY_TUNING)
       .doc(
-        "The codec used to compress the files that native sorts, aggregations, and joins " +
-          "spill to disk. lz4 and zstd are supported, and none disables compression. zstd " +
-          "writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
+        "The codec used to compress the files that Rust-implemented sorts, aggregations, and " +
+          "joins spill to disk. lz4 and zstd are supported, and none disables compression. " +
+          "zstd writes smaller files than lz4 but uses more CPU. Comet's shuffle writers use " +
           s"${COMET_SHUFFLE_COMPRESSION_CODEC.key} instead. $TUNING_GUIDE.")
       .stringConf
       .checkValues(Set("lz4", "zstd", "none"))
@@ -1560,7 +1559,7 @@ object CometConf extends ShimCometConf {
       .doc(
         "Development and testing configuration option to allow DataFusion configs set in " +
           "Spark configuration settings starting with `spark.comet.datafusion.` to be passed " +
-          "into native execution.")
+          "into DataFusion.")
       .booleanConf
       .createWithDefault(false)
 

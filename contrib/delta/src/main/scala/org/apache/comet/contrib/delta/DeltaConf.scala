@@ -75,7 +75,7 @@ object DeltaConf {
         "When true (default), the Delta contrib falls back to Spark's Delta reader on " +
           "any Delta protocol feature it doesn't yet support. When false, the contrib " +
           "raises an error instead -- useful for tests that want to assert the native " +
-          "path is reachable for a particular query.")
+          "Delta scan is reachable for a particular query.")
       .booleanConf
       .createWithDefault(true)
 

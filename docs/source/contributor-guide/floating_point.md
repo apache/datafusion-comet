@@ -44,8 +44,8 @@ include a NaN with the sign bit set.
 | Scala `==`, for boxed values (`BoxesRunTime.equals`)        | Equal                     | A NaN equals nothing, not even another NaN                 | Scala sets and maps of `Any`, such as `collect_set`'s buffer before Spark 4.2                                                                                                                             |
 | `java.lang.Double.compare`                                  | `-0.0` sorts before `0.0` | As in SQL ordering                                         | An ascending `sort_array` of elements that cannot be null, in Spark's generated code                                                                                                                      |
 
-Some functions changed rules in a Spark release, so a native path has to follow the Spark version
-it runs against:
+Some functions changed rules in a Spark release, so a native implementation has to follow the
+Spark version it runs against:
 
 - `collect_set` keys its buffer with Scala's `==` before Spark 4.2, so `-0.0` and `0.0` are one
   value and every NaN is a value of its own. Spark 4.2 normalizes NaN and `-0.0` first and keys the
@@ -84,9 +84,9 @@ normalize the values, or compare them with the helpers below.
 NaNs with the sign bit set are the normal case on x86-64, not a corner case. Every NaN that
 arithmetic produces at run time, such as `sqrt(-1)` or `Infinity - Infinity`, is
 `0xfff8000000000000` in both Rust and the JVM on x86-64, while aarch64 produces
-`0x7ff8000000000000`. Spark hides the difference through `doubleToLongBits`. A native path that
-compares raw values puts those NaNs below every other value, so a query that passes on an Apple
-Silicon laptop can fail on a Linux x86 cluster.
+`0x7ff8000000000000`. Spark hides the difference through `doubleToLongBits`. A native
+implementation that compares raw values puts those NaNs below every other value, so a query that
+passes on an Apple Silicon laptop can fail on a Linux x86 cluster.
 
 ## Where Comet applies the rules
 
@@ -117,7 +117,7 @@ normalized and the output keeps the original values.
 - `create_normalized_key_expr` in `native/core/src/execution/planner.rs` normalizes sort keys,
   window order and partition keys, and the partition keys of `WindowGroupLimit`, so that Arrow's
   sort orders them the Spark way.
-- `spark_comparison` in `native/spark-expr/src/array_funcs/nested_comparison.rs` builds every native
+- `spark_comparison` in `native/spark-expr/src/array_funcs/nested_comparison.rs` builds every Rust
   `=`, `<>`, `<=>`, `<`, `<=`, `>`, `>=` and `IS DISTINCT FROM`, whichever operator evaluates it. It
   compares the operands as they are, without normalized copies: `FLOAT` and `DOUBLE` with
   `compare_float_arrays` and `compare_float_array_scalar`, and arrays and structs with
@@ -141,9 +141,9 @@ normalized and the output keeps the original values.
 
 ### Spark version differences
 
-Rules that depend on the Spark version are decided in Scala. The serde either chooses the native
-path or passes a flag to native code, as `Mode`'s `normalize_neg_zero` does. Where a patch release
-changed the rule, check the runtime version down to the patch with
+Rules that depend on the Spark version are decided in Scala. The serde either decides whether to use
+the native implementation or passes a flag to native code, as `Mode`'s `normalize_neg_zero` does.
+Where a patch release changed the rule, check the runtime version down to the patch with
 `Utils.majorMinorPatchVersion(SPARK_VERSION)`, as `ArraySetSupport` in `arrays.scala` does.
 
 Until an expression has a native implementation that follows its rule, report it `Incompatible`
@@ -201,7 +201,7 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
 - Nest the values in arrays and structs, two levels deep, and make the nested NaN a sign-bit one.
 - When arithmetic produces the NaN, run with ANSI mode both on and off
   (`-- ConfigMatrix: spark.sql.ansi.enabled=false,true`), because division and remainder take
-  different native paths.
+  different code paths in Rust.
 - Where the rule changed in a Spark release, gate the fixtures with `MinSparkVersion` or
   `MaxSparkVersion`, and add the `run-all-spark-profiles` label to the pull request. CI pins one
   patch release per Spark line, so when a patch release changed the rule, also test the routing in

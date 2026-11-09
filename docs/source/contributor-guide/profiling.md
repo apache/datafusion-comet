@@ -27,12 +27,12 @@ you are investigating.
 
 | Tool                                                                           | JVM Frames | Native (Rust) Frames | Install Required | Best For                                                                       |
 | ------------------------------------------------------------------------------ | ---------- | -------------------- | ---------------- | ------------------------------------------------------------------------------ |
-| [async-profiler](https://github.com/async-profiler/async-profiler)             | Yes        | Yes                  | Yes              | End-to-end Comet profiling with unified JVM + native flame graphs              |
+| [async-profiler](https://github.com/async-profiler/async-profiler)             | Yes        | Yes                  | Yes              | End-to-end Comet profiling with unified JVM + Rust flame graphs                |
 | [Java Flight Recorder (JFR)](https://docs.oracle.com/en/java/javase/17/jfapi/) | Yes        | No                   | No (JDK 11+)     | GC pressure, allocations, thread contention, I/O — any JVM-level investigation |
 | [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph)                | No         | Yes                  | Yes              | Isolated Rust micro-benchmarks without a JVM                                   |
 
 **Recommendation:** Use **async-profiler** when profiling Spark queries with Comet enabled —
-it is the only tool that shows both JVM and native frames in a single flame graph.
+it is the only tool that shows both JVM and Rust frames in a single flame graph.
 Use **JFR** when you need rich JVM event data (GC, locks, I/O) without installing anything.
 Use **cargo-flamegraph** when working on native code in isolation via `cargo bench`.
 
@@ -260,7 +260,7 @@ Here is the flamegraph for this example:
 ### Use wall-clock profiling to spot JNI boundary overhead
 
 When profiling Comet with async-profiler, `wall` mode is often more revealing than `cpu`
-because it captures time spent crossing the JNI boundary, waiting for native results,
+because it captures time spent crossing the JNI boundary, waiting for results from the Rust side,
 and blocked on I/O — none of which show up in CPU-only profiles.
 
 ```shell
@@ -276,7 +276,7 @@ objects are created during data transfer between JVM and native code:
 $ASYNC_PROFILER_HOME/bin/asprof -e alloc -d 60 -f alloc-profile.html <pid>
 ```
 
-Look for allocations in `CometExecIterator` (native to JVM output), `CometArrowStream` (JVM to native
+Look for allocations in `CometExecIterator` (Rust-to-JVM output), `CometArrowStream` (JVM-to-Rust
 input export), and Arrow vector classes.
 
 ### Isolate Rust-only performance issues
@@ -289,8 +289,8 @@ cd native
 cargo flamegraph --root --bench <benchmark_name>
 ```
 
-### Correlating JVM and native frames
+### Correlating JVM and Rust frames
 
 In async-profiler flame graphs, native Rust frames appear below JNI entry points like
 `Java_org_apache_comet_Native_*`. Look for these transition points to understand how
-time is split between Spark's JVM code and Comet's native execution.
+time is split between Spark's JVM code and Comet's Rust code.

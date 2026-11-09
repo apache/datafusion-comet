@@ -50,7 +50,7 @@ appropriate label from the table below.
 | Label               | Color  | Description                                                                          | Examples                                                              |
 | ------------------- | ------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------- |
 | `priority:critical` | Red    | Data corruption, silent wrong results, security vulnerabilities                      | Wrong aggregation results, FFI data corruption, incorrect cast output |
-| `priority:high`     | Orange | Crashes, panics, segfaults, major functional breakage affecting production workloads | Native engine panic, JVM segfault, NPE on supported code path         |
+| `priority:high`     | Orange | Crashes, panics, segfaults, major functional breakage affecting production workloads | Rust panic, JVM segfault, NPE on supported code path                  |
 | `priority:medium`   | Yellow | Functional bugs, performance regressions, broken features that have workarounds      | Missing expression support, writer feature gaps, excessive spilling   |
 | `priority:low`      | Green  | Minor issues, test-only failures, tooling, CI flakes, cosmetic issues                | Flaky CI test, build script edge case, documentation generator bug    |
 
@@ -60,7 +60,7 @@ Use this decision tree:
 
 1. **Can this bug cause silent wrong results?** If yes → `priority:critical`. These are the most
    dangerous bugs because users may not notice the incorrect output.
-2. **Does this bug crash the JVM or native engine?** If yes → `priority:high`. Crashes are
+2. **Does this bug crash the JVM or native code?** If yes → `priority:high`. Crashes are
    disruptive but at least visible to the user.
 3. **Does this bug break a feature or cause significant performance degradation?** If yes →
    `priority:medium`. The user can work around it (e.g., falling back to Spark) but it impacts
@@ -85,7 +85,7 @@ help contributors find bugs in their area of expertise.
 | Label              | Description                               |
 | ------------------ | ----------------------------------------- |
 | `area:writer`      | Native writer (Parquet and other formats) |
-| `area:shuffle`     | Shuffle (JVM and native)                  |
+| `area:shuffle`     | Shuffle (JVM and native shuffle)          |
 | `area:aggregation` | Hash aggregates, aggregate expressions    |
 | `area:scan`        | Data source scan (Parquet, CSV, Iceberg)  |
 | `area:expressions` | Expression evaluation                     |
@@ -150,7 +150,7 @@ When fixing correctness bugs, always add a regression test that verifies the out
 
 ### Crash Bugs (`priority:high`)
 
-These are bugs where the native engine panics, segfaults, or throws an unhandled exception.
+These are bugs where native code panics, segfaults, or throws an unhandled exception.
 Common patterns include:
 
 - **All-scalar inputs:** Some expressions assume at least one columnar input and panic when all

@@ -22,12 +22,12 @@ under the License.
 Cast operations in Comet fall into three levels of support:
 
 - **C (Compatible)**: The results match Apache Spark
-- **I (Incompatible)**: Comet's native cast may produce different results from Apache Spark for some inputs. By
+- **I (Incompatible)**: Comet's Rust cast may produce different results from Apache Spark for some inputs. By
   default, Comet instead runs Spark's own code-generated cast inside the Comet pipeline, so the results match Spark.
-  Setting `spark.comet.expression.Cast.allowIncompatible=true` selects the native cast, but this is not recommended
+  Setting `spark.comet.expression.Cast.allowIncompatible=true` selects the Rust cast, but this is not recommended
   for production use.
-- **U (Unsupported)**: Comet does not provide a native version of this cast, so it runs Spark's own code-generated
-  cast inside the Comet pipeline.
+- **U (Unsupported)**: Comet does not provide a native implementation of this cast, so it runs Spark's own
+  code-generated cast inside the Comet pipeline.
 - **N/A**: Spark does not support this cast.
 
 Incompatible and unsupported casts fall back to Spark only when Comet's codegen dispatcher cannot handle them (for
@@ -98,15 +98,15 @@ Supported input formats match Spark exactly:
 
 ## Date to Timestamp
 
-Comet's native `CAST(date AS TIMESTAMP)` is compatible with Spark. The cast interprets each
-date as midnight in the session timezone and converts to a UTC epoch value. DST transitions
-are handled correctly, including spring-forward gaps (where midnight may not exist) and
+Comet's native `CAST(date AS TIMESTAMP)` implementation is compatible with Spark. The cast
+interprets each date as midnight in the session timezone and converts to a UTC epoch value. DST
+transitions are handled correctly, including spring-forward gaps (where midnight may not exist) and
 fall-back ambiguity (where Comet picks the earlier/DST occurrence, matching Spark's
 `LocalDate.atStartOfDay(zoneId)` behavior).
 
 ## Date to TimestampNTZ
 
-Comet's native `CAST(date AS TIMESTAMP_NTZ)` is compatible with Spark. The cast is
+Comet's native `CAST(date AS TIMESTAMP_NTZ)` implementation is compatible with Spark. The cast is
 timezone-independent: each date is converted to midnight as pure arithmetic
 (`days * 86,400,000,000` microseconds) with no session timezone offset applied. The result
 is the same regardless of the session timezone setting.
@@ -115,8 +115,8 @@ is the same regardless of the session timezone setting.
 
 In Legacy mode, `CAST(date AS INT)`, `CAST(date AS LONG)`, and casts to all other numeric
 types (Boolean, Byte, Short, Float, Double, Decimal) always return `NULL`. Comet handles
-this by short-circuiting to a null literal during query planning, so no native execution
-is needed. In ANSI and Try modes, Spark rejects these casts at analysis time (before
+this by short-circuiting to a null literal during query planning, so no cast runs at
+execution time. In ANSI and Try modes, Spark rejects these casts at analysis time (before
 execution reaches Comet). The short-circuit applies only to a top-level cast. See
 [Complex Types](#complex-types) for `DATE` values inside structs and maps.
 
@@ -138,7 +138,7 @@ The result is always a wall-clock timestamp with no timezone conversion or DST a
 
 ## TimestampNTZ Casts
 
-Comet supports the following `TIMESTAMP_NTZ` casts natively:
+Comet supports the following `TIMESTAMP_NTZ` casts in Rust:
 
 | Cast                               | Compatible | Notes                                                             |
 | ---------------------------------- | ---------- | ----------------------------------------------------------------- |
@@ -155,7 +155,7 @@ the same result regardless of the session timezone.
 
 ## Date to String
 
-Comet's native `CAST(date AS STRING)` is compatible with Spark. Years below 1000 are
+Comet's native `CAST(date AS STRING)` implementation is compatible with Spark. Years below 1000 are
 zero-padded to four digits (e.g. year 999 renders as `0999-01-01`). Years above 9999 are
 rendered without truncation. The cast is timezone-independent.
 
@@ -164,7 +164,7 @@ rendered without truncation. The cast is timezone-independent.
 Casting a `DecimalType` with a negative scale to `StringType` is marked as incompatible when
 `spark.sql.legacy.allowNegativeScaleOfDecimal` is `false` (the default). When that config is
 disabled, Spark cannot create negative-scale decimals, so by default Comet runs Spark's
-code-generated cast instead of the native one.
+code-generated cast instead of the Rust one.
 
 When `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, the cast is compatible. Comet matches
 Spark's behavior of using Java `BigDecimal.toString()` semantics, which produces scientific
@@ -179,11 +179,11 @@ integer types to a negative-scale `DecimalType`. Comet reports these as unsuppor
 routes them through the JVM codegen dispatcher (Spark's own generated code) inside the Comet
 pipeline, so the results match Spark exactly.
 
-The native kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
+The Rust kernels align scale by computing `10^|scale|` in fixed-point arithmetic, which
 overflows when the scale is negative. See
 [#5013](https://github.com/apache/datafusion-comet/issues/5013).
 
-All other cast directions to and from negative-scale decimals run natively: `FloatType` and
+All other cast directions to and from negative-scale decimals run in Rust: `FloatType` and
 `DoubleType`, `StringType` in both directions (subject to the config gate described above),
 casts from a negative-scale decimal to `BooleanType`, and widening to another `DecimalType`.
 Casts from `BooleanType` to a `DecimalType` route through the dispatcher at any scale, which is
@@ -210,12 +210,12 @@ support level as casting `INT` to `BIGINT`.
 
 The following casts are exceptions to these rules:
 
-- `ARRAY<DATE>` can only be cast natively to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
+- `ARRAY<DATE>` can only be cast in Rust to `ARRAY<INT>` or `ARRAY<STRING>`. Casts to other array
   types are unsupported.
 - A cast from a `DATE` struct field or map value to a numeric or boolean type is unsupported. In
   Legacy mode these casts always return `NULL` (see [Date to Numeric Types](#date-to-numeric-types)).
 - When `spark.sql.legacy.castComplexTypesToString.enabled=true`, casts from arrays, structs, and
-  maps to `STRING` are unsupported, because Comet's native cast only produces Spark's default
+  maps to `STRING` are unsupported, because Comet's Rust cast only produces Spark's default
   string format.
 
 In Try mode, a cast between maps fails with an error when a key cannot be cast, where Spark returns
@@ -227,8 +227,9 @@ casts that Spark accepts under `TRY_CAST`, such as narrowing `BIGINT` to `INT`. 
 
 Casting a `DecimalType` with a negative scale, which Spark only creates when
 `spark.sql.legacy.allowNegativeScaleOfDecimal=true`, to `ByteType`, `ShortType`, `IntegerType`
-or `LongType` is not supported natively in any eval mode. The native kernels divide by
-`10^scale`, which overflows for a negative scale, so Comet leaves the cast to Spark.
+or `LongType` is not supported in Rust in any eval mode. The Rust kernels divide by
+`10^scale`, which overflows for a negative scale, so Comet runs Spark's own code-generated cast
+instead.
 
 ## Legacy Mode
 

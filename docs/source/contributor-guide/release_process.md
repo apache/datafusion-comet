@@ -349,7 +349,7 @@ git push apache 0.13.0-rc1
 #### A note on workspace cleanliness
 
 The `build-release-comet.sh` script does not build Comet from your local checkout. It resolves the requested
-branch to a single commit when it starts, and builds the Docker images, the native binaries (inside the Docker
+branch to a single commit when it starts, and builds the Docker images, the native libraries (inside the Docker
 containers) and the jars from fresh clones of the repository at that commit. The script itself is the only file it
 uses from your checkout, so uncommitted changes and stale build output elsewhere in your working tree cannot end up
 in the release artifacts (see [#2232](https://github.com/apache/datafusion-comet/issues/2232) for how a stale
@@ -376,7 +376,7 @@ The `build-release-comet.sh` script will create a docker image for each architec
 to build the platform specific binaries. These builder images are created every time this script is run.
 The branch or tag to build is required, and the script optionally allows overriding the repository. For a release,
 always build from the release candidate tag created in the previous step. The tag is resolved to a single commit when
-the script starts, and the builder images, the native binaries and the final uber jar are all built from that commit.
+the script starts, and the builder images, the native libraries and the final uber jar are all built from that commit.
 Only the script itself comes from your local checkout, so the branch you have checked out does not matter.
 
 ```shell

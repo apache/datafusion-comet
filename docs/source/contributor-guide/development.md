@@ -30,8 +30,8 @@ under the License.
 
 ## Threading Architecture
 
-Comet's native execution runs on a shared tokio multi-threaded runtime. Understanding this
-architecture is important because it affects how you write native operators and JVM callbacks.
+Comet's native plans run on a shared tokio multi-threaded runtime. Understanding this
+architecture is important because it affects how you write Rust operators and JVM callbacks.
 
 ### How execution works
 
@@ -51,7 +51,7 @@ the Spark task instead of ending its output early.
 `pull_input_batches()` to feed data from the JVM into the ScanExec and ShuffleScanExec operators,
 whose streams register the poll's waker and are woken by the refill. The stream is polled with a
 waker that also sets a flag. If the flag is still clear when the pull returns, the stream is
-waiting on native I/O, and the thread parks until a waker fires instead of busy-polling. If it is
+waiting on I/O in Rust, and the thread parks until a waker fires instead of busy-polling. If it is
 set, the loop polls again. It checks the flag rather than trusting the thread's parker because the
 pull can run another Comet plan on the same thread, and that plan's `block_on()` shares the parker
 and can consume the wake-up meant for the outer loop.
@@ -428,8 +428,8 @@ from a clean IntelliJ configuration:
    On Apple Silicon, the selected JDK architecture must match the native Rust target. Verify that
    `file "$JAVA_HOME/lib/server/libjvm.dylib"` reports `arm64`.
 
-5. Build the profile once from the command line so generated sources and native artifacts are in
-   place:
+5. Build the profile once from the command line so generated sources and the native library are
+   in place:
 
    ```sh
    PROFILES="-Pspark-4.0" make release
@@ -438,7 +438,7 @@ from a clean IntelliJ configuration:
    The `spark-4.0` profile sets the Scala 2.13 properties, and every profile targets Java 17. If you
    need to be explicit, use `PROFILES="-Pspark-4.0 -Pscala-2.13" make release`.
 
-   If the native build previously used a different JDK, clear Cargo's cached JNI link path before
+   If the Rust build previously used a different JDK, clear Cargo's cached JNI link path before
    rebuilding:
 
    ```sh
@@ -715,8 +715,8 @@ If you add a new Comet Scala Test suite, you must add it to the `suite` matrix i
 - `.github/workflows/pr_build_linux.yml`
 - `.github/workflows/pr_build_macos.yml`
 
-Each file contains a `suite` matrix with named groups such as `fuzz`, `shuffle`, `parquet`, `csv`,
-`exec`, `expressions`, and `sql`. Add your new suite's fully qualified class name to the
+Each file contains a `suite` matrix with four named groups: `scans`, `shuffle`, `exec`, and
+`expressions`. Add your new suite's fully qualified class name to the
 appropriate group. For example, if you add a new expression test suite, add it to the
 `expressions` group:
 
@@ -730,15 +730,12 @@ appropriate group. For example, if you add a new expression test suite, add it t
 
 Choose the group that best matches the area your test covers:
 
-| Group         | Covers                                                     |
-| ------------- | ---------------------------------------------------------- |
-| `fuzz`        | Fuzz testing and data generation                           |
-| `shuffle`     | Shuffle operators and related exchange behavior            |
-| `parquet`     | Parquet read/write and native reader tests                 |
-| `csv`         | CSV native read tests                                      |
-| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\* |
-| `expressions` | Expression evaluation, casts, and Comet SQL Tests          |
-| `sql`         | SQL-level behavior tests                                   |
+| Group         | Covers                                                      |
+| ------------- | ----------------------------------------------------------- |
+| `scans`       | Parquet, CSV and Iceberg reads and writes, and fuzz testing |
+| `shuffle`     | Shuffle operators and related exchange behavior             |
+| `exec`        | Execution operators, joins, aggregates, plan rules, TPC-\*  |
+| `expressions` | Expression evaluation, casts, and Comet SQL Tests           |
 
 **Important:** The suite lists in both workflow files must stay in sync. The `preflight` job in
 `.github/workflows/ci.yml` runs `dev/ci/check-suites.py` on every pull request. It scans for all

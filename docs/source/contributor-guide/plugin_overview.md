@@ -89,12 +89,12 @@ conversion produces. Each phase is described below.
 
 ### Phase 1: CometScanRule
 
-`CometScanRule` replaces any Parquet scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
+`CometScanRule` replaces supported scans with Comet operators. There are different paths for Spark v1 and v2 data sources.
 
-When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for v2
-data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. In both cases, Comet replaces Spark's Parquet
-reader with a custom vectorized Parquet reader. This is similar to Spark's vectorized Parquet reader used by the v2
-Parquet data source but leverages native code for decoding Parquet row groups directly into Arrow format.
+When reading from Parquet v1 data sources, Comet replaces `FileSourceScanExec` with a `CometScanExec`, and for CSV
+and Iceberg v2 data sources, `BatchScanExec` is replaced with `CometBatchScanExec`. Operator conversion then turns
+these into native scans. The native Parquet scan reads files with DataFusion's Parquet reader, which decodes Parquet
+row groups directly into Arrow format.
 
 Comet only supports a subset of data types and will fall back to Spark's scan if unsupported types
 exist. Comet can still accelerate the rest of the query execution in this case because `CometSparkToColumnarExec` will

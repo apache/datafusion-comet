@@ -225,7 +225,7 @@ blocks. `DecodedBatchCoalescer` groups eligible small decoded batches before FFI
 `Utils.serializeBatches`. The read RDD is copied with the same dependency and AQE partition
 specifications, so other consumers of a reused shuffle keep their original reader. Grouping is
 bounded as described in [Memory Management](memory_management.md). Task completion releases
-pending native batches, exported Arrow batches, and the raw stream.
+batches still pending in the Rust coalescer, exported Arrow batches, and the raw stream.
 
 **JVM decode**, used when direct read does not apply:
 

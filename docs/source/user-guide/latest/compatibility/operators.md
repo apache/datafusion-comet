@@ -22,56 +22,56 @@ under the License.
 ## Observations
 
 `CollectMetricsExec`, used by `DataFrame.observe`, preserves Spark's observation counters while
-passing the original Arrow batches between native operators. Metric expressions still execute
+passing the original Arrow batches between Comet operators. Metric expressions still execute
 in Spark over row views of each batch; the data is not copied into a row-based pipeline.
 Spark retains ownership of accumulator publication, observation listeners, resets and snapshots.
 
-This path requires native input and is enabled by `spark.comet.exec.collectMetrics.enabled`.
-Observations retain Spark execution when a consumer can stop reading mid-batch. This includes
-limits, joins, `Dataset.mapPartitions`, replacement sampling at a nonpositive rate, and external
-actions such as `foreachPartition` or `rdd.take`, which do not introduce a physical-plan node.
-The final row iterator is therefore
+This path requires input from the Comet pipeline and is enabled by
+`spark.comet.exec.collectMetrics.enabled`. Observations retain Spark execution when a consumer can
+stop reading mid-batch. This includes limits, joins, `Dataset.mapPartitions`, replacement sampling
+at a nonpositive rate, and external actions such as `foreachPartition` or `rdd.take`, which do not
+introduce a physical-plan node. The final row iterator is therefore
 treated as potentially partial, even when the eventual action reads all rows. A local sort or
 aggregate does not remove this restriction: an external consumer may never request its output,
-so Spark may leave its input unread while native stream setup fetches a batch.
+so Spark may leave its input unread while stream setup in Rust fetches a batch.
 
 A materializing shuffle or broadcast exchange allows columnar observations in its producer
-subtree, unless another short-circuiting consumer intervenes. This preserves native observation
+subtree, unless another short-circuiting consumer intervenes. This preserves columnar observation
 in aggregation and shuffle pipelines while keeping counters aligned with Spark's consumption.
 Direct observations and write pipelines without such an exchange retain Spark collection;
 writer nodes alone do not enable columnar observations.
 
 ## Empty Relations
 
-On Spark 4.0 and later, Comet supports `EmptyRelationExec` as a native input. It is enabled by
-default and can be disabled with `spark.comet.exec.emptyRelation.enabled=false`. The operator
-preserves Spark's output attributes and zero partitions; the eliminated logical subtree is not
-executed.
+On Spark 4.0 and later, Comet supports `EmptyRelationExec` as an input to the Comet pipeline. It is
+enabled by default and can be disabled with `spark.comet.exec.emptyRelation.enabled=false`. The
+operator preserves Spark's output attributes and zero partitions; the eliminated logical subtree
+is not executed.
 
-Supported parent joins and aggregates remain eligible for native execution. Global aggregates
+Supported parent joins and aggregates can still run in Comet. Global aggregates
 still return one row (`COUNT = 0`, `SUM = NULL`), and grouped aggregates return no rows. Independent
 operator restrictions and aggregate buffer compatibility checks still apply.
 
-A native Parquet write over a native empty relation stays native. Like Spark's writer, it runs one
-task for the empty input, so the output still gets a schema-only Parquet file that readers can
-infer the schema from.
+A native Parquet write over a Comet empty relation stays in the Comet pipeline. Like Spark's writer,
+it runs one task for the empty input, so the output still gets a schema-only Parquet file that
+readers can infer the schema from.
 
 ## In-Memory Cache
 
 Comet can store cached relations (`df.cache()`, `CACHE TABLE`) in Arrow format and scan them
-natively. This is experimental and disabled by default; see [In-Memory Cache](../in-memory-cache.md)
-for how to enable it. Comet does not replace a `spark.sql.cache.serializer` that the application
-has already set. Relations whose schema Comet's Arrow writer does not support are cached in
-Spark's default format, and their scans fall back to Spark. Reads that feed Spark operators rather
-than Comet operators can be slower than Spark's cache.
+in the Comet pipeline. This is experimental and disabled by default; see
+[In-Memory Cache](../in-memory-cache.md) for how to enable it. Comet does not replace a
+`spark.sql.cache.serializer` that the application has already set. Relations whose schema Comet's
+Arrow writer does not support are cached in Spark's default format, and their scans fall back to
+Spark. Reads that feed Spark operators rather than Comet operators can be slower than Spark's cache.
 
 With Kryo and `spark.kryo.registrationRequired=true`, Comet needs its Kryo registrator whether or
 not the cache is enabled; see [Kryo serialization](../installation.md#kryo-serialization).
 
 ## Sampling
 
-Comet runs `SampleExec` natively when sampling is performed without replacement, which covers
-`DataFrame.sample`, SQL `TABLESAMPLE`, and `DataFrame.randomSplit`. The native implementation
+Comet runs `SampleExec` in Rust when sampling is performed without replacement, which covers
+`DataFrame.sample`, SQL `TABLESAMPLE`, and `DataFrame.randomSplit`. The Rust implementation
 reproduces Spark's per-row `XORShiftRandom` draw sequence, so for a given seed it selects the same
 rows as Spark.
 
@@ -81,7 +81,7 @@ order than Spark, such as a join or an aggregate, the result is still a valid sa
 expected size, but not necessarily the same rows.
 
 Sampling with replacement (`df.sample(withReplacement = true, ...)`) falls back to Spark, because
-it draws from a Poisson distribution that Comet does not implement natively
+it draws from a Poisson distribution that Comet does not implement in Rust
 ([#5109](https://github.com/apache/datafusion-comet/issues/5109)).
 
 ## Sort
@@ -89,7 +89,7 @@ it draws from a Poisson distribution that Comet does not implement natively
 Spark orders a null element of an array sort key, or a null field of a struct sort key, below
 every other value, whatever the root key's `NULLS FIRST` or `NULLS LAST`. Comet compares nested
 values by Spark's order and applies the requested null placement only to the root key. Sort,
-TopK, and ranking window order keys run natively under both default and nondefault null orders
+TopK, and ranking window order keys run in Comet under both default and nondefault null orders
 ([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
 searches boundaries over a nullable nested key still runs on Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
@@ -106,19 +106,19 @@ accumulator, following the decimal SUM implementation, is tracked in
 This fallback applies to the whole aggregate operator: a single wide-decimal `AVG` or `TRY_AVG`
 also moves sibling aggregates such as `MIN`, `MAX`, `COUNT`, and `SUM` to Spark. Both partial and
 final aggregate operators stay in Spark, including when a shuffle separates them. Narrower
-ungrouped decimal averages remain eligible for native execution.
+ungrouped decimal averages can still run in Comet.
 
-Grouped decimal `AVG` remains eligible for native execution with hash aggregation. With Spark's
+Grouped decimal `AVG` can still run in Comet with hash aggregation. With Spark's
 object aggregation, decimal `AVG` and `TRY_AVG` fall back when their intermediate sum has precision
 38, because Spark's object buffer can recover after an intermediate overflow. As with the ungrouped
-case, the whole aggregate operator falls back. Native finalization can raise an
+case, the whole aggregate operator falls back. Comet's finalization can raise an
 ANSI overflow for a group that Spark would never consume after `LIMIT`; this error-timing difference
 is documented under [known divergences](index.md#known-result-value-divergences).
 
 ## Sort Aggregation
 
-Comet runs `SortAggregateExec` natively when Comet shuffle is enabled and Comet supports every
-aggregate in it. The native aggregate keeps the grouping-key output order that Spark relies on.
+Comet runs `SortAggregateExec` in Rust when Comet shuffle is enabled and Comet supports every
+aggregate in it. Comet's aggregate keeps the grouping-key output order that Spark relies on.
 
 Decimal `sum` and `avg` over input precision 28 or more keep a running sum at precision 38, which
 can overflow even when the final sum fits. Whether Spark's sort aggregation recovers from such an
@@ -134,7 +134,7 @@ Both results are valid under Spark's semantics for these functions.
 
 ## Hash Join
 
-Spark plans `NOT IN` as a null-aware anti join, and the native hash join builds it on Spark's
+Spark plans `NOT IN` as a null-aware anti join, and Comet's hash join builds it on Spark's
 streamed side without keeping that side's order. When Spark reports the streamed side as ordered,
 for example the output of a window, a sort-merge join, or a cached table sorted within its
 partitions, Comet falls back to Spark for the join, so that a sort Spark removed above it on the
@@ -143,12 +143,12 @@ strength of that order is not lost.
 ### Output Order
 
 Spark reports the sort order of a hash join's streamed side as the join's own, and drops a sort
-above the join that this order satisfies. Comet's native hash joins keep that order where Comet can
+above the join that this order satisfies. Comet's hash joins keep that order where Comet can
 show that it holds. That includes a left or right outer join over a streamed side that was sorted
-outside the native plan, such as a sorted relation read from the [in-memory cache](#in-memory-cache).
+outside the Rust plan, such as a sorted relation read from the [in-memory cache](#in-memory-cache).
 
-Comet passes the order to the native join as sort keys, and an outer join needs at least the first
-key to be one that Comet can express natively. Declaring any leading part of the order keeps the
+Comet passes the order to its Rust join as sort keys, and an outer join needs at least the first
+key to be one that Comet can express. Declaring any leading part of the order keeps the
 rows in place, so the join does not need the rest. An outer join whose first sort key Comet cannot
 express falls back to Spark and records a fallback reason (see
 [Understanding Comet Plans](../understanding-comet-plans.md)), because Comet cannot tell whether
@@ -156,7 +156,7 @@ an operator above the join relies on the order.
 
 An outer join falls back to Spark when Comet cannot check the order Spark reports and that order
 reaches the join through an input from the JVM or through a nested loop join. Spark keeps the rows
-in the order they arrive. One such input is an RDD checkpoint. It reaches a native join only with
+in the order they arrive. One such input is an RDD checkpoint. It reaches a Comet join only with
 `spark.comet.convert.rdd.enabled=true`, which defaults to `false`. Without that setting the
 checkpoint stays a Spark input and the join stays in Spark anyway. Another is a cache written by an
 outer hash join whose own probe input was not a scan
@@ -164,17 +164,17 @@ outer hash join whose own probe input was not a scan
 join can already be out of order when it reaches the join
 ([#6898](https://github.com/apache/datafusion-comet/issues/6898)).
 
-When the order Comet cannot check comes only from another native hash join in the same plan, the
-join does not fall back. It runs natively and declares no order, since DataFusion keeps the order
+When the order Comet cannot check comes only from another Comet hash join in the same Rust plan, the
+join does not fall back. It runs in Comet and declares no order, since DataFusion keeps the order
 it can see there.
 
 ## Window Functions
 
-Comet runs `WindowExec` natively and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
+Comet runs `WindowExec` in Rust and it is enabled by default (`spark.comet.exec.window.enabled`). A broad set of
 window functions is accelerated, and any shape Comet does not support falls back to Spark rather than producing an
 incorrect result. When any single window expression in a `WindowExec` falls back, the entire operator runs on Spark.
 
-**Accelerated natively:**
+**Accelerated in Comet:**
 
 - Ranking functions: `row_number`, `rank`, `dense_rank`, `percent_rank`, `cume_dist`, `ntile`.
 - Value functions: `lag`, `lead`, `nth_value`, `first_value` (`first`), `last_value` (`last`). `IGNORE NULLS` is
@@ -187,15 +187,15 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 
 - Aggregate window functions other than the ones listed above, including the statistical aggregates
   (`stddev`, `stddev_pop`, `stddev_samp`, `var_pop`, `var_samp`, `corr`, `covar_pop`, `covar_samp`). These run
-  natively as plain aggregations but not as window functions
+  in Comet as plain aggregations but not as window functions
   ([#4766](https://github.com/apache/datafusion-comet/issues/4766)).
 - `min` / `max` on timestamp-without-time-zone, interval, or array input types, and `sum` / `avg` on year-month
   or day-time interval input types. Windowed aggregates inherit the same input-type support as the batch
   aggregates, so these fall back in both contexts.
-- `min` / `max` on string or binary input types. These run natively as plain aggregations but not as window
+- `min` / `max` on string or binary input types. These run in Comet as plain aggregations but not as window
   functions.
 - `min` / `max` on struct input types. A struct whose fields are all supported `min` / `max` types other than
-  `float` and `double` runs natively as a plain aggregation, but not as a window function. Other structs fall
+  `float` and `double` runs in Comet as a plain aggregation, but not as a window function. Other structs fall
   back in both contexts.
 - `sum` or `avg` on `DECIMAL` with a sliding (non ever-expanding) frame, because the sliding path would wrap on
   overflow instead of returning Spark's `NULL`.
@@ -205,39 +205,39 @@ incorrect result. When any single window expression in a `WindowExec` falls back
 - `RANGE` frame with an explicit offset when the `ORDER BY` column is `DECIMAL`
   ([#4834](https://github.com/apache/datafusion-comet/issues/4834)).
 - `RANGE` frame with an offset above 2144550751 days when the `ORDER BY` column is `DATE`. Spark adds the offset
-  to the date as an `Int` that wraps on overflow, while the native frame treats an overflowing bound as the edge of
+  to the date as an `Int` that wraps on overflow, while Comet's frame treats an overflowing bound as the edge of
   the partition. Smaller offsets cannot wrap for any date between 0001-01-01 and 9999-12-31
   ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array of arrays or structs, or a struct
   holding an array, such as `array(named_struct('x', x))`. DataFusion cannot compare those values to find the
   frame's bounds ([apache/datafusion#24937](https://github.com/apache/datafusion/issues/24937)). Ranking functions
-  and `ROWS` frames over the same keys run natively.
+  and `ROWS` frames over the same keys run in Comet.
 - `RANGE` frame bounded by `CURRENT ROW` when an `ORDER BY` key is an array or struct whose type can hold a null
   element or field, such as `array(x)` over a nullable `x`. DataFusion orders such a null above every other value
   when it looks for the frame's bounds, while the sort puts it first as Spark does, so a frame could run to the end
   of the partition ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). Ranking functions, `ROWS`
-  frames, and a key that cannot hold a null element or field, such as `array(coalesce(x, 0))`, run natively.
+  frames, and a key that cannot hold a null element or field, such as `array(coalesce(x, 0))`, run in Comet.
 - `first_value` / `last_value` on a `RANGE` frame with a literal offset
   ([#4835](https://github.com/apache/datafusion-comet/issues/4835)).
 - `lag` / `lead` with a non-literal default value ([#4268](https://github.com/apache/datafusion-comet/issues/4268)).
 - A `ROWS` offset that is not an integer or long, or a `RANGE` offset that is not numeric.
 - Any `PARTITION BY` or `ORDER BY` expression that Comet cannot serialize.
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation (e.g.
-  `UTF8_LCASE`). The native window finds partitions and peers by comparing keys byte by byte, which splits values
+  `UTF8_LCASE`). Comet's window finds partitions and peers by comparing keys byte by byte, which splits values
   that the collation ties.
 
-A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs natively, but over a date outside Spark's
+A `RANGE` frame with an explicit offset on a `DATE` `ORDER BY` runs in Comet, but over a date outside Spark's
 supported range of 0001-01-01 to 9999-12-31, such as one produced by `date_add` with a very large day count, the
-native frame can treat the bound as the edge of the partition where Spark compares against it
+Comet frame can treat the bound as the edge of the partition where Spark compares against it
 ([#5022](https://github.com/apache/datafusion-comet/issues/5022)).
 
 `WindowGroupLimitExec` (window-based limit pushdown for `ROW_NUMBER`, `RANK`, and `DENSE_RANK`)
-runs natively; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
+runs in Rust; it is controlled by `spark.comet.exec.windowGroupLimit.enabled` (default: true).
 
 **Falls back to Spark:**
 
 - Any `PARTITION BY` or `ORDER BY` key whose type carries a non-default `StringType` collation
-  (e.g. `UTF8_LCASE`). The native operator detects partitions and order-key peer groups by
+  (e.g. `UTF8_LCASE`). Comet's operator detects partitions and order-key peer groups by
   comparing Arrow row-encoded keys for byte equality, which splits peers that Spark ties.
 
 Floating-point `ORDER BY` keys, including floats nested in arrays and structs, are normalized
@@ -246,26 +246,26 @@ strict floating-point mode.
 
 ## MERGE INTO (MergeRowsExec)
 
-Spark `MergeRowsExec` appears as `CometMergeRows` when native execution is enabled.
+Spark `MergeRowsExec` appears as `CometMergeRows` when it runs in Comet.
 
-Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator) natively on
+Comet can run `MergeRowsExec` (Spark's row-level `MERGE INTO` dispatch operator) in Rust on
 Spark 3.5+, but it is disabled by default. Enable it with
 `spark.comet.exec.mergeRows.enabled=true`.
 
 On Spark 4.1+, stock V2 writers discover the concrete Spark `MergeRowsExec` to build
 `MergeSummary`. When a write remains on Spark's V2 writer, Comet therefore keeps that JVM node
-even when native MergeRows is enabled. Comet's split Iceberg write path can run MergeRows natively:
+even when Comet's MergeRows is enabled. Comet's split Iceberg write path can run MergeRows in Rust:
 its `IcebergCommit` collects the same eight semantic action counters and forwards them through the
 summary-aware `BatchWrite.commit` contract. Spark 4.2 uses last-attempt metrics for these counters,
 matching Spark's retry-aware summary semantics.
 
-**Cardinality validation memory use can exceed Spark's:** native MERGE cardinality validation
+**Cardinality validation memory use can exceed Spark's:** Comet's MERGE cardinality validation
 currently stores matched target row IDs in an unspillable hash set. For MERGEs with many matched
 rows per task, this can use more memory than Spark's compressed bitmap and may reach the native
 memory limit earlier than Spark. See
 [#6608](https://github.com/apache/datafusion-comet/issues/6608).
 
-**Undeclared physical output order can differ from Spark:** native execution is set-at-a-time. Within
+**Undeclared physical output order can differ from Spark:** Comet's version is set-at-a-time. Within
 an input batch it emits rows grouped by the MERGE instruction that produced them, and it processes
 the MATCHED, NOT MATCHED, then NOT MATCHED BY SOURCE groups. Spark's row-at-a-time implementation
 emits rows in input order. This is not a MERGE row-value semantic difference: an unordered table
@@ -287,7 +287,7 @@ across the whole group and report `DIVIDE_BY_ZERO` first. The same ordering diff
 between different MERGE groups, between the two projections of a `Split`, or between a cardinality
 violation and an unrelated clause-evaluation error. In these cases both engines reject the query,
 but the surfaced Spark error condition can differ. This limitation only applies to Spark versions
-where native `MergeRowsExec` is enabled.
+where Comet runs `MergeRowsExec`.
 
 ## Round-Robin Partitioning
 

@@ -42,15 +42,15 @@ Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`,
 | `to_json`           | Supported for struct inputs only, no options                                                   | `spark.comet.expression.StructsToJson.allowIncompatible`     |
 | `json_array_length` | Supported, with gaps on single-quoted JSON, unescaped control characters, and trailing content | `spark.comet.expression.LengthOfJsonArray.allowIncompatible` |
 
-When the native path is enabled but an expression or input case has no native
+When the Rust path is enabled but an expression or input case has no native
 implementation (for example `to_json` with map or array inputs, or `from_json`
 with an unsupported schema), Comet falls back to the codegen dispatcher for that
 case.
 
-## When to use the native path
+## When to use the Rust path
 
-- You want the faster native path and your inputs avoid the known compatibility
+- You want the faster Rust path and your inputs avoid the known compatibility
   gaps above.
 - Enable it per expression, for example
-  `spark.comet.expression.GetJsonObject.allowIncompatible=true`. Cases the native path
+  `spark.comet.expression.GetJsonObject.allowIncompatible=true`. Cases the Rust path
   does not cover still fall back to the codegen dispatcher.

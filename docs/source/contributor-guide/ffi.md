@@ -25,7 +25,8 @@ Comet transfers Arrow data across the JVM/native boundary in two directions:
 
 1. **JVM → Native**: Native code pulls batches from the JVM over the
    [Arrow C Stream Interface](https://arrow.apache.org/docs/format/CStreamInterface.html). The JVM exports each
-   per-partition iterator once as an `ArrowArrayStream`, and native pulls every batch through a single C callback.
+   per-partition iterator once as an `ArrowArrayStream`, and the Rust side pulls every batch through a single C
+   callback.
 2. **Native → JVM**: JVM pulls batches from native code using `CometExecIterator`, via the
    [Arrow C Data Interface](https://arrow.apache.org/docs/format/CDataInterface.html) (one `ArrowArray`/`ArrowSchema`
    pair per column of each batch).
@@ -75,11 +76,11 @@ exports once per partition:
 │  (C struct)     │
 └────────┬────────┘
          │ Arrow C Stream Interface
-         │ (native pulls each batch via the get_next callback)
+         │ (the Rust side pulls each batch via the get_next callback)
          ▼
 ┌─────────────────┐
 │    ScanExec     │ ── owns an ArrowArrayStreamReader
-│  (Rust/native)  │
+│     (Rust)      │
 └────────┬────────┘
          │
          ▼
@@ -100,9 +101,9 @@ implementation depends on the source of the data:
 - `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (retains its buffers before closing the input batch)
 
 The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
-to native `createPlan`, one slot per scan input.
+to `Native.createPlan`, one slot per scan input.
 
-Not every slot is an Arrow stream. When a native operator consumes Comet shuffle output and
+Not every slot is an Arrow stream. When a native plan consumes Comet shuffle output and
 `spark.comet.shuffle.directRead.enabled` is set, that slot carries a `CometShuffleBlockIterator` instead, and the
 compressed shuffle blocks are decoded inside the native plan by `ShuffleScanExec` rather than crossing this FFI
 boundary at all. `CometExecRDD.resolveInputObjects` classifies the slots, driven by which scan slots the serialized
@@ -121,18 +122,18 @@ panic ([apache/arrow-rs#10028](https://github.com/apache/arrow-rs/issues/10028))
 
 ### Errors from the JVM Producer
 
-Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands native only its text, so
-native fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps every
-reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of the
-native error. The task then fails with the exception Spark would have thrown, such as a `SparkArithmeticException`
-from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch never takes this path: schema
-reconciliation reads it on the JVM before the stream is exported, so what it throws propagates directly. A test of
-this path therefore has to fail a later batch.
+Arrow Java's exported stream catches whatever the reader throws in `get_next` and hands the Rust side only its text,
+so the Rust side fails the plan with a `CometNativeException` built from that text. `CometArrowStream.stream` wraps
+every reader to keep the throwable itself until the task completes, and `CometExecIterator` rethrows it in place of
+the `CometNativeException`. The task then fails with the exception Spark would have thrown, such as a
+`SparkArithmeticException` from an upstream plan. For an input of Arrow-backed `ColumnarBatch`es, the first batch
+never takes this path: schema reconciliation reads it on the JVM before the stream is exported, so what it throws
+propagates directly. A test of this path therefore has to fail a later batch.
 
 ### Schema Reconciliation
 
 `CometArrowStream.reconcileStreamSchema` advertises the stream's schema from the actual `CometVector` types in the
-first batch rather than the consumer's Spark-declared types. Native `ScanExec` already casts its input to the
+first batch rather than the consumer's Spark-declared types. The Rust `ScanExec` already casts its input to the
 declared scan-input schema in `build_record_batch`, so the truthful first-batch schema lets that cast fire; if the
 two differ, it logs one deduplicated warning naming the operator, column, and type drift.
 
@@ -142,7 +143,7 @@ No input stream carries a dictionary. `RowArrowReader` and `SparkColumnarArrowRe
 
 ### Memory Layout
 
-When a batch is transferred from JVM to native:
+When a batch is transferred from the JVM to the Rust side:
 
 ```
 JVM Heap:                           Native Memory:
@@ -162,7 +163,7 @@ Off-heap Memory:                            │
 └──────────────────┘
 ```
 
-**Key Point**: The actual data buffers are shared zero-copy; native only takes pointers to the off-heap buffers.
+**Key Point**: The actual data buffers are shared zero-copy; the Rust side only takes pointers to the off-heap buffers.
 
 ### Ownership and Lifecycle
 
@@ -170,37 +171,37 @@ For JVM columnar consumers, `CometNativeArrowSource` uses `CometArrowStream.read
 with independent vectors that retain the reader's buffers without copying the data. Closing a batch or its
 columns leaves the source reader's reusable vector structure intact for its next batch. The iterator releases
 the batch vectors when it advances, and closes the final batch, reader and allocator at task completion. A later
-native consumer's `ColumnarBatchArrowReader` retains the buffers before closing its input batch.
+native plan's `ColumnarBatchArrowReader` retains the buffers before closing its input batch.
 
-The Arrow C Stream Interface transfers ownership by reference count: native takes ownership of each imported batch,
-so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.
+The Arrow C Stream Interface transfers ownership by reference count: the Rust side takes ownership of each imported
+batch, so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.
 
 The whole per-partition stream is exported once, so the JVM allocates one `ArrowArrayStream` per partition rather
 than a per-batch, per-column `ArrowArray`/`ArrowSchema` wrapper object pair. Lifecycle is anchored at the stream: when
 `ScanExec` drops its `ArrowArrayStreamReader`, the stream's release callback fires synchronously back into the JVM
-and closes the `ArrowReader` and its `VectorSchemaRoot`, releasing the off-heap buffers. Because native holds those
-buffers until the reader drops, an operator that buffers many batches keeps the corresponding JVM-side data alive
-until then.
+and closes the `ArrowReader` and its `VectorSchemaRoot`, releasing the off-heap buffers. Because the Rust side holds
+those buffers until the reader drops, an operator that buffers many batches keeps the corresponding JVM-side data
+alive until then.
 
 ## Native → JVM Data Flow (CometExecIterator)
 
 ### Architecture
 
-When the JVM needs results from native execution:
+When the JVM needs results from a native plan:
 
 ```
 ┌─────────────────┐
 │ DataFusion Plan │
-│   (native)      │
+│     (Rust)      │
 └────────┬────────┘
          │ produces RecordBatch
          ▼
 ┌─────────────────┐
 │ prepare_output  │ ── fills one ArrowArray/ArrowSchema pair per column
-│  (Rust/native)  │
+│     (Rust)      │
 └────────┬────────┘
          │ Arrow C Data Interface
-         │ (structs allocated by the JVM, filled by native)
+         │ (structs allocated by the JVM, filled by the Rust side)
          ▼
 ┌─────────────────┐
 │   NativeUtil    │ ◄─── CometExecIterator calls Native.executePlan
@@ -240,10 +241,10 @@ numbers dictionaries from 0, so two dictionary-encoded columns would collide in 
 Arrow Java's C Data import ignores `ArrowArray.offset` at every level
 ([apache/arrow-java#88](https://github.com/apache/arrow-java/issues/88)) and reads each buffer from its start. arrow-rs
 folds a slice into the buffers for almost every type, but a sliced `BooleanArray` keeps its bit offset, and a struct
-exports offset 0 even when its children are sliced. So every array native exports to the JVM first goes through
+exports offset 0 even when its children are sliced. So every array the Rust side exports to the JVM first goes through
 `zero_offsets` (in `native/common/src/ffi_offsets.rs`), which re-slices boolean bitmaps to start at bit 0 at every
 level and shares every other buffer. `move_to_spark` applies it to executed batches and decoded shuffle blocks, and
-`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new native to JVM export path has to call it too,
+`JvmScalarUdfExpr` applies it to the inputs of the JVM UDF bridge. A new Rust-to-JVM export path has to call it too,
 or sliced booleans reach the JVM misaligned
 ([#6288](https://github.com/apache/datafusion-comet/issues/6288)).
 
@@ -262,32 +263,32 @@ Python runner rebases the same way before it sends a batch to the worker. All th
 
 ### Ownership and Lifecycle
 
-Native allocates the data, and the JVM references it without copying:
+The Rust side allocates the data, and the JVM references it without copying:
 
-- The `FFI_ArrowArray` that `move_to_spark` writes holds a reference to the column's native buffers, and its release
+- The `FFI_ArrowArray` that `move_to_spark` writes holds a reference to the column's arrow-rs buffers, and its release
   callback drops that reference.
-- On import, Arrow Java wraps each native buffer in an `ArrowBuf`. Closing the last `ArrowBuf` over an imported
-  column runs its release callback, and native frees the buffers once no Rust reference to them remains.
+- On import, Arrow Java wraps each arrow-rs buffer in an `ArrowBuf`. Closing the last `ArrowBuf` over an imported
+  column runs its release callback, and the buffers are freed once no Rust reference to them remains.
 - `CometExecIterator` closes the batch it returned when the consumer next calls `hasNext` or `next`, and on
   `close()`. A batch is therefore valid only until the consumer asks for the next one, and a consumer that keeps the
   data longer has to copy it.
 
-By the time the JVM receives a batch, native has usually stopped reserving it in the memory pool, but it stays
+By the time the JVM receives a batch, the Rust side has usually stopped reserving it in the memory pool, but it stays
 resident until the JVM closes it. See [Crossing the FFI boundary](memory_management.md#crossing-the-ffi-boundary).
 
 ## Memory Ownership Rules
 
 ### JVM → Native
 
-| Scenario  | Ownership   | Action Required                                                                                           |
-| --------- | ----------- | --------------------------------------------------------------------------------------------------------- |
-| All cases | Native owns | None; the C Stream transfers ownership by reference count. Dropping the reader releases the JVM-side data |
+| Scenario  | Ownership      | Action Required                                                                                           |
+| --------- | -------------- | --------------------------------------------------------------------------------------------------------- |
+| All cases | Rust side owns | None; the C Stream transfers ownership by reference count. Dropping the reader releases the JVM-side data |
 
 ### Native → JVM
 
-| Scenario  | Ownership                        | Action Required                                            |
-| --------- | -------------------------------- | ---------------------------------------------------------- |
-| All cases | Native allocates, JVM references | JVM must call `close()` to trigger native release callback |
+| Scenario  | Ownership                           | Action Required                                              |
+| --------- | ----------------------------------- | ------------------------------------------------------------ |
+| All cases | Rust side allocates, JVM references | JVM must call `close()` to trigger the Rust release callback |
 
 ## Further Reading
 

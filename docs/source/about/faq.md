@@ -26,11 +26,11 @@ answered here, see [Where can I ask questions or report bugs?](#where-can-i-ask-
 
 ### How does Comet compare to other open-source Spark accelerators?
 
-Several open-source projects speed up Spark by running query plans in native code. They differ in
-the engine they build on and the hardware they need.
+Several open-source projects speed up Spark by running query plans in engines outside the JVM. They
+differ in the engine they build on and the hardware they need.
 
 - [Apache Gluten](https://gluten.apache.org/) is the closest to Comet in design: a Spark plugin that
-  passes the parts of a plan it supports to a native engine, such as the C++ engine Velox. See
+  passes the parts of a plan it supports to a C++ engine, such as Velox. See
   [Comparison of Comet and Gluten](gluten_comparison.md).
 - [Apache Auron (incubating)](https://auron.apache.org/), formerly Blaze, is also a Spark plugin
   built on DataFusion. Comet is developed within the DataFusion project itself.
@@ -103,7 +103,7 @@ driver or an executor.
 ### How much memory does Comet need?
 
 Comet needs Spark's off-heap memory: without `spark.memory.offHeap.enabled=true`, Comet disables
-itself and logs a warning. Comet's native operators share the off-heap pool, sized by
+itself and logs a warning. Comet's operators share the off-heap pool, sized by
 `spark.memory.offHeap.size`, with Spark. When the pool runs out, operators that can spill, such as
 sorts, aggregations, and shuffle writes, spill to disk, and operators that cannot spill fail the
 task.
@@ -131,7 +131,7 @@ Common causes of a small speedup are:
   manager, Comet disables itself and logs a warning, unless `spark.comet.shuffle.enabled=false`, in
   which case Comet runs but every shuffle runs in Spark. See
   [Shuffle Tuning](../user-guide/latest/tuning/shuffle.md).
-- **Too little memory.** Native operators spill to disk when the off-heap pool is too small. See
+- **Too little memory.** Comet's operators spill to disk when the off-heap pool is too small. See
   [Memory Tuning](../user-guide/latest/tuning/memory.md).
 - **Little computation to accelerate.** Queries that spend most of their time reading from storage,
   listing files, or planning, or that process little data, have less to gain.
@@ -143,7 +143,7 @@ Common causes of a small speedup are:
 Not yet. Comet accelerates [Apache Iceberg](../user-guide/latest/iceberg.md) tables, with a native
 reader that is enabled by default and opt-in
 [native writes](../user-guide/latest/iceberg.md#writes). It does not accelerate scans of Delta Lake,
-Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development; see the
+Hudi, or Paimon tables, so Spark reads those. Native Delta Lake scans are in development; see the
 [roadmap](../contributor-guide/roadmap.md#delta-lake-support). Hudi and Paimon are not on the
 roadmap.
 
@@ -173,7 +173,7 @@ the code generator instead.
 
 If you have a use case that a function of one row handles poorly, such as working on the UTF-8 bytes
 of strings or calling a library that processes whole batches, please describe it in
-[#6694](https://github.com/apache/datafusion-comet/issues/6694). For native speed, see the
+[#6694](https://github.com/apache/datafusion-comet/issues/6694). To run a function in Rust, see the
 experimental [Rust UDF API](../user-guide/latest/rust_udfs.md).
 
 ### Does Comet support Structured Streaming?

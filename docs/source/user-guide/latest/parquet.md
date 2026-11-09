@@ -19,7 +19,7 @@ under the License.
 
 # Parquet
 
-Comet's Parquet scan offloads decoding to native code (Rust, through DataFusion) and produces Arrow
+Comet's Parquet scan offloads decoding to Rust (through DataFusion) and produces Arrow
 batches for the rest of the plan. Comet falls back to Spark when the scan cannot be converted, for
 example because the schema holds an unsupported type or the query uses one of the features listed
 below. When the scan falls back to Spark, enabling `spark.comet.convert.parquet.enabled` converts
@@ -92,12 +92,12 @@ reads that fail where Spark succeeds are listed in
   Resolution is tracked in [#5884](https://github.com/apache/datafusion-comet/issues/5884),
   with mixed-type behavior in [#5964](https://github.com/apache/datafusion-comet/issues/5964).
 - Invalid UTF-8 bytes in `STRING` columns. Spark permits arbitrary byte sequences in a `STRING`
-  column (for example from `CAST(X'C1' AS STRING)`), but Comet's native execution path is built on
+  column (for example from `CAST(X'C1' AS STRING)`), but the Comet pipeline is built on
   Arrow, whose string type is strictly UTF-8. Reading a Parquet file whose `STRING` column contains
   non-UTF-8 bytes fails with `Parquet error: encountered non UTF-8 data`. Disable Comet for the
   query, or cast the column to `BINARY` before persisting, if you need to preserve non-UTF-8 bytes.
-  By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-native Arrow FFI boundaries using
-  JVM-compatible replacement semantics. This covers native query input from the JVM-exported Arrow
+  By contrast, Comet decodes non-UTF-8 bytes at the JVM-to-Rust Arrow FFI boundaries using
+  JVM-compatible replacement semantics. This covers input to Rust plans from the JVM-exported Arrow
   stream (including JVM scans, shuffle reads, and `mapInArrow`), columnar-to-row conversion, and JVM
   UDF results. It does not change the native Parquet reader: rejecting invalid UTF-8 there remains
   Gap A of [#4764](https://github.com/apache/datafusion-comet/issues/4764). See
@@ -157,7 +157,7 @@ behavior.
   `Encountered error while reading file . Data type mismatches…` (note the empty path). Behavior is
   consistent across Spark versions. See
   [#4316](https://github.com/apache/datafusion-comet/issues/4316).
-- **Spark 3.x: extra `SparkException` layer in the cause chain**. The native error is translated to a
+- **Spark 3.x: extra `SparkException` layer in the cause chain**. The Rust error is translated to a
   `SparkException` whose cause is `SchemaColumnConvertNotSupportedException` (matching what Spark would
   throw); on Spark 3.x the executor / task error handling re-wraps this once more on the way back to
   the driver, producing a two-level chain (`SparkException → SparkException →
@@ -183,7 +183,7 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
 
 ## Writing
 
-Comet can also write Parquet files natively. The native Parquet writer is for testing only and
+Comet can also write Parquet files in Rust. The native Parquet writer is for testing only and
 should not be used in production. It is disabled by default and enabled with
 `spark.comet.write.parquet.enabled=true`. It handles only non-partitioned, non-bucketed writes;
 partitioned and bucketed writes fall back to Spark, as do writes with
@@ -265,9 +265,9 @@ tables have their own list under the Iceberg page's [Known Issues](iceberg.md#kn
 Storage-specific issues are listed under the [S3](datasources.md#s3-limitations) and
 [Azure](datasources.md#azure-limitations) limitations.
 
-Which entries apply depends on which native paths are enabled:
+Which entries apply depends on which of these features are enabled:
 
-| Native path    | Setting                             | Default                |
+| Feature        | Setting                             | Default                |
 | -------------- | ----------------------------------- | ---------------------- |
 | Parquet scan   | `spark.comet.scan.enabled`          | `true`                 |
 | Parquet writer | `spark.comet.write.parquet.enabled` | `false` (testing only) |

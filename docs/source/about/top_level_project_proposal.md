@@ -237,9 +237,9 @@ is built on and contributes improvements to, and with Apache Spark, which it acc
 PMC member Liang-Chi Hsieh and proposed committers Chao Sun and Huaxin Gao are members of the Spark
 PMC. Comet also integrates with Apache Parquet, Apache Iceberg, and Apache Celeborn.
 
-Apache Gluten and Apache Auron also accelerate Apache Spark with native execution. The projects
-have separate communities and different designs, and Comet's documentation includes a
-[comparison with Gluten](gluten_comparison.md).
+Apache Gluten and Apache Auron also accelerate Apache Spark by running query plans in engines
+outside the JVM. The projects have separate communities and different designs, and Comet's
+documentation includes a [comparison with Gluten](gluten_comparison.md).
 
 ### Cryptography
 

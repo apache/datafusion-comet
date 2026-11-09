@@ -19,7 +19,7 @@ under the License.
 
 # Delta Lake (experimental)
 
-Comet can execute DSv1 Delta Lake table scans natively. Reads planned by
+Comet can execute DSv1 Delta Lake table scans in Rust. Reads planned by
 delta-spark run through Comet's native Parquet scan, inheriting row-group
 pruning, page-index pruning, and filter pushdown, with deletion vectors
 applied inside the scan.
@@ -48,7 +48,7 @@ as `TIMESTAMP_NTZ` keeps the date spec), and a column read as `TIMESTAMP` takes
 the datetime spec even when the file marks it as not adjusted to UTC. Dates written with the legacy hybrid Julian/Gregorian calendar
 are rebased exactly, timestamps are rebased exactly when the file records a
 fixed UTC writer time zone, and ancient values whose calendar cannot be
-applied natively (non-UTC legacy writer zones, or files that do not declare a
+applied in Rust (non-UTC legacy writer zones, or files that do not declare a
 policy under the `EXCEPTION` read mode) raise an error rather than silently
 returning shifted values. Modern values are unaffected: dates from 1582-10-15
 onward, and timestamps from 1900-01-01T00:00:00Z onward (Spark's own

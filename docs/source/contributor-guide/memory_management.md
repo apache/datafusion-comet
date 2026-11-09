@@ -80,7 +80,7 @@ page:
 | -------------------------------------------------- | ----------- | ------------------------------------------------------------- | ----------------- |
 | Spark execution + storage (on-heap)                | JVM heap    | `spark.executor.memory` and the unified memory manager        | Yes               |
 | Spark Tungsten (off-heap)                          | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
-| Comet native (Rust global allocator)               | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
+| Comet Rust code (global allocator)                 | Native heap | `memory_limit` (see below), enforced only via the memory pool | Reservations only |
 | Comet JVM Arrow (`CometArrowAllocator`)            | Off-heap    | **Nothing**: a `RootAllocator(Long.MaxValue)`                 | No                |
 | Comet JVM shuffle pages                            | Off-heap    | `spark.memory.offHeap.size` via `TaskMemoryManager`           | Yes               |
 | Embedded Python and PyArrow (`python-udf` feature) | Native heap | **Nothing**: CPython's and PyArrow's own allocators           | No                |
@@ -103,7 +103,7 @@ allocates the bytes and in who is able to see them.
 
 **The budget is shared even though the memory is not.** `memory_limit` is derived from
 `spark.memory.offHeap.size` (see [Where Comet's budget comes from](#where-comets-budget-comes-from)),
-and in both off-heap pool types every native reservation is forwarded to Spark's off-heap execution
+and in both off-heap pool types every reservation is forwarded to Spark's off-heap execution
 pool over JNI. A native allocation therefore consumes the same accounting budget as a Tungsten page
 while occupying entirely different memory. Raising `spark.memory.offHeap.size` raises the ceiling
 for both at once, and raises the pod's memory request by the same amount.
@@ -120,13 +120,13 @@ the tasks of an executor that read it at the same time share one such copy. The 
 usage log reports the allocator's total, and the part of it charged to the import allocator
 described below, so that the overhead can be sized for it.
 
-The opt-in broadcast producer batching path also retains native decoded shuffle arrays outside
+The opt-in broadcast producer batching path also retains shuffle arrays decoded in Rust outside
 the execution pool. Each group is bounded by `min(spark.comet.batchSize, 65536)` rows, 8 MiB of
 retained/copy estimates, and 1,024 input batches, then concatenated once before Arrow export.
 Inputs and output coexist during that copy, and one decoded lookahead can be retained. The grouping
 limit therefore does not cap total reader RSS, and oversized input batches pass through unchanged.
 
-Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's native
+Sharing lowers the bytes that are resident, not the bytes that are reserved. Each task's Comet
 join reserves its whole build side, because DataFusion skips only the buffers that the same plan
 has already counted, so with N tasks sharing one copy the pool holds N times the bytes that are
 resident, and spilling behaves as it did before. The memory usage log's untracked figure,
@@ -138,10 +138,10 @@ limit warning, or clamp it to zero.
 
 Charging these buffers to Spark's off-heap pool instead was tried in
 [#5998](https://github.com/apache/datafusion-comet/pull/5998) and dropped. Spark cannot make
-Comet's native consumer release anything, and native operators fill a task's share before they
-spill, so the JVM allocation that decodes their next input batch is refused first. Refusing it
-fails the task where native would have spilled; not refusing it bounds nothing when the pool is
-full. It needs native reclaim first; see
+`NativeMemoryConsumer` release anything, and Rust-implemented operators fill a task's share before
+they spill, so the JVM allocation that decodes their next input batch is refused first. Refusing it
+fails the task where those operators would have spilled; not refusing it bounds nothing when the
+pool is full. It needs Spark to be able to reclaim memory from the Rust side first; see
 [#3873](https://github.com/apache/datafusion-comet/issues/3873).
 
 One further child, `CometArrowImportAllocator` (`comet-ffi-imports`), is what the Arrow C Data
@@ -205,7 +205,7 @@ rules below are why it is written the way it is. Each is easy to break by accide
 **`getUsed` and `spill` must stay lock-free.** Spark calls both while already holding the
 `TaskMemoryManager` monitor, which is why `NativeMemoryConsumer.getUsed` reads an `AtomicLong` and
 `spill` returns without touching guarded state. A consumer that took a monitor of its own in either
-method would risk a deadlock: a native reservation arriving over JNI on a Comet Tokio worker holds
+method would risk a deadlock: a reservation arriving over JNI on a Comet Tokio worker holds
 Spark's monitor and would wait for the consumer's, while whatever held the consumer's waited for
 Spark's. For the same reason, nothing reachable from a `spill` callback may allocate memory that
 routes back through the same consumer.
@@ -216,7 +216,7 @@ three ways and `NonFatal` catches only the first. It runs other consumers' `spil
 `SparkOutOfMemoryError`, which extends `OutOfMemoryError` and is therefore an `Error`. Separately,
 `ExecutionMemoryPool.acquireMemory` parks in `lock.wait()` when a task is below its fair share, so
 killing a task raises a plain `InterruptedException`, which `NonFatal` excludes by name. Comet
-reaches this method from native over JNI, so whatever escapes crosses the JNI boundary.
+reaches this method from the Rust side over JNI, so whatever escapes crosses the JNI boundary.
 
 **Spark exposes no per-consumer usage figure.** `TaskMemoryManager.getMemoryConsumptionForThisTask`
 is task-wide, and a consumer that reaches `acquireExecutionMemory` directly rather than through
@@ -234,7 +234,7 @@ that grant, and the only figure available for doing so is the task-wide one abov
 entry when its balance reaches zero, and an acquire that was waiting in `lock.wait()` and wakes
 afterwards throws a `NoSuchElementException` ("key not found" and the task id) instead of a grant
 ([SPARK-59444](https://issues.apache.org/jira/browse/SPARK-59444)). Releases take no task monitor,
-so another native thread or plan, or a JVM consumer of the same task, can empty the balance while an
+so another Rust thread or plan, or a JVM consumer of the same task, can empty the balance while an
 acquire waits. Both of Comet's consumers that ask Spark directly, `CometTaskMemoryManager` and the
 JVM shuffle allocator, retry that one case through `MissingTaskEntryRetry`. A missing entry means
 the task held nothing from Spark at that moment, so the failed call has no partial grant to
@@ -321,9 +321,10 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
 - Spark can force _Spark's_ consumers in the same task to spill to satisfy Comet's request.
 - The reverse does not hold. Comet registers a `NativeMemoryConsumer` with the `TaskMemoryManager`
   so that Spark has something to charge, but its `spill()` always returns `0`
-  (`CometTaskMemoryManager.java`). A Spark allocation can therefore never make a native sorter or
-  aggregate release its reservations. Native operators spill only when their _own_ `try_grow`
-  fails, so a JVM consumer that is blocked behind native reservations has no way to reclaim them.
+  (`CometTaskMemoryManager.java`). A Spark allocation can therefore never make a Comet sorter or
+  aggregate release its reservations. Rust-implemented operators spill only when their _own_
+  `try_grow` fails, so a JVM consumer that is blocked behind Comet's reservations has no way to
+  reclaim them.
 - In `try_grow`, a partial grant (`acquired < additional`) is released immediately and reported as
   `ResourcesExhausted`, which is the signal DataFusion uses to spill.
 - `grow` cannot fail, so when Spark grants less than asked the pool records the full amount anyway
@@ -333,11 +334,11 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
 
-`CometFairMemoryPool` exists because Spark cannot ask a native operator to spill. Spark limits each
-task to an even share of its off-heap pool among the tasks that hold memory from it. Once one
-operator holds its task's share, Spark refuses the task's other operators, and one that cannot
-spill, such as a sort's merge or the build side of a hash join, fails the task. The pool keeps
-memory for those operators by limiting the ones that can spill to a share of the task's, as
+`CometFairMemoryPool` exists because Spark cannot ask a Rust-implemented operator to spill. Spark
+limits each task to an even share of its off-heap pool among the tasks that hold memory from it.
+Once one operator holds its task's share, Spark refuses the task's other operators, and one that
+cannot spill, such as a sort's merge or the build side of a hash join, fails the task. The pool
+keeps memory for those operators by limiting the ones that can spill to a share of the task's, as
 DataFusion's `FairSpillPool` does over its whole pool
 ([issue #7088](https://github.com/apache/datafusion-comet/issues/7088)).
 
@@ -364,8 +365,8 @@ differences go in these directions:
   tasks than Spark does, the task's share is more than Spark will grant it, and the shares of its
   consumers that can spill can add up to more than Spark grants. That is
   [issue #7088](https://github.com/apache/datafusion-comet/issues/7088) again, so look here first
-  when a stage that mixes JVM and native operators still fails a sort's merge.
-- A task that holds a native pool but no memory, such as a native scan that feeds a JVM shuffle,
+  when a stage that mixes JVM and Rust-implemented operators still fails a sort's merge.
+- A task that holds a Comet pool but no memory, such as a native scan that feeds a JVM shuffle,
   is in Comet's count and not Spark's. Comet then divides by more tasks than Spark does, and its
   consumers that can spill spill earlier than Spark requires. Look here when a mixed workload
   spills more under `fair_unified` than under `greedy_unified`.
@@ -398,7 +399,7 @@ The pool goes by what a consumer declares, with one exception. DataFusion 55.2 r
 `OrderedFinalAggregateStream` as able to spill even when its input is sorted on every grouping key,
 as a workaround for [apache/datafusion#17334](https://github.com/apache/datafusion/issues/17334), but
 builds a spill path only for partially sorted input. Fully sorted, as in a `CometSortAggregateExec`
-over a native sort, a refusal fails the query, so the pool checks its requests only against the
+over a Comet sort, a refusal fails the query, so the pool checks its requests only against the
 pool, as it does those of a consumer that cannot spill (`limited_to_its_share` in `fair_pool.rs`).
 It still counts as a consumer that can spill when the pool divides the task's share, so a sort
 below it stays at half of the share and leaves the aggregate the other half. The partially sorted
@@ -434,8 +435,8 @@ Three details matter for tuning:
 ### Task-shared pools and their lifetime
 
 A single Spark task can run more than one native plan at a time. A native shuffle is not one of
-these cases, because its writer is planned together with the native operators that feed it. These
-operators do split a task's native work into separate plans:
+these cases, because its writer is planned together with the operators that feed it. These
+operators do split a task's work into separate native plans:
 
 - `CometUnionExec` and `CometCoalesceExec` read their children through the JVM, so the native plan
   above them and the native plans below them are separate.
@@ -477,7 +478,7 @@ removing it.
 
 ## How DataFusion consumes the pool
 
-Native operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservation` API:
+Rust-implemented operators reserve through DataFusion's `MemoryConsumer` / `MemoryReservation` API:
 
 - `try_grow(n)` may fail. Spillable operators (`ExternalSorter`, the grouped hash aggregate,
   sort-merge join) respond to a `ResourcesExhausted` error by spilling to disk and retrying. This is
@@ -538,7 +539,7 @@ out of the share that the task's operators that can spill divide.
 
 ## Crossing the FFI boundary
 
-Batches move between the JVM and native over the Arrow C Data and C Stream interfaces, which are
+Batches move between the JVM and Rust over the Arrow C Data and C Stream interfaces, which are
 zero-copy. Nothing is copied, so the _allocator_ that produced a batch and the _runtime_ that
 decides when it dies can be on opposite sides of the boundary. See [Arrow FFI](ffi.md) for the
 mechanics; what matters here is who is charged and who controls the lifetime.
@@ -548,11 +549,11 @@ accounting (if any) saw the bytes appear. Whether the buffer is _reserved_ in Co
 separate decision, made by whichever operator holds it, and that operator neither knows nor cares
 which side of the boundary the bytes came from.
 
-**JVM → native (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
+**JVM → Rust (`ScanExec`).** The JVM allocates the Arrow buffers from a child of
 `CometArrowAllocator` and exports the whole per-partition iterator once as an `ArrowArrayStream`.
 `ScanExec` imports each batch through arrow-rs's `ArrowArrayStreamReader` and keeps every column as
 an `Arc` clone of the imported buffers; the JVM decodes dictionaries before export, so there is
-nothing to unpack. Those bytes stay where Java Arrow put them and are pinned for as long as any native
+nothing to unpack. Those bytes stay where Java Arrow put them and are pinned for as long as any Rust
 reference survives. They are invisible to Spark's `TaskMemoryManager`, and `CometArrowAllocator` is
 unbounded, so nobody charged for them at allocation time. Whether they are charged _later_ depends
 on who holds them. DataFusion's `ExternalSorter` reserves `get_reserved_bytes_for_record_batch` for
@@ -562,7 +563,7 @@ buffers. So an imported batch that a sort or join has buffered _is_ reserved in 
 through a unified pool is charged to Spark. The same batch held by an operator that does not reserve
 (a projection or filter, or `ScanExec` itself between polls) is charged to nothing.
 
-**Native → JVM (`CometExecIterator`).** DataFusion produces the batch in Rust, and whether it is
+**Rust → JVM (`CometExecIterator`).** DataFusion produces the batch in Rust, and whether it is
 still reserved when it reaches the boundary depends on the producing operator. The sort's output is
 wrapped in a `ReservationStream` that shrinks the reservation by the batch's size as each batch is
 emitted, so by the time `prepare_output` sees a sorted batch its bytes are no longer reserved.
@@ -610,7 +611,7 @@ diverge for several structural reasons:
   `lz4_flex` for LZ4 and `zlib-rs` for gzip, as is `libbz2-rs-sys` despite its name, so those
   allocations do pass through `GlobalAlloc` and are counted.
 - **Batches in flight across the FFI boundary.** Reservations stop at the operator that made them.
-  Imported JVM batches are reserved only while a reserving operator holds them, and exported native
+  Imported JVM batches are reserved only while a reserving operator holds them, and exported Rust
   batches have usually been released by the time the JVM receives them yet stay resident until the
   JVM closes them (see [Crossing the FFI boundary](#crossing-the-ffi-boundary)).
 - **Overcommit.** Unlike everything above, this is not accidental. When Spark grants less than a
@@ -686,7 +687,7 @@ flowchart TB
 
 Spark's accounting covers the first group, though not in the same sense throughout it. The JVM
 heap, Tungsten pages and Comet's shuffle pages are allocated by JVM code that reports what it
-allocated. A native reservation is a number an operator declared before allocating: `try_grow`
+allocated. A Comet reservation is a number an operator declared before allocating: `try_grow`
 succeeds only once `CometTaskMemoryManager` has charged Spark's off-heap execution pool over JNI, so
 the budget really is spent, but nothing measured the bytes and the reservation is only a lower bound
 on them. The second group is outside every accounting layer.
@@ -717,7 +718,7 @@ has bounds _declared reservations_, and the sections above describe several stru
 declared reservations are a lower bound on physical usage. The known gaps, roughly in order of how
 much they matter:
 
-- **Real native usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
+- **Real memory usage is observed but not acted on.** Comet counts the bytes Rust's allocator has
   handed out, and each executor logs that count next to the pools' reservations. Nothing reads it
   at runtime, though: no operator, metric, or policy responds to it, so an executor that outgrows
   its container is still stopped only by the kill.
@@ -728,9 +729,9 @@ much they matter:
 - **Buffer and reservation lifetimes are independent across the FFI boundary.** A batch can be
   resident on either side with no reservation covering it, because reservations are made and
   withdrawn by individual operators while the bytes outlive them.
-- **Spark cannot trigger native spilling.** `NativeMemoryConsumer.spill()` returns `0`, so native
-  reservations are released only when a native operator decides to spill on its own failed
-  `try_grow`. JVM consumers in the same task can be starved behind them.
+- **Spark cannot make Rust-implemented operators spill.** `NativeMemoryConsumer.spill()` returns
+  `0`, so Comet's reservations are released only when such an operator decides to spill on its own
+  failed `try_grow`. JVM consumers in the same task can be starved behind them.
 
 [Issue #4576](https://github.com/apache/datafusion-comet/issues/4576) tracks work on the first two.
 

@@ -62,9 +62,9 @@ Example trace visualization:
 
 ## Analyzing Memory Usage
 
-The `analyze_trace` tool parses a trace log and compares the process-wide native allocation counter against
+The `analyze_trace` tool parses a trace log and compares the process-wide Rust allocation counter against
 the total memory reserved by Comet's memory pools. This is useful for detecting untracked native memory
-growth where native allocations exceed what the memory pools account for.
+growth where Rust allocations exceed what the memory pools account for.
 
 Build and run:
 
@@ -125,13 +125,13 @@ WARNING: native_allocated exceeded pool reservation at 87 sampled points:
   Total: 245.8 MB
 ```
 
-A steady excess is expected, since not every native allocation goes through a pool (Arrow IPC buffers, for
+A steady excess is expected, since not every Rust allocation goes through a pool (Arrow IPC buffers, for
 instance), and `jemalloc_allocated` additionally includes the allocator's own metadata and fragmentation. An
 excess that grows over the run, as it does from 26 MB to 171 MB above, is the signal worth chasing: that is
 memory the pool is not accounting for.
 
 Arrow memory on the JVM side is reported separately, because it is off-heap and so invisible to
-`jvm_heap_used`. Comet imports batches from native over the Arrow C Data Interface, and Arrow
+`jvm_heap_used`. Comet imports batches from the Rust side over the Arrow C Data Interface, and Arrow
 charges a buffer to whichever allocator owns it, so those imports are taken against a dedicated
 child allocator and reported as `jvm_arrow_imported`, within the `jvm_arrow_allocated` total.
 The executor's periodic memory usage log reports the same two figures.
@@ -150,8 +150,8 @@ Ownership and allocation come apart in both directions:
 
 For the same reason neither counter is a count of unique physical bytes, and `jvm_arrow_imported`
 is not guaranteed to be included in `native_allocated`. Usually the producer is Rust and the bytes
-are counted in both, but a buffer that Comet exported to native and that native passed back by
-reference is imported without the Rust allocator ever having handed it out. Finally, the two
+are counted in both, but a buffer that Comet exported to the Rust side and that the Rust side passed
+back by reference is imported without the Rust allocator ever having handed it out. Finally, the two
 counters are separate reads of process-wide state, so concurrent tasks can change them between
 samples: they are not an atomic per-query balance, and neither is a measure of RSS.
 
@@ -161,7 +161,7 @@ samples: they are not an atomic per-query balance, and neither is a measure of R
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | jvm_heap_used                    | JVM heap memory usage of live objects for the executor process                                                                                                                                                                                                 |
 | jemalloc_allocated               | Native memory usage for the executor process (requires `jemalloc` feature)                                                                                                                                                                                     |
-| jvm_arrow_allocated              | Bytes charged to Comet's Arrow allocator tree on the JVM, including buffers imported from native over the Arrow C Data Interface                                                                                                                               |
+| jvm_arrow_allocated              | Bytes charged to Comet's Arrow allocator tree on the JVM, including buffers imported from the Rust side over the Arrow C Data Interface                                                                                                                        |
 | jvm_arrow_imported               | Bytes charged to the Arrow C Data Interface import allocator, a subset of `jvm_arrow_allocated`. An allocator charge, not a measure of where the bytes were allocated; see above.                                                                              |
 | native_allocated                 | Bytes handed out by the Rust global allocator, process-wide. Approximate to within 64 KiB of un-flushed delta per live thread.                                                                                                                                 |
 | comet_memory_reserved_total      | Total memory reserved across every live Comet memory pool, process-wide, whatever the configured pool type. Counts a pool shared between execution contexts once, so unlike the per-thread counters it can be compared directly against an allocation counter. |

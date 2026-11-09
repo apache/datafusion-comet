@@ -21,7 +21,7 @@
 
 ## Overview
 
-Apache Comet is a native query accelerator for Apache Spark. It runs SQL expressions in
+Apache Comet is a query accelerator for Apache Spark. It runs SQL expressions in
 **Rust** (via Apache DataFusion) instead of the JVM, which is much faster. But there's a
 catch: when something goes wrong — say, a divide-by-zero or a type cast failure — the error
 needs to travel from Rust code all the way back to the Spark/Scala/Java world as a proper
@@ -45,7 +45,7 @@ SQL Query (Spark/Scala)
         │
         │  2. Rust deserializes the plan and registers query contexts
         ▼
-   Native execution (DataFusion / Rust)
+   Rust execution (DataFusion)
         │
         │  3. An error occurs (e.g. divide by zero)
         ▼
@@ -207,7 +207,7 @@ pub(crate) fn create_expr(&self, spark_expr: &Expr, ...) {
 
 ---
 
-## Step 3: An Error Occurs During Native Execution
+## Step 3: An Error Occurs During Rust Execution
 
 During query execution, a Rust expression might encounter something like division by zero.
 
@@ -359,8 +359,8 @@ public final class CometQueryExecutionException extends CometNativeException {
 
 ## Step 7: Scala Converts JSON Back to a Real Spark Exception
 
-`CometExecIterator.scala` is the Scala code that drives the native execution. Every time it
-calls into the native engine for the next batch of data, it catches
+`CometExecIterator.scala` is the Scala code that drives the native plan. Every time it
+calls into the Rust side for the next batch of data, it catches
 `CometQueryExecutionException` and converts it:
 
 ```scala
@@ -457,7 +457,7 @@ case "BinaryArithmeticOverflow" =>
 
 ## Step 8: The User Sees a Proper Spark Error
 
-The final exception that propagates out of Spark looks exactly like what native Spark would
+The final exception that propagates out of Spark looks exactly like what Spark on its own would
 produce for the same error, including the ANSI error code and the SQL pointer:
 
 ```

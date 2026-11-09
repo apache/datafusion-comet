@@ -43,10 +43,10 @@ limit, or to a non-positive value to convert every eligible join regardless of s
 
 A left-semi join returns each left row if any right row matches. For an unfiltered batch join
 on a single integer equality key (`=`), set `spark.comet.exec.sortMergeJoin.rightKeyReduction.enabled=true`
-to keep one copy of each repeated key per batch before the native sort. The option is off by
+to keep one copy of each repeated key per batch before the Comet sort. The option is off by
 default. The right sort must read the key column directly from a Comet shuffle. With the
-`fair_unified` memory pool, the native planner checks at first execution for memory held by another
-Spark consumer in the task and skips reduction if it finds any, logging the reason at
+`fair_unified` memory pool, Comet's Rust planner checks at first execution for memory held by
+another Spark consumer in the task and skips reduction if it finds any, logging the reason at
 debug level. This best-effort check does not cover consumers that allocate memory later.
 
 The reducer skips reduction until it has seen 8,192 rows in a partition and forwards
@@ -55,7 +55,7 @@ partition. Batches with too few repeated keys also pass through; after an unprof
 batch, reduction is only tried again on a larger batch in the same partition. The join
 reports rows entering, leaving, and bypassing reduction, plus time spent on all attempts.
 
-Left-anti joins and joins with residual conditions keep their ordinary native sort.
+Left-anti joins and joins with residual conditions keep their ordinary Comet sort.
 Extending reduction to those joins or across small batches is separate follow-up work.
 
 ### Broadcast Joins
@@ -85,10 +85,10 @@ runs in Spark, are sent uncompressed too.
 
 ### Join Runtime Filters
 
-Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental native hash join runtime
+Set `spark.comet.exec.join.dynamicFilter.enabled=true` to try experimental Comet hash join runtime
 filtering. It is disabled by default. Eligible joins are inner joins with one direct signed integer
-key (`TINYINT`, `SMALLINT`, `INT`, or `BIGINT`) and one native partition per input within each task.
-Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
+key (`TINYINT`, `SMALLINT`, `INT`, or `BIGINT`) and one DataFusion partition per input within each
+task. Both broadcast and shuffled hash joins support either Spark build side. Unsupported joins keep
 their existing execution path.
 
 Once the build completes, its key domain filters probe batches before the hash probe. Eligible
@@ -106,7 +106,7 @@ adaptations cannot fail. Nested column pruning still reads only the requested st
 with supplied file statistics also skip reader attachment. These cases still use runtime filtering
 on decoded batches.
 
-Filters stay within the task's native plan and do not propagate across Spark exchanges or JVM/Arrow
+Filters stay within the task's Rust plan and do not propagate across Spark exchanges or JVM/Arrow
 boundaries. A shuffled hash join can still filter probe batches after shuffle, but it cannot send
 its filter back to an earlier scan stage. Compare the [runtime-filter and scan metrics](../metrics.md#hash-joins)
 with the setting disabled to distinguish reduced hash-probe work from reader I/O savings.
@@ -138,7 +138,7 @@ retain their own input/output metrics.
 
 #### Join runtime filters through residual predicates
 
-Native join runtime filtering is enabled with
+Comet's join runtime filtering is enabled with
 `spark.comet.exec.join.dynamicFilter.enabled`. It can reject probe rows whose keys
 are absent from the completed build side and use eligible Parquet readers to prune
 row groups. By default, an intervening residual filter permits reader propagation
@@ -184,7 +184,7 @@ files of the same keys packed into one split, can shuffle many times more rows t
 skipping disabled. Compare the shuffle write metrics with the setting enabled and disabled before
 enabling it for a workload.
 
-Eligibility is conservative for the whole fused native plan: any unsupported partial accumulator,
+Eligibility is conservative for the whole fused Rust plan: any unsupported partial accumulator,
 Spark `PartialMerge`, or mixed-mode aggregate disables skipping in that plan. Multi-argument
 `COUNT` and other accumulators are not admitted. Distribution-required grouping-only stages
 still fully deduplicate, and non-native-shuffle plans retain ordinary aggregation.
@@ -207,8 +207,8 @@ accumulators and modes.
 
 ## Local TopK Fusion
 
-Set `spark.comet.exec.topK.fusion.enabled=true` to run an eligible local TopK in the same native
-execution as its Parquet scan. This experimental optimization is disabled by default. It currently
+Set `spark.comet.exec.topK.fusion.enabled=true` to run an eligible local TopK in the same Rust
+plan as its Parquet scan. This experimental optimization is disabled by default. It currently
 supports a direct native Parquet scan ordered by one signed integer column (`TINYINT`, `SMALLINT`,
 `INT`, or `BIGINT`). Both sort directions and null orderings are supported. Other inputs use the
 existing TopK execution path.
@@ -217,7 +217,7 @@ Each scan partition keeps enough candidates for both `LIMIT` and `OFFSET`. With 
 Comet shuffles those candidates and performs the final TopK. With one partition, it reuses the local
 ordering without building a second heap. The final stage applies the offset and output projection.
 
-Fusion reduces the work of passing scan batches between native execution blocks. Fusion alone still
+Fusion reduces the work of passing scan batches between separate Rust plans. Fusion alone still
 reads all input rows. [TopK reader pruning](#topk-reader-pruning) is enabled separately. Fusion can
 also reduce overlap between scan decoding
 and TopK processing, so some workloads may run slower. Compare enabled and disabled runs with your
@@ -258,19 +258,19 @@ See [TopK metrics](../metrics.md#local-topk).
 ## Optimizing Sorting on Floating-Point Values
 
 Comet normalizes NaN payloads and signed zeros in `FLOAT` and `DOUBLE` ordering keys, including floating-point values
-nested in arrays and structs, so `ORDER BY`, window ordering and range partitioning on them match Spark and stay native
-even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized; returned values keep their
-original NaN representation and zero sign.
+nested in arrays and structs, so `ORDER BY`, window ordering and range partitioning on them match Spark and stay in
+the Comet pipeline even with `spark.comet.exec.strictFloatingPoint=true`. Only the comparison key is normalized;
+returned values keep their original NaN representation and zero sign.
 
-A key that nests values in an array or struct whose type can hold a null element or field stays native under
-`ASC NULLS LAST` and `DESC NULLS FIRST` too: Comet separates the key's root null placement from its nested ordering
-([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that has to find a row's
-peers over such a key still falls back to Spark
+A key that nests values in an array or struct whose type can hold a null element or field stays in the Comet pipeline
+under `ASC NULLS LAST` and `DESC NULLS FIRST` too: Comet separates the key's root null placement from its nested
+ordering ([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that has to find a
+row's peers over such a key still falls back to Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)).
 
 `sort_array` sorts array elements rather than ordering rows. It follows Spark's floating-point ordering as well, so it
-also stays native with `spark.comet.exec.strictFloatingPoint=true`.
+also runs in Rust with `spark.comet.exec.strictFloatingPoint=true`.
 
-The default `array_sort` comparator also runs natively. It puts null array elements last while comparing nulls
+The default `array_sort` comparator also runs in Rust. It puts null array elements last while comparing nulls
 inside nested arrays and structs below non-null values. A custom `array_sort` comparator or an
 array with a non-default string collation continues through the JVM codegen dispatcher.

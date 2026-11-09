@@ -78,15 +78,15 @@ on push to `main`, because the queue already tested the exact tree that landed. 
 the Linux and macOS builds, which also run on push so that the dependency caches on `main` stay
 fresh: a pull request can only restore caches saved on its own branch or on `main`, and the queue's
 temporary branch takes its caches with it when it is deleted. On push the macOS build runs only its
-native build, and only when `main` has no cache entry yet for the current dependency set.
+native library build, and only when `main` has no cache entry yet for the current dependency set.
 
 That push run is for the caches and nothing else, so it runs in **cache-refresh-only** mode: only
-the three jobs that own a cache entry (the native CI build and the two TPC-H/TPC-DS jobs, the last
-two stopping before their query passes), plus the short `Lint` job the native build depends on. The
-lints, the Rust tests and the Comet test matrix are skipped, which is the difference between 587
-runner-minutes a push and about 40. If you add a job to `pr_build_linux.yml`, give it
-`if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache that `main` needs;
-`dev/ci/check-ci-config.py` fails the build if you forget.
+the three jobs that own a cache entry (the native library build and the two TPC-H/TPC-DS jobs, the
+last two stopping before their query passes), plus the short `Lint` job the native library build
+depends on. The lints, the Rust tests and the Comet test matrix are skipped, which is the
+difference between 587 runner-minutes a push and about 40. If you add a job to
+`pr_build_linux.yml`, give it `if: ${{ !inputs.cache-refresh-only }}` unless it writes a cache
+that `main` needs; `dev/ci/check-ci-config.py` fails the build if you forget.
 
 For a pull request from a fork, the pull request column's "yes" rows run on your fork rather than
 here; see [Pull requests from forks](#pull-requests-from-forks).
@@ -146,11 +146,11 @@ Some things to know:
   fork's default branch, and a run on your fork's `main` saves them only when it builds. A push to
   `main` that adds nothing to upstream, such as syncing your fork, selects no suite, so it warms
   nothing, and a branch run rebuilds the native library. A run of the PR tier on a fork with cold
-  caches took about an hour of wall time and 240 runner-minutes, of which the native build alone was
-  23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run that also
-  routes to the Spark SQL and Iceberg suites took 89 minutes and about 650 runner-minutes. Their
-  shards run in parallel with the Linux build's test matrix, but the Spark SQL job first builds its
-  own native library and test classes, which took 45 minutes.
+  caches took about an hour of wall time and 240 runner-minutes, of which the native library build
+  alone was 23 minutes. The same run with warm caches took 50 minutes and 213 runner-minutes. A run
+  that also routes to the Spark SQL and Iceberg suites took 89 minutes and about 650
+  runner-minutes. Their shards run in parallel with the Linux build's test matrix, but the Spark SQL
+  job first builds its own native library and test classes, which took 45 minutes.
 - **Scheduled runs stay upstream.** The nightly run, Miri, the stale-PR closer and the weekly
   CodeQL scan run in `apache/datafusion-comet` only. If your fork has scheduled workflows enabled they
   start no job. Miri can still be run on your fork by dispatching it.
@@ -219,9 +219,9 @@ re-run the failed jobs from the Actions page, or remove and re-apply the label.
 Use a label when a change is likely to behave differently on a version or platform the PR tier
 does not cover. Some examples:
 
-- a change to the serde, the planner, or a native operator, where the Comet test suites pass but
-  Spark's own SQL suite is the thing that would catch a behavior difference; the PR tier runs it
-  against the default profile, and `run-spark-3.5-tests` / `run-spark-4.0-tests` /
+- a change to the serde, the planner, or a Rust-implemented operator, where the Comet test suites
+  pass but Spark's own SQL suite is the thing that would catch a behavior difference; the PR tier
+  runs it against the default profile, and `run-spark-3.5-tests` / `run-spark-4.0-tests` /
   `run-spark-4.2-tests` run it against the others
 - code under `spark/src/main/spark-3.5/`, `spark-4.0/` or the shared `spark-3.x/`
   directory, or any change to `CometExprShim` and friends; `run-all-spark-profiles` runs the Comet
@@ -455,9 +455,9 @@ dev/local-ci.sh --print-config       # what it read from ci.yml and dev/ci
 
 The version defaults to the one the merge queue gates on. That, the matrix rows and the shard count
 are read from the workflow files and from `dev/ci/`, so a local shard runs what the CI shard of the
-same name runs. It prepares first (native build, Comet install, patched Spark or Iceberg source
-under `$COMET_LOCAL_CI_HOME`, default `/tmp/comet-local-ci`), then runs the tests, compiling only
-the sbt projects the selected rows need.
+same name runs. It prepares first (native library build, Comet install, patched Spark or Iceberg
+source under `$COMET_LOCAL_CI_HOME`, default `/tmp/comet-local-ci`), then runs the tests, compiling
+only the sbt projects the selected rows need.
 
 `SKIP_PREPARE=1` runs the tests only. It skips the **Comet install** too, so do not use it after
 changing Comet or the run tests the previously installed JAR and goes green regardless.
@@ -486,7 +486,7 @@ Four caveats:
   additionally sweeps the **whole** repository for POMs with no sibling JAR. That is a shared cache,
   so other projects will re-download. `--print-config` touches nothing.
 - CI is x86_64 Linux built with `-Ctarget-cpu=x86-64-v3`, so a pass elsewhere covers Scala, serde
-  and planner behavior but not x86-specific native codegen.
+  and planner behavior but not x86-specific code in the native library.
 
 The underlying steps are documented in [Spark SQL Tests](spark-sql-tests.md) and
 [Iceberg Spark Tests](iceberg-spark-tests.md), which are also where the diff-regeneration workflow

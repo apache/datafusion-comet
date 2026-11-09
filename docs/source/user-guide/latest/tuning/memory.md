@@ -33,9 +33,9 @@ overhead to cover the part of its footprint that no pool tracks. See [Configurin
 
 Comet shares an off-heap memory pool with Spark. The size of the pool is
 specified by `spark.memory.offHeap.size`. The pool is a shared _budget_ rather than a shared
-allocator: Comet's native operators allocate from the Rust heap rather than from JVM off-heap
-memory, but every reservation they make is charged against this same pool, so Comet and Spark's own
-off-heap consumers draw down one number.
+allocator: Comet's Rust-implemented operators allocate from the Rust heap rather than from JVM
+off-heap memory, but every reservation they make is charged against this same pool, so Comet and
+Spark's own off-heap consumers draw down one number.
 
 A larger pool lets the operators that can spill, such as sorts, aggregations and the shuffle writer, keep more in
 memory before they spill to disk. An operator that cannot spill fails the task when it cannot reserve the memory it
@@ -75,15 +75,15 @@ The valid pool types are:
 - `fair_unified` (default when `spark.memory.offHeap.enabled=true` is set)
 - `greedy_unified`
 
-Both pool types are shared by all the native plans in the same Spark task. A task can run more than
-one native plan at a time, for example the native operators on either side of a union or a
+Both pool types are shared by all the Rust plans in the same Spark task. A task can run more than
+one Rust plan at a time, for example the Rust-implemented operators on either side of a union or a
 coalesce. The shared pool ensures that their combined memory usage stays within the per-task limit.
 
 The `fair_unified` pool keeps memory for the operators that cannot spill, such as the final merge of a sort or the
 build side of a hash join. Spark limits each task to an even share of `spark.memory.offHeap.size` among the tasks
-using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running native plans. Within
+using it, and the pool divides `spark.memory.offHeap.size` the same way among the tasks running Rust plans. Within
 a task, it limits each operator that can spill to an even share of what the operators that cannot spill leave of the
-task's share, counting the operators of all of the task's native plans. The operators that cannot spill take what
+task's share, counting the operators of all of the task's Rust plans. The operators that cannot spill take what
 Spark grants. So an operator that can spill sometimes spills even when there is memory to spare, in order to leave it
 for the task's other operators. A limit that small can be less than one batch of wide rows, and a sort cannot spill a
 batch it has not yet reserved, so it then fails with "Not enough memory to continue external sort". Give the
@@ -143,7 +143,7 @@ offer.
 
 ## Sizing the Overhead from the Memory Usage Log
 
-While Comet native plans are running, each executor logs its native memory usage at INFO level,
+While Comet's Rust plans are running, each executor logs its native memory usage at INFO level,
 one line every 10 seconds for the whole executor:
 
 ```
@@ -152,26 +152,26 @@ Comet native memory usage: allocated 5412.3 MiB, reserved 3890.0 MiB (16 native 
 
 - `allocated` is the memory allocated through Comet's Rust global allocator and not yet freed,
   whether or not a pool tracks it. It excludes allocations made by native libraries outside that
-  allocator, including the embedded Python interpreter and PyArrow when native Arrow UDFs are
-  enabled.
+  allocator, including the Python interpreter and PyArrow that Comet embeds to run scalar Arrow
+  UDFs.
 - `reserved` is the part that Comet's memory pools have reserved from Spark's off-heap memory. It is
   charged against `spark.memory.offHeap.size`, so the container already has room for it. A pool
   sometimes has to track memory that Spark could not grant, such as a spilled batch read back from
   disk while the off-heap memory is full. `reserved` leaves that memory out, since nothing charges it
   against `spark.memory.offHeap.size`.
 - `JVM Arrow allocated` is the Arrow memory Comet holds on the JVM side, such as batches read from
-  Comet's in-memory cache, broadcast data, and batches exchanged with native code or Python workers.
-  The part imported from native was allocated by Comet's native code, so `allocated` already counts
-  it, and the rest the JVM allocated itself. A pool reserves the JVM's part only while a native
-  operator holds on to one of its batches, such as a sort buffering its input. The split follows
-  which allocator a buffer is charged to rather than where it was allocated, so treat the JVM's
-  part as an estimate.
+  Comet's in-memory cache, broadcast data, and batches exchanged with Rust code or Python workers.
+  The `imported from native` part was allocated by Comet's Rust code, so `allocated` already counts
+  it, and the rest the JVM allocated itself. A pool reserves the JVM's part only while a
+  Rust-implemented operator holds on to one of its batches, such as a sort buffering its input. The
+  split follows which allocator a buffer is charged to rather than where it was allocated, so treat
+  the JVM's part as an estimate.
 
 When the application writes an event log and runs the Comet plugin, the event log also records a
 summary of these samples; see [Reading the Memory Usage Log from the Event Log].
 
 Comet's untracked memory is what Comet holds outside the JVM heap that Spark's off-heap pool does
-not account for: `allocated`, plus the JVM Arrow figure less the part imported from native, minus
+not account for: `allocated`, plus the JVM Arrow figure less the `imported from native` part, minus
 `reserved`. It is the part of Comet's footprint that has to fit in `spark.executor.memoryOverhead`,
 alongside the JVM's own non-heap memory. To size the overhead from it:
 
@@ -184,11 +184,11 @@ alongside the JVM's own non-heap memory. To size the overhead from it:
    non-heap memory, and add the most untracked memory seen on any executor.
 3. Add a margin on top. The log can miss the true peak between samples, and none of the figures
    includes the allocator's fragmentation and retained pages, or memory allocated by native C
-   libraries such as zstd. With native Arrow UDFs, budget the embedded Python interpreter and
-   PyArrow allocations in addition to the untracked memory calculated from the log. A PyArrow
-   result buffer later imported into the JVM can appear in the `imported from native` figure that
-   the estimate subtracts, even though Rust's `allocated` does not count it. Use the executor's
-   peak resident memory to size this additional overhead.
+   libraries such as zstd. When Comet runs scalar Arrow UDFs in embedded Python, budget the
+   interpreter and PyArrow allocations in addition to the untracked memory calculated from the log.
+   A PyArrow result buffer later imported into the JVM can appear in the `imported from native`
+   figure that the estimate subtracts, even though Rust's `allocated` does not count it. Use the
+   executor's peak resident memory to size this additional overhead.
 
 For example, a 16 GiB executor derives an overhead of 1638 MiB. If the line above has the most
 untracked memory in its log, that is 5412.3 + (310.4 - 96.2) - 3890.0 = 1736.5 MiB. The overhead
@@ -211,10 +211,10 @@ cluster, whose workers do not limit an executor's memory, or with any other clus
 
 Look more closely before raising the overhead if the untracked memory keeps growing through a run
 rather than levelling off: memory that is not being released will exhaust any overhead eventually.
-The executor logs one more line after its last native plan finishes, and an `allocated` or
+The executor logs one more line after its last Rust plan finishes, and an `allocated` or
 `JVM Arrow allocated` figure there that grows from one query to the next points the same way.
 
-`spark.comet.memory.logInterval` is read when an executor starts its first Comet native plan, so set
+`spark.comet.memory.logInterval` is read when an executor starts its first Comet Rust plan, so set
 it when the application is submitted. Set it to `0` to turn the log off.
 
 [Reading the Memory Usage Log from the Event Log]: #reading-the-memory-usage-log-from-the-event-log
@@ -231,11 +231,11 @@ over the cluster and often go away with their containers.
 The driver writes, and flushes, each event of its event log as it goes, so it does not write every
 sample. For each executor, it takes the samples a minute at a time and writes two of them: the one
 with the most untracked memory, and the last, which in the minute an executor goes idle is the one
-after its last native plan finishes. It writes them at the executor's first heartbeat a minute or
+after its last Rust plan finishes. It writes them at the executor's first heartbeat a minute or
 more after the first of them arrived, which comes every `spark.executor.heartbeatInterval`, 10
 seconds by default, busy or not, and when the executor is removed, such as when the cluster manager
 kills it, or the application stops. So each executor adds about two events a minute while it runs
-native plans, however short the interval, and each minute's two reach the event log within about a
+Rust plans, however short the interval, and each minute's two reach the event log within about a
 minute of that minute's first sample arriving. The event with the most untracked memory for an
 executor is then its sample with the most, apart from samples it takes while the application stops,
 and samples from the last minute before a driver exits without stopping the application.
@@ -284,7 +284,7 @@ already freed but the allocator has not returned to the operating system. Comet'
 the system allocator, which on Linux is usually glibc's `malloc`. glibc keeps freed memory in
 arenas so that it can reuse it, and a thread allocates from the arena it is attached to. A lot of
 what Comet's operators free stays there: each spill drops the batches the operator buffered, and the
-next stage's native plans often run on different threads, attached to other arenas, so they reuse
+next stage's Rust plans often run on different threads, attached to other arenas, so they reuse
 only part of what the previous stage left behind. The
 `allocated` figure in the log drops when the memory is freed, but the executor's resident memory
 does not, so it grows from one stage and query to the next until the container's limit is reached.
@@ -318,7 +318,7 @@ makes it ignore the flag silently. To check whether this is the problem before c
 configuration, `jcmd <pid> System.trim_native_heap` trims a running executor once and prints how
 much memory it returned.
 
-A trim is not free: while it runs it takes each arena's lock in turn, so native allocations on that
+A trim is not free: while it runs it takes each arena's lock in turn, so allocations on that
 arena wait for it. On one workload, the nested TPC-H benchmark at scale factor 1000 with 64 GiB of
 off-heap memory per executor, an interval of 5 seconds kept the executors' resident memory at 61 to
 70 GiB in 106 GiB containers, where without it a query got 11 executors killed. A single trim
@@ -345,9 +345,9 @@ flushes sorted spill files. A value larger than `spark.comet.batchSize` is cappe
 
 ## Limiting Spill Disk Usage
 
-Native operators that spill to disk (aggregate, sort, shuffle) are bounded by
-`spark.comet.maxTempDirectorySize` (default 100 GB). The operators of one Comet native plan share
-the limit. A Spark task can run more than one native plan at a time, for example the native
+Rust-implemented operators that spill to disk (aggregate, sort, shuffle) are bounded by
+`spark.comet.maxTempDirectorySize` (default 100 GB). The operators of one Comet Rust plan share
+the limit. A Spark task can run more than one Rust plan at a time, for example the Rust-implemented
 operators on either side of a union or a coalesce, so an executor running `N` concurrent tasks may
 use more than `N` times this value on shared local disks. If the limit is reached, further spills
 fail and the query errors out. Raise this on workloads with large sort/aggregate/shuffle spills, or
@@ -356,7 +356,7 @@ multiple of this value.
 
 ## Compressing Spill Files
 
-`spark.comet.exec.spill.compression.codec` sets the codec for the files that native sorts,
+`spark.comet.exec.spill.compression.codec` sets the codec for the files that Rust-implemented sorts,
 aggregations, sort-merge joins, and nested loop joins spill to disk. The default is `lz4`, which
 Spark also uses for its own spill files by default. `zstd` writes smaller files, which reduces
 spill I/O and how much of `spark.comet.maxTempDirectorySize` they use, but takes more CPU to
