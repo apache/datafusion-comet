@@ -7521,11 +7521,8 @@ class CometIcebergNativeSuite
     }
   }
 
-  // Mirrors TestFilterPushDown.testVariantExtractFiltering. The native scan does not support the
-  // VARIANT type, so the read falls back to Spark entirely; this asserts the fallback is graceful
-  // and correct. (The upstream failure is a plan-shape assertion in the diff's checkFilters helper,
-  // not a Comet execution bug, so this repro passes.)
-  test("variant column filter falls back to Spark") {
+  // Mirrors TestFilterPushDown.testVariantExtractFiltering, plus reads that return the variant.
+  test("projected variant columns read natively") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
@@ -7545,11 +7542,14 @@ class CometIcebergNativeSuite
           INSERT INTO $table VALUES
             (1, parse_json('{"num": 25}')),
             (2, parse_json('{"num": 30}')),
-            (3, parse_json('{"num": 35}'))
+            (3, parse_json('{"num": 35}')),
+            (4, parse_json('null')),
+            (5, NULL)
         """)
-        checkIcebergNativeScanFallback(
-          s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id",
-          "the native scan does not support the VARIANT type")
+        checkIcebergNativeScan(
+          s"SELECT id FROM $table WHERE try_variant_get(data, '$$.num', 'int') > 30 ORDER BY id")
+        checkIcebergNativeScan(s"SELECT id, to_json(data) FROM $table ORDER BY id")
+        checkIcebergNativeScan(s"SELECT to_json(data) FROM $table ORDER BY 1")
         spark.sql(s"DROP TABLE $table")
       }
     }
@@ -7612,10 +7612,9 @@ class CometIcebergNativeSuite
           checkCometAnswer(filteredRows, sparkFilteredRows)
           assertSingleNativeScan(filteredRows.queryExecution.executedPlan)
 
-          checkIcebergNativeScanFallback(
+          checkIcebergNativeScan(
             s"SELECT id FROM $table WHERE " +
-              "try_variant_get(data, '$.num', 'int') > 20 ORDER BY id",
-            "projected VARIANT columns remain unsupported")
+              "try_variant_get(data, '$.num', 'int') > 20 ORDER BY id")
 
           withSQLConf("spark.sql.iceberg.aggregate-push-down.enabled" -> "false") {
             val emptyProjection = spark.sql(s"SELECT COUNT(*) FROM $table")
@@ -7695,7 +7694,7 @@ class CometIcebergNativeSuite
     }
   }
 
-  test("projecting nested variant structs, arrays, and maps still falls back") {
+  test("nested variant structs, arrays, and maps read natively") {
     assume(isSpark40Plus, "VARIANT type requires Spark 4.0+")
     assume(icebergAvailable, "Iceberg not available in classpath")
     assume(icebergVersionAtLeast(1, 10), "VARIANT type requires Iceberg 1.10+")
@@ -7739,20 +7738,19 @@ class CometIcebergNativeSuite
           checkCometAnswer(scalarRows, sparkScalarRows)
           assertSingleNativeScan(scalarRows.queryExecution.executedPlan)
 
-          val nestedProjection = spark.sql(s"SELECT nested.label FROM $table ORDER BY id")
-          assert(
-            collectIcebergNativeScans(nestedProjection.queryExecution.executedPlan).isEmpty,
-            "iceberg-rust rejects a projected parent containing a VARIANT field")
-
-          val arrayProjection = spark.sql(s"SELECT variants FROM $table ORDER BY id")
-          assert(
-            collectIcebergNativeScans(arrayProjection.queryExecution.executedPlan).isEmpty,
-            "iceberg-rust rejects a projected array containing VARIANT values")
-
-          val mapProjection = spark.sql(s"SELECT variants_by_key FROM $table ORDER BY id")
-          assert(
-            collectIcebergNativeScans(mapProjection.queryExecution.executedPlan).isEmpty,
-            "iceberg-rust rejects a projected map containing VARIANT values")
+          checkIcebergNativeScan(s"SELECT id, nested.label FROM $table ORDER BY id")
+          checkIcebergNativeScan(s"SELECT id, to_json(nested.data) FROM $table ORDER BY id")
+          checkIcebergNativeScan(
+            s"SELECT id, size(variants), size(variants_by_key) FROM $table ORDER BY id")
+          // Iceberg 1.10's Spark reader, which produces the reference answer, cannot materialize
+          // Variant values inside arrays or maps.
+          if (icebergVersionAtLeast(1, 11)) {
+            checkIcebergNativeScan(
+              s"SELECT id, transform(variants, v -> to_json(v)) FROM $table ORDER BY id")
+            checkIcebergNativeScan(
+              s"SELECT id, transform_values(variants_by_key, (k, v) -> to_json(v)) " +
+                s"FROM $table ORDER BY id")
+          }
 
           val snapshotId = spark
             .sql(s"SELECT snapshot_id FROM $table.snapshots ORDER BY committed_at DESC LIMIT 1")
@@ -7761,12 +7759,9 @@ class CometIcebergNativeSuite
             .getLong(0)
           spark.sql(s"ALTER TABLE $table RENAME COLUMN nested TO renamed")
 
-          val historicalNestedProjection =
-            spark.sql(s"SELECT nested.label FROM $table VERSION AS OF $snapshotId ORDER BY id")
-          assert(
-            collectIcebergNativeScans(
-              historicalNestedProjection.queryExecution.executedPlan).isEmpty,
-            "A renamed parent containing a VARIANT field must fall back for historical snapshots")
+          checkIcebergNativeScan(
+            s"SELECT id, nested.label, to_json(nested.data) FROM $table " +
+              s"VERSION AS OF $snapshotId ORDER BY id")
         } finally {
           spark.sql(s"DROP TABLE IF EXISTS $table PURGE")
         }

@@ -204,9 +204,18 @@ dependencies = [
  "serde_json",
  "snap",
  "strum 0.28.0",
- "thiserror",
+ "thiserror 2.0.21",
  "uuid",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "approx"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -2058,7 +2067,7 @@ dependencies = [
  "serde",
  "serde_json",
  "simdutf8",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2078,7 +2087,7 @@ dependencies = [
  "prost",
  "regex",
  "serde_json",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2800,7 +2809,7 @@ version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71958f69fb2de856c5dd51ac9377e986ca1aa5919f931bf5395a807277f889a0"
 dependencies = [
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3225,6 +3234,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "geo-traits"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e7c353d12a704ccfab1ba8bfb1a7fe6cb18b665bf89d37f4f7890edcd260206"
+dependencies = [
+ "geo-types",
+]
+
+[[package]]
+name = "geo-types"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "777d18aa0f12f8b285331cd867133ee14422b3f023f6d388034c47d43e28786a"
+dependencies = [
+ "approx",
+ "num-traits",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3568,7 +3598,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
+source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3603,6 +3633,7 @@ dependencies = [
  "once_cell",
  "ordered-float 4.6.0",
  "parquet",
+ "parquet-geospatial",
  "rand 0.9.5",
  "reqwest 0.12.28",
  "roaring",
@@ -3626,7 +3657,7 @@ dependencies = [
 [[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
+source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3636,7 +3667,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust?rev=b154603a710d730d2f43f8af4db257cc137237ef#b154603a710d730d2f43f8af4db257cc137237ef"
+source = "git+https://github.com/c-thiel/iceberg-rust?rev=524f5fddcb42700d81e7c843e8e499666afcf00d#524f5fddcb42700d81e7c843e8e499666afcf00d"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3958,7 +3989,7 @@ dependencies = [
  "libloading",
  "log",
  "simd_cesu8",
- "thiserror",
+ "thiserror 2.0.21",
  "walkdir",
  "windows-link",
 ]
@@ -4219,7 +4250,7 @@ dependencies = [
  "serde-value",
  "serde_json",
  "serde_yaml",
- "thiserror",
+ "thiserror 2.0.21",
  "thread-id",
  "typemap-ors",
  "unicode-segmentation",
@@ -4491,6 +4522,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "object"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4530,7 +4583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
- "thiserror",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "url",
@@ -4922,6 +4975,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "object_store",
+ "parquet-geospatial",
  "parquet-variant",
  "parquet-variant-compute",
  "parquet-variant-json",
@@ -4932,6 +4986,19 @@ dependencies = [
  "tokio",
  "twox-hash",
  "zstd 0.13.3",
+]
+
+[[package]]
+name = "parquet-geospatial"
+version = "59.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dec41b777c27c17102ffcccb5a97b7ece6b423f012e656953e8c29497bdec4c"
+dependencies = [
+ "arrow-schema",
+ "geo-traits",
+ "serde",
+ "serde_json",
+ "wkb",
 ]
 
 [[package]]
@@ -5242,7 +5309,7 @@ dependencies = [
  "spin 0.10.1",
  "symbolic-demangle",
  "tempfile",
- "thiserror",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5272,6 +5339,15 @@ checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
 dependencies = [
  "proc-macro2",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "proc-macro-crate"
+version = "3.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
+dependencies = [
+ "toml_edit",
 ]
 
 [[package]]
@@ -5487,7 +5563,7 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "socket2",
- "thiserror",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "web-time",
@@ -5510,7 +5586,7 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "slab",
- "thiserror",
+ "thiserror 2.0.21",
  "tinyvec",
  "tracing",
  "web-time",
@@ -6696,11 +6772,31 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+dependencies = [
+ "thiserror-impl 1.0.69",
+]
+
+[[package]]
+name = "thiserror"
 version = "2.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e52cb86a36cede5cb101bf8908837b3e4c6e5e59fe7fd85c23fb56200d189e"
 dependencies = [
- "thiserror-impl",
+ "thiserror-impl 2.0.21",
+]
+
+[[package]]
+name = "thiserror-impl"
+version = "1.0.69"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -6881,6 +6977,36 @@ dependencies = [
  "libc",
  "pin-project-lite",
  "tokio",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "1.1.3+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "173f25c883cd2176a2d8212155638c0a60d484a9d84546d270866f40f56b6e49"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "toml_edit"
+version = "0.25.19+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
+dependencies = [
+ "indexmap 2.14.2",
+ "toml_datetime",
+ "toml_parser",
+ "winnow",
+]
+
+[[package]]
+name = "toml_parser"
+version = "1.1.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baa693a8032d7e1cada7d0041e96126df243179ff061456783ac7f12bda4744c"
+dependencies = [
+ "winnow",
 ]
 
 [[package]]
@@ -7472,10 +7598,31 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
 
 [[package]]
+name = "winnow"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "wkb"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04ab2f2845abe967a213998446345a1a6fc9a8f318cd88f668a8e507861d13bc"
+dependencies = [
+ "byteorder",
+ "geo-traits",
+ "num_enum",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "writeable"

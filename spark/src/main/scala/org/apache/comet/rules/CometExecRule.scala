@@ -1289,7 +1289,11 @@ case class CometExecRule(session: SparkSession, queryStagePrep: Boolean = false)
         case writeFiles: WriteFilesExec => Seq(writeFiles.child)
         case other => Seq(other)
       }
-      if (!op.isInstanceOf[CometScanExec] &&
+      val isNativeIcebergScan = op match {
+        case scan: CometBatchScanExec => scan.nativeIcebergScanMetadata.isDefined
+        case _ => false
+      }
+      if (!op.isInstanceOf[CometScanExec] && !isNativeIcebergScan &&
         (op.output ++ dataProducingChildren.flatMap(_.output)).exists(attr =>
           containsVariantType(attr.dataType))) {
         withFallbackReason(
