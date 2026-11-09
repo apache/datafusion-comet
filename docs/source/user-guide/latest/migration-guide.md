@@ -59,25 +59,20 @@ key is removed.
 
 ## Upgrading to Comet 1.3.0
 
-Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The change below
-needs none either, but check whether it applies to your deployment.
+Comet `1.3.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
 
 Comet `1.3.0` no longer builds or publishes support for Spark 3.4. Spark 3.4 has been deprecated
 since Comet `1.0.0`. If you run Spark 3.4, stay on the last Comet release that publishes
 `comet-spark-spark3.4_*`. See [Installing Comet](installation.md) for the supported Java, Scala,
 and Spark versions.
 
-## Upgrading to Comet 1.2.0
-
-Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
-need none either, but check whether any of them applies to your deployment.
-
 ### S3 Request Addressing
 
 Comet's native Parquet and CSV scans now address S3 requests the way Hadoop S3A does (native
 Iceberg reads go through iceberg-rust's FileIO and are unchanged). With `fs.s3a.path.style.access`
 unset or `false` they use virtual-hosted addressing (`<bucket>.<host>`), and with `true` they use
-path-style addressing (`<host>/<bucket>`). Comet `1.1.0` and earlier addressed every custom
+path-style addressing (`<host>/<bucket>`). Comet `1.2.0` and earlier addressed every custom
 `fs.s3a.endpoint` path-style whatever the setting said, and applied the setting the wrong way round
 when no endpoint was set.
 
@@ -96,6 +91,11 @@ addressing, but a proxy or egress rule that matches on host names will see the n
 Comet still addresses a request path-style on its own when the endpoint's host is an IP address or
 the bucket name cannot be a host name. See
 [Additional S3 Configuration Options](datasources.md#additional-s3-configuration-options).
+
+## Upgrading to Comet 1.2.0
+
+Comet `1.2.0` makes no behavior changes that need a `spark.comet.legacy.*` key. The changes below
+need none either, but check whether any of them applies to your deployment.
 
 ### Deprecated and Removed Settings
 
