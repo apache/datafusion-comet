@@ -464,6 +464,21 @@ Bloom-enabled native writes require an identifiable Iceberg version >= 1.5. See 
 rules. Ambiguous legacy aliases and invalid lookup names use Java. Iceberg 1.6/1.7 also uses Java
 for explicit FPP properties because those releases validate them independently.
 
+To exercise that independent FPP validation on Iceberg 1.7.2, first build Comet's JVM classes
+and native library as described in the [Development Guide](development.md). Then run:
+
+```shell
+./mvnw -B test -Pspark-3.5 -Diceberg.spark.runtime.version=1.7.2 -Dtest=none \
+  '-Dsuites=org.apache.comet.serde.operator.IcebergWriteProtoTranslationSuite,org.apache.comet.CometIcebergWriteActionSuite legacy independent FPP validation,org.apache.comet.CometIcebergWriteDetectionSuite standalone Bloom shape properties'
+```
+
+The Spark 3.5 profile's `iceberg.spark.runtime.version` overrides only its test runtime; it
+defaults to 1.8.1. This command runs the translation suite and the two integration tests for
+independent FPP validation and standalone shape properties. Check that
+`legacy independent FPP validation selects Java even without enabled columns` passes rather
+than cancels: it cancels on the pinned runtime, which does not exercise the 1.6/1.7 code path.
+Omit the override to return to the pinned version; no POM edits or Maven-cache cleanup are needed.
+
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions
 and partition path spelling, needs a test that runs on each.
 
