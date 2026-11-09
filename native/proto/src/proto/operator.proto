@@ -932,6 +932,11 @@ message HashAggregate {
   // keys (ascending, nulls first). The native planner sorts the aggregate output on the
   // grouping columns unless the aggregate already emits its groups in that order.
   bool ordered_by_grouping_keys = 9;
+  // When true, the native planner wraps Utf8/Binary group-by expressions in a Cast to
+  // LargeUtf8/LargeBinary (and casts the aggregate's output back to Utf8/Binary), which
+  // promotes the group-key byte buffer from i32 to i64 offsets and removes the 2 GiB cap.
+  // Driven by spark.comet.exec.aggregation.useLargeDataTypes.
+  bool use_large_data_types = 10;
 }
 
 message Limit {
