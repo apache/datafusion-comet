@@ -1538,7 +1538,7 @@ fn timestamp_parser<T: TimeZone>(
     // base pattern.  This prevents the '-' in plain date strings like "2015-03-18"
     // from being misidentified as a negative-offset sign.
     if pattern.is_none() {
-        if let Some((stripped, suffix_tz)) = extract_offset_suffix(value) {
+        if let Some((stripped, suffix_tz, residual_secs)) = extract_offset_suffix(value) {
             // Spark applies Java String.trim to the zone, not Unicode whitespace trimming.
             let stripped = stripped.trim_end_matches(|c: char| c <= '\u{20}');
             // A zone suffix is only meaningful after the seconds segment. Otherwise fall
@@ -1546,7 +1546,12 @@ fn timestamp_parser<T: TimeZone>(
             // reported as malformed (null, or CAST_INVALID_INPUT under ANSI) like Spark does.
             let stripped_pattern = classify_timestamp_pattern(stripped);
             if stripped_pattern.is_some_and(TimestampPattern::ends_with_seconds_segment) {
-                return parse_timestamp_pattern(stripped, stripped_pattern, eval_mode, &suffix_tz);
+                let parsed =
+                    parse_timestamp_pattern(stripped, stripped_pattern, eval_mode, &suffix_tz)?;
+                // Arrow's `Tz` holds whole minutes, so an offset such as `+08:00:30` arrives as
+                // the `+08:00` zone plus a 30-second residual. Subtract the residual to land on
+                // the exact instant Spark computes.
+                return Ok(parsed.map(|micros| micros - i64::from(residual_secs) * 1_000_000));
             }
         }
     }
@@ -1558,16 +1563,19 @@ fn timestamp_parser<T: TimeZone>(
 /// full bare +/- offset including its sign character).  Returns the offset in whole seconds,
 /// or `None` for any malformed, out-of-range, or trailing-garbage input.
 ///
-/// Accepted formats (H = 1–2 digit hour, M = 1–2 digit minute):
+/// Accepted formats (H = 1–2 digit hour, M = 1–2 digit minute, S = 1–2 digit second):
 ///   ""        -> 0          (bare "UTC" / "GMT" / "UT")
 ///   "+H"      -> +H*3600    (hour-only, e.g. "+0" from "UTC+0")
 ///   "+HH"     -> same
 ///   "+HHMM"   -> +H*3600+M*60  (4 digits, no colon)
 ///   "+H:M"    -> same (with colon, any digit count 1-2 each)
 ///   "+HH:MM"  -> same
+///   "+H:M:S"  -> +H*3600+M*60+S  (Java's `ZoneOffset.of` accepts the seconds form)
+///   "+HH:MM:SS" -> same
+///   "+HHMMSS" -> same (6 digits, no colon)
 ///   (negative with '-' analogously)
 ///
-/// Hours must be 0–18 and minutes 0–59, with a maximum absolute offset of 18:00.
+/// Hours must be 0–18, minutes and seconds 0–59, with a maximum absolute offset of 18:00.
 /// A trailing colon ("+8:") is rejected.
 fn parse_sign_offset(s: &str) -> Option<i32> {
     if s.is_empty() {
@@ -1583,30 +1591,55 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
     if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit() || b == b':') {
         return None;
     }
-    let (h, m) = if let Some(colon_pos) = rest.find(':') {
+    let (h, m, sec) = if let Some(colon_pos) = rest.find(':') {
         let h_str = &rest[..colon_pos];
-        let m_str = &rest[colon_pos + 1..];
-        if !(1..=2).contains(&h_str.len()) || !(1..=2).contains(&m_str.len()) {
+        let tail = &rest[colon_pos + 1..];
+        if !(1..=2).contains(&h_str.len()) {
             return None;
         }
         let h: i32 = h_str.parse().ok()?;
-        // Note: "+HH:MM:SS" (with seconds) is not handled; Spark accepts it but it is rare.
+        // Either "+HH:MM" or "+HH:MM:SS"; each segment is one or two digits.
+        let (m_str, s_str) = match tail.find(':') {
+            Some(second_colon) => (&tail[..second_colon], Some(&tail[second_colon + 1..])),
+            None => (tail, None),
+        };
+        if !(1..=2).contains(&m_str.len()) {
+            return None;
+        }
         let m: i32 = m_str.parse().ok()?;
-        (h, m)
+        let sec: i32 = match s_str {
+            Some(s_str) => {
+                if !(1..=2).contains(&s_str.len()) {
+                    return None;
+                }
+                s_str.parse().ok()?
+            }
+            None => 0,
+        };
+        (h, m, sec)
     } else {
         match rest.len() {
-            1 | 2 => (rest.parse::<i32>().ok()?, 0),
+            1 | 2 => (rest.parse::<i32>().ok()?, 0, 0),
             4 => (
                 rest[..2].parse::<i32>().ok()?,
                 rest[2..].parse::<i32>().ok()?,
+                0,
+            ),
+            6 => (
+                rest[..2].parse::<i32>().ok()?,
+                rest[2..4].parse::<i32>().ok()?,
+                rest[4..].parse::<i32>().ok()?,
             ),
             _ => return None,
         }
     };
-    if !(0..=18).contains(&h) || !(0..=59).contains(&m) || (h == 18 && m != 0) {
+    if !(0..=18).contains(&h) || !(0..=59).contains(&m) || !(0..=59).contains(&sec) {
         return None;
     }
-    Some(sign * (h * 3600 + m * 60))
+    if h == 18 && (m != 0 || sec != 0) {
+        return None;
+    }
+    Some(sign * (h * 3600 + m * 60 + sec))
 }
 
 /// Constructs a [`Tz`] from an offset measured in seconds.
@@ -1617,6 +1650,14 @@ fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
     let m = (abs % 3600) / 60;
     let sign = if secs >= 0 { '+' } else { '-' };
     Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
+}
+
+/// Splits an offset into the minute-precision [`Tz`] arrow can represent and the residual
+/// seconds it cannot carry. `tz_from_offset_secs` truncates toward zero, so the residual keeps
+/// the sign of the offset and applying both parts in turn reproduces the exact offset.
+fn tz_and_residual_secs(secs: i32) -> Option<(Tz, i32)> {
+    let tz = tz_from_offset_secs(secs)?;
+    Some((tz, secs - (secs / 60) * 60))
 }
 
 /// Returns the last (rightmost) byte position where `needle` starts inside `haystack`.
@@ -1631,8 +1672,12 @@ fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
         .find(|&i| hb[i..].starts_with(nb))
 }
 
-/// If `value` ends with a recognised timezone suffix, returns `(datetime_prefix, Tz)`.
+/// If `value` ends with a recognised timezone suffix, returns
+/// `(datetime_prefix, Tz, residual_seconds)`.
 /// Returns `None` when no suffix is found.
+///
+/// The [`Tz`] carries only whole minutes, so a suffix such as `+08:00:30` is returned as the
+/// `+08:00` zone plus a 30-second residual the caller subtracts after parsing.
 ///
 /// Recognised forms (in matching priority order):
 ///   Z                  -> UTC+0
@@ -1644,10 +1689,10 @@ fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
 ///
 /// **The caller must ensure the value does not already match a base timestamp pattern.**
 /// Without that guard a bare '-' in "2015-03-18" would be misread as a -18:00 offset.
-fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
+fn extract_offset_suffix(value: &str) -> Option<(&str, Tz, i32)> {
     // 1. Z suffix
     if let Some(stripped) = value.strip_suffix('Z') {
-        return Some((stripped, tz_from_offset_secs(0)?));
+        return Some((stripped, tz_from_offset_secs(0)?, 0));
     }
 
     // 2. Named text-prefix forms: "UTC", "GMT", "UT" (optionally space-prefixed),
@@ -1657,7 +1702,8 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
         if let Some(pos) = rfind_str(value, prefix) {
             let offset_str = &value[pos + prefix.len()..];
             if let Some(secs) = parse_sign_offset(offset_str) {
-                return Some((&value[..pos], tz_from_offset_secs(secs)?));
+                let (tz, residual_secs) = tz_and_residual_secs(secs)?;
+                return Some((&value[..pos], tz, residual_secs));
             }
         }
     }
@@ -1678,7 +1724,8 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
     ] {
         if let Some(pos) = rfind_str(value, abbr) {
             if pos + abbr.len() == value.len() {
-                return Some((&value[..pos], tz_from_offset_secs(*offset_secs)?));
+                let (tz, residual_secs) = tz_and_residual_secs(*offset_secs)?;
+                return Some((&value[..pos], tz, residual_secs));
             }
         }
     }
@@ -1689,7 +1736,7 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
         let tz_name = &value[space_pos + 1..];
         if tz_name.contains('/') {
             if let Ok(tz) = Tz::from_str(tz_name) {
-                return Some((&value[..space_pos], tz));
+                return Some((&value[..space_pos], tz, 0));
             }
         }
     }
@@ -1707,7 +1754,8 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
     if let Some(pos) = last_sign {
         let offset_str = &value[pos..];
         if let Some(secs) = parse_sign_offset(offset_str) {
-            return Some((&value[..pos], tz_from_offset_secs(secs)?));
+            let (tz, residual_secs) = tz_and_residual_secs(secs)?;
+            return Some((&value[..pos], tz, residual_secs));
         }
     }
 
@@ -2018,7 +2066,7 @@ fn timestamp_ntz_parser(
     // pattern matches, so the inner parser reports it as malformed.
     let (value_to_parse, pattern) = if pattern.is_none() {
         match extract_offset_suffix(value) {
-            Some((stripped, _tz)) => {
+            Some((stripped, _, _residual_secs)) => {
                 // Spark applies Java String.trim to the zone, not Unicode whitespace trimming.
                 let stripped = stripped.trim_end_matches(|c: char| c <= '\u{20}');
                 let stripped_pattern = classify_timestamp_pattern(stripped);
@@ -4240,6 +4288,12 @@ mod tests {
             ("-18:00", -64_800),
             ("+1800", 64_800),
             ("-1800", -64_800),
+            ("+08:00:30", 28_830),
+            ("+8:0:3", 28_803),
+            ("-01:30:15", -5_415),
+            ("+080030", 28_830),
+            ("+180000", 64_800),
+            ("-180000", -64_800),
         ] {
             assert_eq!(parse_sign_offset(input), Some(seconds), "{input:?}");
         }
@@ -4252,6 +4306,11 @@ mod tests {
             "+19",
             "-1900",
             "+8:",
+            "+08:00:",
+            "+08:00:60",
+            "+08:000:30",
+            "+18:00:01",
+            "+0800 30",
             "+1:+1",
             "-1:-1",
             "+1\u{967}",
@@ -4260,6 +4319,29 @@ mod tests {
             "++1",
         ] {
             assert_eq!(parse_sign_offset(input), None, "{input:?}");
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_parser_applies_second_precision_zone_offsets() {
+        let tz = &Tz::from_str("UTC").unwrap();
+        for mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+            // 2020-01-01 12:34:56 at +08:00:30 is 04:34:26 UTC.
+            assert_eq!(
+                timestamp_parser("2020-01-01 12:34:56 +08:00:30", mode, tz, true).unwrap(),
+                Some(1_577_853_266_000_000)
+            );
+            // -01:30:15 is 14:05:11 UTC.
+            assert_eq!(
+                timestamp_parser("2020-01-01 12:34:56 -01:30:15", mode, tz, true).unwrap(),
+                Some(1_577_887_511_000_000)
+            );
+            // TIMESTAMP_NTZ keeps the wall-clock time and only drops the zone.
+            assert_eq!(
+                timestamp_ntz_parser("2020-01-01 12:34:56 +08:00:30", mode, true, true).unwrap(),
+                Some(1_577_882_096_000_000)
+            );
         }
     }
 
