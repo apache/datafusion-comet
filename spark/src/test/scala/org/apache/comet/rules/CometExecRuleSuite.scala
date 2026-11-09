@@ -1431,15 +1431,25 @@ class CometExecRuleSuite extends CometTestBase {
 
   test("CometExecRule preserves an inherited AQE stage for its original logical subtree") {
     withAdaptiveAggregateConf {
-      val aggregate = createAdaptiveAggregate()
-      val original = aggregate.originalPlan.logicalLink.get
-      val stage = LogicalQueryStage(LogicalQueryStage(original, aggregate), aggregate)
-      aggregate.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
-      aggregate.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, stage)
+      val originalTags = Seq(SparkPlan.LOGICAL_PLAN_TAG, SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+      originalTags.foreach { originalTag =>
+        withClue(s"original logical tag: $originalTag") {
+          val aggregate = createAdaptiveAggregate()
+          val original = aggregate.originalPlan
+          val logicalPlan = original.logicalLink.get
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+          original.unsetTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG)
+          original.setTagValue(originalTag, logicalPlan)
 
-      val repaired = applyCometExecRule(aggregate)
-      assert(repaired.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
-      assert(repaired.logicalLink.exists(_ eq stage))
+          val stage = LogicalQueryStage(LogicalQueryStage(logicalPlan, aggregate), aggregate)
+          aggregate.unsetTagValue(SparkPlan.LOGICAL_PLAN_TAG)
+          aggregate.setTagValue(SparkPlan.LOGICAL_PLAN_INHERITED_TAG, stage)
+
+          val repaired = applyCometExecRule(aggregate)
+          assert(repaired.getTagValue(SparkPlan.LOGICAL_PLAN_TAG).isEmpty)
+          assert(repaired.logicalLink.exists(_ eq stage))
+        }
+      }
     }
   }
 
