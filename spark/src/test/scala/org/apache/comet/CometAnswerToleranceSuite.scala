@@ -65,6 +65,17 @@ class CometAnswerToleranceSuite extends CometTestBase {
     assertMismatch(Seq(Float.PositiveInfinity).toDF("f"), Row(Float.NegativeInfinity))
   }
 
+  test("null matches only null") {
+    assertMatch(Seq(Option.empty[Double]).toDF("d"), Row(null))
+    assertMismatch(Seq(Option.empty[Double]).toDF("d"), Row(0.0))
+    assertMismatch(Seq(Some(0.0)).toDF("d"), Row(null))
+    assertMismatch(Seq(Option.empty[Float]).toDF("f"), Row(0.0f))
+    assertMismatch(Seq(Some(0.0f)).toDF("f"), Row(null))
+    // A null does not pair with a number when the row has more than one field either.
+    assertMismatch(Seq((Option.empty[Double], "a")).toDF("d", "s"), Row(0.0, "a"))
+    assertMismatch(Seq((Some(0.0), "a")).toDF("d", "s"), Row(null, "a"))
+  }
+
   test("signed zeros match each other") {
     assertMatch(Seq(-0.0).toDF("d"), Row(0.0))
     assertMatch(Seq(0.0f).toDF("f"), Row(-0.0f))
