@@ -174,7 +174,8 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
                   frame.queryExecution.executedPlan.toString)
                 if (enabled) {
                   val explain =
-                    ExtendedExplainInfo.generateExtendedInfo(frame.queryExecution.executedPlan)
+                    new ExtendedExplainInfo().generateExtendedInfo(
+                      frame.queryExecution.executedPlan)
                   assert(explain.contains("fs.s3a.encryption.context"), explain)
                   assert(!explain.contains(value), explain)
                 }
