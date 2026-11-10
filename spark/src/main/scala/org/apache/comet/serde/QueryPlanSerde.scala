@@ -1342,8 +1342,9 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * aggregation's results, whether Spark shares depends on how it runs the operator (see
    * `certain`), so a function that would skip a shared subexpression there falls back rather than
    * guess. They are found on the first `canShortCircuitNulls` call for the operator (or
-   * `skipsSharedSubexpression`), so an operator without an argument to skip never runs
-   * `EquivalentExpressions`. `None` outside `withSharedSubexpressions`, where they are unknown.
+   * `canEvaluateSkippedEagerly` or `skipsSharedSubexpression`), so an operator without an
+   * argument to skip never runs `EquivalentExpressions`. `None` outside
+   * `withSharedSubexpressions`, where they are unknown.
    */
   private val sharedSubexpressions = new DynamicVariable[Option[SharedSubexpressions]](None)
 
@@ -1394,19 +1395,32 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
       Some(new SharedSubexpressions(expressions, alwaysShared, certain)))(f)
 
   /**
-   * Whether an expression whose `canShortCircuitNulls` is `shortCircuit` must fall back to Spark:
-   * it would skip an argument holding a subexpression the operator's expressions share, in an
-   * operator where Spark may or may not evaluate that subexpression for every row, so neither
-   * skipping it nor evaluating it is sure to match Spark.
+   * Why an expression falls back where it would skip an argument holding a shared subexpression
+   * in an operator whose sharing is uncertain (see `shortCircuitFallbackReason`).
    */
-  def skipsUncertainSharedSubexpression(shortCircuit: Boolean): Boolean =
-    !shortCircuit && sharedSubexpressions.value.exists(!_.certain)
-
-  /** Why an expression falls back where `skipsUncertainSharedSubexpression` holds. */
   val uncertainSharedSubexpressionReason: String =
     "An argument this expression skips after a NULL argument holds a subexpression that the " +
       "operator's other expressions share, and whether Spark evaluates it for every row " +
       "depends on how Spark runs this operator"
+
+  /** Why an expression falls back where it can neither skip nor evaluate an argument eagerly. */
+  val failingSharedSubexpressionReason: String =
+    "An argument this expression skips after a NULL argument holds a subexpression that the " +
+      "operator's other expressions share and that can fail, which Spark evaluates for every " +
+      "row, and native execution can neither skip the argument nor evaluate all of it for " +
+      "every row"
+
+  /** The reasons a function that skips an argument after a NULL one may fall back. */
+  val sharedSubexpressionReasons: Seq[String] =
+    Seq(uncertainSharedSubexpressionReason, failingSharedSubexpressionReason)
+
+  /**
+   * Why the expression being converted falls back where neither `canShortCircuitNulls` nor
+   * `canEvaluateSkippedEagerly` holds.
+   */
+  def shortCircuitFallbackReason: String =
+    if (sharedSubexpressions.value.exists(!_.certain)) uncertainSharedSubexpressionReason
+    else failingSharedSubexpressionReason
 
   /**
    * The arguments of `expr` that Spark's evaluation of a null-intolerant `BinaryExpression` or
@@ -1423,10 +1437,31 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Not if one of them holds a subexpression that can fail and that the operator's expressions
    * share and Spark eliminates: Spark evaluates that for every row, and raises if it fails on a
    * row whose array is NULL. Nor, unless they cannot fail, outside `withSharedSubexpressions`,
-   * where what they share is unknown.
+   * where what they share is unknown. See `canEvaluateSkippedEagerly` for the other choice.
    */
   def canShortCircuitNulls(expr: Expression): Boolean =
     canSkipEvaluation(skippableArguments(expr))
+
+  /**
+   * Whether native execution may instead evaluate those arguments for every row, as Spark does
+   * where everything in them that can fail lies inside a subexpression the operator's expressions
+   * share: what else they hold cannot be observed. Only where Spark's sharing is certain (see
+   * `withSharedSubexpressions`). True outside `withSharedSubexpressions`, where native execution
+   * evaluates them for every row. Where neither this nor `canShortCircuitNulls` holds, `expr`
+   * falls back to Spark.
+   */
+  def canEvaluateSkippedEagerly(expr: Expression): Boolean =
+    sharedSubexpressions.value.forall { s =>
+      s.certain &&
+      skippableArguments(expr).forall(arg => failsOnlyShared(DecimalPrecision.promote(arg), s))
+    }
+
+  /** Whether an operator's conversion has set what its expressions share. */
+  def inSharedSubexpressionScope: Boolean = sharedSubexpressions.value.isDefined
+
+  private def failsOnlyShared(expr: Expression, shared: SharedSubexpressions): Boolean =
+    shared.common.exists(_.semanticEquals(expr)) ||
+      (!canFailNode(expr) && expr.children.forall(failsOnlyShared(_, shared)))
 
   /**
    * Whether native execution may leave `skippable`, expressions that Spark evaluates only for
@@ -1563,13 +1598,13 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
    * Has native execution evaluate the arguments of `scalarFunc`, the serialized `expr`, the way
    * Spark evaluates those of a null-intolerant `BinaryExpression` or `TernaryExpression`: each
    * argument after the first only for the rows where no earlier argument is NULL, unless
-   * `canShortCircuitNulls` rules it out. Otherwise every argument is evaluated over the whole
-   * batch, so one that can fail, such as an ANSI cast of a malformed string, fails on a row that
-   * Spark returns NULL for without evaluating it (#6613), except where
-   * `skipsUncertainSharedSubexpression` sends `expr` to Spark. The arguments must be in the order
-   * Spark evaluates them, and the function must return NULL wherever an argument other than the
-   * last is NULL. The native planner drops the guard when every later argument can be evaluated
-   * for any row, such as a column or a literal.
+   * `canShortCircuitNulls` rules it out. Evaluating one that can fail, such as an ANSI cast of a
+   * malformed string, over the whole batch would fail on a row that Spark returns NULL for
+   * without evaluating it (#6613). Where the skip is ruled out, every argument is evaluated over
+   * the whole batch if `canEvaluateSkippedEagerly` allows it, and otherwise `expr` falls back to
+   * Spark. The arguments must be in the order Spark evaluates them, and the function must return
+   * NULL wherever an argument other than the last is NULL. The native planner drops the guard
+   * when every later argument can be evaluated for any row, such as a column or a literal.
    */
   def withNullShortCircuit(expr: Expression, scalarFunc: Option[Expr]): Option[Expr] =
     scalarFunc.flatMap { proto =>
@@ -1580,11 +1615,11 @@ object QueryPlanSerde extends Logging with CometExprShim with CometTypeShim {
           proto.toBuilder
             .setScalarFunc(proto.getScalarFunc.toBuilder.setNullShortCircuit(true))
             .build())
-      } else if (skipsUncertainSharedSubexpression(shortCircuit)) {
-        withFallbackReason(expr, uncertainSharedSubexpressionReason)
-        None
-      } else {
+      } else if (canEvaluateSkippedEagerly(expr)) {
         Some(proto)
+      } else {
+        withFallbackReason(expr, shortCircuitFallbackReason)
+        None
       }
     }
 

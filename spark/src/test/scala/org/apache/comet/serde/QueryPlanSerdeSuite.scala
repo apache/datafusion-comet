@@ -23,7 +23,7 @@ import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
-import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, CreateNamedStruct, Divide, EqualTo, EvalMode, Expression, If, In, Literal, Lower, MakeDate, Not, Slice, Substring, UnaryMinus, UnsafeProjection}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, Concat, CreateArray, CreateNamedStruct, Divide, ElementAt, EqualTo, EvalMode, Expression, If, In, Literal, Lower, MakeDate, MapFromArrays, Not, Slice, Substring, UnaryMinus, UnsafeProjection}
 import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
 import org.apache.spark.sql.comet.DecimalPrecision
 import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
@@ -31,8 +31,9 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
+import org.apache.comet.CometExplainInfo
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, skipsUncertainSharedSubexpression, supportedDataType, withNullShortCircuit, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canEvaluateSkippedEagerly, canShortCircuitNulls, canSkipEvaluation, scalarFunctionExprToProto, supportedDataType, uncertainSharedSubexpressionReason, withNullShortCircuit, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
 
@@ -228,30 +229,25 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
   test("an uncertain scope sends a function that skips a shared subexpression to Spark") {
     val array = AttributeReference("ai", ArrayType(IntegerType))()
     val cast = Cast(AttributeReference("s", StringType)(), IntegerType, None, ansiEnabled = true)
-    val contains = ArrayContains(array, cast)
-    val position = ArrayPosition(array, cast)
-    def uncertain: Boolean = skipsUncertainSharedSubexpression(canShortCircuitNulls(contains))
+    val shared = Seq(ArrayContains(array, cast), ArrayPosition(array, cast))
     val proto =
       scalarFunctionExprToProto("array_contains", Some(ExprOuterClass.Expr.newBuilder().build()))
-    def shortCircuit: Option[Boolean] =
-      withNullShortCircuit(contains, proto).map(_.getScalarFunc.getNullShortCircuit)
+    // The call's NULL short-circuit flag, or the reasons it falls back to Spark
+    def convert(scope: Option[(Seq[Expression], Boolean)]): Either[Set[String], Boolean] = {
+      val call = ArrayContains(array, cast)
+      def run = withNullShortCircuit(call, proto).map(_.getScalarFunc.getNullShortCircuit)
+      val result = scope.fold(run) { case (exprs, certain) =>
+        withSharedSubexpressions(exprs, certain = certain)(run)
+      }
+      result.toRight(call.getTagValue(CometExplainInfo.FALLBACK_REASONS).getOrElse(Set.empty))
+    }
 
-    withSharedSubexpressions(Seq(contains, position), certain = false) {
-      assert(uncertain)
-      assert(shortCircuit.isEmpty)
-    }
+    assert(convert(Some((shared, false))) == Left(Set(uncertainSharedSubexpressionReason)))
     // Nothing shared, so the call still skips the cast
-    withSharedSubexpressions(Seq(contains), certain = false) {
-      assert(!uncertain)
-      assert(shortCircuit.contains(true))
-    }
+    assert(convert(Some((shared.take(1), false))) == Right(true))
     // Where Spark shares the cast for every row, so does native execution
-    withSharedSubexpressions(Seq(contains, position), certain = true) {
-      assert(!uncertain)
-      assert(shortCircuit.contains(false))
-    }
-    assert(!uncertain)
-    assert(shortCircuit.contains(false))
+    assert(convert(Some((shared, true))) == Right(false))
+    assert(convert(None) == Right(false))
   }
 
   test("canShortCircuitNulls counts only shared subexpressions that can fail") {
@@ -323,6 +319,71 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
     // A literal cast fails only if evaluating it fails
     assert(canSkipEvaluation(Seq(Cast(Literal(0), DecimalType(1, 0), None, ansiEnabled = true))))
     assert(!canSkipEvaluation(Seq(Cast(Literal("x"), IntegerType, None, ansiEnabled = true))))
+  }
+
+  test("canEvaluateSkippedEagerly needs every failing part of a skipped argument shared") {
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val other = AttributeReference("aj", ArrayType(IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val shared = Cast(text, IntegerType, None, ansiEnabled = true)
+    val unshared =
+      Cast(AttributeReference("t", StringType)(), IntegerType, None, ansiEnabled = true)
+    val covered = Seq(ArrayContains(array, shared), ArrayContains(other, shared))
+    val mixed = ArrayContains(array, Add(shared, unshared, EvalMode.LEGACY))
+    withSharedSubexpressions(covered, certain = true) {
+      assert(!canShortCircuitNulls(covered.head))
+      assert(canEvaluateSkippedEagerly(covered.head))
+    }
+    // Where Spark may not share them, evaluating them for every row is not sure to match
+    withSharedSubexpressions(covered, certain = false) {
+      assert(!canEvaluateSkippedEagerly(covered.head))
+    }
+    withSharedSubexpressions(Seq(mixed, ArrayPosition(other, shared)), certain = true) {
+      assert(!canShortCircuitNulls(mixed))
+      assert(!canEvaluateSkippedEagerly(mixed))
+    }
+    // Outside an operator's conversion native execution keeps evaluating them for every row
+    assert(canEvaluateSkippedEagerly(mixed))
+    // A wrapper that cannot fail around the shared cast holds nothing else that can
+    val wrapped = ArrayContains(array, Add(shared, Literal(1), EvalMode.LEGACY))
+    val ansiWrapped = ArrayContains(array, Add(shared, Literal(1), EvalMode.ANSI))
+    withSharedSubexpressions(Seq(wrapped, ansiWrapped, covered.last), certain = true) {
+      assert(!canShortCircuitNulls(wrapped))
+      assert(canEvaluateSkippedEagerly(wrapped))
+      assert(!canShortCircuitNulls(ansiWrapped))
+      assert(!canEvaluateSkippedEagerly(ansiWrapped))
+    }
+  }
+
+  test("element_at keeps its NULL guard outside an operator's scope") {
+    val m1 = AttributeReference("m1", MapType(IntegerType, IntegerType))()
+    val m2 = AttributeReference("m2", MapType(IntegerType, IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val key = Cast(text, IntegerType, None, ansiEnabled = true)
+    val lookup = ElementAt(m1, key, None, failOnError = true)
+    val inputs = Seq(m1, m2, text)
+    def guarded: Option[Boolean] = QueryPlanSerde.exprToProto(lookup, inputs).map(_.hasCaseWhen)
+    assert(guarded.contains(true))
+    // Where Spark shares the key for every row, the lookup evaluates it for every row too
+    val shared = Seq(lookup, ElementAt(m2, key, None, failOnError = true))
+    withSharedSubexpressions(shared, certain = true) {
+      assert(guarded.contains(false))
+    }
+  }
+
+  test("map_from_arrays keeps its NULL guards outside an operator's scope") {
+    val k1 = AttributeReference("k1", ArrayType(IntegerType))()
+    val k2 = AttributeReference("k2", ArrayType(IntegerType))()
+    val text = AttributeReference("s", StringType)()
+    val values = CreateArray(Seq(Cast(text, IntegerType, None, ansiEnabled = true)))
+    val call = MapFromArrays(k1, values)
+    def guarded: Option[Boolean] =
+      QueryPlanSerde.exprToProto(call, Seq(k1, k2, text)).map(_.hasCaseWhen)
+    assert(guarded.contains(true))
+    // Where Spark shares the values for every row, the call cannot skip them, so it falls back
+    withSharedSubexpressions(Seq(call, MapFromArrays(k2, values)), certain = true) {
+      assert(guarded.isEmpty)
+    }
   }
 
   test("canShortCircuitNulls follows subexpression elimination except in aggregates") {

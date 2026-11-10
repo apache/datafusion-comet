@@ -441,8 +441,7 @@ object CometMakeDate extends CometExpressionSerde[MakeDate] {
     "make_date requires Spark evaluation when a computed argument after a nullable " +
       "argument cannot preserve Spark's shared-subexpression evaluation."
 
-  override def getUnsupportedReasons(): Seq[String] =
-    Seq(sharedArgumentReason, uncertainSharedSubexpressionReason)
+  override def getUnsupportedReasons(): Seq[String] = Seq(sharedArgumentReason)
 
   override def getSupportLevel(expr: MakeDate): SupportLevel = {
     val firstNullable = expr.children.indexWhere(_.nullable)
