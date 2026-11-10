@@ -130,3 +130,70 @@ SELECT grp, avg(d) FROM test_avg_decimal GROUP BY grp ORDER BY grp
 -- count(*) and avg in the same query for cross-check
 query tolerance=1e-6
 SELECT count(d), avg(d) FROM test_avg_decimal
+
+-- Wide decimal division and overflow use native hash aggregation in legacy mode.
+statement
+SET spark.sql.adaptive.enabled=false
+
+statement
+SET spark.comet.shuffle.mode=native
+
+statement
+SET spark.sql.execution.useObjectHashAggregateExec=true
+
+statement
+CREATE TABLE test_avg_wide_division(k int, v decimal(38,18)) USING parquet
+
+statement
+INSERT INTO test_avg_wide_division SELECT /*+ COALESCE(1) */ * FROM VALUES
+  (1, 9000000000000000), (1, 9000000000000000), (2, 100000000000000000)
+
+-- The sum's rescale exceeds i128, but division by the count produces a valid average.
+query
+SELECT k, AVG(v) FROM test_avg_wide_division WHERE k = 1 GROUP BY k
+
+-- TRY_AVG keeps the valid group and returns NULL for final result overflow in either ANSI mode.
+query
+SELECT k, TRY_AVG(v) FROM test_avg_wide_division GROUP BY k
+
+-- Final result overflow returns NULL in legacy mode.
+query
+SELECT k, AVG(v) FROM test_avg_wide_division WHERE k = 2 GROUP BY k
+
+-- Ungrouped maximum-precision AVG still needs Spark's unbounded aggregation buffer.
+query expect_fallback(Ungrouped decimal AVG with a maximum-precision sum)
+SELECT AVG(v) FROM test_avg_wide_division WHERE k = 1
+
+-- collect_list selects ObjectHashAggregate, whose buffer can recover from the intermediate 1.2.
+statement
+CREATE TABLE test_avg_object(k int, v decimal(38,38)) USING parquet
+
+statement
+INSERT INTO test_avg_object SELECT /*+ COALESCE(1) */ * FROM VALUES
+  (1, 0.6), (1, 0.6), (1, -0.4)
+
+query expect_fallback(Decimal AVG with a maximum-precision sum cannot match Spark's unbounded object aggregation buffer)
+SELECT k, AVG(v), sort_array(collect_list(k)) FROM test_avg_object GROUP BY k
+
+-- Input precision 25 used to require an incompatibility opt-in for rescaling (#7007).
+statement
+CREATE TABLE test_avg_rescale(k int, v24 decimal(24,2), v25 decimal(25,2)) USING parquet
+
+statement
+INSERT INTO test_avg_rescale VALUES (1, 1.5, 1.5), (1, 2.5, 2.5)
+
+query
+SELECT k, AVG(v24), AVG(v25) FROM test_avg_rescale GROUP BY k
+
+query
+SELECT AVG(v24), AVG(v25) FROM test_avg_rescale
+
+-- DECIMAL(38,38) needs no rescale and remains native when grouped.
+statement
+CREATE TABLE test_avg_no_rescale(k int, v decimal(38,38)) USING parquet
+
+statement
+INSERT INTO test_avg_no_rescale VALUES (1, 0.2), (1, 0.4)
+
+query
+SELECT k, AVG(v) FROM test_avg_no_rescale GROUP BY k

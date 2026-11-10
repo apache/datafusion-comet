@@ -98,7 +98,7 @@ class CometPlanEqualitySuite extends AnyFunSuite {
               .stripSuffix(".class")
               .replace(File.separatorChar, '.')
           }
-          .toSeq
+          .toVector
       } finally {
         stream.close()
       }
@@ -112,7 +112,7 @@ class CometPlanEqualitySuite extends AnyFunSuite {
             !entry.isDirectory && entry.getName.startsWith(packagePath) &&
               entry.getName.endsWith(".class"))
           .map(_.getName.stripSuffix(".class").replace('/', '.'))
-          .toSeq
+          .toVector
       } finally {
         jar.close()
       }
