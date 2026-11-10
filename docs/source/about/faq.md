@@ -90,7 +90,7 @@ for one platform only.
 
 ### Why do I get a `ClassNotFoundException` for `CometShuffleManager`?
 
-Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.4 and 3.5,
+Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.5,
 executors create the shuffle manager before they load jars passed with `--jars` or `--packages`, so
 the jar must be on the startup classpath. Either copy it into `$SPARK_HOME/jars` on every machine, or
 set `spark.driver.extraClassPath` and `spark.executor.extraClassPath` to its path, as the

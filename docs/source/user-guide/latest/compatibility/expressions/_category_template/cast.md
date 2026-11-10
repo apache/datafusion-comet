@@ -122,11 +122,27 @@ execution reaches Comet). The short-circuit applies only to a top-level cast. Se
 
 ## String to Timestamp
 
-Comet's native `CAST(string AS TIMESTAMP)` implementation supports all timestamp formats accepted
+Comet's native `CAST(string AS TIMESTAMP)` implementation supports the timestamp formats accepted
 by Apache Spark, including ISO 8601 date-time strings, date-only strings, time-only strings
-(`HH:MM:SS`), embedded timezone offsets (e.g. `+07:30`, `GMT-01:00`, `UTC`), named timezone
-suffixes (e.g. `Europe/Moscow`), and the full Spark timestamp year range
-(-290308 to 294247).
+(`HH:MM:SS`), and the full Spark timestamp year range (-290308 to 294247).
+
+A zone suffix after the seconds is resolved the way Spark's `ZoneId.of(id, ZoneId.SHORT_IDS)`
+does. The following forms are supported:
+
+- `Z`, and `UTC`, `GMT` or `UT` on their own or followed by an offset (e.g. `UTC`, `GMT-01:00`,
+  `UTC+8`).
+- Offsets in the forms `+H`, `+HH`, `+HHMM`, `+HHMMSS`, `+H:M`, `+HH:MM` and `+H:MM:SS`
+  (e.g. `+07:30`, `-0800`, `+080000`, `+08:00:00`).
+- The Java `ZoneId.SHORT_IDS` aliases `ACT`, `AET`, `AGT`, `ART`, `AST`, `BET`, `BST`, `CAT`,
+  `CNT`, `CST`, `CTT`, `EAT`, `ECT`, `IET`, `IST`, `JST`, `MIT`, `NET`, `NST`, `PLT`, `PNT`,
+  `PRT`, `PST`, `SST` and `VST`, which map to a region and follow its daylight saving time, and
+  `EST`, `MST` and `HST`, which are the fixed offsets `-05:00`, `-07:00` and `-10:00`.
+- Time zone database region ids, with or without a `/` and with or without a space before them
+  (e.g. `Europe/Moscow`, `America/Los_Angeles`, `CET`, `Zulu`, `Etc/GMT+8`).
+
+Zone ids are case sensitive, as in Spark. Offsets with a non-zero seconds part (e.g. `+08:00:30`)
+are not supported: Comet returns `NULL`, or raises `CAST_INVALID_INPUT` in ANSI mode, where Spark
+returns a value. See [#7224](https://github.com/apache/datafusion-comet/issues/7224).
 
 ## String to TimestampNTZ
 
