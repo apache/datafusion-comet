@@ -33,7 +33,9 @@ set -eu
 : "${JAVA_HOME:?Set JAVA_HOME to a Java 17 installation}"
 export PATH="$JAVA_HOME/bin:$PATH"
 DELTA_VERSION=4.4.0 # Use 4.4.1 to repeat the other validated pairing.
-ARTIFACT_DIR=$(mktemp -d)
+RUN_DIR=$(mktemp -d /tmp/comet-interleave.XXXXXX)
+ARTIFACT_DIR="$RUN_DIR/artifacts"
+mkdir "$ARTIFACT_DIR"
 export DELTA_SPARK_JAR="$ARTIFACT_DIR/delta-spark_2.13-$DELTA_VERSION.jar"
 export DELTA_STORAGE_JAR="$ARTIFACT_DIR/delta-storage-$DELTA_VERSION.jar"
 export COMET_JAR="$ARTIFACT_DIR/comet-spark-spark4.2_2.13-1.2.0.jar"
@@ -43,19 +45,19 @@ curl --fail --location --retry 3 -o "$DELTA_STORAGE_JAR" \
   "https://repo.maven.apache.org/maven2/io/delta/delta-storage/$DELTA_VERSION/delta-storage-$DELTA_VERSION.jar"
 curl --fail --location --retry 3 -o "$COMET_JAR" \
   https://repo.maven.apache.org/maven2/org/apache/datafusion/comet-spark-spark4.2_2.13/1.2.0/comet-spark-spark4.2_2.13-1.2.0.jar
-mkdir classes
+mkdir "$RUN_DIR/classes"
 java -Xmx1g -cp "$SPARK_HOME/jars/*" scala.tools.nsc.Main \
   -classpath "$SPARK_HOME/jars/*:$DELTA_SPARK_JAR:$DELTA_STORAGE_JAR" \
-  -d classes DeltaInterleaveBitsChecks.scala
-jar cf checks.jar -C classes .
+  -d "$RUN_DIR/classes" DeltaInterleaveBitsChecks.scala
+jar cf "$RUN_DIR/checks.jar" -C "$RUN_DIR/classes" .
 "$SPARK_HOME/bin/spark-submit" --master 'local[2]' --driver-memory 2g \
   --jars "$DELTA_SPARK_JAR,$DELTA_STORAGE_JAR" \
   --class org.apache.spark.sql.comet.repro.DeltaInterleaveBitsChecks \
-  checks.jar stock /tmp/DeltaInterleaveBitsChecks-stock
+  "$RUN_DIR/checks.jar" stock "$RUN_DIR/stock"
 "$SPARK_HOME/bin/spark-submit" --master 'local[2]' --driver-memory 2g \
   --jars "$DELTA_SPARK_JAR,$DELTA_STORAGE_JAR,$COMET_JAR" \
   --class org.apache.spark.sql.comet.repro.DeltaInterleaveBitsChecks \
-  checks.jar comet /tmp/DeltaInterleaveBitsChecks-comet
+  "$RUN_DIR/checks.jar" comet "$RUN_DIR/comet"
 ```
 
 Expected: 15 named cases, matching row/schema JSON across stock and Comet runs, and `native_acceptance: false` in `summary.json`. The Comet lane requires an accelerated control query; passing Delta probes can still execute in Spark. Execution plans are saved beside rows. These are manually run probes, not tests wired into the Comet CI reactor.
