@@ -2149,7 +2149,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
   test(
     "unsupportedEncryptionContextReason resolves propagated references and preserves fallback") {
     val conf = new Configuration(false)
-    conf.set("fs.s3a.encryption.context", "${fs.s3a.context.reference}")
+    conf.set("fs.s3a.encryption.context", s"$${fs.s3a.context.reference}")
     conf.set("fs.s3a.context.reference", "")
     conf.set("fs.s3a.bucket.data-bucket.context.reference", "synthetic-malformed-pair")
     val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
@@ -2158,7 +2158,7 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     conf.setBoolean("hadoop.security.credential.clear-text-fallback", false)
     assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
     val unresolved = new Configuration(false)
-    unresolved.set("fs.s3a.encryption.context", "${unresolved.synthetic.context}")
+    unresolved.set("fs.s3a.encryption.context", s"$${unresolved.synthetic.context}")
     val unresolvedReason =
       DeltaScanSupport.unsupportedEncryptionContextReason(unresolved, DataBucketUris)
     assert(unresolvedReason.isDefined)
