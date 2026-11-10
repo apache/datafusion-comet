@@ -21,6 +21,7 @@ package org.apache.comet.contrib.delta
 
 import java.io.{File, IOException}
 import java.net.URI
+import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.util.{Locale, UUID}
 import java.util.concurrent.atomic.AtomicBoolean
@@ -32,6 +33,7 @@ import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
 import org.apache.hadoop.fs.s3a.{S3AFileSystem, S3AUtils}
 import org.apache.hadoop.security.alias.CredentialProviderFactory
 import org.apache.spark.sql.comet.CometDeltaNativeScanExec
+import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.actions.DeletionVectorDescriptor
 import org.apache.spark.sql.execution.SparkPlan
 
@@ -46,7 +48,8 @@ import org.apache.comet.rules.CometScanRule
  */
 class DeltaScanContribSuite extends CometDeltaTestBase {
 
-  if (org.apache.spark.SPARK_VERSION.startsWith("4.2.")) {
+  if (supportsS3EncryptionContext) {
+    // This pins metadata-setup parity; the MinIO local-clone test exercises the admission gate.
     test("malformed S3 encryption context fails on the driver before Delta scan planning") {
       val conf = spark.sparkContext.hadoopConfiguration
       val settings = Map(
@@ -2113,6 +2116,76 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(reason.isDefined)
     assert(reason.get.contains("IllegalStateException"))
     assert(!reason.get.contains("realSecretValue"))
+  }
+
+  test("S3 deletion-vector context gates the real claim path after encryption algorithms") {
+    withTempPath { dir =>
+      val path = dir.getAbsolutePath
+      spark
+        .range(4)
+        .coalesce(1)
+        .write
+        .format("delta")
+        .option("delta.enableDeletionVectors", "true")
+        .save(path)
+      val log = DeltaLog.forTable(spark, path)
+      val snapshot = log.update()
+      val files = snapshot.allFiles.collect()
+      assert(files.length == 1)
+      val dv = DeletionVectorDescriptor
+        .onDiskWithAbsolutePath("s3a://context-dv-bucket/deletion_vector.bin", 40, 1)
+      val replaced = files.head.copy(deletionVector = dv).withoutTightBoundStats
+      val commit = new File(dir, f"_delta_log/${snapshot.version + 1}%020d.json")
+      Files.write(
+        commit.toPath,
+        (files.head.remove.json + "\n" + replaced.json + "\n").getBytes(UTF_8))
+      val selected = log.update().allFiles.collect()
+      assert(selected.length == 1)
+      assert(selected.head.absolutePath(log).toUri.getScheme == "file")
+      assert(
+        selected.head.deletionVector
+          .absolutePath(new Path(path))
+          .toUri
+          .getHost == "context-dv-bucket")
+
+      val conf = spark.sparkContext.hadoopConfiguration
+      val contextKey = "fs.s3a.bucket.context-dv-bucket.encryption.context"
+      val algorithmKey = "fs.s3a.bucket.context-dv-bucket.encryption.algorithm"
+      val original = Seq(contextKey, algorithmKey).map(key => key -> Option(conf.getRaw(key)))
+      try {
+        conf.unset(contextKey)
+        conf.unset(algorithmKey)
+        // Plan only: the descriptor intentionally names no real sidecar and must never be read.
+        val baseline = spark.read.format("delta").load(path)
+        assert(deltaNativeScans(baseline).nonEmpty, baseline.queryExecution.executedPlan.toString)
+
+        conf.set(contextKey, "synthetic-malformed-pair")
+        val declined = spark.read.format("delta").load(path)
+        assert(deltaNativeScans(declined).isEmpty)
+        val reasons =
+          new ExtendedExplainInfo().getFallbackReasons(declined.queryExecution.executedPlan)
+        assert(
+          reasons.exists(_.contains("does not support fs.s3a.encryption.context")),
+          reasons.toString)
+        Seq("SSE-C", "CSE-KMS", "CSE-CUSTOM").foreach { algorithm =>
+          conf.set(algorithmKey, algorithm)
+          val encrypted = spark.read.format("delta").load(path)
+          assert(deltaNativeScans(encrypted).isEmpty)
+          val encryptionReasons =
+            new ExtendedExplainInfo().getFallbackReasons(encrypted.queryExecution.executedPlan)
+          assert(
+            encryptionReasons.exists(_.contains(s"fs.s3a.encryption.algorithm=$algorithm")),
+            encryptionReasons.toString)
+          assert(
+            !encryptionReasons.exists(_.contains("does not support fs.s3a.encryption.context")))
+        }
+      } finally {
+        original.foreach {
+          case (key, Some(value)) => conf.set(key, value)
+          case (key, None) => conf.unset(key)
+        }
+      }
+    }
   }
 
   test("unsupportedEncryptionContextReason passes absent/empty and non-S3 contexts") {

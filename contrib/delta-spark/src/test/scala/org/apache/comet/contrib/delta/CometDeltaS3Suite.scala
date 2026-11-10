@@ -142,7 +142,7 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
 
   private def tablePath(bucket: String, relPath: String): String = s"s3a://$bucket/$relPath"
 
-  if (org.apache.spark.SPARK_VERSION.startsWith("4.2.")) {
+  if (supportsS3EncryptionContext) {
     test("encryption context on external S3 data files falls back before native reads") {
       assume(dockerAvailable, "Docker is not available; skipping MinIO-backed Delta test")
       withTempPath { dir =>
@@ -161,6 +161,7 @@ class CometDeltaS3Suite extends CometDeltaTestBase with CometS3TestBase with Log
         val keys = contextKeys :+ "fs.s3a.impl.disable.cache"
         val original = keys.map(key => key -> Option(conf.getRaw(key))).toMap
         try {
+          // A filesystem cached by the clone would hide Hadoop's malformed-context failure.
           conf.set("fs.s3a.impl.disable.cache", "true")
           for (key <- contextKeys;
             value <- Seq("synthetic-malformed-pair", "purpose=synthetic")) {

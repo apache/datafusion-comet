@@ -19,6 +19,7 @@
 
 package org.apache.comet.contrib.delta
 
+import org.apache.hadoop.fs.s3a.Constants
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{CometTestBase, DataFrame}
 import org.apache.spark.sql.execution.SparkPlan
@@ -28,6 +29,9 @@ import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
  * Base for Delta contrib suites: CometTestBase plus the Delta Lake session extension and catalog.
  */
 abstract class CometDeltaTestBase extends CometTestBase with AdaptiveSparkPlanHelper {
+
+  protected def supportsS3EncryptionContext: Boolean =
+    classOf[Constants].getFields.exists(_.getName == "S3_ENCRYPTION_CONTEXT")
 
   override protected def sparkConf: SparkConf = {
     val conf = super.sparkConf
