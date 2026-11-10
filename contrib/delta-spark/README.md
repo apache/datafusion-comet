@@ -43,7 +43,11 @@ for configuration details.
 | 4.0   | 4.0.x          | supported                                     |
 | 4.1   | 4.3.x          | supported                                     |
 | 3.4   | delta-core 2.4 | not supported (older Delta, would need shims) |
-| 4.2   | none released  | inert until Delta ships a Spark 4.2 release   |
+| 4.2   | 4.4.x          | supported                                     |
+
+Spark 4.2 uses the `delta-spark_4.2_2.13` artifact, pinned to Delta 4.4.1 by
+the `spark-4.2` Maven profile. Earlier Spark profiles keep `delta-spark` with
+their existing version pins.
 
 ## Building and testing
 
@@ -60,7 +64,7 @@ install is the trap the contributor guide warns about:
 
 Run the test suites the same way (`test` instead of `install` on the second
 line). CI runs them via `.github/workflows/delta_contrib_test.yml`: nightly on
-Spark 3.5, 4.0 and 4.1, or on a pull request carrying the `run-delta-tests`
+Spark 3.5, 4.0, 4.1 and 4.2, or on a pull request carrying the `run-delta-tests`
 label.
 `CometDeltaS3Suite` starts MinIO through Testcontainers and cancels itself when
 no Docker daemon is reachable; setting `COMET_DELTA_S3_REQUIRED=1`, as the

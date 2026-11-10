@@ -44,7 +44,7 @@ flowchart LR
 
   PRTIER["PR tier<br>Linux build, lint, Rust tests<br>TPC-H / TPC-DS<br>Comet suites, Spark 4.1<br>Spark SQL, Spark 4.1 catalyst and sql_core<br>Iceberg 1.11"]
   QUEUE["Queue tier, on top of the PR tier<br>Spark SQL, Spark 4.1 sql_hive<br>macOS build and Comet suites<br>Benchmark check, Delta gate<br>PyArrow UDF, Spark 4.0 / 4.1 / 4.2"]
-  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1"]
+  NIGHTLY["Nightly tier<br>Comet suites, Spark 3.5 / 4.0 / 4.2<br>Spark SQL, Spark 3.5 / 4.0 / 4.2<br>Iceberg 1.9 / 1.10<br>Delta contrib, Spark 3.5 / 4.0 / 4.1 / 4.2"]
   CACHE["Cache-refresh-only mode<br>the three cache-writing jobs, plus Lint"]
 ```
 
@@ -64,7 +64,7 @@ Suite by suite:
 | Comet test suites, Spark 3.5 / 4.0 / 4.2          | with label   | no          | yes     |
 | Spark SQL tests, Spark 3.5 / 4.0 / 4.2            | with label   | no          | yes     |
 | Iceberg Spark SQL tests, Iceberg 1.9 / 1.10       | with label   | no          | yes     |
-| Delta contrib tests, Spark 3.5 / 4.0 / 4.1        | with label   | no          | yes     |
+| Delta contrib tests, Spark 3.5 / 4.0 / 4.1 / 4.2  | with label   | no          | yes     |
 
 The **PR tier** is the fast feedback loop while a change is being iterated on. The **queue
 tier** is the authoritative gate: everything the PR tier runs plus the suites that must pass before
@@ -173,19 +173,19 @@ tier for you before the queue does, so a maintainer may ask you to reproduce a f
 
 Each suite outside the PR tier has a label that runs it on a pull request:
 
-| Label                      | Runs                                               |
-| -------------------------- | -------------------------------------------------- |
-| `run-macos-tests`          | macOS build and Comet test suites                  |
-| `run-all-spark-profiles`   | Comet test suites against Spark 3.5 / 4.0 / 4.2    |
-| `run-benchmark-check`      | Benchmark compile and lint check                   |
-| `run-delta-build-gate`     | Delta contrib build gate                           |
-| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2        |
-| `run-delta-tests`          | Delta contrib tests against Spark 3.5, 4.0 and 4.1 |
-| `run-spark-4.1-hive-tests` | Spark SQL tests against Spark 4.1, sql_hive only   |
-| `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                  |
-| `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                  |
-| `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                  |
-| `run-iceberg-tests`        | Iceberg Spark SQL tests against 1.9 and 1.10       |
+| Label                      | Runs                                                    |
+| -------------------------- | ------------------------------------------------------- |
+| `run-macos-tests`          | macOS build and Comet test suites                       |
+| `run-all-spark-profiles`   | Comet test suites against Spark 3.5 / 4.0 / 4.2         |
+| `run-benchmark-check`      | Benchmark compile and lint check                        |
+| `run-delta-build-gate`     | Delta contrib build gate                                |
+| `run-pyarrow-udf-tests`    | PyArrow UDF tests against Spark 4.0/4.1/4.2             |
+| `run-delta-tests`          | Delta contrib tests against Spark 3.5, 4.0, 4.1 and 4.2 |
+| `run-spark-4.1-hive-tests` | Spark SQL tests against Spark 4.1, sql_hive only        |
+| `run-spark-3.5-tests`      | Spark SQL tests against Spark 3.5                       |
+| `run-spark-4.0-tests`      | Spark SQL tests against Spark 4.0                       |
+| `run-spark-4.2-tests`      | Spark SQL tests against Spark 4.2                       |
+| `run-iceberg-tests`        | Iceberg Spark SQL tests against 1.9 and 1.10            |
 
 For a queue-tier suite the label only brings the run forward; the queue would have run it anyway
 before the change landed. For a nightly-tier suite the label is what gets a verdict _before_ the
@@ -232,7 +232,7 @@ does not cover. Some examples:
   the 4.1 diff
 - anything touching Iceberg reflection, the Iceberg scan or write path, or the Iceberg diffs
 - a change to `contrib/delta-spark/` or to the scan and native code it builds on;
-  `run-delta-tests` runs the Delta contrib suites against Spark 3.5, 4.0 and 4.1
+  `run-delta-tests` runs the Delta contrib suites against Spark 3.5, 4.0, 4.1 and 4.2
 - native code with platform-specific behavior, or a dependency bump that changes what is
   compiled on macOS
 - a change to the benchmark sources under `spark/src/test/scala/org/apache/spark/sql/benchmark`
@@ -303,7 +303,7 @@ re-armed automatically.
 `ci.yml` also runs on a schedule, at 06:00 UTC every day, against what landed on `main` since the
 last successful scheduled run. That run executes only the nightly tier: the Comet test suites against the Spark
 profiles other than 4.1, the Spark SQL suites for Spark 3.5, 4.0 and 4.2, the Iceberg suites for
-1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0 and 4.1, each only when the day's
+1.9 and 1.10, and the Delta contrib suites for Spark 3.5, 4.0, 4.1 and 4.2, each only when the day's
 changes touched files it covers. The queue already ran
 everything else against the same tree, so nothing in the queue tier is repeated. A day with no
 merges, or with only documentation changes, runs nothing.

@@ -841,10 +841,9 @@ under the License.
         <shims.majorVerSrc>spark-4.x</shims.majorVerSrc>
         <shims.minorPlusVerSrc>spark-4.1+</shims.minorPlusVerSrc>
         <shims.minorVerSrc>spark-4.2</shims.minorVerSrc>
-        <!-- No Delta release targets Spark 4.2 yet (Delta 4.3.x still builds against
-             Spark 4.1). The contrib compiles against 4.3.1 here but is unsupported on
-             this profile until Delta ships Spark 4.2 support. -->
-        <delta.spark.version>4.3.1</delta.spark.version>
+        <!-- Delta publishes Spark 4.2 builds under a separate artifact name. -->
+        <delta.artifact>delta-spark_4.2</delta.artifact>
+        <delta.spark.version>4.4.1</delta.spark.version>
         <!-- Use jdk17 by default -->
         <java.version>17</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>

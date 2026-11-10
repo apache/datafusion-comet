@@ -185,6 +185,7 @@ ROUTING_CASES = [
             "delta_3_5",
             "delta_4_0",
             "delta_4_1",
+            "delta_4_2",
         },
     ),
     (["contrib/delta-spark/README.md"], set()),
@@ -233,13 +234,14 @@ NIGHTLY_TIER = {
     "delta_3_5",
     "delta_4_0",
     "delta_4_1",
+    "delta_4_2",
     "build_linux_all_profiles",
 }
 # One label opts a pull request into every nightly Iceberg version. Iceberg
 # 1.11 is in the PR tier, so it needs no label.
 ICEBERG_OPT_IN = {"iceberg_1_9", "iceberg_1_10"}
 # Likewise one label for every Delta profile.
-DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1"}
+DELTA_OPT_IN = {"delta_3_5", "delta_4_0", "delta_4_1", "delta_4_2"}
 ALL_JOBS = QUEUE_TIER | NIGHTLY_TIER | {"docs"}
 assert not QUEUE_TIER & NIGHTLY_TIER, "a job is queue or nightly, never both"
 

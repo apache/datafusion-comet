@@ -46,6 +46,69 @@ import org.apache.comet.rules.CometScanRule
  */
 class DeltaScanContribSuite extends CometDeltaTestBase {
 
+  if (org.apache.spark.SPARK_VERSION.startsWith("4.2.")) {
+    test("malformed S3 encryption context fails on the driver before Delta scan planning") {
+      val conf = spark.sparkContext.hadoopConfiguration
+      val settings = Map(
+        "fs.s3a.impl" -> classOf[S3AFileSystem].getName,
+        "fs.s3a.impl.disable.cache" -> "true",
+        "fs.s3a.endpoint" -> "http://127.0.0.1:1",
+        "fs.s3a.endpoint.region" -> "us-east-1",
+        "fs.s3a.path.style.access" -> "true",
+        "fs.s3a.connection.ssl.enabled" -> "false",
+        "fs.s3a.bucket.probe" -> "0",
+        "fs.s3a.aws.credentials.provider" ->
+          "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        "fs.s3a.access.key" -> "synthetic-access",
+        "fs.s3a.secret.key" -> "synthetic-secret",
+        "fs.s3a.encryption.algorithm" -> "",
+        "fs.s3a.encryption.context" -> "synthetic-malformed-pair")
+      val original = settings.keys.map(key => key -> Option(conf.getRaw(key))).toMap
+      try {
+        settings.foreach { case (key, value) => conf.set(key, value) }
+        for (algorithm <- Seq("", "AES256", "SSE-KMS", "DSSE-KMS")) {
+          conf.set("fs.s3a.encryption.algorithm", algorithm)
+          val valid = new Configuration(conf)
+          valid.set("fs.s3a.encryption.context", "purpose=synthetic")
+          val fs = new S3AFileSystem()
+          try {
+            fs.initialize(new java.net.URI("s3a://valid-context/"), valid)
+            assert(fs.getUri.getHost == "valid-context")
+          } finally {
+            fs.close()
+          }
+          val errors = Seq(false, true).map { enabled =>
+            withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
+              val group = s"malformed-context-${UUID.randomUUID()}"
+              spark.sparkContext.setJobGroup(group, group)
+              try {
+                val error = intercept[IllegalArgumentException] {
+                  spark.read.format("delta").load("s3a://malformed-context/table").collect()
+                }
+                val frames = error.getStackTrace.map(_.toString).toSeq
+                assert(frames.exists(_.contains("S3AEncryption.getS3EncryptionContext")))
+                assert(frames.exists(_.contains("S3AFileSystem.initialize")))
+                assert(spark.sparkContext.statusTracker.getJobIdsForGroup(group).isEmpty)
+                (
+                  error.getClass,
+                  error.getMessage,
+                  frames.filter(_.startsWith("org.apache.hadoop.")))
+              } finally {
+                spark.sparkContext.clearJobGroup()
+              }
+            }
+          }
+          assert(errors.head == errors.last)
+        }
+      } finally {
+        original.foreach {
+          case (key, Some(value)) => conf.set(key, value)
+          case (key, None) => conf.unset(key)
+        }
+      }
+    }
+  }
+
   test("contrib is inert when comet exec is disabled") {
     // The COMET_EXEC_ENABLED gate lives in DeltaScanContrib.tryTransformV1; this pins it there.
     withTempPath { dir =>
@@ -2894,6 +2957,10 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
               "effectiveEncryptionAlgorithm's doc)"),
           "fs.s3a.server-side-encryption.key" ->
             "deprecated alias of fs.s3a.encryption.key, same reasoning",
+          "fs.s3a.encryption.context" ->
+            ("write-request KMS context, never read by the native scan; malformed values fail " +
+              "in S3AFileSystem.initialize during Delta metadata reads before scan planning, " +
+              "as covered by the malformed S3 encryption context driver test above"),
           "fs.s3a.encryption.cse.kms.region" ->
             ("CSE tuning, newer Hadoop only: consulted solely when the algorithm resolves to " +
               "a CSE variant, and the allowlist gate declines every CSE algorithm outright, " +
