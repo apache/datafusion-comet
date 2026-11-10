@@ -5711,7 +5711,7 @@ pub(crate) mod test {
             SparkParquetOptions::new(EvalMode::Legacy, "UTC"),
             None,
         )
-        .create(logical, physical.clone())
+        .create(logical, Arc::clone(&physical))
         .unwrap();
         let expr = adapter.rewrite(Arc::new(Column::new("s", 0))).unwrap();
         let uuid = uuid::Uuid::from_bytes([42; 16]);
