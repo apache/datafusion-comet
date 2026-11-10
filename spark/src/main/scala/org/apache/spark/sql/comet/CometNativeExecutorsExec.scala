@@ -23,7 +23,6 @@ import java.util.IdentityHashMap
 
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
-import scala.util.Try
 
 import org.apache.spark.{Partition, SparkContext, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -48,6 +47,7 @@ import org.apache.comet.{CometConf, CometExecIterator, CometExplainInfo, CometRu
 import org.apache.comet.serde.{ExprOuterClass, PartitioningOuterClass, QueryPlanSerde}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.serde.NativeExecutors.{QueryRequest, ResultEndpoint, ResultEndpoints, Stage, StageInput}
+import org.apache.comet.serde.OperatorOuterClass
 import org.apache.comet.serde.OperatorOuterClass.Operator
 import org.apache.comet.serde.operator.schema2Proto
 import org.apache.comet.vector.NativeUtil
@@ -56,19 +56,22 @@ import org.apache.comet.vector.NativeUtil
  * Runs a whole query on a Comet Native Executor cluster instead of on Spark's executors. See
  * https://github.com/apache/datafusion-comet/issues/7288.
  *
- * This leaf replaces the plan Comet would otherwise execute. `doExecuteColumnar` submits the
- * query to the cluster's scheduler and waits for it on the driver; each partition of the RDD it
- * returns then reads one result partition from the executor that holds it.
+ * This leaf replaces the plan Comet would otherwise execute. Planning only checks that the plan
+ * can run on a cluster ([[CometNativeExecutors.validate]]). `doExecuteColumnar` builds the query,
+ * which lists the files the scans read, submits it to the cluster's scheduler and waits for it on
+ * the driver; each partition of the RDD it returns then reads one result partition from the
+ * executor that holds it.
  *
- * @param query
- *   the serialized `QueryRequest` built by [[CometNativeExecutors.buildQuery]]
+ * @param nativePlan
+ *   the plan Comet would execute, which [[CometNativeExecutors.buildQuery]] turns into the
+ *   `QueryRequest` the cluster runs
  * @param subqueryResults
  *   the query's scalar subqueries. They are expressions of this node, so Spark runs them before
  *   it executes the node, and their results replace them in the query before it is submitted.
  */
 case class CometNativeExecutorsExec(
     override val output: Seq[Attribute],
-    query: Array[Byte],
+    nativePlan: SparkPlan,
     schedulerUrl: String,
     subqueryResults: Seq[Expression] = Nil)
     extends LeafExecNode {
@@ -81,7 +84,7 @@ case class CometNativeExecutorsExec(
   override protected def doExecuteColumnar(): RDD[ColumnarBatch] = {
     NativeExecutorsClient.requireNativeSupport()
     val request = CometNativeExecutors.withSubqueryResults(
-      query,
+      CometNativeExecutors.buildQuery(nativePlan).toByteArray,
       subqueryResults.collect { case sub: ScalarSubquery => sub })
     val endpoints =
       ResultEndpoints.parseFrom(new NativeExecutorsClient().submit(schedulerUrl, request))
@@ -92,7 +95,7 @@ case class CometNativeExecutorsExec(
   }
 
   override def stringArgs: Iterator[Any] =
-    Iterator(output, s"${query.length} bytes", schedulerUrl)
+    Iterator(output, schedulerUrl)
 }
 
 private class CometNativeExecutorsPartition(override val index: Int, val endpoint: ResultEndpoint)
@@ -194,7 +197,8 @@ object CometNativeExecutors {
 
   /**
    * Whether Comet runs `plan` on a Comet Native Executor cluster. It must be a whole query: not a
-   * command, not a stage AQE has split off, and not a plan already replaced.
+   * command, not a stage AQE has split off, and not a plan already replaced. The caller checks
+   * that Comet executes the plan at all.
    */
   def applies(conf: SQLConf, plan: SparkPlan, queryStagePrep: Boolean): Boolean =
     CometConf.COMET_NATIVE_EXECUTORS_ENABLED.get(conf) &&
@@ -222,9 +226,10 @@ object CometNativeExecutors {
       case toObjects: DeserializeToObjectExec =>
         toObjects.withNewChildren(Seq(offloadPlan(toObjects.child, toObjects.child)))
       case native =>
+        validate(native)
         val exec = CometNativeExecutorsExec(
           native.output,
-          buildQuery(native).toByteArray,
+          native,
           CometConf.COMET_NATIVE_EXECUTORS_SCHEDULER_URL.get(),
           scalarSubqueries(native))
         native.logicalLink.orElse(original.logicalLink).foreach(exec.setLogicalLink)
@@ -232,15 +237,35 @@ object CometNativeExecutors {
     }
 
   /**
+   * Checks that a cluster can run `plan`, the plan Comet would execute, without running anything:
+   * it lists no files and resolves no subquery, so it is safe at planning time.
+   *
+   * @throws CometRuntimeException
+   *   naming the first operator that cannot run on a cluster
+   */
+  def validate(plan: SparkPlan): Unit = stageGraph(plan, withFiles = false)
+
+  /**
    * The query a Comet Native Executor cluster runs for `plan`, the plan Comet would execute: one
    * stage per block of Comet operators that run as one Rust plan, with an input for each exchange
-   * that feeds the block.
+   * that feeds the block. A stage that reads files has a plan for each partition, naming its
+   * files, so this lists them and resolves the subqueries in the scans' filters. It belongs at
+   * execution time.
    *
    * @throws CometRuntimeException
    *   naming the first operator that cannot run on a cluster
    */
   def buildQuery(plan: SparkPlan): QueryRequest = {
-    val builder = new StageGraphBuilder(plan)
+    val stages = stageGraph(plan, withFiles = true)
+    QueryRequest
+      .newBuilder()
+      .putAllConf(nativeConf())
+      .addAllStages(stages.asJava)
+      .build()
+  }
+
+  private def stageGraph(plan: SparkPlan, withFiles: Boolean): Seq[Stage] = {
+    val builder = new StageGraphBuilder(plan, withFiles)
     val root = plan match {
       case ColumnarToRowExec(child) => child
       case CometColumnarToRowExec(child) => child
@@ -248,15 +273,11 @@ object CometNativeExecutors {
       case other => other
     }
     builder.stageOf(root)
-    QueryRequest
-      .newBuilder()
-      .putAllConf(nativeConf())
-      .addAllStages(builder.stages.asJava)
-      .build()
+    builder.stages.toSeq
   }
 
   /** The scalar subqueries of `plan`'s expressions, through exchanges, each once. */
-  private def scalarSubqueries(plan: SparkPlan): Seq[Expression] = {
+  private[comet] def scalarSubqueries(plan: SparkPlan): Seq[Expression] = {
     val found = ArrayBuffer.empty[ScalarSubquery]
     def walk(node: SparkPlan): Unit = {
       node.expressions.foreach(_.foreach {
@@ -381,7 +402,14 @@ object CometNativeExecutors {
     .setSinglePartition(PartitioningOuterClass.SinglePartition.newBuilder())
     .build()
 
-  private class StageGraphBuilder(query: SparkPlan) {
+  /** The planning data of a partition that reads no files. */
+  private val noFiles = OperatorOuterClass.NativeScan
+    .newBuilder()
+    .setFilePartition(OperatorOuterClass.SparkFilePartition.getDefaultInstance)
+    .build()
+    .toByteArray
+
+  private class StageGraphBuilder(query: SparkPlan, withFiles: Boolean) {
     val stages: ArrayBuffer[Stage] = ArrayBuffer.empty
     private val stageIndexes = new IdentityHashMap[SparkPlan, Integer]()
 
@@ -399,7 +427,8 @@ object CometNativeExecutors {
         case native: CometNativeExec if native.serializedPlanOpt.isDefined => native
         case other => fail(other, "it is not a Comet operator that runs in Rust")
       }
-      val inputs = inputsOf(block).map {
+      val scans = ArrayBuffer.empty[CometNativeScanExec]
+      val inputs = inputsOf(block, scans).map {
         case exchange: CometShuffleExchangeExec =>
           stageInput(exchange.child)(_.setPartitioning(partitioningOf(exchange)))
         case broadcast => stageInput(broadcast.children.head)(_.setBroadcast(true))
@@ -407,7 +436,9 @@ object CometNativeExecutors {
       val blockPlan = Operator.parseFrom(block.serializedPlanOpt.plan.get)
 
       // A block that reads files runs one copy per partition, each naming its own files.
-      val (common, perPartition) = PlanDataInjector.findAllPlanData(block)
+      val (common, perPartition) =
+        if (withFiles) filesOf(block, scans.toSeq)
+        else (Map.empty[String, Array[Byte]], Map.empty[String, Array[Array[Byte]]])
       val partitionPlans = if (perPartition.isEmpty) {
         Seq.empty
       } else {
@@ -426,16 +457,24 @@ object CometNativeExecutors {
       val numPartitions =
         if (partitionPlans.nonEmpty) partitionPlans.length
         else block.outputPartitioning.numPartitions
-      // A stage that reads a range exchange sorts each of its partitions. A cluster that supports
-      // it merges them in this order instead of range-partitioning the exchange. Without it, or
-      // on a cluster that ignores it, the exchange is read as one partition.
-      val outputOrdering = if (inputs.exists(_.getPartitioning.hasRangePartition)) {
-        val orders = block.outputOrdering.map(QueryPlanSerde.exprToProto(_, block.output))
-        if (orders.nonEmpty && orders.forall(_.isDefined)) orders.flatten else Nil
+      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions)
+    }
+
+    /**
+     * The planning data of the scans in `block`. A block whose scans list no files at all, such
+     * as a table with no data or a partition filter that prunes everything, gets one empty
+     * partition for each, as Spark would return no rows from them.
+     */
+    private def filesOf(block: CometNativeExec, scans: Seq[CometNativeScanExec])
+        : (Map[String, Array[Byte]], Map[String, Array[Array[Byte]]]) = {
+      val found @ (_, perPartition) = PlanDataInjector.findAllPlanData(block)
+      if (perPartition.nonEmpty || scans.isEmpty) {
+        found
       } else {
-        Nil
+        (
+          scans.map(scan => scan.sourceKey -> scan.commonData).toMap,
+          scans.map(scan => scan.sourceKey -> Array(noFiles)).toMap)
       }
-      addStage(plan, blockPlan, inputs, partitionPlans, numPartitions, outputOrdering)
     }
 
     /** An input of a stage that reads the stage running `producer`, as `configure` says. */
@@ -455,7 +494,7 @@ object CometNativeExecutors {
       val blockPlan = take
         .finalNativePlan(inputPartitions = 2)
         .getOrElse(fail(take, "its top-K plan cannot be built"))
-      addStage(take, blockPlan, Seq(input), Seq.empty, 1, Nil)
+      addStage(take, blockPlan, Seq(input), Seq.empty, 1)
     }
 
     private def addStage(
@@ -463,8 +502,7 @@ object CometNativeExecutors {
         blockPlan: Operator,
         inputs: Seq[StageInput],
         partitionPlans: Seq[ByteString],
-        numPartitions: Int,
-        outputOrdering: Seq[ExprOuterClass.Expr]): Int = {
+        numPartitions: Int): Int = {
       findJvmCallback(blockPlan).foreach { name =>
         fail(plan, s"its native plan calls back into the JVM ($name)")
       }
@@ -479,8 +517,6 @@ object CometNativeExecutors {
         .addAllPartitionPlans(partitionPlans.asJava)
         .setNumPartitions(numPartitions)
         .addAllOutputSchema(outputSchema.asJava)
-        .addAllOutputOrdering(outputOrdering.asJava)
-      estimatedOutputBytes(plan).foreach(stage.setEstimatedOutputBytes)
       stages += stage.build()
       val index = stages.length - 1
       stageIndexes.put(plan, index)
@@ -488,22 +524,13 @@ object CometNativeExecutors {
     }
 
     /**
-     * Spark's estimate of the size of `plan`'s output, from the logical plan of the nearest node
-     * in it that has one. A scheduler can use it to decide whether a join's build side is worth
-     * measuring before its probe side is shuffled.
-     */
-    private def estimatedOutputBytes(plan: SparkPlan): Option[Long] =
-      plan
-        .collectFirst { case node if node.logicalLink.isDefined => node.logicalLink.get }
-        .flatMap(logical => Try(logical.stats.sizeInBytes).toOption)
-        .filter(_ >= 0)
-        .map(_.min(Long.MaxValue).toLong)
-
-    /**
      * The exchanges that feed `block`, in the order its native plan's input leaves read them:
-     * native shuffles and broadcasts, with a reused exchange resolved to the one it reuses.
+     * native shuffles and broadcasts, with a reused exchange resolved to the one it reuses. Adds
+     * the block's native Parquet scans to `scans`.
      */
-    private def inputsOf(block: CometNativeExec): Seq[SparkPlan] = {
+    private def inputsOf(
+        block: CometNativeExec,
+        scans: ArrayBuffer[CometNativeScanExec]): Seq[SparkPlan] = {
       val inputs = ArrayBuffer.empty[SparkPlan]
       def walk(plan: SparkPlan): Unit = plan match {
         case reused: ReusedExchangeExec =>
@@ -515,6 +542,7 @@ object CometNativeExecutors {
         // These read or generate their rows inside the block.
         case scan: CometNativeScanExec =>
           rejectDynamicPruning(scan, scan.partitionFilters)
+          scans += scan
         case scan: CometIcebergNativeScanExec =>
           rejectDynamicPruning(scan, scan.runtimeFilters)
         case _: CometRangeExec =>
@@ -565,10 +593,16 @@ object CometNativeExecutors {
       def partitioning = PartitioningOuterClass.Partitioning.newBuilder()
       exchange.outputPartitioning match {
         case HashPartitioning(expressions, numPartitions) =>
-          val keys = expressions.map { key =>
-            QueryPlanSerde
-              .exprToProto(key, exchange.child.output)
-              .getOrElse(fail(exchange, s"its partitioning key $key is not supported by Comet"))
+          val keys = expressions.map {
+            // A cluster hashes columns of the stage's input.
+            case key: Attribute =>
+              QueryPlanSerde
+                .exprToProto(key, exchange.child.output)
+                .getOrElse(fail(exchange, s"its partitioning key $key is not supported by Comet"))
+            case key =>
+              fail(
+                exchange,
+                s"its partitioning key $key is not a column, which a cluster requires")
           }
           partitioning
             .setHashPartition(
@@ -578,7 +612,8 @@ object CometNativeExecutors {
                 .setNumPartitions(numPartitions))
             .build()
         case RangePartitioning(ordering, numPartitions) =>
-          // Without bounds: the stage's sort order tells the cluster how to merge instead.
+          // Without bounds, since Spark would sample for them: the cluster reads the exchange as
+          // one partition, which the block then sorts.
           val sortOrders = ordering.map { order =>
             QueryPlanSerde
               .exprToProto(order, exchange.child.output)

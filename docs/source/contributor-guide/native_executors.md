@@ -68,7 +68,11 @@ this repository yet. [Current limitations](#current-limitations) says which.
 `COMET_NATIVE_EXECUTORS_BIN_DIR`. Its header comment gives the commands. It is not part of CI. Its
 tests that need a cluster are skipped when the variable is not set. The tests that check what the
 driver refuses to plan run without a cluster, but they still need a libcomet built with the
-`native-executors` feature.
+`native-executors` feature. Its TPC-H tests need the cluster of
+[#7289](https://github.com/apache/datafusion-comet/pull/7289): on the cluster in this repository,
+only q1, q6, q11 and q15 pass. `CometNativeExecutorsPlanSuite` runs in CI. It takes the plan Comet
+would execute and checks the stage graph, the queries the driver refuses, and how a scalar
+subquery's result goes into the plan, with neither a cluster nor the feature.
 
 ## Current limitations
 
@@ -78,25 +82,28 @@ Comet Native Executors are a first version. The sub-issues of
 - Whole queries only. See [below](#whole-queries-only).
 - Only native shuffle exchanges. A query whose exchanges use JVM shuffle is refused.
 - `LIMIT` and `show()`: [#7365](https://github.com/apache/datafusion-comet/issues/7365).
-- Global sorts. The driver sends a range exchange's sort order but no range bounds. The cluster in
-  this repository reads the exchange as one partition, so every global sort runs in a single task.
+- Global sorts. The cluster in this repository reads a range exchange as one partition, so every
+  global sort runs in a single task.
   [#7289](https://github.com/apache/datafusion-comet/pull/7289) adds a cluster that sorts the
-  partitions in parallel and merges them in the driver's order, except for sorts by floats or
-  nested types, which still run in a single task:
-  [#7366](https://github.com/apache/datafusion-comet/issues/7366).
+  partitions in parallel and merges them, except for sorts by floats or nested types, which still
+  run in a single task: [#7366](https://github.com/apache/datafusion-comet/issues/7366).
 - Hash partitioning is DataFusion's, not Spark-compatible:
   [#7368](https://github.com/apache/datafusion-comet/issues/7368).
 - A small broadcast side runs in every task that reads it:
-  [#7369](https://github.com/apache/datafusion-comet/issues/7369). The driver sends Spark's
-  estimate of each stage's output size, which the cluster in this repository ignores. Moving a join
-  whose build side turns out small into the stage that produces its probe side is in
+  [#7369](https://github.com/apache/datafusion-comet/issues/7369). Moving a join whose build side
+  turns out small into the stage that produces its probe side is in
   [#7289](https://github.com/apache/datafusion-comet/pull/7289).
 - Dynamic partition pruning: [#7370](https://github.com/apache/datafusion-comet/issues/7370). A scan
   with a dynamic pruning filter is refused.
 - Writes: [#7371](https://github.com/apache/datafusion-comet/issues/7371). Commands and writes stay
   in Spark.
-- Cancellation: [#7372](https://github.com/apache/datafusion-comet/issues/7372). A killed Spark job
-  leaves its query running on the cluster.
+- Cancellation: [#7372](https://github.com/apache/datafusion-comet/issues/7372). The driver thread
+  waits for the cluster in native code until the query finishes, so cancelling the Spark job or
+  interrupting the thread does not stop the wait, and a killed Spark job leaves its query running
+  on the cluster.
+- Errors. A failure on the cluster reaches Spark as a `CometNativeException` with the cluster's
+  message, not as the exception Spark would raise. For example, a division by zero with ANSI mode on
+  is not a `SparkArithmeticException` with the `DIVIDE_BY_ZERO` error class.
 - Spark UI metrics: [#7373](https://github.com/apache/datafusion-comet/issues/7373).
 - Security. The scheduler and the executors have no authentication and no TLS, and a query names
   the files and object stores the executors read. Run a cluster only on a trusted network.

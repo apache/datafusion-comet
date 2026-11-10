@@ -47,6 +47,12 @@ import org.apache.comet.CometConf
  * COMET_NATIVE_EXECUTORS_BIN_DIR=native/target/debug ./mvnw test -Dtest=none \
  *   -Dsuites=org.apache.comet.exec.CometNativeExecutorsSuite
  * }}}
+ *
+ * The TPC-H tests need the cluster of https://github.com/apache/datafusion-comet/pull/7289. On
+ * the cluster in this repository, q1, q6, q11 and q15 pass and the other queries, which join,
+ * fail while the scheduler plans them.
+ *
+ * `CometNativeExecutorsPlanSuite` checks the stage graphs without a cluster, and runs in CI.
  */
 class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
@@ -148,7 +154,17 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
    * Checks that the cluster runs `query` and returns what Spark returns, in order if `ordered`.
    */
   private def checkOnCluster(query: => DataFrame, ordered: Boolean = false): Unit =
-    checkClusterReturns(query, query.collect().toSeq, ordered)
+    checkClusterReturns(query, sparkAnswer(query), ordered)
+
+  /** Spark's own answer, with Comet off, so that a bug the cluster shares with Comet shows. */
+  private def sparkAnswer(query: => DataFrame): Seq[Row] = {
+    // withSQLConf returns Unit on Spark 3.x, so the rows come out through a var.
+    var rows: Seq[Row] = Nil
+    withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+      rows = query.collect().toSeq
+    }
+    rows
+  }
 
   /** Checks that the cluster runs `query` and returns `expected`, in order if `ordered`. */
   private def checkClusterReturns(
@@ -343,6 +359,21 @@ class CometNativeExecutorsSuite extends CometTestBase with AdaptiveSparkPlanHelp
       val left = spark.read.parquet(path).select("id", "k")
       val right = spark.read.parquet(path).where("id < 10").select(col("k").as("k2"), col("v"))
       checkOnCluster(left.join(right, left("k") === right("k2")).select("id", "v"))
+    }
+  }
+
+  nativeExecutorsTest("a scan that lists no files returns no rows") {
+    withTempPath { dir =>
+      spark
+        .range(0, 100)
+        .selectExpr("id", "id % 7 AS k")
+        .write
+        .partitionBy("k")
+        .parquet(dir.getCanonicalPath)
+      // No partition has k = 99, so the scan has no files to read.
+      def table = spark.read.parquet(dir.getCanonicalPath).where("k = 99")
+      checkOnCluster(table)
+      checkOnCluster(table.groupBy().count())
     }
   }
 
