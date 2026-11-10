@@ -1002,6 +1002,7 @@ under the License.
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsSparkPartialToNativeFinal\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.serde\.CometAggregateExpressionSerde\.supportsNativePartialToSparkFinal\..*:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.CometScanWithPlanData\.withDynamicPruningFilters\..*:s</arg>
+                    <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.spark\.sql\.comet\.execution\.arrow\.ArrowFieldWriter\.collectViews\..*:s</arg>
                     <!-- Extractors and public UDF/aggregate hooks retain caller-required arguments. -->
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.CometExecIterator\.InputFailure\.unapply\.nativeFailure:s</arg>
                     <arg>-Wconf:cat=unused-params&amp;site=org\.apache\.comet\.udf\.CometUDF\.evaluate\.(partitionIndex|planId):s</arg>
