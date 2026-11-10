@@ -20,16 +20,23 @@
 package org.apache.comet.serde.operator
 
 import java.lang.reflect.InvocationTargetException
+import java.math.{BigDecimal, BigInteger}
+
+import scala.jdk.CollectionConverters._
 
 import org.scalatest.funsuite.AnyFunSuite
 import org.scalatest.matchers.should.Matchers
 
-import org.apache.iceberg.{DeleteFile, FileContent}
-import org.apache.iceberg.expressions.Expressions
+import org.apache.iceberg.{DeleteFile, FileContent, Schema}
+import org.apache.iceberg.expressions.{Expression, Expressions, Not}
+import org.apache.iceberg.types.Types
 import org.apache.spark.sql.catalyst.expressions.AttributeReference
-import org.apache.spark.sql.types.{ArrayType, IntegerType, MapType, StringType, StructType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DecimalType, IntegerType, MapType, StringType, StructType}
+
+import com.google.protobuf.ByteString
 
 import org.apache.comet.iceberg.IcebergReflection
+import org.apache.comet.serde.OperatorOuterClass.{IcebergLiteral, IcebergPredicate, IcebergPredicateOperator}
 
 /** Unit tests for Iceberg native-scan serde helpers that do not require a Spark session. */
 class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
@@ -60,6 +67,274 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
 
   private def serialize(residual: Any) =
     CometIcebergNativeScan.serializeResidual(residual, intColumn, Set.empty)
+
+  // Bypass the page-index column gate to test the literal contract independently of enabling
+  // decimal pushdown. Going through the residual entry point also catches a conversion failure
+  // incorrectly being reported as a fatal reflection error.
+  private def serializeDecimal(
+      residual: Expression,
+      decimalType: DecimalType = DecimalType(10, 2)): Option[IcebergPredicate] =
+    CometIcebergNativeScan.serializeResidual(
+      residual,
+      Seq(AttributeReference("amount", decimalType)(), AttributeReference("id", IntegerType)()),
+      Set.empty)
+
+  private def decimalEqual(value: String): Expression =
+    Expressions.equal("amount", new BigDecimal(value))
+
+  // Expressions.not(not(child)) returns child, so use the constructor to test a double NOT
+  // that actually reaches the converter rather than a positive expression simplified by Iceberg.
+  private def notWithoutSimplification(child: Expression): Expression = {
+    val constructor = classOf[Not].getDeclaredConstructor(classOf[Expression])
+    constructor.setAccessible(true)
+    constructor.newInstance(child)
+  }
+
+  test("page-index gate allows decimal predicates and retains uuid fixed and binary") {
+    val schema = new Schema(
+      Types.NestedField.optional(1, "decimal_int", Types.DecimalType.of(9, 2)),
+      Types.NestedField.optional(2, "decimal_long", Types.DecimalType.of(18, 2)),
+      Types.NestedField.optional(3, "decimal_fixed", Types.DecimalType.of(38, 2)),
+      Types.NestedField.optional(4, "uuid", Types.UUIDType.get()),
+      Types.NestedField.optional(5, "fixed", Types.FixedType.ofLength(16)),
+      Types.NestedField.optional(6, "binary", Types.BinaryType.get()))
+    val gated = IcebergReflection.pageIndexUnsupportedColumns(schema)
+    gated shouldBe Set("uuid", "fixed", "binary")
+    for ((name, precision) <- Seq(
+        ("decimal_int", 9),
+        ("decimal_long", 18),
+        ("decimal_fixed", 38))) {
+      val output = Seq(AttributeReference(name, DecimalType(precision, 2))())
+      val equal = CometIcebergNativeScan
+        .serializeResidual(Expressions.equal(name, new BigDecimal("123.45")), output, gated)
+        .getOrElse(fail(s"expected decimal pushdown for $name"))
+      equal.getBinary.getColumn shouldBe name
+      assertDecimalLiteral(equal.getBinary.getValue, precision, 2, "12345")
+      for (expression <- Seq(Expressions.isNull(name), Expressions.notNull(name))) {
+        CometIcebergNativeScan.serializeResidual(expression, output, gated).nonEmpty shouldBe true
+      }
+    }
+    for ((name, dataType) <- Seq(
+        ("uuid", StringType),
+        ("fixed", BinaryType),
+        ("binary", BinaryType));
+      expression <- Seq(Expressions.isNull(name), Expressions.notNull(name))) {
+      val output = Seq(AttributeReference(name, dataType)())
+      CometIcebergNativeScan.serializeResidual(expression, output, gated).isEmpty shouldBe true
+    }
+  }
+
+  private def assertDecimalLiteral(
+      literal: IcebergLiteral,
+      precision: Int,
+      scale: Int,
+      unscaled: String): Unit = {
+    literal.getIsNull shouldBe false
+    literal.hasDecimalVal shouldBe true
+    val decimal = literal.getDecimalVal
+    decimal.getPrecision shouldBe precision
+    decimal.getScale shouldBe scale
+    decimal.getUnscaled shouldBe ByteString.copyFrom(new BigInteger(unscaled).toByteArray)
+  }
+
+  for (precision <- Seq(9, 18, 38)) {
+    for ((description, value, unscaled) <- Seq(
+        ("same scale", "123.45", "12345"),
+        ("trailing zero removal", "123.450", "12345"),
+        ("scale expansion", "123.4", "12340"),
+        ("negative value", "-123.45", "-12345"),
+        ("zero", "0.000", "0"),
+        ("negative literal scale", "1E+2", "10000"))) {
+      test(s"decimal($precision,2) residual literal preserves $description exactly") {
+        val predicate = serializeDecimal(decimalEqual(value), DecimalType(precision, 2))
+          .getOrElse(fail(s"expected decimal pushdown for $value"))
+        predicate.hasBinary shouldBe true
+        predicate.getBinary.getColumn shouldBe "amount"
+        predicate.getBinary.getOp shouldBe IcebergPredicateOperator.Eq
+        assertDecimalLiteral(predicate.getBinary.getValue, precision, 2, unscaled)
+      }
+    }
+
+    for (sign <- Seq("", "-")) {
+      test(s"decimal($precision,2) residual literal preserves the ${sign}precision boundary") {
+        // At precision 38 these are actual 38-digit coefficients, beyond rust_decimal's old
+        // 28-digit limit, rather than small values in a wide declared column.
+        val value = sign + "9" * (precision - 2) + ".99"
+        val predicate = serializeDecimal(decimalEqual(value), DecimalType(precision, 2))
+          .getOrElse(fail(s"expected decimal pushdown for $value"))
+        assertDecimalLiteral(predicate.getBinary.getValue, precision, 2, sign + "9" * precision)
+      }
+    }
+  }
+
+  test("decimal residual literal uses signed big-endian two's-complement bytes") {
+    for ((value, bytes) <- Seq(
+        ("1.28", Array[Byte](0, -128)),
+        ("-1.29", Array[Byte](-1, 127)),
+        ("-0.01", Array[Byte](-1)))) {
+      val predicate = serializeDecimal(decimalEqual(value))
+        .getOrElse(fail(s"expected decimal pushdown for $value"))
+      predicate.getBinary.getValue.getDecimalVal.getUnscaled shouldBe ByteString.copyFrom(bytes)
+    }
+  }
+
+  test("decimal residual literals requiring rounding are declined without an exception") {
+    for (value <- Seq("123.456", "-123.456", "0.001", "-0.001")) {
+      withClue(s"literal $value: ") {
+        serializeDecimal(decimalEqual(value)).isEmpty shouldBe true
+      }
+    }
+  }
+
+  test("decimal residual literals exceeding column precision after rescaling are declined") {
+    for (value <- Seq("10", "-10", "10.00", "-10.00")) {
+      withClue(s"literal $value: ") {
+        serializeDecimal(decimalEqual(value), DecimalType(3, 2)).isEmpty shouldBe true
+      }
+    }
+  }
+
+  test("decimal residual null checks remain unary predicates") {
+    for ((expression, op) <- Seq(
+        (Expressions.isNull("amount"), IcebergPredicateOperator.IsNull),
+        (Expressions.notNull("amount"), IcebergPredicateOperator.NotNull))) {
+      val predicate = serializeDecimal(expression).getOrElse(fail("expected unary pushdown"))
+      predicate.hasUnary shouldBe true
+      predicate.getUnary.getColumn shouldBe "amount"
+      predicate.getUnary.getOp shouldBe op
+    }
+  }
+
+  test("decimal residual IN preserves every literal at the column precision and scale") {
+    val expression = Expressions.in(
+      "amount",
+      new BigDecimal("1.0"),
+      new BigDecimal("-5.000"),
+      new BigDecimal("999999999999999999999999999999999999.99"))
+    val predicate = serializeDecimal(expression, DecimalType(38, 2))
+      .getOrElse(fail("expected decimal IN pushdown"))
+    predicate.hasSet shouldBe true
+    predicate.getSet.getColumn shouldBe "amount"
+    predicate.getSet.getOp shouldBe IcebergPredicateOperator.In
+    val literals = predicate.getSet.getValuesList.asScala.toSeq
+    literals.size shouldBe 3
+    literals.foreach { literal =>
+      literal.hasDecimalVal shouldBe true
+      literal.getDecimalVal.getPrecision shouldBe 38
+      literal.getDecimalVal.getScale shouldBe 2
+    }
+    literals
+      .map(l => new BigInteger(l.getDecimalVal.getUnscaled.toByteArray).toString)
+      .toSet shouldBe
+      Set("100", "-500", "99999999999999999999999999999999999999")
+  }
+
+  test("decimal residual IN declines the entire set if any literal requires rounding") {
+    for (values <- Seq(Seq("1.00", "5.001"), Seq("5.001", "1.00"))) {
+      val expression = Expressions.in("amount", values.map(new BigDecimal(_)): _*)
+      serializeDecimal(expression).isEmpty shouldBe true
+    }
+  }
+
+  test("decimal residual positive AND preserves the other conjunct when a literal is declined") {
+    val keep = Expressions.equal("id", Integer.valueOf(7))
+    val declined = decimalEqual("123.456")
+    val expected = serializeDecimal(keep).getOrElse(fail("expected integer pushdown"))
+    for (expression <- Seq(Expressions.and(keep, declined), Expressions.and(declined, keep))) {
+      withClue(s"$expression: ") {
+        serializeDecimal(expression) shouldBe Some(expected)
+      }
+    }
+  }
+
+  test("decimal residual positive AND preserves an exactly rescaled decimal sibling") {
+    val keep = decimalEqual("123.450")
+    val expected = serializeDecimal(keep).getOrElse(fail("expected exact decimal pushdown"))
+    serializeDecimal(Expressions.and(keep, decimalEqual("123.456"))) shouldBe Some(expected)
+  }
+
+  test("decimal residual NOT restriction does not prevent pushing its positive AND sibling") {
+    val keep = Expressions.equal("id", Integer.valueOf(7))
+    val declined = Expressions.not(Expressions.and(keep, decimalEqual("123.456")))
+    val expected = serializeDecimal(keep).getOrElse(fail("expected integer pushdown"))
+    for (expression <- Seq(Expressions.and(keep, declined), Expressions.and(declined, keep))) {
+      serializeDecimal(expression) shouldBe Some(expected)
+    }
+  }
+
+  test("decimal residual AND with no convertible conjunct is declined") {
+    serializeDecimal(
+      Expressions.and(decimalEqual("1.001"), decimalEqual("2.001"))).isEmpty shouldBe true
+  }
+
+  test("decimal residual OR cannot discard an unconvertible disjunct") {
+    val keep = Expressions.equal("id", Integer.valueOf(7))
+    val declined = decimalEqual("123.456")
+    serializeDecimal(keep).nonEmpty shouldBe true
+    for (expression <- Seq(Expressions.or(keep, declined), Expressions.or(declined, keep))) {
+      serializeDecimal(expression).isEmpty shouldBe true
+    }
+  }
+
+  test("decimal residual OR may combine two safely weakened positive AND branches") {
+    val left = Expressions.equal("id", Integer.valueOf(7))
+    val right = Expressions.equal("id", Integer.valueOf(8))
+    val expected = serializeDecimal(Expressions.or(left, right))
+      .getOrElse(fail("expected integer OR pushdown"))
+    val expression = Expressions.or(
+      Expressions.and(left, decimalEqual("1.001")),
+      Expressions.and(decimalEqual("2.001"), right))
+    serializeDecimal(expression) shouldBe Some(expected)
+  }
+
+  test("decimal residual NOT requires complete conversion throughout its subtree") {
+    val keep = Expressions.equal("id", Integer.valueOf(7))
+    val other = Expressions.equal("id", Integer.valueOf(8))
+    val declined = decimalEqual("123.456")
+    // Positive controls use only convertible integers, so these guards already exercise NOT
+    // traversal before decimal literal support is implemented.
+    val complete = serializeDecimal(Expressions.not(Expressions.and(keep, other)))
+      .getOrElse(fail("expected complete NOT pushdown"))
+    complete.hasNot shouldBe true
+    for (child <- Seq(Expressions.and(keep, declined), Expressions.and(declined, keep))) {
+      serializeDecimal(Expressions.not(child)).isEmpty shouldBe true
+      serializeDecimal(
+        notWithoutSimplification(notWithoutSimplification(child))).isEmpty shouldBe true
+    }
+    serializeDecimal(
+      Expressions.not(
+        Expressions.or(Expressions.and(keep, declined), other))).isEmpty shouldBe true
+  }
+
+  test("decimal residual NOT OR declines the whole subtree when a disjunct is unconvertible") {
+    val valid = Expressions.equal("id", Integer.valueOf(7))
+    val other = Expressions.equal("id", Integer.valueOf(8))
+    val invalid = decimalEqual("123.456")
+    val complete = serializeDecimal(Expressions.not(Expressions.or(valid, other)))
+      .getOrElse(fail("expected complete NOT OR pushdown"))
+    complete.hasNot shouldBe true
+    complete.getNot.hasOr shouldBe true
+    // A converter aware of negation could weaken NOT(valid OR invalid) to NOT(valid).
+    // This optimization is not required: declining the entire NOT subtree is conservative,
+    // leaving the exact expression to the post-scan filter.
+    for (child <- Seq(Expressions.or(valid, invalid), Expressions.or(invalid, valid))) {
+      withClue(s"NOT($child): ") {
+        serializeDecimal(Expressions.not(child)).isEmpty shouldBe true
+      }
+      serializeDecimal(
+        notWithoutSimplification(notWithoutSimplification(child))).isEmpty shouldBe true
+    }
+  }
+
+  test("decimal residual double NOT preserves a completely convertible child") {
+    val child = decimalEqual("123.450")
+    val expected = serializeDecimal(child).getOrElse(fail("expected decimal pushdown"))
+    val predicate = serializeDecimal(notWithoutSimplification(notWithoutSimplification(child)))
+      .getOrElse(fail("expected double NOT pushdown"))
+    predicate.hasNot shouldBe true
+    predicate.getNot.hasNot shouldBe true
+    predicate.getNot.getNot shouldBe expected
+  }
 
   private def causes(t: Throwable): Iterator[Throwable] =
     Iterator.iterate(t)(_.getCause).takeWhile(_ != null)
@@ -101,11 +376,7 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       Expressions.alwaysTrue(),
       Expressions.alwaysFalse(),
       // Iceberg spells a nested field as a dotted path, which is never a scan output attribute.
-      Expressions.equal("outer.value", Integer.valueOf(1)),
-      // A conjunct that does not convert elides the whole residual.
-      Expressions.and(
-        Expressions.equal("value", Integer.valueOf(1)),
-        Expressions.notIn("value", Integer.valueOf(2))))
+      Expressions.equal("outer.value", Integer.valueOf(1)))
     for (expr <- declined) {
       withClue(s"$expr: ") {
         serialize(expr).isEmpty shouldBe true
@@ -116,20 +387,26 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
       .serializeResidual(Expressions.equal("value", Integer.valueOf(1)), intColumn, Set("value"))
       .isEmpty shouldBe true
     // The same predicate converts when nothing declines it, so the cases above are not vacuous.
-    serialize(Expressions.equal("value", Integer.valueOf(1))).nonEmpty shouldBe true
+    val supported = Expressions.equal("value", Integer.valueOf(1))
+    serialize(supported).nonEmpty shouldBe true
+    serialize(Expressions.and(supported, Expressions.notIn("value", Integer.valueOf(2)))) shouldBe
+      serialize(supported)
   }
 
   test("a transform residual is declined rather than read as its source column") {
     // UnboundTransform answers ref() with the source column, so converting the term like a bare
     // reference would push bucket(4, value) = 1 as value = 1 and drop matching rows.
-    // CometScanRule declines a non-identity transform during planning, but only when the
-    // residual is a bare predicate, so a nested one has to be declined here. The end-to-end
-    // wrong answer is pinned in CometIcebergResidualPushdownSuite.
+    // CometScanRule declines a bare transform during planning. In a positive AND the serde may
+    // keep a supported sibling, but must never turn the transform into a source-column predicate.
+    // The end-to-end wrong answer is pinned in CometIcebergResidualPushdownSuite.
     val bucketed =
       Expressions.equal(Expressions.bucket[Integer]("value", 4), Integer.valueOf(1))
     serialize(bucketed).isEmpty shouldBe true
-    val nested = Expressions.and(bucketed, Expressions.equal("value", Integer.valueOf(1)))
-    serialize(nested).isEmpty shouldBe true
+    val supported = Expressions.equal("value", Integer.valueOf(1))
+    val nested = Expressions.and(bucketed, supported)
+    serialize(nested) shouldBe serialize(supported)
+    serialize(Expressions.or(bucketed, supported)).isEmpty shouldBe true
+    serialize(Expressions.not(nested)).isEmpty shouldBe true
   }
 
   private def translate(

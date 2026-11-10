@@ -2671,8 +2671,8 @@ fn parse_file_scan_tasks_from_common(
                     .get(idx as usize)
                     .and_then(iceberg_predicate_to_predicate)
                     .and_then(|pred| {
-                        // The residual predicate only drives row-group pruning; the post-scan
-                        // filter still enforces correctness. iceberg-rust cannot bind a datum
+                        // The residual drives pruning and row filtering; the post-scan filter
+                        // enforces the full expression. iceberg-rust cannot bind a datum
                         // whose type has no conversion to the column type, so on a bind failure
                         // we skip pushdown rather than fail the scan.
                         // rewrite_not first: iceberg-rust's scan evaluators require negation-normal
@@ -2984,10 +2984,11 @@ fn literal_to_array_ref(
 // Iceberg Residual Predicate Conversion
 // ============================================================================
 
-/// Converts a serialized Iceberg residual predicate into an iceberg-rust `Predicate` for row-group
-/// pruning. This is only a pruning hint -- the post-scan CometFilter enforces correctness -- so any
-/// node or literal that cannot be represented degrades to `None` (no pushdown) rather than an
-/// error. Mirrors the proto 1:1 onto iceberg-rust's `Reference` builders.
+/// Converts a serialized Iceberg residual predicate into an iceberg-rust `Predicate` for pruning
+/// and row filtering. The post-scan CometFilter enforces the full expression, so unsupported
+/// input degrades to no pushdown. Scala may omit positive conjuncts before serialization, but
+/// every logical node it emits must decode completely here. Mirrors the proto 1:1 onto
+/// iceberg-rust's `Reference` builders.
 fn iceberg_predicate_to_predicate(
     proto: &spark_operator::IcebergPredicate,
 ) -> Option<iceberg::expr::Predicate> {
@@ -3082,10 +3083,8 @@ fn combine_logical(
 }
 
 /// Converts a serialized `IcebergLiteral` into an iceberg-rust `Datum` for predicate pushdown.
-/// Returns `None` for null and for byte-array-backed types (decimal/uuid/fixed/binary), which
-/// iceberg-rust cannot use in the page index yet; the driver does not emit those for predicates,
-/// so this only guards against unexpected input. Correctness is unaffected -- a dropped literal
-/// just skips pushdown.
+/// Decimal values retain the column's precision and scale. Returns `None` for null, invalid
+/// decimal encodings, and UUID/fixed/binary literals that the driver does not emit for predicates.
 fn iceberg_literal_to_datum(lit: &spark_operator::IcebergLiteral) -> Option<iceberg::spec::Datum> {
     use spark_operator::iceberg_literal::Value;
 
@@ -3103,7 +3102,25 @@ fn iceberg_literal_to_datum(lit: &spark_operator::IcebergLiteral) -> Option<iceb
         Value::TimestampVal(v) => Some(iceberg::spec::Datum::timestamp_micros(*v)),
         Value::TimestampTzVal(v) => Some(iceberg::spec::Datum::timestamptz_micros(*v)),
         Value::StringVal(v) => Some(iceberg::spec::Datum::string(v.clone())),
-        Value::DecimalVal(_) | Value::UuidVal(_) | Value::FixedVal(_) | Value::BinaryVal(_) => None,
+        Value::DecimalVal(d) => {
+            let precision = u32::try_from(d.precision).ok()?;
+            let scale = u32::try_from(d.scale).ok()?;
+            if !(1..=38).contains(&precision) || scale > precision || d.unscaled.is_empty() {
+                return None;
+            }
+            let unscaled = decimal_bytes_to_i128(&d.unscaled).ok()?;
+            // Validate before constructing D128: malformed input can carry 39 digits in i128,
+            // while an Iceberg decimal must fit its declared precision (at most 38).
+            if unscaled.unsigned_abs() >= 10_u128.pow(precision) {
+                return None;
+            }
+            // An explicit exponent preserves the scale, including zero and trailing zeros.
+            let decimal = format!("{unscaled}e-{scale}")
+                .parse::<iceberg::spec::Decimal>()
+                .ok()?;
+            iceberg::spec::Datum::decimal_with_precision(decimal, precision).ok()
+        }
+        Value::UuidVal(_) | Value::FixedVal(_) | Value::BinaryVal(_) => None,
     }
 }
 
@@ -3128,6 +3145,7 @@ fn needs_fields_coercion(sig: &TypeSignature) -> bool {
 #[cfg(test)]
 mod tests {
     mod empty_native_scan;
+    mod iceberg_predicate;
     mod multi_store_scan;
     mod semi_join_reduction;
 
