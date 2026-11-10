@@ -5409,6 +5409,8 @@ mod tests {
                             outer,
                             position,
                             project_list: vec![bound],
+                            inline: false,
+                            terminate: None,
                         })),
                         ..Default::default()
                     };
