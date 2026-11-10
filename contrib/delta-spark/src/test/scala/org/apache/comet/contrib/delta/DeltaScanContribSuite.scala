@@ -77,7 +77,8 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
           } finally {
             fs.close()
           }
-          val errors = Seq(false, true).map { enabled =>
+          val errors = scala.collection.mutable.ArrayBuffer.empty[(String, String, Seq[String])]
+          Seq(false, true).foreach { enabled =>
             withSQLConf(CometConf.COMET_ENABLED.key -> enabled.toString) {
               val group = s"malformed-context-${UUID.randomUUID()}"
               spark.sparkContext.setJobGroup(group, group)
@@ -89,15 +90,16 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
                 assert(frames.exists(_.contains("S3AEncryption.getS3EncryptionContext")))
                 assert(frames.exists(_.contains("S3AFileSystem.initialize")))
                 assert(spark.sparkContext.statusTracker.getJobIdsForGroup(group).isEmpty)
-                (
-                  error.getClass,
+                errors += ((
+                  error.getClass.getName,
                   error.getMessage,
-                  frames.filter(_.startsWith("org.apache.hadoop.")))
+                  frames.filter(_.startsWith("org.apache.hadoop."))))
               } finally {
                 spark.sparkContext.clearJobGroup()
               }
             }
           }
+          assert(errors.size == 2)
           assert(errors.head == errors.last)
         }
       } finally {
