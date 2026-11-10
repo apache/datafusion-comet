@@ -522,7 +522,16 @@ case class CometScanRule(session: SparkSession)
           return withFallbackReasons(scanExec, fallbackReasons.toSet)
         }
 
-        val typeChecker = CometScanTypeChecker()
+        // iceberg-rust reads unshredded Variant columns at any depth and rejects shredded ones at
+        // execution with FeatureUnsupported. DataTypeSupport recursively dispatches back to this
+        // override for struct fields, array elements, and map entries.
+        val typeChecker = new CometScanTypeChecker() {
+          override def isTypeSupported(
+              dt: DataType,
+              name: String,
+              reasons: ListBuffer[String]): Boolean =
+            isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
+        }
         // Filter out metadata columns from schema check -- their types are handled
         // by iceberg-rust directly (e.g., _partition can be an empty struct for
         // unpartitioned tables which the general type checker rejects).
@@ -807,33 +816,20 @@ case class CometScanRule(session: SparkSession)
             "by Comet's native reader (#6790)"
         }
 
-        // The full task schema can be serialized to native, but iceberg-rust can represent
-        // Variant in that schema as long as no projected field contains one. Check projected
-        // roots strictly, and allow Variant only under entirely unprojected roots. Other
-        // unsupported types still fail closed everywhere. An empty data projection is also strict
-        // because iceberg-rust currently interprets an empty field-id list as a request for every
-        // column.
+        // The full task schema is serialized to native, so its types must be supported too. An
+        // empty or unresolved data projection rejects Variant because iceberg-rust interprets an
+        // empty field-id list as a request for every column.
         val fullTaskSchema = metadata.fullTaskSchema.getOrElse(metadata.tableSchema)
         val schemaTypesSupported =
           try {
             val fullSchema = IcebergReflection.toSparkSchema(fullTaskSchema)
-            // DataTypeSupport recursively dispatches back to this override for struct fields,
-            // array elements, and map entries, so Variant is allowed at any nesting depth only
-            // when its entire top-level Iceberg field is unprojected.
-            val unprojectedTypeChecker = new CometScanTypeChecker() {
-              override def isTypeSupported(
-                  dt: DataType,
-                  name: String,
-                  reasons: ListBuffer[String]): Boolean =
-                isVariantType(dt) || super.isTypeSupported(dt, name, reasons)
-            }
-            val tableFieldIds = IcebergReflection.buildFieldIdMapping(fullTaskSchema)
-
+            val checker =
+              if (projectedDataColumns.isEmpty || hasUnresolvedProjectedFieldIds) {
+                CometScanTypeChecker()
+              } else {
+                typeChecker
+              }
             fullSchema.fields.forall { field =>
-              val isProjected = projectedDataColumns.isEmpty ||
-                hasUnresolvedProjectedFieldIds ||
-                tableFieldIds.get(field.name).forall(resolvedProjectedFieldIds.contains)
-              val checker = if (isProjected) typeChecker else unprojectedTypeChecker
               checker.isTypeSupported(field.dataType, field.name, fallbackReasons)
             }
           } catch {
