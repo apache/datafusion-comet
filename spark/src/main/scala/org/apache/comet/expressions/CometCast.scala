@@ -24,7 +24,7 @@ import scala.util.Try
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Expression, Literal}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, DataType, DataTypes, DateType, DecimalType, MapType, NullType, NumericType, StringType, StructType, TimestampNTZType, TimestampType}
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, withFallbackReason}
 import org.apache.comet.DataTypeSupport.{containsDuplicateFieldNames, isComplexType}
@@ -585,10 +585,10 @@ object CometCast
   private[comet] def cannotFail(cast: Cast): Boolean = {
     val from = cast.child.dataType
     val to = cast.dataType
-    def isTimestamp(t: DataType) = t == TimestampType || t == TimestampNTZType
-    val hasTimestamp = existsNested(from)(isTimestamp) || existsNested(to)(isTimestamp)
-    val dateToString = existsNested(from)(_ == DataTypes.DateType) &&
-      existsNested(to)(_.isInstanceOf[StringType])
+    val hasTimestamp = Seq(from, to).exists(
+      SupportLevel.containsType(_, classOf[TimestampType], classOf[TimestampNTZType]))
+    val dateToString = SupportLevel.containsType(from, classOf[DateType]) &&
+      SupportLevel.containsType(to, classOf[StringType])
     !hasTimestamp && !dateToString && (evalMode(cast) match {
       case CometEvalMode.TRY => true
       case CometEvalMode.LEGACY if isAtomicCastType(from) && isAtomicCastType(to) => true
@@ -597,18 +597,10 @@ object CometCast
     })
   }
 
-  private def existsNested(dataType: DataType)(p: DataType => Boolean): Boolean =
-    p(dataType) || (dataType match {
-      case ArrayType(elementType, _) => existsNested(elementType)(p)
-      case MapType(keyType, valueType, _) =>
-        existsNested(keyType)(p) || existsNested(valueType)(p)
-      case StructType(fields) => fields.exists(f => existsNested(f.dataType)(p))
-      case _ => false
-    })
-
+  // Timestamps are left out because `cannotFail` rejects them before reaching this check.
   private def isAtomicCastType(dataType: DataType): Boolean = dataType match {
     case _: NumericType | _: StringType | DataTypes.BooleanType | DataTypes.BinaryType |
-        DataTypes.DateType | DataTypes.TimestampType | _: TimestampNTZType =>
+        DataTypes.DateType =>
       true
     case _ => false
   }
