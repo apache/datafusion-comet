@@ -460,7 +460,7 @@ for Spark 4.2, so the 4.2 profile builds against the 4.0 runtime and the Iceberg
 (`icebergAvailable` is false on Spark 4.2). Only the default profile runs on every pull request.
 
 Bloom-enabled native writes additionally require an identifiable Iceberg version >= 1.10.
-On the 3.4 and 3.5 profiles, any per-column Bloom property (including `false` enablement and standalone FPP/NDV) selects Java,
+With the pinned Spark 3.5 / Iceberg 1.8.1 runtime, any per-column Bloom property (including `false` enablement and standalone FPP/NDV) selects Java,
 even when the Bloom folding opt-in is enabled. Other native-write eligibility is unchanged.
 
 Behaviour that differs between Iceberg versions, such as reflection targets, metrics conventions

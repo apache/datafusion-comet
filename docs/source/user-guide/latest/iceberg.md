@@ -698,7 +698,6 @@ version determines eligibility; Spark's version alone does not enable this featu
 
 | Spark profile | Pinned Iceberg | Bloom opt-in behavior                         |
 | ------------- | -------------- | --------------------------------------------- |
-| 3.4           | 1.5.2          | Java writer, even with the opt-in enabled     |
 | 3.5           | 1.8.1          | Java writer, even with the opt-in enabled     |
 | 4.0           | 1.10.0         | Native eligible; FPP interpreted, NDV ignored |
 | 4.1           | 1.11.0         | Native eligible; FPP and NDV interpreted      |
