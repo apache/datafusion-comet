@@ -3712,9 +3712,18 @@ mod tests {
                 Some(utc - 5 * hour - 30 * 60 * 1_000_000),
             ),
             // A non-zero seconds part is applied as a residual after the minute-precision zone
-            ("2020-01-01 12:34:56 +080030", Some(utc - 8 * hour - 30 * 1_000_000)),
-            ("2020-01-01 12:34:56 +08:00:30", Some(utc - 8 * hour - 30 * 1_000_000)),
-            ("2020-01-01 12:34:56-01:30:15", Some(utc + hour + 30 * 60 * 1_000_000 + 15 * 1_000_000)),
+            (
+                "2020-01-01 12:34:56 +080030",
+                Some(utc - 8 * hour - 30 * 1_000_000),
+            ),
+            (
+                "2020-01-01 12:34:56 +08:00:30",
+                Some(utc - 8 * hour - 30 * 1_000_000),
+            ),
+            (
+                "2020-01-01 12:34:56-01:30:15",
+                Some(utc + hour + 30 * 60 * 1_000_000 + 15 * 1_000_000),
+            ),
             ("2020-01-01 12:34:56 +08000", None),
             // UTC/GMT/UT names, and region ids with those names after a '/'
             ("2020-01-01 12:34:56 UTC", Some(utc)),
