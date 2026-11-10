@@ -411,14 +411,13 @@ summary-aware writer commit contract.
 
 For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
 analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
-projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+projections, while on Spark 3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.
 
 Merge-on-read uses Spark's `WriteDelta`, and Iceberg's JVM `DeltaWriter` writes its rows under
 either plan, so it keeps Spark's stock write plan. On Spark 3.5+ the testing setting
 `spark.comet.write.iceberg.splitOperator.enabled` plans it as the split plan, with the same driver
 commit and reporting path, but `CometIcebergWriteExec` is never used for position-delta rows.
-Spark 3.4 always leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -438,8 +437,6 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
 - the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
 - the table uses merge-on-read (`WriteDelta`), unless the testing setting
   `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
-- the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
-  3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write is a streaming write (`writeStream` into an Iceberg table);
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
   not use;
