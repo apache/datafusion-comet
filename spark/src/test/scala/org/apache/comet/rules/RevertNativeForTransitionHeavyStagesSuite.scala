@@ -355,7 +355,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
     val leaf = sparkPlan.collectFirst { case node: LeafExecNode => node }.getOrElse {
       fail(s"expected a leaf node in test plan:\n$sparkPlan")
     }
-    val stacked = CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(leaf)))
+    val stacked = CometSparkToColumnarExec(CometColumnarToRowExec(cometFilter(leaf)))
     val write = cometIcebergWrite(stacked)
 
     val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
@@ -365,7 +365,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       reverted.collect { case _: FilterExec => true }.size == 1,
       s"expected exactly one Spark FilterExec:\n$reverted")
     assert(
-      reverted.collect { case _: CometNativeColumnarToRowExec | _: CometSparkToColumnarExec =>
+      reverted.collect { case _: CometColumnarToRowExec | _: CometSparkToColumnarExec =>
         true
       }.isEmpty,
       s"stacked transitions should be fully unwrapped:\n$reverted")
@@ -440,7 +440,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         fail(s"expected a leaf node in test plan:\n$sparkPlan")
       }
       val aliasing = AliasingFallbackCometExec(leaf, leaf)
-      val stagePlan = CometNativeColumnarToRowExec(aliasing)
+      val stagePlan = CometColumnarToRowExec(aliasing)
       val rule = RevertNativeForTransitionHeavyStages(spark)
       assert(rule.countTransitions(stagePlan) == 1)
 
@@ -462,7 +462,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
       }
       val cometChild = cometFilter(leaf)
       val aliasing = AliasingFallbackCometExec(cometChild, cometChild)
-      val stagePlan = CometNativeColumnarToRowExec(aliasing)
+      val stagePlan = CometColumnarToRowExec(aliasing)
       val rule = RevertNativeForTransitionHeavyStages(spark)
       assert(rule.countTransitions(stagePlan) == 1)
 
@@ -756,12 +756,12 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
           .getOrElse(fail(s"test requires a native shuffle:\n$cometPlan"))
         // The transition that must survive lives in the map stage, under the exchange.
         val preserved =
-          if (shuffle.child.supportsColumnar) CometNativeColumnarToRowExec(shuffle.child)
+          if (shuffle.child.supportsColumnar) CometColumnarToRowExec(shuffle.child)
           else CometSparkToColumnarExec(shuffle.child)
         val shuffleWithTransition = shuffle.withNewChildren(Seq(preserved))
         // Stacked transitions sit directly on the shuffle, the shape #6152 strips through.
         val onExchange =
-          CometSparkToColumnarExec(CometNativeColumnarToRowExec(shuffleWithTransition))
+          CometSparkToColumnarExec(CometColumnarToRowExec(shuffleWithTransition))
         val write = cometIcebergWrite(onExchange)
 
         val reverted = RevertNativeForTransitionHeavyStages(spark).revertToSpark(write)
@@ -902,8 +902,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
           assert(scan.supportsColumnar, s"test requires a vectorized Spark scan:\n$scan")
           val rule = RevertNativeForTransitionHeavyStages(spark, wholePlan)
 
-          val overFilter = BothFormatsExec(
-            CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(scan))))
+          val overFilter =
+            BothFormatsExec(CometSparkToColumnarExec(CometColumnarToRowExec(cometFilter(scan))))
           assert(overFilter.supportsColumnar && overFilter.supportsRowBased)
           assert(rule.countTransitions(overFilter) == 1)
           val filterSparkPlan = rule.revertToSpark(overFilter)
@@ -956,7 +956,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
         val rule = RevertNativeForTransitionHeavyStages(spark)
 
         val columnarRoot =
-          CometSparkToColumnarExec(CometNativeColumnarToRowExec(cometFilter(leaf)))
+          CometSparkToColumnarExec(CometColumnarToRowExec(cometFilter(leaf)))
         assert(columnarRoot.supportsColumnar && !columnarRoot.supportsRowBased)
         assert(rule.countTransitions(columnarRoot) == 1)
         val columnar = rule(columnarRoot)
@@ -995,8 +995,8 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
             .getOrElse(fail("test requires a native shuffle"))
           assert(exchange.child.isInstanceOf[CometNativeScanExec])
           val input = if (columnarRoot) exchange.child else cometFilter(exchange.child)
-          val stage = exchange.withNewChildren(
-            Seq(CometSparkToColumnarExec(CometNativeColumnarToRowExec(input))))
+          val stage =
+            exchange.withNewChildren(Seq(CometSparkToColumnarExec(CometColumnarToRowExec(input))))
           val rule = RevertNativeForTransitionHeavyStages(spark)
           assert(rule.countTransitions(stage.children.head) == 1)
 
@@ -1191,7 +1191,7 @@ class RevertNativeForTransitionHeavyStagesSuite extends CometTestBase {
           }
           .getOrElse(fail(s"expected a native partial aggregate:\n$nativePlan"))
         val producerWithTransition = partial.withNewChildren(
-          Seq(CometSparkToColumnarExec(CometNativeColumnarToRowExec(partial.child))))
+          Seq(CometSparkToColumnarExec(CometColumnarToRowExec(partial.child))))
         val reverter = RevertNativeForTransitionHeavyStages(spark)
         assert(reverter.countTransitions(producerWithTransition) == 1)
 
