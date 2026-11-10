@@ -55,6 +55,8 @@ onward, and timestamps from 1900-01-01T00:00:00Z onward (Spark's own
 rebase cutoff). Disable `spark.comet.scan.delta.enabled` for such tables to
 read them through Spark.
 
+When an effective `fs.s3a.encryption.context` is configured, Delta reads fall back to Spark, including valid context values. Hadoop parses this KMS write-context setting during filesystem initialization. A Delta log can refer to data in another bucket, so reading the log alone does not validate that bucket's configuration. Falling back preserves Spark's initialization checks. The decline reason names the setting without printing its value.
+
 ## Configuration
 
 <!-- This table is hand-maintained (the doc build cannot see the contrib's config provider) and

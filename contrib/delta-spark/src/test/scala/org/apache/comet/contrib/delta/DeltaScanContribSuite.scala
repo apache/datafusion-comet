@@ -2115,6 +2115,98 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
     assert(!reason.get.contains("realSecretValue"))
   }
 
+  test("unsupportedEncryptionContextReason passes absent/empty and non-S3 contexts") {
+    val conf = new Configuration(false)
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    conf.set("fs.s3a.encryption.context", "")
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    conf.set("fs.s3a.encryption.context", "synthetic-malformed-pair")
+    assert(
+      DeltaScanSupport
+        .unsupportedEncryptionContextReason(conf, Seq(new URI("file:///tmp/data.parquet")))
+        .isEmpty)
+  }
+
+  test(
+    "unsupportedEncryptionContextReason declines global/short/long values without printing them") {
+    val keys = Seq(
+      "fs.s3a.encryption.context",
+      "fs.s3a.bucket.data-bucket.encryption.context",
+      "fs.s3a.bucket.data-bucket.fs.s3a.encryption.context")
+    for (key <- keys; value <- Seq("purpose=synthetic", "synthetic-malformed-pair")) {
+      val conf = new Configuration(false)
+      conf.set(key, value)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.exists(_.contains("fs.s3a.encryption.context")))
+      assert(reason.exists(_.contains("data-bucket")))
+      assert(!reason.get.contains(value))
+    }
+    val unrelated = new Configuration(false)
+    unrelated.set("fs.s3a.bucket.other-bucket.encryption.context", "synthetic-malformed-pair")
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(unrelated, DataBucketUris).isEmpty)
+  }
+
+  test(
+    "unsupportedEncryptionContextReason resolves propagated references and preserves fallback") {
+    val conf = new Configuration(false)
+    conf.set("fs.s3a.encryption.context", "${fs.s3a.context.reference}")
+    conf.set("fs.s3a.context.reference", "")
+    conf.set("fs.s3a.bucket.data-bucket.context.reference", "synthetic-malformed-pair")
+    val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+    assert(reason.isDefined)
+    assert(!reason.get.contains("synthetic-malformed-pair"))
+    conf.setBoolean("hadoop.security.credential.clear-text-fallback", false)
+    assert(DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris).isEmpty)
+    val unresolved = new Configuration(false)
+    unresolved.set("fs.s3a.encryption.context", "${unresolved.synthetic.context}")
+    val unresolvedReason =
+      DeltaScanSupport.unsupportedEncryptionContextReason(unresolved, DataBucketUris)
+    assert(unresolvedReason.isDefined)
+    assert(!unresolvedReason.get.contains("unresolved.synthetic.context"))
+  }
+
+  test("unsupportedEncryptionContextReason finds context stored only in JCEKS bucket aliases") {
+    val keys = Seq(
+      "fs.s3a.encryption.context",
+      "fs.s3a.bucket.data-bucket.encryption.context",
+      "fs.s3a.bucket.data-bucket.fs.s3a.encryption.context")
+    keys.foreach { key =>
+      withJceks(Map(key -> "purpose=synthetic")) { conf =>
+        assert(conf.get(key) == null)
+        conf.setBoolean("hadoop.security.credential.clear-text-fallback", false)
+        val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+        assert(reason.isDefined)
+        assert(!reason.get.contains("purpose=synthetic"))
+      }
+    }
+  }
+
+  test(
+    "unsupportedEncryptionContextReason declines unverifiable providers without exposing paths") {
+    for ((key, value) <- Seq(
+        "fs.s3a.security.credential.provider.path" -> "jceks://file/no/synthetic-store.jceks",
+        "hadoop.security.credential.provider.path" -> "jceks://s3a@secret-bucket/secret.jceks")) {
+      val conf = new Configuration(false)
+      conf.set(key, value)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.isDefined)
+      assert(!reason.get.contains(value))
+    }
+    val corruptFile = File.createTempFile("comet-context-corrupt", ".jceks")
+    try {
+      Files.write(corruptFile.toPath, Array[Byte](1, 2, 3))
+      val conf = new Configuration(false)
+      conf.set(
+        "hadoop.security.credential.provider.path",
+        "jceks://file" + corruptFile.getAbsolutePath)
+      val reason = DeltaScanSupport.unsupportedEncryptionContextReason(conf, DataBucketUris)
+      assert(reason.isDefined)
+      assert(!reason.get.contains(corruptFile.getAbsolutePath))
+    } finally {
+      corruptFile.delete()
+    }
+  }
+
   test(
     "unsupportedEncryptionAlgorithmReason declines a bucket configured with global SSE-C, " +
       "naming the algorithm key and the algorithm but never the customer-provided key value") {
@@ -2960,9 +3052,9 @@ class DeltaScanContribSuite extends CometDeltaTestBase {
           "fs.s3a.server-side-encryption.key" ->
             "deprecated alias of fs.s3a.encryption.key, same reasoning",
           "fs.s3a.encryption.context" ->
-            ("write-request KMS context, never read by the native scan; malformed values fail " +
-              "in S3AFileSystem.initialize during Delta metadata reads before scan planning, " +
-              "as covered by the malformed S3 encryption context driver test above"),
+            ("handled by unsupportedEncryptionContextReason: declines non-empty or unverifiable " +
+              "Hadoop-effective context for every S3 data/DV bucket, including when a local " +
+              "Delta log did not initialize that bucket's S3A filesystem"),
           "fs.s3a.encryption.cse.kms.region" ->
             ("CSE tuning, newer Hadoop only: consulted solely when the algorithm resolves to " +
               "a CSE variant, and the allowlist gate declines every CSE algorithm outright, " +

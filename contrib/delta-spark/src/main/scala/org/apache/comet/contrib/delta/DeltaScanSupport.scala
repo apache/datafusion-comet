@@ -388,6 +388,12 @@ object DeltaScanSupport {
       return encryptionReason
     }
 
+    val contextReason =
+      unsupportedEncryptionContextReason(hadoopConf, dataFileUris ++ dvUris, propagatedConfCache)
+    if (contextReason.isDefined) {
+      return contextReason
+    }
+
     // Always zero-I/O (plain propagated-conf read, no keystore): native's S3 client has no
     // HTTP proxy support at all (no fs.s3a.proxy.* key is read anywhere in s3.rs), so a bucket
     // requiring a proxy for S3 egress must decline here rather than claim and then connect
@@ -1155,6 +1161,42 @@ object DeltaScanSupport {
     }
   }
 
+  /**
+   * Decline S3 encryption context because native does not reproduce Hadoop's setup-time parsing.
+   * A local Delta log can reference S3 data or DVs, so metadata reads need not initialize S3A.
+   * Resolve the same bucket aliases and credential providers as Hadoop, without exposing values.
+   */
+  private[delta] def unsupportedEncryptionContextReason(
+      hadoopConf: Configuration,
+      uris: Seq[URI],
+      propagatedConfCache: MutableMap[String, Configuration] = MutableMap.empty)
+      : Option[String] = {
+    val key = "fs.s3a.encryption.context"
+    uris
+      .flatMap(s3Bucket)
+      .distinct
+      .iterator
+      .map { bucket =>
+        try {
+          val propagatedConf = propagatedConfCache.getOrElseUpdate(
+            bucket,
+            propagateBucketOptions(hadoopConf, bucket))
+          hadoopLookupPasswordEffective(propagatedConf, bucket, key) match {
+            case Left(reason) => Some(reason)
+            case Right(Some(_)) =>
+              Some(
+                s"Native Delta scan does not support $key for $bucket " +
+                  "(Hadoop validates the context during S3A initialization)")
+            case Right(None) => None
+          }
+        } catch {
+          case e @ (_: IOException | _: RuntimeException) =>
+            Some(unverifiableValueReason(bucket, key, e))
+        }
+      }
+      .collectFirst { case Some(reason) => reason }
+  }
+
   private def encryptionAlgorithmReason(conf: Configuration, bucket: String): Option[String] =
     effectiveEncryptionAlgorithm(conf, bucket) match {
       case Left(reason) => Some(reason)
@@ -1522,22 +1564,22 @@ object DeltaScanSupport {
    * for the Arm A/B/C dispatch this delegates to) -- or `Left(reason)` when the value cannot be
    * safely verified.
    *
-   * USED ONLY for keys whose real consumer IS `lookupPassword` -- the [[LookupPasswordConsumer]]
-   * entries of [[S3ConfigKeyConsumers]], via [[s3KeyDivergenceReason]]. An earlier version ran
-   * EVERY compared key through this function, reasoning that a wider read could only ever
-   * over-decline; for a value-EQUALITY comparator that reasoning is half-true: the long-form
-   * alias this function consults FIRST can hold exactly the value native resolves while Hadoop's
-   * true propagate-then-plain-get value differs (e.g. a `${...}` reference whose referent
-   * propagation redirects), producing a false EQUALITY that admits a really-diverging scan. A
-   * [[PropagatedOptionConsumer]] key must therefore resolve like its actual consumer instead --
-   * see [[s3KeyDivergenceReason]].
+   * Used for keys whose real consumer is `lookupPassword`: the [[LookupPasswordConsumer]] entries
+   * of [[S3ConfigKeyConsumers]] and the dedicated [[unsupportedEncryptionContextReason]] gate. An
+   * earlier version ran EVERY compared key through this function, reasoning that a wider read
+   * could only ever over-decline; for a value-EQUALITY comparator that reasoning is half-true:
+   * the long-form alias this function consults FIRST can hold exactly the value native resolves
+   * while Hadoop's true propagate-then-plain-get value differs (e.g. a `${...}` reference whose
+   * referent propagation redirects), producing a false EQUALITY that admits a really-diverging
+   * scan. A [[PropagatedOptionConsumer]] key must therefore resolve like its actual consumer
+   * instead -- see [[s3KeyDivergenceReason]].
    *
    * Honors [[ClearTextFallbackKey]] (via [[resolveViaCredentialAliases]]'s [[NoProvider]] arm),
    * matching `getPassword`'s real refusal to read plaintext conf when the flag is off.
    *
-   * `hadoopConf` must be a [[propagateBucketOptions]] result (the caller,
-   * [[s3KeyDivergenceReason]], always passes one) so that `${...}` references embedded in any
-   * alias resolve exactly like `S3AFileSystem#initialize`'s real propagate-then-resolve order.
+   * `hadoopConf` must be a [[propagateBucketOptions]] result (both callers pass one) so that
+   * `${...}` references embedded in any alias resolve exactly like `S3AFileSystem#initialize`'s
+   * real propagate-then-resolve order.
    */
   private def hadoopLookupPasswordEffective(
       hadoopConf: Configuration,
