@@ -61,7 +61,12 @@ yet, and sketches ways to run part of a query in Spark.
    for it.
 
 `CometNativeExecutorsSuite` runs queries against a cluster it starts from the binaries in
-`COMET_NATIVE_EXECUTORS_BIN_DIR`. Its header comment gives the commands.
+`COMET_NATIVE_EXECUTORS_BIN_DIR`. Its header comment gives the commands. It is not part of CI. Its
+tests that need a cluster are skipped when the variable is not set. The tests that check what the
+driver refuses to plan run without a cluster, but they still need a libcomet built with the
+`native-executors` feature. `CometNativeExecutorsPlanSuite` runs in CI. It takes the plan Comet
+would execute and checks the stage graph, the queries the driver refuses, and how a scalar
+subquery's result goes into the plan, with neither a cluster nor the feature.
 
 ## Current limitations
 
@@ -80,8 +85,13 @@ Comet Native Executors are a first version. The sub-issues of
   with a dynamic pruning filter is refused.
 - Writes: [#7371](https://github.com/apache/datafusion-comet/issues/7371). Commands and writes stay
   in Spark.
-- Cancellation: [#7372](https://github.com/apache/datafusion-comet/issues/7372). A killed Spark job
-  leaves its query running on the cluster.
+- Cancellation: [#7372](https://github.com/apache/datafusion-comet/issues/7372). The driver thread
+  waits for the cluster in native code until the query finishes, so cancelling the Spark job or
+  interrupting the thread does not stop the wait, and a killed Spark job leaves its query running
+  on the cluster.
+- Errors. A failure on the cluster reaches Spark as a `CometNativeException` with the cluster's
+  message, not as the exception Spark would raise. For example, a division by zero with ANSI mode on
+  is not a `SparkArithmeticException` with the `DIVIDE_BY_ZERO` error class.
 - Spark UI metrics: [#7373](https://github.com/apache/datafusion-comet/issues/7373).
 - Security. The scheduler and the executors have no authentication and no TLS, and a query names
   the files and object stores the executors read. Run a cluster only on a trusted network.

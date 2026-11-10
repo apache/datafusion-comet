@@ -67,19 +67,8 @@ object NativeExecutorsClient {
     "spark.comet.nativeExecutors.enabled needs a libcomet built with the `native-executors` " +
       "Cargo feature"
 
-  /** Whether the loaded libcomet has the client's native methods, which only the feature adds. */
-  private lazy val hasNativeSupport: Boolean = {
-    val client = new NativeExecutorsClient()
-    try {
-      // A handle of 0 is a no-op once the method exists.
-      client.closePartition(0)
-      true
-    } catch {
-      case e: UnsatisfiedLinkError
-          if String.valueOf(e.getMessage).contains(classOf[NativeExecutorsClient].getName) =>
-        false
-    }
-  }
+  /** Whether the loaded libcomet was built with the feature, which adds the client's methods. */
+  private lazy val hasNativeSupport: Boolean = NativeBase.isFeatureEnabled("native-executors")
 
   /**
    * Fails with a clear error unless libcomet was built with the `native-executors` Cargo feature.

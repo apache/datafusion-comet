@@ -60,18 +60,14 @@ const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// The error for a failed read of a result partition. A partition the cluster has deleted gets a
-/// message that names the setting to change. The scheduler says that a partition it stores has
-/// expired, and an executor fails to open the file of a partition it has deleted.
+/// message that names the setting to change: an executor fails to open the file of a partition it
+/// has deleted.
 fn read_error(context: &str, error: FlightError) -> CometError {
     let expired = match &error {
-        FlightError::Tonic(status) => match status.code() {
-            Code::NotFound => status.message().contains("expired"),
-            Code::Internal => {
-                let message = status.message();
-                message.contains("Failed to open partition file") && message.contains("NotFound")
-            }
-            _ => false,
-        },
+        FlightError::Tonic(status) if status.code() == Code::Internal => {
+            let message = status.message();
+            message.contains("Failed to open partition file") && message.contains("NotFound")
+        }
         _ => false,
     };
     if expired {
@@ -132,11 +128,11 @@ async fn submit(scheduler_url: &str, mut query: Vec<u8>) -> CometResult<ResultEn
         .endpoint
         .into_iter()
         .map(|endpoint| {
-            // A partition without a location is served by the scheduler itself.
-            let location = endpoint.location.first().map_or_else(
-                || scheduler_url.to_string(),
-                |location| location.uri.clone(),
-            );
+            let location = endpoint
+                .location
+                .first()
+                .map(|location| location.uri.clone())
+                .ok_or_else(|| client_error("bad result", "a partition has no location"))?;
             let ticket = endpoint
                 .ticket
                 .map(|ticket| ticket.ticket.to_vec())
@@ -244,18 +240,14 @@ mod tests {
 
     #[test]
     fn an_expired_result_names_the_setting_to_raise() {
-        for status in [
-            Status::not_found("The results of job abc have expired"),
-            Status::internal(
-                "Ballista Error: General(\"Failed to open partition file at \\\"p\\\": \
-                 Os { code: 2, kind: NotFound, message: \\\"No such file or directory\\\" }\")",
-            ),
-        ] {
-            assert!(
-                message(status).contains("COMET_SCHEDULER_RESULT_RETENTION_SECONDS"),
-                "no hint"
-            );
-        }
+        let status = Status::internal(
+            "Ballista Error: General(\"Failed to open partition file at \\\"p\\\": \
+             Os { code: 2, kind: NotFound, message: \\\"No such file or directory\\\" }\")",
+        );
+        assert!(
+            message(status).contains("COMET_SCHEDULER_RESULT_RETENTION_SECONDS"),
+            "no hint"
+        );
     }
 
     #[test]

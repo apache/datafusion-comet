@@ -39,18 +39,13 @@ runs:
         cd native
         cargo clippy --color=never --all-targets --workspace -- -D warnings
 
-    - name: Check native Python UDF feature
+    # Both features are off by default, so nothing above compiles them. The native-executors one
+    # is the JNI client for Comet Native Executors.
+    - name: Check native Python UDF and native executors features
       shell: bash
       run: |
         cd native
-        cargo clippy --color=never -p datafusion-comet --all-targets --features python-udf -- -D warnings
-
-    # The JNI client for Comet Native Executors is off by default, so nothing above compiles it.
-    - name: Check native executors feature
-      shell: bash
-      run: |
-        cd native
-        cargo clippy --color=never -p datafusion-comet --all-targets --features native-executors -- -D warnings
+        cargo clippy --color=never -p datafusion-comet --all-targets --features python-udf,native-executors -- -D warnings
 
     - name: Check compilation
       shell: bash

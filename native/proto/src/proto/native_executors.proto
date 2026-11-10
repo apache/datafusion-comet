@@ -23,7 +23,6 @@ syntax = "proto3";
 
 package spark.spark_native_executors;
 
-import "expr.proto";
 import "operator.proto";
 import "partitioning.proto";
 
