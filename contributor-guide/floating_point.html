@@ -747,8 +747,8 @@ through <code class="docutils literal notranslate"><span class="pre">hash_input<
 <h3>Spark version differences<a class="headerlink" href="#spark-version-differences" title="Link to this heading">#</a></h3>
 <p>Rules that depend on the Spark version are decided in Scala. The serde either chooses the native
 path or passes a flag to native code, as <code class="docutils literal notranslate"><span class="pre">Mode</span></code>’s <code class="docutils literal notranslate"><span class="pre">normalize_neg_zero</span></code> does. Where a patch release
-changed the rule, check the runtime version down to the patch with
-<code class="docutils literal notranslate"><span class="pre">Utils.majorMinorPatchVersion(SPARK_VERSION)</span></code>, as <code class="docutils literal notranslate"><span class="pre">ArraySetSupport</span></code> in <code class="docutils literal notranslate"><span class="pre">arrays.scala</span></code> does.</p>
+changed the rule, add a predicate to <code class="docutils literal notranslate"><span class="pre">SparkFixes</span></code> that checks the version down to the patch with
+<code class="docutils literal notranslate"><span class="pre">Utils.majorMinorPatchVersion</span></code>, as <code class="docutils literal notranslate"><span class="pre">SparkFixes.arraySetFunctionsNormalizeFloats</span></code> does.</p>
 <p>Until an expression has a native implementation that follows its rule, report it <code class="docutils literal notranslate"><span class="pre">Incompatible</span></code>
 for floating-point input so that Spark evaluates it.</p>
 <p><code class="docutils literal notranslate"><span class="pre">spark.comet.exec.strictFloatingPoint=true</span></code> makes Comet fall back for floating-point operations
