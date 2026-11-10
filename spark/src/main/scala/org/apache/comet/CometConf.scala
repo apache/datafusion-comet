@@ -121,6 +121,16 @@ object CometConf extends ShimCometConf {
       .booleanConf
       .createWithDefault(true)
 
+  val COMET_ICEBERG_NATIVE_HDFS_ENABLED: ConfigEntry[Boolean] =
+    conf("spark.comet.scan.icebergNative.hdfs.enabled")
+      .category(CATEGORY_SCAN)
+      .doc(
+        "Whether the native Iceberg scan reads tables on HDFS, through iceberg-rust's " +
+          "experimental `hdfs-native` backend. When false, a scan that reads HDFS files falls " +
+          "back to Spark's Iceberg reader, and scans of other storage are unaffected.")
+      .booleanConf
+      .createWithDefault(true)
+
   val COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED: ConfigEntry[Boolean] =
     conf("spark.comet.write.iceberg.splitOperator.enabled")
       .category(CATEGORY_TESTING)
