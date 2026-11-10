@@ -53,6 +53,7 @@ import org.apache.comet.cloud.s3.MinioLocationScopedCredentialProvider
 import org.apache.comet.iceberg.{IcebergReflection, RESTCatalogHelper}
 import org.apache.comet.rules.CometScanRule
 import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
+import org.apache.comet.serde.operator.CometIcebergNativeScan
 import org.apache.comet.testing.{FuzzDataGenerator, SchemaGenOptions}
 
 /**
@@ -4773,6 +4774,48 @@ class CometIcebergNativeSuite
 
         spark.sql("DROP TABLE rest_cat.db.test_table")
         spark.sql("DROP NAMESPACE rest_cat.db")
+      }
+    }
+  }
+
+  test("REST catalog refresh endpoint selects the vended provider for the native scan") {
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4969")
+    assume(icebergAvailable, "Iceberg not available in classpath")
+
+    // A local warehouse never builds an S3 bridge, so the scan runs without calling the endpoint.
+    // Catalogs usually return a relative endpoint, which the provider resolves against `uri`.
+    val endpoint = Map("client.refresh-credentials-endpoint" -> "/v1/credentials")
+    withRESTCatalog(vendedCredentials = endpoint) { (restUri, _, warehouseDir) =>
+      withSQLConf(
+        "spark.sql.catalog.rest_vend" -> "org.apache.iceberg.spark.SparkCatalog",
+        "spark.sql.catalog.rest_vend.catalog-impl" -> "org.apache.iceberg.rest.RESTCatalog",
+        "spark.sql.catalog.rest_vend.uri" -> restUri,
+        "spark.sql.catalog.rest_vend.warehouse" -> warehouseDir.getAbsolutePath,
+        CometConf.COMET_ENABLED.key -> "true",
+        CometConf.COMET_EXEC_ENABLED.key -> "true",
+        CometConf.COMET_ICEBERG_NATIVE_ENABLED.key -> "true") {
+
+        spark.sql("CREATE NAMESPACE rest_vend.db")
+        spark.sql("CREATE TABLE rest_vend.db.t (id INT) USING iceberg")
+        spark.sql("INSERT INTO rest_vend.db.t VALUES (1), (2), (3)")
+
+        val (_, plan) = checkSparkAnswer("SELECT * FROM rest_vend.db.t ORDER BY id")
+        val scans = collectIcebergNativeScans(plan)
+        assert(scans.nonEmpty, s"Expected a CometIcebergNativeScanExec in:\n$plan")
+        // The provider ships only in Spark 4.x builds.
+        val expected =
+          if (isSpark40Plus) Some(CometIcebergNativeScan.VendedCredentialProviderClass) else None
+        scans.foreach { scan =>
+          val properties = scan.nativeIcebergScanMetadata.catalogProperties
+          val selected = properties.get(CometIcebergNativeScan.IcebergCredentialProviderClassKey)
+          assert(selected == expected, s"Serialized provider $selected, expected $expected")
+          assert(
+            properties.get("uri").contains(restUri),
+            s"Serialized uri ${properties.get("uri")}, expected $restUri")
+        }
+
+        spark.sql("DROP TABLE rest_vend.db.t")
+        spark.sql("DROP NAMESPACE rest_vend.db")
       }
     }
   }

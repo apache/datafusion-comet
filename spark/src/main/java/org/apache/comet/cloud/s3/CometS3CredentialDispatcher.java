@@ -26,6 +26,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
@@ -39,7 +45,19 @@ import org.apache.comet.util.ClassLoaders;
  * <p>{@link #ensureInitialized} reflects the named class, runs {@code initialize(Map)} once, and
  * returns a {@code long} handle. {@link #getCredentialsForPath} takes that handle on every
  * per-request call. See the design notes in the contributor guide for why the SPI is shaped this
- * way (keying, multi-tenant isolation, shutdown lifecycle).
+ * way (keying, multi-tenant isolation, lifecycle).
+ *
+ * <p>Each {@link #ensureInitialized} call takes a reference to the provider, and {@link #release}
+ * gives one back. When the last reference is released, the dispatcher closes the provider and
+ * forgets its key, so a later {@link #ensureInitialized} for the same key creates a new one. This
+ * is what retires a provider whose catalog properties were superseded, such as when an Iceberg REST
+ * catalog vends new credentials for a table: native code releases the old handle when it drops the
+ * last reader built on it. Providers still referenced at JVM shutdown are closed then.
+ *
+ * <p>A release can come from any thread that drops a native reader, including a Tokio worker or a
+ * task thread inside a scan, so the dispatcher closes released providers on its own daemon thread.
+ * A {@code close()} that blocks, such as Iceberg's {@code VendedCredentialsProvider} waiting for a
+ * token refresh in flight, then delays only the closes queued behind it.
  */
 public final class CometS3CredentialDispatcher {
 
@@ -52,6 +70,15 @@ public final class CometS3CredentialDispatcher {
   private static final AtomicLong HANDLE_SEQ = new AtomicLong(1L);
   private static final CometS3AccessMode[] MODES = CometS3AccessMode.values();
 
+  private static final ExecutorService DEFAULT_CLOSER =
+      Executors.newSingleThreadExecutor(
+          r -> {
+            Thread thread = new Thread(r, "comet-s3-credential-close");
+            thread.setDaemon(true);
+            return thread;
+          });
+  private static volatile Executor closer = DEFAULT_CLOSER;
+
   static {
     Runtime.getRuntime()
         .addShutdownHook(
@@ -63,7 +90,8 @@ public final class CometS3CredentialDispatcher {
   /**
    * Reflects and initializes the named provider on first call for the {@code (FQCN, dispatchKey,
    * catalogProperties)} triple, and returns a handle reused by subsequent {@link
-   * #getCredentialsForPath} calls.
+   * #getCredentialsForPath} calls. Each call takes a reference that the caller gives back with
+   * {@link #release}.
    */
   public static long ensureInitialized(
       String providerClassName, String dispatchKey, Map<String, String> catalogProperties) {
@@ -77,15 +105,43 @@ public final class CometS3CredentialDispatcher {
             : Collections.unmodifiableMap(new HashMap<>(catalogProperties));
     InstanceKey key =
         new InstanceKey(providerClassName, dispatchKey == null ? "" : dispatchKey, snapshot);
-    return KEY_TO_HANDLE.computeIfAbsent(
-        key,
-        k -> {
-          CometS3CredentialProvider provider = instantiate(k.providerClassName);
-          provider.initialize(k.catalogProperties);
-          long handle = HANDLE_SEQ.getAndIncrement();
-          INSTANCES.put(handle, new RegisteredProvider(provider, k));
-          return handle;
-        });
+    while (true) {
+      long handle =
+          KEY_TO_HANDLE.computeIfAbsent(
+              key,
+              k -> {
+                CometS3CredentialProvider provider = instantiate(k.providerClassName);
+                provider.initialize(k.catalogProperties);
+                long h = HANDLE_SEQ.getAndIncrement();
+                INSTANCES.put(h, new RegisteredProvider(provider, k));
+                return h;
+              });
+      RegisteredProvider registered = INSTANCES.get(handle);
+      if (registered != null && registered.acquire()) {
+        return handle;
+      }
+      // The provider was retired after the lookup; drop its stale mapping and register anew.
+      KEY_TO_HANDLE.remove(key, handle);
+    }
+  }
+
+  /**
+   * Invoked by native code when it drops the last reader built on {@code handle}. Gives back one
+   * reference taken by {@link #ensureInitialized}, and closes the provider when it was the last. An
+   * unknown handle, such as one already closed at shutdown, is ignored.
+   */
+  public static void release(long handle) {
+    RegisteredProvider registered = INSTANCES.get(handle);
+    if (registered == null || !registered.releaseLast()) {
+      return;
+    }
+    KEY_TO_HANDLE.remove(registered.key, handle);
+    INSTANCES.remove(handle, registered);
+    try {
+      closer.execute(() -> close(registered, "after its last reference was released"));
+    } catch (RejectedExecutionException e) {
+      close(registered, "after its last reference was released");
+    }
   }
 
   /**
@@ -198,18 +254,47 @@ public final class CometS3CredentialDispatcher {
   /** Visible for tests; otherwise invoked from the JVM shutdown hook. */
   static void closeAll() {
     for (RegisteredProvider registered : INSTANCES.values()) {
-      try {
-        registered.provider.close();
-      } catch (Throwable t) {
-        LOG.warn(
-            "Exception from {} (dispatchKey={}).close() during shutdown",
-            registered.key.providerClassName,
-            registered.key.dispatchKey,
-            t);
+      // A concurrent last release may have retired the provider already, and closes it itself.
+      if (registered.retire()) {
+        close(registered, "during shutdown");
       }
     }
     INSTANCES.clear();
     KEY_TO_HANDLE.clear();
+  }
+
+  /**
+   * Visible for tests: runs closes of released providers on {@code executor}, or on the
+   * dispatcher's own thread when it is null.
+   */
+  static void setCloserForTesting(Executor executor) {
+    closer = executor == null ? DEFAULT_CLOSER : executor;
+  }
+
+  /**
+   * Visible for tests: waits until the dispatcher's own thread has run every close queued before
+   * this call. Its executor runs one task at a time, in order, so a no-op queued now runs last.
+   */
+  static void awaitQueuedClosesForTesting() throws Exception {
+    DEFAULT_CLOSER.submit(() -> {}).get(10, TimeUnit.SECONDS);
+  }
+
+  /** Visible for tests: the number of providers the dispatcher holds. */
+  static int registeredCount() {
+    return INSTANCES.size();
+  }
+
+  private static void close(RegisteredProvider registered, String when) {
+    try {
+      registered.provider.close();
+    } catch (Throwable t) {
+      LOG.warn(
+          "Exception from {} (dispatchKey={}).close() {}",
+          registered.key.providerClassName,
+          registered.key.dispatchKey,
+          when,
+          t);
+    }
   }
 
   private static final class InstanceKey {
@@ -241,12 +326,50 @@ public final class CometS3CredentialDispatcher {
   }
 
   private static final class RegisteredProvider {
+    /** {@link #refs} once the provider is retired; it then takes no more references. */
+    private static final int RETIRED = -1;
+
     final CometS3CredentialProvider provider;
     final InstanceKey key;
+    private final AtomicInteger refs = new AtomicInteger();
 
     RegisteredProvider(CometS3CredentialProvider provider, InstanceKey key) {
       this.provider = provider;
       this.key = key;
+    }
+
+    /** Takes a reference, unless the provider is already retired. */
+    boolean acquire() {
+      while (true) {
+        int n = refs.get();
+        if (n == RETIRED) {
+          return false;
+        }
+        if (refs.compareAndSet(n, n + 1)) {
+          return true;
+        }
+      }
+    }
+
+    /** Retires the provider outright. Returns false when it was already retired. */
+    boolean retire() {
+      return refs.getAndSet(RETIRED) != RETIRED;
+    }
+
+    /**
+     * Gives back a reference. Returns true when it was the last, in which case the provider is now
+     * retired and the caller closes it. A concurrent {@link #acquire} that wins the race keeps it.
+     */
+    boolean releaseLast() {
+      while (true) {
+        int n = refs.get();
+        if (n <= 0) {
+          return false;
+        }
+        if (n == 1 ? refs.compareAndSet(1, RETIRED) : refs.compareAndSet(n, n - 1)) {
+          return n == 1;
+        }
+      }
     }
   }
 }

@@ -655,10 +655,11 @@ case class CometScanRule(session: SparkSession)
             // iceberg-rust's FileIO, so the alias key never reaches FileIO -- but it is still
             // handed, unfiltered, to CometS3CredentialBridge, so a custom credential provider sees
             // it. That is intended: the provider gets the full property bag.
-            val catalogProperties = hadoopDerivedProperties ++ fileIOProperties ++
-              hadoopS3Options
-                .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
-                .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _)
+            val catalogProperties = CometIcebergNativeScan.withVendedCredentialProvider(
+              hadoopDerivedProperties ++ fileIOProperties ++
+                hadoopS3Options
+                  .get(COMET_S3_COMPLIANT_SCHEMES_KEY)
+                  .map(COMET_S3_COMPLIANT_SCHEMES_KEY -> _))
 
             val result = CometIcebergNativeScanMetadata.extract(
               scanExec.scan,
