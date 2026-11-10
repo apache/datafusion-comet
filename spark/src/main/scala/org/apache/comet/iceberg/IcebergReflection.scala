@@ -57,6 +57,10 @@ object IcebergReflection extends Logging {
     val UNBOUND_PREDICATE = "org.apache.iceberg.expressions.UnboundPredicate"
     val SPARK_BATCH_QUERY_SCAN = "org.apache.iceberg.spark.source.SparkBatchQueryScan"
     val SPARK_STAGED_SCAN = "org.apache.iceberg.spark.source.SparkStagedScan"
+
+    // Comet's own scan of a compaction job's bins, which exposes the accessors Comet reads off
+    // an Iceberg scan.
+    val COMPACTION_SCAN = "org.apache.comet.iceberg.compaction.CompactionScan"
     val SPARK_SCHEMA_UTIL = "org.apache.iceberg.spark.SparkSchemaUtil"
     val TABLE = "org.apache.iceberg.Table"
     val DEFAULT_LOCATION_PROVIDER =
@@ -85,9 +89,15 @@ object IcebergReflection extends Logging {
    * `SparkStagedScan` also backs reads against Iceberg metadata tables (e.g. `POSITION_DELETES`),
    * but the gate for that lives in `getMetadataLocation`, which returns None for metadata-table
    * instances.
+   *
+   * `CompactionScan` is Comet's own scan of the bins of a compaction job. It is not an Iceberg
+   * class, but it exposes the accessors Comet reads off an Iceberg scan.
    */
   val ICEBERG_SCAN_CLASSES: Set[String] =
-    Set(ClassNames.SPARK_BATCH_QUERY_SCAN, ClassNames.SPARK_STAGED_SCAN)
+    Set(
+      ClassNames.SPARK_BATCH_QUERY_SCAN,
+      ClassNames.SPARK_STAGED_SCAN,
+      ClassNames.COMPACTION_SCAN)
 
   def isIcebergScanClass(name: String): Boolean = ICEBERG_SCAN_CLASSES.contains(name)
 

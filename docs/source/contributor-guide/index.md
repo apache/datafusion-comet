@@ -52,6 +52,7 @@ JVM Shuffle <jvm_shuffle>
 Native Shuffle <native_shuffle>
 Memory Management <memory_management>
 Iceberg Writes <iceberg-writes>
+Iceberg Compaction <iceberg-compaction>
 ANSI Error Propagation <sql_error_propagation>
 S3 Credential Provider Design <s3-credential-provider-design>
 ```
