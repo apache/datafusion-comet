@@ -647,9 +647,7 @@ if it has more columnar-to-row transitions than <code class="docutils literal no
 of the transitions can outweigh the benefits of running part of the stage in Comet. It keeps the stage in Comet when
 reverting it is not safe, for example when Spark and Comet would have to exchange aggregate state. Then
 <code class="docutils literal notranslate"><span class="pre">EliminateRedundantTransitions</span></code> removes transitions that are not needed and replaces the rest that read Comet output
-with <code class="docutils literal notranslate"><span class="pre">CometColumnarToRowExec</span></code>. It uses the Rust-implemented <code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRowExec</span></code> instead when
-<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled=true</span></code> (off by default) and that converter supports the schema. A schema
-that contains <code class="docutils literal notranslate"><span class="pre">VariantType</span></code> keeps Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code>.</p>
+with <code class="docutils literal notranslate"><span class="pre">CometColumnarToRowExec</span></code>. A schema that contains <code class="docutils literal notranslate"><span class="pre">VariantType</span></code> keeps Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code>.</p>
 </section>
 </section>
 <section id="query-execution">

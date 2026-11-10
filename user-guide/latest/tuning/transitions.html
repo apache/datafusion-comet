@@ -913,8 +913,7 @@ expensive conversions again and again.</p>
 </section>
 <section id="experimental-direct-columnar-to-row-conversion">
 <h2>Experimental: Direct Columnar-to-Row Conversion<a class="headerlink" href="#experimental-direct-columnar-to-row-conversion" title="Link to this heading">#</a></h2>
-<p>When the JVM columnar-to-row operator is in use (<code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled=false</span></code>),
-setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.direct.enabled=true</span></code> enables an experimental converter that writes
+<p>Setting <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.direct.enabled=true</span></code> enables an experimental converter that writes
 values straight from Arrow buffers into Spark’s row format without allocating an object per value. This is
 most beneficial for decimal-heavy schemas, where the default conversion allocates a <code class="docutils literal notranslate"><span class="pre">Decimal</span></code> object per
 value (and considerably more for decimals with precision above 18); microbenchmarks show up to 2x faster

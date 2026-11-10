@@ -923,10 +923,9 @@ the same plan is shown in the Spark SQL UI. When reading a plan, look for:</p>
 <ul class="simple">
 <li><p><strong>Node prefix.</strong> <code class="docutils literal notranslate"><span class="pre">Comet*</span></code> nodes are accelerated by Comet. Anything without
 the prefix is unmodified Spark.</p></li>
-<li><p><strong>Transitions.</strong> <code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code>, and
-<code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code> mark boundaries between columnar Comet execution
-and row-based Spark execution. Frequent transitions usually indicate
-fallback inside the plan.</p></li>
+<li><p><strong>Transitions.</strong> <code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code> and <code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code> mark
+boundaries between columnar Comet execution and row-based Spark execution.
+Frequent transitions usually indicate fallback inside the plan.</p></li>
 <li><p><strong>Exchange type.</strong> <code class="docutils literal notranslate"><span class="pre">CometExchange</span></code> is the native shuffle path,
 <code class="docutils literal notranslate"><span class="pre">CometColumnarExchange</span></code> is the JVM columnar shuffle path, and a plain
 <code class="docutils literal notranslate"><span class="pre">Exchange</span></code> means Spark shuffle. See <a class="reference internal" href="#shuffle-operators">Shuffle Operators</a>
@@ -1074,9 +1073,9 @@ the config has no effect there.</p>
 <p>Not every node in the plan is an eligible operator. The following are excluded
 from both operator counts:</p>
 <ul class="simple">
-<li><p>Transition nodes (<code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code>, <code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code>,
-<code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code>, <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>, <code class="docutils literal notranslate"><span class="pre">ColumnarToRow</span></code>,
-<code class="docutils literal notranslate"><span class="pre">RowToColumnar</span></code>), which are reported separately as the transition count.
+<li><p>Transition nodes (<code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code>, <code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code>,
+<code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code>, <code class="docutils literal notranslate"><span class="pre">ColumnarToRow</span></code>, <code class="docutils literal notranslate"><span class="pre">RowToColumnar</span></code>), which are
+reported separately as the transition count.
 <code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code> and <code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code> are the two names
 a single operator renders under, depending on whether its child already
 produces columnar data, and both are excluded.</p></li>
@@ -1367,9 +1366,7 @@ shuffle and choose between the implementations.</p>
 </section>
 <section id="columnar-row-transitions">
 <h3>Columnar/Row Transitions<a class="headerlink" href="#columnar-row-transitions" title="Link to this heading">#</a></h3>
-<p>Comet inserts these nodes wherever data has to cross the columnar/row boundary.
-Multiple implementations exist because the optimal strategy depends on what
-produced the columnar data.</p>
+<p>Comet inserts these nodes wherever data has to cross the columnar/row boundary.</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Node</p></th>
@@ -1380,17 +1377,13 @@ produced the columnar data.</p>
 <tbody>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometColumnarToRow</span></code></p></td>
 <td><p>columnar → row</p></td>
-<td><p>JVM-based row conversion. A fork of Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code> that includes the SPARK-50235 fix. This is the default.</p></td>
+<td><p>JVM-based row conversion. A fork of Spark’s <code class="docutils literal notranslate"><span class="pre">ColumnarToRowExec</span></code> that includes the SPARK-50235 fix.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometNativeColumnarToRow</span></code></p></td>
-<td><p>columnar → row</p></td>
-<td><p>Rust-based row conversion via <code class="docutils literal notranslate"><span class="pre">NativeColumnarToRowConverter</span></code>. Disabled by default; enable with <code class="docutils literal notranslate"><span class="pre">spark.comet.exec.columnarToRow.native.enabled=true</span></code>. It carries a fixed JNI cost per batch and is slower than the JVM conversion for small batches.</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code></p></td>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkColumnarToColumnar</span></code></p></td>
 <td><p>columnar → columnar</p></td>
 <td><p>Converts a Spark columnar input (a non-Comet <code class="docutils literal notranslate"><span class="pre">ColumnarBatch</span></code>) into Comet’s Arrow batches.</p></td>
 </tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code></p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">CometSparkRowToColumnar</span></code></p></td>
 <td><p>row → columnar</p></td>
 <td><p>Converts a Spark row input into Comet’s Arrow batches.</p></td>
 </tr>
