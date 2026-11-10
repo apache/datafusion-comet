@@ -2822,7 +2822,10 @@ class CometExecSuite extends CometTestBase {
             "scan_io_object_store_response_bytes_read",
             "scan_io_metadata_cache_hits",
             "scan_io_metadata_cache_misses",
-            "scan_io_metadata_prefetches").foreach { name =>
+            "scan_io_metadata_prefetches",
+            "scan_io_metadata_storage_reads",
+            "scan_io_footer_read_reused_bytes",
+            "scan_io_data_wait_time").foreach { name =>
             assert(metrics.contains(name), s"Missing $name. Available: ${metrics.keys}")
           }
           assert(
@@ -2873,6 +2876,30 @@ class CometExecSuite extends CometTestBase {
           assert(metrics("scan_io_metadata_cache_hits").value == 0)
           assert(metrics("scan_io_metadata_prefetches").value == (if (prefetch) 3 else 0))
           assert(metrics("scan_io_footer_reads").value == 4)
+        }
+      }
+    }
+  }
+
+  test("native scan serves a small file's data from its footer read") {
+    withTempPath { dir =>
+      val path = dir.getCanonicalPath
+      spark.range(0, 1000, 1, 1).toDF("id").write.parquet(path)
+      // The default reuses the footer read.
+      Seq(None -> true, Some("false") -> false).foreach { case (setting, reuse) =>
+        withSQLConf(
+          setting.map(CometConf.COMET_PARQUET_REUSE_FOOTER_READ_ENABLED.key -> _).toSeq: _*) {
+          val (_, cometPlan) = checkSparkAnswerAndOperator(spark.read.parquet(path))
+          val scan = find(cometPlan)(_.isInstanceOf[CometNativeScanExec])
+          assert(scan.isDefined, "Expected to find a CometNativeScanExec")
+          val metrics = scan.get.metrics
+          // The file is smaller than the 512 KiB footer read, which therefore holds all of its
+          // data and its page index.
+          val dataBytes = metrics("scan_io_data_bytes").value
+          assert(dataBytes > 0)
+          assert(
+            metrics("scan_io_footer_read_reused_bytes").value == (if (reuse) dataBytes else 0))
+          assert(metrics("scan_io_metadata_storage_reads").value == 1)
         }
       }
     }

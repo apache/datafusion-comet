@@ -16,7 +16,9 @@
 // under the License.
 
 use crate::execution::operators::ExecutionError;
-use crate::parquet::eager_page_index_reader_factory::{EagerPageIndexReaderFactory, ScanIoSource};
+use crate::parquet::eager_page_index_reader_factory::{
+    EagerPageIndexReaderFactory, ScanIoOptions, ScanIoSource,
+};
 use crate::parquet::encryption_support::{CometEncryptionConfig, ENCRYPTION_FACTORY_ID};
 use crate::parquet::file_error_context::ParquetErrorContext;
 use crate::parquet::name_fold::fold_schema_names;
@@ -62,6 +64,9 @@ pub(crate) struct CometParquetScanOptions {
     /// Load the next file's footer and page index while the current file is read
     /// (`spark.comet.parquet.prefetchNextFileMetadata.enabled`).
     pub prefetch_next_file_metadata: bool,
+    /// How the scan requests file bytes (`spark.comet.parquet.reuseFooterRead.enabled`,
+    /// `spark.comet.parquet.wholeFileReadThreshold`, `spark.comet.parquet.rangeRequestSplitSize`).
+    pub scan_io: ScanIoOptions,
 }
 
 /// Initializes a DataSourceExec plan with a ParquetSource for Comet's native Parquet scan.
@@ -258,12 +263,17 @@ pub(crate) fn init_datasource_exec(
         }
         _ => None,
     };
+    let scan_io_options = session_config
+        .get_extension::<CometParquetScanOptions>()
+        .map(|options| options.scan_io)
+        .unwrap_or_default();
     let reader_factory = Arc::new(
-        EagerPageIndexReaderFactory::new(
+        EagerPageIndexReaderFactory::with_options(
             store,
             metadata_cache,
             scan_io_source,
             parquet_source.metrics(),
+            scan_io_options,
         )
         .with_spark_variant_schema(projects_variant)
         .with_require_field_ids(require_field_ids)
@@ -1607,7 +1617,7 @@ mod tests {
             .iter()
             .filter(|metric| metric.value().name().starts_with("scan_io_"))
             .collect::<Vec<_>>();
-        assert_eq!(scan_io_metrics.len(), 12);
+        assert_eq!(scan_io_metrics.len(), 15);
         for metric in scan_io_metrics {
             assert!(metric.labels().is_empty());
             assert_eq!(metric.partition(), None);

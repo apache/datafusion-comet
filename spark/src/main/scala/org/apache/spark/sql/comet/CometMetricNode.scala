@@ -455,6 +455,14 @@ object CometMetricNode {
         SQLMetrics.createMetric(
           sc,
           "Metadata loads read from storage ahead of the file's open and used by it"),
+      "scan_io_metadata_storage_reads" ->
+        SQLMetrics.createMetric(sc, "Storage reads made by metadata loads"),
+      "scan_io_footer_read_reused_bytes" ->
+        SQLMetrics.createSizeMetric(
+          sc,
+          "Data bytes served from footer reads instead of new requests"),
+      "scan_io_data_wait_time" ->
+        SQLMetrics.createNanoTimingMetric(sc, "Time spent waiting for data page reads"),
       "pushdown_rows_pruned" ->
         SQLMetrics.createMetric(sc, "Rows filtered out by predicates pushed into parquet scan"),
       "pushdown_rows_matched" ->

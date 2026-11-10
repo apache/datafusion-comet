@@ -143,9 +143,12 @@ use crate::execution::spark_config::{
     SparkConfig, COMET_DEBUG_ENABLED, COMET_DEBUG_MEMORY,
     COMET_EXEC_AGGREGATE_SKIP_PARTIAL_ENABLED, COMET_EXEC_SPILL_COMPRESSION_CODEC,
     COMET_EXPLAIN_NATIVE_ENABLED, COMET_MAX_TEMP_DIRECTORY_SIZE,
-    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
-    COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED, SPARK_EXECUTOR_CORES,
+    COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED, COMET_PARQUET_RANGE_REQUEST_SPLIT_SIZE,
+    COMET_PARQUET_REUSE_FOOTER_READ_ENABLED, COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+    COMET_PARQUET_WHOLE_FILE_READ_THRESHOLD, COMET_STRICT_TIMESTAMP_LABELS, COMET_TRACING_ENABLED,
+    SPARK_EXECUTOR_CORES,
 };
+use crate::parquet::eager_page_index_reader_factory::ScanIoOptions;
 use crate::parquet::encryption_support::{CometEncryptionFactory, ENCRYPTION_FACTORY_ID};
 use crate::parquet::parquet_exec::CometParquetScanOptions;
 use crate::parquet::parquet_support::CometObjectStoreRegistry;
@@ -1117,6 +1120,12 @@ pub(crate) fn comet_session_context(
     session_config = session_config.with_extension(Arc::new(CometParquetScanOptions {
         prefetch_next_file_metadata: spark_config
             .get_bool(COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED),
+        scan_io: ScanIoOptions {
+            reuse_footer_read: spark_config.get_bool(COMET_PARQUET_REUSE_FOOTER_READ_ENABLED),
+            whole_file_read_threshold: spark_config
+                .get_u64(COMET_PARQUET_WHOLE_FILE_READ_THRESHOLD, 0),
+            range_split_size: spark_config.get_u64(COMET_PARQUET_RANGE_REQUEST_SPLIT_SIZE, 0),
+        },
     }));
 
     // Translate Comet's spill codec into DataFusion's spill compression, which DataFusion

@@ -921,7 +921,10 @@ object CometExecIterator extends Logging {
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
       CometConf.COMET_NATIVE_UDF_ENABLED,
       CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED,
+      CometConf.COMET_PARQUET_RANGE_REQUEST_SPLIT_SIZE,
+      CometConf.COMET_PARQUET_REUSE_FOOTER_READ_ENABLED,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
+      CometConf.COMET_PARQUET_WHOLE_FILE_READ_THRESHOLD,
       CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
