@@ -600,9 +600,8 @@ would remove JVM round-trips beyond those the lambda work above addresses.</p>
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/pull/5853">#5853</a>). We want to add the remaining V3 features so that these scans don’t fall back to Spark: row lineage
 metadata columns, column default values, and the new V3 types (<code class="docutils literal notranslate"><span class="pre">variant</span></code>, <code class="docutils literal notranslate"><span class="pre">geometry</span></code>, <code class="docutils literal notranslate"><span class="pre">geography</span></code>, and <code class="docutils literal notranslate"><span class="pre">unknown</span></code>).
 The work is tracked in <a class="reference external" href="https://github.com/apache/datafusion-comet/issues/3376">#3376</a>, and upstream <code class="docutils literal notranslate"><span class="pre">iceberg-rust</span></code> support in <a class="reference external" href="https://github.com/apache/iceberg-rust/issues/2411">iceberg-rust #2411</a>. Native Iceberg scans
-also don’t support HDFS-backed tables today: Comet’s native Iceberg storage layer handles only local files, S3 and
-S3-compatible stores, GCS, and OSS, and would need an HDFS <code class="docutils literal notranslate"><span class="pre">StorageFactory</span></code> upstream in <code class="docutils literal notranslate"><span class="pre">iceberg-storage-opendal</span></code>.
-We’re scoping what that work would take.</p>
+read HDFS-backed tables through iceberg-rust’s experimental <code class="docutils literal notranslate"><span class="pre">hdfs-native</span></code> backend, but fall back to Spark on clusters
+with Kerberos, because that backend cannot authenticate with delegation tokens yet.</p>
 </section>
 <section id="tpc-h-and-tpc-ds-performance">
 <h2>TPC-H and TPC-DS Performance<a class="headerlink" href="#tpc-h-and-tpc-ds-performance" title="Link to this heading">#</a></h2>

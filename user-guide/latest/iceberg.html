@@ -1001,8 +1001,8 @@ safe partial pruning is tracked in <a class="reference external" href="https://g
 <li><p>Local filesystem</p></li>
 <li><p>S3-compatible storage (AWS S3, MinIO)</p></li>
 <li><p>Google Cloud Storage (<code class="docutils literal notranslate"><span class="pre">gs</span></code>) and Alibaba Cloud OSS (<code class="docutils literal notranslate"><span class="pre">oss</span></code>)</p></li>
+<li><p>HDFS (<code class="docutils literal notranslate"><span class="pre">hdfs</span></code>), experimental (see <a class="reference internal" href="#hdfs">HDFS</a>)</p></li>
 </ul>
-<p>HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.</p>
 </section>
 <section id="rest-catalog">
 <h3>REST Catalog<a class="headerlink" href="#rest-catalog" title="Link to this heading">#</a></h3>
@@ -1050,6 +1050,45 @@ configure Spark to use a REST catalog with Comet’s native Iceberg scan:</p>
 </div>
 <p>These <code class="docutils literal notranslate"><span class="pre">s3.*</span></code> storage properties are not specific to the Hive catalog shown here. When <code class="docutils literal notranslate"><span class="pre">s3.access-key-id</span></code> / <code class="docutils literal notranslate"><span class="pre">s3.secret-access-key</span></code> are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (<code class="docutils literal notranslate"><span class="pre">client.region</span></code> or <code class="docutils literal notranslate"><span class="pre">s3.region</span></code>) nor the executor environment (<code class="docutils literal notranslate"><span class="pre">AWS_REGION</span></code> or <code class="docutils literal notranslate"><span class="pre">AWS_DEFAULT_REGION</span></code>) supplies one, Comet uses <code class="docutils literal notranslate"><span class="pre">us-east-1</span></code>, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg’s <a class="reference external" href="https://iceberg.apache.org/docs/latest/aws/#s3-fileio">S3 FileIO</a> docs for the full property list, and <a class="reference internal" href="s3-credential-providers.html"><span class="std std-doc">S3 Credential Providers</span></a> for vended or per-request credentials.</p>
 </section>
+<section id="hdfs">
+<h3>HDFS<a class="headerlink" href="#hdfs" title="Link to this heading">#</a></h3>
+<p>The native reader reads HDFS through iceberg-rust’s experimental <code class="docutils literal notranslate"><span class="pre">hdfs-native</span></code> backend, a Rust HDFS
+client that uses neither libhdfs nor the JVM. The client reads <code class="docutils literal notranslate"><span class="pre">core-site.xml</span></code> and <code class="docutils literal notranslate"><span class="pre">hdfs-site.xml</span></code>
+from <code class="docutils literal notranslate"><span class="pre">$HADOOP_CONF_DIR</span></code>, or from <code class="docutils literal notranslate"><span class="pre">$HADOOP_HOME/etc/hadoop</span></code>, on each executor. Of the session’s
+Hadoop configuration (the driver’s XML and <code class="docutils literal notranslate"><span class="pre">spark.hadoop.*</span></code>), Comet forwards the settings the
+client reads: <code class="docutils literal notranslate"><span class="pre">dfs.client.use.datanode.hostname</span></code>, <code class="docutils literal notranslate"><span class="pre">dfs.client.socket-timeout</span></code>,
+<code class="docutils literal notranslate"><span class="pre">dfs.client.failover.max.attempts</span></code>, <code class="docutils literal notranslate"><span class="pre">dfs.client.failover.sleep.base.millis</span></code> and
+<code class="docutils literal notranslate"><span class="pre">dfs.client.failover.sleep.max.millis</span></code> when the session sets them, and the NameNodes of an HA
+nameservice. A location such as <code class="docutils literal notranslate"><span class="pre">hdfs://ns1/warehouse</span></code> has no port, and Comet passes the client
+the NameNodes that the session’s Hadoop configuration declares for <code class="docutils literal notranslate"><span class="pre">ns1</span></code> with
+<code class="docutils literal notranslate"><span class="pre">dfs.ha.namenodes.ns1</span></code> and <code class="docutils literal notranslate"><span class="pre">dfs.namenode.rpc-address.ns1.&lt;id&gt;</span></code>. A portless location that the
+configuration does not declare is a single NameNode on Hadoop’s default port, 8020, as it is to
+the JVM client. A catalog property under <code class="docutils literal notranslate"><span class="pre">hadoop.</span></code> sets any client key directly and wins over the
+forwarded value. The client does not read the JVM client’s other settings, among them short-circuit
+and hedged reads, <code class="docutils literal notranslate"><span class="pre">dfs.client.retry.*</span></code>, <code class="docutils literal notranslate"><span class="pre">ipc.client.*</span></code>, <code class="docutils literal notranslate"><span class="pre">hadoop.rpc.protection</span></code> and the
+per-nameservice <code class="docutils literal notranslate"><span class="pre">dfs.client.failover.*.&lt;ns&gt;</span></code> keys. Data transfer is encrypted when the NameNode
+requires it (<code class="docutils literal notranslate"><span class="pre">dfs.encrypt.data.transfer</span></code>), as for the JVM client.</p>
+<p>A scan of HDFS files falls back to Spark when <code class="docutils literal notranslate"><span class="pre">hadoop.security.authentication</span></code> is not <code class="docutils literal notranslate"><span class="pre">simple</span></code>,
+because the client cannot authenticate with the delegation tokens that Spark executors use on a
+Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
+the Hadoop configuration does not declare, or when it has no authority (<code class="docutils literal notranslate"><span class="pre">hdfs:///path</span></code>), and when a
+data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
+cannot decrypt it. Comet checks that at planning, on clusters whose NameNode advertises a key
+provider, with one directory listing per parent of the data directories. A listing is kept per
+table for an hour, or for <code class="docutils literal notranslate"><span class="pre">spark.sql.metadataCacheTTLSeconds</span></code> when that is set, so a table
+re-created at the same path lists again on its first scan, and a new partition lists its parent
+again; a scan that would list more than a million directory entries falls back, and later scans
+continue from the listings kept, which hold a million entries at most.</p>
+<p>On a cluster without Kerberos, the client connects as <code class="docutils literal notranslate"><span class="pre">HADOOP_USER_NAME</span></code>, or as the executor’s
+operating system user when that variable is unset, rather than as the Spark user. Comet therefore
+claims an HDFS scan only when the executors are known to read as the Spark user: set
+<code class="docutils literal notranslate"><span class="pre">spark.executorEnv.HADOOP_USER_NAME</span></code> to the user that submits the job, when the application is
+submitted (Comet reads it from the SparkContext’s configuration; a value set on a session
+afterwards never reaches the executors). In local mode, the JVM’s <code class="docutils literal notranslate"><span class="pre">HADOOP_USER_NAME</span></code> or operating
+system user must be that user. Otherwise the scan falls back with a reason that names the setting.
+To read HDFS tables with Spark’s Iceberg reader and keep the native scan for other storage, set
+<code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.hdfs.enabled=false</span></code>. Writes to HDFS use Iceberg’s own writer.</p>
+</section>
 <section id="current-limitations">
 <h3>Current limitations<a class="headerlink" href="#current-limitations" title="Link to this heading">#</a></h3>
 <p>The following scenarios will fall back to the JVM Iceberg reader:</p>
@@ -1066,6 +1105,12 @@ projected is read natively)</p></li>
 <li><p>Queries that use <code class="docutils literal notranslate"><span class="pre">input_file_name()</span></code>, <code class="docutils literal notranslate"><span class="pre">input_file_block_start()</span></code> or <code class="docutils literal notranslate"><span class="pre">input_file_block_length()</span></code></p></li>
 <li><p>Scans whose data or delete files span more than one S3 bucket (the native reader uses one
 object-store configuration per scan)</p></li>
+<li><p>HDFS scans on a cluster with Kerberos, or whose executors are not known to read as the Spark
+user; HDFS file locations that name a nameservice without NameNodes or that have no authority;
+and HDFS files in an encryption zone (see <a class="reference internal" href="#hdfs">HDFS</a>)</p></li>
+<li><p>Scans whose data or delete files are on a different storage backend than the table metadata, for
+example a local or REST-served metadata location with <code class="docutils literal notranslate"><span class="pre">write.data.path</span></code> on S3 or HDFS. The native
+reader opens every file of a scan through one storage, chosen from the metadata location</p></li>
 <li><p>Scans where Iceberg reports an output ordering (for example with
 <code class="docutils literal notranslate"><span class="pre">spark.sql.iceberg.planning.preserve-data-ordering=true</span></code>). Spark may then skip the sort above the
 scan, and the native reader does not preserve file order</p></li>
@@ -1670,7 +1715,11 @@ the <a class="reference internal" href="datasources.html#s3-limitations"><span c
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
 </tr>
-<tr class="row-odd"><td><p>Iceberg writer</p></td>
+<tr class="row-odd"><td><p>Iceberg scan of HDFS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.scan.icebergNative.hdfs.enabled</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">true</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>Iceberg writer</p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">spark.comet.write.iceberg.enabled</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
 </tr>
@@ -1680,9 +1729,11 @@ the <a class="reference internal" href="datasources.html#s3-limitations"><span c
 <section id="reads-that-differ-from-spark">
 <h3>Reads that differ from Spark<a class="headerlink" href="#reads-that-differ-from-spark" title="Link to this heading">#</a></h3>
 <ul class="simple">
-<li><p><strong>Data files with neither field ids nor a name mapping.</strong> Spark reads every nested field of such
-a file as NULL, and the native scan returns the values stored in the file. A read of only some
-of a struct’s fields fails instead
+<li><p><strong>Data files with neither field ids nor a name mapping.</strong> Neither reader can match such a
+file’s nested fields to the table’s, so a struct’s fields read as NULL in both. The containers
+differ: Spark’s reader returns NULL for an optional struct itself, where the native scan
+returns a struct of NULL fields, and an empty list for a list of structs, where the native scan
+returns the list with each element’s fields NULL
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/6794">#6794</a>).</p></li>
 <li><p><strong><code class="docutils literal notranslate"><span class="pre">VERSION</span> <span class="pre">AS</span> <span class="pre">OF</span></code> reads of a column renamed after the snapshot.</strong> The renamed column reads as
 NULL, and two columns that swapped names return each other’s values
@@ -1802,6 +1853,7 @@ partition value is such a constant.</p></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#supported-features">Supported features</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#rest-catalog">REST Catalog</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#object-store-configuration-s3">Object store configuration (S3)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#hdfs">HDFS</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#current-limitations">Current limitations</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-udfs">Iceberg UDFs</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#iceberg-system-functions">Iceberg system functions</a></li>

@@ -1032,8 +1032,8 @@ attaches its own worker threads, so a worker that has read from HDFS can crash t
 (<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/5023">#5023</a>). The crash surfaces well after
 the HDFS read itself, typically while an unrelated query is running.</p>
 </div>
-<p>Native Iceberg scans do not support HDFS-backed tables; those scans fall back to Spark. See the
-<a class="reference internal" href="iceberg.html"><span class="std std-doc">Iceberg</span></a> page.</p>
+<p>Native Iceberg scans read HDFS through a different client, iceberg-rust’s <code class="docutils literal notranslate"><span class="pre">hdfs-native</span></code> backend. See
+the <a class="reference internal" href="iceberg.html#hdfs"><span class="std std-ref">Iceberg</span></a> page.</p>
 </section>
 <section id="building-comet-with-hdfs-support">
 <h3>Building Comet with HDFS support<a class="headerlink" href="#building-comet-with-hdfs-support" title="Link to this heading">#</a></h3>
