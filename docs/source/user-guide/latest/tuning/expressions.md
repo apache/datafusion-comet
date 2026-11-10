@@ -65,6 +65,10 @@ To get the most out of Comet when a query uses lambdas:
   under ANSI mode `exists(array(1, 0), x -> 100 / x > 1)` returns true without dividing by zero, but the native lambda
   evaluates every element. An `exists` lambda that contains any operation that can raise stays on the dispatcher,
   whether or not it uses `AND`, `OR`, `IN` or `CASE WHEN`.
+- **Keep date and timestamp conversions out of the lambda.** A cast between a date or timestamp and a string, date or
+  timestamp fails natively for years beyond about 262,143, which Spark supports up to year 294,247
+  ([#7471](https://github.com/apache/datafusion-comet/issues/7471)), so a lambda that contains one stays on the
+  dispatcher. So does a lambda with a `try_cast` that can make a `NULL` map key.
 - **Capture only numeric, decimal, boolean, date or timestamp columns.** DataFusion copies each column the lambda reads
   once per element of the array before it evaluates the lambda, so a captured string, binary, array, struct or map
   column is copied as many times as the array has elements. A lambda that reads one stays on the dispatcher.

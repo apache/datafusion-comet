@@ -1047,22 +1047,43 @@ trait NativeLambdaSerde extends CometTypeShim with CometExprShim {
       capturesOnlyFixedWidthColumns(body) &&
       shortCircuitSafe(body) &&
       !canProduceNullMapKey(argument) &&
+      !canProduceNullMapKey(body) &&
+      !convertsDateTime(body) &&
       (argument.dataType match {
         case ArrayType(elementType, _) => isLambdaElementType(elementType)
         case _ => false
       })
 
   /**
-   * Whether `argument` has a TRY cast whose map key cast can fail, which makes a null key that
-   * Arrow cannot hold (#6172). The native side would have to build that map, so such an argument
-   * stays on the dispatcher, which runs it in Spark's own code, where the map never reaches
-   * Arrow.
+   * Whether `e` has a TRY cast whose map key cast can fail, which makes a null key that Arrow
+   * cannot hold (#6172). The native side would have to build that map, so an argument or a body
+   * with one stays on the dispatcher, which runs it in Spark's own code, where the map never
+   * reaches Arrow.
    */
-  private def canProduceNullMapKey(argument: Expression): Boolean =
-    argument.exists {
+  private def canProduceNullMapKey(e: Expression): Boolean =
+    e.exists {
       case c: Cast => CometCast.canProduceNullMapKey(c)
       case _ => false
     }
+
+  /**
+   * Whether `body` casts between a date or timestamp and a string, date or timestamp. The native
+   * cast fails for years beyond chrono's range (about 262,143), which Spark supports up to year
+   * 294,247 (#7471), so such a body stays on the dispatcher.
+   */
+  private def convertsDateTime(body: Expression): Boolean = {
+    def isDateTime(dt: DataType): Boolean = dt match {
+      case DateType | TimestampType | TimestampNTZType => true
+      case _ => false
+    }
+    def isTextOrDateTime(dt: DataType): Boolean = dt.isInstanceOf[StringType] || isDateTime(dt)
+    body.exists {
+      case c: Cast if c.child.dataType != c.dataType =>
+        (isDateTime(c.child.dataType) && isTextOrDateTime(c.dataType)) ||
+        (isDateTime(c.dataType) && isTextOrDateTime(c.child.dataType))
+      case _ => false
+    }
+  }
 
   /**
    * DataFusion copies each column the body captures once per element of its row's array before it
