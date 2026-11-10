@@ -754,7 +754,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
               // leave NaN out, or hold it as both when parquet-mr 1.9 or earlier starts a row
               // group with NaN. apache/iceberg-rust#3502 fixes the NaN-bound row-group pruning
               // after the pinned revision; page-index and row-filter semantics still need checking
-              // before relaxing this exclusion.
+              // before relaxing this exclusion (#7588).
               case LT | LT_EQ | GT | GT_EQ
                   if attribute.dataType == FloatType || attribute.dataType == DoubleType =>
                 None
@@ -1089,8 +1089,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
     // Columns whose type changed over the table's history; residual predicates comparing them
-    // with a literal are dropped, except equality. The scan schema also covers a column that
-    // VERSION AS OF reads after it was dropped from the table.
+    // with a literal are dropped, except equality. The scan schema covers VERSION AS OF reads,
+    // where a name can still mean a column the table has since replaced with a new one.
     val promotedColumns = Seq(metadata.tableSchema, metadata.scanSchema)
       .flatMap(IcebergReflection.promotedColumns(metadata.table, _))
       .toSet

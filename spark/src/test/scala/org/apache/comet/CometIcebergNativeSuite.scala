@@ -4648,6 +4648,14 @@ class CometIcebergNativeSuite
             assert(spark.sql(s"SELECT * FROM $table").count() == 6)
             checkResidualPredicates(table, predicates)
           }
+
+          // VERSION AS OF reads with the snapshot's schema. Iceberg's planning cannot bind a filter
+          // on a dropped column, so id is dropped and added back as a new INT column. Only the
+          // snapshot's schema then shows that the id this read filters on was promoted.
+          val snapshot = latestSnapshotId(table)
+          spark.sql(s"ALTER TABLE $table DROP COLUMN id")
+          spark.sql(s"ALTER TABLE $table ADD COLUMN id INT")
+          checkResidualPredicates(s"$table VERSION AS OF $snapshot", predicates)
         } finally {
           spark.sql(s"DROP TABLE $table")
         }

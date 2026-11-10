@@ -1226,7 +1226,8 @@ object IcebergReflection extends Logging {
    * Expiring snapshots with `cleanExpiredMetadata` removes schemas that no retained snapshot
    * uses, even though files written under them can remain. Iceberg numbers schemas consecutively
    * from 0, so a gap means the history is incomplete, and every column of a type that a promotion
-   * can produce (long, double, decimal) is returned. The history cannot reveal a file whose type
+   * can produce is returned: long, double, decimal, and, from format v3, timestamp and
+   * timestamp_ns, which a date can be promoted to. The history cannot reveal a file whose type
    * differs without a recorded schema change, such as one imported by `add_files`, `migrate` or
    * `snapshot`, or one promoted under metadata from before Iceberg 0.12, which kept only the
    * current schema. Called at serialization time, so it throws on reflection failure.
@@ -1249,8 +1250,8 @@ object IcebergReflection extends Logging {
       .filter { column =>
         val id = fieldIdOf(column).asInstanceOf[AnyRef]
         val current = typeOf(column)
-        val promotable =
-          current == "long" || current == "double" || current.startsWith("decimal(")
+        val promotable = current.startsWith("decimal(") ||
+          Set("long", "double", "timestamp", "timestamp_ns").contains(current)
         (promotable && !historyComplete) ||
         history.exists(older => Option(findField.invoke(older, id)).exists(typeOf(_) != current))
       }

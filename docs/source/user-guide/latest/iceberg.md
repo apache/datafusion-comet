@@ -132,8 +132,13 @@ different rows than Spark:
 - `NOT` over equality on a nullable column, as in `NOT (id <=> 1)`, unless it is ANDed with an
   `IS NOT NULL` check on that column, written in the query or inferred by Spark as for `b = false`.
   `!=` reaches iceberg-rust as a separate comparison and is not affected.
-- Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`
-  and `DOUBLE` column when expiring snapshots removed older schemas.
+- Comparisons other than `=` on a column whose type was promoted. This applies to every `BIGINT`,
+  `DOUBLE`, `DECIMAL` and `TIMESTAMP_NTZ` column when expiring snapshots removed older schemas.
+
+Iceberg still skips data files by their column bounds for these predicates, but the native scan
+does not prune row groups for them or for conjunctions containing them. Restoring range pruning
+on `FLOAT` and `DOUBLE` columns is tracked in
+[#7588](https://github.com/apache/datafusion-comet/issues/7588).
 
 **Partitioning:**
 

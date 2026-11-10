@@ -270,20 +270,24 @@ class CometIcebergNativeScanSuite extends AnyFunSuite with Matchers {
   }
 
   test("an incomplete schema history treats every promotable column as promoted") {
-    // Without schema 0, as after expiring snapshots with cleanExpiredMetadata, a long, double or
-    // decimal column may still hold files written as a narrower type.
+    // Without schema 0, as after expiring snapshots with cleanExpiredMetadata, a long, double,
+    // decimal or timestamp column may still hold files written as a narrower type. A date can be
+    // promoted to a timestamp without a time zone (format v3), but not to timestamptz.
     val schema = new Schema(
       Types.NestedField.optional(1, "id", Types.LongType.get()),
       Types.NestedField.optional(2, "f", Types.DoubleType.get()),
       Types.NestedField.optional(3, "amount", Types.DecimalType.of(10, 2)),
       Types.NestedField.optional(4, "i", Types.IntegerType.get()),
-      Types.NestedField.optional(5, "s", Types.StringType.get()))
+      Types.NestedField.optional(5, "s", Types.StringType.get()),
+      Types.NestedField.optional(6, "ts", Types.TimestampType.withoutZone()),
+      Types.NestedField.optional(7, "tstz", Types.TimestampType.withZone()),
+      Types.NestedField.optional(8, "d", Types.DateType.get()))
     IcebergReflection.promotedColumns(new SchemaHistory(1 -> schema), schema) shouldBe
-      Set("id", "f", "amount")
+      Set("id", "f", "amount", "ts")
     IcebergReflection.promotedColumns(
       new SchemaHistory(0 -> schema, 2 -> schema),
       schema) shouldBe
-      Set("id", "f", "amount")
+      Set("id", "f", "amount", "ts")
     IcebergReflection.promotedColumns(
       new SchemaHistory(0 -> schema, 1 -> schema),
       schema) shouldBe
