@@ -72,7 +72,9 @@ import org.apache.comet.iceberg.IcebergReflection
  * every profile:
  *   - Spark 3.5, 4.0 and 4.1: the cluster starts and every test runs, none canceled. A cluster
  *     that fails to start there is a broken fixture, so `beforeAll` fails the suite with the
- *     cause instead of cancelling the tests.
+ *     cause instead of cancelling the tests. On Spark 4.0 the encryption-zone test needs
+ *     BouncyCastle on the test class path, which that profile adds: Hadoop 3.4.1's `KeyProvider`
+ *     links against it.
  *   - Spark 4.2: nothing runs (all tests are cancelled), for two independent reasons. There is no
  *     Iceberg runtime for 4.2 (`icebergAvailable` is false there), and the cluster cannot start
  *     either: `MiniDFSCluster.Builder` throws `NoClassDefFoundError:
