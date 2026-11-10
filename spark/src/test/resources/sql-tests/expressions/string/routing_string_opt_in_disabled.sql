@@ -29,8 +29,13 @@ INSERT INTO routing_string_opt_in VALUES ('hello world', '{"a":1}'), ('', '{}'),
 query expect_fallback(initcap: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT initcap(s) FROM routing_string_opt_in
 
-query expect_fallback(replace: spark.comet.exec.scalaUDF.codegen.enabled=false)
+-- A direct column with bounded, non-empty literals is native even without opt-in.
+query expect_native(replace)
 SELECT replace(s, 'l', 'L') FROM routing_string_opt_in
+
+-- Empty search remains outside the native default subset and needs the dispatcher.
+query expect_fallback(replace: spark.comet.exec.scalaUDF.codegen.enabled=false)
+SELECT replace(s, '', 'L') FROM routing_string_opt_in
 
 query expect_fallback(get_json_object: spark.comet.exec.scalaUDF.codegen.enabled=false)
 SELECT get_json_object(j, '$.a') FROM routing_string_opt_in

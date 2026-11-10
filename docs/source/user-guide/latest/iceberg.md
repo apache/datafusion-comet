@@ -63,11 +63,20 @@ Catalog configuration is standard Iceberg-on-Spark and independent of Comet. The
 
 ### Tuning
 
-Comet’s native Iceberg reader supports fetching multiple files in parallel to hide I/O latency with the
-config `spark.comet.scan.icebergNative.dataFileConcurrencyLimit`. This value defaults to 1 to
-maintain test behavior on Iceberg Java tests without `ORDER BY` clauses, but we suggest increasing it to
-values between 2 and 8 based on your workload, at the cost of extra memory. This helps most for
-tables with many small files or high-latency storage.
+Comet’s native Iceberg reader fetches multiple data files in parallel to hide I/O latency. The config
+`spark.comet.scan.icebergNative.dataFileConcurrencyLimit` sets how many files one task reads at a time.
+It defaults to 2, which helps most for tables with many small files or high-latency storage such as S3.
+Values between 2 and 8 are reasonable; raise it based on your workload, at the cost of extra memory,
+because each file in flight holds its own buffers.
+
+When the limit is above 1, batches from different files are returned in no particular order, so a
+query without an `ORDER BY` can return rows in a different order than with a limit of 1. Spark does
+not guarantee that order, but some tests and applications depend on it. Set the limit to `1` to read
+the files one after another, in the order Spark assigned them.
+
+The Iceberg Spark tests are an example. They expect file order from queries without an `ORDER BY`, so
+the Iceberg test jobs set the environment variable `COMET_ICEBERG_DATA_FILE_CONCURRENCY_LIMIT=1`,
+which overrides the default. See [Iceberg Spark tests](../../contributor-guide/iceberg-spark-tests.md).
 
 ### Supported features
 
@@ -129,8 +138,7 @@ safe partial pruning is tracked in [#5883](https://github.com/apache/datafusion-
 - Local filesystem
 - S3-compatible storage (AWS S3, MinIO)
 - Google Cloud Storage (`gs`) and Alibaba Cloud OSS (`oss`)
-
-HDFS-backed tables are not supported by the native Iceberg reader and fall back to Spark.
+- HDFS (`hdfs`), experimental (see [HDFS](#hdfs))
 
 ### REST Catalog
 
@@ -185,6 +193,47 @@ For a custom S3-compatible endpoint, configure the catalog with the endpoint, pa
 
 These `s3.*` storage properties are not specific to the Hive catalog shown here. When `s3.access-key-id` / `s3.secret-access-key` are omitted, credentials come from the standard AWS chain (environment variables, instance profiles, and so on). The region is not auto-detected: when neither the catalog (`client.region` or `s3.region`) nor the executor environment (`AWS_REGION` or `AWS_DEFAULT_REGION`) supplies one, Comet uses `us-east-1`, so set it for AWS buckets in any other region. If your REST catalog vends temporary credentials, the native reader does not consume them automatically, and wiring that requires the credential provider bridge. See Iceberg's [S3 FileIO](https://iceberg.apache.org/docs/latest/aws/#s3-fileio) docs for the full property list, and [S3 Credential Providers](s3-credential-providers.md) for vended or per-request credentials.
 
+### HDFS
+
+The native reader reads HDFS through iceberg-rust's experimental `hdfs-native` backend, a Rust HDFS
+client that uses neither libhdfs nor the JVM. The client reads `core-site.xml` and `hdfs-site.xml`
+from `$HADOOP_CONF_DIR`, or from `$HADOOP_HOME/etc/hadoop`, on each executor. Of the session's
+Hadoop configuration (the driver's XML and `spark.hadoop.*`), Comet forwards the settings the
+client reads: `dfs.client.use.datanode.hostname`, `dfs.client.socket-timeout`,
+`dfs.client.failover.max.attempts`, `dfs.client.failover.sleep.base.millis` and
+`dfs.client.failover.sleep.max.millis` when the session sets them, and the NameNodes of an HA
+nameservice. A location such as `hdfs://ns1/warehouse` has no port, and Comet passes the client
+the NameNodes that the session's Hadoop configuration declares for `ns1` with
+`dfs.ha.namenodes.ns1` and `dfs.namenode.rpc-address.ns1.<id>`. A portless location that the
+configuration does not declare is a single NameNode on Hadoop's default port, 8020, as it is to
+the JVM client. A catalog property under `hadoop.` sets any client key directly and wins over the
+forwarded value. The client does not read the JVM client's other settings, among them short-circuit
+and hedged reads, `dfs.client.retry.*`, `ipc.client.*`, `hadoop.rpc.protection` and the
+per-nameservice `dfs.client.failover.*.<ns>` keys. Data transfer is encrypted when the NameNode
+requires it (`dfs.encrypt.data.transfer`), as for the JVM client.
+
+A scan of HDFS files falls back to Spark when `hadoop.security.authentication` is not `simple`,
+because the client cannot authenticate with the delegation tokens that Spark executors use on a
+Kerberos cluster. It also falls back when a file location has no port and names a nameservice that
+the Hadoop configuration does not declare, or when it has no authority (`hdfs:///path`), and when a
+data or delete file lies in an HDFS encryption zone: the client is built without KMS support and
+cannot decrypt it. Comet checks that at planning, on clusters whose NameNode advertises a key
+provider, with one directory listing per parent of the data directories. A listing is kept per
+table for an hour, or for `spark.sql.metadataCacheTTLSeconds` when that is set, so a table
+re-created at the same path lists again on its first scan, and a new partition lists its parent
+again; a scan that would list more than a million directory entries falls back, and later scans
+continue from the listings kept, which hold a million entries at most.
+
+On a cluster without Kerberos, the client connects as `HADOOP_USER_NAME`, or as the executor's
+operating system user when that variable is unset, rather than as the Spark user. Comet therefore
+claims an HDFS scan only when the executors are known to read as the Spark user: set
+`spark.executorEnv.HADOOP_USER_NAME` to the user that submits the job, when the application is
+submitted (Comet reads it from the SparkContext's configuration; a value set on a session
+afterwards never reaches the executors). In local mode, the JVM's `HADOOP_USER_NAME` or operating
+system user must be that user. Otherwise the scan falls back with a reason that names the setting.
+To read HDFS tables with Spark's Iceberg reader and keep the native scan for other storage, set
+`spark.comet.scan.icebergNative.hdfs.enabled=false`. Writes to HDFS use Iceberg's own writer.
+
 ### Current limitations
 
 The following scenarios will fall back to the JVM Iceberg reader:
@@ -196,18 +245,36 @@ The following scenarios will fall back to the JVM Iceberg reader:
   projected is read natively)
 - Encrypted tables with 192-bit data keys (no AES-192-GCM in the underlying crypto)
 - Delete files in a format other than Parquet or Puffin (Avro or ORC positional/equality deletes)
+- Equality deletes keyed on a field nested in a struct
 - Tables backed by Avro or ORC data files (only Parquet is accelerated)
 - Queries that use `input_file_name()`, `input_file_block_start()` or `input_file_block_length()`
 - Scans whose data or delete files span more than one S3 bucket (the native reader uses one
   object-store configuration per scan)
+- HDFS scans on a cluster with Kerberos, or whose executors are not known to read as the Spark
+  user; HDFS file locations that name a nameservice without NameNodes or that have no authority;
+  and HDFS files in an encryption zone (see [HDFS](#hdfs))
+- Scans whose data or delete files are on a different storage backend than the table metadata, for
+  example a local or REST-served metadata location with `write.data.path` on S3 or HDFS. The native
+  reader opens every file of a scan through one storage, chosen from the metadata location
+- Scans where Iceberg reports an output ordering (for example with
+  `spark.sql.iceberg.planning.preserve-data-ordering=true`). Spark may then skip the sort above the
+  scan, and the native reader does not preserve file order
 - Tables partitioned on `BINARY` or `DECIMAL` (with precision >28) columns
 - Scans with residual filters using `truncate`, `bucket`, `year`, `month`, `day`, or `hour`
   transform functions (partition pruning still works, but row-level filtering of these
   transforms falls back)
-- Scans that read a struct, array, or map column with a nested field that schema evolution added
-  or renamed. The native reader cannot yet match such a field to data files written before the
-  change. The check uses the table's schema history, so the fallback stays after those files are
-  rewritten
+- Scans that read a struct column, or a struct inside an array or map, whose fields were all added
+  by schema evolution after some data file was written. For such a file the native reader returns a
+  struct of NULLs or NULL, depending on what else the scan reads, where Spark does not. The check
+  uses the table's schema history, so the fallback stays after those files are rewritten
+- Scans that read a struct, array, or map column from a table with
+  `schema.name-mapping.default`, including tables imported with `snapshot`, `migrate`, or
+  `add_files` ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The native reader
+  does not apply name mappings to nested fields. Queries that read only primitive columns can
+  still run natively. The fallback remains while the property is set, even if the data files
+  have since been rewritten with field IDs. Iceberg's nullness rules are separate from the
+  Parquet legacy setting; [#6934](https://github.com/apache/datafusion-comet/issues/6934) tracks
+  the reader update and review of this fallback
 - Scans where no schema in the table's history gives a partition source or equality-delete key a
   name that the scan's other columns don't use (every task of a native scan must give such a
   column the same name)
@@ -390,14 +457,13 @@ summary-aware writer commit contract.
 
 For copy-on-write row-level DML, the mechanism differs by Spark version: on Spark 4.0+ the
 analyzer emits operation-coded rows that Comet's writer dispatches through `ReplaceData`'s
-projections, while on Spark 3.4/3.5 the rewritten rows are written as a plain row stream. The
+projections, while on Spark 3.5 the rewritten rows are written as a plain row stream. The
 supported set of operations is the same either way.
 
 Merge-on-read uses Spark's `WriteDelta`, and Iceberg's JVM `DeltaWriter` writes its rows under
 either plan, so it keeps Spark's stock write plan. On Spark 3.5+ the testing setting
 `spark.comet.write.iceberg.splitOperator.enabled` plans it as the split plan, with the same driver
 commit and reporting path, but `CometIcebergWriteExec` is never used for position-delta rows.
-Spark 3.4 always leaves `WriteDelta` on Spark's stock write plan.
 
 On Spark 4.1+ the split plan matches two further stock-Spark behaviours: MERGE metrics are
 forwarded to the writer's commit (Iceberg 1.11+ records them in the snapshot summary), and
@@ -417,8 +483,6 @@ The rewrite is skipped — and the write runs through Spark's stock combined ope
 - the write is neither an Iceberg `SparkWrite` nor a supported Iceberg position-delta write;
 - the table uses merge-on-read (`WriteDelta`), unless the testing setting
   `spark.comet.write.iceberg.splitOperator.enabled` is on with Spark 3.5+;
-- the statement is CTAS / RTAS on Spark 3.4, where the staged exec writes inline; on Spark
-  3.5+ those statements re-plan their inner append, which is intercepted normally;
 - the write is a streaming write (`writeStream` into an Iceberg table);
 - the write requires Spark's commit coordinator, which Comet's per-task commit protocol does
   not use;
@@ -630,9 +694,8 @@ normal `remove_orphan_files` maintenance.
 When one task fails, the tasks that had already completed leave committed-nothing data files
 too. The committer collects each task's commit message as that task finishes, so on a job
 failure it aborts with the completed messages and deletes their data files through the table
-`FileIO`. (From Iceberg 1.6 on, Iceberg's own `SparkWrite.abort` skips cleanup unless a commit
-failed with a cleanable error, so on the stock path those files are left for
-`remove_orphan_files`. Iceberg 1.5, which the Spark 3.4 profile pins, deletes them.) A
+`FileIO`. (Iceberg's own `SparkWrite.abort` skips cleanup unless a commit failed with a
+cleanable error, so on the stock path those files are left for `remove_orphan_files`.) A
 failure during the driver-side commit itself behaves exactly as on the stock path: the commit
 messages carry genuine `SparkWrite$TaskCommit` objects, so Iceberg's own `SparkWrite.abort`
 cleanup (which deletes the files listed in the commit messages for cleanable failures) applies
@@ -686,9 +749,8 @@ a data file but not what any reader computes from it:
   per task. The native writer zero-pads the task attempt id and counts from `00000`; iceberg-java
   leaves the id unpadded and counts from `00001`.
 - Partition directory names match iceberg-java 1.8+'s `PartitionSpec.partitionToPath` for every
-  partition type the native writer accepts. On Iceberg 1.5.x,
-  which the Spark 3.4 profile pins, iceberg-java itself spelled `timestamp` and `timestamptz`
-  directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
+  partition type the native writer accepts. Earlier iceberg-java releases spelled `timestamp` and
+  `timestamptz` directories with `LocalDateTime.toString()` / `OffsetDateTime.toString()`
   (`ts=1969-12-31T23:59:58.500Z`) and left the partition field name unescaped; Comet uses the
   1.8+ spelling on every profile. Distinct partition values still get distinct directories in all
   cases, and no reader parses these names: files are resolved through committed manifests.
@@ -772,21 +834,19 @@ the [S3](datasources.md#s3-limitations) and [Azure](datasources.md#azure-limitat
 
 Which entries apply depends on which native paths are enabled:
 
-| Native path    | Setting                                  | Default |
-| -------------- | ---------------------------------------- | ------- |
-| Iceberg scan   | `spark.comet.scan.icebergNative.enabled` | `true`  |
-| Iceberg writer | `spark.comet.write.iceberg.enabled`      | `false` |
+| Native path          | Setting                                       | Default |
+| -------------------- | --------------------------------------------- | ------- |
+| Iceberg scan         | `spark.comet.scan.icebergNative.enabled`      | `true`  |
+| Iceberg scan of HDFS | `spark.comet.scan.icebergNative.hdfs.enabled` | `true`  |
+| Iceberg writer       | `spark.comet.write.iceberg.enabled`           | `false` |
 
 ### Reads that differ from Spark
 
-- **Migrated tables that use a name mapping.** The `migrate`, `snapshot` and `add_files`
-  procedures set `schema.name-mapping.default` for files without Iceberg field ids. When a query
-  also reads a top-level primitive column, the native scan returns NULL for nested fields (struct
-  fields, list elements and map values). Filters on those fields then select the wrong rows
-  ([#6790](https://github.com/apache/datafusion-comet/issues/6790)). The fix needs an iceberg-rust
-  upgrade ([#6934](https://github.com/apache/datafusion-comet/issues/6934)).
-- **Data files with neither field ids nor a name mapping.** Spark reads every nested field of such
-  a file as NULL, and the native scan returns the values stored in the file
+- **Data files with neither field ids nor a name mapping.** Neither reader can match such a
+  file's nested fields to the table's, so a struct's fields read as NULL in both. The containers
+  differ: Spark's reader returns NULL for an optional struct itself, where the native scan
+  returns a struct of NULL fields, and an empty list for a list of structs, where the native scan
+  returns the list with each element's fields NULL
   ([#6794](https://github.com/apache/datafusion-comet/issues/6794)).
 - **`VERSION AS OF` reads of a column renamed after the snapshot.** The renamed column reads as
   NULL, and two columns that swapped names return each other's values
@@ -813,15 +873,8 @@ The physical differences that every native data file has, and why they are safe,
 
 ### Reads that fail where Spark succeeds
 
-- **A data file that omits an optional nested field.** The native scan fails on a data file that
-  lacks an optional struct field, which a write with `write.spark.accept-any-schema=true` can
-  produce without any schema change
-  ([#7033](https://github.com/apache/datafusion-comet/issues/7033)).
 - **`VERSION AS OF` reads of a column whose type was promoted after the snapshot**
   ([#6993](https://github.com/apache/datafusion-comet/issues/6993)).
-- **An equality delete keyed on a nested field.** Every query the native scan runs on the table
-  fails with `field not found`, even one that reads the key
-  ([#6782](https://github.com/apache/datafusion-comet/issues/6782)).
 - **Column names that only newer Unicode case data folds together**, such as a pair of Vithkuqi
   letters, which Unicode 14 added. Queries on such a table fail with a duplicate-field error
   ([#5540](https://github.com/apache/datafusion-comet/issues/5540)).
