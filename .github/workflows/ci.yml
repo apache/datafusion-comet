@@ -634,10 +634,10 @@ jobs:
   # So requiring the bare name would block every code change, and requiring a
   # nested name would block every docs-only change. Both hang rather than fail,
   # and a required context that never reports also locks `.asf.yaml` itself,
-  # which then needs an INFRA ticket to unwedge. Aggregating into one flat job,
-  # whose name is published on every event that can reach the merge box, avoids
-  # the whole class of problem. The exception is a fork run that is no pull
-  # request's tier, which Preflight skips and this job follows.
+  # which then takes a committer bypass merge to unwedge. Aggregating into one
+  # flat job, whose name is published on every event that can reach the merge
+  # box, avoids the whole class of problem. The exception is a fork run that is
+  # no pull request's tier, which Preflight skips and this job follows.
   #
   # `if: always()` is what makes this work: without it the job inherits the
   # default `success()` and is itself skipped the moment any dependency fails.

@@ -128,13 +128,16 @@ Add the new branch to `protected_branches` in `.asf.yaml` so it requires a pull 
 
 ```yaml
 protected_branches:
-  main:
+  branch-0.12:
     required_pull_request_reviews:
       required_approving_review_count: 1
   branch-0.13:
     required_pull_request_reviews:
       required_approving_review_count: 1
 ```
+
+Do not add `main` there. It is protected by rulesets instead, because classic protection on `main` would disable
+the committer bypass described in [Merging an urgent pull request](ci.md#merging-an-urgent-pull-request).
 
 All release branches stay protected, including older ones, so released code cannot be pushed to directly.
 

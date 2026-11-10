@@ -267,6 +267,42 @@ semantic conflict between two pull requests that each pass in isolation is caugh
 lands. It also means a pull request can be evicted for a failure it did not cause on its own,
 because `main` moved or because an entry ahead of it broke the combined tree.
 
+## Merging an urgent pull request
+
+A committer can merge an approved pull request without waiting for the queue or for
+`Required Checks`, for example a security fix, or the fix for a queue that every entry fails for a
+reason outside the pull request, such as a runner image GitHub has retired. Use this only when the
+queue cannot do the job. A bypass merge lands code that no queue build has tested.
+
+1. Join the [`apache/datafusion-public`](https://github.com/orgs/apache/teams/datafusion-public)
+   team through [Boxer](https://gitbox.apache.org/boxer/). This is a one-time step, only current
+   committers can join, and membership takes about 15 minutes to sync.
+2. Get the pull request approved. The bypass skips the queue and the required checks, not review.
+3. If the pull request is in the queue, click **Remove from queue**.
+4. Merge it directly:
+
+   ```sh
+   gh pr merge <number> --squash --admin
+   ```
+
+   In the web UI, the same thing is the **Merge without waiting for requirements to be met**
+   checkbox.
+
+To check that your account can bypass, look up the `Merge Queue` ruleset:
+
+```sh
+gh api repos/apache/datafusion-comet/rulesets \
+  --jq '.[] | select(.name == "Merge Queue") | .id' |
+  xargs -I{} gh api repos/apache/datafusion-comet/rulesets/{} --jq .current_user_can_bypass
+```
+
+It prints `pull_requests_only` for a member of the team and `never` for everyone else.
+
+The bypass works only because `main` has no classic branch protection. While classic protection
+exists on a branch, GitHub refuses a ruleset bypass on it, so the review requirement for `main`
+lives in a second ruleset, `Default Branch Protection`, that only ASF Infra can bypass. See the
+"Branch protection" section of `.github/workflows/README.md`.
+
 ## When a queue run fails
 
 A queue failure removes the pull request from the queue but does not otherwise change it. Work
