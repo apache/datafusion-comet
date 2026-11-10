@@ -37,6 +37,11 @@
 //! - `error`: an error carrying the driver's exception class and message.
 //! - missing or anything else: an error, so a plan that did not run the resolver cannot pass.
 //!
+//! Scans never reach any of these errors. The driver handles `declined` and `error` itself and,
+//! for `resolved`, asks [`store_error`] (through `NativeBase.abfsStoreError`) whether
+//! [`create_store`] can build the store the scan would build. A scan that would fail here is
+//! planned on Spark instead. Native writes still fail with these errors.
+//!
 //! `comet.azure.auth.type` is Hadoop's `AuthType` name, `comet.azure.oauth.provider.class` the
 //! OAuth provider class, `comet.azure.sas.provider.class` a custom SAS provider and
 //! `comet.azure.oauth.assertion.provider.class` a Workload Identity client assertion provider.
@@ -62,7 +67,9 @@
 //! the client id and tenant to its request only when they are non-empty. The MSI tenant and
 //! authority are accepted but unused: object_store's IMDS provider reads only the client id and
 //! endpoint. `RefreshTokenBasedTokenProvider` and `UserPasswordTokenProvider` have no
-//! `object_store` counterpart and fail as unsupported. A value a mechanism needs but that is
+//! `object_store` counterpart and fail as unsupported. The client credentials endpoint and the
+//! Workload Identity authority must be `https` URLs: the store is built without `allow_http`, so
+//! an `http` token request would fail on every attempt. A value a mechanism needs but that is
 //! absent (or, for the SAS token and the client credentials endpoint, unusable) is an error
 //! naming the key; other `fs.azure.*` keys are ignored. Values are applied as forwarded (Hadoop
 //! already trimmed and defaulted them), except that the trailing slash Hadoop appends to
@@ -71,13 +78,15 @@
 
 use log::debug;
 use std::collections::HashMap;
-use url::{Position, Url};
+use url::Url;
 
 use object_store::{
     azure::{AzureConfigKey, MicrosoftAzureBuilder},
     path::Path,
     ObjectStore, ObjectStoreScheme,
 };
+
+use super::url_redaction::{display_authority, without_credentials, without_secrets};
 
 const MARKER_RESOLUTION: &str = "comet.azure.resolution";
 const MARKER_AUTH_TYPE: &str = "comet.azure.auth.type";
@@ -120,13 +129,31 @@ pub fn create_store(
     url: &Url,
     configs: &HashMap<String, String>,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    let (scheme, path) = ObjectStoreScheme::parse(url)?;
+    let (scheme, path) = ObjectStoreScheme::parse(&without_credentials(url))?;
     if scheme != ObjectStoreScheme::MicrosoftAzure {
-        return Err(config_error(format!("Scheme of URL is not Azure: {url}")));
+        return Err(config_error(format!(
+            "Scheme of URL is not Azure: {}",
+            url.scheme()
+        )));
     }
     let path = Path::parse(path)?;
     let store = builder_for(url, configs)?.build()?;
     Ok((Box::new(store), path))
+}
+
+/// Why [`create_store`] cannot build a store for `url` from `configs`, or `None` when it can.
+/// The driver asks this at planning time so that a scan the store would reject falls back to
+/// Spark, from the same code the scan runs instead of a copy of its rules. Building makes no
+/// request, and the message names keys, never their values.
+pub fn store_error(url: &str, configs: &HashMap<String, String>) -> Option<String> {
+    let url = match Url::parse(url) {
+        Ok(url) => url,
+        Err(e) => return Some(format!("invalid ABFS URL: {e}")),
+    };
+    create_store(&url, configs).err().map(|e| match e {
+        object_store::Error::Generic { source, .. } => source.to_string(),
+        other => other.to_string(),
+    })
 }
 
 /// The builder the markers in `configs` call for. Only `none` touches the environment.
@@ -137,17 +164,21 @@ fn builder_for(
     let marker = |key: &str| configs.get(key).map(String::as_str);
     match marker(MARKER_RESOLUTION) {
         Some("none") => {
-            debug!("Azure authentication for {url}: none configured in Hadoop, reading AZURE_*");
-            Ok(MicrosoftAzureBuilder::from_env().with_url(url.to_string()))
+            debug!(
+                "Azure authentication for {}: none configured in Hadoop, reading AZURE_*",
+                display_authority(url)
+            );
+            Ok(MicrosoftAzureBuilder::from_env().with_url(without_secrets(url).to_string()))
         }
         Some("resolved") => {
             let settings = resolved_settings(configs)?;
             debug!(
-                "Azure authentication for {url}: {} with keys {:?}",
+                "Azure authentication for {}: {} with keys {:?}",
+                display_authority(url),
                 marker(MARKER_AUTH_TYPE).unwrap_or_default(),
                 settings.iter().map(|(k, _)| k.as_ref()).collect::<Vec<_>>()
             );
-            let builder = MicrosoftAzureBuilder::new().with_url(url.to_string());
+            let builder = MicrosoftAzureBuilder::new().with_url(without_secrets(url).to_string());
             Ok(settings
                 .into_iter()
                 .fold(builder, |b, (key, value)| b.with_config(key, value)))
@@ -162,9 +193,8 @@ fn builder_for(
             ))
         }
         Some("error") => Err(config_error(format!(
-            "Hadoop ABFS authentication failed on the driver for {}://{}: {}: {}",
-            url.scheme(),
-            &url[Position::BeforeUsername..Position::AfterPort],
+            "Hadoop ABFS authentication failed on the driver for {}: {}: {}",
+            display_authority(url),
             marker(MARKER_ERROR_CLASS).unwrap_or("<unknown>"),
             marker(MARKER_ERROR_MESSAGE).unwrap_or("<unknown>"),
         ))),
@@ -232,6 +262,7 @@ fn client_creds_settings(
              before `oauth2`"
         ))
     })?;
+    require_https(HADOOP_OAUTH_CLIENT_ENDPOINT, &host)?;
     Ok(vec![
         (
             AzureConfigKey::ClientId,
@@ -274,6 +305,14 @@ fn msi_settings(configs: &HashMap<String, String>) -> Result<Settings, object_st
 fn workload_identity_settings(
     configs: &HashMap<String, String>,
 ) -> Result<Settings, object_store::Error> {
+    let authority = required(configs, HADOOP_MSI_AUTHORITY)?;
+    let has_host = Url::parse(&authority).is_ok_and(|url| url.has_host());
+    if !has_host {
+        return Err(config_error(format!(
+            "`{HADOOP_MSI_AUTHORITY}` has no `scheme://host` origin"
+        )));
+    }
+    require_https(HADOOP_MSI_AUTHORITY, &authority)?;
     Ok(vec![
         (
             AzureConfigKey::ClientId,
@@ -287,11 +326,21 @@ fn workload_identity_settings(
             AzureConfigKey::FederatedTokenFile,
             required(configs, HADOOP_WI_TOKEN_FILE)?,
         ),
-        (
-            AzureConfigKey::AuthorityHost,
-            authority_host(&required(configs, HADOOP_MSI_AUTHORITY)?),
-        ),
+        (AzureConfigKey::AuthorityHost, authority_host(&authority)),
     ])
+}
+
+/// The store is built without `allow_http`, so a token request to an `http` URL fails on every
+/// attempt. Fail at build time instead, naming the key. `url` must already parse.
+fn require_https(key: &str, url: &str) -> Result<(), object_store::Error> {
+    if Url::parse(url).is_ok_and(|url| url.scheme() == "https") {
+        Ok(())
+    } else {
+        Err(config_error(format!(
+            "`{key}` is not an `https` URL; the native ABFS store sends token requests over \
+             HTTPS only"
+        )))
+    }
 }
 
 fn required(configs: &HashMap<String, String>, key: &str) -> Result<String, object_store::Error> {
@@ -530,6 +579,81 @@ mod tests {
     }
 
     #[test]
+    fn create_store_errors_do_not_echo_userinfo_or_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        let error_for = |raw: String| {
+            let url = Url::parse(&raw).unwrap();
+            let err = create_store(&url, &configs).unwrap_err().to_string();
+            for leaked in ["alice", SECRET, "SAS-MARKER"] {
+                assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+            }
+            err
+        };
+        let not_azure = error_for(format!(
+            "s3://alice:{SECRET}@bucket/dir/file.parquet?sig=SAS-MARKER"
+        ));
+        assert!(
+            not_azure.ends_with("Scheme of URL is not Azure: s3"),
+            "{not_azure}"
+        );
+        assert!(!not_azure.contains("bucket"), "host echoed: {not_azure}");
+        error_for(format!(
+            "foo://alice:{SECRET}@host/dir/file.parquet?sig=SAS-MARKER"
+        ));
+    }
+
+    #[test]
+    fn builder_errors_do_not_echo_the_password_or_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        // object_store recognises only the public cloud and Fabric hosts, and quotes the URL.
+        let url = Url::parse(&format!(
+            "abfss://data:{SECRET}@myacct.dfs.core.chinacloudapi.cn/path/file.parquet?sig=SAS-MARKER"
+        ))
+        .unwrap();
+        let err = create_store(&url, &configs).unwrap_err().to_string();
+        for leaked in [SECRET, "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
+    }
+
+    #[test]
+    fn create_store_keeps_the_container_of_a_url_with_a_query() {
+        let configs = with(shared_key(), HADOOP_KEY, KEY);
+        let url =
+            Url::parse("abfss://data@myacct.dfs.core.windows.net/path/file.parquet?sig=SAS-MARKER")
+                .unwrap();
+        let (_store, path) = create_store(&url, &configs).expect("store builds");
+        assert_eq!(path.as_ref(), "path/file.parquet");
+    }
+
+    #[test]
+    fn store_error_answers_whether_create_store_builds() {
+        let shared_key = with(shared_key(), HADOOP_KEY, KEY);
+        assert_eq!(store_error(URL, &shared_key), None);
+        assert_eq!(store_error(URL, &client_creds()), None);
+        let http = with(
+            client_creds(),
+            HADOOP_OAUTH_CLIENT_ENDPOINT,
+            "http://login.microsoftonline.com/hadoop-tenant/oauth2/token",
+        );
+        let err = store_error(URL, &http).expect("an error");
+        assert!(
+            err.starts_with(&format!(
+                "`{HADOOP_OAUTH_CLIENT_ENDPOINT}` is not an `https` URL"
+            )),
+            "{err}"
+        );
+        let declined = configs(&[
+            (MARKER_RESOLUTION, "declined"),
+            (MARKER_AUTH_TYPE, "Custom"),
+        ]);
+        let err = store_error(URL, &declined).expect("an error");
+        assert!(err.contains("auth type Custom"), "{err}");
+        let err = store_error("not a url", &shared_key).expect("an error");
+        assert!(err.starts_with("invalid ABFS URL"), "{err}");
+    }
+
+    #[test]
     fn client_creds_take_tenant_and_authority_host_from_the_endpoint_alone() {
         assert_exactly(
             &client_creds(),
@@ -563,9 +687,11 @@ mod tests {
         );
         // An endpoint without a tenant segment or without a `scheme://host` origin cannot
         // fall through to another credential or to the default authority host.
+        // Nor can an `http` endpoint, which the store would refuse on every token request.
         for endpoint in [
             "https://auth-proxy.example/",
             "file:///hadoop-tenant/oauth2/token",
+            "http://login.microsoftonline.com/hadoop-tenant/oauth2/token",
         ] {
             let err = err(&with(
                 client_creds(),
@@ -693,6 +819,15 @@ mod tests {
                 Some(host),
                 "{authority}"
             );
+        }
+        // The token request goes to the authority over a client that refuses `http`.
+        for authority in [
+            "http://login.microsoftonline.com/",
+            "login.microsoftonline.com",
+            "file:///",
+        ] {
+            let err = err(&with(workload_identity(), HADOOP_MSI_AUTHORITY, authority));
+            assert!(err.contains(HADOOP_MSI_AUTHORITY), "{authority}: {err}");
         }
     }
 
@@ -843,6 +978,19 @@ mod tests {
              abfss://data@myacct.dfs.core.windows.net: \
              org.apache.hadoop.fs.azurebfs.contracts.exceptions.KeyProviderException: \
              Failure to initialize configuration"
+        );
+        let with_password = Url::parse(&format!(
+            "abfss://data:{SECRET}@myacct.dfs.core.windows.net/path/file.parquet"
+        ))
+        .unwrap();
+        let err = builder_for(&with_password, &configs)
+            .err()
+            .map(|e| e.to_string())
+            .expect("an error");
+        assert!(!err.contains(SECRET), "password echoed: {err}");
+        assert!(
+            err.contains("for abfss://data@myacct.dfs.core.windows.net: "),
+            "{err}"
         );
     }
 

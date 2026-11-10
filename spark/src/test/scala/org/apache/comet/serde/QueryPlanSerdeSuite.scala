@@ -21,14 +21,116 @@ package org.apache.comet.serde
 
 import org.scalatest.funsuite.AnyFunSuite
 
-import org.apache.spark.sql.catalyst.expressions.{ArrayContains, ArrayPosition, AttributeReference, Cast}
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.catalyst.analysis.SimpleAnalyzer
+import org.apache.spark.sql.catalyst.expressions.{Alias, ArrayContains, ArrayPosition, AttributeReference, AttributeSeq, BindReferences, Cast, CreateNamedStruct, Divide, Expression, In, Literal, MakeDate, Not, UnsafeProjection}
+import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, Project}
+import org.apache.spark.sql.comet.DecimalPrecision
+import org.apache.spark.sql.comet.util.Utils.equalsIgnoreCompatibleNullability
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus}
-import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, supportedDataType, withSharedSubexpressions}
+import org.apache.comet.serde.QueryPlanSerde.{canShortCircuitNulls, canSkipEvaluation, supportedDataType, withSharedSubexpressions}
 
 class QueryPlanSerdeSuite extends AnyFunSuite {
+
+  test("make_date IN evaluates the probe but can skip list expressions") {
+    val year = AttributeReference("y", IntegerType)()
+    val month = AttributeReference("m", IntegerType)()
+    val date = MakeDate(year, month, Literal(1), failOnError = true)
+    val inputs = Seq(year, month)
+    val epoch = Literal(0, DateType)
+    val probe = In(date, Seq(epoch, Literal(31, DateType)))
+    assert(QueryPlanSerde.exprToProto(probe, inputs).exists(_.hasIn))
+
+    // Spark must skip the unevaluable column references in the list in both cases.
+    val nullProbe = In(Literal.create(null, DateType), Seq(date))
+    val firstMatch = In(epoch, Seq(epoch, date))
+    assert(nullProbe.eval() == null)
+    assert(firstMatch.eval() == true)
+    Seq(nullProbe, firstMatch).foreach { predicate =>
+      assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
+    }
+  }
+
+  test("make_date IN accepts analyzer casts that only widen candidate nullability") {
+    val year = AttributeReference("y", IntegerType)()
+    val text = AttributeReference("s", StringType)()
+    val inputs = Seq(year, text)
+    val date = MakeDate(year, Literal(1), Literal(1), failOnError = true)
+    def struct(value: Expression): Expression =
+      CreateNamedStruct(Seq(Literal("d"), value, Literal("f"), Literal(0.0d)))
+    def analyze(candidate: Expression): In = {
+      val predicate = In(struct(date), Seq(struct(candidate)))
+      val plan = Project(Seq(Alias(predicate, "matches")()), LocalRelation(inputs))
+      SimpleAnalyzer
+        .execute(plan)
+        .asInstanceOf[Project]
+        .projectList
+        .head
+        .children
+        .head
+        .asInstanceOf[In]
+    }
+
+    val safe = analyze(Literal(java.sql.Date.valueOf("2024-01-01")))
+    // The analyzer coerces the literal's nonnullable date field to match the nullable probe.
+    val cast = safe.list.head.asInstanceOf[Cast]
+    assert(cast.child.dataType != cast.dataType)
+    assert(equalsIgnoreCompatibleNullability(cast.child.dataType, cast.dataType))
+    assert(QueryPlanSerde.exprToProto(safe, inputs).exists(_.hasIn))
+
+    // Value-changing casts remain unsafe inside otherwise safe struct constructors.
+    val unsafe = analyze(Cast(text, DateType, Some("UTC"), ansiEnabled = true))
+    assert(QueryPlanSerde.exprToProto(unsafe, inputs).isEmpty)
+  }
+
+  test("make_date IN falls back when a candidate can fail on a skipped row") {
+    val year = AttributeReference("y", IntegerType)()
+    val text = AttributeReference("s", StringType)()
+    val inputs = Seq(year, text)
+    val date = MakeDate(year, Literal(1), Literal(1), failOnError = true)
+    val first = Literal(java.sql.Date.valueOf("2024-01-01"))
+    val cast = Cast(text, DateType, Some("UTC"), ansiEnabled = true)
+    def struct(value: Expression): Expression =
+      CreateNamedStruct(Seq(Literal("d"), value, Literal("f"), Literal(0.0d)))
+    val scalar = In(date, Seq(first, cast))
+    val nested = In(struct(date), Seq(struct(first), struct(cast)))
+    val rows = Seq(
+      InternalRow(2024, UTF8String.fromString("bad")),
+      InternalRow(2025, UTF8String.fromString("2025-01-01")))
+
+    Seq(scalar, nested).foreach { in =>
+      Seq(in -> true, Not(in) -> false).foreach { case (predicate, expected) =>
+        val bound = BindReferences.bindReference(predicate, AttributeSeq(inputs))
+        val projection = UnsafeProjection.create(Seq(bound))
+        rows.foreach { row =>
+          assert(bound.eval(row) == expected)
+          assert(projection(row).getBoolean(0) == expected)
+        }
+        val error = intercept[Exception] {
+          bound.eval(InternalRow(2026, UTF8String.fromString("bad")))
+        }
+        assert(error.getMessage.contains("CAST_INVALID_INPUT"))
+        assert(QueryPlanSerde.exprToProto(predicate, inputs).isEmpty)
+      }
+    }
+
+    // A NULL scalar probe skips even the first candidate.
+    val nullProbe = In(date, Seq(cast))
+    val bound = BindReferences.bindReference(nullProbe, AttributeSeq(inputs))
+    assert(bound.eval(InternalRow(null, UTF8String.fromString("bad"))) == null)
+    assert(QueryPlanSerde.exprToProto(nullProbe, inputs).isEmpty)
+
+    // Literal/column candidates, including struct constructors, remain native.
+    val candidate = AttributeReference("d", DateType)()
+    Seq(In(date, Seq(first, candidate)), In(struct(date), Seq(struct(first), struct(candidate))))
+      .foreach { predicate =>
+        assert(QueryPlanSerde.exprToProto(predicate, inputs :+ candidate).exists(_.hasIn))
+      }
+  }
 
   test("supportedDataType matches each caller boundary") {
     val complex = ArrayType(IntegerType)
@@ -147,6 +249,35 @@ class QueryPlanSerdeSuite extends AnyFunSuite {
       }
       // Outside an operator's conversion what they share is still unknown
       assert(!canShortCircuitNulls(contains))
+    }
+  }
+
+  test("canSkipEvaluation recognizes shared subexpressions across decimal promotion") {
+    val left = AttributeReference("a", DecimalType(10, 0))()
+    val right = AttributeReference("b", DecimalType(10, 0))()
+    val cast = Cast(Divide(left, right), IntegerType)
+    val array = AttributeReference("ai", ArrayType(IntegerType))()
+    val contains = ArrayContains(array, cast)
+    val position = ArrayPosition(array, cast)
+    val promoted = DecimalPrecision.promote(cast)
+    assert(!cast.semanticEquals(promoted))
+
+    for (enabled <- Seq(false, true); alwaysShared <- Seq(false, true)) {
+      val conf = new SQLConf
+      conf.setConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED, enabled)
+      SQLConf.withExistingConf(conf) {
+        withSharedSubexpressions(Seq(contains, position), alwaysShared) {
+          val canSkip = !(enabled || alwaysShared)
+          assert(canSkipEvaluation(Seq(cast)) == canSkip)
+          assert(canSkipEvaluation(Seq(promoted)) == canSkip)
+          assert(canShortCircuitNulls(contains) == canSkip)
+          assert(canShortCircuitNulls(DecimalPrecision.promote(contains)) == canSkip)
+        }
+        withSharedSubexpressions(Seq(contains), alwaysShared) {
+          assert(canSkipEvaluation(Seq(cast)))
+          assert(canSkipEvaluation(Seq(promoted)))
+        }
+      }
     }
   }
 }
