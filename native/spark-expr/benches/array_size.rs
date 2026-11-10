@@ -155,7 +155,8 @@ fn criterion_benchmark(c: &mut Criterion) {
         "spark_size: LargeList of long arrays",
         &create_large_list_array(rows, 64, true),
     );
-    // No-null LargeList: production path after CometSize's isnotnull filter.
+    // No-null LargeList: what the kernel sees behind CometSize's isnotnull guard, or for a
+    // non-nullable child.
     bench(
         "spark_size: LargeList, no nulls",
         &create_large_list_array(rows, 5, false),
