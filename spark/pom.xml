@@ -26,7 +26,7 @@ under the License.
   <parent>
     <groupId>org.apache.datafusion</groupId>
     <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-    <version>1.2.0-SNAPSHOT</version>
+    <version>1.3.0-SNAPSHOT</version>
     <relativePath>../pom.xml</relativePath>
   </parent>
 
@@ -110,6 +110,10 @@ under the License.
       <groupId>org.apache.spark</groupId>
       <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
       <classifier>tests</classifier>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.spark</groupId>
+      <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
     </dependency>
     <dependency>
       <!-- Test-only: provides an embedded Hive metastore so Iceberg's type=hive catalog can
@@ -340,63 +344,6 @@ under the License.
     </profile>
 
     <!-- Iceberg dependencies vary by Spark version (Iceberg 1.8.1 for Spark 3.x, 1.10.0 for Spark 4.0, 1.11.0 for Spark 4.1) -->
-    <profile>
-      <id>spark-3.4</id>
-      <dependencies>
-        <!--
-          AWS SDK v1 for the built-in S3 credential adapters (spark-3.x source set). hadoop-aws
-          3.3.4 links against the full v1 SDK (it ships the aws-java-sdk-bundle), so its S3AUtils
-          references the s3 model (API extraction at compile) and the DynamoDB model (the S3Guard
-          branch of translateException, at runtime). Supply both modules; core comes transitively
-          and gives the adapter com.amazonaws.auth.*. commons-logging is excluded because
-          jcl-over-slf4j already provides those classes (duplicate-class enforcer).
-        -->
-        <dependency>
-          <groupId>com.amazonaws</groupId>
-          <artifactId>aws-java-sdk-s3</artifactId>
-          <version>${aws-java-sdk-v1.version}</version>
-          <scope>provided</scope>
-          <exclusions>
-            <exclusion>
-              <groupId>commons-logging</groupId>
-              <artifactId>commons-logging</artifactId>
-            </exclusion>
-          </exclusions>
-        </dependency>
-        <dependency>
-          <groupId>com.amazonaws</groupId>
-          <artifactId>aws-java-sdk-dynamodb</artifactId>
-          <version>${aws-java-sdk-v1.version}</version>
-          <scope>provided</scope>
-          <exclusions>
-            <exclusion>
-              <groupId>commons-logging</groupId>
-              <artifactId>commons-logging</artifactId>
-            </exclusion>
-          </exclusions>
-        </dependency>
-        <dependency>
-          <groupId>org.apache.iceberg</groupId>
-          <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
-          <version>1.5.2</version>
-          <scope>test</scope>
-        </dependency>
-        <!-- Jetty 9.4.x for Spark 3.4 (javax.* packages) -->
-        <dependency>
-          <groupId>org.eclipse.jetty</groupId>
-          <artifactId>jetty-server</artifactId>
-          <version>9.4.53.v20231009</version>
-          <scope>test</scope>
-        </dependency>
-        <dependency>
-          <groupId>org.eclipse.jetty</groupId>
-          <artifactId>jetty-servlet</artifactId>
-          <version>9.4.53.v20231009</version>
-          <scope>test</scope>
-        </dependency>
-      </dependencies>
-    </profile>
-
     <profile>
       <id>spark-3.5</id>
       <!--
@@ -629,7 +576,7 @@ under the License.
                 <configuration>
                   <rules>
                     <requireActiveProfile>
-                      <profiles>spark-3.4,spark-3.5,spark-4.0,spark-4.1,spark-4.2</profiles>
+                      <profiles>spark-3.5,spark-4.0,spark-4.1,spark-4.2</profiles>
                       <all>false</all>
                       <message>-Pcontrib-delta requires an explicit Spark profile, e.g. `-Pspark-4.1,contrib-delta`. Activating any profile turns off the activeByDefault Spark profile, which drops test-scope dependencies (iceberg-spark-runtime, Jetty) and breaks test compilation.</message>
                     </requireActiveProfile>
@@ -721,10 +668,12 @@ under the License.
           <generateGitPropertiesFile>true</generateGitPropertiesFile>
           <generateGitPropertiesFilename>${project.build.outputDirectory}/comet-git-info.properties</generateGitPropertiesFilename>
           <commitIdGenerationMode>full</commitIdGenerationMode>
+          <dateFormatTimeZone>UTC</dateFormatTimeZone>
           <includeOnlyProperties>
             <includeOnlyProperty>^git.branch$</includeOnlyProperty>
             <includeOnlyProperty>^git.build.*$</includeOnlyProperty>
             <includeOnlyProperty>^git.commit.id.(abbrev|full)$</includeOnlyProperty>
+            <includeOnlyProperty>^git.commit.time$</includeOnlyProperty>
             <includeOnlyProperty>^git.remote.*$</includeOnlyProperty>
           </includeOnlyProperties>
         </configuration>
@@ -796,8 +745,9 @@ under the License.
                          separately and writes the name twice, failing the build. Excluding the
                          already relocated copy on the way in leaves exactly one. -->
                     <exclude>META-INF/services/${comet.shade.packageName}.arrow.*</exclude>
-                    <!-- The IncludeResourceTransformer below writes this jar's NOTICE, so no input
-                         may supply one: shade would write META-INF/NOTICE twice. -->
+                    <!-- The transformers below supply the binary LICENSE and project NOTICE.
+                         Exclude input copies, including those from an earlier incremental build. -->
+                    <exclude>META-INF/LICENSE</exclude>
                     <exclude>META-INF/NOTICE</exclude>
                   </excludes>
                 </filter>
@@ -852,6 +802,11 @@ under the License.
                      and its contents. -->
                 <transformer
                   implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                <transformer
+                  implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/LICENSE</resource>
+                  <file>${project.basedir}/../dev/licenses/LICENSE-binary.txt</file>
+                </transformer>
                 <!-- The ASF parent POM generates a META-INF/NOTICE holding only the ASF boilerplate,
                      and shade kept that one, so the attributions in NOTICE.txt (Apache Gluten) never
                      reached the jar or the sources jar. Ship NOTICE.txt itself instead, which keeps
@@ -924,20 +879,6 @@ under the License.
     <resources>
       <resource>
         <directory>${project.basedir}/src/main/resources</directory>
-      </resource>
-      <resource>
-        <directory>${project.basedir}/../native/target/x86_64-apple-darwin/release</directory>
-        <includes>
-          <include>libcomet.dylib</include>
-        </includes>
-        <targetPath>org/apache/comet/darwin/x86_64</targetPath>
-      </resource>
-      <resource>
-        <directory>${project.basedir}/../native/target/aarch64-apple-darwin/release</directory>
-        <includes>
-          <include>libcomet.dylib</include>
-        </includes>
-        <targetPath>org/apache/comet/darwin/aarch64</targetPath>
       </resource>
       <resource>
         <directory>${jni.dir}</directory>

@@ -36,7 +36,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, BoundReference, Exp
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
 import org.apache.spark.sql.catalyst.plans.physical._
-import org.apache.spark.sql.comet.{CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometFilterExec, CometMetricNode, CometNativeExec, CometNativeScanExec, CometPlan, CometProjectExec, CometSinkPlaceHolder, CometSparkToColumnarExec, NativeExecContext}
 import org.apache.spark.sql.comet.execution.arrow.{CometArrowStream, CometNativeArrowSource}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.adaptive.ShuffleQueryStageExec
@@ -51,7 +51,7 @@ import org.apache.spark.util.random.XORShiftRandom
 
 import com.google.common.base.Objects
 
-import org.apache.comet.{CometConf, CometExplainInfo}
+import org.apache.comet.CometConf
 import org.apache.comet.CometConf.{COMET_SHUFFLE_ENABLED, COMET_SHUFFLE_MODE}
 import org.apache.comet.CometSparkSessionExtensions.{cometCelebornShuffleFallbackReason, hasFallbackReason, isCometCelebornShuffleManagerEnabled, isCometShuffleManagerEnabled, isSpark40Plus, withFallbackReasons}
 import org.apache.comet.serde.{Compatible, OperatorOuterClass, QueryPlanSerde, SupportLevel, Unsupported}
@@ -235,6 +235,7 @@ case class CometShuffleExchangeExec(
               nativeChild.nativeOp,
               nativeChildMetricNode,
               ctx,
+              CapturedSQLConf.capture(),
               positionalRoundRobin))
         case None =>
           child match {
@@ -623,11 +624,8 @@ object CometShuffleExchangeExec
           _: FloatType | _: DoubleType | _: StringType | _: BinaryType | _: TimestampType |
           _: TimestampNTZType | _: DateType =>
         true
-      case d: DecimalType =>
-        // Match the SQL hash restriction in serde/HashUtils until #5994 fixes native encoding.
-        // Different partition assignments break mixed native/Spark joins. A single partition
-        // does not hash the key: CometNativeShuffleWriter serializes it as SinglePartition.
-        d.precision <= 18 || s.outputPartitioning.numPartitions == 1
+      case _: DecimalType =>
+        true
       case dt if isTimeType(dt) =>
         true
       case StructType(fields) if nestedHashPartitioningEnabled =>
@@ -720,11 +718,11 @@ object CometShuffleExchangeExec
           return reasons.toSeq
         }
         for (o <- orderings) {
-          if (QueryPlanSerde.exprToProto(o, inputs).isEmpty) {
+          val (result, expressionReasons) =
+            QueryPlanSerde.exprToProtoWithFallbackReasons(o, inputs)
+          if (result.isEmpty) {
             reasons += s"unsupported range partitioning sort order: $o"
-            // Roll up fallback reasons recorded on the sort-order expression (e.g. strict
-            // floating-point sort) so they surface in the shuffle's explain output.
-            o.getTagValue(CometExplainInfo.FALLBACK_REASONS).foreach(reasons ++= _)
+            reasons ++= expressionReasons
           }
         }
         for (dt <- orderings.map(_.dataType).distinct) {
@@ -971,7 +969,7 @@ object CometShuffleExchangeExec
       outputPartitioning,
       serializer,
       metrics,
-      NativeShuffleSpec(scanOp, childMetricNode, ctx))
+      NativeShuffleSpec(scanOp, childMetricNode, ctx, CapturedSQLConf.capture()))
   }
 
   /**

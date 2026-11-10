@@ -34,10 +34,6 @@ $SPARK_HOME/bin/spark-shell \
     --conf spark.comet.exec.inMemoryCache.enabled=true
 ```
 
-On Spark 3.4, a union of a shuffle and a relation cached in Comet's format keeps every shuffle
-partition. Spark 3.4 has no hook for the rule through which Comet lets AQE coalesce the shuffle
-partitions of a union that Comet runs.
-
 It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet's
@@ -128,7 +124,7 @@ nowhere to record either that a column is dictionary encoded or the dictionary i
 
 | Config                                                  | Default | Description                                                                                                                                          |
 | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup.                                                                |
+| `spark.comet.exec.inMemoryCache.enabled`                | `false` | Whether to store and scan Spark's in-memory cache in Comet's format. Read at startup. Also decides how an AQE cache is built on Spark 4.0+.          |
 | `spark.comet.exec.inMemoryCache.compression.codec`      | `zstd`  | Arrow IPC compression codec for cached data: `zstd`, `lz4` or `none`. Affects newly cached data only: a batch records the codec it was written with. |
 | `spark.comet.exec.inMemoryCache.compression.zstd.level` | `1`     | Compression level when the codec is `zstd`. Ignored otherwise.                                                                                       |
 

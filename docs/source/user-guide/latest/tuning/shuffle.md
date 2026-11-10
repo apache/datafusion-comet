@@ -53,16 +53,19 @@ scalar types. Hash partitioning keys must be scalar types unless
 and later) map keys. That setting is disabled by default until the performance of the nested hashing paths has been
 measured. Columns that are not partitioning keys may contain complex types like maps, structs, and arrays.
 
-Hash partitioning into multiple partitions on decimal keys with precision greater than 18 falls back because native
-hashing does not match Spark's partition assignments. Mixing the two partitioners can silently lose join rows.
-The restriction also applies to decimal leaves in nested hash keys. Wider decimals remain supported as payload
-columns, range partitioning keys, and in single-partition shuffles, including one-partition hash exchanges.
+### Batching shuffle inputs to broadcast
 
-With `spark.comet.shuffle.mode=auto`, Comet uses Columnar Shuffle when eligible, adding a columnar-to-row-to-columnar
-conversion. With `native`, it uses Spark shuffle, which can also restore aggregates such as `collect_list` and
-`collect_set` to Spark to preserve buffer compatibility. Celeborn uses Spark/Celeborn shuffle for unsupported native
-keys because it has no Comet columnar fallback. Spark-compatible native decimal hashing is tracked in
-[#5994](https://github.com/apache/datafusion-comet/issues/5994).
+The experimental `spark.comet.exec.broadcastExchange.producerCoalesce.enabled` setting combines small
+local native shuffle batches before broadcast serialization. It is disabled by default. It
+can reduce Arrow export, serialization, and driver assembly work when a broadcast build reads
+many small shuffle blocks.
+
+The broadcast must read directly from a local Comet native shuffle, including an AQE shuffle
+read, and have only INT, BIGINT, BOOLEAN, STRING, or BINARY columns. Grouping preserves the
+selected shuffle partitions and row order. Large batches pass through without a merge copy.
+
+Reader buffers are outside Spark's execution memory pool. The contributor guide describes the
+[grouping limits and memory lifetime](../../../contributor-guide/memory_management.md).
 
 ### Columnar (JVM) Shuffle
 
@@ -82,9 +85,9 @@ converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do f
 batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
 all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
-`map<string,string>`. A shuffle that hashes a decimal wider than 18 digits, or a string or a value computed from a
-string, stays on columnar shuffle, so that it partitions rows as Spark does. The converted batches are allocated on
-the JVM outside Comet's memory pools. The setting is disabled by default.
+`map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
+that it partitions rows as Spark does. The converted batches are allocated on the JVM outside Comet's memory pools.
+The setting is disabled by default.
 
 ### Automatic Revert to Spark Shuffle
 
@@ -106,6 +109,19 @@ and <child>`, which lets you correlate any unexpected behavior with this optimiz
 This optimization is enabled by default and can be disabled by setting
 `spark.comet.shuffle.revertRedundantColumnar.enabled=false`, in which case Comet will keep its shuffle
 even when both of those aggregates run on Spark.
+
+## Native Shuffle Writer Memory
+
+The native shuffle writer buffers a task's output in memory and spills it to disk. By default
+(`spark.comet.shuffle.native.maxBufferBytes=0`) it spills only when the memory pool denies an allocation, so it holds
+as much of the task's share of the off-heap pool as it can get. That can leave a sort or an aggregation in the same
+task without memory, and the large buffers it frees at the end of the task can stay resident in the native allocator,
+adding to the executor's memory footprint.
+
+Setting `spark.comet.shuffle.native.maxBufferBytes` makes the writer spill whenever it has buffered that many bytes.
+The limit applies to each task's writer, so it does not grow with the size of the executor. A value such as `256m`
+keeps the writer's footprint small at the cost of more spills and a slightly larger shuffle. Much smaller values write
+small shuffle blocks, which slows down the stage that reads them.
 
 ## Shuffle Compression
 

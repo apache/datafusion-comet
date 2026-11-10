@@ -55,7 +55,7 @@ trait CometBenchmarkBase
     val conf = new SparkConf()
       .setAppName("CometReadBenchmark")
       // Since `spark.master` always exists, overrides this value
-      .set("spark.master", "local[1]")
+      .set("spark.master", sys.env.getOrElse("COMET_BENCHMARK_MASTER", "local[1]"))
       .setIfMissing("spark.driver.memory", "3g")
       .setIfMissing("spark.executor.memory", "3g")
       // Use Comet's shuffle manager so operators that require Comet shuffle can
@@ -453,6 +453,14 @@ trait CometBenchmarkBase
 }
 
 object CometBenchmarkBase {
+
+  private[benchmark] def onOffModes(onFirst: Boolean): Seq[(String, Boolean)] = {
+    if (onFirst) {
+      Seq("ON" -> true, "OFF" -> false, "ON (repeat)" -> true)
+    } else {
+      Seq("OFF" -> false, "ON" -> true, "OFF (repeat)" -> false)
+    }
+  }
 
   /**
    * SplitMix64 finalizer, used to turn a row id into a well distributed pseudo-random value.
