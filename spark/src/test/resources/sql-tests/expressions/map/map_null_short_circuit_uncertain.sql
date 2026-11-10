@@ -28,7 +28,8 @@
 -- Config: spark.sql.subexpressionElimination.enabled=true
 -- A declined join keeps Spark's broadcast, adaptive execution wraps it in a query stage, and the
 -- rerun declines the join for its Spark input before looking at the keys, so the final plan carries
--- no uncertain-scope reason. Only the join checks need adaptive execution off.
+-- no uncertain-scope reason (https://github.com/apache/datafusion-comet/issues/6442). Only the
+-- join checks need adaptive execution off.
 -- Config: spark.sql.adaptive.enabled=false
 
 statement
