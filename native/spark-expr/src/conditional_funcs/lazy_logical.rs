@@ -16,13 +16,14 @@
 // under the License.
 
 use super::case_when::{cannot_fail, is_infallible};
-use super::null_short_circuit::{evaluate_projected, project};
+use super::null_short_circuit::Masked;
 use crate::{
     spark_comparison, spark_in_list, CaseWhenExpr, Cast, CheckOverflow, CheckedBinaryExpr,
     FloatOperands, IfExpr, NormalizeNaNAndZero, NullShortCircuit, SparkComparison,
     WideDecimalBinaryExpr,
 };
 use arrow::array::{Array, BooleanArray};
+use arrow::buffer::NullBuffer;
 use arrow::compute::{and_kleene, or_kleene};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
@@ -36,7 +37,6 @@ use datafusion::physical_expr::expressions::{
 use datafusion::physical_expr::{PhysicalExpr, ScalarFunctionExpr};
 use std::fmt::{Display, Formatter};
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Spark's `AND` and `OR`, which evaluate the right operand only for the rows that the left one
@@ -50,17 +50,8 @@ pub struct LazyLogical {
     left: Arc<dyn PhysicalExpr>,
     op: Operator,
     right: Arc<dyn PhysicalExpr>,
-    /// The input columns that `right` reads
-    projection: Vec<usize>,
-    /// `right` reading those columns from a batch of just them, so that skipping rows filters no
-    /// other column. It is evaluated in place of `right` for every batch, since rebuilding it gave
-    /// it its own copy of any state kept across batches
-    projected: Arc<dyn PhysicalExpr>,
-    /// Whether to try `right` over the whole batch first when most rows need it, which costs less
-    /// than selecting rows. That is wrong for an expression whose result depends on the rows it
-    /// has seen, so it requires a deterministic `right`. If that fails on a row that Spark skips,
-    /// the rows are selected instead, here and for the batches after it.
-    speculate: AtomicBool,
+    /// `right`, evaluated for only the rows that `left` has not decided
+    masked: Masked,
 }
 
 impl LazyLogical {
@@ -78,24 +69,17 @@ impl LazyLogical {
         if !booleans || cannot_fail(&right, input_schema) {
             return Ok(Arc::new(BinaryExpr::new(left, op, right)));
         }
-        Ok(Arc::new(Self::try_new(left, op, right)?))
+        Ok(Arc::new(Self::new(left, op, right)))
     }
 
-    fn try_new(
-        left: Arc<dyn PhysicalExpr>,
-        op: Operator,
-        right: Arc<dyn PhysicalExpr>,
-    ) -> Result<Self> {
-        let (projection, projected) = project(&right)?;
-        let speculate = AtomicBool::new(is_deterministic(&right));
-        Ok(Self {
+    fn new(left: Arc<dyn PhysicalExpr>, op: Operator, right: Arc<dyn PhysicalExpr>) -> Self {
+        let masked = Masked::new(Arc::clone(&right), false);
+        Self {
             left,
             op,
             right,
-            projection,
-            projected,
-            speculate,
-        })
+            masked,
+        }
     }
 }
 
@@ -244,28 +228,17 @@ impl PhysicalExpr for LazyLogical {
             (_, None) => !left.values(),
             (_, Some(nulls)) => !&(left.values() & nulls.inner()),
         };
-        let pending_rows = pending.count_set_bits();
-        if pending_rows == 0 {
+        let pending = NullBuffer::new(pending);
+        if pending.null_count() == num_rows {
             // No row needs the right operand, and the left one is the result on every row
             return Ok(ColumnarValue::Array(Arc::new(left.clone())));
         }
-        let mut right = None;
-        if pending_rows * 2 > num_rows && self.speculate.load(Ordering::Relaxed) {
-            // Whatever the right operand returns for a row that the left one decides is ignored
-            // below, so it only matters if it fails there
-            right = evaluate_projected(&self.projection, &self.projected, batch, None).ok();
-            if right.is_none() {
-                self.speculate.store(false, Ordering::Relaxed);
-            }
-        }
-        let right = match right {
-            Some(right) => right,
-            None => {
-                let pending = BooleanArray::new(pending, None);
-                evaluate_projected(&self.projection, &self.projected, batch, Some(&pending))?
-            }
-        }
-        .into_array(num_rows)?;
+        // Whatever the right operand returns for a row that the left one decides is ignored
+        // below
+        let right = self
+            .masked
+            .evaluate(batch, Some(&pending))?
+            .into_array(num_rows)?;
         let right = as_boolean_array(&right)?;
         // The right operand is NULL on the rows it was skipped for, which the left one decides
         let result: BooleanArray = match self.op {
@@ -286,7 +259,7 @@ impl PhysicalExpr for LazyLogical {
         let [left, right] = <[_; 2]>::try_from(children).map_err(|children| {
             internal_datafusion_err!("LazyLogical expects 2 children, got {}", children.len())
         })?;
-        Ok(Arc::new(Self::try_new(left, self.op, right)?))
+        Ok(Arc::new(Self::new(left, self.op, right)))
     }
 
     fn fmt_sql(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -603,5 +576,43 @@ mod tests {
             assert!(expr.is::<NullShortCircuit>());
         }
         assert!(is_deterministic(&expr));
+    }
+
+    #[test]
+    fn deeply_nested_lazy_operands_reading_other_columns_are_planned_in_linear_time() {
+        const LEVELS: usize = 64;
+        let mut fields = (0..LEVELS)
+            .map(|i| Field::new(format!("x{i}"), DataType::Int32, true))
+            .collect::<Vec<_>>();
+        fields.push(Field::new("s", DataType::Utf8, true));
+        let schema = Arc::new(Schema::new(fields));
+        // x63 != 0 AND (x62 != 0 AND (... AND (x0 != 0 AND CAST(s AS INT) > 0))). The right
+        // operand of each level reads `s`, the last input column, from another index of the
+        // batch it projects, so projecting it rebuilds every level below. Projecting each level
+        // when it is planned would take 2^64 steps.
+        let mut expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            ansi_cast(col("s", &schema).unwrap(), DataType::Int32),
+            Operator::Gt,
+            lit(0),
+        ));
+        for i in 0..LEVELS {
+            let not_zero = Arc::new(BinaryExpr::new(
+                col(&format!("x{i}"), &schema).unwrap(),
+                Operator::NotEq,
+                lit(0),
+            ));
+            expr = LazyLogical::wrap(not_zero, Operator::And, expr, &schema).unwrap();
+            assert!(expr.is::<LazyLogical>());
+        }
+        // x0 is 0 on the second row, where `s` is malformed
+        let mut columns: Vec<ArrayRef> = (0..LEVELS)
+            .map(|i| Arc::new(Int32Array::from(vec![1, i32::from(i > 0)])) as ArrayRef)
+            .collect();
+        columns.push(Arc::new(StringArray::from(vec!["1", "bad"])));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+        assert_eq!(
+            evaluate(&expr, &batch).unwrap(),
+            vec![Some(true), Some(false)]
+        );
     }
 }

@@ -47,7 +47,7 @@ trait MathBase {
       evalMode: EvalMode.Value,
       f: (ExprOuterClass.Expr.Builder, ExprOuterClass.MathExpr) => ExprOuterClass.Expr.Builder,
       checkDivideOverflow: Boolean = false,
-      skippable: Option[Expression] = None): Option[ExprOuterClass.Expr] = {
+      skippable: Expression): Option[ExprOuterClass.Expr] = {
     val leftExpr = exprToProtoInternal(left, inputs, binding)
     val rightExpr = exprToProtoInternal(right, inputs, binding)
 
@@ -58,7 +58,7 @@ trait MathBase {
       builder.setRight(rightExpr.get)
       builder.setEvalMode(evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode)))
       builder.setCheckDivideOverflow(checkDivideOverflow)
-      builder.setNullShortCircuit(skippable.exists(e => canSkipEvaluation(Seq(e))))
+      builder.setNullShortCircuit(canSkipEvaluation(Seq(skippable)))
       serializeDataType(dataType).foreach { t =>
         builder.setReturnType(t)
       }
@@ -153,6 +153,11 @@ trait MathBase {
    * type. Flattening stops at casts and at nested `Add` or `Multiply` expressions with a
    * different `evalMode`, so every rebuilt inner node can use the chain's `returnType` and
    * `evalMode`.
+   *
+   * Spark evaluates the operands left to right and each one only for the rows where every operand
+   * before it is not NULL. Each rebuilt node skips its right half on the rows where its left half
+   * is NULL, the way `createMathExpression` skips its right operand, so nested nodes evaluate
+   * every operand on the same rows that Spark does.
    */
   def createBalancedMathExpr(
       operands: Seq[Expression],
@@ -168,16 +173,18 @@ trait MathBase {
     } else {
       val returnType = serializeDataType(dataType)
       val evalModeProto = evalModeToProto(CometEvalModeUtil.fromSparkEvalMode(evalMode))
-      val leaves = protos.map(_.get).toIndexedSeq
-      def build(slice: IndexedSeq[ExprOuterClass.Expr]): ExprOuterClass.Expr = {
-        if (slice.length == 1) slice.head
+      val leaves = protos.map(_.get).zip(operands).toIndexedSeq
+      def build(slice: IndexedSeq[(ExprOuterClass.Expr, Expression)]): ExprOuterClass.Expr = {
+        if (slice.length == 1) slice.head._1
         else {
           val mid = slice.length / 2
+          val right = slice.slice(mid, slice.length)
           val mathBuilder = ExprOuterClass.MathExpr
             .newBuilder()
             .setLeft(build(slice.slice(0, mid)))
-            .setRight(build(slice.slice(mid, slice.length)))
+            .setRight(build(right))
             .setEvalMode(evalModeProto)
+            .setNullShortCircuit(canSkipEvaluation(right.map(_._2)))
           returnType.foreach(mathBuilder.setReturnType)
           f(ExprOuterClass.Expr.newBuilder(), mathBuilder.build()).build()
         }
@@ -220,7 +227,7 @@ object CometAdd extends CometExpressionSerde[Add] with MathBase {
         expr.dataType,
         expr.evalMode,
         (builder, mathExpr) => builder.setAdd(mathExpr),
-        skippable = Some(expr.right))
+        skippable = expr.right)
     }
   }
 }
@@ -242,7 +249,7 @@ object CometSubtract extends CometExpressionSerde[Subtract] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setSubtract(mathExpr),
-      skippable = Some(expr.right))
+      skippable = expr.right)
   }
 }
 
@@ -278,7 +285,7 @@ object CometMultiply extends CometExpressionSerde[Multiply] with MathBase {
         expr.dataType,
         expr.evalMode,
         (builder, mathExpr) => builder.setMultiply(mathExpr),
-        skippable = Some(expr.right))
+        skippable = expr.right)
     }
   }
 }
@@ -317,7 +324,7 @@ object CometDivide extends CometExpressionSerde[Divide] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setDivide(mathExpr),
-      skippable = Some(expr.left))
+      skippable = expr.left)
   }
 }
 
@@ -364,7 +371,7 @@ object CometIntegralDivide extends CometExpressionSerde[IntegralDivide] with Mat
       // Spark only checks integral divide overflow (Long.MinValue div -1) for LONG
       // operands; DECIMAL operands wrap around on the cast to LONG even in ANSI mode
       checkDivideOverflow = expr.checkDivideOverflow,
-      skippable = Some(expr.left))
+      skippable = expr.left)
 
     if (divideExpr.isDefined) {
       val childExpr = if (dataType.isInstanceOf[DecimalType]) {
@@ -407,7 +414,7 @@ object CometRemainder extends CometExpressionSerde[Remainder] with MathBase {
       expr.dataType,
       expr.evalMode,
       (builder, mathExpr) => builder.setRemainder(mathExpr),
-      skippable = Some(expr.left))
+      skippable = expr.left)
   }
 }
 

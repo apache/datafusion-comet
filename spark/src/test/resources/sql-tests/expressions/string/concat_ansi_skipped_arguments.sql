@@ -83,6 +83,12 @@ SELECT id, concat(CAST(n AS STRING), CAST(CAST(txt AS INT) AS STRING)) FROM most
 query
 SELECT id, concat(CAST(n AS STRING), CAST(CAST(txt AS INT) AS STRING)) FROM all_null
 
+-- Arguments that cannot fail, which Comet evaluates for every row
+query
+SELECT id, concat(CAST(n AS STRING), CAST(id AS STRING), CAST(CAST(id AS DECIMAL(12, 2)) AS STRING),
+  CAST(id = 2 AS STRING), CAST(CAST(id AS DOUBLE) AS STRING))
+FROM skipped
+
 -- An argument that Spark evaluates still fails
 
 query expect_error_class(CAST_INVALID_INPUT)

@@ -18,8 +18,8 @@
 //!
 //! Each shape runs as `eager`, evaluating both operands over the whole batch, and as `lazy`, the
 //! way Comet plans it now, evaluating the second operand only for the rows where the first one is
-//! not NULL. The data is valid in every row, so both forms succeed, and the difference is the cost
-//! of skipping the rows Spark skips.
+//! not NULL unless it cannot fail. The data is valid in every row, so both forms succeed, and the
+//! difference is the cost of skipping the rows Spark skips.
 
 use arrow::array::{ArrayRef, Decimal128Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -47,8 +47,8 @@ const DECIMAL: DataType = DataType::Decimal128(12, 2);
 
 type Expr = Arc<dyn PhysicalExpr>;
 
-/// An expression: its name, and how to build it
-type Shape = (&'static str, fn() -> Expr);
+/// An expression: its name, how to build it, and whether Comet wraps it in `NullShortCircuit`
+type Shape = (&'static str, fn() -> Expr, bool);
 
 /// `a` a long with `null_density` of it NULL, `p` the same as a decimal and `q` as a string, and
 /// `b`, `c`, `s`, a long written as a string, and `d`, a decimal, never NULL.
@@ -209,28 +209,53 @@ fn concat_upper() -> Expr {
     )
 }
 
+/// `concat(q, CAST(b AS STRING))`, whose cast cannot fail, so Comet evaluates it for every row
+fn concat_cast() -> Expr {
+    let cast = Arc::new(Cast::new(
+        column("b", 1),
+        DataType::Utf8,
+        SparkCastOptions::new_without_timezone(EvalMode::Ansi),
+        None,
+        None,
+    ));
+    let name = "concat";
+    Arc::new(ScalarFunctionExpr::new(
+        name,
+        Arc::new(ScalarUDF::new_from_impl(SparkConcat::default())),
+        vec![column("q", 6), cast],
+        Arc::new(Field::new(name, DataType::Utf8, true)),
+        Arc::new(ConfigOptions::default()),
+    ))
+}
+
 fn bench_arithmetic(c: &mut Criterion) {
     let schema = schema();
     let mut group = c.benchmark_group("null_short_circuit");
     group.throughput(Throughput::Elements(NUM_ROWS as u64));
 
-    let shapes: [Shape; 7] = [
-        ("add_parsing_cast", add_parsing_cast),
-        ("mul_nested_sub", mul_nested_sub),
-        ("decimal_mul_nested_sub", ansi_decimal_mul_nested_sub),
+    let shapes: [Shape; 8] = [
+        ("add_parsing_cast", add_parsing_cast, true),
+        ("mul_nested_sub", mul_nested_sub, true),
+        ("decimal_mul_nested_sub", ansi_decimal_mul_nested_sub, true),
         (
             "legacy_decimal_mul_nested_sub",
             legacy_decimal_mul_nested_sub,
+            true,
         ),
-        ("wide_decimal_mul", wide_decimal_mul),
-        ("decimal_mul_rescaling_cast", decimal_mul_rescaling_cast),
-        ("concat_upper", concat_upper),
+        ("wide_decimal_mul", wide_decimal_mul, true),
+        (
+            "decimal_mul_rescaling_cast",
+            decimal_mul_rescaling_cast,
+            true,
+        ),
+        ("concat_upper", concat_upper, true),
+        ("concat_cast", concat_cast, false),
     ];
-    for (name, shape) in shapes {
+    for (name, shape, wrapped) in shapes {
         for null_percent in [0, 10, 50, 70, 90] {
             let batch = make_batch(null_percent as f32 / 100.0);
             let lazy = NullShortCircuit::wrap(shape(), &schema).unwrap();
-            assert!(lazy.is::<NullShortCircuit>());
+            assert_eq!(lazy.is::<NullShortCircuit>(), wrapped, "{name}");
             for (form, expr) in [("eager", shape()), ("lazy", lazy)] {
                 group.bench_with_input(
                     BenchmarkId::new(format!("{name}/{form}"), format!("nulls_{null_percent}")),
