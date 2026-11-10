@@ -672,8 +672,6 @@ Planned to be lifted:
   ([#6954](https://github.com/apache/datafusion-comet/issues/6954))
 - `uuid` and `unknown` columns
   ([#6959](https://github.com/apache/datafusion-comet/issues/6959))
-- An identity partition on a `float` or `double` column
-  ([PR #6851](https://github.com/apache/datafusion-comet/pull/6851))
 
 Waiting on work in another project:
 
