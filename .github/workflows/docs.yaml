@@ -125,11 +125,14 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: trusted
-          sparse-checkout: .asf.yaml
+          sparse-checkout: |
+            /.asf.yaml
+            /.github/actions/download-artifact-retry/
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       - name: Download generated site
-        uses: actions/download-artifact@v8
+        uses: ./trusted/.github/actions/download-artifact-retry
         with:
           name: comet-docs-site
           path: site-output

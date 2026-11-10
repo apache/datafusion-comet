@@ -1958,13 +1958,16 @@ def check_docs_permission_boundary():
     runs = [re.findall(r"^(?:run:|        run:)", step, re.M) for step in steps]
     if (len(steps) != 4 or len(uses[0]) != 1 or not uses[0][0].startswith("actions/checkout@")
             or len(uses[1]) != 1 or not uses[1][0].startswith("actions/checkout@")
-            or len(uses[2]) != 1 or not uses[2][0].startswith("actions/download-artifact@")
+            or uses[2] != ["./trusted/.github/actions/download-artifact-retry"]
             or uses[3] or runs[0] or runs[1] or runs[2] or len(runs[3]) != 1
             or not re.search(r"^          ref: asf-site$", steps[0], re.M)
             or not re.search(r"^          path: asf-site$", steps[0], re.M)
             or not re.search(r"^          ref: \$\{\{ github.sha \}\}$", steps[1], re.M)
             or not re.search(r"^          path: trusted$", steps[1], re.M)
-            or not re.search(r"^          sparse-checkout: \.asf.yaml$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout: \|\n            /\.asf.yaml\n            /\.github/actions/download-artifact-retry/$", steps[1], re.M)
+            or not re.search(r"^          sparse-checkout-cone-mode: false$", steps[1], re.M)
+            or not re.search(r"^          name: comet-docs-site$", steps[2], re.M)
+            or not re.search(r"^          path: site-output$", steps[2], re.M)
             or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
         failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
     if len(steps) == 4:
@@ -1975,6 +1978,20 @@ def check_docs_permission_boundary():
                          "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll"):
             if required not in steps[3]:
                 failures.append(f"the writer must protect metadata: {required}")
+        commands = [line.strip() for line in steps[3].splitlines()]
+        try:
+            after_copy = commands[commands.index("./") + 1:]
+        except ValueError:
+            after_copy = []
+        if after_copy != [
+            "rm -f .asf.yaml .nojekyll", "cp ../trusted/.asf.yaml .", "touch .nojekyll",
+            "git status --porcelain", 'if [ "$(git status --porcelain)" != "" ]; then',
+            'git config user.name "github-actions[bot]"',
+            'git config user.email "github-actions[bot]@users.noreply.github.com"',
+            "git add --all", "git commit -m 'Publish built docs triggered by ${{ github.sha }}'",
+            "git push || git push --force", "fi",
+        ]:
+            failures.append("the writer must run only the expected commands after copying the site")
     for failure in failures:
         print(f"docs permissions: {failure}")
     return not failures

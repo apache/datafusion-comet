@@ -32,8 +32,15 @@ mutations = [
     original.replace('          path: asf-site', '          path: elsewhere', 1),
     original.replace('      contents: read\n', '      contents: read\n      id-token: write\n', 1),
     original.replace('          cd asf-site/\n', '          cd asf-site/\n          bash ../site-output/x.sh\n'),
-    original.replace('          sparse-checkout: .asf.yaml', '          sparse-checkout: docs'),
-    original.replace("            --exclude '/.asf.yaml' \\", "            --exclude '/other' \\")
+    original.replace('            /.asf.yaml', '            /docs/'),
+    original.replace("            --exclude '/.asf.yaml' \\", "            --exclude '/other' \\"),
+    original.replace('          path: site-output', '          path: .'),
+    original.replace('          name: comet-docs-site\n          path: site-output',
+                     '          name: another-artifact\n          path: site-output'),
+    original.replace('          rm -f .asf.yaml .nojekyll',
+                     '          bash ./postprocess.sh\n          rm -f .asf.yaml .nojekyll'),
+    original.replace('./trusted/.github/actions/download-artifact-retry',
+                     './asf-site/.github/actions/download-artifact-retry')
 ]
 with tempfile.TemporaryDirectory() as tmp:
     checker.WORKFLOWS = Path(tmp)
