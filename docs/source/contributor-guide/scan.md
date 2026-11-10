@@ -25,7 +25,9 @@ reader, and how the native reader reconciles the Parquet file schema with the sc
 for.
 
 For the user-facing view of supported formats, storage systems, and credentials, see
-[Supported Spark Data Sources](../user-guide/latest/datasources.md).
+[Supported Spark Data Sources](../user-guide/latest/datasources.md). The [Parquet](../user-guide/latest/parquet.md)
+page lists what the Parquet scan falls back on, where its results differ from Spark, and how to tune it. The gate
+table below is the code-side view of that list.
 
 ## Overview
 
@@ -134,36 +136,47 @@ A gate goes in one of four places, and never before the contrib hook, which is f
   format.
 - In `nativeScan`: checks specific to the native Parquet reader. The object-store scheme gates live
   here, so contrib scans are unaffected by them.
-- In `CometNativeScan.isSupported`: checks that belong with the serde. This runs during
-  `CometExecRule`, after `CometScanExec` already exists, and short-circuits if the node is already
-  tagged.
+- In `CometNativeScan.isSupported`: checks that belong with the serde. `nativeScan` calls it during
+  planning, on the `FileSourceScanExec`, before any `CometScanExec` exists. It short-circuits if the
+  node is already tagged, and it tags and continues, so every reason it finds accumulates. What runs
+  later, in `CometExecRule`, is `CometNativeScan.convert`, which declines partitions that span
+  object stores and some ABFS layouts.
 - In the Iceberg arm of `transformV2Scan`, which is structured differently from the three above.
-  Those return as soon as a gate declines. The Iceberg gates accumulate into a `fallbackReasons`
-  buffer and are decided once at the end, so a user sees every reason the table was rejected rather
-  than only the first.
+  The first three return as soon as a gate declines. The Iceberg arm returns early for the Iceberg
+  and exec configs, unsupported metadata columns, a reported output ordering, a failure to extract
+  or validate the file scan tasks, data files in more than one bucket, and a failure to extract the
+  table metadata. The checks on the table itself, such as its format version, `FileIO`, delete
+  files and partition transforms, accumulate into a `fallbackReasons` buffer and are decided once
+  at the end, so a user sees every one of those reasons rather than only the first.
 
 ### Gates that exist today
 
 The V1 Parquet gates, grouped by the function that owns them:
 
-| Gate                                        | Owner             | Why                                                                                                 |
-| ------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------- |
-| `SKIP_COMET_SCAN_TAG`                       | `_apply`          | Set by `CometSpark34AqeDppFallbackRule` to keep a peer scan Spark-native for SMJ self-join symmetry |
-| `spark.comet.scan.enabled`                  | `_apply`          | Test-only kill switch                                                                               |
-| Metadata columns                            | `transformV1Scan` | Only file-constant ones (`file_path`, `file_size`, ...) are supported, `_metadata.row_index` is not |
-| AQE DPP on Spark 3.4                        | `transformV1Scan` | `injectQueryStageOptimizerRule` is unavailable there, so Comet's DPP rewrite rule cannot run        |
-| File format                                 | `transformV1Scan` | Exactly `ParquetFileFormat`                                                                         |
-| Nested-type default values                  | `transformV1Scan` | `getExistenceDefaultValues` yielding a map, struct, or array                                        |
-| `spark.comet.exec.enabled`                  | `nativeScan`      | The native scan is a native operator                                                                |
-| Filesystem scheme                           | `nativeScan`      | Asked of the native layer via `NativeBase.isObjectStoreSchemeSupported`, not a hardcoded list       |
-| Multi-bucket alias paths                    | `nativeScan`      | One object store is registered per `FilePartition`, keyed on the first file                         |
-| Path rejected by `object_store`             | `nativeScan`      | A recognized scheme can still carry a key `Path::from_url_path` refuses, e.g. a newline             |
-| `parquet.enableVectorizedReader=false`      | `nativeScan`      | Opts into parquet-mr's permissive behavior, which Comet has no equivalent backend for               |
-| Parquet encryption config                   | `nativeScan`      | Only the configurations `CometParquetUtils.isEncryptionConfigSupported` recognizes                  |
-| `input_file_name` and friends               | `nativeScan`      | Read a thread-local set by `FileScanRDD`, which the native scan does not use                        |
-| Row index generation                        | `nativeScan`      | `_metadata.row_index` is produced per row by the reader                                             |
-| Schema and partition schema                 | `nativeScan`      | `CometScanTypeChecker`, below                                                                       |
-| `ignoreCorruptFiles` / `ignoreMissingFiles` | `isSupported`     | Spark's permissive file handling has no native equivalent                                           |
+| Gate                                        | Owner                           | Why                                                                                                                                                                                                                           |
+| ------------------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SKIP_COMET_SCAN_TAG`                       | `_apply`                        | Set by `CometSpark34AqeDppFallbackRule` to keep a peer scan Spark-native for SMJ self-join symmetry                                                                                                                           |
+| `spark.comet.scan.enabled`                  | `_apply`                        | Test-only kill switch                                                                                                                                                                                                         |
+| Streaming plan                              | `_apply`                        | Returns the plan unchanged, without a reason: Comet does not support structured streaming                                                                                                                                     |
+| Metadata columns                            | `transformV1Scan`               | Only the file-constant ones (`file_path`, `file_size`, ...) are supported. `file_block_start` and `file_block_length` are not ([#6505](https://github.com/apache/datafusion-comet/issues/6505)), nor is `_metadata.row_index` |
+| AQE DPP on Spark 3.4                        | `transformV1Scan`               | `injectQueryStageOptimizerRule` is unavailable there, so Comet's DPP rewrite rule cannot run                                                                                                                                  |
+| File format                                 | `transformV1Scan`               | Exactly `ParquetFileFormat`                                                                                                                                                                                                   |
+| Nested-type default values                  | `transformV1Scan`               | `getExistenceDefaultValues` yielding a map, struct, or array                                                                                                                                                                  |
+| `spark.comet.exec.enabled`                  | `nativeScan`                    | The native scan is a native operator                                                                                                                                                                                          |
+| Filesystem scheme                           | `nativeScan`                    | Asked of the native layer via `NativeBase.isObjectStoreSchemeSupported`, not a hardcoded list                                                                                                                                 |
+| Stores a scan cannot read together          | `nativeScan`, `convert`         | A bucketed scan over several stores, or settings that cannot be forwarded per store. A partition reads one object store, keyed on its first file                                                                              |
+| Path rejected by `object_store`             | `nativeScan`                    | A recognized scheme can still carry a key `Path::from_url_path` refuses, e.g. a newline                                                                                                                                       |
+| `parquet.enableVectorizedReader=false`      | `nativeScan`                    | Opts into parquet-mr's permissive behavior, which Comet has no equivalent backend for. `spark.comet.scan.allowDisabledParquetVectorizedReader` overrides the decline                                                          |
+| Scan-only libhdfs schemes                   | `nativeScan`                    | A scheme added to `fs.comet.libhdfs.schemes` only through reader options is declined                                                                                                                                          |
+| Parquet encryption config                   | `nativeScan`                    | Only the configurations `CometParquetUtils.isEncryptionConfigSupported` recognizes, and not with a Variant column                                                                                                             |
+| `input_file_name` and friends               | `nativeScan`, `transformV2Scan` | Read a thread-local set by `FileScanRDD`, which the native scan does not use                                                                                                                                                  |
+| Row index generation                        | `nativeScan`                    | `_metadata.row_index` is produced per row by the reader                                                                                                                                                                       |
+| Schema and partition schema                 | `nativeScan`                    | `CometScanTypeChecker`, below                                                                                                                                                                                                 |
+| `ignoreCorruptFiles` / `ignoreMissingFiles` | `isSupported`                   | Spark's permissive file handling has no native equivalent                                                                                                                                                                     |
+| Existence defaults                          | `isSupported`                   | Defaults that cannot be serialized                                                                                                                                                                                            |
+| Case-insensitive duplicate names            | `isSupported`                   | A read schema whose field names collide when `spark.sql.caseSensitive=false` ([#6136](https://github.com/apache/datafusion-comet/issues/6136))                                                                                |
+| Variant settings                            | `isSupported`                   | `allowReadingShredded=false`, and timestamp inference that is not the default                                                                                                                                                 |
+| Types with no proto form                    | `isSupported`                   | A serialized field whose type `serializeDataType` cannot express, such as GEOMETRY                                                                                                                                            |
 
 The Iceberg arm adds many more, covering the table format version, `FileIO` compatibility, V3
 column defaults, delete-file formats and equality-delete column types, partition transform support,
@@ -178,12 +191,14 @@ same question:
 
 - `ShortType` when `spark.comet.scan.unsignedSmallIntSafetyCheck` is on, because the native reader
   may mishandle an unsigned `UINT_8` column
+- `TIME`, which the native reader cannot decode
 - Collated strings, declined so the whole query falls back
 - A shredded Variant struct, which Spark 4.0's `PushVariantIntoScan` rewrites into typed fields
   that the native scan does not honor
 - Empty structs
-- Duplicate Parquet field ids among sibling fields, when `spark.sql.parquet.fieldId.read.enabled`
-  is set, because Comet reads such a struct positionally while Spark raises an ambiguity error
+- Duplicate Parquet field ids among sibling fields, in a struct or at the root of the schema, when
+  `spark.sql.parquet.fieldId.read.enabled` is set, because Comet reads such a struct positionally
+  while Spark raises an ambiguity error
 
 ## Planning to Execution
 
@@ -240,16 +255,18 @@ JVM side, under `spark/src/main/` (`CometFileKeyUnwrapper` in `java/`, the rest 
 
 Rust side, under `native/core/src/parquet/`:
 
-| File                                 | Role                                                                                                        |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| `parquet_exec.rs`                    | `init_datasource_exec`, which assembles `DataSourceExec`, `ParquetSource`, and the option bags.             |
-| `schema_adapter.rs`                  | The physical expression adapter: name and field-id remapping, Spark's conversion rejection matrix.          |
-| `parquet_support.rs`                 | `SparkParquetOptions`, `spark_parquet_convert`, struct and map field matching, object-store preparation.    |
-| `name_fold.rs`                       | The single case-folding policy shared by the adapter, the nested convert, and the plan-time projection.     |
-| `cast_column.rs`                     | `CometCastColumnExpr`, the expression the adapter swaps in to apply a Spark-compatible conversion.          |
-| `eager_page_index_reader_factory.rs` | Forces the page index to load with the footer so it lands in the metadata cache, plus the scan I/O metrics. |
-| `encryption_support.rs`              | `CometEncryptionFactory`, which calls back to the JVM key unwrapper over JNI.                               |
-| `objectstore/`                       | S3, Azure, and S3-compliant alias support.                                                                  |
+| File                                 | Role                                                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| `parquet_exec.rs`                    | `init_datasource_exec`, which assembles `DataSourceExec`, `ParquetSource`, and the option bags.              |
+| `schema_adapter.rs`                  | The physical expression adapter: name and field-id remapping, Spark's conversion rejection matrix.           |
+| `parquet_support.rs`                 | `SparkParquetOptions`, `spark_parquet_convert`, struct and map field matching, object-store preparation.     |
+| `field_resolver.rs`                  | `FieldResolver`: which file field a requested field selects, by id or by name, for the root and each struct. |
+| `name_fold.rs`                       | The single case-folding policy shared by the adapter, the nested convert, and the plan-time projection.      |
+| `datetime_rebase.rs`                 | Per-file calendar rebase from the footer's writer metadata. Opt-in per scan.                                 |
+| `cast_column.rs`                     | `CometCastColumnExpr`, the expression the adapter swaps in to apply a Spark-compatible conversion.           |
+| `eager_page_index_reader_factory.rs` | Forces the page index to load with the footer, and hosts the other per-file footer hooks, see below.         |
+| `encryption_support.rs`              | `CometEncryptionFactory`, which calls back to the JVM key unwrapper over JNI.                                |
+| `objectstore/`                       | S3, Azure, and S3-compliant alias support.                                                                   |
 
 The native entry point is `OpStruct::NativeScan` in `native/core/src/execution/planner.rs`, which
 unpacks the proto and calls `init_datasource_exec`.
@@ -267,9 +284,12 @@ scan bugs.
 | `projection_vector`         | Indices into `data_schema ++ partition_schema`, in output order.                 |
 
 **Constant metadata columns ride on the partition schema.** `file_path`, `file_name`, `file_size`,
-`file_block_start`, `file_block_length`, and `file_modification_time` are known before the file is
-opened and are constant for every row in it, exactly like partition values, so the serde appends
-them to the partition schema and lets DataFusion's partition-value substitution supply them.
+and `file_modification_time` are known before the file is opened and are constant for every row in
+it, exactly like partition values, so the serde appends them to the partition schema and lets
+DataFusion's partition-value substitution supply them. `file_block_start` and `file_block_length`
+are constant per split too, but which split reads a row group is the reader's decision, and
+DataFusion's differs from Spark's, so a scan that reads them falls back
+([#6505](https://github.com/apache/datafusion-comet/issues/6505)).
 DataFusion substitutes those values **by name**, so the serde renames each one to
 `_comet_metadata_<name>`, uniquified against the data and partition schemas, to stop a user column
 of the same name from silently receiving the metadata value instead of its own.
@@ -294,16 +314,26 @@ declined at the planning gate.
 schema Spark asked for. DataFusion calls it at plan time for each file, and it rewrites the
 expressions the scan will evaluate.
 
-Its job is not "cast the column". Its job is to produce **exactly** what Spark's vectorized Parquet
-reader would have produced for the same file, including the errors.
+Its job is not "cast the column". Its target is to produce **exactly** what Spark's vectorized
+Parquet reader would have produced for the same file, including the errors. It does not reach that
+everywhere: [Reads that differ from Spark](../user-guide/latest/parquet.md#reads-that-differ-from-spark)
+lists the known differences, such as the legacy date rebase
+([#5010](https://github.com/apache/datafusion-comet/issues/5010)). Rebasing is implemented
+(`datetime_rebase.rs`), but a scan opts in through `rebase_from_file_metadata`, which the plain
+Parquet serde does not set.
 
 ### Name and field-id matching
 
 `remap_physical_schema` mirrors Spark's `ParquetReadSupport.clipParquetGroupFields`: a requested
-field that carries a `PARQUET:field_id` is matched by id, and everything else is matched by
-case-insensitive name. The remap changes only top-level field names, so that DataFusion's
-exact-name lookup hits. Indices, types, nullability, and metadata stay as they are in the file, and
-the original names are restored before the stream is consumed.
+field that carries a `PARQUET:field_id` is matched by id when id matching is on, and everything
+else is matched by name, case-insensitively unless `spark.sql.caseSensitive` is set. The remap
+changes only top-level field names, so that DataFusion's exact-name lookup hits. Indices, types,
+nullability, and metadata stay as they are in the file, and the original names are restored before
+the stream is consumed.
+
+`field_resolver.rs` holds that precedence for one group of fields, and the root adapter, the nested
+struct convert, and the plan-time conversion check all select file fields through it. A change to
+the precedence rules has to go there, not into one of the three.
 
 Case folding is centralized in `name_fold.rs` for a reason. The fold happens in three places, the
 top-level adapter, the nested struct convert in `parquet_support.rs`, and the plan-time projection
@@ -323,9 +353,15 @@ leaf regardless of nesting, so the check walks same-shape complex pairs and appl
 at each leaf, extending the column path the way `descriptor.getPath()` does. The first non-accepting
 verdict in leaf order wins, matching Spark raising on the first offending column it initializes.
 
-A rejection does not fail the plan. It becomes a `RejectOnNonEmpty` expression that raises only when
-a non-empty batch actually arrives, mirroring Spark's per-row-group check. A file whose offending
-row groups are all pruned reads successfully, as it does in Spark.
+There are two kinds of rejection, because Spark rejects at two points. A shape mismatch that Spark
+cannot clip when it opens the file (a group read as another type, or a primitive read as a struct,
+or as an array or map with a complex element) is an error from the check itself, and fails the read
+at open time. Every other pair Spark rejects, including a primitive read as an array or map of
+primitives, is rejected only by `getUpdater`, which Spark calls while decoding a row group
+([#6506](https://github.com/apache/datafusion-comet/issues/6506)). Those become a
+`ConversionCheck::RejectOnNonEmpty` verdict, and an expression that raises only when a non-empty
+batch actually arrives. A file whose offending row groups are all pruned reads successfully, as it
+does in Spark. That guarantee is scoped to the deferred verdict.
 
 ### Conversion
 
@@ -340,16 +376,19 @@ is deliberately an allow list, because a deny list would fail open the moment
 ### `SparkParquetOptions`
 
 Everything about the conversion that depends on the Spark session or the Spark version travels in
-one struct. The version-dependent members are the ones to watch:
+one struct. `require_field_ids` is applied before the adapter sees a file, by
+`EagerPageIndexReaderFactory`, which walks the raw Parquet schema. The version-dependent members are the ones to watch:
 
-| Option                                     | Source                                                                                                                              |
-| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `allow_type_promotion`                     | `ShimCometConf.COMET_SCHEMA_EVOLUTION_ENABLED`: false on 3.x, true on 4.x                                                           |
-| `allow_timestamp_ltz_to_ntz`               | `ShimCometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ`: false on 3.x, true on 4.x (SPARK-47447)                                           |
-| `return_null_struct_if_all_fields_missing` | `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing`, defaulting to true before Spark 4.1 and false from 4.1 (SPARK-53535) |
-| `use_field_id` / `ignore_missing_field_id` | `spark.sql.parquet.fieldId.read.enabled` and `.ignoreMissing`                                                                       |
-| `case_sensitive`                           | `spark.sql.caseSensitive`                                                                                                           |
-| `checked_timestamp_overflow`               | Derived: true only for an unfiltered scan, see below                                                                                |
+| Option                                                                                   | Source                                                                                                                                    |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `allow_type_promotion`                                                                   | `ShimCometConf.COMET_SCHEMA_EVOLUTION_ENABLED`: false on 3.x, true on 4.x                                                                 |
+| `allow_timestamp_ltz_to_ntz`                                                             | `ShimCometConf.COMET_ALLOW_TIMESTAMP_LTZ_AS_NTZ`: false on 3.x, true on 4.x (SPARK-47447)                                                 |
+| `return_null_struct_if_all_fields_missing`                                               | `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing`, defaulting to true before Spark 4.1 and false from 4.1 (SPARK-53535)       |
+| `use_field_id`                                                                           | `spark.sql.parquet.fieldId.read.enabled`, and the requested schema carries a field id                                                     |
+| `require_field_ids`                                                                      | The requested schema carries a field id and `spark.sql.parquet.fieldId.read.ignoreMissing` is false, whatever the read flag says          |
+| `rebase_from_file_metadata`, `datetime_rebase_mode_in_read`, `int96_rebase_mode_in_read` | Opt-in per-file calendar rebase, with the session's read modes for files whose footer does not decide. Not set by the plain Parquet serde |
+| `case_sensitive`                                                                         | `spark.sql.caseSensitive`                                                                                                                 |
+| `checked_timestamp_overflow`                                                             | Derived: true only for an unfiltered scan, see below                                                                                      |
 
 ## Filter Pushdown
 
@@ -378,10 +417,20 @@ many of the V1 gates are about URL schemes.
 
 `prepare_object_store_with_configs` registers one object store per `FilePartition`, keyed on the
 **first file in that partition**, and strips the authority from every file's object key. A
-partition spanning two buckets would therefore read every file from the first file's bucket. The
-V1 gate declines that case for opt-in alias schemes. Plain multi-bucket `s3://` has the same
-limitation today and is not yet declined, because doing so would newly fall back scans that
-currently work by luck. The Iceberg gate is stricter and declines multi-bucket `s3a://` too.
+partition spanning two buckets must therefore never reach it, and three layers keep it from doing so:
+
+- A non-bucketed V1 scan packs its files separately for each object store
+  (`CometScanUtils.packFilesPerStore`), so a scan over several buckets, including opted-in aliases,
+  is claimed and each partition holds files from one store.
+- `CometScanUtils.multiStoreFallbackReason` declines what packing cannot fix: a bucketed scan,
+  whose table buckets are one partition each, over more than one store, and settings that cannot be
+  forwarded per store, such as one bucket read through an alias and another scheme. `nativeScan`
+  checks the root paths, and `CometNativeScan.convert` checks the listed files.
+- The planner rejects a partition whose files resolve to different stores
+  (`get_partitioned_files`) rather than reading them all from the first file's store.
+
+The Iceberg gate is stricter and declines data files in more than one S3 bucket, including
+`s3a://`.
 
 Which schemes are readable is answered by the native layer itself, through
 `NativeBase.isObjectStoreSchemeSupported`, so the planner cannot drift from `object_store`'s actual
@@ -395,8 +444,9 @@ support. Two sets sit outside that answer:
 
 The Iceberg path keeps its own narrower allow list, `icebergReadableSchemes`, because
 `object_store` recognizes schemes that iceberg-rust's storage factory cannot build. Admitting one
-of those would turn a clean JVM fallback into a native runtime error. That list must stay in
-lockstep with `storage_factory_for` in `native/core/src/execution/operators/iceberg_common.rs`.
+of those would turn a clean JVM fallback into a native runtime error. The list is not kept by hand:
+`IcebergStorageSchemes` loads `builtin_storage_schemes` from `iceberg_common.rs` over JNI, next to
+`storage_factory_for`.
 
 ## Encryption
 
@@ -416,9 +466,16 @@ and that deferred load bypasses the file metadata cache. On a predicate that nev
 from row-group statistics, the page index is then re-fetched, uncached, on every open
 ([#3978](https://github.com/apache/datafusion-comet/issues/3978)).
 `EagerPageIndexReaderFactory` forces the page index to load on the first fetch so it is cached with
-the footer, trading away the skip's benefit in the cases where it would have applied. This is a
-workaround for [apache/datafusion#23978](https://github.com/apache/datafusion/issues/23978) and
-should be reverted when that is fixed.
+the footer, trading away the skip's benefit in the cases where it would have applied. That forced
+policy is a workaround for [apache/datafusion#23978](https://github.com/apache/datafusion/issues/23978),
+and only it should be reverted when the issue is fixed. The factory stays, because it is the
+per-file hook that sees the raw footer and hosts other work:
+
+- the missing field id check (`require_field_ids`)
+- the Variant footer rewrite
+- the INT96 leaf stamp that rebase-aware scans use
+- the deferred conversion check
+- the prefetch of the next file's metadata, `spark.comet.parquet.prefetchNextFileMetadata.enabled`
 
 The same factory owns the scan I/O counters. `bytes_scanned` keeps its existing meaning, counting
 requested data and bloom-filter ranges, because Spark's `inputMetrics.bytesRead` and
@@ -444,15 +501,18 @@ The generated [configuration reference](../user-guide/latest/configs.md) has the
 current defaults. The table below is the cross-category view the generator cannot produce: the
 configs that affect the scan but are filed elsewhere, or are not public.
 
-| Config                                             | Purpose                                                    |
-| -------------------------------------------------- | ---------------------------------------------------------- |
-| `spark.comet.scan.enabled`                         | Test-only kill switch for native scans as a whole          |
-| `spark.comet.scan.contrib.detectConflicts.enabled` | Diagnostic. Warns when more than one contrib claims a scan |
-| `spark.comet.scan.csv.v2.enabled`                  | Experimental native CSV V2 scan                            |
-| `spark.comet.parquet.rowFilterPushdown.enabled`    | Per-row `RowFilter` evaluation in the native reader        |
-| `spark.comet.convert.parquet.enabled`              | Convert a fallen-back Parquet scan's output to Arrow       |
-| `fs.comet.libhdfs.schemes`                         | Hadoop key. Schemes to route through the libhdfs bridge    |
-| `fs.comet.s3Compliant.schemes`                     | Hadoop key. Schemes to treat as `s3://` aliases            |
+| Config                                                 | Purpose                                                                   |
+| ------------------------------------------------------ | ------------------------------------------------------------------------- |
+| `spark.comet.scan.enabled`                             | Test-only kill switch for native scans as a whole                         |
+| `spark.comet.scan.contrib.detectConflicts.enabled`     | Diagnostic. Warns when more than one contrib claims a scan                |
+| `spark.comet.scan.csv.v2.enabled`                      | Experimental native CSV V2 scan                                           |
+| `spark.comet.parquet.rowFilterPushdown.enabled`        | Per-row `RowFilter` evaluation in the native reader                       |
+| `spark.comet.parquet.prefetchNextFileMetadata.enabled` | Load the next file's footer and page index while the current file is read |
+| `spark.comet.exec.join.dynamicFilter.enabled`          | Opt-in. A join attaches a runtime predicate to the Parquet reader         |
+| `spark.comet.exec.topK.dynamicFilter.enabled`          | Opt-in. A top-K attaches a runtime predicate to the Parquet reader        |
+| `spark.comet.convert.parquet.enabled`                  | Convert a fallen-back Parquet scan's output to Arrow                      |
+| `fs.comet.libhdfs.schemes`                             | Hadoop key. Schemes to route through the libhdfs bridge                   |
+| `fs.comet.s3Compliant.schemes`                         | Hadoop key. Schemes to treat as `s3://` aliases                           |
 
 Type promotion and TimestampLTZ-as-NTZ are **not** configs. They are per-Spark-version constants in
 `ShimCometConf`. The `spark.comet.schemaEvolution.enabled` conf that used to control type promotion

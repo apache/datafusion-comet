@@ -39,6 +39,7 @@ of it crashes. Review it expecting the failure mode to be quiet.
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
 | `docs/source/contributor-guide/scan.md`                | Which path runs, the fallback gate model, the schema triple, the adapter, the gotchas |
 | `docs/source/user-guide/latest/datasources.md`         | The user-facing contract for formats, storage, schemes, and credentials               |
+| `docs/source/user-guide/latest/parquet.md`             | The user-facing list of Parquet fallbacks, reads that differ from Spark, and tuning   |
 | `docs/source/contributor-guide/plugin_overview.md`     | Where `CometScanRule` sits relative to `CometExecRule`                                |
 | `docs/source/user-guide/latest/iceberg.md`             | Iceberg PRs only                                                                      |
 | `docs/source/contributor-guide/iceberg-spark-tests.md` | Iceberg PRs only. Those suites report in the merge queue, not on the PR               |
@@ -95,13 +96,17 @@ Checklist for a new or moved gate:
       show it. This is easy to miss in review because the query still returns the right answer, just
       slowly, and the user has nothing to read.
 - [ ] **It matches the local return convention.** Some gates `return withFallbackReason(...)`
-      immediately. Others (notably `CometNativeScan.isSupported` and the Iceberg arm) tag and
-      continue so that every applicable reason accumulates before the single decision at the end.
-      A gate that returns early where the surrounding code accumulates hides the other reasons.
+      immediately. Others (notably `CometNativeScan.isSupported` and the table checks of the
+      Iceberg arm) tag and continue so that every applicable reason accumulates before the single
+      decision at the end. The Iceberg arm's checks on its configs, metadata columns, ordering,
+      file scan tasks and metadata extraction return early. A gate that returns early where the
+      surrounding code accumulates hides the other reasons.
 - [ ] **It is in the right function.** A guard hoisted above the contrib hook declines scans Comet
       does not own. A guard specific to the native Parquet reader belongs in `nativeScan`, not
-      `transformV1Scan`, so contrib scans are unaffected. `scan.md` § The Fallback Gate Model has
-      the placement rule.
+      `transformV1Scan`, so contrib scans are unaffected. `CometNativeScan.isSupported` is also a
+      planning-time gate: `nativeScan` calls it before any `CometScanExec` exists, while
+      `CometNativeScan.convert`, which runs in `CometExecRule`, declines multi-store partitions and
+      some ABFS layouts. `scan.md` § The Fallback Gate Model has the placement rule.
 - [ ] **A gate that duplicates an existing one is drift waiting to happen.** The AQE DPP check is
       deliberately in two places with a comment saying the second is a safety net. A new duplicate
       without that rationale should be one gate.
@@ -138,16 +143,22 @@ change here against Spark's source, not against what looks reasonable.
 - [ ] **The rejection matrix still mirrors `ParquetVectorUpdaterFactory.getUpdater`**, at the same
       Spark versions, with the same leaf-by-leaf walk and the same first-verdict-wins ordering. A
       change that short-circuits differently changes which error a user sees.
-- [ ] **Errors stay deferred.** A rejection becomes a `RejectOnNonEmpty` that fires only on a
-      non-empty batch, so a file whose offending row groups are all pruned still reads, as it does
-      in Spark. A PR that raises at plan time breaks queries Spark accepts, and a test that always
-      reads the offending row group will not notice.
+- [ ] **Each rejection keeps its timing.** Spark rejects a shape mismatch it cannot clip when it
+      opens the file, and every other pair only in `getUpdater`, while it decodes a row group. The
+      first is an error from the check, the second a `ConversionCheck::RejectOnNonEmpty` that
+      fires only on a non-empty batch, so a file whose offending row groups are all pruned still
+      reads, as it does in Spark. Moving a pair from the deferred verdict to an error breaks
+      queries Spark accepts, and a test that always reads the offending row group will not notice.
+      Moving one the other way hides an error Spark raises at open.
 - [ ] **Case folding goes through `name_fold.rs`.** A new `to_lowercase()` or
       `eq_ignore_ascii_case()` anywhere in the scan path is a finding. Three call sites share the
       policy, and those drifting apart is what produced #5495.
-- [ ] **Field-id matching keeps Spark's gate**, which uses ids only when the conf is on _and_ the
-      requested schema actually carries them. Removing either half changes behavior on schemas
-      Spark reads by name.
+- [ ] **Field-id matching keeps Spark's gates.** Ids select fields (`use_field_id`) only when the
+      conf is on _and_ the requested schema carries them, and the missing-id rejection
+      (`require_field_ids`) applies whenever the schema carries ids, unless
+      `spark.sql.parquet.fieldId.read.ignoreMissing` is set, whatever the read flag says. Removing
+      either half of either gate changes behavior on schemas Spark reads by name. The precedence
+      between id and name lives in `field_resolver.rs`, shared by the root and the nested fields.
 - [ ] **`is_pure_structural_narrowing` is an allow list on purpose.** Any PR touching
       `parquet_convert_array` should say whether that predicate needs a matching exclusion, because
       a case it does not know to exclude silently starts producing wrong results.
@@ -175,15 +186,19 @@ that `Filter` ever sees them. The three checks below follow from which side a ch
 ## 6. Object Stores and Schemes
 
 - [ ] **One object store is registered per `FilePartition`, keyed on the first file.** Everything
-      about multi-bucket handling follows from this. A PR that widens which schemes are claimed
-      needs to say what happens to a partition spanning two buckets. The existing V1-versus-Iceberg
-      asymmetry is deliberate, so do not let a PR "fix" it silently.
+      about multi-bucket handling follows from this. A non-bucketed V1 scan packs its files per
+      store, the gates decline what packing cannot fix (bucketed scans over several stores, and
+      settings that cannot be forwarded per store), and the planner rejects a mixed-store
+      partition. A PR that widens which schemes are claimed needs to say what happens to each of
+      the three. The Iceberg gate is stricter and declines data files in more than one bucket,
+      which is deliberate, so do not let a PR "fix" it silently.
 - [ ] **A new scheme needs both sides.** The JVM gate and the native reader must agree. The `hdfs`
       default is the cautionary tale: the JVM default is `Set("hdfs")` specifically to mirror
       `is_hdfs_scheme`, because an empty default would silently fall back every plain `hdfs://` scan.
-- [ ] **Iceberg's scheme list tracks `storage_factory_for`.** `icebergReadableSchemes` must stay in
-      lockstep with the match arms in `iceberg_common.rs`. Admitting a scheme iceberg-rust cannot
-      build turns a clean JVM fallback into a native runtime error.
+- [ ] **Iceberg's scheme list comes from `builtin_storage_schemes`.** `icebergReadableSchemes` is
+      loaded from `iceberg_common.rs` over JNI, so there is no JVM list to keep in lockstep. A PR
+      that adds a hand-kept list needs a reason. Admitting a scheme iceberg-rust cannot build turns
+      a clean JVM fallback into a native runtime error.
 - [ ] **A new Hadoop-surface key is read from the Hadoop config, not SQLConf**, or it will not work
       for users who configure through `core-site.xml`.
 - [ ] **New credential or endpoint handling is documented** in `datasources.md`, which carries the
@@ -210,9 +225,9 @@ This is the fail-closed rule applied to upstream defaults.
       options makes every future DataFusion option silently active.
 - [ ] **`coerce_int96` and `coerce_int96_tz` stay hardcoded.** Making them session-overridable
       breaks the adapter's ability to distinguish an INT96-derived TimestampLTZ.
-- [ ] **A DataFusion version bump is a scan review.** The allow list, the
-      `EagerPageIndexReaderFactory` workaround and its stated exit condition, and the schema
-      adapter's assumptions about `nested_struct::cast_column` all track upstream.
+- [ ] **A DataFusion version bump is a scan review.** The allow list, the forced page-index policy
+      of `EagerPageIndexReaderFactory` and its stated exit condition, and the schema adapter's
+      assumptions about `nested_struct::cast_column` all track upstream.
 
 ## 9. Tests
 
@@ -249,11 +264,14 @@ invalidate. Two need naming individually:
 - The **Which Scan Path Runs** table. The claim that V2 Parquet is not read natively is the single
   statement in the doc most likely to become wrong.
 - The **Page Index and Metadata Caching** section, which describes a workaround with a stated exit
-  condition. A DataFusion bump that fixes `apache/datafusion#23978` should delete it rather than
-  edit it.
+  condition. A DataFusion bump that fixes `apache/datafusion#23978` should drop the forced
+  page-index policy and update the section. It should keep `EagerPageIndexReaderFactory`, which
+  also hosts the field-id check, the Variant footer rewrite, the INT96 stamp, the deferred
+  conversion check and the next-file prefetch.
 
-Check also whether `datasources.md` (user-facing formats, schemes, credentials) or the
-`### CometScanRule` section of `plugin_overview.md` still holds.
+Check also whether `datasources.md` (user-facing formats, schemes, credentials), `parquet.md` (the
+fallback list and the reads that differ from Spark) or the `### CometScanRule` section of
+`plugin_overview.md` still holds.
 
 ## Common Scan Review Findings
 
