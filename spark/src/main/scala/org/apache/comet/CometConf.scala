@@ -724,10 +724,11 @@ object CometConf extends ShimCometConf {
         "Experimental opt-in: let a native partial aggregate stop aggregating once its input " +
           "looks mostly distinct, and send the rest of the task's rows to the shuffle " +
           "unaggregated. Only applies to partial aggregates that feed Comet native shuffle " +
-          "and whose aggregate functions, if any, are all single-argument COUNT. The check " +
-          "starts after the first 100,000 input rows of a task, and once aggregation stops " +
-          "it does not resume, so a task whose keys repeat after a mostly distinct start can " +
-          s"shuffle many times more rows than it would with this disabled. $TUNING_GUIDE.")
+          "and whose aggregate functions, if any, are all single-argument COUNT or AVG of a " +
+          "non-decimal value. The check starts after the first 100,000 input rows of a task, " +
+          "and once aggregation stops it does not resume, so a task whose keys repeat after a " +
+          "mostly distinct start can shuffle many times more rows than it would with this " +
+          s"disabled. $TUNING_GUIDE.")
       .booleanConf
       .createWithDefault(false)
 

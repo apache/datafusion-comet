@@ -60,6 +60,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_comet_proto::spark_expression::agg_expr::ExprStruct as AggExprStruct;
+use datafusion_comet_proto::spark_expression::data_type::DataTypeId;
 use datafusion_comet_proto::spark_operator::{AggregateMode, Operator, ShuffleScan};
 use datafusion_comet_shuffle::decoded_batch_coalescer::DecodedBatchCoalescer;
 use datafusion_comet_spark_expr::url_funcs::{CometParseUrl, CometTryParseUrl};
@@ -1036,6 +1037,12 @@ fn configure_skip_partial_aggregation(config: &mut SessionConfig, plan: &Operato
                         && agg.agg_exprs.iter().all(|expr| {
                             matches!(&expr.expr_struct, Some(AggExprStruct::Count(count))
                                 if count.children.len() == 1)
+                                // A decimal average's accumulator can't convert rows to states.
+                                || matches!(&expr.expr_struct, Some(AggExprStruct::Avg(avg))
+                                    if avg.child.is_some()
+                                        && avg.datatype.as_ref().is_some_and(|datatype| {
+                                            datatype.type_id == DataTypeId::Double as i32
+                                        }))
                         })
                 }
                 // PartialMerge consumes states, not rows.
@@ -2551,7 +2558,7 @@ mod tests {
     use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::physical_plan::ExecutionPlan;
     use datafusion_comet_proto::spark_expression;
-    use datafusion_comet_proto::spark_expression::{AggExpr, Count, Expr, Sum};
+    use datafusion_comet_proto::spark_expression::{AggExpr, Avg, Count, Expr, Sum};
     use datafusion_comet_proto::spark_operator::{HashAggregate, ShuffleWriter};
     use std::cell::Cell;
     use std::future::Future;
@@ -2566,6 +2573,17 @@ mod tests {
         };
         let sum = AggExpr {
             expr_struct: Some(AggExprStruct::Sum(Sum::default())),
+            ..Default::default()
+        };
+        let avg = |child: Option<Expr>, type_id: DataTypeId| AggExpr {
+            expr_struct: Some(AggExprStruct::Avg(Avg {
+                child,
+                datatype: Some(spark_expression::DataType {
+                    type_id: type_id as i32,
+                    type_info: None,
+                }),
+                ..Default::default()
+            })),
             ..Default::default()
         };
         let partial = HashAggregate {
@@ -2613,6 +2631,13 @@ mod tests {
                 ..partial.clone()
             },
             HashAggregate {
+                agg_exprs: vec![
+                    count.clone(),
+                    avg(Some(Expr::default()), DataTypeId::Double),
+                ],
+                ..partial.clone()
+            },
+            HashAggregate {
                 agg_exprs: vec![count.clone(), count],
                 ..partial.clone()
             },
@@ -2634,6 +2659,14 @@ mod tests {
             },
             HashAggregate {
                 agg_exprs: vec![AggExpr::default()],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(None, DataTypeId::Double)],
+                ..partial.clone()
+            },
+            HashAggregate {
+                agg_exprs: vec![avg(Some(Expr::default()), DataTypeId::Decimal)],
                 ..partial.clone()
             },
             HashAggregate {
