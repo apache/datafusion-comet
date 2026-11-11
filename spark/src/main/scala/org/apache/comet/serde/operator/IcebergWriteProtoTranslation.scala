@@ -100,8 +100,14 @@ object IcebergWriteProtoTranslation {
       }
     }
 
-  /** True when the write compresses with brotli. Unlike `resolveCompression`, never throws. */
-  def compressesWithBrotli(props: Map[String, String]): Boolean = codecName(props) == "brotli"
+  /**
+   * True when the write compresses with brotli. Unlike `resolveCompression`, never throws. The
+   * name is matched the way iceberg-java matches it, upper-cased with `Locale.ENGLISH`, so that
+   * `BROTLI` counts. It is also trimmed, so that a padded name, which the codec parsing here
+   * accepts, is checked too.
+   */
+  def compressesWithBrotli(props: Map[String, String]): Boolean =
+    codecName(props).trim.toUpperCase(Locale.ENGLISH) == "BROTLI"
 
   /** Builds the parquet settings message. Pure: no SparkWrite or Iceberg `Table` access. */
   def buildParquetSettings(

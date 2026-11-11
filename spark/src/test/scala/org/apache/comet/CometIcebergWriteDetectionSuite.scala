@@ -386,7 +386,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
       createTable(
         "brotli_table",
         partitionSpec = "",
-        properties = Some("'write.parquet.compression-codec'='brotli'"))
+        properties = Some("'write.parquet.compression-codec'='BROTLI'"))
       createTable("brotli_session", partitionSpec = "")
       val tableWrite = planInsertWriteExec(s"$catalog.$ns.brotli_table")
       // The session setting reaches the gate through SparkWrite.writeProperties. withSQLConf
