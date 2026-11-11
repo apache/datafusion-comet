@@ -213,16 +213,18 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
-  test("native text read - wholetext on an empty file is one empty row") {
+  test("native text read - wholetext on an empty file has no rows, like Spark") {
     withTempDir { dir =>
       val file = new File(dir, "empty-wholetext.txt")
       Files.write(file.toPath, Array.emptyByteArray)
       withTextConf {
-        // Line mode has no rows for an empty file, but wholetext returns the whole (empty) content
-        // as one row. Check the count too, so a missing row cannot pass as an empty result.
+        // Spark's file index drops empty files before the scan is planned
+        // (PartitioningAwareFileIndex.listFiles keeps only files with a length above zero), so the
+        // reader never sees one and wholetext returns no row, not an empty row. Pin the count so a
+        // change on either side shows up instead of two empty results agreeing by accident.
         val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
         checkSparkAnswerAndOperator(df)
-        assert(df.collect().length == 1)
+        assert(df.collect().isEmpty)
       }
     }
   }
@@ -245,9 +247,11 @@ class CometTextNativeReadSuite extends CometTestBase {
         "line1\nline2\n".getBytes(StandardCharsets.UTF_8))
       Files.write(new File(dir, "b.txt").toPath, "".getBytes(StandardCharsets.UTF_8))
       withTextConf {
-        // One row per file, including one empty row for the empty file.
-        checkSparkAnswerAndOperator(
-          spark.read.option("wholetext", "true").text(dir.getAbsolutePath))
+        // One row per non-empty file. Spark's file index drops the empty file (b.txt) before
+        // planning, so it contributes no row.
+        val df = spark.read.option("wholetext", "true").text(dir.getAbsolutePath)
+        checkSparkAnswerAndOperator(df)
+        assert(df.collect().length == 1)
       }
     }
   }

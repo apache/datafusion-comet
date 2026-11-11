@@ -692,6 +692,53 @@ mod tests {
         assert_eq!(lines_after_bom(b"hello", false, None), vec!["hello"]);
     }
 
+    /// Run a file through DataFusion's real scan (`FileStream` and the projection wrapper), built
+    /// the way the planner builds it: a file group whose range covers the file, even when the file
+    /// is empty. Returns the `value` rows.
+    async fn scan_file(content: &[u8], whole_text: bool) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input.txt");
+        std::fs::write(&path, content).unwrap();
+        let size = content.len() as u64;
+        let mut file = PartitionedFile::new_with_range(String::new(), size, 0, size as i64);
+        file.object_meta.location = object_store::path::Path::from_filesystem_path(&path).unwrap();
+        let options = TextOptions {
+            whole_text,
+            line_sep: None,
+        };
+        let exec = init_text_datasource_exec(
+            ObjectStoreUrl::local_filesystem(),
+            vec![vec![file]],
+            Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, true)])),
+            vec![0],
+            &options,
+        )
+        .unwrap();
+        let ctx = datafusion::prelude::SessionContext::new();
+        let batches = datafusion::physical_plan::collect(exec, ctx.task_ctx())
+            .await
+            .unwrap();
+        values(&batches)
+    }
+
+    #[tokio::test]
+    async fn scan_reads_lines_through_datafusion() {
+        assert_eq!(scan_file(b"a\nb", false).await, vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn scan_of_an_empty_file_has_no_rows_in_line_mode() {
+        assert!(scan_file(b"", false).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_of_an_empty_file_is_one_empty_row_in_wholetext_mode() {
+        // Spark's file index drops empty files before planning, so a Spark query never sends one
+        // here. The reader still treats the empty content as the file's single row, as Spark's
+        // whole-file reader would if it were handed the file.
+        assert_eq!(scan_file(b"", true).await, vec![""]);
+    }
+
     #[test]
     fn invalid_utf8_is_replaced() {
         // Ill-formed bytes become U+FFFD (matches Spark's new String(bytes, UTF_8) on collect).
