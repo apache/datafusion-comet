@@ -1518,15 +1518,7 @@ fn timestamp_parser<T: TimeZone>(
     // padding is accepted there.
     // Check the prefix, not the base patterns: a zone suffix can hide a time-only match.
     if trimmed.is_empty() || (is_spark4_plus && start > 0 && trimmed.starts_with('T')) {
-        return if eval_mode == EvalMode::Ansi {
-            Err(SparkError::InvalidInputInCastToDatetime {
-                value: value.to_string(),
-                from_type: "STRING".to_string(),
-                to_type: "TIMESTAMP".to_string(),
-            })
-        } else {
-            Ok(None)
-        };
+        return invalid_timestamp(value, eval_mode);
     }
     let value = trimmed;
 
@@ -1556,14 +1548,7 @@ fn timestamp_parser<T: TimeZone>(
                     .and_then(|micros| micros.checked_sub(i64::from(residual_secs) * 1_000_000));
                 return match adjusted {
                     Some(micros) => Ok(Some(micros)),
-                    None if eval_mode == EvalMode::Ansi => {
-                        Err(SparkError::InvalidInputInCastToDatetime {
-                            value: value.to_string(),
-                            from_type: "STRING".to_string(),
-                            to_type: "TIMESTAMP".to_string(),
-                        })
-                    }
-                    None => Ok(None),
+                    None => invalid_timestamp(value, eval_mode),
                 };
             }
         }
@@ -2087,15 +2072,7 @@ fn parse_timestamp_pattern<T: TimeZone>(
     };
 
     if timestamp.is_none() {
-        return if eval_mode == EvalMode::Ansi {
-            Err(SparkError::InvalidInputInCastToDatetime {
-                value: value.to_string(),
-                from_type: "STRING".to_string(),
-                to_type: "TIMESTAMP".to_string(),
-            })
-        } else {
-            Ok(None)
-        };
+        return invalid_timestamp(value, eval_mode);
     }
 
     Ok(timestamp)
@@ -2145,6 +2122,19 @@ fn timestamp_ntz_parser(
     };
 
     timestamp_ntz_parser_inner(value_to_parse, pattern, eval_mode)
+}
+
+/// ANSI mode raises on an unparseable TIMESTAMP value; the other modes return null.
+fn invalid_timestamp(value: &str, eval_mode: EvalMode) -> SparkResult<Option<i64>> {
+    if eval_mode == EvalMode::Ansi {
+        Err(SparkError::InvalidInputInCastToDatetime {
+            value: value.to_string(),
+            from_type: "STRING".to_string(),
+            to_type: "TIMESTAMP".to_string(),
+        })
+    } else {
+        Ok(None)
+    }
 }
 
 /// ANSI mode raises on an unparseable TIMESTAMP_NTZ value; the other modes return null.
