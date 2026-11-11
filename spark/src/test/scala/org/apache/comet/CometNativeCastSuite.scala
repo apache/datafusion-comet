@@ -1555,6 +1555,58 @@ class CometNativeCastSuite
         Some(SparkFixes.castsZeroWithAnyExponentToDecimal(org.apache.spark.SPARK_VERSION)))
   }
 
+  test(
+    "cast StringType to DecimalType sets the integral-digit limit option from the legacy config") {
+    val a = AttributeReference("a", StringType)()
+    Seq(true, false).foreach { allowNegativeScale =>
+      withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> allowNegativeScale.toString) {
+        val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
+        assert(proto.map(_.getCast.getDecimalSkipIntegralDigitLimit) == Some(allowNegativeScale))
+      }
+    }
+  }
+
+  // Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed
+  // it, before it checks the value against the target type. So ANSI mode raises
+  // NUMERIC_OUT_OF_SUPPORTED_RANGE whatever the target type, where a value with up to 38 integral
+  // digits that does not fit raises NUMERIC_VALUE_OUT_OF_RANGE, and the other modes return NULL.
+  // See https://github.com/apache/datafusion-comet/issues/7188.
+  test("cast StringType to DecimalType - more than 38 integral digits") {
+    val tooManyDigits = Seq(
+      "6E+38",
+      "1" + "0" * 38, // 39 digits, which fit an i128 in Comet's parser
+      "1" + "0" * 39, // 40 digits, which do not
+      "-1.5e50",
+      "9" * 40 + ".5",
+      "0.1e40",
+      // leading zeros do not count
+      "0" * 50 + "1e38")
+    val withinTheLimit = Seq("1.5", "-12", "12345678901", "9" * 38, "1" + "0" * 37, "1e-50")
+    Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+      toType =>
+        // ANSI mode stops at the first row that fails, so each error is compared on its own.
+        tooManyDigits.foreach { value =>
+          castTest(Seq(value).toDF("a"), toType, expectAnsiFailure = true)
+        }
+        // The other modes return NULL for these and the usual result for the rest.
+        castTest((tooManyDigits ++ withinTheLimit).toDF("a"), toType, testAnsi = false)
+    }
+  }
+
+  // With the setting Spark skips the limit above, so a string with too many integral digits is an
+  // ordinary value that is too large for the target type. A zero with a large exponent is zero,
+  // whether or not Spark has SPARK-60118.
+  test("cast StringType to DecimalType - more than 38 integral digits with negative scale") {
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+        toType =>
+          // 39 digits, which fit an i128 in Comet's parser
+          castTest(Seq("1" + "0" * 38).toDF("a"), toType, expectAnsiFailure = true)
+          castTest(Seq("0e38", "0E+73", "+0e83", "0e5887677", "1.5", "-12").toDF("a"), toType)
+      }
+    }
+  }
+
   test("cast StringType to DecimalType(38,10) high precision") {
     val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
     Seq(true, false).foreach(ansiEnabled =>
@@ -2626,6 +2678,75 @@ class CometNativeCastSuite
         Unsupported(Some(expectedMessage)))
   }
 
+  // https://github.com/apache/datafusion-comet/issues/6200
+  // Nested isSupported used to return the first non-Compatible child, so an earlier
+  // Incompatible (negative-scale decimal → string) could mask a later Unsupported.
+  // Boolean → Decimal is Unsupported; that pair is used as the Unsupported child.
+  test("struct to struct prefers Unsupported over Incompatible regardless of field order") {
+    val (negScaleType, unsupportedTo) = nestedCastSupportFixtures()
+    val unsupportedReason =
+      Some(s"Cast from $BooleanType to $unsupportedTo is not supported")
+    def struct(a: DataType, b: DataType): StructType =
+      StructType(Seq(StructField("a", a), StructField("b", b)))
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          struct(negScaleType, BooleanType),
+          struct(StringType, unsupportedTo),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          struct(BooleanType, negScaleType),
+          struct(unsupportedTo, StringType),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
+  test("struct to string prefers Unsupported over Incompatible regardless of field order") {
+    val (negScaleType, _) = nestedCastSupportFixtures()
+    val unsupportedFrom = MapType(IntegerType, IntegerType)
+    val unsupportedReason =
+      Some(s"Cast from $unsupportedFrom to ${DataTypes.StringType} is not supported")
+    def struct(a: DataType, b: DataType): StructType =
+      StructType(Seq(StructField("a", a), StructField("b", b)))
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          struct(negScaleType, unsupportedFrom),
+          StringType,
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          struct(unsupportedFrom, negScaleType),
+          StringType,
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
+  test("map prefers Unsupported over Incompatible regardless of key/value order") {
+    val (negScaleType, unsupportedTo) = nestedCastSupportFixtures()
+    val unsupportedReason =
+      Some(s"Cast from $BooleanType to $unsupportedTo is not supported")
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "false") {
+      assert(
+        CometCast.isSupported(
+          MapType(negScaleType, BooleanType),
+          MapType(StringType, unsupportedTo),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+      assert(
+        CometCast.isSupported(
+          MapType(BooleanType, negScaleType),
+          MapType(unsupportedTo, StringType),
+          None,
+          CometEvalMode.TRY) == Unsupported(unsupportedReason))
+    }
+  }
+
   test("cast ArrayType(DateType) to unsupported ArrayType routes through codegen dispatch") {
     // Boundary case rather than dispatch coverage: these pairs have no native cast, so all this
     // asserts is that `Unsupported` keeps the operator native via `CodegenDispatchFallback`
@@ -2781,6 +2902,16 @@ class CometNativeCastSuite
         }
       }
     }
+  }
+
+  // DecimalType(10, -2) must be built while negative scale is allowed; the constructor
+  // itself checks the config. Boolean → Decimal is the nested Unsupported child.
+  private def nestedCastSupportFixtures(): (DecimalType, DecimalType) = {
+    var negScaleType: DecimalType = null
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      negScaleType = DecimalType(10, -2)
+    }
+    (negScaleType, DecimalType(10, 2))
   }
 
   private def isCompatible(
