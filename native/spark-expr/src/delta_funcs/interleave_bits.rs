@@ -147,6 +147,7 @@ fn interleave(values: &[u32]) -> u64 {
 mod tests {
     use super::*;
     use arrow::array::ArrayRef;
+    use arrow::buffer::{NullBuffer, ScalarBuffer};
     use arrow::datatypes::Field;
     use datafusion::config::ConfigOptions;
 
@@ -335,6 +336,35 @@ mod tests {
     fn null_counts_as_zero() {
         let rows = hex_rows(vec![vec![Some(-1), None], vec![None, Some(-1)]]);
         assert_eq!(rows, ["AAAAAAAAAAAAAAAA", "5555555555555555"]);
+    }
+
+    #[test]
+    fn null_slot_ignores_its_value() {
+        // The value buffer holds -1 under the null slot, unlike the 0 a builder writes there.
+        let under_null = || {
+            ColumnarValue::Array(Arc::new(Int32Array::new(
+                ScalarBuffer::from(vec![-1, -1]),
+                Some(NullBuffer::from(vec![true, false])),
+            )))
+        };
+        let minus_one = || int_array(vec![Some(-1), Some(-1)]);
+        let cases = [
+            (
+                vec![minus_one(), under_null()],
+                ["FFFFFFFFFFFFFFFF", "AAAAAAAAAAAAAAAA"],
+            ),
+            (
+                vec![under_null(), minus_one()],
+                ["FFFFFFFFFFFFFFFF", "5555555555555555"],
+            ),
+            (vec![under_null()], ["FFFFFFFF", "00000000"]),
+        ];
+        for (args, expected) in cases {
+            let ColumnarValue::Array(result) = invoke(args, 2).unwrap() else {
+                panic!("expected an array result");
+            };
+            assert_eq!(to_hex_rows(&result), expected);
+        }
     }
 
     #[test]
