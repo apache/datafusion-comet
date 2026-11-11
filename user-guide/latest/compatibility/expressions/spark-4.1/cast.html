@@ -967,6 +967,20 @@ Plane, such as U+1D7CE MATHEMATICAL BOLD DIGIT ZERO, are rejected as they are by
 under ANSI mode. Comet chooses the behavior by the Spark version number. On a vendor build that
 reports an older version but includes SPARK-60118, Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code> (or raises) where Spark
 returns <code class="docutils literal notranslate"><span class="pre">0</span></code>.</p>
+<p>A string whose integral part has more than 38 digits, such as <code class="docutils literal notranslate"><span class="pre">'6E+38'</span></code>, is rejected before Spark
+checks the value against the target type. Comet does the same: the result is <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, or
+<code class="docutils literal notranslate"><span class="pre">NUMERIC_OUT_OF_SUPPORTED_RANGE</span></code> under ANSI mode, whatever the target type. With
+<code class="docutils literal notranslate"><span class="pre">spark.sql.legacy.allowNegativeScaleOfDecimal=true</span></code>, Spark does not apply this limit, and neither
+does Comet.</p>
+<p>Under ANSI mode, a value that parses but is too large for the target type can raise
+<code class="docutils literal notranslate"><span class="pre">CAST_INVALID_INPUT</span></code> where Spark raises <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>, when scaling it to the target
+type needs more than 38 digits. Examples are <code class="docutils literal notranslate"><span class="pre">'1e37'</span></code> cast to <code class="docutils literal notranslate"><span class="pre">DECIMAL(10,2)</span></code>, and <code class="docutils literal notranslate"><span class="pre">'6E+38'</span></code> cast to
+<code class="docutils literal notranslate"><span class="pre">DECIMAL(10,2)</span></code> with the setting above
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7576">#7576</a>). A string whose digits do not
+fit in an <code class="docutils literal notranslate"><span class="pre">i128</span></code>, which is about 38 of them with the fractional digits included, and that the limit
+above does not reject, is not parsed at all. Comet returns <code class="docutils literal notranslate"><span class="pre">NULL</span></code>, or raises <code class="docutils literal notranslate"><span class="pre">CAST_INVALID_INPUT</span></code>
+under ANSI mode, where Spark returns the value or raises <code class="docutils literal notranslate"><span class="pre">NUMERIC_VALUE_OUT_OF_RANGE</span></code>
+(<a class="reference external" href="https://github.com/apache/datafusion-comet/issues/7581">#7581</a>).</p>
 </section>
 <section id="string-to-date">
 <h2>String to Date<a class="headerlink" href="#string-to-date" title="Link to this heading">#</a></h2>
