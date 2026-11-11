@@ -77,7 +77,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     val ParquetShredVariants: String = "write.parquet.shred-variants"
     val ParquetVariantBufferSize: String = "write.parquet.variant-inference-buffer-size"
     val ParquetEnableDictionary: String = "parquet.enable.dictionary"
-    val FileIOImpl: String = "io-impl"
   }
 
   private val EncryptionPropertyPrefix = "encryption."
@@ -96,7 +95,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val LocalStorageSchemes: Set[String] = Set("file", "memory")
   private val MaxSupportedFormatVersion = 3
   private val ParquetWritePropertyPrefix = "write.parquet."
-  private val ParquetMrPropertyPrefix = "parquet."
   private val CometS3CredentialProviderClassProperty =
     "s3.comet.credential.provider.class"
 
@@ -111,8 +109,90 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val SupportedHadoopS3Suffixes: Set[String] =
     NativeConfig.s3aSuffixToIcebergGlobalKey.keySet
 
-  private val SupportedHadoopS3Keys: Set[String] =
-    SupportedHadoopS3Suffixes.map("fs.s3a." + _)
+  // S3A settings that cannot change the written object, where it is written or who writes it,
+  // by `fs.s3a.` suffix. The native writer has its own connection pool, timeouts, retries and
+  // upload buffering, issues no reads, listings or deletes through S3A, and commits through table
+  // metadata rather than a Hadoop output committer, so none of these may make an otherwise clean
+  // S3 write ineligible. Spark seeds the vectored-read and syncable settings into every session,
+  // and clusters commonly set the rest cluster-wide. The data bucket's per-bucket spellings are
+  // admitted too. Anything that can change a request stays unsupported: endpoint and region
+  // selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers,
+  // encryption and access points, and so do the credential settings. Audited against
+  // `org.apache.hadoop.fs.s3a.Constants` in hadoop-aws 3.3.4 and 3.4.2.
+  private val IgnoredHadoopS3Suffixes: Set[String] = Set(
+    // Connection pool, threads and timeouts.
+    "connection.maximum",
+    "connection.establish.timeout",
+    "connection.timeout",
+    "connection.request.timeout",
+    "connection.acquisition.timeout",
+    "connection.idle.time",
+    "connection.ttl",
+    "connection.keepalive",
+    "connection.part.upload.timeout",
+    "connection.expect.continue",
+    "socket.send.buffer",
+    "socket.recv.buffer",
+    "threads.max",
+    "threads.keepalivetime",
+    "max.total.tasks",
+    "executor.capacity",
+    "io.rate.limit",
+    // Retries.
+    "attempts.maximum",
+    "retry.limit",
+    "retry.interval",
+    "retry.throttle.limit",
+    "retry.throttle.interval",
+    "retry.http.5xx.errors",
+    "experimental.aws.s3.throttling",
+    // Upload buffering and multipart sizing.
+    "fast.upload",
+    "fast.upload.buffer",
+    "fast.upload.active.blocks",
+    "fast.buffer.size",
+    "buffer.dir",
+    "block.size",
+    "multipart.size",
+    "multipart.threshold",
+    "multipart.uploads.enabled",
+    "multipart.purge",
+    "multipart.purge.age",
+    "downgrade.syncable.exceptions",
+    // Reads, listings and deletes.
+    "readahead.range",
+    "experimental.input.fadvise",
+    "input.async.drain.threshold",
+    "vectored.read.max.merged.size",
+    "vectored.read.min.seek.size",
+    "vectored.active.ranged.reads",
+    "prefetch.enabled",
+    "prefetch.block.size",
+    "prefetch.block.count",
+    "change.detection.mode",
+    "change.detection.source",
+    "change.detection.version.required",
+    "paging.maximum",
+    "list.version",
+    "bulk.delete.page.size",
+    "multiobjectdelete.enable",
+    "etag.checksum.enabled",
+    // Hadoop output committers, which Iceberg does not use.
+    "committer.magic.enabled",
+    "committer.name",
+    "committer.threads",
+    // Not an S3A setting: no hadoop-aws release from 3.3.4 to 3.5.0 reads `fs.s3a.region`, and
+    // the region Comet forwards comes from `endpoint.region`.
+    "region")
+
+  // Many Spark configurations name S3A itself as the `s3a` filesystem, which changes nothing.
+  private val FileSystemImplSuffix = "impl"
+  private val S3AFileSystemClass = "org.apache.hadoop.fs.s3a.S3AFileSystem"
+
+  // Every suffix the gate can admit. Their per-bucket spellings resolve through this set even
+  // where the runtime Hadoop version does not declare the property.
+  private val AdmittedHadoopS3Suffixes: Set[String] =
+    SupportedHadoopS3Suffixes ++ IgnoredHadoopS3Suffixes + FileSystemImplSuffix
 
   private val FsS3aPrefix = "fs.s3a."
   private val FsS3aBucketPrefix = "fs.s3a.bucket."
@@ -134,7 +214,7 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   // suffix. Resolve the suffix against the property names declared by the runtime Hadoop version,
   // so `bucket.target.other.encryption.algorithm` belongs to bucket `target.other`, even though
   // `encryption.algorithm` is unsupported by the native writer. If hadoop-aws is unavailable,
-  // retain the supported suffixes and let unknown spellings take the conservative path below.
+  // retain the admitted suffixes and let unknown spellings take the conservative path below.
   private lazy val HadoopS3Properties: HadoopS3PropertyNames =
     try {
       val suffixes = allStaticStringConstants(
@@ -142,33 +222,15 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         .filter(key => key.startsWith(FsS3aPrefix) && !key.startsWith(FsS3aBucketPrefix))
         .map(_.stripPrefix(FsS3aPrefix))
         .filter(_.nonEmpty)
-        .toSet ++ SupportedHadoopS3Suffixes
+        .toSet ++ AdmittedHadoopS3Suffixes
       val (prefixes, exact) = suffixes.partition(_.endsWith("."))
       HadoopS3PropertyNames(exact, prefixes.toSeq.sorted)
     } catch {
       case _: ClassNotFoundException =>
-        HadoopS3PropertyNames(SupportedHadoopS3Suffixes, Seq.empty)
-      case _: LinkageError => HadoopS3PropertyNames(SupportedHadoopS3Suffixes, Seq.empty)
-      case NonFatal(_) => HadoopS3PropertyNames(SupportedHadoopS3Suffixes, Seq.empty)
+        HadoopS3PropertyNames(AdmittedHadoopS3Suffixes, Seq.empty)
+      case _: LinkageError => HadoopS3PropertyNames(AdmittedHadoopS3Suffixes, Seq.empty)
+      case NonFatal(_) => HadoopS3PropertyNames(AdmittedHadoopS3Suffixes, Seq.empty)
     }
-
-  // Spark seeds these Hadoop S3A compatibility/read settings into every session as if they came
-  // from spark.hadoop.*. They do not alter an Iceberg data-file write request, so they must not
-  // make every otherwise-clean S3 write ineligible. This also permits explicit overrides, which
-  // are harmless on the write path for the same reason.
-  //
-  // Some Spark distributions also set S3A delete, read and committer defaults cluster-wide. The
-  // native writer does not go through S3A, `fadvise` is a read hint, and Iceberg commits through
-  // table metadata rather than a Hadoop output committer, so these are harmless here as well.
-  private val IgnoredHadoopS3Keys: Set[String] = Set(
-    "fs.s3a.downgrade.syncable.exceptions",
-    "fs.s3a.vectored.read.max.merged.size",
-    "fs.s3a.vectored.read.min.seek.size",
-    "fs.s3a.bulk.delete.page.size",
-    "fs.s3a.experimental.input.fadvise",
-    "fs.s3a.committer.magic.enabled",
-    "fs.s3a.committer.name",
-    "fs.s3a.committer.threads")
 
   // Audited against the pinned iceberg-rust S3 parser
   // (`iceberg/src/io/storage/config/s3.rs` and `storage/opendal/src/s3.rs`). Do not broaden this
@@ -200,6 +262,25 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     "s3.comet.credential.webIdentity.minTtlSeconds",
     "s3.comet.credential.webIdentity.refreshJitterSeconds",
     "s3.session-token-expires-at-ms")
+
+  // S3FileIO settings that cannot change the written object, where it is written or who writes
+  // it: multipart sizing and threads, the staging directory, retries, delete batching and client
+  // preloading. The native storage backend has its own equivalents, so they need no translation.
+  private val IgnoredS3FileIOProperties: Set[String] = Set(
+    "s3.multipart.part-size-bytes",
+    "s3.multipart.num-threads",
+    "s3.multipart.threshold",
+    "s3.staging-dir",
+    "s3.retry.num-retries",
+    "s3.retry.min-wait-ms",
+    "s3.retry.max-wait-ms",
+    "s3.delete.batch-size",
+    "s3.delete.num-threads",
+    "s3.preload-client-enabled")
+
+  // A failed native write task deletes the files it wrote, as iceberg-java's writer does through
+  // `FileIO.deleteFile`. S3FileIO skips that delete when this is false, so only true is harmless.
+  private val S3FileIODeleteEnabledProperty = "s3.delete-enabled"
 
   // iceberg-java also defines "dsse-kms", but the pinned iceberg-rust S3 backend cannot map
   // that mode into an OpenDAL server-side-encryption configuration. Check the value as well as
@@ -260,15 +341,17 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         Option(field.get(null).asInstanceOf[String])
       }
 
-  // Hadoop-side `parquet.*` keys that iceberg-java's writer never consumes, so seeing them
-  // in the session Hadoop configuration does not indicate the native writer would diverge.
-  // `parquet.hadoop.vectored.io.enabled` is a reader-side vectored-IO knob declared by
-  // parquet-hadoop as `ParquetInputFormat.HADOOP_VECTORED_IO_ENABLED` (default `true` in
-  // parquet-hadoop 1.16+) and only consulted by parquet-mr's Hadoop reader path. Keep it
-  // out of the writer-compatibility gate so that environments which seed it into the
-  // session Hadoop configuration do not silently disable native Iceberg writes.
-  private val IgnoredHadoopParquetConfKeys: Set[String] = Set(
-    "parquet.hadoop.vectored.io.enabled")
+  // The parquet-mr settings that change iceberg-java's data files beyond their compressed bytes.
+  // The writer copies every table and write property into its Hadoop configuration and builds the
+  // ParquetProperties itself, so of all `parquet.*` keys, from either source, only the column
+  // index truncation length, read by Iceberg's ParquetWriter, does. parquet-mr's ZstandardCodec
+  // also reads the zstd level and worker count, but like the other codec-level side channels they
+  // only change compressed bytes, which are an accepted divergence. Any other `parquet.*` key,
+  // including one parquet-mr does not declare, changes nothing. `parquet.enable.dictionary` is
+  // read from the table and write properties only and has its own rule. Re-check this list
+  // against Parquet.java, ParquetWriter.java and the parquet-mr codecs on every Iceberg or
+  // parquet-mr version bump.
+  private val UnsupportedParquetMrKeys: Set[String] = Set("parquet.columnindex.truncate.length")
 
   private lazy val vettedParquetWriteKeys: Set[String] = Set(
     PropertyKeys.ParquetCompressionCodec,
@@ -421,18 +504,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     requireRowGroupCheckMinRecordCountAtDefault,
     requireRowGroupCheckMaxRecordCountAtDefault,
     requireParquetPageVersionDefault,
-    requireShredVariantsDisabled,
     requireNativeSupportedCompressionLevel,
     requireOnlyVettedParquetWriteProperties,
     requirePropertyAbsent(
       PropertyKeys.ParquetEnableDictionary,
       "dictionary override unsupported"),
-    requireNoUnvettedParquetMrProperties,
-    requirePropertyAbsent(PropertyKeys.FileIOImpl, "custom FileIO unsupported"),
+    requireNoUnsupportedParquetMrProperties,
     requireRecognizedTableFileIO,
     requirePlaintextEncryptionManager,
     requirePositiveIntParquetSizes,
-    requireNoParquetHadoopConfOverrides,
+    requireNoUnsupportedParquetMrHadoopSettings,
     requireSupportedStorageScheme,
     requireSupportedHadoopS3Settings,
     requireSupportedS3FileIOProperties,
@@ -578,13 +659,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .map(v => s"$key=$v unsupported")
   }
 
-  private val requireShredVariantsDisabled: TriggerRule = ctx => {
-    val key = PropertyKeys.ParquetShredVariants
-    ctx.properties
-      .get(key)
-      .filter(_.equalsIgnoreCase("true"))
-      .map(_ => s"$key=true (variant shredding changes the parquet schema)")
-  }
+  // No variant-shredding gate: iceberg-java shreds only top-level `variant` columns (Iceberg 1.11's
+  // ParquetFormatModel), and requireSupportedColumnTypes declines a `variant` column at any depth.
+  // Spark 4.x on Iceberg 1.11 resolves `write.parquet.shred-variants` into every Parquet write, so
+  // gating it would make every write fall back in a session that turns shredding on.
 
   // iceberg-java never validates the level -- the raw string flows into a codec-specific
   // parquet-mr writer property -- while parquet-rs enforces per-codec ranges when the native
@@ -603,18 +681,20 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       }
       .map { case (k, v) => s"$k=$v is not a vetted parquet write property" }
 
-  private val requireNoUnvettedParquetMrProperties: TriggerRule = ctx =>
+  private val requireNoUnsupportedParquetMrProperties: TriggerRule = ctx =>
     ctx.properties.keys
-      .find(k =>
-        k.startsWith(ParquetMrPropertyPrefix) && k != PropertyKeys.ParquetEnableDictionary)
-      .map(k => s"$k is set (parquet-mr properties are forwarded verbatim by iceberg-java)")
+      .find(UnsupportedParquetMrKeys.contains)
+      .map(k => s"$k is set (iceberg-java's Parquet writer reads it, the native writer does not)")
 
-  private val requireNoParquetHadoopConfOverrides: TriggerRule = ctx =>
-    ctx.hadoopConf.asScala
-      .map(_.getKey)
-      .filter(_.startsWith(ParquetMrPropertyPrefix))
-      .find(k => !IgnoredHadoopParquetConfKeys.contains(k))
+  // A HadoopFileIO hands the Parquet writer its own configuration, which carries the catalog's
+  // `hadoop.*` overrides. Other FileIOs hand it a new Configuration, which loads the same site
+  // files as the session configuration.
+  private val requireNoUnsupportedParquetMrHadoopSettings: TriggerRule = ctx => {
+    val confs = ctx.hadoopConf +: IcebergReflection.getFileIOHadoopConf(ctx.table).toSeq
+    UnsupportedParquetMrKeys
+      .find(key => confs.exists(_.get(key) != null))
       .map(k => s"Hadoop configuration sets $k (reaches iceberg-java's writer but not native)")
+  }
 
   /**
    * The scheme the native writer picks its storage backend from. Must follow the same rule as
@@ -691,7 +771,6 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       .asScala
       .map(_.getKey)
       .filter(_.startsWith("fs.s3a."))
-      .filterNot(IgnoredHadoopS3Keys.contains)
       // Hadoop's iterator includes the many fs.s3a.* defaults loaded from core-default.xml.
       // Those are library implementation defaults, not settings selected by the user, and
       // treating them as explicit would reject every ordinary S3 write. Preserve settings from
@@ -704,16 +783,16 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       }
       .toSeq
 
-    keys.filter(key => isUnsupportedHadoopS3Key(key, targetBucket)).sorted
+    keys.filter(key => isUnsupportedHadoopS3Key(hadoopConf, key, targetBucket)).sorted
   }
 
   private def isCoreDefaultResource(source: String): Boolean =
     source == "core-default.xml" || source.endsWith("/core-default.xml")
 
   /**
-   * Bucket of `fs.s3a.bucket.<bucket>.<suffix>` when `<suffix>` is exactly one supported S3A
-   * suffix. The longest suffix wins, so `endpoint.region` stays one property and a dotted bucket
-   * name is what remains.
+   * Bucket of `fs.s3a.bucket.<bucket>.<suffix>` when `<suffix>` is exactly one known S3A suffix.
+   * The longest suffix wins, so `endpoint.region` stays one property and a dotted bucket name is
+   * what remains.
    */
   private def perBucketProperty(key: String): Option[(String, String)] = {
     if (!key.startsWith(FsS3aBucketPrefix)) {
@@ -727,18 +806,29 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     }
   }
 
-  private def isUnsupportedHadoopS3Key(key: String, targetBucket: Option[String]): Boolean =
+  private def isUnsupportedHadoopS3Key(
+      hadoopConf: Configuration,
+      key: String,
+      targetBucket: Option[String]): Boolean =
     if (key.startsWith(FsS3aBucketPrefix)) {
       perBucketProperty(key) match {
         case Some((bucket, suffix)) =>
-          targetBucket.contains(bucket) && !SupportedHadoopS3Suffixes.contains(suffix)
+          targetBucket.contains(bucket) && !isAdmittedHadoopS3Setting(hadoopConf, key, suffix)
         case None =>
           // Preserve fail-closed behavior for a property unknown to the runtime Hadoop version.
           targetBucket.exists(bucket => key.startsWith(s"$FsS3aBucketPrefix$bucket."))
       }
     } else {
-      !SupportedHadoopS3Keys.contains(key)
+      !isAdmittedHadoopS3Setting(hadoopConf, key, key.stripPrefix(FsS3aPrefix))
     }
+
+  private def isAdmittedHadoopS3Setting(
+      hadoopConf: Configuration,
+      key: String,
+      suffix: String): Boolean =
+    SupportedHadoopS3Suffixes.contains(suffix) || IgnoredHadoopS3Suffixes.contains(suffix) ||
+      (suffix == FileSystemImplSuffix &&
+        Option(hadoopConf.getTrimmed(key)).contains(S3AFileSystemClass))
 
   /** Return unsupported FileIO S3/client property names in deterministic order. */
   private[comet] def unsupportedS3FileIOProperties(properties: Map[String, String]): Seq[String] =
@@ -754,7 +844,10 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
     properties.iterator
       .filter { case (key, _) => key.startsWith("s3.") || key.startsWith("client.") }
       .filter { case (key, value) =>
-        val unsupportedName = !SupportedS3FileIOProperties.contains(key)
+        val unsupportedName = !SupportedS3FileIOProperties.contains(key) &&
+          !IgnoredS3FileIOProperties.contains(key) &&
+          // PropertyUtil.propertyAsBoolean semantics, as S3FileIOProperties reads it.
+          !(key == S3FileIODeleteEnabledProperty && java.lang.Boolean.parseBoolean(value))
         val unsupportedValue =
           key == "s3.sse.type" && !Option(value).exists(value =>
             SupportedS3SseTypes.contains(value.toLowerCase(Locale.ROOT)))
@@ -815,13 +908,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
   private val requireExecutorReflectionResolvable: TriggerRule = _ =>
     IcebergReflection.executorReflectionUnresolved
 
-  // The `io-impl` property rule above only sees FileIO configured through table/write
-  // properties; a catalog-level `io-impl` (or a catalog implementation installing its own
-  // FileIO) leaves the properties clean while `table.io()` is still custom. Gate on the
-  // instantiated FileIO's class hierarchy, mirroring the scan side's `isCompatibleFileIO` --
-  // except that the EncryptingFileIO family, which the scan accepts (it reads ciphertext
-  // through iceberg-rust's own storage layer), is rejected here: the native writer produces
-  // plaintext data files.
+  // iceberg-java reads `io-impl` from catalog properties only, never from table properties, and a
+  // catalog implementation can install its own FileIO without any property, so no property rule
+  // can tell which FileIO a table uses. Gate on the instantiated FileIO's class hierarchy,
+  // mirroring the scan side's `isCompatibleFileIO` -- except that the EncryptingFileIO family,
+  // which the scan accepts (it reads ciphertext through iceberg-rust's own storage layer), is
+  // rejected here: the native writer produces plaintext data files.
   private val requireRecognizedTableFileIO: TriggerRule = ctx =>
     IcebergReflection.getFileIO(ctx.table) match {
       case None => Some("could not resolve table.io() for FileIO compatibility checking")
