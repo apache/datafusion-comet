@@ -80,8 +80,8 @@ Clone Apache Iceberg locally and apply the diff file from Comet against the matc
 ```shell
 git clone git@github.com:apache/iceberg.git apache-iceberg
 cd apache-iceberg
-git checkout apache-iceberg-1.8.1
-git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git checkout apache-iceberg-1.9.1
+git apply ../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 ```
 
 ## 3. Run Iceberg Spark Tests
@@ -132,27 +132,28 @@ regenerate:
 
 ```shell
 cd apache-iceberg
-git reset --hard apache-iceberg-1.8.1 && git clean -fd
-git apply ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git reset --hard apache-iceberg-1.9.1 && git clean -fd
+git apply ../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 
 # Make changes, then run spotless to fix formatting
 ./gradlew spotlessApply
 
 # Stage any new or deleted files, then generate the diff
 git add -A
-git diff apache-iceberg-1.8.1 > ../datafusion-comet/dev/diffs/iceberg/1.8.1.diff
+git diff apache-iceberg-1.9.1 > ../datafusion-comet/dev/diffs/iceberg/1.9.1.diff
 ```
 
-Repeat for each Iceberg version (1.8.1, 1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
+Repeat for each Iceberg version (1.9.1, 1.10.0, 1.11.0). The file contents differ between versions, so each
 diff must be generated against its own tag.
 
 ## Running Tests in CI
 
-The `iceberg_1_8`, `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
-run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.8.1 runs against
-Spark 3.4.3; Iceberg 1.9.1 and 1.10.0 run against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
-Iceberg 1.11.0 runs in the merge queue; 1.8.1, 1.9.1 and 1.10.0 run once a night against `main`. All four
-run earlier on a pull request labeled `run-iceberg-tests`; none runs on an unlabeled pull request. Each job
+The `iceberg_1_9`, `iceberg_1_10` and `iceberg_1_11` jobs in `ci.yml` apply these diffs and
+run the three Gradle targets above against each Iceberg version, all with Java 17. Iceberg 1.9.1 and 1.10.0 run
+against Spark 3.5.9; Iceberg 1.11.0 runs against Spark 4.1.3.
+Iceberg 1.11.0 runs on every pull request whose paths match and in the merge queue; 1.9.1 and
+1.10.0 run once a night against `main`. Those two run earlier on a pull request labeled
+`run-iceberg-tests`. Each job
 calls `iceberg_spark_test_reusable.yml`, which holds the build and test job logic. See
 [.github/workflows/README.md](https://github.com/apache/datafusion-comet/blob/main/.github/workflows/README.md)
 for how the pull-request, merge-queue and nightly tiers differ.
@@ -184,8 +185,9 @@ generated tests, existing exclusions, and failure propagation. The fixture does 
 Apply the `run-iceberg-tests` label to a pull request whenever it touches the Iceberg scan or write
 path, reflection code (`org.apache.comet.iceberg.IcebergReflection`), or other logic whose behavior
 can differ across Iceberg versions. The Comet test suites in the Linux build do not exercise Iceberg's
-own Spark tests, so without the label the first Iceberg 1.11 verdict is the merge queue's, and the
-first verdict on the older Iceberg versions is the nightly run's, after the change has landed.
+own Spark tests, but the Iceberg 1.11 job does and every pull request gets its verdict. Without the
+label, the first verdict on the older Iceberg versions is the nightly run's, after the change has
+landed.
 
 ### Which writer ran each Iceberg write
 
@@ -201,8 +203,7 @@ records one of three writers:
 - `jvm`: Comet's split operator planned the write but kept Iceberg's JVM writer (`IcebergWriteExec`).
   The line includes the reasons Comet recorded for not converting it.
 - `spark`: Spark's own V2 write operator ran the write, so Comet's split operator never saw it. Examples
-  are `WriteToDataSourceV2` for a streaming micro-batch, and on Spark 3.4 both `WriteDelta` for
-  merge-on-read and the CTAS and RTAS execs, which write the table themselves.
+  are `WriteToDataSourceV2` for a streaming micro-batch.
 
 `dev/ci/summarize-iceberg-writes.py` turns these records into a table on the job's summary page. It
 shows the count and share of each writer, the most common fallback reasons, and the Spark write

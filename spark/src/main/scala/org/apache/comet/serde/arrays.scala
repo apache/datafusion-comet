@@ -25,7 +25,6 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.SPARK_VERSION
 import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
-import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -437,13 +436,13 @@ object CometArraysOverlap
     ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
 
   /**
-   * The native variant for a Spark version. Where ArraySetSupport.normalizesFloats holds, Spark
-   * normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and the
-   * `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * The native variant for a Spark version. Where SparkFixes.arraySetFunctionsNormalizeFloats
+   * holds, Spark normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and
+   * the `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
    * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
    */
   def nativeFunction(version: String): String =
-    if (ArraySetSupport.normalizesFloats(version)) "spark_arrays_overlap_normalized"
+    if (SparkFixes.arraySetFunctionsNormalizeFloats(version)) "spark_arrays_overlap_normalized"
     else "spark_arrays_overlap"
 
   override def convert(
@@ -706,22 +705,8 @@ private[comet] object ArraySetSupport {
       "4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions " +
       "(SPARK-54918, SPARK-59602)"
 
-  // Spark 4.2.0 normalizes the arguments of these functions in the plan (SPARK-54918), and 4.0.5,
-  // 4.1.4 and 4.2.1 normalize while evaluating them (SPARK-59602). Either way, Spark treats -0.0
-  // and 0.0, and every NaN, as one value at any depth, which the spark_ variants match. Earlier
-  // releases keep -0.0 and 0.0 apart in a flat array. Both changes cover arrays_overlap too (see
-  // CometArraysOverlap.nativeFunction). The check reads the version rather than a
-  // KnownFloatingPointNormalized marker, because SPARK-59602 adds no marker, and SPARK-54918
-  // normalizes CreateArray, If, CaseWhen and Coalesce without wrapping the resulting array.
-  def normalizesFloats(version: String): Boolean =
-    Utils.majorMinorPatchVersion(version).exists {
-      case (4, 0, patch) => patch >= 5
-      case (4, 1, patch) => patch >= 4
-      case (major, minor, _) => major > 4 || (major == 4 && minor >= 2)
-    }
-
   def supportLevel(dataType: DataType): SupportLevel = {
-    if (hasFloats(dataType) && !normalizesFloats(SPARK_VERSION)) {
+    if (hasFloats(dataType) && !SparkFixes.arraySetFunctionsNormalizeFloats(SPARK_VERSION)) {
       Incompatible(Some(floatingPointReason))
     } else {
       Compatible()
@@ -1066,16 +1051,24 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
+    // a NULL child must give NULL. The guard serializes the child twice, which would run an
+    // expensive child such as a Scala UDF twice per row.
+    if (expr.legacySizeOfNull || !expr.child.nullable) {
+      return scalarFunctionExprToProto("size", arrayExprProto)
+    }
+
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, IntegerType), inputs, binding)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExprProto)
         .addThen(sizeScalarExprProto)
-        .setElseExpr(emptyLiteralExprProto)
+        .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
@@ -1093,11 +1086,6 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-  }
-
-  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
-    val value = if (legacySizeOfNull) -1 else null
-    exprToProtoInternal(Literal(value, IntegerType), Seq.empty, binding = true)
   }
 
 }
@@ -1333,6 +1321,23 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   override def getUnsupportedReasons(): Seq[String] =
     Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 " +
+      "and later return its elements (SPARK-58821), and earlier releases raise " +
+      "`INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor " +
+      "build that reports an older version but includes SPARK-58821, Comet raises the error " +
+      "where Spark returns the elements.")
+
+  /**
+   * The native variant for a Spark version. Where SparkFixes.sequenceRecomputesOverflowedLength
+   * holds (SPARK-58821), Spark returns the exact length when `stop - start` overflows a long but
+   * the length is small, and `spark_sequence_recomputed` does the same. Earlier releases raise
+   * INTERNAL_ERROR("Unreachable code reached.") there, as `spark_sequence` does.
+   */
+  def nativeFunction(version: String): String =
+    if (SparkFixes.sequenceRecomputesOverflowedLength(version)) "spark_sequence_recomputed"
+    else "spark_sequence"
+
   override def convert(
       expr: Sequence,
       inputs: Seq[Attribute],
@@ -1344,7 +1349,7 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
     val argProtos = Seq(startExprProto, stopExprProto) ++
       expr.stepOpt.map(exprToProtoInternal(_, inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
-      "spark_sequence",
+      nativeFunction(SPARK_VERSION),
       expr.dataType,
       failOnError = false,
       argProtos: _*)
