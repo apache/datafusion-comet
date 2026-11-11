@@ -152,7 +152,7 @@ const NULL: &str = "null";
 /// | `timestamp`        | `1969-12-31T23:59:58.5`       | `1969-12-31 23:59:58.500`        |
 /// | `timestamptz`      | `1969-12-31T23:59:58.5+00:00` | panics for a negative value with a sub-second part; otherwise `1969-12-31 23:59:58.500 UTC` |
 /// | `binary` / `fixed` | base64                        | uppercase hex                    |
-/// | `float` / `double` | `1.0`, `1.0E20`               | `1`, `100000000000000000000`     |
+/// | `float` / `double` | `1.0`, `1.0E20`               | `1.0`, `1.0E20` since #3358; `Double::MAX` still renders as 309 digits (see below) |
 ///
 /// The nanosecond timestamp types get the same treatment for the same reason. Spark cannot plan a
 /// write to them today, and `CometIcebergNativeWrite`'s column-type rule declines them as well; the
