@@ -28,7 +28,7 @@ import org.apache.commons.io.FileUtils
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.CometTestBase
 import org.apache.spark.sql.catalyst.CatalystTypeConverters
-import org.apache.spark.sql.catalyst.expressions.{GenericInternalRow, Literal}
+import org.apache.spark.sql.catalyst.expressions.{ArrayDistinct, GenericInternalRow, Literal}
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, GenericArrayData}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.internal.SQLConf
@@ -44,8 +44,8 @@ import org.apache.comet.vector.CometVector
  * Randomized end-to-end tests for the Arrow-direct codegen dispatcher: schema-driven coverage of
  * every input vector class against random parquet, plus a decimal precision-scale sweep across
  * the `Decimal.MAX_LONG_DIGITS=18` boundary at varying null densities. Extends [[CometTestBase]]
- * (not [[CometFuzzTestBase]]) because the base's `shuffle` x `nativeC2R` cross-product is
- * irrelevant for projection-only queries.
+ * (not [[CometFuzzTestBase]]) because the base's per-shuffle-mode runs are irrelevant for
+ * projection-only queries.
  */
 class CometCodegenFuzzSuite
     extends CometTestBase
@@ -299,17 +299,20 @@ class CometCodegenFuzzSuite
       case _ => false
     }
     spark.udf.register("id_int_arrdistinct", (i: Int) => i)
-    for (field <- arrayStructFields) {
-      val q = s"SELECT id_int_arrdistinct(cardinality(array_distinct(${field.name}))) FROM t1"
-      val df = sql(q)
-      val plan = df.queryExecution.optimizedPlan.toString
-      val planLower = plan.toLowerCase
-      assert(
-        planLower.contains("array_distinct") || planLower.contains("arraydistinct"),
-        s"optimizer eliminated array_distinct on column ${field.name}; coverage would be " +
-          s"vacuous. plan=\n$plan")
-      assertCodegenRan {
-        checkSparkAnswerAndOperator(df)
+    // Inputs omit negative zeros and use Parquet-canonicalized NaNs for native opt-in coverage.
+    withSQLConf(CometConf.getExprAllowIncompatConfigKey(classOf[ArrayDistinct]) -> "true") {
+      for (field <- arrayStructFields) {
+        val q = s"SELECT id_int_arrdistinct(cardinality(array_distinct(${field.name}))) FROM t1"
+        val df = sql(q)
+        val plan = df.queryExecution.optimizedPlan.toString
+        val planLower = plan.toLowerCase
+        assert(
+          planLower.contains("array_distinct") || planLower.contains("arraydistinct"),
+          s"optimizer eliminated array_distinct on column ${field.name}; coverage would be " +
+            s"vacuous. plan=\n$plan")
+        assertCodegenRan {
+          checkSparkAnswerAndOperator(df)
+        }
       }
     }
   }

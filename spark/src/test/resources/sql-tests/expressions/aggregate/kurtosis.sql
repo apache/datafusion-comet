@@ -261,3 +261,35 @@ INSERT INTO k_big VALUES
 
 query spark_answer_only
 SELECT kurtosis(v) FROM k_big
+
+-- The division by m2 * m2 follows the ANSI setting the aggregate was analyzed under, not the one
+-- it runs under. 1e-100 and 2e-100 give an m2 whose square underflows to zero. A view keeps the
+-- aggregate it analyzed.
+statement
+CREATE TABLE test_kurtosis_underflow(v double) USING parquet
+
+statement
+INSERT INTO test_kurtosis_underflow VALUES (1e-100D), (2e-100D)
+
+statement
+SET spark.sql.ansi.enabled=false
+
+statement
+CREATE OR REPLACE TEMPORARY VIEW kurtosis_analyzed_legacy AS SELECT kurtosis(v) AS k FROM test_kurtosis_underflow
+
+statement
+SET spark.sql.ansi.enabled=true
+
+statement
+CREATE OR REPLACE TEMPORARY VIEW kurtosis_analyzed_ansi AS SELECT kurtosis(v) AS k FROM test_kurtosis_underflow
+
+-- Analyzed with ANSI off and run with it on: NULL.
+query
+SELECT k FROM kurtosis_analyzed_legacy
+
+statement
+SET spark.sql.ansi.enabled=false
+
+-- Analyzed with ANSI on and run with it off: raises.
+query expect_error(DIVIDE_BY_ZERO)
+SELECT k FROM kurtosis_analyzed_ansi

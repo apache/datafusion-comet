@@ -17,9 +17,9 @@
 
 use arrow::array::{
     Array, ArrayBuilder, ArrayRef, GenericListArray, GenericStringArray, GenericStringBuilder,
-    ListArray, NullBufferBuilder, OffsetSizeTrait,
+    ListArray, OffsetSizeTrait,
 };
-use arrow::buffer::OffsetBuffer;
+use arrow::buffer::{NullBuffer, OffsetBuffer};
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{
     cast::as_generic_string_array, exec_err, DataFusionError, Result as DataFusionResult,
@@ -28,6 +28,8 @@ use datafusion::common::{
 use datafusion::logical_expr::ColumnarValue;
 use regex::Regex;
 use std::sync::Arc;
+
+use super::pattern_cache::PatternCache;
 
 /// Spark-compatible split function
 /// Splits a string around matches of a regex pattern with optional limit
@@ -39,7 +41,10 @@ use std::sync::Arc;
 ///   - limit > 0: At most limit-1 splits, array length <= limit
 ///   - limit = 0: As many splits as possible, trailing empty strings removed
 ///   - limit < 0: As many splits as possible, trailing empty strings kept
-pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+pub fn spark_split(
+    args: &[ColumnarValue],
+    regex_cache: &PatternCache,
+) -> DataFusionResult<ColumnarValue> {
     if args.len() < 2 || args.len() > 3 {
         return exec_err!(
             "split expects 2 or 3 arguments (string, pattern, [limit]), got {}",
@@ -76,7 +81,7 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
             }
 
             let pattern_str = pattern.as_ref().unwrap();
-            split_array(string_array.as_ref(), pattern_str, limit)
+            split_array(string_array.as_ref(), pattern_str, limit, regex_cache)
         }
         (ColumnarValue::Scalar(ScalarValue::Utf8(string)), ColumnarValue::Scalar(pattern_val))
         | (
@@ -97,7 +102,7 @@ pub fn spark_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
                 }
             };
 
-            let result = split_string(string.as_ref().unwrap(), pattern_str, limit)?;
+            let result = split_string(string.as_ref().unwrap(), pattern_str, limit, regex_cache)?;
             let string_array = GenericStringArray::<i32>::from(result);
             let list_array = create_list_array(Arc::new(string_array));
 
@@ -176,9 +181,11 @@ fn split_array(
     string_array: &dyn arrow::array::Array,
     pattern: &str,
     limit: i32,
+    regex_cache: &PatternCache,
 ) -> DataFusionResult<ColumnarValue> {
-    // Compile regex once for the entire array
-    let regex = Regex::new(pattern).map_err(|e| {
+    // The pattern is a plan-time literal, so the cache makes this compile a one-time cost
+    // for the expression instead of a per-batch cost.
+    let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
         DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
     })?;
 
@@ -279,6 +286,32 @@ fn split_sql_scalar_array<O: OffsetSizeTrait>(
     }
 }
 
+/// Build the list output shared by the four split functions: finish the per-row values builder
+/// into a Utf8/LargeUtf8 child array and wrap it in a list array with the collected offsets.
+///
+/// The caller owns the offsets and the null buffer, since those differ per split variant.
+fn finish_split_list<O: OffsetSizeTrait>(
+    offsets: Vec<O>,
+    mut values_builder: GenericStringBuilder<O>,
+    nulls: Option<NullBuffer>,
+) -> ColumnarValue {
+    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
+    let item_type = if O::IS_LARGE {
+        DataType::LargeUtf8
+    } else {
+        DataType::Utf8
+    };
+    let field = Arc::new(Field::new("item", item_type, false));
+    let list_array = GenericListArray::<O>::new(
+        field,
+        OffsetBuffer::new(offsets.into()),
+        values_array,
+        nulls,
+    );
+
+    ColumnarValue::Array(Arc::new(list_array))
+}
+
 fn split_generic<O: OffsetSizeTrait>(
     string_array: &GenericStringArray<O>,
     regex: &Regex,
@@ -300,21 +333,11 @@ fn split_generic<O: OffsetSizeTrait>(
         offsets.push(O::usize_as(values_builder.len()));
     }
 
-    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
-    let item_type = if O::IS_LARGE {
-        DataType::LargeUtf8
-    } else {
-        DataType::Utf8
-    };
-    let field = Arc::new(Field::new("item", item_type, false));
-    let list_array = GenericListArray::<O>::new(
-        field,
-        OffsetBuffer::new(offsets.into()),
-        values_array,
+    Ok(finish_split_list(
+        offsets,
+        values_builder,
         string_array.nulls().cloned(),
-    );
-
-    Ok(ColumnarValue::Array(Arc::new(list_array)))
+    ))
 }
 
 fn split_sql_generic_scalar<O: OffsetSizeTrait>(
@@ -333,21 +356,11 @@ fn split_sql_generic_scalar<O: OffsetSizeTrait>(
         offsets.push(O::usize_as(values_builder.len()));
     }
 
-    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
-    let item_type = if O::IS_LARGE {
-        DataType::LargeUtf8
-    } else {
-        DataType::Utf8
-    };
-    let field = Arc::new(Field::new("item", item_type, false));
-    let list_array = GenericListArray::<O>::new(
-        field,
-        OffsetBuffer::new(offsets.into()),
-        values_array,
+    Ok(finish_split_list(
+        offsets,
+        values_builder,
         string_array.nulls().cloned(),
-    );
-
-    Ok(ColumnarValue::Array(Arc::new(list_array)))
+    ))
 }
 
 fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
@@ -357,34 +370,20 @@ fn split_sql_generic_scalar_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
     let len = delimiter_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
     let mut values_builder = GenericStringBuilder::<O>::new();
-    let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
     for i in 0..len {
-        if delimiter_array.is_null(i) {
-            nulls.append_null();
-        } else {
+        if !delimiter_array.is_null(i) {
             push_split_sql_parts(string, delimiter_array.value(i), &mut values_builder);
-            nulls.append_non_null();
         }
         offsets.push(O::usize_as(values_builder.len()));
     }
 
-    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
-    let item_type = if O::IS_LARGE {
-        DataType::LargeUtf8
-    } else {
-        DataType::Utf8
-    };
-    let field = Arc::new(Field::new("item", item_type, false));
-    let list_array = GenericListArray::<O>::new(
-        field,
-        OffsetBuffer::new(offsets.into()),
-        values_array,
-        nulls.finish(),
-    );
-
-    Ok(ColumnarValue::Array(Arc::new(list_array)))
+    Ok(finish_split_list(
+        offsets,
+        values_builder,
+        delimiter_array.nulls().cloned(),
+    ))
 }
 
 fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
@@ -394,38 +393,24 @@ fn split_sql_generic_array<O: OffsetSizeTrait, D: OffsetSizeTrait>(
     let len = string_array.len();
     let mut offsets: Vec<O> = Vec::with_capacity(len + 1);
     let mut values_builder = GenericStringBuilder::<O>::new();
-    let mut nulls = NullBufferBuilder::new(len);
     offsets.push(O::usize_as(0));
 
     for i in 0..len {
-        if string_array.is_null(i) || delimiter_array.is_null(i) {
-            nulls.append_null();
-        } else {
+        if !string_array.is_null(i) && !delimiter_array.is_null(i) {
             push_split_sql_parts(
                 string_array.value(i),
                 delimiter_array.value(i),
                 &mut values_builder,
             );
-            nulls.append_non_null();
         }
         offsets.push(O::usize_as(values_builder.len()));
     }
 
-    let values_array = Arc::new(values_builder.finish()) as ArrayRef;
-    let item_type = if O::IS_LARGE {
-        DataType::LargeUtf8
-    } else {
-        DataType::Utf8
-    };
-    let field = Arc::new(Field::new("item", item_type, false));
-    let list_array = GenericListArray::<O>::new(
-        field,
-        OffsetBuffer::new(offsets.into()),
-        values_array,
-        nulls.finish(),
-    );
-
-    Ok(ColumnarValue::Array(Arc::new(list_array)))
+    Ok(finish_split_list(
+        offsets,
+        values_builder,
+        NullBuffer::union(string_array.nulls(), delimiter_array.nulls()),
+    ))
 }
 
 /// Push the splits of `string` into `builder`. Avoids materializing an
@@ -438,18 +423,24 @@ fn push_split_parts<O: OffsetSizeTrait>(
     builder: &mut GenericStringBuilder<O>,
 ) {
     if limit == 0 {
-        // limit = 0: split all, drop trailing empties. Need to know the end
-        // before pushing, so collect borrowed slices first (no string copies).
-        let mut parts: Vec<&str> = regex.split(string).collect();
-        while parts.last().is_some_and(|s| s.is_empty()) {
-            parts.pop();
-        }
-        if parts.is_empty() {
-            builder.append_value("");
-        } else {
-            for p in parts {
-                builder.append_value(p);
+        // limit = 0: split all, drop trailing empties. Empty parts are held back until a
+        // non-empty part follows, so the trailing ones are never appended.
+        let mut pending_empty = 0;
+        let mut appended = false;
+        for part in regex.split(string) {
+            if part.is_empty() {
+                pending_empty += 1;
+            } else {
+                for _ in 0..pending_empty {
+                    builder.append_value("");
+                }
+                pending_empty = 0;
+                builder.append_value(part);
+                appended = true;
             }
+        }
+        if !appended {
+            builder.append_value("");
         }
     } else if limit > 0 {
         // limit > 0: at most limit-1 splits.
@@ -485,8 +476,13 @@ fn push_split_sql_parts<O: OffsetSizeTrait>(
     }
 }
 
-fn split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {
-    let regex = Regex::new(pattern).map_err(|e| {
+fn split_string(
+    string: &str,
+    pattern: &str,
+    limit: i32,
+    regex_cache: &PatternCache,
+) -> DataFusionResult<Vec<String>> {
+    let regex = regex_cache.get_or_compile(pattern).map_err(|e| {
         DataFusionError::Execution(format!("Invalid regex pattern '{}': {}", pattern, e))
     })?;
 
@@ -590,7 +586,15 @@ fn new_null_list_array_value(len: usize) -> ListArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
+    use arrow::array::{LargeListArray, LargeStringArray, StringArray};
+
+    fn run_split(args: &[ColumnarValue]) -> DataFusionResult<ColumnarValue> {
+        spark_split(args, &PatternCache::new())
+    }
+
+    fn run_split_string(string: &str, pattern: &str, limit: i32) -> DataFusionResult<Vec<String>> {
+        split_string(string, pattern, limit, &PatternCache::new())
+    }
 
     #[test]
     fn test_split_basic() {
@@ -598,7 +602,7 @@ mod tests {
         let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
         let args = vec![ColumnarValue::Array(string_array), pattern];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         // Should produce [["a", "b", "c"], ["x", "y", "z"]]
         assert!(matches!(result, ColumnarValue::Array(_)));
     }
@@ -610,32 +614,32 @@ mod tests {
         let limit = ColumnarValue::Scalar(ScalarValue::Int32(Some(2)));
         let args = vec![ColumnarValue::Array(string_array), pattern, limit];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         // Should produce [["a", "b,c,d"]]
         assert!(matches!(result, ColumnarValue::Array(_)));
     }
 
     #[test]
     fn test_split_regex() {
-        let parts = split_string("foo123bar456baz", r"\d+", -1).unwrap();
+        let parts = run_split_string("foo123bar456baz", r"\d+", -1).unwrap();
         assert_eq!(parts, vec!["foo", "bar", "baz"]);
     }
 
     #[test]
     fn test_split_limit_positive() {
-        let parts = split_string("a,b,c,d,e", ",", 3).unwrap();
+        let parts = run_split_string("a,b,c,d,e", ",", 3).unwrap();
         assert_eq!(parts, vec!["a", "b", "c,d,e"]);
     }
 
     #[test]
     fn test_split_limit_zero() {
-        let parts = split_string("a,b,c,,", ",", 0).unwrap();
+        let parts = run_split_string("a,b,c,,", ",", 0).unwrap();
         assert_eq!(parts, vec!["a", "b", "c"]);
     }
 
     #[test]
     fn test_split_limit_negative() {
-        let parts = split_string("a,b,c,,", ",", -1).unwrap();
+        let parts = run_split_string("a,b,c,,", ",", -1).unwrap();
         assert_eq!(parts, vec!["a", "b", "c", "", ""]);
     }
 
@@ -651,7 +655,7 @@ mod tests {
         let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
         let args = vec![ColumnarValue::Array(string_array), pattern];
 
-        let result = spark_split(&args).unwrap();
+        let result = run_split(&args).unwrap();
         match result {
             ColumnarValue::Array(arr) => {
                 let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
@@ -672,7 +676,7 @@ mod tests {
     #[test]
     fn test_split_empty_string() {
         // Test that empty string input produces array with single empty string
-        let parts = split_string("", ",", -1).unwrap();
+        let parts = run_split_string("", ",", -1).unwrap();
         assert_eq!(parts, vec![""]);
     }
 
@@ -754,9 +758,139 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_split_sql_string_array_delimiter_array() {
+        let string_array = Arc::new(StringArray::from(vec![
+            Some("a,b"),
+            Some("c.d"),
+            None,
+            Some("e"),
+        ])) as ArrayRef;
+        let delimiter_array = Arc::new(StringArray::from(vec![
+            Some(","),
+            None,
+            Some(","),
+            Some(","),
+        ])) as ArrayRef;
+        let result = spark_split_sql(&[
+            ColumnarValue::Array(string_array),
+            ColumnarValue::Array(delimiter_array),
+        ])
+        .unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 4);
+                assert_list_value(list_array, 0, &["a", "b"]);
+                // A NULL delimiter and a NULL string each give a NULL row.
+                assert!(list_array.is_null(1));
+                assert!(list_array.is_null(2));
+                assert_list_value(list_array, 3, &["e"]);
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn test_split_sql_array_scalar_delimiter_with_nulls() {
+        let string_array =
+            Arc::new(StringArray::from(vec![Some("a,b"), None, Some("c,")])) as ArrayRef;
+        let delimiter = ColumnarValue::Scalar(ScalarValue::Utf8(Some(",".to_string())));
+
+        let result = spark_split_sql(&[ColumnarValue::Array(string_array), delimiter]).unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                assert_eq!(list_array.len(), 3);
+                assert_eq!(
+                    list_array.data_type(),
+                    &DataType::List(Arc::new(Field::new("item", DataType::Utf8, false)))
+                );
+                assert_list_value(list_array, 0, &["a", "b"]);
+                assert!(list_array.is_null(1));
+                assert_list_value(list_array, 2, &["c", ""]);
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    #[test]
+    fn test_split_sql_large_utf8_scalar_string_array_delimiter() {
+        let delimiter_array = Arc::new(StringArray::from(vec![Some(","), None])) as ArrayRef;
+
+        let result = spark_split_sql(&[
+            ColumnarValue::Scalar(ScalarValue::LargeUtf8(Some("a,b".to_string()))),
+            ColumnarValue::Array(delimiter_array),
+        ])
+        .unwrap();
+
+        match result {
+            ColumnarValue::Array(arr) => {
+                let list_array = arr.as_any().downcast_ref::<LargeListArray>().unwrap();
+                assert_eq!(list_array.len(), 2);
+                // Output offsets and item type follow the input type, not the delimiter's.
+                assert_eq!(list_array.value_offsets().len(), 3);
+                assert_eq!(
+                    list_array.data_type(),
+                    &DataType::LargeList(Arc::new(Field::new("item", DataType::LargeUtf8, false)))
+                );
+                assert_eq!(list_array.values().data_type(), &DataType::LargeUtf8);
+                assert_large_list_value(list_array, 0, &["a", "b"]);
+                assert!(list_array.is_null(1));
+            }
+            _ => panic!("Expected Array result"),
+        }
+    }
+
+    /// One expression evaluates many batches; the pattern must compile once and results
+    /// must stay correct on every batch.
+    #[test]
+    fn test_split_compiles_regex_once_across_batches() {
+        let cache = PatternCache::new();
+        let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"\d+".to_string())));
+
+        for batch in 0..4 {
+            let input = format!("foo{batch}bar{batch}baz");
+            let string_array = Arc::new(StringArray::from(vec![input.as_str()])) as ArrayRef;
+            let args = vec![ColumnarValue::Array(string_array), pattern.clone()];
+
+            let result = spark_split(&args, &cache).unwrap();
+            match result {
+                ColumnarValue::Array(arr) => {
+                    let list_array = arr.as_any().downcast_ref::<ListArray>().unwrap();
+                    assert_list_value(list_array, 0, &["foo", "bar", "baz"]);
+                }
+                _ => panic!("Expected Array result"),
+            }
+        }
+
+        assert_eq!(cache.compile_count(), 1);
+    }
+
+    #[test]
+    fn test_split_invalid_pattern_errors_at_evaluation() {
+        let string_array = Arc::new(StringArray::from(vec!["abc"])) as ArrayRef;
+        let pattern = ColumnarValue::Scalar(ScalarValue::Utf8(Some("(unclosed".to_string())));
+        let args = vec![ColumnarValue::Array(string_array), pattern];
+
+        let err = run_split(&args).err().unwrap();
+        let msg = err.to_string();
+        assert!(msg.contains("Invalid regex pattern '(unclosed'"), "{msg}");
+    }
+
     fn assert_list_value(list_array: &ListArray, row: usize, expected: &[&str]) {
         let value = list_array.value(row);
         let strings = value.as_any().downcast_ref::<StringArray>().unwrap();
+        let actual = strings.iter().collect::<Vec<_>>();
+        let expected = expected.iter().map(|s| Some(*s)).collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_large_list_value(list_array: &LargeListArray, row: usize, expected: &[&str]) {
+        let value = list_array.value(row);
+        let strings = value.as_any().downcast_ref::<LargeStringArray>().unwrap();
         let actual = strings.iter().collect::<Vec<_>>();
         let expected = expected.iter().map(|s| Some(*s)).collect::<Vec<_>>();
         assert_eq!(actual, expected);

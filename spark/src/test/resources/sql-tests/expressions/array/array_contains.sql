@@ -59,8 +59,8 @@ SELECT array_contains(cast(NULL as array<int>), val) FROM test_array_contains
 
 -- ============================================================
 -- Floating-point elements: Spark compares with ordering.equiv, so -0.0 == +0.0 and NaN == NaN.
--- Native array_contains compares raw Arrow values bitwise, so float/double element types route
--- through the JVM codegen dispatcher (Spark's own doGenCode) to stay native and Spark-exact.
+-- Flat float/double arrays run Comet's spark_array_contains, which compares the same way; nested
+-- float elements route through the JVM codegen dispatcher (Spark's own doGenCode).
 -- ============================================================
 
 statement
@@ -87,6 +87,6 @@ SELECT array_contains(array(-0.0D, 1.0D), 0.0D),
        array_contains(array(cast('-0.0' as float), 1.0F), cast('0.0' as float)),
        array_contains(array(cast('NaN' as float), 1.0F), cast('NaN' as float))
 
--- nested float element: the element type is array<double>, so the float decline must recurse
+-- nested float element: the element type is array<double>, so the dispatch decision must recurse
 query
 SELECT array_contains(array(array(0.0D), array(1.0D)), array(-0.0D))

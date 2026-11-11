@@ -329,52 +329,48 @@ SELECT grp, count(DISTINCT IF(i % 2 = 0, NULL, i)), sum(i)
 FROM pm_basic GROUP BY grp ORDER BY grp
 
 -- ############################################################
--- FALLBACK cases
+-- FIRST/LAST cases
 -- ############################################################
 
--- FIRST/LAST aggregates in PartialMerge mode are order-dependent and
--- DataFusion's hash table may process rows in a different order than Spark's.
--- See https://github.com/apache/datafusion-comet/issues/4131
-
 -- ============================================================
--- fallback: first + distinct count triggers PartialMerge on first
+-- first + distinct count triggers PartialMerge on first
 -- ============================================================
 
-query expect_fallback(PartialMerge not supported for aggregates: first)
+query
 SELECT first(i), count(DISTINCT i) FROM pm_basic
 
-query expect_fallback(PartialMerge not supported for aggregates: first)
+query
 SELECT grp, first(i), count(DISTINCT i) FROM pm_basic GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- fallback: last + distinct count triggers PartialMerge on last
+-- last + distinct count triggers PartialMerge on last
 -- ============================================================
 
-query expect_fallback(PartialMerge not supported for aggregates: last)
+query
 SELECT last(i), count(DISTINCT i) FROM pm_basic
 
-query expect_fallback(PartialMerge not supported for aggregates: last)
+query
 SELECT grp, last(i), count(DISTINCT i) FROM pm_basic GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- fallback: first and last together with distinct
+-- first and last together with distinct
 -- ============================================================
 
-query expect_fallback(PartialMerge not supported for aggregates: first, last)
+query
 SELECT first(i), last(i), count(DISTINCT i) FROM pm_basic
 
-query expect_fallback(PartialMerge not supported for aggregates: first, last)
+query
 SELECT grp, first(i), last(i), count(DISTINCT i), sum(i)
 FROM pm_basic GROUP BY grp ORDER BY grp
 
 -- ============================================================
--- fallback: first/last IGNORE NULLS with distinct
+-- first/last IGNORE NULLS with distinct
 -- ============================================================
 
-query expect_fallback(PartialMerge not supported for aggregates: first)
+query
 SELECT grp, first(i) IGNORE NULLS, count(DISTINCT i)
 FROM pm_nulls GROUP BY grp ORDER BY grp
 
-query expect_fallback(PartialMerge not supported for aggregates: last)
+query
 SELECT grp, last(i) IGNORE NULLS, count(DISTINCT i)
 FROM pm_nulls GROUP BY grp ORDER BY grp

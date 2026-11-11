@@ -24,7 +24,7 @@ import java.nio.ByteBuffer
 import org.apache.spark.{CometTaskMemoryManager, TaskContext}
 import org.apache.spark.sql.comet.CometMetricNode
 
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.shuffle.ShufflePartitionPusher
 
 class Native extends NativeBase {
@@ -49,6 +49,12 @@ class Native extends NativeBase {
    * @param taskMemoryManager
    *   the task-level memory manager that is responsible for tracking memory usage across JVM and
    *   native side.
+   * @param memoryLimit
+   *   the most that the task's native memory pool may reserve, see
+   *   `CometExecIterator.getMemoryConfig`.
+   * @param offHeapSize
+   *   `spark.memory.offHeap.size`, which the `fair_unified` pool shares among the tasks running
+   *   native plans.
    * @param taskContext
    *   the driving Spark task's `TaskContext`, propagated to Tokio workers running JVM UDFs.
    * @param classLoader
@@ -72,7 +78,7 @@ class Native extends NativeBase {
       offHeapMode: Boolean,
       memoryPoolType: String,
       memoryLimit: Long,
-      memoryLimitPerTask: Long,
+      offHeapSize: Long,
       taskAttemptId: Long,
       taskCPUs: Long,
       keyUnwrapper: CometFileKeyUnwrapper,
@@ -92,6 +98,20 @@ class Native extends NativeBase {
    *   the callback that receives complete encoded shuffle blocks.
    */
   @native def setShufflePartitionPusher(plan: Long, pusher: ShufflePartitionPusher): Unit
+
+  /**
+   * Bind the output stream of the file a native Parquet write writes, for a file the JVM created
+   * itself, to an existing native query plan.
+   *
+   * The output stream must be registered before the plan is executed. Its native global reference
+   * is released when the plan is released.
+   *
+   * @param plan
+   *   the address of the native query plan.
+   * @param output
+   *   the file the plan's Parquet writer writes the bytes of.
+   */
+  @native def setOutputStream(plan: Long, output: HadoopFileOutput): Unit
 
   /**
    * Execute a native query plan based on given input Arrow arrays.
@@ -117,6 +137,21 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long]): Long
 
   /**
+   * Returns the partition offsets published by a finished native shuffle write.
+   *
+   * The writer knows every offset once its plan completes, so they are handed back in memory
+   * rather than through a temporary index file. Call only after the plan has been fully drained,
+   * and only for a plan whose root is a native shuffle writer with a local destination.
+   *
+   * @param plan
+   *   the address to native query plan.
+   * @return
+   *   `numPartitions + 1` offsets, the last being the total data file length, so that partition
+   *   lengths are successive differences.
+   */
+  @native def getShufflePartitionOffsets(plan: Long): Array[Long]
+
+  /**
    * Release and drop the native query plan object and context object.
    *
    * @param plan
@@ -125,7 +160,7 @@ class Native extends NativeBase {
   @native def releasePlan(plan: Long): Unit
 
   /**
-   * Used by Comet shuffle external sorter to write sorted records to disk.
+   * Used by the bypass merge sort shuffle writer to write one partition's records to disk.
    *
    * @param addresses
    *   the array of addresses of Spark unsafe rows.
@@ -136,9 +171,9 @@ class Native extends NativeBase {
    * @param file
    *   the file path to write to.
    * @param preferDictionaryRatio
-   *   the ratio of total values to distinct values in a string column that makes the writer to
-   *   prefer dictionary encoding. If it is larger than the specified ratio, dictionary encoding
-   *   will be used when writing columns of string type.
+   *   the ratio of total values to distinct values in a string or binary column that makes the
+   *   writer prefer dictionary encoding. If it is larger than the specified ratio, dictionary
+   *   encoding will be used when writing columns of either type.
    * @param batchSize
    *   the batch size on the native side to buffer outputs during the row to columnar conversion
    *   before writing them out to disk.
@@ -153,6 +188,8 @@ class Native extends NativeBase {
    *   the compression codec
    * @param compressionLevel
    *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
    * @return
    *   [the number of bytes written to disk, the checksum]
    */
@@ -169,18 +206,84 @@ class Native extends NativeBase {
       currentChecksum: Long,
       compressionCodec: String,
       compressionLevel: Int,
+      offsetsAsLengths: Boolean,
       tracingEnabled: Boolean): Array[Long]
   // scalastyle:on
 
   /**
-   * Sorts partition ids of Spark unsafe rows in place. Used by Comet shuffle external sorter.
+   * Used by Comet shuffle external sorter to write one sorted spill to disk: the records of every
+   * partition, in partition order, in one call.
+   *
+   * @param recordPointersAddr
+   *   the address of the sorter's packed record pointers, sorted by partition id.
+   * @param numRecords
+   *   the number of record pointers.
+   * @param pageAddresses
+   *   the base address of each page holding records, indexed by the page number in the record
+   *   pointers. Pages the sorter does not hold are 0.
+   * @param uaoSize
+   *   the size of the record length stored before each record, `UnsafeAlignedOffset.getUaoSize`.
+   * @param datatypes
+   *   the datatypes of fields in Spark unsafe rows.
+   * @param file
+   *   the file path to append to.
+   * @param preferDictionaryRatio
+   *   as in `writeSortedFileNative`.
+   * @param batchSize
+   *   the maximum number of rows in each batch written.
+   * @param checksumAlgo
+   *   the checksum algorithm to use: 0 for CRC32, 1 for Adler32, 2 for CRC32C, or -1 for none.
+   * @param partitionChecksums
+   *   each partition's checksum, updated for every partition written. `Long.MIN_VALUE` is a
+   *   checksum not computed yet. Empty without a checksum.
+   * @param partitionLengths
+   *   set to the number of bytes written for each partition.
+   * @param compressionCodec
+   *   the compression codec
+   * @param compressionLevel
+   *   the compression level
+   * @param offsetsAsLengths
+   *   whether to store offsets as lengths where the codec takes it
+   * @return
+   *   the time spent encoding and compressing, in nanoseconds
+   */
+  // scalastyle:off
+  @native def writeSortedPartitionsNative(
+      recordPointersAddr: Long,
+      numRecords: Int,
+      pageAddresses: Array[Long],
+      uaoSize: Int,
+      datatypes: Array[Array[Byte]],
+      file: String,
+      preferDictionaryRatio: Double,
+      batchSize: Int,
+      checksumAlgo: Int,
+      partitionChecksums: Array[Long],
+      partitionLengths: Array[Long],
+      compressionCodec: String,
+      compressionLevel: Int,
+      offsetsAsLengths: Boolean,
+      tracingEnabled: Boolean): Long
+  // scalastyle:on
+
+  /**
+   * Sorts the packed record pointers of Spark unsafe rows in place by partition id, keeping the
+   * order of the pointers within a partition. Used by Comet shuffle external sorter.
    *
    * @param addr
-   *   the address of the array of compacted partition ids.
+   *   the address of the array of packed record pointers.
    * @param size
-   *   the size of the array.
+   *   the number of records, at the start of the array.
+   * @param capacity
+   *   the length of the array in longs. The sort uses the `size` longs after the records as
+   *   scratch space, so it must be at least `2 * size`, which `ShuffleInMemorySorter` keeps free
+   *   when it sorts with radix sort.
    */
-  @native def sortRowPartitionsNative(addr: Long, size: Long, tracingEnabled: Boolean): Unit
+  @native def sortRowPartitionsNative(
+      addr: Long,
+      size: Long,
+      capacity: Long,
+      tracingEnabled: Boolean): Unit
 
   /**
    * Decompress and decode a native shuffle block.
@@ -200,10 +303,41 @@ class Native extends NativeBase {
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean): Long
 
+  /** Own a bounded group of decoded local shuffle batches until export or reader cleanup. */
+  @native def createShuffleBatchCoalescer(maxRows: Int): Long
+
+  /** Decode one frame and return the next output's column count, or -1 for more input. */
+  @native def appendShuffleBatch(
+      handle: Long,
+      shuffleBlock: ByteBuffer,
+      length: Int,
+      numColumns: Int,
+      tracingEnabled: Boolean): Int
+
+  /** Return ready columns, flushing any pending group at EOF. */
+  @native def peekShuffleBatch(handle: Long, endOfInput: Boolean, tracingEnabled: Boolean): Int
+
+  /** Transfer one ready batch through Arrow FFI, returning its row count. */
+  @native def takeShuffleBatch(
+      handle: Long,
+      arrayAddrs: Array[Long],
+      schemaAddrs: Array[Long],
+      tracingEnabled: Boolean): Long
+
+  @native def closeShuffleBatchCoalescer(handle: Long): Unit
+
   /**
-   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation. The
-   * expected schema is serialized as a ShuffleScan protobuf. Keep the existing local decoder
-   * entry point unchanged so trusted local shuffle reads retain their fast path.
+   * Create a remote shuffle decoder that retains the expected Spark types for one iterator. The
+   * expected schema is serialized as a ShuffleScan protobuf.
+   */
+  @native def createRemoteShuffleDecoder(expectedSchema: Array[Byte]): Long
+
+  /** Release a remote shuffle decoder after its iterator finishes reading or closes early. */
+  @native def releaseRemoteShuffleDecoder(decoderHandle: Long): Unit
+
+  /**
+   * Decode a remote shuffle block with Arrow buffer/offset and logical type validation, using the
+   * expected Spark types retained by the decoder.
    */
   @native def decodeShuffleBlockWithValidation(
       shuffleBlock: ByteBuffer,
@@ -211,7 +345,7 @@ class Native extends NativeBase {
       arrayAddrs: Array[Long],
       schemaAddrs: Array[Long],
       tracingEnabled: Boolean,
-      expectedSchema: Array[Byte]): Long
+      decoderHandle: Long): Long
 
   /**
    * Log the beginning of an event.
@@ -242,49 +376,19 @@ class Native extends NativeBase {
    */
   @native def getRustThreadId(): Long
 
-  // Native Columnar to Row conversion methods
-
   /**
-   * Initialize a native columnar to row converter.
+   * Returns the executor's native memory usage, for the periodic memory usage log. Reads only
+   * process-wide counters, never a plan's execution context, so it is safe to call from any
+   * thread.
    *
-   * @param schema
-   *   Array of serialized data types (as byte arrays) for each column in the schema.
-   * @param batchSize
-   *   The maximum number of rows that will be converted in a single batch. Used to pre-allocate
-   *   the output buffer.
    * @return
-   *   A handle to the native converter context. This handle must be passed to subsequent convert
-   *   and close calls.
+   *   `[nativeAllocated, poolsReserved, pools, plans]`. `nativeAllocated` is the bytes the native
+   *   allocator has handed out. `poolsReserved` is the bytes reserved across every Comet memory
+   *   pool, counting a pool shared by several plans once, less any that a pool recorded beyond
+   *   what Spark granted it. Spark's off-heap pool does not account for those bytes, so they are
+   *   counted with the native memory that no pool tracks. `pools` is the number of live pools,
+   *   which with the default task-shared pool types is one per task running native plans, and
+   *   `plans` is the number of native plans created and not yet released.
    */
-  @native def columnarToRowInit(schema: Array[Array[Byte]], batchSize: Int): Long
-
-  /**
-   * Convert Arrow columnar data to Spark UnsafeRow format.
-   *
-   * @param c2rHandle
-   *   The handle returned by columnarToRowInit.
-   * @param arrayAddrs
-   *   The addresses of Arrow Array structures for each column.
-   * @param schemaAddrs
-   *   The addresses of Arrow Schema structures for each column.
-   * @param numRows
-   *   The number of rows to convert.
-   * @return
-   *   A NativeColumnarToRowInfo containing the memory address of the row buffer and metadata
-   *   (offsets and lengths) for each row.
-   */
-  @native def columnarToRowConvert(
-      c2rHandle: Long,
-      arrayAddrs: Array[Long],
-      schemaAddrs: Array[Long],
-      numRows: Int): NativeColumnarToRowInfo
-
-  /**
-   * Close and release the native columnar to row converter.
-   *
-   * @param c2rHandle
-   *   The handle returned by columnarToRowInit.
-   */
-  @native def columnarToRowClose(c2rHandle: Long): Unit
-
+  @native def getMemoryUsage(): Array[Long]
 }

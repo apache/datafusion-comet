@@ -29,15 +29,33 @@ Here is an overview of the changes that we need to make to Spark:
 - Modify SparkSession to load the Comet extension
 - Modify TestHive to load Comet
 - Modify SQLTestUtilsBase to load Comet when `ENABLE_COMET` environment variable exists
+- Modify `project/SparkBuild.scala` so that, when Comet is enabled, the `sql` and `hive` test JVMs use
+  `CometShuffleManager` as the default shuffle manager. Comet disables itself when its shuffle manager is not
+  registered, so without this default the suites that build their own `SparkSession` or `SparkContext` would
+  run without Comet. From Spark 3.5, the same JVMs also turn on `spark.comet.exec.inMemoryCache.enabled` and
+  default `spark.sql.cache.serializer` to Comet's `ArrowCachedBatchSerializer`, so that Spark's suites test
+  Comet's cache format although it is disabled by default. The serializer has to be a default for the whole JVM
+  because Spark keeps the first cache serializer it loads for the rest of the JVM
 
-Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.4.3 for this example.
+Here are the steps involved in running the Spark SQL tests with Comet, using Spark 3.5.9 for this example.
+
+`dev/local-ci.sh` runs all of the steps below the way CI runs them:
+
+```shell
+dev/local-ci.sh spark                # every matrix row
+dev/local-ci.sh spark catalyst       # one row
+dev/local-ci.sh spark 3.5 catalyst   # a non-default Spark version
+```
+
+See [Continuous Integration](ci.md#reproducing-a-suite-failure-locally). The manual steps below
+are still the reference, and are what you want when creating or updating a diff file.
 
 ## 1. Install Comet
 
 Run `make release` in Comet to install the Comet JAR into the local Maven repository, specifying the Spark version.
 
 ```shell
-PROFILES="-Pspark-3.4" make release
+PROFILES="-Pspark-3.5" make release
 ```
 
 ## 2. Clone Spark and Apply Diff
@@ -47,9 +65,9 @@ Clone Apache Spark locally and apply the diff file from Comet.
 Note: this is a shallow clone of a tagged Spark commit and is not suitable for general Spark development.
 
 ```shell
-git clone -b 'v3.4.3' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
+git clone -b 'v3.5.9' --single-branch --depth 1 git@github.com:apache/spark.git apache-spark
 cd apache-spark
-git apply ../datafusion-comet/dev/diffs/3.4.3.diff
+git apply ../datafusion-comet/dev/diffs/3.5.9.diff
 ```
 
 ## 3. Run Spark SQL Tests
@@ -94,9 +112,10 @@ ENABLE_COMET=true ENABLE_COMET_ONHEAP=true sbt -J-Xmx4096m -Dspark.test.includeS
 -Dspark.comet.enabled=true -Dspark.comet.debug.enabled=true -Dspark.plugins=org.apache.spark.CometPlugin -DXmx4096m -Dspark.executor.heartbeatInterval=20000 -Dspark.network.timeout=10000 --add-exports=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED
 ```
 
-2. Set `ENABLE_COMET=true` in environment variables
+2. Set `ENABLE_COMET=true` and `ENABLE_COMET_ONHEAP=true` in environment variables. Without
+   `ENABLE_COMET_ONHEAP`, Comet stays disabled, because the tests do not enable off-heap memory.
    ![img.png](img.png)
-3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.4" make release`)
+3. After the above tests are configured, spark tests can be run with debugging enabled on spark/comet code. Note that Comet is added as a dependency and the classes are readonly while debugging from Spark. Any new changes to Comet are to be built and deployed locally through the command (`PROFILES="-Pspark-3.5" make release`)
 
 ## Creating a diff file for a new Spark version
 
@@ -168,9 +187,17 @@ git diff v3.5.6 > ../datafusion-comet/dev/diffs/3.5.6.diff
 
 ## Running Tests in CI
 
-The easiest way to run the tests is to create a PR against Comet and let CI run the tests. When working with a
-new Spark version, the `spark_sql_test.yaml` and `spark_sql_test_ansi.yaml` files will need updating with the
-new version.
+The easiest way to run the tests is to open a pull request against Comet and let CI run them. Spark
+4.1 (catalyst and sql_core) runs on every pull request and again in the merge queue, which also runs
+the sql_hive shards; `run-spark-4.1-hive-tests` brings those forward onto a pull request. Spark 3.5,
+4.0 and 4.2 run once a night against `main`, and each also runs earlier on a pull request carrying
+the `run-spark-3.5-tests` / `run-spark-4.0-tests` / `run-spark-4.2-tests` label. Apply the 3.5, 4.0
+or 4.2 label when a change could behave differently on those versions,
+since without it the first verdict is the nightly run's, after the change has landed.
+
+See [Continuous Integration](ci.md) for how the tiers and labels work. When bringing up a new Spark
+version, the version needs its own job in `.github/workflows/ci.yml` plus entries in `FILTERS` and
+`POLICY` in `dev/ci/compute-changes.py`.
 
 ## Adding support for a new Spark major or minor version
 

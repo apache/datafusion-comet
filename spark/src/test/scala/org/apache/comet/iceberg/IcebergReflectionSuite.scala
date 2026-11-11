@@ -28,6 +28,7 @@ import org.apache.iceberg.BaseMetastoreTableOperations
 import org.apache.iceberg.BaseTable
 import org.apache.iceberg.DataFiles
 import org.apache.iceberg.PartitionSpec
+import org.apache.iceberg.PartitionSpecParser
 import org.apache.iceberg.Schema
 import org.apache.iceberg.TableMetadata
 import org.apache.iceberg.io.FileIO
@@ -65,6 +66,75 @@ class IcebergReflectionSuite extends AnyFunSuite {
     val metadata = IcebergReflection.getTableMetadata(table)
     assert(metadata.isDefined)
     assert(metadata.get.isInstanceOf[TableMetadata])
+    val extracted = extractScanMetadata(new MetadataScan(table, schema)).get
+    assert(extracted.nameMapping.isEmpty)
+    assert(extracted.fullTaskSchema.isDefined)
+    assert(extracted.prunedTaskSchema.isDefined)
+  }
+
+  private val scanSchema =
+    new Schema(Types.NestedField.optional(1, "id", Types.IntegerType.get()))
+
+  private def extractScanMetadata(scan: MetadataScan): Option[CometIcebergNativeScanMetadata] =
+    CometIcebergNativeScanMetadata.extract(
+      scan,
+      "file:///tmp/test-table/metadata.json",
+      Map.empty,
+      Collections.emptyList[AnyRef](),
+      Set.empty)
+
+  test("scan metadata preserves name mapping when present and None when absent") {
+    val mapping = """[{"field-id":1,"names":["id","old_id"]}]"""
+    for (expected <- Seq(None, Some(mapping))) {
+      val properties = new java.util.HashMap[String, String]()
+      expected.foreach(properties.put("schema.name-mapping.default", _))
+      val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => properties))
+      val metadata = extractScanMetadata(new MetadataScan(table, scanSchema)).get
+      assert(metadata.nameMapping == expected)
+      assert(metadata.fullTaskSchema.isDefined)
+      assert(metadata.prunedTaskSchema.isDefined)
+      assert(metadata.globalFieldIdMapping == Map("id" -> 1))
+    }
+  }
+
+  test("scan metadata declines when the properties accessor throws") {
+    val metadata =
+      new PropertiesMetadata(() => throw new IllegalStateException("properties failed"))
+    val table = new MetadataTable(scanSchema, metadata)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor is missing") {
+    val table = new MetadataTable(scanSchema, new Object)
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  test("scan metadata declines when the properties accessor returns null") {
+    val table = new MetadataTable(scanSchema, new PropertiesMetadata(() => null))
+    assert(extractScanMetadata(new MetadataScan(table, scanSchema)).isEmpty)
+  }
+
+  // Only the metadata's properties accessor varies. Every case has a valid scan/table schema,
+  // schema history and operations.current(), so other reflection failures cannot mask the bug.
+  class MetadataScan(scanTable: AnyRef, scanSchema: Schema) {
+    def table(): AnyRef = scanTable
+    def projection(): Schema = scanSchema
+  }
+
+  class MetadataTable(tableSchema: Schema, metadata: AnyRef) {
+    def schema(): Schema = tableSchema
+    def schemas(): java.util.Map[Integer, Schema] =
+      Collections.singletonMap(Integer.valueOf(0), tableSchema)
+    def operations(): MetadataOperations = new MetadataOperations(metadata)
+    def name(): String = "test-table"
+  }
+
+  class MetadataOperations(metadata: AnyRef) {
+    def current(): AnyRef = metadata
+  }
+
+  class PropertiesMetadata(read: () => java.util.Map[String, String]) {
+    def properties(): java.util.Map[String, String] = read()
   }
 
   test("findMethod resolves a method once and returns the cached instance") {
@@ -135,6 +205,27 @@ class IcebergReflectionSuite extends AnyFunSuite {
       IcebergReflection.extractFileLocation(classOf[ThrowingLocationFile], file)
     }
     assert(ex.getCause.getMessage == "boom")
+  }
+
+  test("taskCommitFileLocations reads plain SparkWrite task commits") {
+    val commit = new PlainTaskCommit(
+      Array(
+        new LocationFile("s3://bucket/data/a.parquet"),
+        new LocationFile("s3://bucket/data/b.parquet")))
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/data/b.parquet"))
+  }
+
+  test("taskCommitFileLocations reads new files from position-delta task commits") {
+    val commit = new DeltaTaskCommit(
+      Array(new LocationFile("s3://bucket/data/a.parquet")),
+      Array(new LocationFile("s3://bucket/delete/d.parquet")),
+      Array(new LocationFile("s3://bucket/delete/old.parquet")))
+
+    assert(
+      IcebergReflection.taskCommitFileLocations(commit) ==
+        Seq("s3://bucket/data/a.parquet", "s3://bucket/delete/d.parquet"))
   }
 
   test("getFileFormat reads format() when declared") {
@@ -229,6 +320,24 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(IcebergReflection.getEncryptionManager(new NoEncryptionMethodTable).isEmpty)
   }
 
+  class CustomLocationProviderTable {
+    def locationProvider(): AnyRef = new Object
+  }
+
+  class NoLocationProviderTable
+
+  test("getLocationProvider resolves the provider the table actually installed") {
+    val custom = IcebergReflection.getLocationProvider(new CustomLocationProviderTable)
+    assert(custom.isDefined)
+    assert(custom.get.getClass.getName != IcebergReflection.ClassNames.DEFAULT_LOCATION_PROVIDER)
+  }
+
+  test("getLocationProvider returns None when locationProvider() cannot be resolved") {
+    // The write gate treats None as fail-closed, so a table type without the accessor (or a
+    // future rename) declines the native write rather than assuming DefaultLocationProvider.
+    assert(IcebergReflection.getLocationProvider(new NoLocationProviderTable).isEmpty)
+  }
+
   test("executor-side reflection surface resolves against the linked Iceberg") {
     // The eligibility gate declines a native write when any class, method, or constructor used
     // by the executor-side commit-message assembly fails to resolve (it would otherwise be a
@@ -238,6 +347,88 @@ class IcebergReflectionSuite extends AnyFunSuite {
     assert(
       IcebergReflection.executorReflectionUnresolved.isEmpty,
       IcebergReflection.executorReflectionUnresolved)
+  }
+
+  test("footer re-reads build parquet-mr's read options without a Hadoop Configuration") {
+    // `ParquetFileReader.open(InputFile)` builds its read options from a new Hadoop
+    // `Configuration` on parquet-mr 1.14 and later, and parsing that configuration's XML
+    // resources was most of the cost of rebuilding a native-written file's metrics.
+    IcebergReflection.resolveParquetFooterReflection().readOptions match {
+      case Some(readOptions) =>
+        val options = readOptions.newOptions()
+        val configuration = options.getClass.getMethod("getConfiguration").invoke(options)
+        assert(configuration.getClass.getSimpleName == "PlainParquetConfiguration")
+      case None =>
+        // Only parquet-mr without `ParquetConfiguration` keeps `open(InputFile)`, whose
+        // defaults are built without Hadoop.
+        intercept[ClassNotFoundException] {
+          IcebergReflection.loadClass(
+            "org.apache.iceberg.shaded.org.apache.parquet.conf.ParquetConfiguration")
+        }
+    }
+  }
+
+  /** Schema the transform tests below partition on, one column per transform source type. */
+  private val transformSchema = new Schema(
+    Types.NestedField.optional(1, "id", Types.LongType.get()),
+    Types.NestedField.optional(2, "s", Types.StringType.get()),
+    Types.NestedField.optional(3, "ts", Types.TimestampType.withZone()))
+
+  /**
+   * The single-field spec Iceberg parses out of `transform`, applied to source column `sourceId`.
+   */
+  private def singleFieldSpec(transform: String, sourceId: Int): PartitionSpec =
+    PartitionSpecParser.fromJson(
+      transformSchema,
+      s"""{"spec-id":0,"fields":[{"name":"p","transform":"$transform",""" +
+        s""""source-id":$sourceId,"field-id":1000}]}""")
+
+  test("forNative keeps every transform iceberg-rust can deserialize") {
+    // Spelled as Iceberg serializes them. The round-trip assertion matters as much as forNative's
+    // own answer: forNative matches on Transform.toString, so a version that renders a transform
+    // differently from its JSON spelling would silently start rewriting it to "unknown".
+    Seq(
+      ("identity", 1),
+      ("void", 1),
+      ("bucket[8]", 1),
+      ("truncate[4]", 2),
+      ("year", 3),
+      ("month", 3),
+      ("day", 3),
+      ("hour", 3)).foreach { case (transform, sourceId) =>
+      val rendered = singleFieldSpec(transform, sourceId).fields().get(0).transform().toString
+      assert(rendered == transform, s"Iceberg renders $transform as $rendered")
+      assert(IcebergReflection.Transforms.forNative(rendered) == transform)
+    }
+  }
+
+  test("forNative rewrites a transform Iceberg Java could not resolve") {
+    // TestForwardCompatibility's UNKNOWN_SPEC. Iceberg parses "zero" into an UnknownTransform whose
+    // toString is the original name; serialized verbatim it fails PartitionSpec deserialization in
+    // iceberg-rust, leaving the scan task holding partition values with no spec, which
+    // FileScanTask validation rejects ("Non-empty FileScanTask partition requires a partition
+    // spec") and the whole scan dies.
+    val spec = singleFieldSpec("zero", 1)
+    val rendered = spec.fields().get(0).transform().toString
+    assert(rendered == "zero")
+    assert(IcebergReflection.Transforms.forNative(rendered) == "unknown")
+
+    // The partition type Comet serializes alongside the rewritten spec has to agree with what
+    // iceberg-rust derives for Transform::Unknown, which is string.
+    assert(spec.partitionType().fields().get(0).`type`().toString == "string")
+  }
+
+  class PlainTaskCommit(taskFiles: Array[LocationFile]) {
+    def files(): Array[LocationFile] = taskFiles
+  }
+
+  class DeltaTaskCommit(
+      data: Array[LocationFile],
+      deletes: Array[LocationFile],
+      rewrittenDeletes: Array[LocationFile]) {
+    def dataFiles(): Array[LocationFile] = data
+    def deleteFiles(): Array[LocationFile] = deletes
+    def rewrittenDeleteFiles(): Array[LocationFile] = rewrittenDeletes
   }
 
   /** Mimics a newer Iceberg ContentFile, which exposes location(). */

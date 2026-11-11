@@ -22,12 +22,12 @@ package org.apache.comet.serde
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters._
 
-import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, IsNotNull, IsNull, LambdaFunction, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
+import org.apache.spark.SPARK_VERSION
+import org.apache.spark.sql.catalyst.expressions.{And, ArrayAggregate, ArrayAppend, ArrayContains, ArrayDistinct, ArrayExcept, ArrayExists, ArrayFilter, ArrayForAll, ArrayInsert, ArrayIntersect, ArrayJoin, ArrayMax, ArrayMin, ArrayPosition, ArrayRemove, ArraySort, ArraysOverlap, ArraysZip, ArrayTransform, ArrayUnion, Attribute, BoundReference, Cast, CreateArray, ElementAt, EmptyRow, Expression, Flatten, GetArrayItem, GreaterThan, If, IsNotNull, IsNull, LambdaFunction, LessThan, Literal, NamedLambdaVariable, Reverse, Sequence, Size, Slice, SortArray, ZipWith}
 import org.apache.spark.sql.catalyst.util.GenericArrayData
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometConf
 import org.apache.comet.CometSparkSessionExtensions.withFallbackReason
 import org.apache.comet.DataTypeSupport.{deepNullable, isComplexType}
 import org.apache.comet.serde.QueryPlanSerde._
@@ -44,24 +44,66 @@ object CometArrayRemove
       expr: ArrayRemove,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.left, inputs, binding)
-    val keyExprProto = exprToProto(expr.right, inputs, binding)
-
-    scalarFunctionExprToProto("array_remove_all", arrayExprProto, keyExprProto)
+    val arrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val keyExprProto = exprToProtoInternal(expr.right, inputs, binding)
+    // DataFusion's array_remove_all compares floats by their bits. spark_array_remove compares
+    // them as Spark does, with -0.0 equal to 0.0 and all NaNs equal.
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val function =
+      if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+        "spark_array_remove"
+      } else {
+        "array_remove_all"
+      }
+    withNullShortCircuit(expr, scalarFunctionExprToProto(function, arrayExprProto, keyExprProto))
   }
 }
 
-object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
+object CometArrayAppend extends CometExpressionSerde[ArrayAppend] with ArraysBase {
+
+  /**
+   * Spark's generated code for `ArrayAppend` evaluates the item for every row and guards only the
+   * assignment of the result, so an item that raises under ANSI raises on a row whose array is
+   * NULL too (#6086). With a nullable array, `convert` reproduces that by also evaluating the
+   * item in the `ELSE` branch of its `CASE WHEN <array> IS NOT NULL` guard. The guard serializes
+   * the array twice and the `ELSE` serializes the item a second time, and a stateful operand
+   * cannot survive that: each copy sees only a subset of the rows, so the copies advance its
+   * state independently and silently move values and NULLs. Either operand is declined when it is
+   * nondeterministic. A non-nullable array needs no guard, so `convert` emits no `CASE` for it
+   * and evaluates each operand once over the whole batch, in order, whatever the operands are.
+   */
+  private val nondeterministicReason: String =
+    "array_append with a nullable array and a nondeterministic operand such as `rand()`: the " +
+      "native NULL guard evaluates the operands more than once, on subsets of the rows"
+
+  override def getUnsupportedReasons(): Seq[String] = Seq(nondeterministicReason)
+
+  /**
+   * Whether evaluating `expr` for a row Spark would not guard it on is unobservable: a literal or
+   * column read cannot throw. `foldable` is not usable here, see CometArrayJoin.orderInsensitive.
+   */
+  private def cannotThrow(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayAppend): SupportLevel = {
+    if (expr.left.nullable && expr.children.exists(!_.deterministic)) {
+      Unsupported(Some(nondeterministicReason))
+    } else {
+      Compatible()
+    }
+  }
 
   override def convert(
       expr: ArrayAppend,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val child = expr.children.head
-    val elementType = child.dataType.asInstanceOf[ArrayType].elementType
+    val (srcChild, itemChild) = widenElementInLockstep(expr.children.head, expr.children(1))
+    val elementType = srcChild.dataType.asInstanceOf[ArrayType].elementType
 
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val keyExprProto = exprToProto(expr.children(1), inputs, binding)
+    val arrayExprProto = exprToProtoInternal(srcChild, inputs, binding)
+    val keyExprProto = exprToProtoInternal(itemChild, inputs, binding)
 
     // DataFusion's array_append always returns a list with nullable elements,
     // so we must promise ArrayType(elementType, containsNull = true) here even if
@@ -74,21 +116,62 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
         arrayExprProto,
         keyExprProto)
 
+    // A non-nullable array never takes the NULL branch, so the guard is dead weight. Without it
+    // each operand is evaluated once over the whole batch, which also keeps a nondeterministic
+    // operand in step.
+    if (!expr.children.head.nullable) {
+      return arrayAppendScalarExpr
+    }
+
+    // IS NOT NULL does not care about element nullability, so use the un-widened source and skip
+    // serializing a redundant cast.
     val isNotNullExpr = createUnaryExpr(
-      expr,
       expr.children.head,
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
 
-    val nullLiteralProto = exprToProto(Literal(null, elementType), Seq.empty)
+    // The NULL a row with a NULL array returns. It has to be typed as the list that THEN returns,
+    // not as an element: typed as an element, the inner CASE below returns elements, and the outer
+    // CASE cannot merge those with the lists of its other branch.
+    val nullLiteralProto =
+      exprToProtoInternal(
+        Literal(null, ArrayType(elementType, containsNull = true)),
+        Seq.empty,
+        binding = true)
 
-    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
+    // DataFusion's CaseExpr evaluates the THEN branch only on the rows the guard selects, but
+    // Spark evaluates the item on every row. Evaluate it on the remaining rows in the ELSE
+    // branch, so that it raises there as well, and still once per row. See
+    // `nondeterministicReason` for why this is restricted to deterministic operands.
+    val elseExprProto =
+      if (cannotThrow(expr.children(1))) {
+        nullLiteralProto
+      } else {
+        for {
+          itemProto <- keyExprProto
+          nullLit <- nullLiteralProto
+        } yield {
+          val itemIsNotNull = ExprOuterClass.Expr
+            .newBuilder()
+            .setIsNotNull(ExprOuterClass.UnaryExpr.newBuilder().setChild(itemProto))
+            .build()
+          val evaluateItem = ExprOuterClass.CaseWhen
+            .newBuilder()
+            .addWhen(itemIsNotNull)
+            .addThen(nullLit)
+            .setElseExpr(nullLit)
+            .build()
+          ExprOuterClass.Expr.newBuilder().setCaseWhen(evaluateItem).build()
+        }
+      }
+
+    if (arrayAppendScalarExpr.isDefined && isNotNullExpr.isDefined && elseExprProto.isDefined) {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExpr.get)
         .addThen(arrayAppendScalarExpr.get)
-        .setElseExpr(nullLiteralProto.get)
+        .setElseExpr(elseExprProto.get)
         .build()
       Some(
         ExprOuterClass.Expr
@@ -103,43 +186,81 @@ object CometArrayAppend extends CometExpressionSerde[ArrayAppend] {
 
 object CometArrayContains
     extends CometExpressionSerde[ArrayContains]
+    with CometTypeShim
     with CodegenDispatchFallback {
 
-  private val floatingPointReason: String =
+  override def hasConditionalNativeDefault: Boolean = true
+
+  private val nestedFloatReason: String =
     "Spark compares array elements with ordering.equiv, so -0.0 matches +0.0 and all NaNs match " +
-      "each other; Comet's native array_contains compares the raw Arrow values bitwise"
+      "each other; Comet's native array_contains applies that only to flat FLOAT and DOUBLE " +
+      "elements, and nested float elements stay on Spark's comparison"
 
-  override def getIncompatibleReasons(): Seq[String] = Seq(floatingPointReason)
+  private val eagerEvalReason: String =
+    "array_contains evaluates its value eagerly, while Spark skips it when the array is null"
 
-  override def getSupportLevel(expr: ArrayContains): SupportLevel = expr.left.dataType match {
-    // Native array_contains compares floating-point elements bitwise, disagreeing with Spark for
-    // -0.0/+0.0 and NaN. Report Incompatible (not Unsupported) for float/double element types (at
-    // any nesting level) so the expression routes through the JVM codegen dispatcher (Spark's own
-    // doGenCode) and stays native + Spark-exact under the default config, while non-float arrays
-    // keep the fast native kernel. Under allowIncompatible=true the native kernel is used
-    // as before.
-    case ArrayType(elementType, _)
-        if SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType]) =>
-      Incompatible(Some(floatingPointReason))
-    case _ => Compatible()
+  private val collationReason: String =
+    ArrayElementEqualitySupport.collationReason("array_contains")
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(nestedFloatReason, eagerEvalReason, collationReason)
+
+  private def isFlatFloat(elementType: DataType): Boolean = elementType match {
+    case FloatType | DoubleType => true
+    case _ => false
+  }
+
+  // Whether evaluating `expr` earlier than Spark would is unobservable: a literal or column read
+  // cannot throw. See CometArrayJoin.orderInsensitive.
+  private def orderInsensitive(expr: Expression): Boolean = expr match {
+    case _: Literal | _: Attribute | _: BoundReference => true
+    case _ => false
+  }
+
+  override def getSupportLevel(expr: ArrayContains): SupportLevel = {
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    if (hasNonDefaultStringCollation(elementType)) {
+      // See ArrayElementEqualitySupport: bytewise string comparison ignores the collation.
+      Incompatible(Some(collationReason))
+    } else if (isFlatFloat(elementType)) {
+      // Spark skips the value when the array is null, so a value that can throw (an ANSI cast,
+      // say) must not run for a null array. The native kernel evaluates both arguments first.
+      if (expr.left.nullable && !orderInsensitive(expr.right)) {
+        Incompatible(Some(eagerEvalReason))
+      } else {
+        Compatible()
+      }
+    } else if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+      // Float leaves inside arrays or structs stay on the codegen dispatcher: the per-element
+      // comparator is slower than Spark's generated code there, and it compares any string field
+      // bytewise, ignoring its collation.
+      Incompatible(Some(nestedFloatReason))
+    } else {
+      Compatible()
+    }
   }
 
   override def convert(
       expr: ArrayContains,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val keyExprProto = exprToProto(expr.children(1), inputs, binding)
-
-    scalarFunctionExprToProto("array_contains", arrayExprProto, keyExprProto)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val keyExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
+    // datafusion-spark's array_contains compares floats by their bits. spark_array_contains
+    // compares them as Spark does, with -0.0 equal to 0.0 and all NaNs equal, at any depth, so
+    // it also serves nested float elements under allowIncompatible.
+    val elementType = expr.left.dataType.asInstanceOf[ArrayType].elementType
+    val function =
+      if (SupportLevel.containsType(elementType, classOf[FloatType], classOf[DoubleType])) {
+        "spark_array_contains"
+      } else {
+        "array_contains"
+      }
+    withNullShortCircuit(expr, scalarFunctionExprToProto(function, arrayExprProto, keyExprProto))
   }
 }
 
 object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispatchFallback {
-
-  override def getIncompatibleReasons(): Seq[String] = Seq(
-    "When `" + CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key + "=true`, sorting on" +
-      " floating-point types is not 100% compatible with Spark")
 
   private def supportedSortArrayElementType(dt: DataType): Boolean = {
     dt match {
@@ -160,16 +281,13 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     if (!supportedSortArrayElementType(elementType)) {
       Unsupported(Some(s"Sort on array element type $elementType is not supported"))
     } else {
-      SupportLevel
-        .strictFloatingPointReason(elementType, "Sorting on floating-point")
-        .map(reason => Incompatible(Some(reason)))
-        .getOrElse(expr.ascendingOrder match {
-          // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
-          // foldable boolean. Accept both; convert evaluates the foldable expression.
-          case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
-          case other =>
-            Unsupported(Some(s"ascendingOrder must be a foldable boolean: $other"))
-        })
+      expr.ascendingOrder match {
+        // Spark 3.x requires a boolean Literal; Spark 4.0+ widens ascendingOrder to any
+        // foldable boolean. Accept both; convert evaluates the foldable expression.
+        case ao if ao.foldable && ao.dataType == BooleanType => Compatible()
+        case other =>
+          Unsupported(Some(s"ascendingOrder must be a foldable boolean: $other"))
+      }
     }
   }
 
@@ -181,18 +299,30 @@ object CometSortArray extends CometExpressionSerde[SortArray] with CodegenDispat
     // ascendingOrder is a foldable boolean (gated in getSupportLevel). Evaluate it; a null result
     // unboxes to false, matching Spark's `right.eval().asInstanceOf[Boolean]`.
     val ascending = expr.ascendingOrder.eval(EmptyRow).asInstanceOf[Boolean]
-    val direction = if (ascending) "ASC" else "DESC"
-    val nullOrdering = if (ascending) "NULLS FIRST" else "NULLS LAST"
-    val sortDirectionExprProto = exprToProtoInternal(Literal(direction), inputs, binding)
-    val nullOrderingExprProto = exprToProtoInternal(Literal(nullOrdering), inputs, binding)
-
-    val sortArrayScalarExpr =
+    val arrayType = expr.base.dataType.asInstanceOf[ArrayType]
+    if (SupportLevel.containsType(
+        arrayType.elementType,
+        classOf[FloatType],
+        classOf[DoubleType])) {
+      // DataFusion's array_sort orders floats by IEEE 754 total order. spark_sort_array follows
+      // Spark's ordering, except that -0.0 sorts before 0.0 where Spark's generated code sorts
+      // with java.util.Arrays.sort: ascending, over FLOAT or DOUBLE elements that cannot be null.
+      val negativeZeroFirst = ascending && !arrayType.containsNull &&
+        (arrayType.elementType == FloatType || arrayType.elementType == DoubleType)
+      scalarFunctionExprToProto(
+        "spark_sort_array",
+        arrayExprProto,
+        exprToProtoInternal(Literal(ascending), inputs, binding),
+        exprToProtoInternal(Literal(negativeZeroFirst), inputs, binding))
+    } else {
+      val direction = if (ascending) "ASC" else "DESC"
+      val nullOrdering = if (ascending) "NULLS FIRST" else "NULLS LAST"
       scalarFunctionExprToProto(
         "array_sort",
         arrayExprProto,
-        sortDirectionExprProto,
-        nullOrderingExprProto)
-    sortArrayScalarExpr
+        exprToProtoInternal(Literal(direction), inputs, binding),
+        exprToProtoInternal(Literal(nullOrdering), inputs, binding))
+    }
   }
 }
 
@@ -228,8 +358,8 @@ object CometArrayIntersect
       expr: ArrayIntersect,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     val arraysIntersectScalarExpr =
       scalarFunctionExprToProto("array_intersect", leftArrayExprProto, rightArrayExprProto)
@@ -237,12 +367,35 @@ object CometArrayIntersect
   }
 }
 
-object CometArrayMax extends CometExpressionSerde[ArrayMax] {
+private object ArrayExtremaSupport extends CometTypeShim {
+  val incompatReason: String =
+    "Array extrema use binary string ordering for non-UTF8_BINARY collations " +
+      "(https://github.com/apache/datafusion-comet/issues/4496)."
+
+  def getSupportLevel(elementType: DataType): SupportLevel = {
+    if (hasNonDefaultStringCollation(elementType)) {
+      // The dispatcher runs Spark's own comparison with the original collation IDs, including
+      // strings nested in arrays or structs. Keep the native bytewise comparison opt-in only.
+      Incompatible(Some(incompatReason))
+    } else {
+      Compatible()
+    }
+  }
+}
+
+object CometArrayMax extends CometExpressionSerde[ArrayMax] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMax): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMax,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
 
     val arrayMaxScalarExpr =
       scalarFunctionExprToProto("array_max", arrayExprProto)
@@ -250,33 +403,62 @@ object CometArrayMax extends CometExpressionSerde[ArrayMax] {
   }
 }
 
-object CometArrayMin extends CometExpressionSerde[ArrayMin] {
+object CometArrayMin extends CometExpressionSerde[ArrayMin] with CodegenDispatchFallback {
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] = Seq(ArrayExtremaSupport.incompatReason)
+
+  override def getSupportLevel(expr: ArrayMin): SupportLevel =
+    ArrayExtremaSupport.getSupportLevel(expr.dataType)
+
   override def convert(
       expr: ArrayMin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.children.head, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
 
     val arrayMinScalarExpr = scalarFunctionExprToProto("array_min", arrayExprProto)
     arrayMinScalarExpr
   }
 }
 
-object CometArraysOverlap extends CometExpressionSerde[ArraysOverlap] {
+object CometArraysOverlap
+    extends CometExpressionSerde[ArraysOverlap]
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(ArrayElementEqualitySupport.collationReason("arrays_overlap"))
+
+  // Both inputs share one element type, so checking the left side is enough.
+  override def getSupportLevel(expr: ArraysOverlap): SupportLevel =
+    ArrayElementEqualitySupport.getSupportLevel("arrays_overlap", expr.left.dataType)
+
+  /**
+   * The native variant for a Spark version. Where SparkFixes.arraySetFunctionsNormalizeFloats
+   * holds, Spark normalizes flat FLOAT and DOUBLE elements, so -0.0 and 0.0 are one value, and
+   * the `_normalized` variant matches them that way. Earlier releases keep the zeros apart. Both
+   * variants treat every NaN as one value and compare nested elements in Spark's SQL ordering.
+   */
+  def nativeFunction(version: String): String =
+    if (SparkFixes.arraySetFunctionsNormalizeFloats(version)) "spark_arrays_overlap_normalized"
+    else "spark_arrays_overlap"
+
   override def convert(
       expr: ArraysOverlap,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arraysOverlapScalarExpr = scalarFunctionExprToProtoWithReturnType(
-      "spark_arrays_overlap",
+      nativeFunction(SPARK_VERSION),
       BooleanType,
       false,
       leftArrayExprProto,
       rightArrayExprProto)
-    arraysOverlapScalarExpr
+    withNullShortCircuit(expr, arraysOverlapScalarExpr)
   }
 }
 
@@ -287,7 +469,7 @@ object CometArrayCompact extends CometExpressionSerde[Expression] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     val child = expr.children.head
-    val arrayExprProto = exprToProto(child, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(child, inputs, binding)
 
     val arrayCompactScalarExpr = scalarFunctionExprToProto("array_compact", arrayExprProto)
     arrayCompactScalarExpr
@@ -343,8 +525,8 @@ object CometArrayExcept
         return None
       case None =>
     }
-    val leftArrayExprProto = exprToProto(expr.left, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.right, inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     val arrayExceptScalarExpr =
       scalarFunctionExprToProto("array_except", leftArrayExprProto, rightArrayExprProto)
@@ -400,8 +582,8 @@ object CometArrayJoin
       expr: ArrayJoin,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.array, inputs, binding)
-    val delimiterExprProto = exprToProto(expr.delimiter, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.array, inputs, binding)
+    val delimiterExprProto = exprToProtoInternal(expr.delimiter, inputs, binding)
 
     val joined = expr.nullReplacement match {
       case Some(nullReplacementExpr) =>
@@ -409,7 +591,7 @@ object CometArrayJoin
           "array_to_string",
           arrayExprProto,
           delimiterExprProto,
-          exprToProto(nullReplacementExpr, inputs, binding))
+          exprToProtoInternal(nullReplacementExpr, inputs, binding))
       case None =>
         scalarFunctionExprToProto("array_to_string", arrayExprProto, delimiterExprProto)
     }
@@ -420,8 +602,8 @@ object CometArrayJoin
       case Some(nullReplacementExpr) =>
         for {
           innerProto <- joined
-          replacementIsNull <- exprToProto(IsNull(nullReplacementExpr), inputs, binding)
-          nullLiteral <- exprToProto(Literal(null, expr.dataType), inputs, binding)
+          replacementIsNull <- exprToProtoInternal(IsNull(nullReplacementExpr), inputs, binding)
+          nullLiteral <- exprToProtoInternal(Literal(null, expr.dataType), inputs, binding)
         } yield ExprOuterClass.Expr
           .newBuilder()
           .setIf(
@@ -444,28 +626,7 @@ object CometArrayInsert extends CometExpressionSerde[ArrayInsert] with ArraysBas
       expr: ArrayInsert,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val srcArray = expr.children.head
-    val item = expr.children(2)
-    val srcElementType = srcArray.dataType.asInstanceOf[ArrayType].elementType
-
-    // Native ArrayInsert requires the item's Arrow type to equal the source array's element type
-    // exactly, including nested nullability. For complex element types the two sides can disagree:
-    // a `CreateArray` source is widened to a deeply-nullable element type (see CometCreateArray),
-    // while a standalone item (e.g. `map(2, coalesce(id, 0))`) keeps Spark's Catalyst nullability.
-    // Cast BOTH sides in lockstep to the same deeply-nullable element type so their Arrow types
-    // match; Spark's `ArrayInsert.dataType` is `first.dataType.asNullable`, so this also
-    // matches the declared output element type. Casting only widens metadata and never
-    // changes values. Primitive element types are byte-identical on both sides, so the gate
-    // leaves them untouched.
-    val (srcChild, itemChild) = if (isComplexType(srcElementType)) {
-      val elementType = deepNullable(srcElementType)
-      val arrayType = ArrayType(elementType, containsNull = true)
-      val widenedSrc = if (srcArray.dataType == arrayType) srcArray else Cast(srcArray, arrayType)
-      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
-      (widenedSrc, widenedItem)
-    } else {
-      (srcArray, item)
-    }
+    val (srcChild, itemChild) = widenElementInLockstep(expr.children.head, expr.children(2))
 
     val srcExprProto = exprToProtoInternal(srcChild, inputs, binding)
     val posExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
@@ -497,36 +658,123 @@ object CometSlice extends CometExpressionSerde[Slice] {
       expr: Slice,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val elementType = expr.x.dataType.asInstanceOf[ArrayType].elementType
-    val arrayExprProto = exprToProto(expr.x, inputs, binding)
-    val startExprProto = exprToProto(Cast(expr.start, LongType), inputs, binding)
-    val lengthExprProto = exprToProto(Cast(expr.length, LongType), inputs, binding)
-    // DataFusion list types always have nullable inner elements, so promise
-    // ArrayType(elementType, containsNull = true) here even if Spark's
-    // expr.dataType reports containsNull = false (e.g. for array(1, 2, 3)).
-    val sliceScalarExpr =
-      scalarFunctionExprToProtoWithReturnType(
+    val arrayExprProto = exprToProtoInternal(expr.x, inputs, binding)
+    val startExprProto = exprToProtoInternal(Cast(expr.start, LongType), inputs, binding)
+    val lengthExprProto = exprToProtoInternal(Cast(expr.length, LongType), inputs, binding)
+    // No serialized return type: native `spark_array_slice` reuses its input's list field for the
+    // output, so only `return_field_from_args` is guaranteed to match. Spark's `expr.dataType` is
+    // not: `CometCreateArray` may have widened the input to a deeply-nullable element type, and
+    // DataFusion list elements are nullable where Spark's `containsNull` says otherwise.
+    withNullShortCircuit(
+      expr,
+      scalarFunctionExprToProto(
         "spark_array_slice",
-        ArrayType(elementType, containsNull = true),
-        false,
         arrayExprProto,
         startExprProto,
-        lengthExprProto)
-    sliceScalarExpr
+        lengthExprProto))
+  }
+}
+
+/**
+ * Support level for native array kernels that compare elements for equality (membership, overlap,
+ * dedup). They compare strings by raw bytes, so a non-UTF8_BINARY collation (for example
+ * UTF8_LCASE, where 'a' equals 'A') gives wrong answers, and these cases report Incompatible.
+ * Serdes with a boolean result mix in CodegenDispatchFallback, so the JVM codegen dispatcher runs
+ * Spark's collation-aware comparison. Array-valued serdes fall back instead (see
+ * ArraySetSupport).
+ */
+private[comet] object ArrayElementEqualitySupport extends CometTypeShim {
+  def collationReason(name: String): String =
+    "Spark compares non-UTF8_BINARY collated string elements under their collation, while " +
+      s"Comet's native $name compares raw bytes"
+
+  def collationSupportLevel(name: String, arrayType: DataType): Option[SupportLevel] =
+    if (hasNonDefaultStringCollation(arrayType)) {
+      Some(Incompatible(Some(collationReason(name))))
+    } else {
+      None
+    }
+
+  def getSupportLevel(name: String, arrayType: DataType): SupportLevel =
+    collationSupportLevel(name, arrayType).getOrElse(Compatible())
+}
+
+private[comet] object ArraySetSupport {
+  val floatingPointReason: String =
+    "Floating-point elements match Spark's signed-zero semantics natively only on Spark " +
+      "4.0.5+, 4.1.4+ and 4.2+, which treat -0.0 and 0.0 as one value in these functions " +
+      "(SPARK-54918, SPARK-59602)"
+
+  def supportLevel(dataType: DataType): SupportLevel = {
+    if (hasFloats(dataType) && !SparkFixes.arraySetFunctionsNormalizeFloats(SPARK_VERSION)) {
+      Incompatible(Some(floatingPointReason))
+    } else {
+      Compatible()
+    }
+  }
+
+  /**
+   * Collated string elements are also Incompatible; see ArrayElementEqualitySupport. That check
+   * runs first, so an element with both a float and a collated string falls back on every
+   * version: the spark_ variants normalize the floats but compare strings by their bytes.
+   */
+  def supportLevel(name: String, dataType: DataType): SupportLevel =
+    ArrayElementEqualitySupport
+      .collationSupportLevel(name, dataType)
+      .getOrElse(supportLevel(dataType))
+
+  def incompatibleReasons(name: String): Seq[String] =
+    Seq(floatingPointReason, ArrayElementEqualitySupport.collationReason(name))
+
+  // DataFusion folds -0.0 into 0.0 only in a flat float array and compares NaNs by their bits.
+  // The spark_ variants normalize floats at any depth first, as Spark does.
+  def function(name: String, dataType: DataType): String =
+    if (hasFloats(dataType)) s"spark_$name" else name
+
+  private def hasFloats(dataType: DataType): Boolean =
+    SupportLevel.containsType(dataType, classOf[FloatType], classOf[DoubleType])
+}
+
+// Use projection fallback to avoid codegen dispatch overhead for array-valued results.
+// The native implementation remains available through opt-in.
+object CometArrayDistinct extends CometExpressionSerde[ArrayDistinct] {
+  override def getIncompatibleReasons(): Seq[String] =
+    ArraySetSupport.incompatibleReasons("array_distinct")
+
+  override def getSupportLevel(expr: ArrayDistinct): SupportLevel =
+    ArraySetSupport.supportLevel("array_distinct", expr.dataType)
+
+  override def convert(
+      expr: ArrayDistinct,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childProto = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProto(
+      ArraySetSupport.function("array_distinct", expr.dataType),
+      childProto)
   }
 }
 
 object CometArrayUnion extends CometExpressionSerde[ArrayUnion] {
+  override def getIncompatibleReasons(): Seq[String] =
+    ArraySetSupport.incompatibleReasons("array_union")
+
+  override def getSupportLevel(expr: ArrayUnion): SupportLevel =
+    ArraySetSupport.supportLevel("array_union", expr.dataType)
+
   override def convert(
       expr: ArrayUnion,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val leftArrayExprProto = exprToProto(expr.children.head, inputs, binding)
-    val rightArrayExprProto = exprToProto(expr.children(1), inputs, binding)
+    val leftArrayExprProto = exprToProtoInternal(expr.children.head, inputs, binding)
+    val rightArrayExprProto = exprToProtoInternal(expr.children(1), inputs, binding)
 
     val arraysUnionScalarExpr =
-      scalarFunctionExprToProto("array_union", leftArrayExprProto, rightArrayExprProto)
-    arraysUnionScalarExpr
+      scalarFunctionExprToProto(
+        ArraySetSupport.function("array_union", expr.dataType),
+        leftArrayExprProto,
+        rightArrayExprProto)
+    withNullShortCircuit(expr, arraysUnionScalarExpr)
   }
 }
 
@@ -586,6 +834,8 @@ object CometGetArrayItem extends CometExpressionSerde[GetArrayItem] {
         .setOrdinal(ordinalExpr.get)
         .setOneBased(false)
         .setFailOnError(expr.failOnError)
+        // Spark evaluates the ordinal only where the array is not NULL, see withNullShortCircuit
+        .setNullShortCircuit(canShortCircuitNulls(expr))
 
       Some(
         ExprOuterClass.Expr
@@ -629,7 +879,7 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
       withFallbackReason(expr, s"child data type not supported: ${expr.child.dataType}")
       return None
     }
-    val reverseExprProto = exprToProto(expr.child, inputs, binding)
+    val reverseExprProto = exprToProtoInternal(expr.child, inputs, binding)
     val reverseScalarExpr = scalarFunctionExprToProto("array_reverse", reverseExprProto)
     reverseScalarExpr
   }
@@ -638,11 +888,34 @@ object CometArrayReverse extends CometExpressionSerde[Reverse] with ArraysBase {
 
 object CometElementAt extends CometExpressionSerde[ElementAt] {
 
+  /**
+   * Under ANSI, neither native shape reproduces Spark for a nullable nondeterministic operand.
+   * Spark's `ElementAt` is a `BinaryExpression`: for a NULL map/array it returns NULL without
+   * evaluating the key/index child at all. A native lookup evaluates every argument over the
+   * whole batch first, so a throwing index fires on rows whose operand is NULL. `convert`
+   * reproduces the short-circuit with a `CASE WHEN <operand> IS NOT NULL` guard, but that guard
+   * serializes the operand twice, which a stateful operand cannot survive: the two copies advance
+   * its state independently and silently move values and NULLs. Declining leaves the lookup on
+   * Spark. Lifting this needs a native lookup that evaluates the operand once and masks the index
+   * evaluation with the result, at which point the guard becomes unnecessary for every operand.
+   */
+  private val eagerIndexReason: String =
+    "ANSI mode with a nullable nondeterministic array or map operand: a native lookup evaluates " +
+      "the index over the whole batch, where Spark skips it on the rows whose operand is NULL"
+
+  /** True when `convert` has to wrap the lookup to reproduce Spark's NULL short-circuit. */
+  private def needsNullGuard(expr: ElementAt): Boolean =
+    expr.failOnError && expr.left.nullable
+
   override def getSupportLevel(expr: ElementAt): SupportLevel = {
-    expr.left.dataType match {
-      case _: ArrayType => Compatible()
-      case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
-      case _ => Unsupported(Some("Input must be an array or map"))
+    if (needsNullGuard(expr) && !expr.left.deterministic) {
+      Unsupported(Some(eagerIndexReason))
+    } else {
+      expr.left.dataType match {
+        case _: ArrayType => Compatible()
+        case MapType(keyType, _, _) => MapKeySupport.keySupport(keyType)
+        case _ => Unsupported(Some("Input must be an array or map"))
+      }
     }
   }
 
@@ -682,22 +955,19 @@ object CometElementAt extends CometExpressionSerde[ElementAt] {
         }
     }
 
-    // Spark's ElementAt is a BinaryExpression: for a NULL map/array it returns NULL WITHOUT
-    // evaluating the key/index child. Native scalar functions evaluate the key eagerly over the
-    // whole batch, so under ANSI (failOnError) a throwing key (e.g. a divide-by-zero) fires even on
-    // rows whose map/array is NULL, where Spark short-circuits. When the left can actually be NULL,
-    // guard the lookup with CASE WHEN left IS NOT NULL THEN <lookup> ELSE null so the key is only
-    // evaluated on the selected rows (DataFusion's CaseExpr filters the batch before the THEN
-    // branch), reproducing the short-circuit. Mirrors the CASE-WHEN idiom in CometArrayAppend /
-    // CometSize; the ELSE null literal carries the result type, as in CometArraysZip.
-    if (expr.failOnError && expr.left.nullable) {
+    // Evaluate the key only on the rows the guard selects (DataFusion's CaseExpr filters the batch
+    // before the THEN branch), reproducing Spark's short-circuit. See `eagerIndexReason` for why
+    // this shape is restricted to deterministic operands. Mirrors the CASE-WHEN idiom in
+    // CometArrayAppend / CometSize; the ELSE null literal carries the result type, as in
+    // CometArraysZip.
+    if (needsNullGuard(expr)) {
       val isNotNullExpr = createUnaryExpr(
-        expr,
         expr.left,
         inputs,
         binding,
         (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-      val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+      val nullLiteralProto =
+        exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
       for {
         base <- baseExpr
         notNull <- isNotNullExpr
@@ -735,7 +1005,7 @@ object CometFlatten extends CometExpressionSerde[Flatten] with ArraysBase {
       expr: Flatten,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val flattenExprProto = exprToProto(expr.child, inputs, binding)
+    val flattenExprProto = exprToProtoInternal(expr.child, inputs, binding)
     val flattenScalarExpr = scalarFunctionExprToProto("flatten", flattenExprProto)
     flattenScalarExpr
   }
@@ -780,17 +1050,25 @@ object CometSize extends CometExpressionSerde[Size] {
       expr: Size,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.child, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.child, inputs, binding)
+
+    // Native size gives -1 for NULL, the legacy answer, so the NULL guard is needed only when
+    // a NULL child must give NULL. The guard serializes the child twice, which would run an
+    // expensive child such as a Scala UDF twice per row.
+    if (expr.legacySizeOfNull || !expr.child.nullable) {
+      return scalarFunctionExprToProto("size", arrayExprProto)
+    }
+
     for {
       isNotNullExprProto <- createIsNotNullExprProto(expr, inputs, binding)
       sizeScalarExprProto <- scalarFunctionExprToProto("size", arrayExprProto)
-      emptyLiteralExprProto <- createLiteralExprProto(expr.legacySizeOfNull)
+      nullLiteralExprProto <- exprToProtoInternal(Literal(null, IntegerType), inputs, binding)
     } yield {
       val caseWhenExpr = ExprOuterClass.CaseWhen
         .newBuilder()
         .addWhen(isNotNullExprProto)
         .addThen(sizeScalarExprProto)
-        .setElseExpr(emptyLiteralExprProto)
+        .setElseExpr(nullLiteralExprProto)
         .build()
       ExprOuterClass.Expr
         .newBuilder()
@@ -804,16 +1082,10 @@ object CometSize extends CometExpressionSerde[Size] {
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
     createUnaryExpr(
-      expr,
       expr.child,
       inputs,
       binding,
       (builder, unaryExpr) => builder.setIsNotNull(unaryExpr))
-  }
-
-  private def createLiteralExprProto(legacySizeOfNull: Boolean): Option[ExprOuterClass.Expr] = {
-    val value = if (legacySizeOfNull) -1 else null
-    exprToProto(Literal(value, IntegerType), Seq.empty)
   }
 
 }
@@ -833,14 +1105,14 @@ object CometArrayPosition extends CometExpressionSerde[ArrayPosition] with Array
       expr: ArrayPosition,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val arrayExprProto = exprToProto(expr.left, inputs, binding)
-    val elementExprProto = exprToProto(expr.right, inputs, binding)
+    val arrayExprProto = exprToProtoInternal(expr.left, inputs, binding)
+    val elementExprProto = exprToProtoInternal(expr.right, inputs, binding)
 
     // Use spark_array_position which returns Int64 and 0 when not found
     // (matching Spark's behavior)
     val optExpr =
       scalarFunctionExprToProto("spark_array_position", arrayExprProto, elementExprProto)
-    optExpr
+    withNullShortCircuit(expr, optExpr)
   }
 }
 
@@ -884,7 +1156,8 @@ object CometArraysZip extends CometExpressionSerde[ArraysZip] {
     // mimic Spark's ArraysZip behavior: returns NULL if any argument is NULL
     val combinedNullCheck = expr.children.map(child => IsNotNull(child)).reduce(And)
     val isNotNullExpr = exprToProtoInternal(combinedNullCheck, inputs, binding)
-    val nullLiteralProto = exprToProto(Literal(null, expr.dataType), Seq.empty)
+    val nullLiteralProto =
+      exprToProtoInternal(Literal(null, expr.dataType), Seq.empty, binding = true)
 
     if (exprChildren.forall(
         _.isDefined) && isNotNullExpr.isDefined && nullLiteralProto.isDefined) {
@@ -940,6 +1213,27 @@ trait ArraysBase {
       .collectFirst { case dt if !isTypeSupported(dt) => dt }
       .map(dt => Unsupported(Some(s"data type not supported: $dt")))
       .getOrElse(Compatible())
+
+  /**
+   * Cast `srcArray` and `item` to one deeply-nullable element type, for the native kernels that
+   * require the two Arrow types to be equal (`array_append`, `array_insert`). A `CreateArray`
+   * source is already deeply-nullable (see `CometCreateArray`) while a standalone item keeps
+   * Spark's Catalyst nullability, so for a complex element type the two disagree. Casting only
+   * widens metadata, and lands on both expressions' declared `asNullable` output element type.
+   * Primitive element types already agree, so the gate leaves them untouched.
+   */
+  def widenElementInLockstep(srcArray: Expression, item: Expression): (Expression, Expression) = {
+    val srcType = srcArray.dataType.asInstanceOf[ArrayType]
+    if (isComplexType(srcType.elementType)) {
+      val elementType = deepNullable(srcType.elementType)
+      val arrayType = ArrayType(elementType, containsNull = true)
+      val widenedSrc = if (srcType == arrayType) srcArray else Cast(srcArray, arrayType)
+      val widenedItem = if (item.dataType == elementType) item else Cast(item, elementType)
+      (widenedSrc, widenedItem)
+    } else {
+      (srcArray, item)
+    }
+  }
 }
 
 object CometArrayTransform extends CometCodegenDispatch[ArrayTransform]
@@ -950,7 +1244,39 @@ object CometArrayForAll extends CometCodegenDispatch[ArrayForAll]
 
 object CometArrayAggregate extends CometCodegenDispatch[ArrayAggregate]
 
-object CometArraySort extends CometCodegenDispatch[ArraySort]
+object CometArraySort extends CometExpressionSerde[ArraySort] with CometTypeShim {
+  private def usesDefaultComparator(expr: ArraySort): Boolean = expr.function match {
+    case lambda: LambdaFunction if lambda.arguments.length == 2 =>
+      val left = lambda.arguments.head
+      val right = lambda.arguments(1)
+      val noNulls = If(
+        LessThan(left, right),
+        Literal(-1),
+        If(GreaterThan(left, right), Literal(1), Literal(0)))
+      val withNulls = If(
+        And(IsNull(left), IsNull(right)),
+        Literal(0),
+        If(IsNull(left), Literal(1), If(IsNull(right), Literal(-1), noNulls)))
+      lambda.function == withNulls ||
+      (!expr.argument.dataType.asInstanceOf[ArrayType].containsNull &&
+        lambda.function == noNulls)
+    case _ => false
+  }
+
+  override def convert(
+      expr: ArraySort,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val elementType = expr.argument.dataType.asInstanceOf[ArrayType].elementType
+    if (usesDefaultComparator(expr) && !hasNonDefaultStringCollation(elementType)) {
+      scalarFunctionExprToProto(
+        "spark_array_sort",
+        exprToProtoInternal(expr.argument, inputs, binding))
+    } else {
+      CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
+    }
+  }
+}
 
 object CometZipWith extends CometCodegenDispatch[ZipWith]
 
@@ -995,18 +1321,35 @@ object CometSequence extends CometExpressionSerde[Sequence] with CodegenDispatch
   override def getUnsupportedReasons(): Seq[String] =
     Seq(temporalUnsupportedReason, unsafeArgUnsupportedReason)
 
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "When `stop - start` overflows a long but the sequence is short, Spark 4.0.5, 4.1.4, 4.2.1 " +
+      "and later return its elements (SPARK-58821), and earlier releases raise " +
+      "`INTERNAL_ERROR`. Comet chooses the behavior by the Spark version number. On a vendor " +
+      "build that reports an older version but includes SPARK-58821, Comet raises the error " +
+      "where Spark returns the elements.")
+
+  /**
+   * The native variant for a Spark version. Where SparkFixes.sequenceRecomputesOverflowedLength
+   * holds (SPARK-58821), Spark returns the exact length when `stop - start` overflows a long but
+   * the length is small, and `spark_sequence_recomputed` does the same. Earlier releases raise
+   * INTERNAL_ERROR("Unreachable code reached.") there, as `spark_sequence` does.
+   */
+  def nativeFunction(version: String): String =
+    if (SparkFixes.sequenceRecomputesOverflowedLength(version)) "spark_sequence_recomputed"
+    else "spark_sequence"
+
   override def convert(
       expr: Sequence,
       inputs: Seq[Attribute],
       binding: Boolean): Option[ExprOuterClass.Expr] = {
-    val startExprProto = exprToProto(expr.start, inputs, binding)
-    val stopExprProto = exprToProto(expr.stop, inputs, binding)
+    val startExprProto = exprToProtoInternal(expr.start, inputs, binding)
+    val stopExprProto = exprToProtoInternal(expr.stop, inputs, binding)
     // With no step argument the native kernel computes Spark's per-row default,
     // `start <= stop ? 1 : -1`, which cannot be expressed as a plan-time literal.
     val argProtos = Seq(startExprProto, stopExprProto) ++
-      expr.stepOpt.map(exprToProto(_, inputs, binding))
+      expr.stepOpt.map(exprToProtoInternal(_, inputs, binding))
     scalarFunctionExprToProtoWithReturnType(
-      "spark_sequence",
+      nativeFunction(SPARK_VERSION),
       expr.dataType,
       failOnError = false,
       argProtos: _*)

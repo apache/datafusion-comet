@@ -42,6 +42,16 @@ If you need to process dates far in the future with accurate timezone handling, 
 - Using timezone-naive types (`timestamp_ntz`) when timezone conversion is not required
 - Falling back to Spark for these specific operations
 
+### Timezone Database Versions
+
+Comet's native code converts between instants and local time with the IANA timezone database that
+chrono-tz compiles into the Comet library. Spark uses the JVM's timezone database (`tzdb.dat`), whose
+version depends on the JDK build and on whether its timezone data has been updated. When the two versions
+have different rules for a timezone, local times that Comet computes natively for that timezone can differ
+from Spark's for the affected dates. That covers `hour`, casts between timestamps and strings or dates,
+`date_trunc`, and parsing strings as timestamps. Comet logs a warning at startup when the two versions
+differ.
+
 <!--BEGIN:EXPR_COMPAT[datetime]-->
 
 <!--END:EXPR_COMPAT-->

@@ -35,7 +35,7 @@ import org.apache.arrow.flatbuf.{Int => IpcInt, Message, MessageHeader, Schema =
 import org.apache.arrow.memory.RootAllocator
 import org.apache.arrow.vector.{FieldVector, IntVector, VarCharVector, VectorSchemaRoot}
 import org.apache.arrow.vector.complex.{ListVector, MapVector}
-import org.apache.arrow.vector.dictionary.{Dictionary, DictionaryProvider}
+import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
 import org.apache.arrow.vector.ipc.ArrowStreamWriter
 import org.apache.arrow.vector.types.pojo.{ArrowType, DictionaryEncoding, Field, FieldType}
@@ -56,26 +56,8 @@ import org.apache.comet.serde.{OperatorOuterClass, QueryPlanSerde}
 
 class CometCelebornShuffleReaderSuite extends CometTestBase {
 
+  import NativeShuffleTestFrames._
   import testImplicits._
-
-  private def frameBytes(payload: Byte*): Array[Byte] = ByteBuffer
-    .allocate(20 + payload.size)
-    .order(ByteOrder.LITTLE_ENDIAN)
-    .putLong(12L + payload.size)
-    .putLong(0L)
-    .put(Array[Byte](78, 79, 78, 69)) // NONE codec; raw-reader tests need only a framed payload.
-    .put(payload.toArray)
-    .array()
-
-  private final class TrackingInputStream(bytes: Array[Byte])
-      extends ByteArrayInputStream(bytes) {
-    var closeCalls = 0
-
-    override def close(): Unit = {
-      closeCalls += 1
-      super.close()
-    }
-  }
 
   private final class RecordingReaderBackend(client: RecordingCelebornRawClient)
       extends ShuffleManager {
@@ -931,6 +913,35 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     context.markTaskCompleted(None)
   }
 
+  test("a killed task stops at the next read of a local shuffle's direct-read stream") {
+    withSQLConf(
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SHUFFLE_MODE.key -> "native",
+      CometConf.COMET_SHUFFLE_ENABLED.key -> "true",
+      "spark.sql.adaptive.enabled" -> "false") {
+      withParquetTable((0 until 12).map(i => (i, s"row-$i")), "local_direct_read_rows") {
+        val shuffled = sql("SELECT * FROM local_direct_read_rows").repartition(1, $"_1")
+        // Running the query writes the shuffle that the stream below reads again.
+        assert(shuffled.collect().length == 12)
+        val rdd = shuffled.queryExecution.executedPlan
+          .collectFirst { case exchange: CometShuffleExchangeExec =>
+            exchange.executeColumnar().asInstanceOf[CometShuffledBatchRDD]
+          }
+          .getOrElse(fail("Expected a native Comet shuffle exchange"))
+        val context = TaskContext.empty()
+        val blocks = rdd.computeAsShuffleBlockIterator(rdd.partitions.head, context)
+        try {
+          assert(blocks.hasNext() > 0)
+          context.markInterrupted("killed after the first batch")
+          intercept[TaskKilledException](blocks.hasNext())
+        } finally {
+          blocks.close()
+          context.markTaskCompleted(None)
+        }
+      }
+    }
+  }
+
   test("malformed native frames invalidate once before allocating or opening another reducer") {
     def header(length: Long, fields: Long): Array[Byte] = ByteBuffer
       .allocate(16)
@@ -1198,42 +1209,6 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     }
   }
 
-  private def arrowFrame(
-      root: VectorSchemaRoot,
-      dictionaries: DictionaryProvider = null): Array[Byte] = {
-    val output = new ByteArrayOutputStream()
-    val writer = new ArrowStreamWriter(root, dictionaries, Channels.newChannel(output))
-    val payload =
-      try {
-        writer.start()
-        writer.writeBatch()
-        writer.end()
-        output.toByteArray
-      } finally writer.close()
-    val frame = frameBytes(payload: _*)
-    ByteBuffer
-      .wrap(frame)
-      .order(ByteOrder.LITTLE_ENDIAN)
-      .putLong(8, root.getFieldVectors.size().toLong)
-    frame
-  }
-
-  private def intFrame(): Array[Byte] = {
-    val allocator = new RootAllocator(Long.MaxValue)
-    val values = new IntVector("value", allocator)
-    val root = VectorSchemaRoot.of(values)
-    try {
-      values.allocateNew()
-      Seq(-1, 0, 1).zipWithIndex.foreach { case (value, index) => values.setSafe(index, value) }
-      values.setValueCount(3)
-      root.setRowCount(3)
-      arrowFrame(root)
-    } finally {
-      root.close()
-      allocator.close()
-    }
-  }
-
   private def dictionaryFrame(): Array[Byte] = {
     val allocator = new RootAllocator(Long.MaxValue)
     val encoding = new DictionaryEncoding(0L, false, new ArrowType.Int(32, true))
@@ -1442,6 +1417,25 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     }
   }
 
+  test("JVM reader decodes multiple remote frames with the same expected Spark types") {
+    val frame = intFrame()
+    val attributes = Seq(AttributeReference("value", IntegerType)())
+    val (rows, failure, reports) =
+      readRemoteFrame(frame ++ frame ++ frame, attributes, raw = false)
+    assert(failure.isEmpty)
+    assert(rows.map(_.getInt(0)) == Seq.fill(3)(Seq(-1, 0, 1)).flatten)
+    assert(reports == 0)
+  }
+
+  test("JVM reader validates later frames against the retained expected Spark types") {
+    val attributes = Seq(AttributeReference("value", IntegerType)())
+    val (rows, failure, reports) =
+      readRemoteFrame(intFrame() ++ dictionaryFrame(), attributes, raw = false)
+    assert(rows.map(_.getInt(0)) == Seq(-1, 0, 1))
+    assert(failure.exists(_.toLowerCase(java.util.Locale.ROOT).contains("type mismatch")))
+    assert(reports == 1)
+  }
+
   test("both remote consumption paths validate Arrow offsets before exposing decoded arrays") {
     val allocator = new RootAllocator(Long.MaxValue)
     val strings = new VarCharVector("value", allocator)
@@ -1552,8 +1546,16 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       classOf[Native]
         .getDeclaredMethod(
           "decodeShuffleBlockWithValidation",
-          (parameters :+ classOf[Array[Byte]]): _*)
+          (parameters :+ java.lang.Long.TYPE): _*)
         .getReturnType == java.lang.Long.TYPE)
+    assert(
+      classOf[Native]
+        .getDeclaredMethod("createRemoteShuffleDecoder", classOf[Array[Byte]])
+        .getReturnType == java.lang.Long.TYPE)
+    assert(
+      classOf[Native]
+        .getDeclaredMethod("releaseRemoteShuffleDecoder", java.lang.Long.TYPE)
+        .getReturnType == java.lang.Void.TYPE)
 
     val local = new CometShuffleBlockIterator(new ByteArrayInputStream(Array.empty[Byte]))
     assert(!local.requiresValidation())
@@ -1604,8 +1606,32 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
     NativeBatchDecoderIteratorLifecycleChecks.closesPrefetchedBatch()
   }
 
+  test("shuffle readers read in pieces of the read buffer size without asking for available") {
+    NativeBatchDecoderIteratorLifecycleChecks.readersReadInPiecesOfTheReadBufferSize()
+  }
+
   test("decoder cleanup releases its delivered batch exactly once") {
     NativeBatchDecoderIteratorLifecycleChecks.closesDeliveredBatch()
+  }
+
+  test("decoder cleanup waits for native decoder creation") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForDecoderCreation()
+  }
+
+  test("decoder cleanup waits for active native decoding even when interrupted") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForNativeDecoding()
+  }
+
+  test("decoder cleanup waits for Arrow import and releases the resulting batch") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeWaitsForBatchImportAndPublication()
+  }
+
+  test("decoder cleanup can close a blocked transport without decoding its returned block") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeUnblocksTransportAndPreventsDecoding()
+  }
+
+  test("decoder unwinds Arrow import before reporting failures without blocking cleanup") {
+    NativeBatchDecoderIteratorConcurrencyChecks.closeProceedsDuringFailureReporting()
   }
 
   test("decoder cleanup releases remaining resources and preserves suppressed failures") {
@@ -1627,6 +1653,18 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
 
   test("decoder validates remote Arrow payloads without changing the local decode path") {
     NativeBatchDecoderIteratorLifecycleChecks.selectsValidationOnlyForRemoteStreams()
+  }
+
+  test("decoder does not allocate native state for empty or unused remote streams") {
+    NativeBatchDecoderIteratorLifecycleChecks.doesNotAllocateUnusedRemoteDecoder()
+  }
+
+  test("decoder releases remote native state once and preserves cleanup failures") {
+    NativeBatchDecoderIteratorLifecycleChecks.preservesRemoteDecoderCleanupFailures()
+  }
+
+  test("decoder does not report native decoder creation failures as remote data corruption") {
+    NativeBatchDecoderIteratorLifecycleChecks.doesNotReportRemoteDecoderCreationFailures()
   }
 
   test("decoder rejects a missing remote schema before consuming or reporting persisted data") {

@@ -55,7 +55,9 @@ TEMPLATE_DIR="${COMPAT_EXPR_DIR}/_category_template"
 # Spark profiles for which we publish per-version compatibility pages. Keep this list
 # in sync with docs/build.sh. Each entry must match both a Maven profile id (-P<profile>)
 # and a source-tree subdirectory under compatibility/expressions/.
-SPARK_PROFILES=(spark-3.4 spark-3.5 spark-4.0 spark-4.1)
+# Every run also rewrites the shared configs.md and expressions.md pages, so the last
+# entry decides their content. Keep the default build profile (spark-4.1) last.
+SPARK_PROFILES=(spark-3.5 spark-4.0 spark-4.2 spark-4.1)
 
 echo "Compiling and generating documentation content..."
 for profile in "${SPARK_PROFILES[@]}"; do
@@ -71,12 +73,16 @@ done
 # must pass the check. GenerateDocs wraps the config/cast tables in prettier-ignore, but
 # the surrounding generated Markdown is not guaranteed prettier-clean. prettier honors
 # .prettierignore, so excluded pages (e.g. expressions.md) are left untouched.
+# CI installs the latest prettier (`npm install -g prettier`), and releases of prettier differ
+# in what they accept, so format with the latest too rather than with whatever version is
+# installed locally or cached by npx. Generating the 1.2.0 docs with prettier 3.2.5 left 40
+# pages that the latest prettier rejects.
 if ! command -v npx >/dev/null 2>&1; then
   echo "ERROR: npx not found. Install Node/prettier (see docs/source/contributor-guide/development.md)" >&2
   exit 1
 fi
 echo "Formatting generated Markdown with prettier..."
-npx prettier "${LATEST_USER_GUIDE}/**/*.md" --write
+npx --yes prettier@latest "${LATEST_USER_GUIDE}/**/*.md" --write
 
 echo ""
 echo "Done! Generated documentation content in docs/source/user-guide/latest/"

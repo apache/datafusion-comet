@@ -15,5 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
+mod map_extract;
+mod map_from_arrays;
 mod map_sort;
+pub use map_extract::SparkMapExtract;
+pub use map_from_arrays::SparkMapFromArrays;
 pub use map_sort::spark_map_sort;

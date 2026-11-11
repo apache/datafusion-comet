@@ -18,26 +18,39 @@
 # under the License.
 #
 
-RAT_VERSION=0.16.1
+set -euo pipefail
 
-# download apache rat
-if [ ! -f apache-rat-${RAT_VERSION}.jar ]; then
-  curl -s https://repo1.maven.org/maven2/org/apache/rat/apache-rat/${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar > apache-rat-${RAT_VERSION}.jar
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 <source-tarball>" >&2
+  exit 1
 fi
 
-RAT="java -jar apache-rat-${RAT_VERSION}.jar -x "
+source_tarball=$1
+if [ ! -f "${source_tarball}" ]; then
+  echo "Source tarball does not exist: ${source_tarball}" >&2
+  exit 1
+fi
 
-RELEASE_DIR=$(cd "$(dirname "$BASH_SOURCE")"; pwd)
+RAT_VERSION=0.16.1
+RELEASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)
+work_dir=$(mktemp -d "${TMPDIR:-/tmp}/comet-rat.XXXXXX")
+trap 'rm -rf "${work_dir}"' EXIT
 
-# generate the rat report
-$RAT $1 > rat.txt
-python3 $RELEASE_DIR/check-rat-report.py $RELEASE_DIR/rat_exclude_files.txt rat.txt > filtered_rat.txt
-UNAPPROVED=`cat filtered_rat.txt  | grep "NOT APPROVED" | wc -l`
+rat_jar=${work_dir}/apache-rat-${RAT_VERSION}.jar
+rat_report=${work_dir}/rat.xml
+filtered_report=${work_dir}/filtered-rat.txt
 
-if [ "0" -eq "${UNAPPROVED}" ]; then
+curl --fail --location --retry 4 --retry-all-errors --silent --show-error \
+  --output "${rat_jar}" \
+  "https://repo.maven.apache.org/maven2/org/apache/rat/apache-rat/${RAT_VERSION}/apache-rat-${RAT_VERSION}.jar"
+
+java -jar "${rat_jar}" -x "${source_tarball}" > "${rat_report}"
+
+if python3 "${RELEASE_DIR}/check-rat-report.py" \
+  "${RELEASE_DIR}/rat_exclude_files.txt" "${rat_report}" > "${filtered_report}"; then
   echo "No unapproved licenses"
 else
-  echo "${UNAPPROVED} unapproved licences. Check rat report: rat.txt"
-  cat filtered_rat.txt
+  cat "${filtered_report}"
+  echo "Apache RAT found unapproved licenses" >&2
   exit 1
 fi

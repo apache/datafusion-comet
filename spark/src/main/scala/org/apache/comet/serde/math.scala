@@ -19,7 +19,7 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Hex, Hypot, If, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Sqrt, UnaryPositive, Unhex, WidthBucket}
+import org.apache.spark.sql.catalyst.expressions.{Abs, Add, Atan2, Attribute, BRound, Ceil, CheckOverflow, Conv, Expression, Floor, Greatest, Hex, Hypot, If, Least, LessThanOrEqual, Literal, Log, Log10, Log1p, Log2, Logarithm, NaNvl, Pmod, Pow, Signum, Sqrt, UnaryPositive, Unhex, WidthBucket}
 import org.apache.spark.sql.types.{DecimalType, DoubleType, NumericType}
 
 import org.apache.comet.serde.QueryPlanSerde.{exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType, serializeDataType}
@@ -169,9 +169,15 @@ object CometUnhex extends CometExpressionSerde[Unhex] with MathExprBase {
   }
 }
 
-object CometAbs extends CometExpressionSerde[Abs] with MathExprBase {
+/**
+ * `abs` lowers to the native `abs` kernel for numeric inputs. Interval inputs have no native
+ * implementation, so `CodegenDispatchFallback` keeps them in the Comet pipeline by running
+ * Spark's own `Abs.doGenCode` in the JVM codegen dispatcher, which matches Spark exactly.
+ */
+object CometAbs extends CometExpressionSerde[Abs] with MathExprBase with CodegenDispatchFallback {
 
-  val unsupportedReason: String = "Only integral, floating-point, and decimal types are supported"
+  private val unsupportedReason: String =
+    "`INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` inputs"
 
   override def getUnsupportedReasons(): Seq[String] = Seq(unsupportedReason)
 
@@ -230,6 +236,29 @@ object CometSqrt extends CometExpressionSerde[Sqrt] {
     val optExpr =
       scalarFunctionExprToProtoWithReturnType("spark_sqrt", DoubleType, false, childExpr)
     optExpr
+  }
+}
+
+// Uses a custom spark_signum UDF because DataFusion's own `signum` returns 0.0 for both zeros,
+// while Spark's Signum (java.lang.Math.signum) returns the zero it is given, so -0.0 keeps its
+// sign. The kernel takes doubles only. Spark's Signum also accepts the two interval types, which
+// DataFusion's `signum` failed on at execution, so those fall back. As with CometSqrt, the
+// Comet-only name needs its return type set explicitly.
+object CometSignum extends CometExpressionSerde[Signum] {
+
+  override def getUnsupportedReasons(): Seq[String] = Seq("Only `DoubleType` is supported")
+
+  override def getSupportLevel(expr: Signum): SupportLevel = expr.child.dataType match {
+    case DoubleType => Compatible()
+    case other => Unsupported(Some(s"signum does not support input type $other"))
+  }
+
+  override def convert(
+      expr: Signum,
+      inputs: Seq[Attribute],
+      binding: Boolean): Option[ExprOuterClass.Expr] = {
+    val childExpr = exprToProtoInternal(expr.child, inputs, binding)
+    scalarFunctionExprToProtoWithReturnType("spark_signum", DoubleType, false, childExpr)
   }
 }
 
@@ -294,3 +323,24 @@ object CometPmod extends CometCodegenDispatch[Pmod]
 object CometWidthBucket extends CometCodegenDispatch[WidthBucket]
 
 object CometUnaryPositive extends CometCodegenDispatch[UnaryPositive]
+
+/**
+ * `greatest` and `least` order string inputs by raw bytes natively, while Spark orders them under
+ * the input collation.
+ */
+class CometStringOrderingExtremum[T <: Expression](function: String)
+    extends CometScalarFunction[T](function)
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason(function))
+
+  override def getSupportLevel(expr: T): SupportLevel =
+    StringCollationSupport.getSupportLevel(function, expr.children)
+}
+
+object CometGreatest extends CometStringOrderingExtremum[Greatest]("greatest")
+
+object CometLeast extends CometStringOrderingExtremum[Least]("least")

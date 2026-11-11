@@ -17,10 +17,23 @@
 
 # Replacement for dorny/paths-filter, which is not on the apache org allow
 # list. Reads a list of changed files (one per line) and emits per-job
-# "<name>=true|false" lines suitable for $GITHUB_OUTPUT. Pattern semantics
-# match dorny/picomatch: "**" spans path segments, "*" stays within a
-# segment, and a leading "!" marks an exclude pattern.
+# "<name>=true|false" lines suitable for $GITHUB_OUTPUT.
+#
+# Each output folds together two independent questions:
+#
+#   1. Did the change touch files this job covers?  FILTERS, below. Pattern
+#      semantics match dorny/picomatch: "**" spans path segments, "*" stays
+#      within a segment, and a leading "!" marks an exclude pattern.
+#   2. Does this event permit the job to run at all?  POLICY, below.
+#
+# Question 2 used to live in ci.yml as a four-line `${{ }}` expression
+# repeated on every heavy job. Keeping it here instead means the whole
+# routing policy is in one place, is readable without evaluating GitHub
+# expression syntax in your head, and is covered by the cases in
+# dev/ci/check-ci-config.py, which YAML expressions never could be.
 
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -31,6 +44,8 @@ FILTERS = {
         "common/**",
         "spark/**",
         "spark-integration/**",
+        # The strict warnings job compiles the Delta contrib against Spark 3.5.
+        "contrib/delta-spark/**",
         "pom.xml",
         "**/pom.xml",
         ".mvn/**",
@@ -42,13 +57,27 @@ FILTERS = {
         ".github/workflows/pr_build_linux.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/maven-bootstrap/**",
         ".github/actions/rust-test/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
+    # Same inputs as build_linux: not a separate job but a second POLICY
+    # decision for the same call, selecting the full pipeline rather than the
+    # cache-populating subset. ci.yml folds it into the reusable workflow's
+    # `cache-refresh-only` input. Populated below, after the dict, so the two
+    # lists cannot drift.
+    "build_linux_full": [],
+    # A third POLICY decision on the same inputs: whether the linux-test matrix
+    # runs every Spark profile or only the PR-tier one. ci.yml folds it into
+    # the reusable workflow's `profiles` input. Populated below as well.
+    "build_linux_all_profiles": [],
     "build_macos": [
         "native/**",
         "common/**",
@@ -65,21 +94,100 @@ FILTERS = {
         ".github/workflows/pr_build_macos.yml",
         ".github/actions/setup-macos-builder/**",
         ".github/actions/java-test/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
         "!**.md",
         "!native/core/benches/**",
         "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
         "!spark/src/test/scala/org/apache/spark/sql/benchmark/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
     ],
     "benchmark": [
         "native/core/benches/**",
         "native/spark-expr/benches/**",
+        "native/operators/benches/**",
         "spark/src/test/scala/org/apache/spark/sql/benchmark/**",
+    ],
+    # dev/verify-contrib-delta-gate.sh proves the default cargo, Maven and
+    # libcomet builds carry no Delta surface and that the gated build does.
+    # It reads the cargo tree, the effective pom, the compiled classes and the
+    # dylib symbol table: main sources and build inputs, never tests.
+    "delta_gate": [
+        "native/**",
+        "common/src/main/**",
+        "spark/src/main/**",
+        "contrib/delta/**",
+        "pom.xml",
+        "**/pom.xml",
+        ".mvn/**",
+        "mvnw",
+        "Makefile",
+        "rust-toolchain.toml",
+        "dev/verify-contrib-delta-gate.sh",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_build_gate.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
+        "!**.md",
+        "!native/core/benches/**",
+        "!native/spark-expr/benches/**",
+        "!native/operators/benches/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+    ],
+    # A real Python worker against each Spark 4.x Arrow runner. The list is
+    # deliberately narrow: the suite builds Comet three times, once per Spark
+    # version, and covers map-in-batch wiring and the native scalar Arrow UDF.
+    "pyarrow_udf": [
+        "pom.xml",
+        "common/pom.xml",
+        "native/shuffle/src/spark_unsafe/row.rs",
+        "native/core/src/execution/python_udf.rs",
+        "native/core/src/execution/operators/arrow_python_udf.rs",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/CometArrowEvalPythonExec.scala",
+        "spark/src/main/spark-4.1+/org/apache/spark/sql/comet/shims/ShimCometArrowEvalPythonExec.scala",
+        "spark/src/test/spark-4.1+/org/apache/spark/sql/comet/CometArrowPythonUdfSuite.scala",
+        "spark/pom.xml",
+        "spark/src/main/java/org/apache/comet/vector/**",
+        "spark/src/main/java/org/apache/spark/sql/comet/execution/shuffle/SpillWriter.java",
+        "spark/src/main/scala/org/apache/comet/CometConf.scala",
+        "spark/src/main/scala/org/apache/comet/rules/EliminateRedundantTransitions.scala",
+        "spark/src/main/scala/org/apache/comet/vector/**",
+        "spark/src/main/scala/org/apache/spark/sql/comet/CometMapInBatchExec.scala",
+        "spark/src/main/scala/org/apache/spark/sql/comet/shims/MapInBatchInfo.scala",
+        "spark/src/main/spark-3.5/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.0/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.1/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/comet/shims/ShimCometMapInBatch.scala",
+        "spark/src/main/spark-4.2/org/apache/spark/sql/execution/python/CometArrowPythonRunner.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/comet/shims/Spark4xMapInBatchSupport.scala",
+        "spark/src/main/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerBase.scala",
+        "spark/src/test/resources/pyspark/conftest.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf.py",
+        "spark/src/test/resources/pyspark/test_native_arrow_udf_files.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_fuzz.py",
+        "spark/src/test/resources/pyspark/test_pyarrow_udf_dictionary_shuffle.py",
+        "spark/src/test/spark-3.5/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/comet/CometMapInBatchSuite.scala",
+        "spark/src/test/spark-4.x/org/apache/spark/sql/execution/python/CometArrowPythonRunnerSuite.scala",
+        ".mvn/**",
+        "mvnw",
+        ".github/workflows/ci.yml",
+        ".github/workflows/pyarrow_udf_test.yml",
+        ".github/actions/setup-builder/**",
+        ".github/actions/maven-bootstrap/**",
     ],
     "docs": [
         ".asf.yaml",
         ".github/workflows/docs.yaml",
         "docs/**",
+        # The docs deploy renders and then verifies the site's mermaid diagrams with this
+        # script, so a change to it has to be exercised by a real build, not just by the
+        # preflight run that renders the fences.
+        "dev/ci/check-mermaid.py",
         # Generated docs (configs.md, per-version expression compatibility pages) are
         # built from these Scala sources by GenerateDocs, so changes to them must
         # republish the site even when no docs/ file is touched.
@@ -89,28 +197,6 @@ FILTERS = {
         "spark/src/main/scala/org/apache/comet/expressions/**",
         "spark/src/main/spark-*/**",
     ],
-    "spark_3_4": [
-        "native/**/src/**",
-        "native/**/Cargo.toml",
-        "native/Cargo.lock",
-        "common/src/main/**",
-        "common/pom.xml",
-        "spark/src/main/**",
-        "!spark/src/main/spark-3.5/**",
-        "!spark/src/main/spark-4.0/**",
-        "!spark/src/main/spark-4.1/**",
-        "!spark/src/main/spark-4.2/**",
-        "!spark/src/main/spark-4.x/**",
-        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
-        "spark/pom.xml",
-        "dev/diffs/3.4.3.diff",
-        "pom.xml",
-        "rust-toolchain.toml",
-        ".github/workflows/ci.yml",
-        ".github/workflows/spark_sql_test_reusable.yml",
-        ".github/actions/setup-builder/**",
-        ".github/actions/setup-spark-builder/**",
-    ],
     "spark_3_5": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -118,7 +204,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-4.0/**",
         "!spark/src/main/spark-4.1/**",
         "!spark/src/main/spark-4.2/**",
@@ -130,8 +215,14 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_0": [
         "native/**/src/**",
@@ -140,7 +231,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.1/**",
@@ -152,8 +242,14 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "spark_4_1": [
         "native/**/src/**",
@@ -162,7 +258,6 @@ FILTERS = {
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
-        "!spark/src/main/spark-3.4/**",
         "!spark/src/main/spark-3.5/**",
         "!spark/src/main/spark-3.x/**",
         "!spark/src/main/spark-4.0/**",
@@ -174,26 +269,47 @@ FILTERS = {
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
         ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
-    "iceberg_1_8": [
+    "spark_4_2": [
         "native/**/src/**",
         "native/**/Cargo.toml",
         "native/Cargo.lock",
         "common/src/main/**",
         "common/pom.xml",
         "spark/src/main/**",
+        "!spark/src/main/spark-3.5/**",
+        "!spark/src/main/spark-3.x/**",
+        "!spark/src/main/spark-4.0/**",
+        "!spark/src/main/spark-4.1/**",
         "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
         "spark/pom.xml",
-        "dev/diffs/iceberg/**",
+        "dev/diffs/4.2.0.diff",
         "pom.xml",
         "rust-toolchain.toml",
         ".github/workflows/ci.yml",
-        ".github/workflows/iceberg_spark_test_reusable.yml",
+        ".github/workflows/spark_sql_test_reusable.yml",
+        "dev/ci/spark-sql-modules.py",
         ".github/actions/setup-builder/**",
-        ".github/actions/setup-iceberg-builder/**",
+        ".github/actions/setup-spark-builder/**",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
+    # Same inputs as spark_4_1: this is not a separate job but a second
+    # POLICY decision for the same call, selecting the sql_hive matrix rows.
+    # ci.yml folds the two outputs into the reusable workflow's `modules`
+    # input. Populated below, after the dict, so the two lists cannot drift.
+    "spark_4_1_hive": [],
     "iceberg_1_9": [
         "native/**/src/**",
         "native/**/Cargo.toml",
@@ -210,6 +326,14 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_10": [
         "native/**/src/**",
@@ -227,6 +351,14 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
     "iceberg_1_11": [
         "native/**/src/**",
@@ -244,8 +376,321 @@ FILTERS = {
         ".github/workflows/iceberg_spark_test_reusable.yml",
         ".github/actions/setup-builder/**",
         ".github/actions/setup-iceberg-builder/**",
+        "dev/ci/iceberg-test-shards.gradle",
+        "dev/ci/check-iceberg-shards.py",
+        "dev/ci/test-iceberg-shards.py",
+        ".github/actions/upload-artifact-retry/**",
+        ".github/actions/download-artifact-retry/**",
+        ".github/actions/maven-bootstrap/**",
+        ".mvn/**",
+        "mvnw",
     ],
+    "delta_3_5": [
+        "contrib/delta-spark/**",
+        "!**.md",
+        "native/**/src/**",
+        "native/**/Cargo.toml",
+        "native/Cargo.lock",
+        "common/src/main/**",
+        "common/pom.xml",
+        "spark/src/main/**",
+        "!spark/src/main/scala/org/apache/comet/GenerateDocs.scala",
+        # The contrib suites extend these through the spark test-jar.
+        "spark/src/test/scala/org/apache/spark/sql/CometTestBase.scala",
+        "spark/src/test/scala/org/apache/comet/CometS3TestBase.scala",
+        "spark/pom.xml",
+        "pom.xml",
+        "rust-toolchain.toml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/delta_contrib_test.yml",
+        ".github/actions/setup-builder/**",
+    ],
+    # Same inputs as delta_3_5: the Delta contrib workflow is called once per
+    # Spark profile, and the three calls share one path filter. Populated
+    # below, after the dict, so the lists cannot drift.
+    "delta_4_0": [],
+    "delta_4_1": [],
 }
+FILTERS["spark_4_1_hive"] = FILTERS["spark_4_1"]
+FILTERS["build_linux_full"] = FILTERS["build_linux"]
+FILTERS["build_macos_full"] = FILTERS["build_macos"]
+FILTERS["build_linux_all_profiles"] = FILTERS["build_linux"]
+FILTERS["delta_4_0"] = FILTERS["delta_3_5"]
+FILTERS["delta_4_1"] = FILTERS["delta_3_5"]
+
+# Which events may run each job, independent of the path filters above.
+#
+#   "pr"              every pull request, except one from a fork (see
+#                     UPSTREAM below), plus a push to a fork
+#   "queue"           the merge queue, i.e. a merge_group event
+#   "nightly"         the scheduled run against main, once a day
+#   "push"            push to main
+#   "label:<name>"    a pull request carrying that label
+#
+# workflow_dispatch always runs everything, so it is not listed. "pr" and
+# "label:" are mutually exclusive -- a job is either unconditional on pull
+# requests or opt-in, never both -- and check-ci-config.py rejects a job that
+# lists both rather than letting the label quietly win.
+#
+# The merge queue is the authoritative gate: it tests the merge result rather
+# than the PR head, and every "queue" job has to pass before a change lands.
+# "nightly" is for the suites that catch a regression on a Spark or Iceberg
+# version other than the default one: about 870 of the 1,900 runner-minutes a
+# queue run cost in September 2026, and the most common reason a queue run
+# went red on a good tree (issue #5870). A regression there is real but rare,
+# and a day's delay in seeing it costs less than running the suites on every
+# merge. The scheduled run diffs main against the commit the last successful
+# scheduled run tested and routes through FILTERS like any other event. A job
+# is "queue" or "nightly", never both; check-ci-config.py enforces that.
+#
+# "push" is reserved for work that can only happen once a commit is on main.
+# Adding "push" back to a test job would make every merge run it twice, once
+# in the queue and once after, which is the thing the queue was adopted to
+# avoid.
+#
+# A pull request that targets a release branch (`branch-N.M`) is the one
+# exception: it runs every "pr", "queue" and "nightly" job. On main the tiers
+# spread the suites over three events, and every change still meets all of
+# them. A release branch has only the pull request: the merge queue covers the
+# default branch alone, ci.yml runs on push only for main, and GitHub fires
+# `schedule` only on the default branch. A tier there would not defer a suite,
+# it would drop it. And the tiers exist because of main's volume, which a
+# release branch does not have: branch-1.0 took 28 pull requests in its first
+# two months. "push" jobs (the site deploy) and any label-only job keep their
+# rules on a release branch.
+POLICY = {
+    # The one test job that also runs on push to main, and only because of
+    # actions/cache scoping: a pull request can restore caches saved on its
+    # own branch or on main, and nowhere else. The queue runs on a throwaway
+    # gh-readonly-queue/* branch, so whatever it saves is deleted with that
+    # branch. Without a push run, a Cargo.lock or pom.xml change would leave
+    # main's cargo-ci, Maven and TPC-H/TPC-DS caches stale
+    # forever, and every later pull request would pay the delta on top of the
+    # restore-keys prefix match.
+    #
+    # On push that is the *only* thing it is for. The queue already tested the
+    # exact tree that landed, so re-running the lints and the linux-test
+    # matrix there tests nothing, and they are 514 of the 587 runner-minutes a
+    # push run costs. The split below keeps the cache writers on push and moves
+    # everything else behind `build_linux_full`.
+    "build_linux": ["pr", "queue", "push"],
+    # The lints and the test matrix inside pr_build_linux.yml. Deliberately no
+    # "push": ci.yml turns this output into the workflow's `cache-refresh-only`
+    # input, so dropping "push" here is what trims the push tier down to the
+    # jobs that write an actions/cache entry. See issue #5929.
+    "build_linux_full": ["pr", "queue"],
+    # The linux-test matrix's Spark profiles other than the default one. The
+    # five profiles cost about the same each, roughly 2,300 runner-minutes a
+    # day apiece on pull requests in mid-September 2026, and together they
+    # were three quarters of the Linux build. A pull request and the queue run
+    # the Comet test suites against Spark 4.1 only; the nightly run covers the
+    # other four. The lint-java matrix still compiles every Spark profile on
+    # every pull request, so what waits for the nightly is runtime behaviour,
+    # not a shim that fails to build. ci.yml turns this output into the
+    # workflow's `profiles` input.
+    "build_linux_all_profiles": ["nightly", "label:run-all-spark-profiles"],
+    # macOS runners are the scarcest capacity we have, and the Linux build
+    # already covers rustfmt and the Rust/JVM compile on every PR. The label
+    # is for a change that touches platform-specific code.
+    #
+    # Split like the Linux build: `build_macos` runs pr_build_macos.yml at all,
+    # `build_macos_full` runs its test matrix too. Push to main sets only the
+    # first, so the workflow runs in cache-refresh-only mode there and keeps
+    # main's macOS cargo cache warm. Nothing else runs on main, and an entry
+    # written from the queue's throwaway branch is visible to nobody, so
+    # without the push run every queue build compiled the native library from
+    # scratch (issue #6390).
+    "build_macos": ["queue", "push", "label:run-macos-tests"],
+    "build_macos_full": ["queue", "label:run-macos-tests"],
+    # Benchmark sources are compiled and linted, never run, so a break there
+    # cannot affect a PR's correctness verdict; the queue catches it.
+    "benchmark": ["queue", "label:run-benchmark-check"],
+    # The Delta build gate only proves a build-system property, and the
+    # PyArrow suite builds Comet once per Spark 4.x version to drive a real
+    # Python worker. Neither changes often enough to earn a PR-tier slot; the
+    # queue catches a regression before it lands, and the label is the escape
+    # hatch for a change to the surface they cover.
+    "delta_gate": ["queue", "label:run-delta-build-gate"],
+    "pyarrow_udf": ["queue", "label:run-pyarrow-udf-tests"],
+    # docs deploys to asf-site, so it must not run from a pull request or from
+    # the queue's throwaway branch.
+    "docs": ["push"],
+    # Spark 4.1 is the default build profile and the one Spark SQL suite the
+    # queue runs; 3.5, 4.0 and 4.2 run nightly, or on a pull request with
+    # their label.
+    "spark_3_5": ["nightly", "label:run-spark-3.5-tests"],
+    "spark_4_0": ["nightly", "label:run-spark-4.0-tests"],
+    # Spark 4.1 is the default build profile, and its catalyst and sql_core
+    # shards are the one Spark SQL suite every pull request runs. For a pull
+    # request from a fork that is the fork's runners, not ASF's: the PR tier
+    # runs there (see UPSTREAM below). The suite was out of the PR tier while
+    # the PR tier ran upstream, because agent-driven review rounds meant each
+    # pull request paid for the whole 4.1 build several times over. On a fork
+    # that repetition costs ASF nothing, and running the suite there means a
+    # contributor sees a 4.1 failure before the queue does, rather than having
+    # to ask for a label. The queue runs the same shards again on the merge
+    # result, and it stays the gate.
+    #
+    # The sql_hive shards stay in the queue alone. They are four more shards
+    # on every push for a surface few changes touch, and the queue still runs
+    # them before anything lands; `run-spark-4.1-hive-tests` brings them
+    # forward onto a pull request.
+    "spark_4_1": ["pr", "queue"],
+    "spark_4_1_hive": ["queue", "label:run-spark-4.1-hive-tests"],
+    # Spark 4.2 support is experimental, but the suite passes, so it sits in
+    # the nightly tier with the other non-default versions rather than being
+    # reachable only on demand. Nightly is the right tier for it twice over:
+    # a 4.2 regression blocks nobody's merge, and running it every night is
+    # what keeps the 4.2 diff in `dev/diffs` from silently rotting as the
+    # other diffs are updated -- the failure mode an on-demand suite hides
+    # until someone thinks to ask for it.
+    "spark_4_2": ["nightly", "label:run-spark-4.2-tests"],
+    # Same shape for Iceberg: 1.11 is the only Spark 4.1 coverage, so it is
+    # the one Iceberg version every pull request and the queue run, for the
+    # same reason as Spark 4.1 above. The two older versions run nightly,
+    # and one label brings both forward onto a pull request.
+    "iceberg_1_9": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_10": ["nightly", "label:run-iceberg-tests"],
+    "iceberg_1_11": ["pr", "queue"],
+    # The Delta contrib suites all run nightly. The PR tier's strict warnings
+    # job compiles the contrib against Spark 3.5, so a change that breaks its
+    # build on Spark 3.5 fails on its own pull request. One label opts a pull
+    # request into all three.
+    "delta_3_5": ["nightly", "label:run-delta-tests"],
+    "delta_4_0": ["nightly", "label:run-delta-tests"],
+    "delta_4_1": ["nightly", "label:run-delta-tests"],
+}
+
+
+# Pull requests from a contributor's fork do not run the PR tier on ASF runners.
+# The contributor's fork runs it instead, on a push to the PR branch (see
+# ci_fork.yml), and a bridge workflow (fork_ci_status.yml) mirrors that run onto
+# the pull request as the informational `CI (fork)` check. The merge queue still
+# runs the queue tier on the merge result, so the fork's verdict is feedback and
+# never a gate: a contributor controls their own workflows. A fork PR keeps
+# every opt-in label job, and a PR from a branch of this repository, or one that
+# targets a release branch, keeps the PR tier upstream.
+UPSTREAM = "apache/datafusion-comet"
+
+
+def is_fork_pull_request(event):
+    """Does the pull request's PR tier run on a fork, not here?
+
+    That is a pull request from a fork of UPSTREAM into the default branch. It
+    is also any pull request opened inside a fork, whose own branch push has
+    already run the tier through ci_fork.yml: running it again on the
+    `pull_request` event would test the same commit twice.
+    """
+    if event.get("name") != "pull_request":
+        return False
+    repository = event.get("repository", "")
+    if repository and repository != UPSTREAM:
+        return True
+    head = event.get("head_repository", "")
+    return (
+        repository == UPSTREAM
+        and bool(head)
+        and head != UPSTREAM
+        and event.get("base") == "main"
+    )
+
+
+def is_fork_push(event):
+    """Is this a push to a contributor's fork, rather than to UPSTREAM?"""
+    repository = event.get("repository", "")
+    return event.get("name") == "push" and bool(repository) and repository != UPSTREAM
+
+
+# Release branches are named `branch-<major>.<minor>`, as in branch-0.17 and
+# branch-1.0. A pull request against one runs these tiers; see the end of the
+# comment above POLICY.
+RELEASE_BRANCH = re.compile(r"branch-\d+\.\d+")
+RELEASE_BRANCH_TIERS = ("pr", "queue", "nightly")
+
+
+def gating_labels(job):
+    return [t[len("label:"):] for t in POLICY[job] if t.startswith("label:")]
+
+
+def event_allows(job, event):
+    """Does `event` permit `job` to run, ignoring which files changed?
+
+    `event` is {"name", "action", "label", "labels", "base", "repository",
+    "head_repository"}: the workflow event name, the pull_request action, the
+    label just added on a `labeled` event, the labels currently on the pull
+    request, the branch it targets, the repository the workflow runs in, and
+    the repository the pull request's branch lives in.
+    """
+    tiers = POLICY[job]
+    name = event.get("name")
+
+    if name == "workflow_dispatch":
+        return True
+    if name == "push":
+        # A push to a fork's branch is the contributor's own pull request tier.
+        # The "push" tier is main's cache refresh and site deploy, and a fork
+        # has no site to deploy.
+        if is_fork_push(event):
+            return "pr" in tiers
+        return "push" in tiers
+    if name == "merge_group":
+        return "queue" in tiers
+    if name == "schedule":
+        return "nightly" in tiers
+    if name != "pull_request":
+        return False
+    if RELEASE_BRANCH.fullmatch(event.get("base", "")):
+        return release_branch_allows(job, event)
+
+    gates = gating_labels(job)
+    if gates:
+        if not any(label in event.get("labels", []) for label in gates):
+            return False
+    elif "pr" not in tiers or is_fork_pull_request(event):
+        return False
+
+    # A `labeled` event fires at the same commit as the opened/synchronize run
+    # that already tested it, and GitHub cannot filter a pull_request trigger
+    # by label name. So on `labeled`, run only the job the new label gates;
+    # everything else would be duplicating a pipeline. See issue #5007 for what
+    # happens when this is expressed as a job-level `if:` instead.
+    if event.get("action") == "labeled":
+        return event.get("label") in gates
+    return True
+
+
+def release_branch_allows(job, event):
+    """event_allows for a pull request that targets a release branch."""
+    tiers = POLICY[job]
+    gates = gating_labels(job)
+    automatic = any(tier in tiers for tier in RELEASE_BRANCH_TIERS)
+    # The opened/synchronize run already ran every automatic job at this
+    # commit, so a `labeled` run adds only a job that nothing else runs there,
+    # which leaves only the label-only jobs, of which there are currently none.
+    if event.get("action") == "labeled":
+        return not automatic and event.get("label") in gates
+    return automatic or any(label in event.get("labels", []) for label in gates)
+
+
+def compute(files, event):
+    """Return {job: bool}, folding the path filter and the event policy."""
+    return {
+        name: event_allows(name, event) and matches(patterns, files)
+        for name, patterns in FILTERS.items()
+    }
+
+
+def event_from_env():
+    labels = os.environ.get("PR_LABELS", "")
+    return {
+        "name": os.environ.get("EVENT_NAME", ""),
+        "action": os.environ.get("EVENT_ACTION", ""),
+        "label": os.environ.get("LABEL_NAME", ""),
+        "labels": json.loads(labels) if labels.strip() else [],
+        "base": os.environ.get("PR_BASE_REF", ""),
+        "repository": os.environ.get("REPOSITORY", ""),
+        "head_repository": os.environ.get("PR_HEAD_REPO", ""),
+    }
 
 
 def glob_to_regex(pat):
@@ -288,8 +733,14 @@ def matches(patterns, files):
 
 
 if __name__ == "__main__":
+    event = event_from_env()
+    # workflow_dispatch has no meaningful base to diff against, so the caller
+    # passes an empty list and every path filter is treated as matched.
+    if event["name"] == "workflow_dispatch":
+        for name in FILTERS:
+            print(f"{name}=true")
+        sys.exit(0)
     files_path = Path(sys.argv[1])
     files = [line.strip() for line in files_path.read_text().splitlines() if line.strip()]
-    for name, patterns in FILTERS.items():
-        flag = "true" if matches(patterns, files) else "false"
-        print(f"{name}={flag}")
+    for name, flag in compute(files, event).items():
+        print(f"{name}={'true' if flag else 'false'}")

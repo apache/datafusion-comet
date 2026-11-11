@@ -542,7 +542,7 @@ private[shuffle] class CompletedMaterializationJobs extends SparkListener {
   }
 }
 
-class CometCelebornFallbackTestShuffleManager(conf: SparkConf, isDriver: Boolean)
+private[shuffle] class CometCelebornFallbackTestShuffleManager(conf: SparkConf, isDriver: Boolean)
     extends CometCelebornShuffleManager(
       conf,
       isDriver,

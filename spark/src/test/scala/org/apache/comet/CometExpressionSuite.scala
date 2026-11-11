@@ -22,33 +22,247 @@ package org.apache.comet
 import scala.util.Random
 
 import org.apache.hadoop.fs.Path
+import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{Column, CometTestBase, DataFrame, Row}
-import org.apache.spark.sql.catalyst.expressions.{Alias, Cast, FromUnixTime, Literal, StructsToJson, TruncDate, TruncTimestamp}
+import org.apache.spark.sql.catalyst.expressions.{Add, Alias, AtLeastNNonNulls, AttributeReference, Cast, Divide, FromUnixTime, In, InSet, IntegralDivide, Literal, Multiply, Remainder, StructsToJson, Subtract, TruncDate, TruncTimestamp}
 import org.apache.spark.sql.catalyst.optimizer.{ConvertToLocalRelation, OptimizeIn, SimplifyExtractValueOps}
-import org.apache.spark.sql.comet.CometProjectExec
-import org.apache.spark.sql.execution.{ProjectExec, SparkPlan}
+import org.apache.spark.sql.comet.{CometFilterExec, CometProjectExec, CometSortExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.execution.{LocalTableScanExec, ProjectExec, SparkPlan}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.SESSION_LOCAL_TIMEZONE
 import org.apache.spark.sql.types._
 
-import org.apache.comet.CometSparkSessionExtensions.{isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.CometSparkSessionExtensions.{isSpark35Plus, isSpark40Plus, isSpark41Plus, isSpark42Plus}
+import org.apache.comet.serde.{CometAdd, CometDivide, CometIntegralDivide, CometMultiply, CometRemainder, CometSubtract, Compatible, Unsupported}
 import org.apache.comet.testing.{DataGenOptions, FuzzDataGenerator}
 
 class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   import testImplicits._
 
-  val ARITHMETIC_OVERFLOW_EXCEPTION_MSG =
-    """[ARITHMETIC_OVERFLOW] integer overflow. If necessary set "spark.sql.ansi.enabled" to "false" to bypass this error"""
   val DIVIDE_BY_ZERO_EXCEPTION_MSG =
     """Division by zero. Use `try_divide` to tolerate divisor being 0 and return NULL instead"""
+
+  private def arithmeticError(error: Throwable): SparkThrowable =
+    causeChain(error)
+      .collectFirst {
+        // SparkArithmeticException is private[spark] in Spark 3.4, so this cross-version test
+        // cannot pattern match on its type directly.
+        case error: SparkThrowable
+            if error.getClass.getName == "org.apache.spark.SparkArithmeticException" =>
+          error
+      }
+      .getOrElse(fail(s"Expected SparkArithmeticException, got $error"))
 
   // Temporary test to verify checkSparkAnswer failure output labels Comet/Spark correctly.
   ignore("check output labels on mismatch") {
     val cometDf = Seq((1, "apple"), (2, "banana"), (3, "cherry")).toDF("id", "fruit")
     val sparkAnswer = Seq(Row(1, "apple"), Row(2, "BANANA"), Row(3, "cherry"))
     checkCometAnswer(cometDf, sparkAnswer)
+  }
+
+  test("AtLeastNNonNulls: na.drop counts non-null and non-NaN values") {
+    val input = sql("""SELECT * FROM VALUES
+      (1, '', cast('NaN' AS FLOAT), 1D),
+      (2, NULL, -0F, cast('NaN' AS DOUBLE)),
+      (3, 'NaN', cast(NULL AS FLOAT), cast('Infinity' AS DOUBLE)),
+      (4, NULL, cast(NULL AS FLOAT), cast(NULL AS DOUBLE)) AS t(id, s, f, d)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "2") {
+          for (n <- Seq(-1, 0, 1, 2, 3, 4)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, Seq("s", "f", "d")),
+              native = Seq("atleastnnonnulls"))
+          }
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop("all", Seq("s", "f", "d")),
+            native = Seq("atleastnnonnulls"))
+          withSQLConf(CometConf.getExprEnabledConfigKey("AtLeastNNonNulls") -> "false") {
+            checkSparkAnswerAndFallbackReason(
+              spark.table("nonnulls").na.drop(2, Seq("s", "f", "d")),
+              "Expression support is disabled. Set spark.comet.expression.AtLeastNNonNulls.enabled=true to enable it.")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: counter and batch boundaries") {
+    val columns = (0 until 33).map(i => s"c$i")
+    val fields = columns.zipWithIndex.map { case (name, i) =>
+      s"CASE WHEN (id + $i) % 33 < id % 34 THEN cast(id AS DOUBLE) " +
+        s"WHEN $i % 2 = 0 THEN cast('NaN' AS DOUBLE) ELSE NULL END AS $name"
+    }
+    withTempPath { dir =>
+      spark.range(137).selectExpr((Seq("id") ++ fields): _*).write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        withSQLConf(CometConf.COMET_BATCH_SIZE.key -> "65") {
+          for (n <- Seq(2, 3, 7, 8, 15, 16, 17, 31, 32, 33, 34)) {
+            checkSparkAnswerAndImpl(
+              spark.table("nonnulls").na.drop(n, columns),
+              native = Seq("atleastnnonnulls"))
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: complex values use only their outer nullability") {
+    val input = sql("""SELECT * FROM VALUES
+      (array(cast(NULL AS INT)), named_struct('a', cast(NULL AS INT)), map(1, cast(NULL AS INT))),
+      (array(), named_struct('a', 1), map()),
+      (NULL, NULL, NULL) AS t(a, s, m)""")
+    withTempPath { dir =>
+      input.write.parquet(dir.getCanonicalPath)
+      withParquetTable(dir.getCanonicalPath, "nonnulls") {
+        for (n <- Seq(1, 2, 3, 4)) {
+          checkSparkAnswerAndImpl(
+            spark.table("nonnulls").na.drop(n),
+            native = Seq("atleastnnonnulls"))
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: short-circuit child evaluation") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query(n: Int, prefix: Boolean = false): DataFrame = {
+          val df = spark.table("nonnulls")
+          val children = Seq(df.col("_1").expr, Cast(df.col("_2").expr, IntegerType))
+          val args = if (prefix) Literal(1) +: children else children
+          df.select(getColumnFromExpression(AtLeastNNonNulls(n, args)))
+        }
+        for (n <- Seq(-1, 0, 1)) {
+          checkSparkAnswerAndImpl(query(n), native = Seq("atleastnnonnulls"))
+        }
+        // Reach the threshold on different children for different rows in the counter path.
+        checkSparkAnswerAndImpl(query(2, prefix = true), native = Seq("atleastnnonnulls"))
+        for (n <- Seq(2, 3)) {
+          assertExpressionImpl(
+            query(n).queryExecution.executedPlan,
+            Seq("atleastnnonnulls"),
+            Seq.empty)
+          checkSparkError(query(n), "CAST_INVALID_INPUT")
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: falls back rather than skip a shared subexpression") {
+    withParquetTable(Seq((Some(1), "bad"), (None, "7")), "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        // Every row reaches n=2 before its second cast, and the first row before either cast.
+        // Spark evaluates the repeated cast for every row only when it eliminates it as a
+        // shared subexpression, and then fails on "bad".
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(df.col("_2").expr, IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          // A shared subexpression among the first n children is evaluated for every row anyway.
+          val df = spark.table("nonnulls")
+          val plus = Add(df.col("_1").expr, Literal(1))
+          checkSparkAnswerAndImpl(
+            df.select(getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(plus, plus, Cast(df.col("_2").expr, IntegerType))))),
+            native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(
+                  causeChain(error).exists(e =>
+                    String.valueOf(e.getMessage).contains("CAST_INVALID_INPUT")),
+                  error)
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+        }
+      }
+    }
+  }
+
+  test("AtLeastNNonNulls: shared decimal subexpressions preserve divide-by-zero errors") {
+    val rows = Seq((Some(1), BigDecimal(1), BigDecimal(0)), (None, BigDecimal(7), BigDecimal(1)))
+    withParquetTable(rows, "nonnulls") {
+      withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+        def query: DataFrame = {
+          val df = spark.table("nonnulls")
+          val cast = Cast(Divide(df.col("_2").expr, df.col("_3").expr), IntegerType)
+          df.select(
+            getColumnFromExpression(
+              AtLeastNNonNulls(2, Seq(Literal(1), df.col("_1").expr, cast, cast))))
+        }
+
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "false") {
+          checkSparkAnswerAndImpl(query, native = Seq("atleastnnonnulls"))
+        }
+        withSQLConf(SQLConf.SUBEXPRESSION_ELIMINATION_ENABLED.key -> "true") {
+          val df = query
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              for (error <- Seq(sparkException, cometException)) {
+                assert(arithmeticError(error).getErrorClass == "DIVIDE_BY_ZERO")
+              }
+            case result => fail(s"Expected both Spark and Comet to fail, got $result")
+          }
+          val reasons =
+            new ExtendedExplainInfo().getFallbackReasons(df.queryExecution.executedPlan)
+          assert(
+            reasons.exists(_.contains("would skip a subexpression that Spark evaluates")),
+            reasons)
+        }
+      }
+    }
+  }
+
+  test("nested floating point membership uses native In and InSet") {
+    withTable("nested_in_plan") {
+      sql("CREATE TABLE nested_in_plan (a ARRAY<DOUBLE>) USING parquet")
+      sql("""INSERT INTO nested_in_plan VALUES
+        |(array(CAST('-0.0' AS DOUBLE))), (array(CAST('0.0' AS DOUBLE))),
+        |(array(CAST('NaN' AS DOUBLE))), (array(CAST('1.0' AS DOUBLE))),
+        |(array(CAST(NULL AS DOUBLE))), (array()), (NULL)""".stripMargin)
+      withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> "") {
+        for (size <- Seq(1, 2)) {
+          val candidates = Seq.fill(size)("array(CAST('0.0' AS DOUBLE))").mkString(", ")
+          val df = sql(s"SELECT a IN ($candidates), a NOT IN ($candidates) FROM nested_in_plan")
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          assert(!expressions.exists(_.exists(_.isInstanceOf[In])))
+          checkSparkAnswerAndImpl(df, native = Seq("equalto"))
+        }
+      }
+      for (threshold <- Seq(100, 0)) {
+        withSQLConf("spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+          val df = sql("""SELECT a IN (array(CAST('0.0' AS DOUBLE)),
+            |array(CAST('2.0' AS DOUBLE))) FROM nested_in_plan""".stripMargin)
+          val expressions = df.queryExecution.optimizedPlan.flatMap(_.expressions)
+          if (threshold == 0) {
+            assert(expressions.exists(_.exists(_.isInstanceOf[InSet])))
+          } else {
+            assert(expressions.exists(_.exists(_.isInstanceOf[In])))
+          }
+          checkSparkAnswerAndImpl(df, native = Seq(if (threshold == 0) "inset" else "in"))
+        }
+      }
+    }
   }
 
   test("sort floating point with negative zero") {
@@ -62,64 +276,223 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       schema,
       1000,
       DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReasons(
-        "select * from tbl order by 1, 2",
-        Set(
-          "unsupported range partitioning sort order",
-          "Sorting on floating-point is not 100% compatible with Spark"))
+    withTempDir { dir =>
+      // `-0.0` and `+0.0` are peers under Spark's comparison, so `ORDER BY c0, c1` alone leaves
+      // genuine ties whose relative order neither engine promises. Materialize a unique `id` to
+      // Parquet and sort on it last, making the ordering total so the row-by-row comparison below
+      // tests the sort keys rather than an unspecified tie order.
+      val path = new Path(dir.toString, "tbl").toString
+      df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("tbl")
+
+      // Scalar floating-point sort keys are normalized natively, so strict mode admits them. The
+      // nested tests below cover array and struct keys.
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
+      }
+    }
+  }
+  // https://github.com/apache/datafusion-comet/issues/5506
+  //
+  // Scalar floating-point sort keys are admitted under strict floating point because their
+  // comparison keys are normalized natively. Signed zeros survive a Parquet round trip, so these
+  // cases are materialized to Parquet, which also keeps constant folding from deleting the sort.
+  // NaN payloads do NOT survive that round trip (every payload is canonicalized on write), so
+  // payload fidelity is covered separately below over a local relation.
+  //
+  // Every query ends with a unique `id` so the ordering is total: -0.0 and +0.0 are peers under
+  // Spark's comparison, and neither engine promises an order within a tie.
+  private val strictFpSortRows = Seq(
+    (0, Some(-0.0f), Some(-0.0d), 1),
+    (1, Some(0.0f), Some(0.0d), 0),
+    (2, Some(0.0f), Some(0.0d), 1),
+    (3, Some(-0.0f), Some(-0.0d), 0),
+    (4, Some(1.0f), Some(1.0d), 0),
+    (5, Some(-1.0f), Some(-1.0d), 1),
+    (6, None, None, 0),
+    (7, None, None, 1),
+    (8, Some(Float.NaN), Some(Double.NaN), 0),
+    (9, Some(Float.PositiveInfinity), Some(Double.PositiveInfinity), 1),
+    (10, Some(Float.NegativeInfinity), Some(Double.NegativeInfinity), 0))
+
+  for {
+    col <- Seq("f", "d")
+    direction <- Seq("ASC", "DESC")
+    nullOrder <- Seq("NULLS FIRST", "NULLS LAST")
+    compound <- Seq(false, true)
+  } {
+    val label = s"$col $direction $nullOrder" + (if (compound) " with compound key" else "")
+    test(s"strict floating point: scalar sort on $label") {
+      withTempDir { dir =>
+        val path = new Path(dir.toString, "strict_fp_sort").toString
+        strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
+        spark.read.parquet(path).createOrReplaceTempView("strict_fp_sort")
+
+        val secondary = if (compound) ", s DESC" else ""
+        val query =
+          s"SELECT id, f, d, s FROM strict_fp_sort ORDER BY $col $direction $nullOrder$secondary, id"
+
+        withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+          checkSparkAnswerAndOperator(sql(query), Seq(classOf[CometSortExec]))
+        }
+      }
     }
   }
 
-  test("sort array of floating point with negative zero") {
-    val schema = StructType(
-      Seq(
-        StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
-        StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true)))
+  test("strict floating point: scalar TopK sort key") {
+    // TakeOrderedAndProject reaches the native path through the same CometSortOrder gate as a
+    // plain sort, but lands on a different operator (Sort with a fetch). Widening admission
+    // therefore opens this path too, so assert it rather than inferring it.
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "strict_fp_topk").toString
+      strictFpSortRows.toDF("id", "f", "d", "s").write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("strict_fp_topk")
+
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        for (col <- Seq("f", "d")) {
+          checkSparkAnswerAndOperator(
+            sql(s"SELECT id, f, d FROM strict_fp_topk ORDER BY $col ASC NULLS LAST, id LIMIT 4"),
+            Seq(classOf[CometTakeOrderedAndProjectExec]))
+        }
+      }
+    }
+  }
+
+  test("strict floating point: scalar sort keeps NaN payloads and zero signs unchanged") {
+    // A local relation preserves the raw bits that a Parquet round trip would canonicalize, so
+    // this is where "only the comparison key is normalized" can actually be asserted.
+    val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
+    val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
+    val negNanF = java.lang.Float.intBitsToFloat(0xffc00002)
+    val posNanF = java.lang.Float.intBitsToFloat(0x7fc00002)
+    val rows = Seq(
+      (0, negNanF, negNan),
+      (1, posNanF, posNan),
+      (2, -0.0f, -0.0d),
+      (3, 0.0f, 0.0d),
+      (4, 1.0f, 1.0d))
+    val expected = rows.map { case (id, f, d) =>
+      id -> ((java.lang.Float.floatToRawIntBits(f), java.lang.Double.doubleToRawLongBits(d)))
+    }.toMap
+
+    rows.toDF("id", "f", "d").createOrReplaceTempView("strict_fp_bits")
+
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      for (col <- Seq("f", "d")) {
+        val query = s"SELECT id, f, d FROM strict_fp_bits ORDER BY $col, id"
+        // LocalTableScanExec has no native counterpart enabled by default; it is the source of
+        // the unmodified bits, not part of what this test asserts.
+        checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometSortExec]),
+          classOf[LocalTableScanExec])
+
+        val actual = sql(query).collect().toSeq
+        actual.foreach { row =>
+          val bits = (
+            java.lang.Float.floatToRawIntBits(row.getFloat(1)),
+            java.lang.Double.doubleToRawLongBits(row.getDouble(2)))
+          assert(
+            bits == expected(row.getInt(0)),
+            s"row ${row.getInt(0)} had its floating-point bits rewritten by the sort")
+        }
+        // The two NaN payloads are peers, so they must be adjacent and ordered by the tiebreaker.
+        val nanIds = actual.map(_.getInt(0)).filter(id => id == 0 || id == 1)
+        assert(nanIds == Seq(0, 1), s"NaN peers were not tied and ordered by id: $nanIds")
+      }
+    }
+  }
+
+  // Floats nested in array and struct sort keys are normalized natively, in strict mode too. A key
+  // whose type can hold a null element or field sorts natively under the default null order, which
+  // agrees with Spark's. Every field the generator makes is nullable. A unique `id` sorted last
+  // makes the ordering total, as above.
+  private def checkStrictNestedFloatingPointSort(schema: StructType): Unit = {
     val df = FuzzDataGenerator.generateDataFrame(
       new Random(42),
       spark,
       schema,
       1000,
       DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReason(
-        "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+    withTempDir { dir =>
+      val path = new Path(dir.toString, "tbl").toString
+      df.withColumn("id", monotonically_increasing_id()).write.parquet(path)
+      spark.read.parquet(path).createOrReplaceTempView("tbl")
+
+      withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+        checkSparkAnswerAndOperator(
+          sql("select * from tbl order by 1, 2, 3"),
+          Seq(classOf[CometSortExec]))
+      }
     }
   }
 
+  test("sort array of floating point with negative zero") {
+    checkStrictNestedFloatingPointSort(
+      StructType(
+        Seq(
+          StructField("c0", DataTypes.createArrayType(DataTypes.FloatType), true),
+          StructField("c1", DataTypes.createArrayType(DataTypes.DoubleType), true))))
+  }
+
   test("sort struct containing floating point with negative zero") {
-    val schema = StructType(
-      Seq(
+    checkStrictNestedFloatingPointSort(
+      StructType(Seq(
         StructField(
           "float_struct",
           StructType(Seq(StructField("c0", DataTypes.FloatType, true)))),
         StructField(
           "float_double",
-          StructType(Seq(StructField("c0", DataTypes.DoubleType, true))))))
-    val df = FuzzDataGenerator.generateDataFrame(
-      new Random(42),
-      spark,
-      schema,
-      1000,
-      DataGenOptions(generateNegativeZero = true))
-    df.createOrReplaceTempView("tbl")
+          StructType(Seq(StructField("c0", DataTypes.DoubleType, true)))))))
+  }
 
-    withSQLConf(
-      CometConf.getExprAllowIncompatConfigKey("SortOrder") -> "false",
-      CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
-      checkSparkAnswerAndFallbackReason(
-        "select * from tbl order by 1, 2",
-        "unsupported range partitioning sort order")
+  test("strict floating point: nested sort keeps NaN payloads and zero signs unchanged") {
+    // As in the scalar test, a local relation keeps the raw bits that Parquet would canonicalize.
+    // `d` is a primitive `Double`, so it is not nullable, and neither are the element of
+    // `array(d)` and the field of `named_struct('v', d)`. The `IF` key's element is null on row
+    // 4, and strict mode admits it too, because its default null order sorts a null element first,
+    // where Spark does.
+    val negNan = java.lang.Double.longBitsToDouble(0xfff8000000000002L)
+    val posNan = java.lang.Double.longBitsToDouble(0x7ff8000000000002L)
+    val rows = Seq((0, negNan), (1, posNan), (2, -0.0d), (3, 0.0d), (4, 1.0d))
+    val expected = rows.map { case (id, d) =>
+      id -> java.lang.Double.doubleToRawLongBits(d)
+    }.toMap
+
+    rows.toDF("id", "d").createOrReplaceTempView("strict_fp_nested_bits")
+
+    withSQLConf(CometConf.COMET_EXEC_STRICT_FLOATING_POINT.key -> "true") {
+      // The zeros are peers, and so are the two NaNs, which sort last.
+      for ((key, value, order) <- Seq[(String, Row => Option[Double], Seq[Int])](
+          ("array(d)", r => Some(r.getSeq[Double](1).head), Seq(2, 3, 4, 0, 1)),
+          ("named_struct('v', d)", r => Some(r.getStruct(1).getDouble(0)), Seq(2, 3, 4, 0, 1)),
+          (
+            "array(IF(id = 4, CAST(NULL AS DOUBLE), d))",
+            r => Option(r.getSeq[java.lang.Double](1).head).map(_.doubleValue),
+            Seq(4, 2, 3, 0, 1)))) {
+        val query = s"SELECT id, $key AS k FROM strict_fp_nested_bits ORDER BY k, id"
+        checkSparkAnswerAndOperator(
+          sql(query),
+          Seq(classOf[CometSortExec]),
+          classOf[LocalTableScanExec])
+
+        val actual = sql(query).collect().toSeq
+        actual.foreach { row =>
+          val id = row.getInt(0)
+          value(row) match {
+            case Some(v) =>
+              assert(
+                java.lang.Double.doubleToRawLongBits(v) == expected(id),
+                s"row $id had its floating-point bits rewritten by the sort on $key")
+            case None => assert(id == 4, s"row $id lost its value in the sort on $key")
+          }
+        }
+        assert(actual.map(_.getInt(0)) == order, s"sort on $key")
+      }
     }
   }
 
@@ -172,6 +545,155 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  Seq(
+    (
+      "float",
+      "_1",
+      Seq[Any](
+        java.lang.Float.intBitsToFloat(0x7fc00001),
+        java.lang.Float.intBitsToFloat(0xffc00002))),
+    (
+      "double",
+      "_2",
+      Seq[Any](
+        java.lang.Double.longBitsToDouble(0x7ff8000000000001L),
+        java.lang.Double.longBitsToDouble(0xfff8000000000002L)))).foreach {
+    case (dataType, column, nanLiterals) =>
+      test(s"compare $dataType columns with noncanonical NaN literals") {
+        withSQLConf(SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false") {
+          val rows = Seq(
+            (Some(Float.NaN), Some(Double.NaN)),
+            (Some(-0.0f), Some(-0.0d)),
+            (Some(0.0f), Some(0.0d)),
+            (Some(-1.0f), Some(-1.0d)),
+            (Some(1.0f), Some(1.0d)),
+            (Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)),
+            (Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+            (None, None))
+          val identifiedRows = rows.zipWithIndex.map { case ((f, d), id) => (f, d, id) }
+          withParquetDataFrame(identifiedRows, withDictionary = false) { df =>
+            // Parquet canonicalizes stored NaNs, so construct the signed/payload literals here.
+            // Compare Boolean results so Spark's NaN-aware answer checker cannot hide a mismatch.
+            val value = df(column)
+            nanLiterals.foreach { nan =>
+              val literal = lit(nan)
+              Seq((value, literal), (literal, value)).foreach { case (left, right) =>
+                val comparisons = Seq(
+                  left === right,
+                  left =!= right,
+                  left.eqNullSafe(right),
+                  left < right,
+                  left <= right,
+                  left > right,
+                  left >= right)
+                checkSparkAnswerAndOperator(
+                  df.select(comparisons: _*),
+                  Seq(classOf[CometProjectExec]))
+                comparisons.foreach { comparison =>
+                  // Compare surviving identities, not just NaN-aware row values. Keep Parquet
+                  // pushdown disabled so every ordering predicate executes in CometFilterExec.
+                  checkSparkAnswerAndOperator(
+                    df.filter(comparison).select("_3"),
+                    Seq(classOf[CometFilterExec]))
+                }
+              }
+            }
+          }
+        }
+      }
+  }
+
+  for ((name, threshold) <- Seq(("In", 10), ("InSet", 1))) {
+    test(s"floating $name and NOT $name normalize NaNs and signed zeros") {
+      withSQLConf(
+        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+        "spark.sql.optimizer.inSetConversionThreshold" -> threshold.toString) {
+        val rows = Seq(
+          (0, Some(Float.NaN), Some(Double.NaN)),
+          (1, Some(0.0f), Some(0.0d)),
+          (2, Some(-0.0f), Some(-0.0d)),
+          (3, Some(13.0f), Some(13.0d)),
+          (4, Some(1.0f), Some(1.0d)),
+          (5, None, None),
+          (6, Some(Float.PositiveInfinity), Some(Double.PositiveInfinity)),
+          (7, Some(Float.NegativeInfinity), Some(Double.NegativeInfinity)))
+        withParquetDataFrame(rows, withDictionary = false) { df =>
+          val cases = Seq(
+            (
+              java.lang.Float.intBitsToFloat(0x7fc00001),
+              java.lang.Double.longBitsToDouble(0x7ff8000000000001L)),
+            (
+              java.lang.Float.intBitsToFloat(0xffc00002),
+              java.lang.Double.longBitsToDouble(0xfff8000000000002L)),
+            (0.0f, 0.0d),
+            (-0.0f, -0.0d),
+            (Float.PositiveInfinity, Double.PositiveInfinity),
+            (Float.NegativeInfinity, Double.NegativeInfinity))
+          for ((f, d) <- cases; includeNull <- Seq(false, true)) {
+            val floatCandidates: Seq[Any] = Seq(f, 13.0f) ++ (if (includeNull) Seq(null) else Nil)
+            val doubleCandidates: Seq[Any] =
+              Seq(d, 13.0d) ++ (if (includeNull) Seq(null) else Nil)
+            // Negation creates negative NaNs after the Parquet scan, so the membership value
+            // must be normalized as well as the programmatically constructed list literals.
+            val predicates = Seq(df("_2"), -df("_2")).map(_.isin(floatCandidates: _*)) ++
+              Seq(df("_3"), -df("_3")).map(_.isin(doubleCandidates: _*))
+            val projected = df.select(df("_1") +: predicates.flatMap(p => Seq(p, !p)): _*)
+            val optimized = projected.queryExecution.optimizedPlan
+            val membership = optimized.expressions.flatMap(_.collect {
+              case _: org.apache.spark.sql.catalyst.expressions.In => "In"
+              case _: org.apache.spark.sql.catalyst.expressions.InSet => "InSet"
+            })
+            // A singleton IN is rewritten to equality and would not exercise the faulty kernel.
+            assert(membership.nonEmpty && membership.forall(_ == name), optimized.toString)
+            checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+            for (p <- predicates; negate <- Seq(false, true)) {
+              val filtered = df.filter(if (negate) !p else p).select("_1")
+              if (includeNull && negate) {
+                // NOT IN with a null candidate can never be true. Spark legitimately replaces
+                // this filter with an empty LocalRelation before physical planning.
+                checkSparkAnswer(filtered)
+              } else {
+                checkSparkAnswerAndOperator(filtered, Seq(classOf[CometFilterExec]))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("floating IN with a column candidate normalizes signed zeros") {
+    withSQLConf(
+      SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "false",
+      "spark.sql.optimizer.inSetConversionThreshold" -> "10") {
+      val rows = Seq(
+        (0, Some(-0.0d), Some(0.0d)),
+        (1, Some(0.0d), Some(-0.0d)),
+        (2, Some(1.0d), Some(2.0d)),
+        (3, None, Some(0.0d)))
+      withParquetDataFrame(rows, withDictionary = false) { df =>
+        // The first candidate is another column, so DataFusion evaluates dynamic equality rather
+        // than a static literal filter. The second candidate keeps Spark from rewriting a
+        // singleton IN to ordinary equality before Comet serializes it.
+        val predicate = df("_2").isin(df("_3"), lit(13.0d))
+        val projected = df.select(df("_1"), predicate)
+        val optimized = projected.queryExecution.optimizedPlan
+        val membership = optimized.expressions.flatMap(_.collect {
+          case in: org.apache.spark.sql.catalyst.expressions.In => in
+        })
+        assert(
+          membership.size == 1 &&
+            membership.forall(_.list.exists(candidate => !candidate.isInstanceOf[Literal])),
+          optimized.toString)
+
+        checkSparkAnswerAndOperator(projected, Seq(classOf[CometProjectExec]))
+        checkSparkAnswerAndOperator(
+          df.filter(predicate).select("_1"),
+          Seq(classOf[CometFilterExec]))
+      }
+    }
+  }
+
   test("parquet default values") {
     withTable("t1") {
       sql("create table t1(col1 boolean) using parquet")
@@ -198,6 +720,81 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               checkSparkAnswerAndOperator(cometDf)
             }
           }
+        }
+      }
+    }
+  }
+
+  test("ANSI parse_url of an invalid URL raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("parse_url_invalid") {
+        sql("CREATE TABLE parse_url_invalid (u STRING) USING PARQUET")
+        sql("INSERT INTO parse_url_invalid VALUES ('inva lid://user:pass@host/file')")
+
+        val df = sql("SELECT parse_url(u, 'HOST') FROM parse_url_invalid")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            def sparkError(error: Throwable): SparkThrowable =
+              causeChain(error)
+                .collectFirst { case error: SparkThrowable => error }
+                .getOrElse(fail(s"Expected a SparkThrowable, got $error"))
+            val expected = sparkError(sparkException)
+            val actual = sparkError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+          case errors => fail(s"Expected Spark and Comet invalid URL errors, got $errors")
+        }
+      }
+    }
+  }
+
+  test("ANSI decimal divide by zero raises a Spark error") {
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("decimal_div_zero") {
+        sql("CREATE TABLE decimal_div_zero (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO decimal_div_zero VALUES (1.00, 0.00)")
+
+        Seq("a / b", "a div b").foreach { expression =>
+          val df = sql(s"SELECT $expression FROM decimal_div_zero")
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          checkSparkAnswerMaybeThrows(df) match {
+            case (Some(sparkException), Some(cometException)) =>
+              val expected = arithmeticError(sparkException)
+              val actual = arithmeticError(cometException)
+              assert(actual.getErrorClass == expected.getErrorClass)
+              assert(actual.getSqlState == expected.getSqlState)
+              assert(
+                actual.getQueryContext.map(_.fragment()).toSeq ==
+                  expected.getQueryContext.map(_.fragment()).toSeq)
+            case errors => fail(s"Expected Spark and Comet divide-by-zero errors, got $errors")
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI cast overflow reports the cast's own context") {
+    // The child divide proto carries its own expr_id and context, while the outer Cast proto is
+    // built fresh by its serde and must still receive the cast's own context. Pins the
+    // conditional expr_id assignment in QueryPlanSerde.exprToProtoInternal.
+    withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+      withTable("cast_div_overflow") {
+        sql("CREATE TABLE cast_div_overflow (a DECIMAL(10, 2), b DECIMAL(10, 2)) USING PARQUET")
+        sql("INSERT INTO cast_div_overflow VALUES (100.00, 1.00)")
+
+        val df = sql("SELECT CAST(a / b AS DECIMAL(3, 2)) FROM cast_div_overflow")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        checkSparkAnswerMaybeThrows(df) match {
+          case (Some(sparkException), Some(cometException)) =>
+            val expected = arithmeticError(sparkException)
+            val actual = arithmeticError(cometException)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
+          case errors => fail(s"Expected Spark and Comet cast-overflow errors, got $errors")
         }
       }
     }
@@ -1046,6 +1643,112 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("division on negative-scale decimal reports unsupported via getSupportLevel") {
+    // Issue #5013: `spark_decimal_div` computes its scale-alignment exponents in `u32`, so a
+    // negative scale wraps to roughly 4.29e9 and the BigInt branch attempts an unbounded
+    // allocation. Only division is affected. The other arithmetic operators scale-align by
+    // `10^(max_scale - s)`, which is never negative, so they stay native and are pinned by
+    // "safe ops on negative-scale decimal run natively" below. Constructing the expressions
+    // requires allowNegativeScaleOfDecimal so DecimalType(_, s<0) passes Spark's own check.
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DecimalType(10, -1), DecimalType(20, -5)).foreach { negScale =>
+        val posDec = DecimalType(10, 0)
+        val negAttr = AttributeReference("n", negScale)()
+        val posAttr = AttributeReference("p", posDec)()
+        val expected = Unsupported(Some(CometDivide.negScaleDecimalArithmeticReason))
+
+        assert(CometDivide.getSupportLevel(Divide(negAttr, posAttr)) == expected)
+        assert(CometIntegralDivide.getSupportLevel(IntegralDivide(negAttr, posAttr)) == expected)
+        // Guard also fires when negative scale is only on the right operand.
+        assert(CometDivide.getSupportLevel(Divide(posAttr, negAttr)) == expected)
+
+        // The unguarded operators must not report unsupported for the same operands.
+        assert(CometAdd.getSupportLevel(Add(negAttr, posAttr)) == Compatible())
+        assert(CometSubtract.getSupportLevel(Subtract(negAttr, posAttr)) == Compatible())
+        assert(CometRemainder.getSupportLevel(Remainder(negAttr, posAttr)) == Compatible())
+        assert(CometMultiply.getSupportLevel(Multiply(negAttr, posAttr)) == Compatible())
+      }
+    }
+  }
+
+  test("division on negative-scale decimal falls back and returns correct results") {
+    // End-to-end proof for issue #5013 that the previously-panicking queries now complete.
+    // `checkSparkAnswerAndFallbackReason` rather than `checkSparkAnswer`: `CometDivide` and
+    // `CometIntegralDivide` do not mix in `CodegenDispatchFallback`, so `Unsupported` falls the
+    // whole projection back to Spark, and asserting the reason is what proves the guard fired.
+    // A plain answer comparison would pass whether or not it did.
+    // ConvertToLocalRelation is excluded so the arithmetic actually runs on the plan rather
+    // than being folded at plan time (#4789). `DecimalType(_, s<0)` must be constructed under
+    // allowNegativeScaleOfDecimal=true because the case class initializer reads the flag, so
+    // wrap everything (including the type value) in one block.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // A narrow and a wide negative-scale type, so the guard is exercised at both widths.
+      // Neither reaches a native kernel here, since the assertion below is that the projection
+      // falls back to Spark. `unit` is the smallest magnitude representable at that scale.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        // Build the neg-scale column via string -> Decimal(neg), a known-safe cast, so the
+        // source construction does not depend on any of the guards under test.
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        Seq("v / cast(3 as decimal(10, 0))", "v div cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndFallbackReason(
+            v.selectExpr(e),
+            CometDivide.negScaleDecimalArithmeticReason)
+        }
+      }
+    }
+  }
+
+  test("safe ops on negative-scale decimal run natively (regression pin)") {
+    // Multiply and UnaryMinus on negative-scale decimals don't scale-align an integer and
+    // ran natively at the time #5013 was fixed. The arithmetic guard intentionally does
+    // not cover them. If a future change ever adds scale-alignment to Multiply or a
+    // decimal codepath is added to UnaryMinus that does the multiply-by-10^n trick,
+    // these assertions will start returning a Comet fallback plan and this test will
+    // catch it before it reaches production as a silent-wrap or debug panic.
+    withSQLConf(
+      "spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true",
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key ->
+        "org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation") {
+      // The wide case matters most for `v * v`: Decimal(20,-5) * Decimal(20,-5) has
+      // p1 + p2 >= DECIMAL128_MAX_PRECISION, so it takes `WideDecimalBinaryExpr`'s multiply
+      // branch (which does compute a scale adjustment against the output precision/scale)
+      // and its result type is Decimal(38,-10) -- a negative *output* scale, not just
+      // negative inputs.
+      val negScaleCases = Seq((DecimalType(10, -1), 10), (DecimalType(20, -5), 100000))
+      negScaleCases.foreach { case (negScaleType, unit) =>
+        val strs = Seq(10 * unit, 20 * unit, 30 * unit).map(_.toString)
+        val v = strs.toDF("s").select(col("s").cast(negScaleType).as("v"))
+        // Same-scale Multiply - no alignment needed, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("v * v"))
+        checkSparkAnswerAndOperator(v.selectExpr("v * cast(2 as int)"))
+        // UnaryMinus on Decimal(neg) - no alignment, must stay native.
+        checkSparkAnswerAndOperator(v.selectExpr("-v"))
+        // Add, Subtract and Remainder scale-align by `10^(max_scale - s)`, which is never
+        // negative, so a negative scale is safe for them. They reach the decimal width tests in
+        // `PhysicalPlanner::create_binary_expr_with_options` and `create_modulo_expr`, which
+        // compute that width in `i16` for the same reason. A debug build panicked when those
+        // were `u8`, so these assertions catch a regression there only when the native library
+        // is built with overflow checks on.
+        Seq(
+          "v + v",
+          "v - v",
+          "v % v",
+          "v + cast(2 as decimal(10, 0))",
+          "v - cast(2 as decimal(10, 0))",
+          "v % cast(3 as decimal(10, 0))").foreach { e =>
+          checkSparkAnswerAndOperator(v.selectExpr(e))
+        }
+      }
+    }
+  }
+
   test("rlike with non-scalar pattern runs via codegen dispatcher") {
     val table = "rlike_non_scalar"
     withTable(table) {
@@ -1264,7 +1967,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     def makeDecimalRDD(num: Int, decimal: DecimalType, useDictionary: Boolean): DataFrame = {
       val div = if (useDictionary) 5 else num // narrow the space to make it dictionary encoded
       spark
-        .range(num)
+        .range(num.toLong)
         .map(_ % div)
         // Parquet doesn't allow column names with spaces, have to add an alias here.
         // Minus 500 here so that negative decimals are also tested.
@@ -1394,17 +2097,27 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("scalar decimal overflow - ANSI mode throws ArithmeticException") {
-    // 1.1e19 * 1.1e19 = 1.21e38 overflows DECIMAL(38,0). With ANSI mode on, both Spark and
-    // Comet must throw — Comet must not panic or silently return null. Spark reports
-    // NUMERIC_VALUE_OUT_OF_RANGE; Comet's WideDecimalBinaryExpr catches the overflow first
-    // and surfaces it as an arithmetic overflow error.
+    // 1.1e19 * 1.1e19 overflows Decimal(38, 6); ANSI must raise NUMERIC_VALUE_OUT_OF_RANGE
+    // with the same pre-toPrecision `value` as Spark (#5211).
     withSQLConf(CometConf.COMET_ENABLED.key -> "true", SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(Seq((BigDecimal("11000000000000000000"), 0)), "tbl") {
         val res = sql("SELECT _1 * _1 FROM tbl")
+        checkCometOperators(stripAQEPlan(res.queryExecution.executedPlan))
         checkSparkAnswerMaybeThrows(res) match {
           case (Some(sparkExc), Some(cometExc)) =>
-            assert(sparkExc.getMessage.contains("NUMERIC_VALUE_OUT_OF_RANGE"))
-            assert(cometExc.getMessage.toLowerCase.contains("overflow"))
+            val expected = arithmeticError(sparkExc)
+            val actual = arithmeticError(cometExc)
+            assert(actual.getErrorClass == expected.getErrorClass)
+            assert(actual.getSqlState == expected.getSqlState)
+            assert(
+              actual.getQueryContext.map(_.fragment()).toSeq ==
+                expected.getQueryContext.map(_.fragment()).toSeq)
+            val actualValue = actual.getMessageParameters.get("value")
+            val expectedValue = expected.getMessageParameters.get("value")
+            assert(
+              actualValue == expectedValue,
+              s"value mismatch: comet=$actualValue spark=$expectedValue")
+            assert(!actualValue.contains(".000000"))
           case _ =>
             fail("Expected exception for decimal overflow in ANSI mode")
         }
@@ -1610,20 +2323,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("md5") {
-    Seq(false, true).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col String) using parquet")
-          sql(
-            s"insert into $table values ('test1'), ('test1'), ('test2'), ('test2'), (NULL), ('')")
-          checkSparkAnswerAndOperator(s"select md5(col) FROM $table")
-        }
-      }
-    }
-  }
-
   test("unhex") {
     val table = "unhex_table"
     Seq(false, true).foreach { dictionaryEnabled =>
@@ -1687,10 +2386,11 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
 
   test("test in(set)/not in(set)") {
     Seq("100", "0").foreach { inSetThreshold =>
-      Seq(false, true).foreach { dictionary =>
+      for (dictionary <- Seq(false, true); codegen <- Seq("false", "true")) {
         withSQLConf(
           SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> inSetThreshold,
-          "parquet.enable.dictionary" -> dictionary.toString) {
+          "parquet.enable.dictionary" -> dictionary.toString,
+          CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) {
           val table = "names"
           withTable(table) {
             sql(s"create table $table(id int, name varchar(20)) using parquet")
@@ -1698,9 +2398,15 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
               s"insert into $table values(1, 'James'), (1, 'Jones'), (2, 'Smith'), (3, 'Smith')," +
                 "(NULL, 'Jones'), (4, NULL)")
 
-            checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)")
-            checkSparkAnswerAndOperator(
-              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)")
+            val nativeName = if (inSetThreshold == "0") "inset" else "in"
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE id in (1, 2, 4, NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
+            checkSparkAnswerAndImpl(
+              s"SELECT * FROM $table WHERE name in ('Smith', 'Brown', NULL)",
+              native = Seq(nativeName),
+              dispatched = Seq.empty)
 
             // TODO: why with not in, the plan is only `LocalTableScan`?
             checkSparkAnswerAndOperator(s"SELECT * FROM $table WHERE id not in (1)")
@@ -1725,13 +2431,59 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
       withParquetTable(data, "tbl") {
         // An unset config exercises the version-dependent default, which follows ANSI mode on
         // Spark 4.0+ and is always the legacy behavior on Spark 3.x.
-        for (legacy <- Seq(Some("true"), Some("false"), None); ansi <- Seq("true", "false")) {
+        for {
+          legacy <- Seq(Some("true"), Some("false"), None)
+          ansi <- Seq("true", "false")
+          codegen <- Seq("true", "false")
+        } {
           val legacyConf = legacy.map("spark.sql.legacy.nullInEmptyListBehavior" -> _).toSeq
-          withSQLConf(Seq(SQLConf.ANSI_ENABLED.key -> ansi) ++ legacyConf: _*) {
-            val df = sql("SELECT _1 AS a FROM tbl")
-              .select(col("a"), col("a").isin(), !col("a").isin())
-            checkSparkAnswer(df)
+          withSQLConf(
+            Seq(
+              SQLConf.ANSI_ENABLED.key -> ansi,
+              CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> codegen) ++ legacyConf: _*) {
+            val input = sql("SELECT _1 AS a FROM tbl")
+            val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+            val df = input.select(
+              col("a"),
+              col("a").isin(),
+              !col("a").isin(),
+              getColumnFromExpression(emptySet))
+            val legacyEnabled = !CometSparkSessionExtensions.isSpark35Plus ||
+              legacy.map(_.toBoolean).getOrElse(!isSpark40Plus || !ansi.toBoolean)
+            if (!legacyEnabled) {
+              checkSparkAnswerAndImpl(df, native = Seq("in", "inset"))
+            } else if (codegen.toBoolean) {
+              checkSparkAnswerAndImpl(df, dispatched = Seq("in", "inset"))
+            } else {
+              checkSparkAnswerAndFallbackReason(
+                df,
+                s"in: ${CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key}=false")
+            }
           }
+        }
+      }
+    }
+  }
+
+  test("make_date is not evaluated by empty IN predicates") {
+    assume(isSpark35Plus, "Spark 3.4 always uses legacy empty-IN evaluation")
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      "spark.sql.legacy.nullInEmptyListBehavior" -> "false",
+      SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> OptimizeIn.ruleName) {
+      val data: Seq[Tuple1[Integer]] = Seq(Tuple1(13), Tuple1(null))
+      withParquetTable(data, "make_date_empty_in") {
+        val input = sql("SELECT make_date(2024, _1, 1) AS d FROM make_date_empty_in")
+        val emptySet = InSet(input.queryExecution.analyzed.output.head, Set.empty[Any])
+        // Separate projections ensure one parent's fallback cannot mask a missing guard for
+        // the other. The fallback reason also proves the optimizer retained the empty predicate.
+        Seq("In" -> col("d").isin(), "InSet" -> getColumnFromExpression(emptySet)).foreach {
+          case (parent, predicate) =>
+            val df = input.select(predicate)
+            val _ = checkSparkAnswerAndFallbackReason(
+              df,
+              s"make_date requires Spark evaluation under $parent")
+            checkCometAnswer(df, Seq(Row(false), Row(false)))
         }
       }
     }
@@ -1768,7 +2520,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     // must stay native; interval types are unsupported and fall back to Spark.
     withParquetTable(
       (1 to 5).map(i =>
-        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal(i * 3, 2))),
+        (i.toByte, i.toShort, i, i.toLong, i.toFloat, i.toDouble, BigDecimal((i * 3).toLong, 2))),
       "umt") {
       checkSparkAnswerAndOperator("SELECT -_1, -_2, -_3, -_4, -_5, -_6, -_7 FROM umt")
     }
@@ -1849,6 +2601,32 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
           checkSparkAnswerAndOperator(
             "SELECT col, year(col), month(col), day(col), weekday(col), " +
               s" dayofweek(col), dayofyear(col), weekofyear(col), quarter(col) FROM $table")
+        }
+      }
+    }
+  }
+
+  test("dayofweek/weekday over a date column, including ancient dates") {
+    Seq(false, true).foreach { dictionary =>
+      // 0001-01-01 predates the Gregorian cutover, and Spark 3.x refuses to write such a date to
+      // parquet unless the rebase mode is set (Spark 4 already defaults to CORRECTED). CORRECTED
+      // writes the value as-is in the proleptic Gregorian calendar, which is the calendar the
+      // results are compared in, so it does not affect what dayofweek/weekday return.
+      withSQLConf(
+        "parquet.enable.dictionary" -> dictionary.toString,
+        SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key -> "CORRECTED") {
+        val table = "test"
+        withTable(table) {
+          sql(s"create table $table(col date) using parquet")
+          // The week around the epoch pins both numbering conventions (1970-01-01 is a
+          // Thursday); the rest cover a leap day, the Gregorian century rules, and an ancient
+          // date on the far side of the Gregorian cutover.
+          sql(s"""insert into $table values
+                 | (date('1969-12-28')), (date('1970-01-01')), (date('1970-01-04')),
+                 | (date('1900-01-01')), (date('2000-02-29')), (date('2024-02-29')),
+                 | (date('0001-01-01')), (date('9999-12-31')), (null)""".stripMargin)
+          checkSparkAnswerAndOperator(
+            s"SELECT col, dayofweek(col), weekday(col) FROM $table ORDER BY col")
         }
       }
     }
@@ -2112,48 +2890,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hash functions") {
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          sql(s"""
-              |insert into $table values
-              |('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |, ('Spark SQL  ', 10, 1.2), (NULL, NULL, NULL), ('', 0, 0.0), ('苹果手机', NULL, 3.999999)
-              |""".stripMargin)
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)), crc32(cast(b as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string)), sha1(cast(b as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
-    }
-  }
-
-  test("sha2 with all-literal arguments and ConstantFolding disabled") {
-    // https://github.com/apache/datafusion-comet/issues/3340
-    // When ConstantFolding is disabled, an all-literal sha2() call reaches the native
-    // engine as scalar arguments. Verify it computes the correct result rather than crashing.
-    withSQLConf(
-      "spark.sql.optimizer.excludedRules" ->
-        "org.apache.spark.sql.catalyst.optimizer.ConstantFolding") {
-      checkSparkAnswerAndOperator("""
-          |select
-          |sha2('test', 0), sha2('test', 256), sha2('test', 224),
-          |sha2('test', 384), sha2('test', 512), sha2('test', 128), sha2('test', -1),
-          |sha2(cast(null as string), 256)
-          |""".stripMargin)
-    }
-  }
-
   test("remainder function") {
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
@@ -2233,44 +2969,6 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
-  test("hash functions with random input") {
-    val dataGen = DataGenerator.DEFAULT
-    // sufficient number of rows to create dictionary encoded ArrowArray.
-    val randomNumRows = 1000
-
-    val whitespaceChars = " \t\r\n"
-    val timestampPattern = "0123456789/:T" + whitespaceChars
-    Seq(true, false).foreach { dictionary =>
-      withSQLConf("parquet.enable.dictionary" -> dictionary.toString) {
-        val table = "test"
-        withTable(table) {
-          sql(s"create table $table(col string, a int, b float) using parquet")
-          val tableSchema = spark.table(table).schema
-          val rows = dataGen.generateRows(
-            randomNumRows,
-            tableSchema,
-            Some(() => dataGen.generateString(timestampPattern, 6)))
-          val data = spark.createDataFrame(spark.sparkContext.parallelize(rows), tableSchema)
-          data.write
-            .mode("append")
-            .insertInto(table)
-          // with random generated data
-          // disable cast(b as string) for now, as the cast from float to string may produce incompatible result
-          checkSparkAnswerAndOperator("""
-              |select
-              |md5(col), md5(cast(a as string)), --md5(cast(b as string)),
-              |hash(col), hash(col, 1), hash(col, 0), hash(col, a, b), hash(b, a, col),
-              |xxhash64(col), xxhash64(col, 1), xxhash64(col, 0), xxhash64(col, a, b), xxhash64(b, a, col),
-              |crc32(col), crc32(cast(a as string)),
-              |sha2(col, 0), sha2(col, 256), sha2(col, 224), sha2(col, 384), sha2(col, 512), sha2(col, 128), sha2(col, -1),
-              |sha1(col), sha1(cast(a as string))
-              |from test
-              |""".stripMargin)
-        }
-      }
-    }
-  }
-
   test("hash function with decimal input") {
     val testPrecisionScales: Seq[(Int, Int)] = Seq(
       (1, 0),
@@ -2314,7 +3012,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
   }
 
   test("unary negative integer overflow test") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     def withAnsiMode(enabled: Boolean)(f: => Unit): Unit = {
       withSQLConf(
         SQLConf.ANSI_ENABLED.key -> enabled.toString,
@@ -2933,8 +3631,123 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  for ((sqlType, min, max, errorClass) <- Seq(
+      ("TINYINT", Byte.MinValue.toLong, Byte.MaxValue.toLong, "BINARY_ARITHMETIC_OVERFLOW"),
+      ("SMALLINT", Short.MinValue.toLong, Short.MaxValue.toLong, "BINARY_ARITHMETIC_OVERFLOW"),
+      ("INT", Int.MinValue.toLong, Int.MaxValue.toLong, "ARITHMETIC_OVERFLOW"),
+      ("BIGINT", Long.MinValue, Long.MaxValue, "ARITHMETIC_OVERFLOW"))) {
+    test(s"ANSI integral overflow fidelity - $sqlType") {
+      val expectedErrorClass =
+        if (errorClass == "BINARY_ARITHMETIC_OVERFLOW" && !isSpark35Plus) {
+          "_LEGACY_ERROR_TEMP_2044"
+        } else {
+          errorClass
+        }
+      val cases = Seq(
+        ("+", "try_add", max, 1L),
+        ("+", "try_add", min, -1L),
+        ("-", "try_subtract", min, 1L),
+        ("-", "try_subtract", max, -1L),
+        ("*", "try_multiply", max, 2L),
+        ("*", "try_multiply", min, -1L))
+      withSQLConf(
+        SQLConf.ANSI_ENABLED.key -> "true",
+        CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+        // Read operands from Parquet: literal-only arithmetic is folded by Spark before Comet.
+        withParquetTable(
+          cases.zipWithIndex.map { case ((_, _, l, r), id) =>
+            (id, l, r)
+          },
+          "overflow_input") {
+          for (((symbol, function, l, r), id) <- cases.zipWithIndex;
+            (lhs, rhs) <- Seq(("_2", "_3"), (l.toString, "_3"), ("_2", r.toString))) {
+            val query = s"SELECT CAST($lhs AS $sqlType) $symbol CAST($rhs AS $sqlType) " +
+              s"FROM overflow_input WHERE _1 = $id"
+            val df = sql(query)
+            assert(df.schema.head.dataType == DataType.fromDDL(sqlType))
+            checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+            val (sparkError, cometError) = checkSparkAnswerMaybeThrows(df)
+            def structured(error: Option[Throwable]): SparkThrowable with Throwable = {
+              val failure = error.getOrElse(fail(s"Expected overflow: $query"))
+              causeChain(failure)
+                .collect { case e: SparkThrowable with Throwable =>
+                  e
+                }
+                .lastOption
+                .getOrElse(fail(s"Expected SparkThrowable: $failure"))
+            }
+            val expected = structured(sparkError)
+            val actual = structured(cometError)
+            assert(expected.getErrorClass == expectedErrorClass, query)
+            assert(actual.getClass == expected.getClass, query)
+            assert(actual.getErrorClass == expected.getErrorClass, query)
+            assert(actual.getSqlState == expected.getSqlState, query)
+            assert(actual.getMessageParameters == expected.getMessageParameters, query)
+            // Spark 3.x's Byte/Short error has no functionName parameter; the shim must
+            // preserve that version's contract rather than imposing the Spark 4.x message.
+            if (errorClass == "ARITHMETIC_OVERFLOW" || isSpark40Plus) {
+              assert(actual.getMessage.contains(function), query)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  test("ANSI integral overflow fidelity - unary operations have no try suggestion") {
+    withSQLConf(
+      SQLConf.ANSI_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(Seq((Int.MinValue, Long.MinValue)), "overflow_input") {
+        for (expr <- Seq("abs(_1)", "abs(_2)", "-_1", "-_2")) {
+          val actual =
+            checkSparkError(sql(s"SELECT $expr FROM overflow_input"), "ARITHMETIC_OVERFLOW")
+          assert(!actual.getMessage.contains("try_"))
+        }
+      }
+    }
+  }
+
+  test("ANSI integral overflow fidelity - valid, NULL, TRY and legacy results") {
+    withSQLConf(CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "false") {
+      withParquetTable(
+        Seq((Option(1), Option(2)), (None, Option(2)), (Option(1), None)),
+        "overflow_input") {
+        for (sqlType <- Seq("TINYINT", "SMALLINT", "INT", "BIGINT");
+          ansi <- Seq("true", "false")) {
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> ansi) {
+            val l = s"CAST(_1 AS $sqlType)"
+            val r = s"CAST(_2 AS $sqlType)"
+            checkSparkAnswerAndOperator(s"SELECT $l + $r, $l - $r, $l * $r FROM overflow_input")
+          }
+        }
+      }
+      for ((sqlType, max) <- Seq(
+          ("TINYINT", Byte.MaxValue.toLong),
+          ("SMALLINT", Short.MaxValue.toLong),
+          ("INT", Int.MaxValue.toLong),
+          ("BIGINT", Long.MaxValue))) {
+        withParquetTable(Seq((max, 1L)), "overflow_input") {
+          val l = s"CAST(_1 AS $sqlType)"
+          val r = s"CAST(_2 AS $sqlType)"
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
+            checkSparkAnswerAndOperator(
+              s"SELECT try_add($l, $r), " +
+                s"try_subtract(-$l, CAST(2 AS $sqlType)), " +
+                s"try_multiply($l, CAST(2 AS $sqlType)) FROM overflow_input")
+          }
+          withSQLConf(SQLConf.ANSI_ENABLED.key -> "false") {
+            checkSparkAnswerAndOperator(
+              s"SELECT $l + $r, " +
+                s"-$l - CAST(2 AS $sqlType), $l * CAST(2 AS $sqlType) FROM overflow_input")
+          }
+        }
+      }
+    }
+  }
+
   test("ANSI support for add") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MAX_VALUE, 1), (Integer.MIN_VALUE, -1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2944,18 +3757,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
 
   test("ANSI support for subtract") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MIN_VALUE, 1))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2964,18 +3772,13 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  _1 - _2
                               |  from tbl
                               |  """.stripMargin)
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
 
   test("ANSI support for multiply") {
-    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4142")
+    assume(!isSpark42Plus, "https://github.com/apache/datafusion-comet/issues/4967")
     val data = Seq((Integer.MAX_VALUE, 10))
     withSQLConf(SQLConf.ANSI_ENABLED.key -> "true") {
       withParquetTable(data, "tbl") {
@@ -2985,12 +3788,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(ARITHMETIC_OVERFLOW_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("overflow"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "ARITHMETIC_OVERFLOW")
       }
     }
   }
@@ -3005,12 +3803,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3025,12 +3818,7 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                               |  from tbl
                               |  """.stripMargin)
 
-        checkSparkAnswerMaybeThrows(res) match {
-          case (Some(sparkExc), Some(cometExc)) =>
-            assert(cometExc.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
-            assert(sparkExc.getMessage.contains("Division by zero"))
-          case _ => fail("Exception should be thrown")
-        }
+        checkSparkError(res, "DIVIDE_BY_ZERO")
       }
     }
   }
@@ -3046,6 +3834,8 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
                 |  from tbl
                 |  """.stripMargin)
 
+          // Integral divide still raises an unconverted Arrow error under ANSI.
+          // https://github.com/apache/datafusion-comet/issues/5072
           checkSparkAnswerMaybeThrows(res) match {
             case (Some(sparkException), Some(cometException)) =>
               assert(sparkException.getMessage.contains(DIVIDE_BY_ZERO_EXCEPTION_MSG))
@@ -3484,6 +4274,40 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("regression: cast Decimal(0, 0) to Boolean via Java UDF") {
+    // Reachable via a Java UDF that declares return type `DecimalType(0, 0)` and returns
+    // either `BigInteger.ZERO` or `null`. Spark accepts the schema; Arrow rejects
+    // `precision == 0` inside `Decimal128Array::with_precision_and_scale`, so the native
+    // cast kernel used to error. Enabling the ScalaUDF codegen dispatcher routes the UDF
+    // output straight into the native cast, so this test exercises the actual native path
+    // rather than falling back to Spark. The mixed valid + null batch covers the
+    // precision-zero fast path that reads the raw i128 payload; the all-null batch covers
+    // the earlier all-null shortcut.
+    withSQLConf(
+      CometConf.COMET_ENABLED.key -> "true",
+      CometConf.COMET_EXEC_ENABLED.key -> "true",
+      CometConf.COMET_SCALA_UDF_CODEGEN_ENABLED.key -> "true") {
+      spark.udf.register(
+        "zero_decimal",
+        new org.apache.spark.sql.api.java.UDF1[java.lang.Long, java.math.BigInteger] {
+          override def call(id: java.lang.Long): java.math.BigInteger =
+            if (id == 0L) java.math.BigInteger.ZERO else null
+        },
+        DecimalType(0, 0))
+      // id = 0 -> BigInteger.ZERO -> Decimal(0,0) 0 -> false
+      // id = 1 -> null -> null
+      val mixed = spark.range(0, 2).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(mixed)
+      checkAnswer(mixed, Seq(Row(false), Row(null)))
+
+      // All-null batch: exercises the earlier `null_count() == len()` fast path that
+      // bypasses the zero-scalar construction entirely.
+      val allNull = spark.range(1, 3).selectExpr("CAST(zero_decimal(id) AS BOOLEAN) AS b")
+      checkSparkAnswerAndOperator(allNull)
+      checkAnswer(allNull, Seq(Row(null), Row(null)))
+    }
+  }
+
   test("NativeOptIn message and Compatible field") {
     import org.apache.comet.serde.{Compatible, NativeOptIn}
     val key = "spark.comet.expression.RLike.allowIncompatible"
@@ -3495,17 +4319,21 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     assert(Compatible().nativeOptIn.isEmpty)
   }
 
-  test("RLike literal pattern shows native opt-in, non-literal does not") {
+  test("RLike out-of-subset literal shows native opt-in, in-subset and non-literal do not") {
     withTable("t") {
       spark.sql("create table t(s string, p string) using parquet")
       spark.sql("insert into t values ('abc','a.*'), ('xyz','z')")
-      val lit = spark.sql("select s rlike 'a.*' as r from t")
+      val unsafeLit = spark.sql("select s rlike 'a.*' as r from t")
+      val safeLit = spark.sql("select s rlike 'abc[0-9]+' as r from t")
       val nonLit = spark.sql("select s rlike p as r from t")
-      val explainLit =
-        new ExtendedExplainInfo().generateExtendedInfo(lit.queryExecution.executedPlan)
+      val explainUnsafe =
+        new ExtendedExplainInfo().generateExtendedInfo(unsafeLit.queryExecution.executedPlan)
+      val explainSafe =
+        new ExtendedExplainInfo().generateExtendedInfo(safeLit.queryExecution.executedPlan)
       val explainNonLit =
         new ExtendedExplainInfo().generateExtendedInfo(nonLit.queryExecution.executedPlan)
-      assert(explainLit.contains("native implementation of RLike"))
+      assert(explainUnsafe.contains("native implementation of RLike"))
+      assert(!explainSafe.contains("native implementation of RLike"))
       assert(!explainNonLit.contains("native implementation of RLike"))
     }
   }
@@ -3545,6 +4373,157 @@ class CometExpressionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
         assert(
           !explain.contains("native implementation of DateFormatClass"),
           "Expected no opt-in hint for UTC session: native already runs without config change")
+      }
+    }
+  }
+
+  test("hll_sketch_agg and hll_sketch_estimate (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    // HLL is approximate: Comet's Rust DataSketches estimator differs slightly from
+    // Spark's after a merge, so these functions are Incompatible. Opt in, assert the
+    // query runs natively (no fallback), and that the estimate is within HLL error of
+    // the TRUE distinct count (700). Do NOT compare bit-exactly to Spark.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 700, i)), "tbl") {
+        def checkEstimate(query: String): Unit = {
+          val df = sql(query)
+          checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+          val est = df.collect().head.getLong(0)
+          assert(
+            math.abs(est - 700).toDouble / 700 <= 0.05,
+            s"estimate $est not within 5% of the true distinct count 700 for: $query")
+        }
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(_1, 14)) FROM tbl")
+        checkEstimate("SELECT hll_sketch_estimate(hll_sketch_agg(cast(_1 as string))) FROM tbl")
+      }
+    }
+  }
+
+  test("hll_union_agg and hll_union (incompatible, opt-in)") {
+    assume(isSpark40Plus)
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 1000).map(i => (i % 3, i)), "tbl") {
+        // hll_union_agg: union the per-group sketches -> ~1000 distinct.
+        val aggDf = sql(
+          "SELECT hll_sketch_estimate(hll_union_agg(s)) FROM " +
+            "(SELECT _1 AS g, hll_sketch_agg(_2) AS s FROM tbl GROUP BY _1)")
+        checkCometOperators(stripAQEPlan(aggDf.queryExecution.executedPlan))
+        val aggEst = aggDf.collect().head.getLong(0)
+        assert(math.abs(aggEst - 1000).toDouble / 1000 <= 0.05, s"union_agg estimate $aggEst")
+
+        // hll_union: union two disjoint group sketches -> ~667 distinct.
+        val unionDf = sql(
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s)) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b")
+        checkCometOperators(stripAQEPlan(unionDf.queryExecution.executedPlan))
+        val unionEst = unionDf.collect().head.getLong(0)
+        assert(math.abs(unionEst - 667).toDouble / 667 <= 0.05, s"union estimate $unionEst")
+      }
+    }
+  }
+
+  test("hll_union_agg rejects different lgConfigK when not allowed") {
+    assume(isSpark40Plus)
+    withTempPath { dir =>
+      val sketchPath = dir.getCanonicalPath
+      // Materialize one lgConfigK=10 and one lgConfigK=12 sketch into Parquet, written by Spark
+      // (the HllSketchAgg opt-in is deliberately absent here), so the query under test is a plain
+      // scan plus aggregate. Building the two sketches inline with UNION ALL instead is not
+      // version-stable: on Spark 4.2 MergeSubplans folds the two non-grouping aggregates into one
+      // CTE projecting a struct with duplicate field names, which Comet does not accelerate, so
+      // hll_union_agg falls back and the native check under test never runs.
+      withParquetTable((0 until 100).map(i => Tuple1(i)), "tbl") {
+        sql("SELECT hll_sketch_agg(_1, 10) AS s FROM tbl")
+          .union(sql("SELECT hll_sketch_agg(_1, 12) AS s FROM tbl"))
+          .write
+          .parquet(sketchPath)
+      }
+      withSQLConf("spark.comet.expression.HllUnionAgg.allowIncompatible" -> "true") {
+        // Unioning the two sketches (allowDifferentLgConfigK defaults false) must throw in BOTH
+        // Spark and Comet.
+        val df = spark.read.parquet(sketchPath).selectExpr("hll_union_agg(s)")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val (sparkErr, cometErr) = checkSparkAnswerMaybeThrows(df)
+        assert(sparkErr.isDefined, "expected Spark to throw on different lgConfigK")
+        assert(cometErr.isDefined, "expected Comet to throw on different lgConfigK")
+        // Both arms raising is not enough: if Comet had fallen back for the whole plan, the
+        // second run would raise Spark's exception too and this test would pass without the
+        // native check ever running. The two messages differ - Spark raises
+        // HLL_UNION_DIFFERENT_LG_K - so asserting on Comet's own wording pins the native path.
+        assert(
+          cometErr.get.getMessage.contains("to enable unions of different lgConfigK"),
+          s"expected Comet's native lgConfigK error, got: ${cometErr.get.getMessage}")
+      }
+    }
+  }
+
+  test("hll_union with a NULL allowDifferentLgConfigK returns NULL") {
+    assume(isSpark40Plus)
+    // HllUnion is a TernaryExpression evaluated through nullSafeEval, so a NULL in *any* of the
+    // three arguments - the allowDifferentLgConfigK flag included - makes the whole call NULL.
+    // Returning a sketch would be a categorically wrong answer rather than an approximation,
+    // which is not something the Incompatible opt-in covers.
+    //
+    // The serde only accepts a foldable third argument, and Spark marks HllUnion
+    // `nullIntolerant`, so with the default optimizer NullPropagation rewrites a foldable NULL
+    // flag to a NULL literal before Comet ever sees the expression. Excluding that rule is what
+    // makes the native kernel responsible for the NULL, which is the behaviour under test; a
+    // user who excludes NullPropagation must still get Spark's answer.
+    //
+    // (HllUnionAgg needs no equivalent guard: its `convert` falls back when `right.eval()` is
+    // not a Boolean, and Spark's `null.asInstanceOf[Boolean]` coerces to false, so the two agree
+    // whichever way the flag arrives.)
+    withSQLConf(
+      "spark.sql.optimizer.excludedRules" ->
+        "org.apache.spark.sql.catalyst.optimizer.NullPropagation",
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true",
+      "spark.comet.expression.HllUnion.allowIncompatible" -> "true") {
+      withParquetTable((0 until 300).map(i => (i % 2, i)), "tbl") {
+        val query =
+          "SELECT hll_sketch_estimate(hll_union(a.s, b.s, cast(null as boolean))) FROM " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 0) a, " +
+            "(SELECT hll_sketch_agg(_2) AS s FROM tbl WHERE _1 = 1) b"
+        val df = sql(query)
+        val plan = stripAQEPlan(df.queryExecution.executedPlan)
+        // Without these the test would pass on a plan where hll_union was folded away or fell
+        // back to Spark, neither of which exercises the native null check.
+        checkCometOperators(plan)
+        assert(
+          plan.toString().contains("hll_union"),
+          s"expected hll_union to survive into the native plan, got:\n$plan")
+        assert(
+          df.collect().head.isNullAt(0),
+          "a NULL allowDifferentLgConfigK must make hll_union return NULL")
+        checkSparkAnswer(query)
+      }
+    }
+  }
+
+  test("hll_sketch_agg over all-null input estimates to 0, not NULL") {
+    assume(isSpark40Plus)
+    // Spark's HllSketchAgg/HllSketchEstimate are declared non-nullable: an empty or
+    // all-null group still produces a serialized empty sketch, and hll_sketch_estimate
+    // reads that as 0, never NULL. Guard against regressing to Binary(None) here.
+    withSQLConf(
+      "spark.comet.expression.HllSketchAgg.allowIncompatible" -> "true",
+      "spark.comet.expression.HllSketchEstimate.allowIncompatible" -> "true") {
+      withParquetTable((0 until 100).map(_ => Tuple1(null.asInstanceOf[Integer])), "tbl") {
+        val df = sql("SELECT hll_sketch_estimate(hll_sketch_agg(_1)) FROM tbl")
+        checkCometOperators(stripAQEPlan(df.queryExecution.executedPlan))
+        val row = df.collect().head
+        assert(!row.isNullAt(0), "expected a non-null estimate for an all-null group")
+        assert(
+          row.getLong(0) == 0,
+          s"expected estimate 0 for an all-null group, got ${row.getLong(0)}")
       }
     }
   }

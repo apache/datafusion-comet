@@ -22,6 +22,8 @@ on:
 
 jobs:
   close-stale-prs:
+    # Upstream only: in a fork this would close the fork owner's own stale PRs.
+    if: github.repository == 'apache/datafusion-comet'
     runs-on: ubuntu-slim
     permissions:
       issues: write

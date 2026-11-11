@@ -20,7 +20,7 @@ use arrow::array::ArrayRef;
 use criterion::{criterion_group, criterion_main, Criterion};
 use datafusion::common::ScalarValue;
 use datafusion::physical_plan::ColumnarValue;
-use datafusion_comet_spark_expr::spark_regexp_extract;
+use datafusion_comet_spark_expr::{spark_regexp_extract, PatternCache};
 use std::hint::black_box;
 use std::sync::Arc;
 
@@ -47,7 +47,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"(\d+)-(\d+)".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int32(Some(1))),
         ];
-        b.iter(|| black_box(spark_regexp_extract(black_box(&args)).unwrap()))
+        let cache = PatternCache::new();
+        b.iter(|| black_box(spark_regexp_extract(black_box(&args), &cache).unwrap()))
     });
 
     // Extract the whole match (group 0).
@@ -57,7 +58,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"(\d+)-(\d+)".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int32(Some(0))),
         ];
-        b.iter(|| black_box(spark_regexp_extract(black_box(&args)).unwrap()))
+        let cache = PatternCache::new();
+        b.iter(|| black_box(spark_regexp_extract(black_box(&args), &cache).unwrap()))
     });
 
     // Extract the second capture group.
@@ -67,7 +69,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(r"(\d+)-(\d+)".to_string()))),
             ColumnarValue::Scalar(ScalarValue::Int32(Some(2))),
         ];
-        b.iter(|| black_box(spark_regexp_extract(black_box(&args)).unwrap()))
+        let cache = PatternCache::new();
+        b.iter(|| black_box(spark_regexp_extract(black_box(&args), &cache).unwrap()))
     });
 }
 

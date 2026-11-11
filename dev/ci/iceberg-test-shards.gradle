@@ -1,0 +1,110 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import groovy.json.JsonOutput
+import org.gradle.api.file.FileTreeElement
+import org.gradle.api.tasks.testing.Test
+
+// An exclusion predicate partitions Gradle's existing candidates without broadening
+// its includes, replacing its exclusions, or changing JUnit's discovery/parameters.
+// All classes remain on the test classpath, including inherited test fixtures.
+class CometIcebergTestShard {
+  static int owner(String classFileName, int count) {
+    if (count == 1) {
+      return 1
+    }
+    // Keep JUnit @Nested classes with their enclosing class.
+    String outer = classFileName.substring(0, classFileName.length() - '.class'.length())
+        .split('\\$', 2)[0]
+    // This family exists in all supported Iceberg versions. In the 1.11 run used
+    // to size these shards it took ~19 of ~67 test minutes. The remaining classes
+    // hash to ~18.5 / 16.4 / 13.2 minutes; new classes need no allowlist update.
+    if (outer.startsWith('TestStructuredStreamingRead')) {
+      return 1
+    }
+    return 2 + Math.floorMod(outer.hashCode(), count - 1)
+  }
+}
+
+def properties = gradle.startParameter.projectProperties
+def required = ['cometShardTask', 'cometShardIndex', 'cometShardCount']
+if (required.any { !properties[it] }) {
+  throw new GradleException("Iceberg sharding requires ${required.join(', ')}")
+}
+int shardIndex
+int shardCount
+try {
+  shardIndex = Integer.parseInt(properties.cometShardIndex)
+  shardCount = Integer.parseInt(properties.cometShardCount)
+} catch (NumberFormatException e) {
+  throw new GradleException('Iceberg shard index/count must be integers', e)
+}
+if (shardCount < 1 || shardIndex < 1 || shardIndex > shardCount) {
+  throw new GradleException('Iceberg shard index must be between 1 and cometShardCount')
+}
+
+gradle.projectsEvaluated {
+  def testTask = gradle.rootProject.tasks.findByPath(properties.cometShardTask)
+  if (!(testTask instanceof Test)) {
+    throw new GradleException("Not a Test task: ${properties.cometShardTask}")
+  }
+  testTask.inputs.property('cometShardIndex', shardIndex)
+  testTask.inputs.property('cometShardCount', shardCount)
+  int runAttempt = Integer.parseInt(System.getenv('GITHUB_RUN_ATTEMPT') ?: '1')
+  testTask.inputs.property('cometShardRunAttempt', runAttempt)
+  testTask.inputs.files(gradle.startParameter.initScripts).withPropertyName('cometShardScripts')
+  boolean applyShardFilter = true
+  testTask.exclude { FileTreeElement entry ->
+    applyShardFilter && !entry.directory && entry.name.endsWith('.class') &&
+        CometIcebergTestShard.owner(entry.name, shardCount) != shardIndex
+  }
+
+  // Keep a machine-readable inventory next to the normal JUnit reports. This is
+  // Gradle's candidate set, not the number of tests that JUnit actually executes.
+  def manifest = testTask.project.layout.buildDirectory
+      .file("comet-shards/${testTask.name}-${shardIndex}.json").get().asFile
+  testTask.outputs.file(manifest)
+  testTask.doFirst {
+    def inventory = {
+      def candidates = new TreeSet<String>()
+      testTask.candidateClassFiles.visit { entry ->
+        if (!entry.directory && entry.name.endsWith('.class')) {
+          candidates.add(entry.relativePath.pathString)
+        }
+      }
+      candidates
+    }
+    // Compilation has completed by this point. Disable only our predicate while
+    // recording the baseline, preserving even upstream exclusion closures. Then
+    // restore it before collecting the selected candidates and executing tests.
+    def unshardedCandidates
+    applyShardFilter = false
+    try {
+      unshardedCandidates = inventory()
+    } finally {
+      applyShardFilter = true
+    }
+    def candidates = inventory()
+    manifest.parentFile.mkdirs()
+    manifest.text = JsonOutput.prettyPrint(JsonOutput.toJson([
+        task: testTask.path, shard: shardIndex, count: shardCount, attempt: runAttempt,
+        candidates: candidates, unshardedCandidates: unshardedCandidates])) + '\n'
+    testTask.logger.lifecycle("Iceberg shard ${shardIndex}/${shardCount}: ${candidates.size()} candidate classes")
+  }
+}

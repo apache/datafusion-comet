@@ -19,3 +19,5 @@
 pub use datafusion_comet_common::{
     decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult,
 };
+
+pub(crate) use datafusion_comet_common::unwrap_arrow_external_error;
