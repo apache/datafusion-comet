@@ -18,14 +18,11 @@
 -- Strict floating-point mode and sort or window keys that nest floats in arrays and structs.
 -- nested_float_order_keys.sql checks that Comet normalizes those floats to match Spark, so strict
 -- mode runs these keys natively too. Spark orders a null element or field below every other
--- value, whatever the key's null order. Comet falls back, in every mode, for the two shapes where
--- that differs: `ASC NULLS LAST` or `DESC NULLS FIRST` on a key whose type can hold such a null
--- (#6476), and a RANGE window frame that has to find a row's peers over such a key (#6477).
+-- value, whatever the key's null order. Comet separates root null placement from nested
+-- comparison for `ASC NULLS LAST` and `DESC NULLS FIRST` (#6476). A RANGE window frame that
+-- searches for a row's peers over a key that can hold a nested null still falls back (#6477).
 --
--- The test harness admits incompatible sort orders by default, so turn that off to check the
--- shipped policy.
 -- Config: spark.comet.exec.strictFloatingPoint=true
--- Config: spark.comet.expression.SortOrder.allowIncompatible=false
 
 statement
 CREATE TABLE nested_float_strict(id INT, g INT, d DOUBLE, f FLOAT, s BOOLEAN) USING parquet
@@ -43,20 +40,19 @@ INSERT INTO nested_float_strict VALUES
   (9, 2, double('-Infinity'), float('-Infinity'), false)
 
 -- Keys over the nullable columns can hold a null element or field, whether or not any row does.
--- Row 8 holds one. Under a non-default null order, or in a RANGE frame that finds a row's peers,
--- they fall back, and Spark's answers come back. Native, ORDER BY array(d) NULLS LAST would put
--- row 8 last, where Spark puts it first, and the running sum would span the whole partition on
--- row 8 and every row after it.
-query expect_fallback(can hold a null element or field)
+-- Row 8 holds one. Non-default root null placement now stays native while row 8's nested null
+-- sorts first. The RANGE frame still falls back because its boundary search uses a different
+-- nested-null comparison.
+query
 SELECT id FROM nested_float_strict ORDER BY array(d) NULLS LAST, id
 
 query expect_fallback(can hold a null element or field)
 SELECT id, SUM(id) OVER (ORDER BY array(d)) AS running FROM nested_float_strict
 
-query expect_fallback(can hold a null element or field)
+query
 SELECT id FROM nested_float_strict ORDER BY named_struct('x', f) DESC NULLS FIRST, id
 
-query expect_fallback(can hold a null element or field)
+query
 SELECT id, RANK() OVER (ORDER BY array(IF(s, -d, d)) DESC NULLS FIRST, id) AS r
 FROM nested_float_strict
 

@@ -36,7 +36,10 @@ import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
  * Because we need to modify some methods of Spark `TPCDSQueryTestSuite` but they are private, we
  * copy Spark `TPCDSQueryTestSuite`.
  */
-class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQueryTestHelper {
+abstract class CometTPCDSQueryTestBase
+    extends QueryTest
+    with TPCDSBase
+    with CometSQLQueryTestHelper {
 
   val tpcdsExtendedQueries: Seq[String] = Seq("q72")
 
@@ -211,10 +214,9 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
       s"Join configurations [$conf] should be one of $allJoinConfCombinations"))
 
   /**
-   * Registers the TPC-DS tests. A subclass that overrides `tpcdsQueries` must call this at the
-   * end of its own body, once its overrides are initialized. Calling it from this class's
-   * constructor would see them as null, which previously required an early initializer in the
-   * subclass.
+   * Registers the TPC-DS tests. Every concrete suite calls this at the end of its own body, once
+   * its overrides of `tpcdsQueries` are initialized. Calling it from this class's constructor
+   * would see them as null, which previously required an early initializer in the subclass.
    */
   protected def registerTpcdsQueryTests(): Unit = if (tpcdsDataPath.nonEmpty) {
     tpcdsQueries.foreach { name =>
@@ -271,4 +273,9 @@ class CometTPCDSQueryTestSuite extends QueryTest with TPCDSBase with CometSQLQue
   } else {
     ignore("skipped because env `SPARK_TPCDS_DATA` is not set") {}
   }
+}
+
+/** Runs the TPC-DS queries that this base class lists. */
+class CometTPCDSQueryTestSuite extends CometTPCDSQueryTestBase {
+  registerTpcdsQueryTests()
 }

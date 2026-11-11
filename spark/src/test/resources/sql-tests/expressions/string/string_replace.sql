@@ -24,10 +24,7 @@ INSERT INTO test_str_replace VALUES ('hello world', 'world', 'there'), ('aaa', '
 query
 SELECT replace(s, search, replace) FROM test_str_replace
 
--- Empty literal search: DataFusion's replace diverges from Spark
--- (Spark short-circuits and returns the source unchanged). The custom
--- CometStringReplace serde routes through the codegen dispatcher so
--- Spark's own doGenCode handles this case.
+-- Empty literal search: CometStringReplace retains the codegen dispatcher path.
 -- https://github.com/apache/datafusion-comet/issues/4497
 query
 SELECT replace('hello', '', 'x')

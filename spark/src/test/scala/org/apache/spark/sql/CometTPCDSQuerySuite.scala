@@ -25,7 +25,7 @@ import org.apache.spark.sql.comet.shims.ShimCometTPCDSQuerySuite
 
 import org.apache.comet.CometConf
 
-class CometTPCDSQuerySuite extends CometTPCDSQueryTestSuite with ShimCometTPCDSQuerySuite {
+class CometTPCDSQuerySuite extends CometTPCDSQueryTestBase with ShimCometTPCDSQuerySuite {
 
   val tpcdsAllQueries: Seq[String] = Seq(
     "q1",
