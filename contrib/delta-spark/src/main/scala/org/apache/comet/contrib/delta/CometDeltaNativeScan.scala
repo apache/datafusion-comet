@@ -186,11 +186,12 @@ object CometDeltaNativeScan
         new org.apache.spark.sql.execution.datasources.parquet.ParquetOptions(
           relation.options,
           scanExec.conf)
+      val planId = scanExec.id
       val deltaCommon = OperatorOuterClass.DeltaSparkScanCommon
         .newBuilder()
         .setTableRoot(tableRoot)
         .setColumnMappingMode(columnMappingMode(scanExec))
-        .setSourceKey(DeltaPlanDataInjector.sourceKey(tableRoot, common))
+        .setSourceKey(DeltaPlanDataInjector.sourceKey(tableRoot, common, planId))
         .setDatetimeRebaseModeInRead(parquetReadOptions.datetimeRebaseModeInRead)
         .setInt96RebaseModeInRead(parquetReadOptions.int96RebaseModeInRead)
         .build()
@@ -200,7 +201,7 @@ object CometDeltaNativeScan
         .setDeltaCommon(deltaCommon)
       Operator
         .newBuilder()
-        .setPlanId(scanExec.id)
+        .setPlanId(planId)
         .setContribScan(DeltaSparkScanEnvelope.pack(deltaScan.build()))
         .build()
     }

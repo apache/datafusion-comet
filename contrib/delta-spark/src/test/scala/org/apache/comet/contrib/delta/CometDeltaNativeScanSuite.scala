@@ -23,6 +23,7 @@ import java.io.File
 
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
+import scala.jdk.CollectionConverters._
 
 import org.apache.spark.CometListenerBusUtils
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
@@ -2246,6 +2247,53 @@ class CometDeltaNativeScanSuite extends CometDeltaTestBase {
       val df = query
       df.collect()
       assert(deltaNativeScans(df).size == 2)
+    }
+  }
+
+  test("scans of one table with different partition filters keep their own planning data") {
+    // Without AQE the executed plan is a plain tree, so the scans are taken straight from it.
+    withSQLConf(SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false") {
+      withTempPath { dir =>
+        val path = dir.getAbsolutePath
+        spark
+          .range(0, 20)
+          .selectExpr("id", "id % 2 as p")
+          .write
+          .format("delta")
+          .partitionBy("p")
+          .save(path)
+
+        def scanOf(partition: Int): CometDeltaNativeScanExec = {
+          val df = spark.read.format("delta").load(path).filter(col("p") === partition)
+          val scans = deltaNativeScans(df).collect { case s: CometDeltaNativeScanExec => s }
+          assert(scans.size == 1, s"Expected one native Delta scan in:\n${df.queryExecution}")
+          scans.head
+        }
+        def filePaths(scan: CometDeltaNativeScanExec): Seq[String] =
+          scan.perPartitionData.toSeq.flatMap { bytes =>
+            OperatorOuterClass.DeltaSparkScan
+              .parseFrom(bytes)
+              .getFilePartition
+              .getPartitionedFileList
+              .asScala
+              .map(_.getFile.getFilePath)
+          }
+
+        val p0 = scanOf(0)
+        val p1 = scanOf(1)
+        // Equal common halves, so only the plan id can tell the two keys apart.
+        assert(
+          DeltaSparkScanEnvelope.unpack(p0.nativeOp).getCommon ==
+            DeltaSparkScanEnvelope.unpack(p1.nativeOp).getCommon)
+        assert(p0.sourceKey != p1.sourceKey)
+        Seq(p0, p1).foreach { scan =>
+          assert(scan.sourceKey.endsWith(s"#${scan.nativeOp.getPlanId}"), scan.sourceKey)
+        }
+        Seq(p0 -> "p=0", p1 -> "p=1").foreach { case (scan, dirName) =>
+          val files = filePaths(scan)
+          assert(files.nonEmpty && files.forall(_.contains(dirName)), files)
+        }
+      }
     }
   }
 

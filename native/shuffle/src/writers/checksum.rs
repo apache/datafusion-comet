@@ -16,12 +16,10 @@
 // under the License.
 
 use crate::spark_crc32c_hasher::SparkCrc32cHasher;
-use bytes::Buf;
 use datafusion_comet_jni_bridge::errors::{CometError, CometResult};
 use simd_adler32::Adler32;
 use std::default::Default;
 use std::hash::Hasher;
-use std::io::{Cursor, SeekFrom};
 
 /// Checksum algorithms for writing IPC bytes.
 #[derive(Clone)]
@@ -69,23 +67,11 @@ impl Checksum {
         }
     }
 
-    pub(crate) fn update(&mut self, cursor: &mut Cursor<&mut Vec<u8>>) -> CometResult<()> {
+    pub(crate) fn update(&mut self, bytes: &[u8]) {
         match self {
-            Checksum::CRC32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.update(cursor.chunk());
-                Ok(())
-            }
-            Checksum::Adler32(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.write(cursor.chunk());
-                Ok(())
-            }
-            Checksum::CRC32C(hasher) => {
-                std::io::Seek::seek(cursor, SeekFrom::Start(0))?;
-                hasher.write(cursor.chunk());
-                Ok(())
-            }
+            Checksum::CRC32(hasher) => hasher.update(bytes),
+            Checksum::Adler32(hasher) => hasher.write(bytes),
+            Checksum::CRC32C(hasher) => hasher.write(bytes),
         }
     }
 
@@ -101,17 +87,13 @@ impl Checksum {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
 
     #[test]
     fn test_crc32() {
         let mut checksum = Checksum::try_new(0, None).unwrap();
         let message = b"123456789";
 
-        let mut vector: Vec<u8> = message.to_vec();
-        let mut buff = Cursor::new(&mut vector);
-
-        checksum.update(&mut buff).unwrap();
+        checksum.update(message);
         let result = checksum.finalize();
 
         let expected_crc = 0xcbf43926u32;
@@ -123,10 +105,7 @@ mod tests {
         let mut checksum = Checksum::try_new(1, None).unwrap();
         let message = b"123456789";
 
-        let mut vector: Vec<u8> = message.to_vec();
-        let mut buff = Cursor::new(&mut vector);
-
-        checksum.update(&mut buff).unwrap();
+        checksum.update(message);
         let result = checksum.finalize();
 
         let expected_crc = 0x091e01deu32;
@@ -138,10 +117,7 @@ mod tests {
         let mut checksum = Checksum::try_new(2, None).unwrap();
         let message = b"123456789";
 
-        let mut vector: Vec<u8> = message.to_vec();
-        let mut buff = Cursor::new(&mut vector);
-
-        checksum.update(&mut buff).unwrap();
+        checksum.update(message);
         let result = checksum.finalize();
 
         let expected_crc = 0xe3069283u32;

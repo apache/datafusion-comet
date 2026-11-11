@@ -19,9 +19,19 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use datafusion::common::Result;
-use datafusion::execution::memory_pool::{GreedyMemoryPool, MemoryPool, MemoryReservation};
+use datafusion::execution::memory_pool::{
+    GreedyMemoryPool, MemoryConsumer, MemoryPool, MemoryReservation,
+};
+
+/// A consumer that can spill, as DataFusion registers a sort's and a spilling aggregate's.
+pub(crate) fn spillable(name: &str, pool: &Arc<dyn MemoryPool>) -> MemoryReservation {
+    MemoryConsumer::new(name)
+        .with_can_spill(true)
+        .register(pool)
+}
 
 /// A [`GreedyMemoryPool`] that also records the most it ever had reserved, so a test can check
 /// what an operator reserved while it ran, not only that it gave everything back.
