@@ -23,13 +23,17 @@ Native Delta Lake reads for Comet. Delta tables are scanned through Comet's
 existing native Parquet reader, so they get row-group pruning, page-index
 pruning, and filter pushdown, with deletion vectors applied inside the scan.
 
-Support is experimental and explicitly opt-in. Two things are required:
+The jar also gives Comet a Rust implementation of Delta's `InterleaveBits`
+(the Z-order key) for one or two integer inputs. It is on whenever the jar is
+present; `spark.comet.expression.InterleaveBits.enabled=false` turns it off.
+
+Scan support is experimental and explicitly opt-in. Two things are required:
 
 1. This module's jar (`comet-contrib-delta-spark`) on the classpath, alongside
    `delta-spark`. It is never bundled into `comet-spark`; without it, Comet
    has no Delta surface at all.
 2. `spark.comet.scan.delta.enabled=true`. The default is `false`, so the jar
-   alone does nothing.
+   alone leaves Delta table scans to Spark.
 
 Unsupported tables and features fall back to Spark's reader. See the
 [user guide](https://datafusion.apache.org/comet/user-guide/latest/delta.html)

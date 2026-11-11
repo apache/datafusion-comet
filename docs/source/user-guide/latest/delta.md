@@ -24,14 +24,14 @@ delta-spark run through Comet's native Parquet scan, inheriting row-group
 pruning, page-index pruning, and filter pushdown, with deletion vectors
 applied inside the scan.
 
-Support is experimental and explicitly opt-in. Two things are required:
+Scan support is experimental and explicitly opt-in. Two things are required:
 
 1. The `comet-contrib-delta-spark` contrib jar on the classpath, alongside
    `delta-spark`. It is never bundled into `comet-spark`, and no release
    publishes it yet, so build it from source with the steps in the
    [contrib module README](https://github.com/apache/datafusion-comet/blob/main/contrib/delta-spark/README.md#building-and-testing).
 2. `spark.comet.scan.delta.enabled=true`. The default is `false`, so
-   the jar alone does nothing.
+   the jar alone leaves Delta table scans to Spark.
 
 Unsupported tables and features fall back to Spark's reader. See the
 [contrib module README](https://github.com/apache/datafusion-comet/blob/main/contrib/delta-spark/README.md)
@@ -55,6 +55,21 @@ onward, and timestamps from 1900-01-01T00:00:00Z onward (Spark's own
 rebase cutoff). Disable `spark.comet.scan.delta.enabled` for such tables to
 read them through Spark.
 
+## Z-Order Keys
+
+With the contrib jar on the classpath, Comet also runs Delta's `InterleaveBits`
+expression, the Z-order key that `OPTIMIZE ... ZORDER BY` builds, in the Comet
+pipeline. It is Rust-implemented for one or two integer inputs and returns the
+same bytes as Delta, whichever implementation
+`spark.databricks.delta.optimize.zorder.fastInterleaveBits.enabled` selects.
+Calls with more inputs fall back to Spark. This does not depend on
+`spark.comet.scan.delta.enabled`. To turn it off, set
+`spark.comet.expression.InterleaveBits.enabled=false`.
+
+`OPTIMIZE ... ZORDER BY` does not benefit yet. There the inputs of
+`InterleaveBits` are Delta's range-partition expressions, which Comet does not
+support, so that projection still falls back to Spark.
+
 ## Configuration
 
 <!-- This table is hand-maintained (the doc build cannot see the contrib's config provider) and
@@ -63,7 +78,7 @@ guarded by DeltaScanContribSuite, which checks every DeltaScanConf entry's key, 
 | Config | Description | Default Value |
 |--------|-------------|---------------|
 | `spark.comet.scan.delta.dv.maxDeletedRowsPerFile` | Upper bound on a single file's deletion-vector cardinality (deleted row count) the native Delta scan will claim. Applying a deletion vector expands it into per-row selectors that are held in memory. This bound caps one file's selectors, not what a task holds: the selectors for every file in a partition stay held until the task finishes. The bound is a deliberately pessimistic planning-time proxy for that memory (deletion vector cardinality, not the exact selector count), so a large but contiguous deletion is declined the same as a large alternating one. Scans whose deletion vectors exceed this bound for any file fall back to Spark's reader. | 1000000 |
-| `spark.comet.scan.delta.enabled` | Whether to enable native Delta table scans. When enabled, DSv1 Delta table reads planned by delta-spark are executed through Comet's native Parquet scan, inheriting row-group pruning, page-index pruning, and filter pushdown, with deletion vectors applied inside the scan. Experimental: defaults to false, so adding the contrib jar does not by itself change how any query is read. | false |
+| `spark.comet.scan.delta.enabled` | Whether to enable native Delta table scans. When enabled, DSv1 Delta table reads planned by delta-spark are executed through Comet's native Parquet scan, inheriting row-group pruning, page-index pruning, and filter pushdown, with deletion vectors applied inside the scan. Experimental: defaults to false, so adding the contrib jar does not by itself change how any Delta table is scanned. | false |
 <!-- prettier-ignore-end -->
 
 When Spark splits a Parquet file into several tasks, each native Delta scan builds
