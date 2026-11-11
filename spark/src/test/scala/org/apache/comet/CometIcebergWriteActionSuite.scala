@@ -1143,12 +1143,17 @@ class CometIcebergWriteActionSuite
     withIcebergCatalog { _ =>
       val columns = "id BIGINT, s STRING, d DOUBLE, st STRUCT<a: INT, b: STRING>, " +
         "arr ARRAY<INT>, m MAP<STRING, INT>, dt DATE, ts TIMESTAMP, ntz TIMESTAMP_NTZ, " +
-        "dec DECIMAL(12, 3), bin BINARY, b BOOLEAN, f FLOAT"
+        "dec DECIMAL(12, 3), bin BINARY, b BOOLEAN, f FLOAT, " +
+        "nested ARRAY<STRUCT<x: INT, y: STRING>>, " +
+        "deep STRUCT<k: MAP<STRING, ARRAY<INT>>, v: INT>"
       spark.sql(s"CREATE TABLE $catalog.$ns.shuffle_src ($columns) USING iceberg")
       spark.sql(s"""
         INSERT INTO $catalog.$ns.shuffle_src
         SELECT id,
-          IF(id % 7 = 0, NULL, CONCAT('s', CAST(id AS STRING))),
+          CASE WHEN id % 7 = 0 THEN NULL
+            WHEN id % 5 = 0 THEN CONCAT('日本語-', CAST(id AS STRING))
+            WHEN id % 3 = 0 THEN CONCAT('é😀-', CAST(id AS STRING))
+            ELSE CONCAT('s', CAST(id AS STRING)) END,
           CASE id % 11 WHEN 0 THEN NULL WHEN 1 THEN CAST('NaN' AS DOUBLE) WHEN 2 THEN -0.0D
             WHEN 3 THEN CAST('Infinity' AS DOUBLE) WHEN 4 THEN CAST('-Infinity' AS DOUBLE)
             ELSE id / 3.0 END,
@@ -1156,15 +1161,32 @@ class CometIcebergWriteActionSuite
             NAMED_STRUCT('a', CAST(id AS INT), 'b', IF(id % 2 = 0, NULL, CAST(id AS STRING)))),
           IF(id % 17 = 0, NULL, ARRAY(CAST(id AS INT), NULL)),
           IF(id % 19 = 0, NULL, MAP(CAST(id AS STRING), CAST(id AS INT))),
-          IF(id % 23 = 0, NULL, DATE_ADD(DATE '1970-01-01', CAST(id * 7 AS INT))),
-          IF(id % 29 = 0, NULL, TIMESTAMP_MICROS(id * 1000003)),
-          IF(id % 31 = 0, NULL, CAST(TIMESTAMP_MICROS(id * 999983) AS TIMESTAMP_NTZ)),
+          CASE WHEN id % 23 = 0 THEN NULL
+            WHEN id % 23 = 1 THEN DATE '1900-01-01'
+            WHEN id % 23 = 2 THEN DATE '1969-12-31'
+            WHEN id % 23 = 3 THEN DATE '9999-12-31'
+            ELSE DATE_ADD(DATE '1970-01-01', CAST(id * 7 AS INT)) END,
+          CASE WHEN id % 29 = 0 THEN NULL
+            WHEN id % 29 = 1 THEN TIMESTAMP_MICROS(-2208988800000000)
+            WHEN id % 29 = 2 THEN TIMESTAMP_MICROS(-1)
+            WHEN id % 29 = 3 THEN TIMESTAMP_MICROS(253402300799999999)
+            ELSE TIMESTAMP_MICROS(id * 1000003) END,
+          CASE WHEN id % 31 = 0 THEN NULL
+            WHEN id % 31 = 1 THEN CAST(TIMESTAMP_MICROS(-2208988800000000) AS TIMESTAMP_NTZ)
+            WHEN id % 31 = 2 THEN CAST(TIMESTAMP_MICROS(253402300799999999) AS TIMESTAMP_NTZ)
+            ELSE CAST(TIMESTAMP_MICROS(id * 999983) AS TIMESTAMP_NTZ) END,
           IF(id % 37 = 0, NULL, CAST(CAST(id AS DECIMAL(12, 3)) / 7 AS DECIMAL(12, 3))),
           IF(id % 41 = 0, NULL, CAST(CONCAT('b', CAST(id AS STRING)) AS BINARY)),
           IF(id % 43 = 0, NULL, id % 2 = 0),
           CASE id % 10 WHEN 0 THEN CAST('NaN' AS FLOAT) WHEN 1 THEN CAST(-0.0D AS FLOAT)
             WHEN 2 THEN CAST('Infinity' AS FLOAT) WHEN 3 THEN CAST('-Infinity' AS FLOAT)
-            WHEN 4 THEN NULL ELSE CAST(id AS FLOAT) / 3 END
+            WHEN 4 THEN NULL ELSE CAST(id AS FLOAT) / 3 END,
+          IF(id % 47 = 0, NULL,
+            ARRAY(NAMED_STRUCT('x', CAST(id AS INT), 'y', CONCAT('日', CAST(id AS STRING))),
+              NULL, NAMED_STRUCT('x', CAST(NULL AS INT), 'y', CAST(NULL AS STRING)))),
+          IF(id % 53 = 0, NULL,
+            NAMED_STRUCT('k', IF(id % 2 = 0, MAP('a', ARRAY(CAST(id AS INT), NULL), 'b', ARRAY()),
+              CAST(NULL AS MAP<STRING, ARRAY<INT>>)), 'v', CAST(id AS INT)))
         FROM range(0, 2000)""")
 
       // (case, hint, filter, AQE on, the write's leaf when direct read is on, extra confs).
@@ -1183,6 +1205,15 @@ class CometIcebergWriteActionSuite
           true,
           "SHUFFLE_SCAN",
           Seq(SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false")),
+        // The timestamp columns hold instants, so a session time zone must not change what the
+        // shuffle blocks decode to.
+        (
+          "non_utc_session",
+          "REPARTITION(8, id)",
+          "",
+          true,
+          "SHUFFLE_SCAN",
+          Seq(SQLConf.SESSION_LOCAL_TIMEZONE.key -> "America/Los_Angeles")),
         ("no_aqe", "REPARTITION(8, id)", "", false, "SCAN", Seq.empty[(String, String)]))
       cases.foreach { case (name, hint, filter, adaptive, directReadLeaf, extraConfs) =>
         val expected =

@@ -437,7 +437,9 @@ private class CometIcebergWriteRDD(
 
   override def compute(split: Partition, context: TaskContext): Iterator[ColumnarBatch] = {
     // Before the shuffle fetch that `resolveInputObjects` starts, as the probe's RDD does for a
-    // child that is not read natively.
+    // child that is not read natively. The probe is test-only, and only the scheduler-ordering
+    // tests need this hook, so this path does not report `afterInput`: the JVM never sees the
+    // rows of a shuffle that the native plan decodes.
     shuffleProbe.foreach(_.beforeInput())
     val (inputObjects, shuffleBlockIterators) =
       CometExecRDD.resolveInputObjects(Seq(input), Array(split), shuffleScanIndices, context)
