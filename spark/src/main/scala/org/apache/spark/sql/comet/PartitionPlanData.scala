@@ -57,21 +57,23 @@ object PartitionPlanData {
 /**
  * One native Iceberg scan partition's plan data.
  *
- * `scan` is the partition's IcebergScan: its file tasks, plus its partition values, residuals and
- * delete-file sets in `common`. Its delete files are kept apart, because a delete file is often
- * used by many partitions: the driver serializes each delete file once, and every partition that
- * uses it holds the same array and the same path string. A coalesced task then carries each
- * delete file once, and the driver keeps one copy of it.
+ * `scan` is the partition's IcebergScan: its file tasks, plus its partition values and
+ * delete-file sets in `common`. Its delete files and residuals are kept apart, because many
+ * partitions often use the same ones, such as an unpartitioned equality delete or the scan's
+ * filter. The driver serializes each once, and every partition that uses it holds the same array.
+ * A coalesced task then carries each once, and the driver keeps one copy.
  *
  * `deleteFiles(i)` is the partition's delete file `i`, an IcebergDeleteFile without
  * `file_path_idx`, and `deleteFilePaths(i)` is its path. The delete-file sets in `scan` index
  * into `deleteFiles`. Each partition orders its delete files differently, so the index into the
- * path pool is set here, when the partition's message is built.
+ * path pool is set here, when the partition's message is built. `residuals(i)` is the
+ * IcebergPredicate its tasks' `residual_idx = i` refers to.
  */
 final class IcebergPartitionPlanData(
     val scan: Array[Byte],
     val deleteFiles: Array[Array[Byte]],
-    val deleteFilePaths: Array[String])
+    val deleteFilePaths: Array[String],
+    val residuals: Array[Array[Byte]])
     extends PartitionPlanData {
 
   require(
@@ -79,7 +81,7 @@ final class IcebergPartitionPlanData(
     s"${deleteFiles.length} delete files but ${deleteFilePaths.length} paths")
 
   override def bytes: Array[Byte] = {
-    if (deleteFiles.isEmpty) {
+    if (deleteFiles.isEmpty && residuals.isEmpty) {
       scan
     } else {
       val builder = OperatorOuterClass.IcebergScan.newBuilder().mergeFrom(scan)
@@ -98,6 +100,7 @@ final class IcebergPartitionPlanData(
             .mergeFrom(deleteFiles(i))
             .setFilePathIdx(pathIdx))
       }
+      residuals.foreach(r => common.addResidualPoolBuilder().mergeFrom(r))
       builder.build().toByteArray
     }
   }

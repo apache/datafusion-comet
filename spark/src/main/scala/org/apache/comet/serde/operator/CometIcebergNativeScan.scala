@@ -1197,9 +1197,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
    * Delete files use two levels: a flat pool of unique files, plus a per-task list of indices
    * into it. One delete file applies to many data files under Iceberg's default partition delete
    * granularity, so each partition stores it once and references it many times, as Iceberg's own
-   * DeleteFileIndex does. Across partitions, each delete file is serialized once and shared by
-   * reference (see IcebergPartitionPlanData), so a coalesced task carries it once and the driver
-   * keeps one copy.
+   * DeleteFileIndex does. Across partitions, each delete file and residual is serialized once and
+   * shared by reference (see IcebergPartitionPlanData), so a coalesced task carries it once and
+   * the driver keeps one copy.
    *
    * @param scanExec
    *   The BatchScanExec whose inputRDD contains the DPP-filtered partitions
@@ -1232,6 +1232,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // as many delete files as there are data files.
     val sharedDeleteFilePaths = mutable.HashMap[String, String]()
     var sharedDeleteFileBytes = 0L
+    // A residual is often the scan's whole filter, used by every partition, so it is shared the
+    // same way.
+    val sharedResiduals = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Array[Byte]]()
+    var sharedResidualBytes = 0L
 
     // The per-file pools of one partition, so a task never holds entries that only other
     // partitions use. Within a partition each entry is stored once.
@@ -1246,7 +1250,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
       val deleteFileBytes = mutable.ArrayBuffer[Array[Byte]]()
       val deleteFilePaths = mutable.ArrayBuffer[String]()
       val deleteFileSets = mutable.HashMap[Seq[Int], Int]()
+      // The partition's residuals, in the order its tasks index them.
       val residuals = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
+      val residualBytes = mutable.ArrayBuffer[Array[Byte]]()
 
       def internDeleteFile(file: (String, OperatorOuterClass.IcebergDeleteFile)): Int =
         deleteFiles.getOrElseUpdate(
@@ -1262,14 +1268,27 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             deleteFileBytes.size - 1
           })
 
+      def internResidual(residual: OperatorOuterClass.IcebergPredicate): Int =
+        residuals.getOrElseUpdate(
+          residual, {
+            residualBytes += sharedResiduals.getOrElseUpdate(
+              residual, {
+                val bytes = residual.toByteArray
+                sharedResidualBytes += bytes.length
+                bytes
+              })
+            residualBytes.size - 1
+          })
+
       def build(scan: OperatorOuterClass.IcebergScan.Builder): IcebergPartitionPlanData = {
-        if (partitionData.nonEmpty || deleteFileSets.nonEmpty || residuals.nonEmpty) {
+        if (partitionData.nonEmpty || deleteFileSets.nonEmpty) {
           scan.setCommon(builder)
         }
         new IcebergPartitionPlanData(
           scan.build().toByteArray,
           deleteFileBytes.toArray,
-          deleteFilePaths.toArray)
+          deleteFilePaths.toArray,
+          residualBytes.toArray)
       }
     }
     // Entries in the per-file pools, summed over partitions, for the log.
@@ -1447,13 +1466,7 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                     pageIndexUnsupportedColumns)
 
                 residualExprOpt.foreach { residual =>
-                  val residualIdx = pools.residuals.getOrElseUpdate(
-                    residual, {
-                      val idx = pools.residuals.size
-                      pools.builder.addResidualPool(residual)
-                      idx
-                    })
-                  taskBuilder.setResidualIdx(residualIdx)
+                  taskBuilder.setResidualIdx(pools.internResidual(residual))
                 }
 
                 serializePartitionData(
@@ -1505,7 +1518,11 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
             "preserving empty execution partitions")
         other.partitions.foreach { _ =>
           perPartition +=
-            new IcebergPartitionPlanData(Array.emptyByteArray, Array.empty, Array.empty)
+            new IcebergPartitionPlanData(
+              Array.emptyByteArray,
+              Array.empty,
+              Array.empty,
+              Array.empty)
         }
       case other =>
         throw new IllegalStateException(
@@ -1582,11 +1599,12 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
         s"partition_data=$partitionDataEntries, delete_file=$deleteFileEntries, " +
         s"delete_files_set=$deleteFileSetEntries, residual=$residualEntries")
     logInfo(
-      "  Delete files, each held once and shared by the partitions that use it: " +
-        s"${sharedDeleteFiles.size} files, ${sharedDeleteFilePaths.size} paths, " +
-        s"$sharedDeleteFileBytes bytes")
+      "  Held once and shared by the partitions that use them: " +
+        s"${sharedDeleteFiles.size} delete files, ${sharedDeleteFilePaths.size} paths, " +
+        s"$sharedDeleteFileBytes bytes; ${sharedResiduals.size} residuals, " +
+        s"$sharedResidualBytes bytes")
     logInfo(
-      s"  Per-partition messages, without delete files: ${perPartition.size}, " +
+      s"  Per-partition messages, without delete files and residuals: ${perPartition.size}, " +
         s"total=$perPartitionTotal bytes, max=$perPartitionMax bytes")
 
     (commonBuilder.build().toByteArray, perPartition.toArray[PartitionPlanData])

@@ -207,28 +207,32 @@ class PlanDataInjectorSuite extends AnyFunSuite {
   }
 
   /**
-   * One partition whose tasks each use all of `deleteFiles`, as the driver builds it: the delete
-   * files are shared arrays and path strings, and the partition's own message indexes into them.
+   * One partition whose tasks each use all of `deleteFiles` and `residual`, as the driver builds
+   * it: they are shared arrays and path strings, and the partition's own message indexes into
+   * them.
    */
   private def sharedDeletePartition(
       dataFiles: Seq[String],
-      deleteFiles: Seq[(String, Array[Byte])]): IcebergPartitionPlanData = {
+      deleteFiles: Seq[(String, Array[Byte])],
+      residual: Option[Array[Byte]] = None): IcebergPartitionPlanData = {
     val sets = OperatorOuterClass.DeleteFileList.newBuilder()
     deleteFiles.indices.foreach(i => sets.addDeleteFileIndices(i))
     val scan = OperatorOuterClass.IcebergScan
       .newBuilder()
       .setCommon(OperatorOuterClass.IcebergScanCommon.newBuilder().addDeleteFilesPool(sets))
     dataFiles.foreach { path =>
-      scan.addFileScanTasks(
-        OperatorOuterClass.IcebergFileScanTask
-          .newBuilder()
-          .setDataFilePath(path)
-          .setDeleteFilesIdx(0))
+      val task = OperatorOuterClass.IcebergFileScanTask
+        .newBuilder()
+        .setDataFilePath(path)
+        .setDeleteFilesIdx(0)
+      residual.foreach(_ => task.setResidualIdx(0))
+      scan.addFileScanTasks(task)
     }
     new IcebergPartitionPlanData(
       scan.build().toByteArray,
       deleteFiles.map(_._2).toArray,
-      deleteFiles.map(_._1).toArray)
+      deleteFiles.map(_._1).toArray,
+      residual.toArray)
   }
 
   private def deletionVector(dataFile: String, offset: Long): Array[Byte] =
@@ -294,9 +298,10 @@ class PlanDataInjectorSuite extends AnyFunSuite {
     }
   }
 
-  test("a coalesced task carries a delete file its partitions share once") {
+  test("a coalesced task carries a delete file and residual its partitions share once") {
     // A coalesce without a shuffle writes all of its input partitions into one task stream. A
-    // delete file those partitions share is one array, so Java serialization writes it once.
+    // delete file or residual those partitions share is one array, so Java serialization writes
+    // it once.
     val keyMetadata = com.google.protobuf.ByteString.copyFrom(new Array[Byte](8 * 1024))
     val shared = (
       "s3://bucket/table/data/eq-deletes.parquet",
@@ -308,11 +313,23 @@ class PlanDataInjectorSuite extends AnyFunSuite {
         .setKeyMetadata(keyMetadata)
         .build()
         .toByteArray)
+    // A large IN list, the residual of a filter every file in the scan gets.
+    val inList = OperatorOuterClass.IcebergSetPredicate
+      .newBuilder()
+      .setColumn("id")
+      .setOp(OperatorOuterClass.IcebergPredicateOperator.In)
+    (0 until 2000).foreach { v =>
+      inList.addValues(OperatorOuterClass.IcebergLiteral.newBuilder().setLongVal(v))
+    }
+    val residual =
+      OperatorOuterClass.IcebergPredicate.newBuilder().setSet(inList).build().toByteArray
+    val sharedBytes = shared._2.length + residual.length
     val partitions = (0 until 16).map { i =>
       new CometExecPartition(
         i,
         Array.empty,
-        Map("scan" -> sharedDeletePartition(Seq(s"data-$i.parquet"), Seq(shared))))
+        Map(
+          "scan" -> sharedDeletePartition(Seq(s"data-$i.parquet"), Seq(shared), Some(residual))))
     }
     def serializedSize(obj: AnyRef): Int = {
       val buffer = new java.io.ByteArrayOutputStream()
@@ -324,10 +341,10 @@ class PlanDataInjectorSuite extends AnyFunSuite {
 
     val one = serializedSize(partitions.head)
     val together = serializedSize(partitions.toArray)
-    assert(one > shared._2.length, s"a partition should carry the delete file: $one bytes")
+    assert(one > sharedBytes, s"a partition should carry the shared entries: $one bytes")
     assert(
-      together < one + shared._2.length,
-      s"16 partitions took $together bytes; one took $one, the delete file ${shared._2.length}")
+      together < one + sharedBytes,
+      s"16 partitions took $together bytes; one took $one, the shared entries $sharedBytes")
 
     val buffer = new java.io.ByteArrayOutputStream()
     val out = new java.io.ObjectOutputStream(buffer)
@@ -339,9 +356,17 @@ class PlanDataInjectorSuite extends AnyFunSuite {
         .asInstanceOf[Array[CometExecPartition]]
         .map(_.planDataByKey("scan").asInstanceOf[IcebergPartitionPlanData])
     assert(received.forall(_.deleteFiles.head eq received.head.deleteFiles.head))
+    assert(received.forall(_.residuals.head eq received.head.residuals.head))
     received.zip(partitions).foreach { case (got, sent) =>
       assert(got.bytes.sameElements(sent.planDataByKey("scan").bytes))
     }
+    val task = OperatorOuterClass.IcebergScan.parseFrom(received.head.bytes)
+    assert(
+      task.getCommon
+        .getResidualPool(task.getFileScanTasks(0).getResidualIdx)
+        .getSet
+        .getValuesCount == 2000,
+      "the task's residual should resolve to the shared IN list")
   }
 
   test("each registered injector is reachable by its opStructCase") {

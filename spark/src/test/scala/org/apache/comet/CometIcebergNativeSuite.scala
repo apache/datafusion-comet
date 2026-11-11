@@ -34,7 +34,7 @@ import org.apache.iceberg.expressions.Expressions
 import org.apache.iceberg.spark.Spark3Util
 import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.hadoop.util.HadoopInputFile
-import org.apache.spark.CometListenerBusUtils
+import org.apache.spark.{CometListenerBusUtils, SparkEnv}
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.{CometTestBase, DataFrame, Row}
 import org.apache.spark.sql.catalyst.expressions.{Ascending, DynamicPruningExpression, SortOrder}
@@ -1441,7 +1441,31 @@ class CometIcebergNativeSuite
         assert(
           heldCopies.length == copies.sum && heldCopies.forall(_ eq heldCopies.head),
           "partitions should share one serialized copy of the equality delete")
-        checkSparkAnswer(spark.table("test_cat.db.global_eq_delete").coalesce(1))
+        val coalesced = spark.table("test_cat.db.global_eq_delete").coalesce(1)
+        checkSparkAnswer(coalesced)
+
+        // A real coalesce runs every partition in one task. That task's serialized partition
+        // carries the equality delete and its path once, not once per input partition.
+        val coalescedPlan = coalesced.queryExecution.executedPlan
+        assert(collectIcebergNativeScans(coalescedPlan).nonEmpty, s"$coalescedPlan")
+        val coalescedRdd = coalescedPlan.execute()
+        assert(coalescedRdd.getNumPartitions == 1, s"$coalescedPlan")
+        val taskPartition = SparkEnv.get.closureSerializer
+          .newInstance()
+          .serialize(coalescedRdd.partitions.head)
+        val taskBytes = new Array[Byte](taskPartition.remaining())
+        taskPartition.get(taskBytes)
+        val eqDeletePath = scan.perPartitionData.toSeq.collectFirst {
+          case data: IcebergPartitionPlanData if data.deleteFilePaths.nonEmpty =>
+            data.deleteFilePaths.head
+        }.get
+        assert(
+          copies.count(_ == 1) > 1,
+          s"expected several partitions to use the delete: $copies")
+        assert(
+          countByteOccurrences(taskBytes, eqDeletePath.getBytes(UTF_8)) == 1 &&
+            countByteOccurrences(taskBytes, heldCopies.head) == 1,
+          s"the coalesced task (${taskBytes.length} bytes) should carry one copy of the delete")
 
         spark.sql("DROP TABLE test_cat.db.global_eq_delete")
       }
