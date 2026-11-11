@@ -25,6 +25,7 @@ use arrow::array::{
 use arrow::datatypes::{
     i256, is_validate_decimal_precision, DataType, Date32Type, Decimal256Type, Float32Type,
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
+    DECIMAL128_MAX_PRECISION,
 };
 use chrono::{LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
 use num::traits::CheckedNeg;
@@ -334,14 +335,26 @@ pub(crate) fn cast_string_to_decimal(
     precision: &u8,
     scale: &i8,
     eval_mode: EvalMode,
+    zero_any_exponent: bool,
+    skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     match to_type {
-        DataType::Decimal128(_, _) => {
-            cast_string_to_decimal128_impl(array, eval_mode, *precision, *scale)
-        }
-        DataType::Decimal256(_, _) => {
-            cast_string_to_decimal256_impl(array, eval_mode, *precision, *scale)
-        }
+        DataType::Decimal128(_, _) => cast_string_to_decimal128_impl(
+            array,
+            eval_mode,
+            *precision,
+            *scale,
+            zero_any_exponent,
+            skip_integral_digit_limit,
+        ),
+        DataType::Decimal256(_, _) => cast_string_to_decimal256_impl(
+            array,
+            eval_mode,
+            *precision,
+            *scale,
+            zero_any_exponent,
+            skip_integral_digit_limit,
+        ),
         _ => Err(SparkError::Internal(format!(
             "Unexpected type in cast_string_to_decimal: {:?}",
             to_type
@@ -354,6 +367,8 @@ fn cast_string_to_decimal128_impl(
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
+    zero_any_exponent: bool,
+    skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
@@ -367,7 +382,13 @@ fn cast_string_to_decimal128_impl(
             decimal_builder.append_null();
         } else {
             let str_value = string_array.value(i);
-            match parse_string_to_decimal(str_value, precision, scale) {
+            match parse_string_to_decimal(
+                str_value,
+                precision,
+                scale,
+                zero_any_exponent,
+                skip_integral_digit_limit,
+            ) {
                 Ok(Some(decimal_value)) => {
                     decimal_builder.append_value(decimal_value);
                 }
@@ -417,6 +438,8 @@ fn cast_string_to_decimal256_impl(
     eval_mode: EvalMode,
     precision: u8,
     scale: i8,
+    zero_any_exponent: bool,
+    skip_integral_digit_limit: bool,
 ) -> SparkResult<ArrayRef> {
     let string_array = array
         .as_any()
@@ -430,7 +453,13 @@ fn cast_string_to_decimal256_impl(
             decimal_builder.append_null();
         } else {
             let str_value = string_array.value(i);
-            match parse_string_to_decimal(str_value, precision, scale) {
+            match parse_string_to_decimal(
+                str_value,
+                precision,
+                scale,
+                zero_any_exponent,
+                skip_integral_digit_limit,
+            ) {
                 Ok(Some(decimal_value)) => {
                     // Convert i128 to i256
                     let i256_value = i256::from_i128(decimal_value);
@@ -666,7 +695,28 @@ fn is_special_value(trimmed: &str) -> bool {
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 /// Parse a string to decimal following Spark's behavior
-fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkResult<Option<i128>> {
+///
+/// `zero_any_exponent` selects how a zero with a large exponent ("0e39") is cast. Spark used to
+/// apply the integral-digit limit to zero too, so such a string returned NULL (or raised
+/// NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI). Since SPARK-60118 Spark skips that limit for zero,
+/// which fits any decimal type, and casts it to 0.
+///
+/// Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed it,
+/// with NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, whatever the target type. It does not with
+/// `spark.sql.legacy.allowNegativeScaleOfDecimal`, and `skip_integral_digit_limit` is set then.
+/// Spark rescales the value like any other, and it fails the target type's precision check if it
+/// is too large, with NUMERIC_VALUE_OUT_OF_RANGE under ANSI. Two shapes still report
+/// CAST_INVALID_INPUT under ANSI instead: a scale adjustment to the target type over 38, which
+/// returns `Ok(None)` below (https://github.com/apache/datafusion-comet/issues/7576), and more
+/// digits than an i128 holds, which `parse_decimal_str` rejects
+/// (https://github.com/apache/datafusion-comet/issues/7581).
+fn parse_string_to_decimal(
+    input_str: &str,
+    precision: u8,
+    scale: i8,
+    zero_any_exponent: bool,
+    skip_integral_digit_limit: bool,
+) -> SparkResult<Option<i128>> {
     // Spark parses via `new java.math.BigDecimal(str.toString.trim)`, so the trim set is
     // `String.trim`'s: every byte <= 0x20, which includes the null byte ("123\u0000" and
     // "\u0000123" both parse as 123) but not 0x7F or any non-ASCII whitespace. Null bytes in
@@ -693,15 +743,15 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     }
 
     // validate and parse mantissa and exponent or bubble up the error
-    let (mantissa, exponent) = parse_decimal_str(trimmed, input_str, precision, scale)?;
+    let limit = if skip_integral_digit_limit {
+        IntegralDigitLimit::Skipped
+    } else {
+        IntegralDigitLimit::Applied { zero_any_exponent }
+    };
+    let (mantissa, exponent) = parse_decimal_str(trimmed, input_str, precision, scale, limit)?;
 
-    // Early return mantissa 0, Spark checks if it fits digits and throw error in ansi
+    // Early return mantissa 0, which fits any decimal type.
     if mantissa == 0 {
-        if exponent < -37 {
-            return Err(SparkError::NumericOutOfRange {
-                value: input_str.to_string(),
-            });
-        }
         return Ok(Some(0));
     }
 
@@ -710,8 +760,9 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
     let scale_adjustment = target_scale - exponent as i64;
     // `BigDecimal.setScale`, which Spark rescales with, fails when the scale difference does not
     // fit in an int (e.g. "1e-2147483647" to a negative target scale), so do not round to zero.
-    // Spark raises a raw `ArithmeticException` there in every eval mode; see
-    // https://github.com/apache/datafusion-comet/issues/6966.
+    // Spark raises a raw `ArithmeticException` there in every eval mode. Spark 4.0.5, 4.1.4 and
+    // 4.2.1 skip `setScale` when the value is far below the target scale's ulp (SPARK-60119) and
+    // return 0 for that example; see https://github.com/apache/datafusion-comet/issues/6966.
     if i32::try_from(scale_adjustment).is_err() {
         return Err(invalid_decimal_cast(input_str, precision, scale));
     }
@@ -725,8 +776,9 @@ fn parse_string_to_decimal(input_str: &str, precision: u8, scale: i8) -> SparkRe
         mantissa.checked_mul(pow10_i128(scale_adjustment as u32).unwrap())
     } else {
         // Need to divide (decrease scale)
-        // Spark's `BigDecimal.setScale` also fails for a very large difference that still fits in
-        // an int, while this rounds to zero: https://github.com/apache/datafusion-comet/issues/6966
+        // Before SPARK-60119 (Spark 4.0.5, 4.1.4 and 4.2.1), Spark's `BigDecimal.setScale` also
+        // fails for a very large difference that still fits in an int, while this rounds to zero
+        // as those releases do: https://github.com/apache/datafusion-comet/issues/6966
         if -scale_adjustment > 38 {
             return Ok(Some(0));
         }
@@ -770,6 +822,71 @@ fn invalid_decimal_cast(value: &str, precision: u8, scale: i8) -> SparkError {
     )
 }
 
+/// How [`parse_decimal_str`] applies Spark's limit of 38 integral digits.
+#[derive(Clone, Copy)]
+enum IntegralDigitLimit {
+    /// Spark does not apply the limit (`spark.sql.legacy.allowNegativeScaleOfDecimal`).
+    Skipped,
+    /// Spark applies the limit. Since SPARK-60118 it exempts zero, which `zero_any_exponent` says.
+    Applied { zero_any_exponent: bool },
+}
+
+/// Whether Spark's `Decimal.fromString` and `fromStringANSI` reject a string for having more than
+/// 38 integral digits, which they count as `precision - scale` of the parsed `BigDecimal`. Its
+/// scale is the number of fractional digits less the exponent, and its precision is the number of
+/// digits from the first non-zero one, so leading zeros do not count, and zero has one.
+///
+/// The digits are at most those before and after the point, so the integral digits are at most
+/// those before the point plus the exponent. That settles nearly every string, zero included, with
+/// one comparison on the path every string takes, and only the rest are counted.
+#[inline]
+fn exceeds_integral_digit_limit(
+    integral_part: &[u8],
+    fractional_part: &[u8],
+    exponent: i32,
+    scale: i32,
+    zero_any_exponent: bool,
+) -> bool {
+    integral_part.len() as i64 + i64::from(exponent) > i64::from(DECIMAL128_MAX_PRECISION)
+        && counted_digits_exceed_integral_digit_limit(
+            integral_part,
+            fractional_part,
+            scale,
+            zero_any_exponent,
+        )
+}
+
+/// [`exceeds_integral_digit_limit`] for a string that may be over the limit, counting its digits.
+#[cold]
+#[inline(never)]
+fn counted_digits_exceed_integral_digit_limit(
+    integral_part: &[u8],
+    fractional_part: &[u8],
+    scale: i32,
+    zero_any_exponent: bool,
+) -> bool {
+    let leading_zeros = integral_part
+        .iter()
+        .chain(fractional_part)
+        .take_while(|&&digit| digit == b'0')
+        .count();
+    let digits = integral_part.len() + fractional_part.len() - leading_zeros;
+    if digits == 0 {
+        // Spark counts integral digits for zero too, so "0e38" (scale -38) has 39 and is over the
+        // limit. Spark stopped applying the limit to zero in SPARK-60118. Before that it counted
+        // in an int, which wraps negative for "0e2147483647" (scale -2147483647), so that zero
+        // skipped the limit; the wrapping subtraction does the same.
+        !zero_any_exponent && 1i32.wrapping_sub(scale) > i32::from(DECIMAL128_MAX_PRECISION)
+    } else {
+        // SPARK-60118 also made Spark count in a long. Before it, the int wrapped for a scale near
+        // the bottom of its range ("1e2147483647"), so the check passed and the value then failed
+        // in `BigDecimal.setScale` with a raw `ArithmeticException`. That exception has no
+        // counterpart here, so every release counts in a long and rejects such a string as the
+        // fixed ones do.
+        digits as i64 - i64::from(scale) > i64::from(DECIMAL128_MAX_PRECISION)
+    }
+}
+
 /// Parse a decimal string into mantissa and scale
 /// e.g., "123.45" -> (12345, 2), "-0.001" -> (-1, 3) , 0e50 -> (0,50) etc
 fn parse_decimal_str(
@@ -777,6 +894,7 @@ fn parse_decimal_str(
     original_str: &str,
     precision: u8,
     scale: i8,
+    limit: IntegralDigitLimit,
 ) -> SparkResult<(i128, i32)> {
     let bytes = s.as_bytes();
 
@@ -836,10 +954,34 @@ fn parse_decimal_str(
         return Err(invalid_decimal_cast(original_str, precision, scale));
     }
 
+    let fractional_scale = fractional_part.len() as i64;
+    // final scale = fractional_scale - exponent
+    // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
+    // `java.math.BigDecimal` rejects a scale outside the `int` range ("Scale out of range"),
+    // which Spark reports as an invalid input.
+    let final_scale = i32::try_from(fractional_scale - exponent as i64)
+        .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
+
+    // Spark checks the integral-digit limit right after `BigDecimal` has parsed the string, before
+    // it rescales the value to the target type. `BigDecimal` has no limit on its digits, so this
+    // also comes before the errors below for digits that do not fit in an i128.
+    if let IntegralDigitLimit::Applied { zero_any_exponent } = limit {
+        if exceeds_integral_digit_limit(
+            integral_part,
+            fractional_part,
+            exponent,
+            final_scale,
+            zero_any_exponent,
+        ) {
+            return Err(SparkError::NumericOutOfRange {
+                value: original_str.to_string(),
+            });
+        }
+    }
+
     let integral_value = digits_to_i128(integral_part)
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
-    let fractional_scale = fractional_part.len() as i64;
     let fractional_value = digits_to_i128(fractional_part)
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
@@ -852,12 +994,6 @@ fn parse_decimal_str(
         .ok_or_else(|| invalid_decimal_cast(original_str, precision, scale))?;
 
     let final_mantissa = if negative { -mantissa } else { mantissa };
-    // final scale = fractional_scale - exponent
-    // For example : "1.23E-5" has fractional_scale=2, exponent=-5, so scale = 2 - (-5) = 7
-    // `java.math.BigDecimal` rejects a scale outside the `int` range ("Scale out of range"),
-    // which Spark reports as an invalid input.
-    let final_scale = i32::try_from(fractional_scale - exponent as i64)
-        .map_err(|_| invalid_decimal_cast(original_str, precision, scale))?;
     Ok((final_mantissa, final_scale))
 }
 
@@ -1546,6 +1682,8 @@ fn timestamp_parser<T: TimeZone>(
 ///   "+HHMM"   -> +H*3600+M*60  (4 digits, no colon)
 ///   "+H:M"    -> same (with colon, any digit count 1-2 each)
 ///   "+HH:MM"  -> same
+///   "+H:MM:SS" -> +H*3600+M*60+S (1-2 digit hour, two-digit minutes and seconds; Spark pads
+///               a one-digit hour before calling `ZoneId.of`)
 ///   (negative with '-' analogously)
 ///
 /// Hours must be 0–18 and minutes 0–59, with a maximum absolute offset of 18:00.
@@ -1564,35 +1702,62 @@ fn parse_sign_offset(s: &str) -> Option<i32> {
     if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_digit() || b == b':') {
         return None;
     }
-    let (h, m) = if let Some(colon_pos) = rest.find(':') {
+    let (h, m, sec) = if let Some(colon_pos) = rest.find(':') {
         let h_str = &rest[..colon_pos];
-        let m_str = &rest[colon_pos + 1..];
+        let mut m_str = &rest[colon_pos + 1..];
+        // "+HH:MM:SS": java.time.ZoneOffset accepts a seconds field with two-digit minutes and
+        // seconds. Spark's `getZoneId` pads a one-digit hour first, so "+8:00:00" is valid too.
+        let mut sec = 0;
+        if let Some(sec_pos) = m_str.find(':') {
+            let s_str = &m_str[sec_pos + 1..];
+            m_str = &m_str[..sec_pos];
+            if !(1..=2).contains(&h_str.len()) || m_str.len() != 2 || s_str.len() != 2 {
+                return None;
+            }
+            sec = s_str.parse::<i32>().ok()?;
+        }
         if !(1..=2).contains(&h_str.len()) || !(1..=2).contains(&m_str.len()) {
             return None;
         }
         let h: i32 = h_str.parse().ok()?;
-        // Note: "+HH:MM:SS" (with seconds) is not handled; Spark accepts it but it is rare.
         let m: i32 = m_str.parse().ok()?;
-        (h, m)
+        (h, m, sec)
     } else {
         match rest.len() {
-            1 | 2 => (rest.parse::<i32>().ok()?, 0),
+            1 | 2 => (rest.parse::<i32>().ok()?, 0, 0),
             4 => (
                 rest[..2].parse::<i32>().ok()?,
                 rest[2..].parse::<i32>().ok()?,
+                0,
+            ),
+            // "+HHMMSS", as `java.time.ZoneOffset.of` accepts it ("+080000" is "+08:00").
+            6 => (
+                rest[..2].parse::<i32>().ok()?,
+                rest[2..4].parse::<i32>().ok()?,
+                rest[4..].parse::<i32>().ok()?,
             ),
             _ => return None,
         }
     };
-    if !(0..=18).contains(&h) || !(0..=59).contains(&m) || (h == 18 && m != 0) {
+    if !(0..=18).contains(&h)
+        || !(0..=59).contains(&m)
+        || !(0..=59).contains(&sec)
+        || (h == 18 && (m != 0 || sec != 0))
+    {
         return None;
     }
-    Some(sign * (h * 3600 + m * 60))
+    Some(sign * (h * 3600 + m * 60 + sec))
 }
 
 /// Constructs a [`Tz`] from an offset measured in seconds.
 /// E.g. `+7*3600 + 30*60` -> `"+07:30"`.
 fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
+    // `Tz` offsets have minute precision, so an offset with a non-zero seconds part such as
+    // "+08:00:30" cannot be represented. Returning `None` leaves the value unparsed, while
+    // Spark accepts it: https://github.com/apache/datafusion-comet/issues/7224
+    if secs % 60 != 0 {
+        return None;
+    }
     let abs = secs.abs();
     let h = abs / 3600;
     let m = (abs % 3600) / 60;
@@ -1600,16 +1765,82 @@ fn tz_from_offset_secs(secs: i32) -> Option<Tz> {
     Tz::from_str(&format!("{}{:02}:{:02}", sign, h, m)).ok()
 }
 
-/// Returns the last (rightmost) byte position where `needle` starts inside `haystack`.
-fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
-    let hb = haystack.as_bytes();
-    let nb = needle.as_bytes();
-    if nb.len() > hb.len() {
+/// `java.time.ZoneId.SHORT_IDS`, which Spark passes to `ZoneId.of` when it parses the zone
+/// of a timestamp string.
+const JAVA_SHORT_IDS: &[(&str, &str)] = &[
+    ("ACT", "Australia/Darwin"),
+    ("AET", "Australia/Sydney"),
+    ("AGT", "America/Argentina/Buenos_Aires"),
+    ("ART", "Africa/Cairo"),
+    ("AST", "America/Anchorage"),
+    ("BET", "America/Sao_Paulo"),
+    ("BST", "Asia/Dhaka"),
+    ("CAT", "Africa/Harare"),
+    ("CNT", "America/St_Johns"),
+    ("CST", "America/Chicago"),
+    ("CTT", "Asia/Shanghai"),
+    ("EAT", "Africa/Addis_Ababa"),
+    ("ECT", "Europe/Paris"),
+    ("IET", "America/Indiana/Indianapolis"),
+    ("IST", "Asia/Kolkata"),
+    ("JST", "Asia/Tokyo"),
+    ("MIT", "Pacific/Apia"),
+    ("NET", "Asia/Yerevan"),
+    ("NST", "Pacific/Auckland"),
+    ("PLT", "Asia/Karachi"),
+    ("PNT", "America/Phoenix"),
+    ("PRT", "America/Puerto_Rico"),
+    ("PST", "America/Los_Angeles"),
+    ("SST", "Pacific/Guadalcanal"),
+    ("VST", "Asia/Ho_Chi_Minh"),
+    ("EST", "-05:00"),
+    ("MST", "-07:00"),
+    ("HST", "-10:00"),
+];
+
+/// Length of the longest tz database id (`America/Argentina/ComodRivadavia` in chrono-tz 0.10).
+const MAX_ZONE_ID_LEN: usize = 32;
+
+/// A cheap check that runs before the `Tz` lookup, which builds an error string on every miss.
+/// Every tz database id and `SHORT_IDS` alias starts with an upper-case letter and is at most
+/// `MAX_ZONE_ID_LEN` bytes of `[A-Za-z0-9_+/-]`, and ids are case sensitive, so anything else
+/// (for example "a timestamp" or "timestamp" in a malformed value such as "not a timestamp")
+/// cannot resolve and is skipped without a lookup.
+fn could_be_zone_id(id: &str) -> bool {
+    id.starts_with(|c: char| c.is_ascii_uppercase())
+        && id.len() <= MAX_ZONE_ID_LEN
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'+' | b'/' | b'-'))
+}
+
+/// Resolves a zone id that starts with a letter the way `ZoneId.of(id, SHORT_IDS)` does:
+/// a `SHORT_IDS` alias first, then a tz database region id such as `CET`, `Zulu` or
+/// `Etc/GMT+8`. Prefix forms such as `UTC+07:30` are not handled here.
+fn zone_id_to_tz(id: &str) -> Option<Tz> {
+    if !could_be_zone_id(id) {
         return None;
     }
-    (0..=(hb.len() - nb.len()))
-        .rev()
-        .find(|&i| hb[i..].starts_with(nb))
+    if let Some((_, target)) = JAVA_SHORT_IDS.iter().find(|(alias, _)| *alias == id) {
+        return Tz::from_str(target).ok();
+    }
+    Tz::from_str(id).ok()
+}
+
+/// Looks for a zone id at the end of `value` that starts right after a digit or whitespace,
+/// e.g. "2020-01-01 12:34:56 CET" or "2020-01-01 12:34:56America/Los_Angeles", and returns
+/// the text before it together with the resolved zone.
+fn extract_zone_id_suffix(value: &str) -> Option<(&str, Tz)> {
+    let bytes = value.as_bytes();
+    (1..bytes.len()).rev().find_map(|pos| {
+        let prev = bytes[pos - 1];
+        if !bytes[pos].is_ascii_alphabetic()
+            || !(prev.is_ascii_digit() || prev.is_ascii_whitespace())
+        {
+            return None;
+        }
+        zone_id_to_tz(&value[pos..]).map(|tz| (&value[..pos], tz))
+    })
 }
 
 /// If `value` ends with a recognised timezone suffix, returns `(datetime_prefix, Tz)`.
@@ -1620,7 +1851,9 @@ fn rfind_str(haystack: &str, needle: &str) -> Option<usize> {
 ///   UTC / " UTC"       -> UTC+0  (or UTC +/- offset, e.g. "UTC+0", " UTC+07:30")
 ///   GMT / " GMT"       -> UTC+0  (or GMT +/- offset)
 ///   UT  / " UT"        -> UTC+0  (or UT +/- offset)
-///   Named IANA zone    -> e.g. " Europe/Moscow"
+///                         (not when the name follows a '/', as in "Etc/UTC" or "Etc/GMT+8")
+///   Region id          -> e.g. " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu"
+///   Java SHORT_IDS     -> e.g. " PST" (America/Los_Angeles), " EST" (-05:00)
 ///   Bare +/-offset       -> e.g. "+07:30", "-1:0", "+0730"
 ///
 /// **The caller must ensure the value does not already match a base timestamp pattern.**
@@ -1633,49 +1866,34 @@ fn extract_offset_suffix(value: &str) -> Option<(&str, Tz)> {
 
     // 2. Named text-prefix forms: "UTC", "GMT", "UT" (optionally space-prefixed),
     //    each optionally followed by a bare +/-offset.
-    //    Longest first so " UTC" is tried before " UT", etc.
-    for prefix in &[" UTC", "UTC", " GMT", "GMT", " UT", "UT"] {
-        if let Some(pos) = rfind_str(value, prefix) {
-            let offset_str = &value[pos + prefix.len()..];
+    //    These are the most common named suffixes, so they are matched before the region
+    //    lookup below. The offset can only contain signs, digits and colons, so the name
+    //    must end right where that trailing run starts. A name that follows a '/' is part of
+    //    a region id such as "Etc/UTC" or "Etc/GMT+8" (UTC-8, not UTC+8) and is left to the
+    //    region lookup.
+    let name_end = value
+        .trim_end_matches(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | ':'))
+        .len();
+    let (head, offset_str) = value.split_at(name_end);
+    if let Some(before) = ["UTC", "GMT", "UT"]
+        .iter()
+        .find_map(|name| head.strip_suffix(name))
+    {
+        if !before.ends_with('/') {
             if let Some(secs) = parse_sign_offset(offset_str) {
-                return Some((&value[..pos], tz_from_offset_secs(secs)?));
+                let before = before.strip_suffix(' ').unwrap_or(before);
+                return Some((before, tz_from_offset_secs(secs)?));
             }
         }
     }
 
-    // 3. Java SHORT_IDS fixed-offset abbreviations recognised by ZoneId.of() via SHORT_IDS map.
-    //    Only three have purely fixed offsets (no '/'):
-    //      EST -> -05:00  (-18 000 s)
-    //      MST -> -07:00  (-25 200 s)
-    //      HST -> -10:00  (-36 000 s)
-    //    These may appear with or without a leading space; no sub-offset is allowed after them.
-    for (abbr, offset_secs) in &[
-        (" EST", -18_000i32),
-        ("EST", -18_000),
-        (" MST", -25_200),
-        ("MST", -25_200),
-        (" HST", -36_000),
-        ("HST", -36_000),
-    ] {
-        if let Some(pos) = rfind_str(value, abbr) {
-            if pos + abbr.len() == value.len() {
-                return Some((&value[..pos], tz_from_offset_secs(*offset_secs)?));
-            }
-        }
+    // 3. Region ids and Java `ZoneId.SHORT_IDS` aliases, with or without a leading space:
+    //    " Europe/Moscow", "America/Los_Angeles", " CET", " Zulu", " Etc/GMT+8", " PST".
+    if let Some((prefix, tz)) = extract_zone_id_suffix(value) {
+        return Some((prefix, tz));
     }
 
-    // 4. Named IANA timezone: a space followed by a slash-containing word at the end.
-    //    e.g. "2015-03-18T12:03:17.123456 Europe/Moscow"
-    if let Some(space_pos) = value.rfind(' ') {
-        let tz_name = &value[space_pos + 1..];
-        if tz_name.contains('/') {
-            if let Ok(tz) = Tz::from_str(tz_name) {
-                return Some((&value[..space_pos], tz));
-            }
-        }
-    }
-
-    // 5. Bare +/-offset: find the rightmost '+' or '-' and try to parse everything
+    // 4. Bare +/-offset: find the rightmost '+' or '-' and try to parse everything
     //    from that position to the end as a complete valid offset.
     let last_sign = {
         let p = value.rfind('+');
@@ -2427,14 +2645,16 @@ mod tests {
     fn test_parse_string_to_decimal_boundary() {
         // 38-digit integral parses (fits i128).
         let s38 = "9".repeat(38);
-        assert!(parse_string_to_decimal(&s38, 38, 0).unwrap().is_some());
+        assert!(parse_string_to_decimal(&s38, 38, 0, false, false)
+            .unwrap()
+            .is_some());
         // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
         let s39 = "9".repeat(39);
-        assert!(parse_string_to_decimal(&s39, 38, 0).is_err());
+        assert!(parse_string_to_decimal(&s39, 38, 0, false, false).is_err());
         // Very long fractional part now returns Err via the invalid_decimal_cast path instead
         // of panicking on 10_i128.pow(fractional_scale).
         let over_long = format!("0.{}", "0".repeat(40));
-        assert!(parse_string_to_decimal(&over_long, 38, 10).is_err());
+        assert!(parse_string_to_decimal(&over_long, 38, 10, false, false).is_err());
     }
 
     #[test]
@@ -2471,7 +2691,7 @@ mod tests {
         // Expected values come from `new java.math.BigDecimal(s)` on JDK 17, which is what
         // Spark's Decimal.fromString / fromStringANSI call.
         let ok = |s: &str, precision: u8, scale: i8| {
-            parse_string_to_decimal(s, precision, scale)
+            parse_string_to_decimal(s, precision, scale, false, false)
                 .unwrap()
                 .unwrap()
         };
@@ -2506,14 +2726,14 @@ mod tests {
             "\u{00A0}٣",  // non-ASCII whitespace is not trimmed
         ] {
             // The error reports the original string, not the normalized one.
-            match parse_string_to_decimal(s, 10, 2) {
+            match parse_string_to_decimal(s, 10, 2, false, false) {
                 Err(SparkError::CastInvalidValue { value, .. }) => assert_eq!(value, s),
                 other => panic!("{s:?}: {other:?}"),
             }
         }
 
         // Overflow is reported as such, not as an invalid input.
-        let err = parse_string_to_decimal("٣٣٣٣٣٣٣٣٣", 10, 2).unwrap_err();
+        let err = parse_string_to_decimal("٣٣٣٣٣٣٣٣٣", 10, 2, false, false).unwrap_err();
         assert!(
             matches!(err, SparkError::NumericValueOutOfRange { .. }),
             "{err}"
@@ -2737,17 +2957,375 @@ mod tests {
             "1e2147483649",
             "1e-9999999999",
         ] {
-            let err = parse_string_to_decimal(s, 10, 2).unwrap_err();
+            let err = parse_string_to_decimal(s, 10, 2, false, false).unwrap_err();
             assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
         }
         // The parsed scale fits in an int, but rescaling it to a negative target scale does not.
-        let err = parse_string_to_decimal("1e-2147483647", 10, -2).unwrap_err();
+        let err = parse_string_to_decimal("1e-2147483647", 10, -2, false, false).unwrap_err();
         assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
-        assert_eq!(parse_string_to_decimal("1.5e-3", 10, 2).unwrap(), Some(0));
         assert_eq!(
-            parse_string_to_decimal("12.345e1", 10, 2).unwrap(),
+            parse_string_to_decimal("1.5e-3", 10, 2, false, false).unwrap(),
+            Some(0)
+        );
+        assert_eq!(
+            parse_string_to_decimal("12.345e1", 10, 2, false, false).unwrap(),
             Some(12345)
         );
+    }
+
+    /// Spark used to count integral digits for zero, so a zero with an exponent above 37 was out
+    /// of range (NULL, or NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI), except "0e2147483647", whose
+    /// count wrapped in Spark's int arithmetic. Since SPARK-60118 zero casts to 0 whatever its
+    /// exponent. The inputs include ones from Comet's cast fuzz tests.
+    #[test]
+    fn test_parse_string_to_decimal_zero_with_large_exponent() {
+        for (s, precision, scale) in [
+            ("0e37", 10, 2),
+            ("0e-50", 10, 2),
+            ("-0.0e10", 38, 10),
+            ("0e2147483647", 10, 2),
+        ] {
+            for zero_any_exponent in [false, true] {
+                assert_eq!(
+                    parse_string_to_decimal(s, precision, scale, zero_any_exponent, false).unwrap(),
+                    Some(0),
+                    "{s} zero_any_exponent={zero_any_exponent}"
+                );
+            }
+        }
+        for (s, precision, scale) in [
+            ("0e38", 10, 2),
+            ("0E73", 2, 2),
+            ("+0e83", 10, 2),
+            ("0E2655", 10, 2),
+            ("+0.E81", 10, 2),
+            ("0e5887677", 38, 10),
+            ("0e2147483646", 10, 2),
+            ("0.0e2147483647", 10, 2),
+        ] {
+            let err = parse_string_to_decimal(s, precision, scale, false, false).unwrap_err();
+            assert!(
+                err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                "{s}: {err}"
+            );
+            assert_eq!(
+                parse_string_to_decimal(s, precision, scale, true, false).unwrap(),
+                Some(0),
+                "{s}"
+            );
+        }
+    }
+
+    /// Strings whose integral part has more than 38 digits, which Spark rejects as soon as it has
+    /// parsed them. It counts `precision - scale` of the `BigDecimal`, so leading zeros do not
+    /// count, and neither the digits nor the exponent has to fit an i128 for the count to apply.
+    fn over_integral_digit_limit() -> Vec<String> {
+        let one_and_zeros = |zeros: usize| format!("1{}", "0".repeat(zeros));
+        vec![
+            "6E+38".to_string(),
+            "1e38".to_string(),
+            "+1e39".to_string(),
+            "-1.5e50".to_string(),
+            "0.1e40".to_string(),
+            format!("{}1e38", "0".repeat(40)),
+            // 39 digits. The first two fit in an i128 and the third does not.
+            one_and_zeros(38),
+            format!("-{}", one_and_zeros(38)),
+            "9".repeat(39),
+            // 40 digits and more, which do not fit in an i128
+            one_and_zeros(39),
+            format!("{}.5", "9".repeat(40)),
+            format!("{}.{}", "9".repeat(39), "9".repeat(10)),
+            // an exponent at the top of the int range, which Spark counts in a long since
+            // SPARK-60118
+            "1e2147483647".to_string(),
+            "1.5e2147483647".to_string(),
+            "12e2147483647".to_string(),
+        ]
+    }
+
+    /// Without `spark.sql.legacy.allowNegativeScaleOfDecimal`, Spark rejects such a string before it
+    /// rescales it, whatever the target type, so the error is NUMERIC_OUT_OF_SUPPORTED_RANGE and
+    /// not the one the digits would give when the cast goes on: an invalid input for digits or a
+    /// scale adjustment that do not fit an i128, or NUMERIC_VALUE_OUT_OF_RANGE for a value that
+    /// does not fit the target type. A string with up to 38 integral digits goes on as before.
+    #[test]
+    fn test_parse_string_to_decimal_integral_digit_limit() {
+        for s in over_integral_digit_limit() {
+            for (precision, scale) in [(10, 2), (38, 10), (38, 0), (38, 38), (1, 0)] {
+                for zero_any_exponent in [false, true] {
+                    let err =
+                        parse_string_to_decimal(&s, precision, scale, zero_any_exponent, false)
+                            .unwrap_err();
+                    assert!(
+                        err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                        "{s} to DECIMAL({precision},{scale}): {err}"
+                    );
+                    // The error reports the string as given.
+                    assert!(err.to_string().contains(&s), "{s}: {err}");
+                }
+            }
+        }
+
+        // 38 integral digits are within the limit. Leading zeros do not count, and trailing
+        // zeros do, so 39 digits with a scale of 38 are one integral digit.
+        let nines = "9".repeat(38);
+        let one_and_37_zeros = format!("1{}", "0".repeat(37));
+        let one_and_38_zeros = format!("1{}", "0".repeat(38));
+        let padded = format!("{}1", "0".repeat(50));
+        let trailing_zeros = format!("{one_and_38_zeros}e-38");
+        for (s, precision, scale, expected) in [
+            (nines.as_str(), 38, 0, Some(10_i128.pow(38) - 1)),
+            (one_and_37_zeros.as_str(), 38, 0, Some(10_i128.pow(37))),
+            ("1e37", 38, 0, Some(10_i128.pow(37))),
+            (padded.as_str(), 10, 2, Some(100)),
+            (trailing_zeros.as_str(), 10, 2, Some(100)),
+            ("0.000001", 10, 2, Some(0)),
+            ("1e-50", 10, 2, Some(0)),
+        ] {
+            assert_eq!(
+                parse_string_to_decimal(s, precision, scale, false, false).unwrap(),
+                expected,
+                "{s} to DECIMAL({precision},{scale})"
+            );
+        }
+        // A value that is within the limit but does not fit the target type is a different error.
+        for (s, precision, scale) in [
+            ("12345678901", 10, 2),
+            (nines.as_str(), 10, 2),
+            (one_and_37_zeros.as_str(), 10, 2),
+            ("1e30", 10, 2),
+        ] {
+            let err = parse_string_to_decimal(s, precision, scale, false, false).unwrap_err();
+            assert!(
+                err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+                "{s} to DECIMAL({precision},{scale}): {err}"
+            );
+        }
+
+        // An exponent or scale outside the int range is not a number to `BigDecimal`, so it is
+        // an invalid input and not a value with too many digits.
+        for s in ["1e2147483648", "1e-2147483649", "1.5e-2147483648"] {
+            let err = parse_string_to_decimal(s, 10, 2, false, false).unwrap_err();
+            assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{s}: {err}");
+        }
+    }
+
+    /// With `spark.sql.legacy.allowNegativeScaleOfDecimal`, Spark skips the limit. A value that
+    /// has too many integral digits for the target type then fails the precision check like any
+    /// other, and a zero with a large exponent is zero, whether or not Spark has SPARK-60118.
+    #[test]
+    fn test_parse_string_to_decimal_skip_integral_digit_limit() {
+        let one_and_38_zeros = format!("1{}", "0".repeat(38));
+        for (s, precision, scale) in [
+            (one_and_38_zeros.as_str(), 10, 2),
+            (one_and_38_zeros.as_str(), 38, 0),
+        ] {
+            let err = parse_string_to_decimal(s, precision, scale, false, true).unwrap_err();
+            assert!(
+                err.to_string().contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+                "{s} to DECIMAL({precision},{scale}): {err}"
+            );
+        }
+        for s in ["0e38", "0E73", "+0e83", "0e5887677", "0.0e2147483647"] {
+            for zero_any_exponent in [false, true] {
+                assert_eq!(
+                    parse_string_to_decimal(s, 10, 2, zero_any_exponent, true).unwrap(),
+                    Some(0),
+                    "{s} zero_any_exponent={zero_any_exponent}"
+                );
+            }
+        }
+        // Two shapes that are too large for the target type but still do not report
+        // NUMERIC_VALUE_OUT_OF_RANGE as Spark does: a scale adjustment over 38 returns `None`,
+        // which the cast reports as CAST_INVALID_INPUT under ANSI (#7576), and more digits than
+        // an i128 holds are rejected as an invalid input (#7581).
+        assert_eq!(
+            parse_string_to_decimal("6E+38", 10, 2, false, true).unwrap(),
+            None
+        );
+        let forty_digits = format!("1{}", "0".repeat(39));
+        let err = parse_string_to_decimal(&forty_digits, 10, 2, false, true).unwrap_err();
+        assert!(err.to_string().contains("CAST_INVALID_INPUT"), "{err}");
+        // The scale adjustment of "6E+38" to a negative-scale target is 8, so it is a value.
+        assert_eq!(
+            parse_string_to_decimal("6E+38", 10, -30, false, true).unwrap(),
+            Some(600_000_000)
+        );
+        // The setting changes nothing for a value within the limit.
+        for s in ["123", "-1.005", "1e-50", "12345678901", "1e30"] {
+            for zero_any_exponent in [false, true] {
+                let with_setting = parse_string_to_decimal(s, 10, 2, zero_any_exponent, true);
+                let without = parse_string_to_decimal(s, 10, 2, zero_any_exponent, false);
+                assert_eq!(
+                    with_setting.map_err(|e| e.to_string()),
+                    without.map_err(|e| e.to_string()),
+                    "{s}"
+                );
+            }
+        }
+    }
+
+    /// `exceeds_integral_digit_limit` settles most strings from an upper bound on their integral
+    /// digits and counts the digits only for the rest. The bound must never hide a string that is
+    /// over the limit, so compare the function with a count of the digits for strings of every
+    /// shape around the limit: all zeros, leading zeros, and none, before and after the point,
+    /// with exponents on both sides of it and near the ends of the int range.
+    #[test]
+    fn test_integral_digit_limit_bound_agrees_with_the_digit_count() {
+        // The integral digits are `precision - scale` of the parsed `BigDecimal`.
+        let reference = |integral: &str, fractional: &str, scale: i32, zero_any_exponent: bool| {
+            let digits = format!("{integral}{fractional}")
+                .trim_start_matches('0')
+                .len();
+            if digits == 0 {
+                !zero_any_exponent && 1i32.wrapping_sub(scale) > 38
+            } else {
+                digits as i64 - scale as i64 > 38
+            }
+        };
+        let shapes = |len: usize| -> Vec<String> {
+            let mut shapes = vec!["0".repeat(len)];
+            if len > 0 {
+                shapes.push(format!("{}1", "0".repeat(len - 1)));
+                shapes.push(format!("1{}", "0".repeat(len - 1)));
+            }
+            shapes
+        };
+        let exponents = (-50..=50).chain([i32::MIN + 1000, i32::MAX - 1000]);
+        let mut over = 0;
+        let mut within = 0;
+        for exponent in exponents {
+            for integral_len in 0..=44 {
+                for fractional_len in [0, 1, 2, 10, 37, 38, 39, 40, 44] {
+                    if integral_len + fractional_len == 0 {
+                        continue;
+                    }
+                    let scale = i32::try_from(fractional_len as i64 - exponent as i64).unwrap();
+                    for integral in shapes(integral_len) {
+                        for fractional in shapes(fractional_len) {
+                            for zero_any_exponent in [false, true] {
+                                let expected =
+                                    reference(&integral, &fractional, scale, zero_any_exponent);
+                                let actual = exceeds_integral_digit_limit(
+                                    integral.as_bytes(),
+                                    fractional.as_bytes(),
+                                    exponent,
+                                    scale,
+                                    zero_any_exponent,
+                                );
+                                assert_eq!(
+                                    actual, expected,
+                                    "{integral}.{fractional}e{exponent} zero_any_exponent={zero_any_exponent}"
+                                );
+                                if expected {
+                                    over += 1;
+                                } else {
+                                    within += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Both outcomes are common enough for the comparison to mean something.
+        assert!(
+            over > 10_000 && within > 10_000,
+            "over={over} within={within}"
+        );
+    }
+
+    /// The limit reaches both decimal widths from `SparkCastOptions`: NULL for a string over it in
+    /// legacy and try mode and NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, unless
+    /// `decimal_skip_integral_digit_limit` is set. Each string is its own array because ANSI mode
+    /// stops at the first row that fails.
+    #[test]
+    fn test_cast_string_to_decimal_integral_digit_limit() -> DataFusionResult<()> {
+        use arrow::array::AsArray;
+        use arrow::datatypes::Decimal128Type;
+
+        let cast_one = |s: &str,
+                        to_type: &DataType,
+                        eval_mode: EvalMode,
+                        skip_integral_digit_limit: bool|
+         -> DataFusionResult<Option<i128>> {
+            let strings: ArrayRef = Arc::new(StringArray::from(vec![Some(s)]));
+            let mut options = SparkCastOptions::new(eval_mode, "UTC");
+            options.decimal_skip_integral_digit_limit = skip_integral_digit_limit;
+            let result = cast_array(strings, to_type, &options)?;
+            Ok(match result.data_type() {
+                DataType::Decimal128(_, _) => result.as_primitive::<Decimal128Type>().iter().next(),
+                _ => result
+                    .as_primitive::<Decimal256Type>()
+                    .iter()
+                    .next()
+                    .map(|v| v.and_then(|v| v.to_i128())),
+            }
+            .flatten())
+        };
+
+        for to_type in [DataType::Decimal128(10, 2), DataType::Decimal256(10, 2)] {
+            for s in over_integral_digit_limit() {
+                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                    let result = cast_one(&s, &to_type, eval_mode, false);
+                    if eval_mode == EvalMode::Ansi {
+                        let err = result.unwrap_err().to_string();
+                        assert!(
+                            err.contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                            "{s} to {to_type} in {eval_mode:?}: {err}"
+                        );
+                    } else {
+                        assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
+                    }
+                }
+            }
+
+            // With the setting, the 39-digit string is a value too large for the target type.
+            let s = format!("1{}", "0".repeat(38));
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                let result = cast_one(&s, &to_type, eval_mode, true);
+                if eval_mode == EvalMode::Ansi {
+                    let err = result.unwrap_err().to_string();
+                    assert!(
+                        err.contains("NUMERIC_VALUE_OUT_OF_RANGE"),
+                        "{s} to {to_type}: {err}"
+                    );
+                } else {
+                    assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
+                }
+            }
+
+            // Two shapes the setting leaves as they were. Spark reports NUMERIC_VALUE_OUT_OF_RANGE
+            // under ANSI for both, and Comet reports CAST_INVALID_INPUT: a scale adjustment over
+            // 38 (#7576) and more digits than an i128 holds (#7581). NULL matches in the other modes.
+            for s in ["6E+38".to_string(), format!("1{}", "0".repeat(39))] {
+                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                    let result = cast_one(&s, &to_type, eval_mode, true);
+                    if eval_mode == EvalMode::Ansi {
+                        let err = result.unwrap_err().to_string();
+                        assert!(
+                            err.contains("CAST_INVALID_INPUT"),
+                            "{s} to {to_type}: {err}"
+                        );
+                    } else {
+                        assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
+                    }
+                }
+            }
+
+            // A string within the limit is unaffected, in every mode.
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                for skip_integral_digit_limit in [false, true] {
+                    assert_eq!(
+                        cast_one("1.255", &to_type, eval_mode, skip_integral_digit_limit)?,
+                        Some(126),
+                        "{to_type} in {eval_mode:?}"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Mirrors `Double.parseDouble` / `Float.parseFloat` followed by Spark's
@@ -3489,6 +4067,144 @@ mod tests {
             timestamp_parser("+2020-01-01T12:34:56", EvalMode::Legacy, tz, true).unwrap(),
             Some(1577882096000000)
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_parser_zone_id_suffix_test() {
+        let tz = &Tz::from_str("UTC").unwrap();
+        // 2020-01-01T12:34:56Z
+        let utc: i64 = 1577882096000000;
+        let hour: i64 = 3600 * 1_000_000;
+        let cases = [
+            // Java ZoneId.SHORT_IDS aliases
+            ("2020-01-01 12:34:56 PST", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56PST", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 CST", Some(utc + 6 * hour)),
+            ("2020-01-01 12:34:56 JST", Some(utc - 9 * hour)),
+            ("2020-01-01 12:34:56 EST", Some(utc + 5 * hour)),
+            // Region ids without a '/'
+            ("2020-01-01 12:34:56 CET", Some(utc - hour)),
+            ("2020-01-01 12:34:56Zulu", Some(utc)),
+            ("2020-01-01 12:34:56 Zulu", Some(utc)),
+            // Region id with no space before it
+            (
+                "2020-01-01 12:34:56America/Los_Angeles",
+                Some(utc + 8 * hour),
+            ),
+            (
+                "2020-01-01 12:34:56.123America/Los_Angeles",
+                Some(utc + 8 * hour + 123_000),
+            ),
+            // Etc/GMT+8 is UTC-8; it must not be read as the "GMT+8" prefix form
+            ("2020-01-01 12:34:56 Etc/GMT+8", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 Etc/GMT-8", Some(utc - 8 * hour)),
+            // Offset with a seconds field, including a one-digit hour as Spark pads it
+            ("2020-01-01 12:34:56 +08:00:00", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56-08:00:00", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 +8:00:00", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56-8:00:00", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 UTC+8:00:00", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56 GMT-8:00:00", Some(utc + 8 * hour)),
+            // "+HHMMSS" without colons, bare and after UTC/GMT
+            ("2020-01-01 12:34:56 +080000", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56-080000", Some(utc + 8 * hour)),
+            ("2020-01-01 12:34:56 UTC-080000", Some(utc + 8 * hour)),
+            (
+                "2020-01-01 12:34:56 GMT+053000",
+                Some(utc - 5 * hour - 30 * 60 * 1_000_000),
+            ),
+            ("2020-01-01 12:34:56 +080030", None),
+            ("2020-01-01 12:34:56 +08000", None),
+            // A non-zero seconds part is not supported yet (`Tz` has minute precision),
+            // see https://github.com/apache/datafusion-comet/issues/7224
+            ("2020-01-01 12:34:56 +08:00:30", None),
+            // UTC/GMT/UT names, and region ids with those names after a '/'
+            ("2020-01-01 12:34:56 UTC", Some(utc)),
+            ("2020-01-01 12:34:56UTC", Some(utc)),
+            ("2020-01-01 12:34:56 GMT", Some(utc)),
+            ("2020-01-01 12:34:56 Etc/UTC", Some(utc)),
+            ("2020-01-01 12:34:56 Etc/GMT", Some(utc)),
+            ("2020-01-01 12:34:56 UT-1", Some(utc + hour)),
+            ("2020-01-01 12:34:56Etc/GMT+8", Some(utc + 8 * hour)),
+            // Prefix forms still go through the UTC/GMT/UT rule
+            ("2020-01-01 12:34:56 GMT+8", Some(utc - 8 * hour)),
+            ("2020-01-01 12:34:56 UTC-08:00", Some(utc + 8 * hour)),
+            // Zone ids are case sensitive, and unknown ids are rejected
+            ("2020-01-01 12:34:56 pst", None),
+            ("2020-01-01 12:34:56 XYZ", None),
+            ("2020-01-01 12:34:56 +08:00:0", None),
+            ("2020-01-01 12:34:56 +8:0:00", None),
+            ("2020-01-01 12:34:56 +108:00:00", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                timestamp_parser(input, EvalMode::Legacy, tz, true).unwrap(),
+                expected,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn timestamp_parser_short_id_summer_test() {
+        // In summer the SHORT_IDS aliases that map to a region follow its daylight saving
+        // time, while the fixed-offset ones do not: PST is America/Los_Angeles (PDT, -07:00),
+        // but EST is always -05:00.
+        let tz = &Tz::from_str("UTC").unwrap();
+        // 2020-07-01T12:34:56Z
+        let utc: i64 = 1593606896000000;
+        let hour: i64 = 3600 * 1_000_000;
+        let cases = [
+            ("2020-07-01 12:34:56 PST", Some(utc + 7 * hour)),
+            ("2020-07-01 12:34:56 CST", Some(utc + 5 * hour)),
+            ("2020-07-01 12:34:56 ECT", Some(utc - 2 * hour)),
+            ("2020-07-01 12:34:56 EST", Some(utc + 5 * hour)),
+            ("2020-07-01 12:34:56 MST", Some(utc + 7 * hour)),
+            ("2020-07-01 12:34:56 HST", Some(utc + 10 * hour)),
+            (
+                "2020-07-01 12:34:56 America/Los_Angeles",
+                Some(utc + 7 * hour),
+            ),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                timestamp_parser(input, EvalMode::Legacy, tz, true).unwrap(),
+                expected,
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn java_short_ids_resolve_test() {
+        // Every SHORT_IDS target must resolve through `Tz`, so that a tz database rename
+        // cannot silently turn an alias into NULL.
+        for (alias, target) in JAVA_SHORT_IDS {
+            assert!(
+                Tz::from_str(target).is_ok(),
+                "SHORT_IDS alias {alias} maps to {target}, which Tz cannot resolve"
+            );
+            assert!(zone_id_to_tz(alias).is_some(), "{alias}");
+        }
+        assert_eq!(JAVA_SHORT_IDS.len(), 28);
+    }
+
+    #[test]
+    fn could_be_zone_id_test() {
+        assert!(could_be_zone_id("America/Argentina/ComodRivadavia"));
+        assert!(could_be_zone_id("Etc/GMT+8"));
+        assert!(could_be_zone_id("America/Port-au-Prince"));
+        assert!(could_be_zone_id("PST"));
+        for (alias, _) in JAVA_SHORT_IDS {
+            assert!(could_be_zone_id(alias), "{alias}");
+        }
+        assert!(!could_be_zone_id("a timestamp"));
+        assert!(!could_be_zone_id("timestamp"));
+        assert!(!could_be_zone_id("pst"));
+        assert!(!could_be_zone_id("Europe/Moscow!"));
+        assert!(!could_be_zone_id(&"A".repeat(MAX_ZONE_ID_LEN + 1)));
     }
 
     #[test]

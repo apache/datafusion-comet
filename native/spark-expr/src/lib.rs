@@ -20,6 +20,7 @@
 #![deny(clippy::clone_on_ref_ptr)]
 
 mod error;
+mod nested_compaction;
 mod query_context;
 
 pub mod kernels;
@@ -86,10 +87,11 @@ pub use comet_scalar_funcs::{
 };
 pub use csv_funcs::*;
 pub use datetime_funcs::{
-    spark_day_name, spark_month_name, spark_seconds_of_time, spark_to_time, SparkDateDiff,
-    SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkHour, SparkHoursTransform,
-    SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMinute, SparkNextDay, SparkSecond,
-    SparkSecondsToTimestamp, SparkUnixTimestamp, SparkWeekDay, TimestampTruncExpr,
+    spark_day_name, spark_month_name, spark_seconds_of_time, spark_to_time, MakeDateExpr,
+    SparkDateDiff, SparkDateFromUnixDate, SparkDateTrunc, SparkDayOfWeek, SparkHour,
+    SparkHoursTransform, SparkMakeDate, SparkMakeInterval, SparkMakeTime, SparkMinute,
+    SparkNextDay, SparkSecond, SparkSecondsToTimestamp, SparkUnixTimestamp, SparkWeekDay,
+    TimestampTruncExpr,
 };
 pub use error::{decimal_overflow_error, SparkError, SparkErrorWithContext, SparkResult};
 pub use hash_funcs::*;

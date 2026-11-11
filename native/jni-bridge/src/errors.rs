@@ -88,6 +88,20 @@ pub enum CometError {
     #[error("{0}")]
     IllegalState(String),
 
+    /// Must reach the JVM as `java.util.NoSuchElementException` carrying this exact message.
+    #[error("{0}")]
+    NoSuchElement(String),
+
+    /// `spark.comet.nativeUdf.enabled` or `spark.comet.nativeUdf.allowedPaths` refuses a native
+    /// UDF library. Surfaces as `CometNativeUdfNotAllowedException`.
+    #[error("{0}")]
+    NativeUdfNotAllowed(String),
+
+    /// A native UDF library reports the wrong ABI version or lacks a required symbol. Surfaces as
+    /// `CometNativeUdfAbiException`.
+    #[error("{0}")]
+    NativeUdfAbi(String),
+
     #[error(transparent)]
     Arrow {
         #[from]
@@ -227,7 +241,10 @@ impl From<CometError> for DataFusionError {
             // The same applies to the classifications that must keep their JVM exception class.
             value @ (CometError::JavaException { .. }
             | CometError::ShuffleSizeLimit(_)
-            | CometError::IllegalState(_)) => DataFusionError::External(Box::new(value)),
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)) => DataFusionError::External(Box::new(value)),
             _ => DataFusionError::Execution(value.to_string()),
         }
     }
@@ -357,6 +374,18 @@ impl jni::errors::ToException for CometError {
             },
             CometError::IllegalState(message) => Exception {
                 class: "java/lang/IllegalStateException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NoSuchElement(message) => Exception {
+                class: "java/util/NoSuchElementException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfNotAllowed(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfNotAllowedException".to_string(),
+                msg: message.clone(),
+            },
+            CometError::NativeUdfAbi(message) => Exception {
+                class: "org/apache/comet/udf/CometNativeUdfAbiException".to_string(),
                 msg: message.clone(),
             },
             _other => Exception {
@@ -765,8 +794,13 @@ fn jvm_exception(error: &CometError) -> JvmException<'_> {
 fn typed_jvm_exception(error: &(dyn std::error::Error + 'static)) -> Option<Exception> {
     let mut cause = Some(error);
     while let Some(error) = cause {
-        if let Some(typed @ (CometError::ShuffleSizeLimit(_) | CometError::IllegalState(_))) =
-            error.downcast_ref::<CometError>()
+        if let Some(
+            typed @ (CometError::ShuffleSizeLimit(_)
+            | CometError::IllegalState(_)
+            | CometError::NoSuchElement(_)
+            | CometError::NativeUdfNotAllowed(_)
+            | CometError::NativeUdfAbi(_)),
+        ) = error.downcast_ref::<CometError>()
         {
             return Some(typed.to_exception());
         }
@@ -797,7 +831,47 @@ fn natural_exception(error: &CometError) -> JvmException<'static> {
     let exception = error.to_exception();
     JvmException::New {
         class: exception.class,
-        message: exception.msg,
+        message: with_comet_config_hint(exception.msg),
+    }
+}
+
+/// The config key DataFusion's spill-limit error tells users to raise. Comet sets the limit
+/// from `spark.comet.maxTempDirectorySize` instead, and DataFusion raises the error as a plain
+/// `std::io::Error`, so the key in the message text is the only thing to match on.
+const DATAFUSION_SPILL_LIMIT_KEY: &str = "`datafusion.runtime.max_temp_directory_size`";
+
+const SPILL_LIMIT_HINT: &str = "Comet does not use `datafusion.runtime.*` settings: \
+     the spill limit is `spark.comet.maxTempDirectorySize`. It applies to each Comet native plan \
+     separately, so an executor can use several times that much disk.";
+
+/// The first config key DataFusion's external-sort OOM error tells users to change. Comet never
+/// uses it, and the sort is identified only by the `Context` string around `ResourcesExhausted`,
+/// so this quoted text is what to match on.
+const DATAFUSION_SORT_MEMORY_KEY: &str = "'datafusion.runtime.memory_limit'";
+
+const SORT_MEMORY_HINT: &str = "Comet does not use `datafusion.runtime.memory_limit`, and in \
+     production it keeps `datafusion.execution.sort_spill_reservation_bytes` at DataFusion's \
+     default of 10 MiB. Native operators reserve memory from Spark's off-heap pool, sized by \
+     `spark.memory.offHeap.size`, and each running task gets a share of it. Raise \
+     `spark.memory.offHeap.size` or run fewer tasks per executor. See the Comet tuning guide: \
+     https://datafusion.apache.org/comet/user-guide/latest/tuning.html";
+
+/// DataFusion error text that names settings unavailable for production tuning in Comet,
+/// paired with the hint that points users at the Comet settings to change instead.
+const COMET_CONFIG_HINTS: &[(&str, &str)] = &[
+    (DATAFUSION_SPILL_LIMIT_KEY, SPILL_LIMIT_HINT),
+    (DATAFUSION_SORT_MEMORY_KEY, SORT_MEMORY_HINT),
+];
+
+/// Appends the matching hint on its own line: the DataFusion text it follows can end mid-sentence,
+/// for example with the `Reserved: N` of a memory pool refusal.
+fn with_comet_config_hint(message: String) -> String {
+    match COMET_CONFIG_HINTS
+        .iter()
+        .find(|(datafusion_key, _)| message.contains(datafusion_key))
+    {
+        Some((_, hint)) => format!("{message}\n{hint}"),
+        None => message,
     }
 }
 
@@ -1434,6 +1508,45 @@ mod tests {
         let (_, class, message, _) = classify(CometError::IllegalState("bad".to_string()));
         assert_eq!(class, "java/lang/IllegalStateException");
         assert_eq!(message, "bad");
+
+        let (_, class, message, _) = classify(CometError::NoSuchElement("gone".to_string()));
+        assert_eq!(class, "java/util/NoSuchElementException");
+        assert_eq!(message, "gone");
+    }
+
+    /// The native UDF failures `CometNativeUDF.register` reports keep their exception class and
+    /// exact message, also when DataFusion wraps them.
+    #[test]
+    fn native_udf_errors_keep_their_class_through_datafusion_wrappers() {
+        for (error, expected_class) in [
+            (
+                CometError::NativeUdfNotAllowed("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfNotAllowedException",
+            ),
+            (
+                CometError::NativeUdfAbi("refused".to_string()),
+                "org/apache/comet/udf/CometNativeUdfAbiException",
+            ),
+            (
+                CometError::NoSuchElement("refused".to_string()),
+                "java/util/NoSuchElementException",
+            ),
+        ] {
+            let (status, class, message, _) = classify(error);
+            assert_eq!(status, NativeStatus::Error);
+            assert_eq!(class, expected_class);
+            assert_eq!(message, "refused");
+        }
+
+        let wrapped = CometError::from(DataFusionError::Context(
+            "planning".to_string(),
+            Box::new(DataFusionError::from(CometError::NativeUdfAbi(
+                "refused".to_string(),
+            ))),
+        ));
+        let (_, class, message, _) = classify(wrapped);
+        assert_eq!(class, "org/apache/comet/udf/CometNativeUdfAbiException");
+        assert_eq!(message, "refused");
     }
 
     #[test]
@@ -1448,6 +1561,114 @@ mod tests {
             r#"Unable to get field named "b". Valid fields: ["A", "B"]"#.to_string(),
         )));
         assert_eq!(class, QUERY_EXECUTION_EXCEPTION);
+    }
+
+    /// DataFusion's spill-limit error, produced by a real `DiskManager` rather than copied, so a
+    /// rewording in a DataFusion upgrade fails this test instead of silently dropping the hint.
+    fn spill_limit_error() -> io::Error {
+        use datafusion::execution::disk_manager::DiskManagerBuilder;
+        use std::io::Write;
+
+        let disk_manager = Arc::new(
+            DiskManagerBuilder::default()
+                .with_max_temp_directory_size(10)
+                .build()
+                .unwrap(),
+        );
+        let file = disk_manager.create_tmp_file("spill limit test").unwrap();
+        let mut writer = file.open_writer().unwrap();
+        writer.write_all(&[0u8; 1024]).unwrap_err()
+    }
+
+    #[test]
+    fn spill_limit_error_names_the_comet_config() {
+        for error in [
+            DataFusionError::IoError(spill_limit_error()),
+            DataFusionError::ArrowError(Box::new(ArrowError::from(spill_limit_error())), None),
+            DataFusionError::External(Box::new(spill_limit_error())),
+        ] {
+            let error = CometError::from(error);
+            assert!(error.to_string().contains(DATAFUSION_SPILL_LIMIT_KEY));
+            let expected = format!("{error}\n{SPILL_LIMIT_HINT}");
+            let (_, class, message, _) = classify(error);
+            assert_eq!(class, "org/apache/comet/CometNativeException");
+            assert_eq!(message, expected);
+        }
+
+        let other = CometError::from(io::Error::other("disk gone"));
+        let expected = other.to_string();
+        let (_, _, message, _) = classify(other);
+        assert_eq!(message, expected);
+    }
+
+    /// DataFusion's external-sort OOM error, produced by a real `SortExec` whose memory pool
+    /// cannot hold a single batch, so a rewording in a DataFusion upgrade fails this test instead
+    /// of silently dropping the hint.
+    fn sort_oom_error() -> DataFusionError {
+        use arrow::array::Int32Array;
+        use arrow::datatypes::{DataType, Field, Schema};
+        use arrow::record_batch::RecordBatch;
+        use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::execution::memory_pool::GreedyMemoryPool;
+        use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+        use datafusion::execution::TaskContext;
+        use datafusion::physical_expr::expressions::col;
+        use datafusion::physical_expr::{LexOrdering, PhysicalSortExpr};
+        use datafusion::physical_plan::sorts::sort::SortExec;
+        use datafusion::physical_plan::ExecutionPlan;
+        use futures::StreamExt;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int32Array::from(vec![3, 1, 2]))],
+        )
+        .unwrap();
+        let input =
+            MemorySourceConfig::try_new_exec(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+        let ordering = LexOrdering::new(vec![PhysicalSortExpr::new_default(
+            col("a", &schema).unwrap(),
+        )])
+        .unwrap();
+        let sort = SortExec::new(ordering, input);
+        let runtime = RuntimeEnvBuilder::new()
+            .with_memory_pool(Arc::new(GreedyMemoryPool::new(1)))
+            .build_arc()
+            .unwrap();
+        let task_ctx = Arc::new(TaskContext::default().with_runtime(runtime));
+        let mut stream = sort.execute(0, task_ctx).unwrap();
+        futures::executor::block_on(stream.next())
+            .unwrap()
+            .unwrap_err()
+    }
+
+    #[test]
+    fn sort_oom_error_names_the_comet_config() {
+        assert_eq!(
+            datafusion::common::config::ConfigOptions::default()
+                .execution
+                .sort_spill_reservation_bytes,
+            10 * 1024 * 1024
+        );
+
+        for error in [
+            sort_oom_error(),
+            DataFusionError::Shared(Arc::new(sort_oom_error())),
+        ] {
+            let error = CometError::from(error);
+            assert!(error.to_string().contains(DATAFUSION_SORT_MEMORY_KEY));
+            let expected = format!("{error}\n{SORT_MEMORY_HINT}");
+            let (_, class, message, _) = classify(error);
+            assert_eq!(class, "org/apache/comet/CometNativeException");
+            assert_eq!(message, expected);
+        }
+
+        let other = CometError::from(DataFusionError::ResourcesExhausted(
+            "Failed to acquire 1024 bytes".to_string(),
+        ));
+        let expected = other.to_string();
+        let (_, _, message, _) = classify(other);
+        assert_eq!(message, expected);
     }
 
     #[test]

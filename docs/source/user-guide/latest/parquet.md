@@ -111,6 +111,14 @@ reads that fail where Spark succeeds are listed in
   ([SPARK-47447](https://issues.apache.org/jira/browse/SPARK-47447)) and Comet matches Spark's
   behavior.
 
+### Missing Nested Fields
+
+When all requested leaf fields under a nested column are missing from a Parquet file, Spark 3.5
+and 4.0 return NULL for the entire missing subtree, including nested arrays and maps. Comet
+follows this behavior. On Spark 4.1+, the default (`false`) preserves the file's parent nullness.
+Set `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true` for legacy behavior.
+A field that exists in the file but contains only NULL values is not a missing field.
+
 ### Schema Mismatch Handling
 
 The issues in this subsection apply only when the requested read schema differs from the schema written
@@ -160,6 +168,19 @@ SchemaColumnConvertNotSupportedException`) instead of the one-level chain Spark'
   `SchemaColumnConvertNotSupportedException`. Spark 4.0+ produces a single-level chain, matching
   vanilla Spark. See [#4354](https://github.com/apache/datafusion-comet/issues/4354).
 
+### Read Error Wrapping
+
+- **Spark 3.x: `TIMESTAMP_MILLIS` overflow past the first batch is wrapped in a file-read error**.
+  When a Parquet `TIMESTAMP_MILLIS` value overflows on conversion to microseconds, Spark's reader
+  throws `ArithmeticException: long overflow`. Spark 3.5 wraps a reader error in a
+  `SparkException` that names the file only while reading the first batch of each file split. For
+  the vectorized reader, that batch is the first `spark.sql.parquet.columnarReaderBatchSize` rows
+  (4096 by default), or the first row group if that is smaller. An overflow in a later batch fails
+  the task with the bare `ArithmeticException`. Spark 4.0+ wraps errors from every batch, and so does
+  Comet on every Spark version. So on Spark 3.x, an overflow past the first batch produces a Comet
+  error that names the file and has one more `SparkException` above the `ArithmeticException` in
+  its cause chain than Spark's error.
+
 ## Writing
 
 Comet can also write Parquet files natively. The native Parquet writer is for testing only and
@@ -169,6 +190,14 @@ partitioned and bucketed writes fall back to Spark, as do writes with
 `spark.sql.files.maxRecordsPerFile` set on Spark 4.0 and later. Parts of Spark's Parquet write
 behavior are not reproduced, as listed under [Known Issues](#known-issues). Iceberg writes use a
 different native writer, described on the [Iceberg](iceberg.md#writes) page.
+
+The native writer supports local and HDFS destinations, and S3 writes that the S3A magic committer
+commits. Spark 4.1 configures that committer by default when spark-hadoop-cloud is on the
+classpath, and earlier versions for a bucket that sets
+`fs.s3a.bucket.<bucket>.committer.magic.enabled`. S3A creates each of those files, through the same
+call Spark's own writer makes, so the magic committer and S3A's write settings, such as server-side
+encryption, ACLs, storage class and object headers, apply exactly as they do for Spark's writer.
+Other S3 writes fall back to Spark.
 
 ## Tuning
 
@@ -259,17 +288,14 @@ for production, so do not turn it off to avoid an entry on this page.
   read back wrong inside lists written in a legacy layout, as Hive and
   `spark.sql.parquet.writeLegacyFormat=true` write them
   ([#7029](https://github.com/apache/datafusion-comet/issues/7029)).
-- **A struct or array with none of its requested fields in the file.** Spark returns NULL for the
-  column. Comet returns a non-null struct or array that holds NULLs. This applies to Spark 3.4, 3.5
-  and 4.0, and to Spark 4.1 and later with
-  `spark.sql.legacy.parquet.returnNullStructIfAllFieldsMissing=true`
-  ([#7030](https://github.com/apache/datafusion-comet/issues/7030)).
-- **Nested BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY
-  column without the UTF8 annotation that is read as `string`, through the read schema or
-  `spark.sql.parquet.binaryAsString=true`. Spark returns the bytes. Comet returns NULL for each
-  such nested value. Top-level values match Spark in a release build, because the invalid bytes
-  reach an Arrow string array unchecked. A debug build panics on them
-  ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
+- **BINARY values that are not valid UTF-8, read as STRING.** This applies to a BINARY column
+  without the UTF8 annotation that is read as `string`, through the read schema or
+  `spark.sql.parquet.binaryAsString=true`. Spark keeps the bytes. In a struct field, list element
+  or map value, Comet replaces each ill-formed sequence with `U+FFFD`, as described in
+  [Strings with non-UTF-8 bytes](compatibility/index.md#strings-with-non-utf-8-bytes). Top-level
+  values, and map keys at any depth, reach an Arrow string array unchecked, which keeps keys that
+  differ only in such bytes distinct: they match Spark in a release build, and a debug build
+  panics on top-level values ([#7032](https://github.com/apache/datafusion-comet/issues/7032), part of
   [#4764](https://github.com/apache/datafusion-comet/issues/4764)).
 - **Field-id reads where one file column matches a field by id and a sibling by name.** With
   `spark.sql.parquet.fieldId.read.enabled=true`, Comet returns NULL for the sibling at the top
@@ -280,32 +306,36 @@ for production, so do not turn it off to avoid an entry on this page.
   `ArithmeticException: long overflow`
   ([#5553](https://github.com/apache/datafusion-comet/issues/5553),
   [#5739](https://github.com/apache/datafusion-comet/issues/5739)).
-- **Reads that Spark rejects.** Comet returns rows where Spark fails the read for
-  `TIMESTAMP(NANOS)` columns read as `timestamp` or `timestamp_ntz`
-  ([#7034](https://github.com/apache/datafusion-comet/issues/7034)), `INT` columns read as
-  `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188)), and
-  Variant-annotated fields read as a plain struct
+- **Reads that Spark rejects.** Comet returns rows where Spark fails the read for `INT` columns
+  read as `INTERVAL DAY TO SECOND` ([#5188](https://github.com/apache/datafusion-comet/issues/5188))
+  and Variant-annotated fields read as a plain struct
   ([#5741](https://github.com/apache/datafusion-comet/issues/5741)).
 
 ### Writes that differ from Spark
 
 With `spark.comet.write.parquet.enabled=true`:
 
-- **The datetime rebase modes are ignored.** On Spark 3.4 and 3.5, whose default rebase mode is
-  `EXCEPTION`, the native writer writes dates and timestamps before October 15, 1582 that Spark
-  refuses to write, and Spark then fails to read them back under its default read mode. With
-  `spark.sql.parquet.datetimeRebaseModeInRead=LEGACY`, Spark reads them shifted by several days, on
-  every version. The files lack the `org.apache.spark.version` footer key that tells Spark they need
-  no rebasing ([#7047](https://github.com/apache/datafusion-comet/issues/7047),
-  [#3427](https://github.com/apache/datafusion-comet/issues/3427)).
+- **The `EXCEPTION` rebase mode is ignored.** On Spark 3.5, whose default rebase mode is
+  `EXCEPTION`, the native writer writes dates before October 15, 1582 and timestamps before
+  January 1, 1900 that Spark refuses to write
+  ([#7047](https://github.com/apache/datafusion-comet/issues/7047)). With
+  `spark.sql.parquet.datetimeRebaseModeInWrite=LEGACY` (or
+  `spark.sql.parquet.int96RebaseModeInWrite=LEGACY` for a timestamp column) Comet falls back to
+  Spark, because the native writer cannot rebase values to the hybrid calendar. Each file the
+  native writer does produce carries the `org.apache.spark.version` footer key, so Spark treats it
+  as written by Spark 3.0 or later and reads the values back unchanged under every
+  `spark.sql.parquet.datetimeRebaseModeInRead` setting. Files written by a Comet build that
+  predates that key have no version, and Spark then fails to read their pre-1582 values under its
+  default read mode on 3.5, or reads them shifted by several days under `LEGACY`.
 - **`spark.sql.parquet.outputTimestampType` and `spark.sql.parquet.writeLegacyFormat` are
   ignored.** Timestamps are always written as `INT64` microseconds, never as Spark's default
   `INT96`, so with `TIMESTAMP_MILLIS` they keep the sub-millisecond digits that Spark drops. Spark's
-  schema footer key is not written either, so a path-based read loses column metadata such as
-  comments, and with `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ`
-  columns as `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
+  schema footer key, `org.apache.spark.sql.parquet.row.metadata`, is not written either, so a
+  path-based read loses column metadata such as comments, and with
+  `spark.sql.parquet.inferTimestampNTZ.enabled=false` it reads `TIMESTAMP_NTZ` columns as
+  `TIMESTAMP` ([#7048](https://github.com/apache/datafusion-comet/issues/7048),
   [#3425](https://github.com/apache/datafusion-comet/issues/3425)).
-- **Spark 3.4 and 3.5: `INSERT INTO` leaves the target stale.** Comet skips the steps Spark runs
+- **Spark 3.5: `INSERT INTO` leaves the target stale.** Comet skips the steps Spark runs
   after a write: file index refresh, cache refresh, partition refresh and statistics update. Later
   queries can return the table's previous contents until `REFRESH TABLE`
   ([#6315](https://github.com/apache/datafusion-comet/issues/6315)).
@@ -340,6 +370,15 @@ With `spark.comet.write.parquet.enabled=true`:
   ([#7035](https://github.com/apache/datafusion-comet/issues/7035)).
 - **A `DATE` column read as `INTERVAL YEAR TO MONTH`.** Spark reads it, and Comet fails the read
   ([#5188](https://github.com/apache/datafusion-comet/issues/5188)).
+- **A nested dictionary-encoded BINARY column, read as STRING, whose batch decodes to more than
+  2 GiB.** In a struct field, list element, map key or map value, Comet expands the dictionary
+  into one string array per batch, whose offsets hold at most 2,147,483,647 bytes. A batch of
+  `spark.comet.batchSize` rows (8192 by default) fails the scan when the values its rows reference
+  add up to more, counting each reference of a shared entry, even for a query that never reads the
+  strings. Values that are not valid UTF-8 decode to up to three times their size, since each
+  ill-formed sequence becomes `U+FFFD`. Spark keeps the dictionary and reads it row by row. Lower
+  `spark.comet.batchSize` so that a batch holds fewer rows
+  ([#7254](https://github.com/apache/datafusion-comet/issues/7254)).
 
 ### Writes that fail where Spark succeeds
 
