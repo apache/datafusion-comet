@@ -80,20 +80,15 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     }
   }
 
-  test("compression codec parsing does not trim") {
-    intercept[IllegalArgumentException] {
-      buildParquetSettings(Map(Keys.ParquetCompression -> " gzip"), TestCreatedBy)
-    }
-    intercept[IllegalArgumentException] {
-      buildParquetSettings(Map(Keys.ParquetCompression -> "none"), TestCreatedBy)
-    }
-  }
-
   test("unknown compression codec throws") {
-    val ex = intercept[IllegalArgumentException] {
-      buildParquetSettings(Map(Keys.ParquetCompression -> "lzo"), TestCreatedBy)
+    // The gate declines these first; the throw is the defensive path behind it. It resolves the
+    // name as iceberg-java does, so a padded name and ORC's `none` are as unknown as `lzo`.
+    Seq("lzo", " gzip", "none").foreach { codec =>
+      val ex = intercept[IllegalArgumentException] {
+        buildParquetSettings(Map(Keys.ParquetCompression -> codec), TestCreatedBy)
+      }
+      assert(ex.getMessage.contains(codec), s"codec='$codec'")
     }
-    assert(ex.getMessage.contains("lzo"))
   }
 
   test("compression level is emitted when present and parseable") {

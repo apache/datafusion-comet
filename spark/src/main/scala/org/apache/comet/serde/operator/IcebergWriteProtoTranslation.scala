@@ -96,7 +96,7 @@ object IcebergWriteProtoTranslation {
    * -- while parquet-rs enforces per-codec ranges when the writer is built, so a level the JVM
    * writer happily writes with would fail the native task. The bounds mirror parquet-rs's
    * `CompressionLevel` impls (pinned 58.x: zstd 1..=22, gzip 0..=9, brotli 0..=11); codecs
-   * without a native level concept (snappy, lz4, none) ignore the property on both sides.
+   * without a native level concept (snappy, lz4, uncompressed) ignore the property on both sides.
    */
   def compressionLevelRejection(props: Map[String, String]): Option[String] =
     props.get(Keys.ParquetCompressionLevel).flatMap { raw =>
