@@ -1966,8 +1966,8 @@ def check_docs_permission_boundary():
             or not re.search(r"^          path: trusted$", steps[1], re.M)
             or not re.search(r"^          sparse-checkout: \|\n            /\.asf.yaml\n            /\.github/actions/download-artifact-retry/$", steps[1], re.M)
             or not re.search(r"^          sparse-checkout-cone-mode: false$", steps[1], re.M)
-            or not re.search(r"^          name: comet-docs-site$", steps[2], re.M)
-            or not re.search(r"^          path: site-output$", steps[2], re.M)
+            or re.findall(r"^          name: (.+)$", steps[2], re.M) != ["comet-docs-site"]
+            or re.findall(r"^          path: (.+)$", steps[2], re.M) != ["site-output"]
             or not re.search(r"^          persist-credentials: false$", steps[1], re.M)):
         failures.append("the writer must check out the site and trusted metadata before downloading the artifact")
     if len(steps) == 4:
