@@ -78,14 +78,14 @@ package object comet {
           props.load(resourceStream)
         } catch {
           case e: Exception =>
-            logError(s"Error loading properties from $GIT_INFO_PROPS_FILENAME", e)
+            logWarning(s"Error loading properties from $GIT_INFO_PROPS_FILENAME", e)
         } finally {
           if (resourceStream != null) {
             try {
               resourceStream.close()
             } catch {
               case e: Exception =>
-                logError("Error closing Comet build info resource stream", e)
+                logWarning("Error closing Comet build info resource stream", e)
             }
           }
         }
