@@ -25,7 +25,6 @@ import java.util.Locale
 import scala.collection.mutable
 
 import org.apache.spark.sql.catalyst.expressions.{DynamicPruningExpression, Expression, Literal}
-import org.apache.spark.sql.catalyst.plans.physical.UnknownPartitioning
 import org.apache.spark.sql.execution.FileSourceScanExec
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.types.StructType
@@ -177,14 +176,6 @@ object CometScanUtils {
     val filePartitions = splitPartitionsByStore(
       inputPartitions,
       file => NativeConfig.objectStoreKey(file.pathUri, s3CompliantSchemes, libhdfsSchemes))
-    // Spark 3.4 reports a one-partition scan as SinglePartition and plans no exchange above it,
-    // so the operators above rely on the scan's partition count.
-    if (filePartitions.length != inputPartitions.length &&
-      !op.wrapped.outputPartitioning.isInstanceOf[UnknownPartitioning]) {
-      return Left(
-        s"$scanName would split a partition that mixes object stores, but Spark planned the " +
-          "operators above it for the scan's own partitioning")
-    }
     Right(NativeFileScanInput(objectStoreOptions, filePartitions))
   }
 

@@ -213,6 +213,20 @@ class CometTextNativeReadSuite extends CometTestBase {
     }
   }
 
+  test("native text read - wholetext on an empty file is one empty row") {
+    withTempDir { dir =>
+      val file = new File(dir, "empty-wholetext.txt")
+      Files.write(file.toPath, Array.emptyByteArray)
+      withTextConf {
+        // Line mode has no rows for an empty file, but wholetext returns the whole (empty) content
+        // as one row. Check the count too, so a missing row cannot pass as an empty result.
+        val df = spark.read.option("wholetext", "true").text(file.getAbsolutePath)
+        checkSparkAnswerAndOperator(df)
+        assert(df.collect().length == 1)
+      }
+    }
+  }
+
   test("native text read - directory of multiple small files") {
     withTempDir { dir =>
       Files.write(new File(dir, "a.txt").toPath, "alpha\nbeta".getBytes(StandardCharsets.UTF_8))
