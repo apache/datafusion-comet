@@ -340,26 +340,28 @@ class CometShuffleInputConversionSuite extends CometTestBase {
     }
   }
 
-  Seq("xs", "m").foreach { column =>
-    convertTest(s"a converted wide-decimal shuffle joins the JVM columnar shuffle with $column") {
-      // Native shuffle hashes a decimal wider than 18 digits as Spark does, so a left input that
-      // converts, with an array or map column, joins a right input that stays on the JVM
-      // columnar shuffle, with its NullType column, without losing rows.
-      withShuffledJoins {
-        Seq("true", "false").foreach { aqe =>
-          withSQLConf(
-            SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
-            SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
-            SQLConf.SKEW_JOIN_ENABLED.key -> "false") {
-            val left =
-              collectionsDf().select(col("k").cast(DecimalType(38, 0)).as("lk"), col(column))
-            val right = nullsDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("n"))
-            val (_, plan) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
-            assert(convertedShuffles(plan).length == 1, s"AQE $aqe:\n$plan")
-            assert(
-              cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1,
-              s"AQE $aqe:\n$plan")
-          }
+  convertTest("a converted wide-decimal shuffle joins the JVM columnar shuffle") {
+    // Native shuffle hashes a decimal wider than 18 digits as Spark does, so a left input that
+    // converts, with an array and a map column, joins a right input that stays on the JVM
+    // columnar shuffle, with its NullType column, without losing rows. The payload does not
+    // change what is hashed, which is the key, so one join carries both columns.
+    withShuffledJoins {
+      Seq("true", "false").foreach { aqe =>
+        withSQLConf(
+          SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> aqe,
+          SQLConf.COALESCE_PARTITIONS_ENABLED.key -> "false",
+          SQLConf.SKEW_JOIN_ENABLED.key -> "false") {
+          val left =
+            collectionsDf().select(
+              col("k").cast(DecimalType(38, 0)).as("lk"),
+              col("xs"),
+              col("m"))
+          val right = nullsDf().select(col("k").cast(DecimalType(38, 0)).as("rk"), col("n"))
+          val (_, plan) = checkSparkAnswer(left.join(right, col("lk") === col("rk")))
+          assert(convertedShuffles(plan).length == 1, s"AQE $aqe:\n$plan")
+          assert(
+            cometShuffles(plan).count(_.shuffleType == CometColumnarShuffle) == 1,
+            s"AQE $aqe:\n$plan")
         }
       }
     }

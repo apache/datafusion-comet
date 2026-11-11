@@ -4591,12 +4591,9 @@ class CometExecSuite extends CometTestBase {
 
     // The shared rule looks inside a collection and declines these for what it finds there, and
     // so does the conversion for a calendar interval. A decline of the whole collection would
-    // record no reason, which is how the two differ.
-    val duplicate = StructType(Seq(StructField("a", LongType), StructField("a", LongType)))
+    // record no reason, which is how the two differ. Structs with duplicate field names inside a
+    // collection are in CometNativeShuffleSuite, which also checks their reason.
     val declined = Seq(
-      ArrayType(duplicate),
-      MapType(LongType, duplicate),
-      ArrayType(ArrayType(duplicate)),
       ArrayType(NullType),
       MapType(IntegerType, ArrayType(NullType)),
       ArrayType(DayTimeIntervalType()),
@@ -4698,58 +4695,90 @@ class CometExecSuite extends CometTestBase {
         "map_from_arrays(array(x, x + 1), array('a', concat('b', cast(id AS STRING))))"))
   }
 
-  sparkToColumnarShapes.foreach { case (ddl, expression, element) =>
-    test(s"SparkToColumnar converts $ddl columns that native operators read") {
-      withTempPath { dir =>
-        var schema: StructType = null
-        var rows: Seq[Row] = Seq.empty
-        withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-          val data = spark.range(100).selectExpr("id", s"$expression AS c")
-          schema = data.schema
-          rows = data.collect().toSeq
-          data.repartition(1).write.parquet(dir.toString)
-        }
-        for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
-          val vectorized = sourceType == "parquet-columnar"
-          withSQLConf(
+  /**
+   * Runs `buildQuery` over `rows` as an RDD and as Parquet read by Spark's row reader and by its
+   * columnar reader, with each source converted to Arrow for the native operators above it. For
+   * each source it checks the answer, that one `CometSparkToColumnarExec` reads the source in the
+   * mode the reader gives, the Spark schema, a native shuffle on top of the query, and the answer
+   * of a query that stops before it drains the input. `check` adds a test's own checks for each
+   * source: its name, the DataFrame it reads and the plan of the query.
+   */
+  private def checkSparkToColumnarSources(
+      schema: StructType,
+      rows: Seq[Row],
+      rddPartitions: Int,
+      cometBatchSize: Int,
+      parquetBatchSize: Option[Int] = None)(buildQuery: DataFrame => DataFrame)(
+      check: (String, DataFrame, SparkPlan) => Unit = (_, _, _) => ()): Unit = {
+    withTempPath { dir =>
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        spark
+          .createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
+          .write
+          .parquet(dir.toString)
+      }
+      for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
+        val vectorized = sourceType == "parquet-columnar"
+        withSQLConf(
+          (Seq(
             SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
             SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
             SQLConf.PARQUET_VECTORIZED_READER_NESTED_COLUMN_ENABLED.key -> "true",
-            // Spark batches smaller than Comet's, so an Arrow batch spans several of them.
-            SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> "30",
             CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-            CometConf.COMET_BATCH_SIZE.key -> "16",
+            CometConf.COMET_BATCH_SIZE.key -> cometBatchSize.toString,
             CometConf.COMET_SHUFFLE_MODE.key -> "native",
             CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
-            def source =
-              if (sourceType == "rdd") {
-                spark.createDataFrame(spark.sparkContext.parallelize(rows, 2), schema)
-              } else {
-                spark.read.parquet(dir.toString)
-              }
-            def query =
-              source.filter("id > 0").selectExpr("id", "c", "size(c) AS n", s"$element AS e")
-            val (_, plan) = checkSparkAnswerAndOperator(
-              query,
-              includeClasses = Seq(
-                classOf[CometSparkToColumnarExec],
-                classOf[CometProjectExec],
-                classOf[CometFilterExec]))
-            val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
-            assert(conversions.size == 1, plan)
-            assert(conversions.head.child.supportsColumnar == vectorized, plan)
-            checkSparkSchema(query)
-            val (_, shuffled) = checkSparkAnswerAndOperator(
-              query.repartition(2, col("id")),
-              includeClasses = Seq(classOf[CometShuffleExchangeExec]))
-            val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
-            assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
-            // Stop before draining the input to exercise normal task-completion cleanup.
-            checkSparkAnswer(query.limit(1))
-          }
+            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") ++
+            parquetBatchSize.map(size =>
+              SQLConf.PARQUET_VECTORIZED_READER_BATCH_SIZE.key -> size.toString)): _*) {
+          def source =
+            if (sourceType == "rdd") {
+              spark.createDataFrame(spark.sparkContext.parallelize(rows, rddPartitions), schema)
+            } else {
+              spark.read.schema(schema).parquet(dir.toString)
+            }
+          def query = buildQuery(source)
+          val (_, plan) = checkSparkAnswerAndOperator(
+            query,
+            includeClasses = Seq(
+              classOf[CometSparkToColumnarExec],
+              classOf[CometProjectExec],
+              classOf[CometFilterExec]))
+          val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
+          assert(conversions.size == 1, plan)
+          assert(conversions.head.child.supportsColumnar == vectorized, plan)
+          checkSparkSchema(query)
+          val (_, shuffled) = checkSparkAnswerAndOperator(
+            query.repartition(2, col("id")),
+            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
+          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
+          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
+          // Stop before draining the input to exercise normal task-completion cleanup.
+          checkSparkAnswer(query.limit(1))
+          check(sourceType, source, plan)
         }
       }
+    }
+  }
+
+  sparkToColumnarShapes.foreach { case (ddl, expression, element) =>
+    test(s"SparkToColumnar converts $ddl columns that native operators read") {
+      var schema: StructType = null
+      var rows: Seq[Row] = Seq.empty
+      withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
+        val data = spark.range(100).selectExpr("id", s"$expression AS c")
+        schema = data.schema
+        rows = data.collect().toSeq
+      }
+      // Spark batches smaller than Comet's, so an Arrow batch spans several of them.
+      checkSparkToColumnarSources(
+        schema,
+        rows,
+        rddPartitions = 2,
+        cometBatchSize = 16,
+        parquetBatchSize = Some(30)) { source =>
+        source.filter("id > 0").selectExpr("id", "c", "size(c) AS n", s"$element AS e")
+      }()
     }
   }
 
@@ -4816,6 +4845,8 @@ class CometExecSuite extends CometTestBase {
     }
   }
 
+  // Unlike the tests that use checkSparkToColumnarSources, this one also reads JSON and Spark's V2
+  // file sources.
   test("SparkToColumnar string arrays cross JSON and Parquet native boundaries") {
     val schema = new StructType()
       .add("id", IntegerType)
@@ -4896,59 +4927,24 @@ class CometExecSuite extends CometTestBase {
         Row(Map("nullable" -> null, "x" -> "value"))),
       Row(5, Map("hour" -> "2026-09-03T00", "long" -> ("東京" * 32768)), null),
       Row(6, Map("hour" -> "2026-09-03T01"), Row(Map("x" -> "value"))))
-    for (sourceType <- Seq("rdd", "parquet-row", "parquet-columnar")) {
-      val vectorized = sourceType == "parquet-columnar"
-      withSQLConf(
-        SQLConf.ADAPTIVE_EXECUTION_ENABLED.key -> "false",
-        SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> vectorized.toString,
-        "spark.sql.parquet.enableNestedColumnVectorizedReader" -> "true",
-        CometConf.COMET_NATIVE_SCAN_ENABLED.key -> "false",
-        CometConf.COMET_BATCH_SIZE.key -> "2",
-        CometConf.COMET_SHUFFLE_MODE.key -> "native",
-        CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "true",
-        CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "true") {
-        withTempPath { dir =>
-          def rdd = spark.createDataFrame(spark.sparkContext.parallelize(rows, 1), schema)
-          if (sourceType != "rdd") {
-            withSQLConf(CometConf.COMET_ENABLED.key -> "false") {
-              rdd.write.parquet(dir.toString)
-            }
-          }
-          def source =
-            if (sourceType == "rdd") rdd else spark.read.schema(schema).parquet(dir.toString)
-          def query = source
-            .filter("id > 0")
-            .selectExpr("id", "partitionValues", "nested", "partitionValues['hour'] AS hour")
-          val (_, plan) = checkSparkAnswerAndOperator(
-            query,
-            includeClasses = Seq(
-              classOf[CometSparkToColumnarExec],
-              classOf[CometProjectExec],
-              classOf[CometFilterExec]))
+    def query(source: DataFrame): DataFrame = source
+      .filter("id > 0")
+      .selectExpr("id", "partitionValues", "nested", "partitionValues['hour'] AS hour")
+    checkSparkToColumnarSources(schema, rows, rddPartitions = 1, cometBatchSize = 2)(query) {
+      (sourceType, source, plan) =>
+        if (sourceType == "rdd") {
           val conversions = collect(plan) { case c: CometSparkToColumnarExec => c }
-          assert(conversions.size == 1)
-          assert(conversions.head.child.supportsColumnar == vectorized)
-          if (sourceType == "rdd") {
-            assert(conversions.head.child.collect { case scan: RDDScanExec => scan }.nonEmpty)
-          }
-          checkSparkSchema(query)
-          checkSparkAnswerAndOperator(
-            source.filter("partitionValues['hour'] BETWEEN '2026-09-02T22' AND '2026-09-03T00'"),
-            includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
-          val (_, shuffled) = checkSparkAnswerAndOperator(
-            query.repartition(2, col("id")),
-            includeClasses = Seq(classOf[CometShuffleExchangeExec]))
-          val exchanges = collect(shuffled) { case s: CometShuffleExchangeExec => s }
-          assert(exchanges.nonEmpty && exchanges.forall(_.shuffleType == CometNativeShuffle))
-          checkSparkAnswer(query.limit(1))
-          withSQLConf(
-            CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
-            CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
-            val (_, disabled) = checkSparkAnswer(query)
-            assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
-          }
+          assert(conversions.head.child.collect { case scan: RDDScanExec => scan }.nonEmpty)
         }
-      }
+        checkSparkAnswerAndOperator(
+          source.filter("partitionValues['hour'] BETWEEN '2026-09-02T22' AND '2026-09-03T00'"),
+          includeClasses = Seq(classOf[CometSparkToColumnarExec], classOf[CometFilterExec]))
+        withSQLConf(
+          CometConf.COMET_CONVERT_FROM_RDD_ENABLED.key -> "false",
+          CometConf.COMET_CONVERT_FROM_PARQUET_ENABLED.key -> "false") {
+          val (_, disabled) = checkSparkAnswer(query(source))
+          assert(collect(disabled) { case c: CometSparkToColumnarExec => c }.isEmpty)
+        }
     }
   }
 
