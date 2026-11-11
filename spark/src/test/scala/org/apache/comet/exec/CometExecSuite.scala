@@ -3145,7 +3145,6 @@ class CometExecSuite extends CometTestBase {
             var columnarToRowExec: Seq[SparkPlan] =
               stripAQEPlan(df.queryExecution.executedPlan).collect {
                 case s: CometColumnarToRowExec => s
-                case s: CometNativeColumnarToRowExec => s
               }
             assert(columnarToRowExec.isEmpty)
 
@@ -3160,9 +3159,8 @@ class CometExecSuite extends CometTestBase {
             // After AQE: CometBroadcastExchange has to be converted to rows to conform to Spark
             // BroadcastHashJoin.
             val plan = stripAQEPlan(df.queryExecution.executedPlan)
-            columnarToRowExec = plan.collect {
-              case s: CometColumnarToRowExec => s
-              case s: CometNativeColumnarToRowExec => s
+            columnarToRowExec = plan.collect { case s: CometColumnarToRowExec =>
+              s
             }
             assert(columnarToRowExec.length == 1)
 
@@ -3172,7 +3170,7 @@ class CometExecSuite extends CometTestBase {
             assert(broadcastJoins.nonEmpty, s"Expected BroadcastHashJoinExec in plan:\n$plan")
             val hasC2RDescendant = broadcastJoins.exists { join =>
               join.find {
-                case _: CometColumnarToRowExec | _: CometNativeColumnarToRowExec => true
+                case _: CometColumnarToRowExec => true
                 case _ => false
               }.isDefined
             }

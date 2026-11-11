@@ -26,7 +26,6 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Cast, Divide, Expre
 import org.apache.spark.sql.catalyst.expressions.aggregate.{AggregateExpression, AggregateFunction, ApproximatePercentile, Average, BitAndAgg, BitOrAgg, BitXorAgg, BloomFilterAggregate, CentralMomentAgg, CollectList, CollectSet, Complete, Corr, Count, Covariance, CovPopulation, CovSample, DeclarativeAggregate, First, HyperLogLogPlusPlus, Last, Max, MaxBy, MaxMinBy, Min, MinBy, Mode, Partial, PartialMerge, Percentile, PivotFirst, RegrIntercept, RegrR2, RegrReplacement, RegrSlope, RegrSXY, StddevPop, StddevSamp, Sum, VariancePop, VarianceSamp}
 import org.apache.spark.sql.catalyst.util.ArrayData
 import org.apache.spark.sql.comet.CometExecUtils
-import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DayTimeIntervalType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, NullType, NumericType, ShortType, StringType, StructType, TimestampNTZType, TimestampType, YearMonthIntervalType}
 
@@ -748,7 +747,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       return Unsupported(Some(descendingReason))
     }
     expr.child.dataType match {
-      case FloatType | DoubleType if !keepsSignedZeroKeys(SPARK_VERSION) =>
+      case FloatType | DoubleType if !SparkFixes.keepsSignedZeroKeys(SPARK_VERSION) =>
         Compatible(Some(signedZeroKeysNote))
       case FloatType | DoubleType => Compatible(Some(zeroOrderNote))
       case _: NumericType => Compatible()
@@ -779,7 +778,7 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       builder.setFloatInput(percentile.child.dataType == FloatType)
       // Only floating-point input can hold both zeros; the native side tracks Spark's partial
       // buffers only when this is set.
-      builder.setSignedZeroKeys(floatingInput && keepsSignedZeroKeys(SPARK_VERSION))
+      builder.setSignedZeroKeys(floatingInput && SparkFixes.keepsSignedZeroKeys(SPARK_VERSION))
       builder.setMergeStage(aggExpr.mode == PartialMerge)
       // DoubleType always serializes successfully.
       builder.setDatatype(serializeDataType(DoubleType).get)
@@ -792,13 +791,6 @@ object CometPercentile extends CometAggregateExpressionSerde[Percentile] {
       None
     }
   }
-
-  // Spark 3.5.2 keeps 0.0 and -0.0 as separate keys in the percentile buffer (SPARK-45599).
-  // Earlier releases can merge the two, which the native percentile does not reproduce.
-  def keepsSignedZeroKeys(version: String): Boolean =
-    Utils.majorMinorPatchVersion(version).exists { case (major, minor, patch) =>
-      major > 3 || (major == 3 && (minor > 5 || (minor == 5 && patch >= 2)))
-    }
 }
 
 object CometApproxPercentile extends CometAggregateExpressionSerde[ApproximatePercentile] {
@@ -929,51 +921,6 @@ object CometCorr extends CometAggregateExpressionSerde[Corr] {
 }
 
 /**
- * The Spark releases that changed the regression aggregates. Both changes shipped in patch
- * releases, so the minor version alone places them on the wrong side for earlier patches.
- */
-private[comet] object RegrSparkVersions {
-
-  /**
-   * SPARK-48719 made regr_slope and regr_intercept count VariancePop(x) only over rows where both
-   * y and x are non-null. Present from 3.5.2 and 4.0.0; earlier 3.5 patches and 3.4 count every
-   * row where x is non-null.
-   */
-  def slopeFiltersVarByPairNulls(sparkVersion: String): Boolean =
-    majorMinorPatch(sparkVersion) match {
-      case Some((3, 5, patch)) => patch >= 2
-      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
-      case None => sparkVersion >= "3.5"
-    }
-
-  /**
-   * SPARK-55969 swapped regr_r2's degenerate cases: a constant dependent variable yields 1.0 (was
-   * null) and a constant independent variable yields null (was 1.0). Present from 3.5.9, 4.0.3,
-   * 4.1.2 and 4.2.0; earlier patches of those lines and 3.4 keep the old cases.
-   */
-  def r2DegenerateCasesSwapped(sparkVersion: String): Boolean =
-    majorMinorPatch(sparkVersion) match {
-      case Some((3, 5, patch)) => patch >= 9
-      case Some((4, 0, patch)) => patch >= 3
-      case Some((4, 1, patch)) => patch >= 2
-      case Some((major, minor, _)) => isAfterMinor(major, minor, 3, 5)
-      case None => sparkVersion >= "3.5"
-    }
-
-  private def isAfterMinor(major: Int, minor: Int, thanMajor: Int, thanMinor: Int): Boolean =
-    major > thanMajor || (major == thanMajor && minor > thanMinor)
-
-  // Spark's VersionUtils is private to its packages, so parse the leading major.minor.patch
-  // here; a missing patch reads as 0 and a suffix such as -SNAPSHOT is ignored.
-  private val versionPattern = """^(\d+)\.(\d+)(?:\.(\d+))?""".r
-
-  private def majorMinorPatch(sparkVersion: String): Option[(Int, Int, Int)] =
-    versionPattern.findFirstMatchIn(sparkVersion).map { m =>
-      (m.group(1).toInt, m.group(2).toInt, Option(m.group(3)).map(_.toInt).getOrElse(0))
-    }
-}
-
-/**
  * Shared serialization for the simple linear regression aggregates. `child1` is the dependent
  * variable (y) and `child2` is the independent variable (x), matching the native accumulator's
  * `regr_*(y, x)` convention.
@@ -1001,9 +948,9 @@ trait CometRegrBase {
       // Both regression fixes shipped in patch releases, so the running Spark's exact version
       // decides which behaviour the native accumulator mirrors.
       val sparkVersion = org.apache.spark.SPARK_VERSION
-      builder.setFilterVarByPairNulls(RegrSparkVersions.slopeFiltersVarByPairNulls(sparkVersion))
+      builder.setFilterVarByPairNulls(SparkFixes.slopeFiltersVarByPairNulls(sparkVersion))
       builder.setR2ConstantDependentIsPerfectFit(
-        RegrSparkVersions.r2DegenerateCasesSwapped(sparkVersion))
+        SparkFixes.r2DegenerateCasesSwapped(sparkVersion))
 
       Some(
         ExprOuterClass.AggExpr
@@ -1214,7 +1161,9 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
         "`collect_set` with `RESPECT NULLS` falls back to Spark, since the native " +
           "implementation always drops null inputs.")
     } else {
-      Nil
+      Seq(
+        "`collect_set` over FLOAT or DOUBLE in a PartialMerge chain (for example, beside " +
+          "`count(DISTINCT ...)`) falls back to Spark to preserve signed-zero and NaN semantics.")
     }
 
   override def getSupportLevel(expr: CollectSet): SupportLevel = {
@@ -1244,6 +1193,16 @@ object CometCollectSet extends CometAggregateExpressionSerde[CollectSet] {
       inputs: Seq[Attribute],
       binding: Boolean,
       conf: SQLConf): Option[ExprOuterClass.AggExpr] = {
+    // Declining the merge also keeps its buffer producers in Spark via the unsafe-partial pass.
+    if (!isSpark42Plus && aggExpr.mode == PartialMerge &&
+      (expr.child.dataType == FloatType || expr.child.dataType == DoubleType)) {
+      withFallbackReason(
+        aggExpr,
+        "collect_set on FLOAT/DOUBLE in PartialMerge requires Spark 4.2 or later " +
+          "to preserve signed-zero and NaN semantics")
+      return None
+    }
+
     val child = aggExpr.mode match {
       // Spark 4.2 (SPARK-57298) normalizes NaN and -0.0 inside CollectSet's buffer conversion
       // (`convertToBufferElement`/`eval` in collect.scala), so the normalization is invisible in

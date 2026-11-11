@@ -45,8 +45,8 @@ import org.apache.comet.vector.CometVector
  * Randomized end-to-end tests for the Arrow-direct codegen dispatcher: schema-driven coverage of
  * every input vector class against random parquet, plus a decimal precision-scale sweep across
  * the `Decimal.MAX_LONG_DIGITS=18` boundary at varying null densities. Extends [[CometTestBase]]
- * (not [[CometFuzzTestBase]]) because the base's `shuffle` x `nativeC2R` cross-product is
- * irrelevant for projection-only queries.
+ * (not [[CometFuzzTestBase]]) because the base's per-shuffle-mode runs are irrelevant for
+ * projection-only queries.
  */
 @ExpressionsGroup
 class CometCodegenFuzzSuite

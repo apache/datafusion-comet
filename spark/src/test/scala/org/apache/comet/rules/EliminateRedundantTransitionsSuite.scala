@@ -20,7 +20,7 @@
 package org.apache.comet.rules
 
 import org.apache.spark.sql.CometTestBase
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec, CometPlan}
+import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometPlan}
 import org.apache.spark.sql.execution.{ColumnarToRowExec, SparkPlan, UnionExec}
 
 import org.apache.comet.CometConf
@@ -35,12 +35,6 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
       plan = spark.sql(sql).queryExecution.executedPlan
     }
     stripAQEPlan(plan)
-  }
-
-  private def isCometColumnarToRow(plan: SparkPlan): Boolean = plan match {
-    case _: CometColumnarToRowExec => true
-    case _: CometNativeColumnarToRowExec => true
-    case _ => false
   }
 
   // The rule decides, per `ColumnarToRowExec`, whether the subtree below it is Comet columnar.
@@ -65,7 +59,7 @@ class EliminateRedundantTransitionsSuite extends CometTestBase {
 
       val Seq(cometBranch, sparkBranch) = result.children
       assert(
-        isCometColumnarToRow(cometBranch),
+        cometBranch.isInstanceOf[CometColumnarToRowExec],
         s"Comet branch should use a Comet columnar-to-row transition:\n${result.treeString}")
       assert(
         sparkBranch == sparkTransition,

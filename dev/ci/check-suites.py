@@ -108,6 +108,9 @@ def group_name(tag):
 def main():
     failures = []
     members = {tag: set() for tag in GROUP_TAGS}
+    # Where each tag was found for each suite. A suite can be declared in several source sets
+    # (for one Spark version each), and every copy has to carry the same tag.
+    declared = {}
     seen_ignored = set()
     for path in test_sources():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -139,11 +142,27 @@ def main():
                 )
                 continue
             members[tags[0]].add(fqn)
+            declared.setdefault(fqn, {}).setdefault(tags[0], []).append(where)
+
+    for fqn, by_tag in sorted(declared.items()):
+        if len(by_tag) > 1:
+            detail = "; ".join(
+                f"@{tag} at {', '.join(wheres)}" for tag, wheres in sorted(by_tag.items())
+            )
+            failures.append(f"{fqn} is declared with different group tags: {detail}")
 
     for fqn in sorted(set(IGNORE_LIST) - seen_ignored):
         failures.append(f"IGNORE_LIST names {fqn}, which no longer exists")
 
-    tagged = {fqn: group_name(tag) for tag, suites in members.items() for fqn in suites}
+    tagged = {
+        fqn: group_name(tag)
+        for tag, suites in members.items()
+        for fqn in suites
+        if len(declared[fqn]) == 1
+    }
+    # A suite whose copies disagree is already reported, so it is left out of the comparison with
+    # the workflows, but it is still a tagged suite.
+    all_tagged = {fqn for suites in members.values() for fqn in suites}
     for workflow in WORKFLOWS:
         listed = workflow_groups(workflow)
         for fqn, group in sorted(tagged.items()):
@@ -151,7 +170,7 @@ def main():
                 failures.append(f"{workflow} does not list {fqn}, which its tag puts in {group}")
             elif listed[fqn] != group:
                 failures.append(f"{workflow} lists {fqn} in {listed[fqn]}, but its tag puts it in {group}")
-        for fqn in sorted(set(listed) - set(tagged)):
+        for fqn in sorted(set(listed) - all_tagged):
             failures.append(f"{workflow} lists {fqn}, which is not a tagged concrete suite")
 
     if failures:

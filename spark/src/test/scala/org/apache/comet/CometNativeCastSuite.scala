@@ -1557,6 +1557,58 @@ class CometNativeCastSuite
         Some(SparkFixes.castsZeroWithAnyExponentToDecimal(org.apache.spark.SPARK_VERSION)))
   }
 
+  test(
+    "cast StringType to DecimalType sets the integral-digit limit option from the legacy config") {
+    val a = AttributeReference("a", StringType)()
+    Seq(true, false).foreach { allowNegativeScale =>
+      withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> allowNegativeScale.toString) {
+        val proto = CometCast.convert(Cast(a, DecimalType(38, 10)), Seq(a), binding = false)
+        assert(proto.map(_.getCast.getDecimalSkipIntegralDigitLimit) == Some(allowNegativeScale))
+      }
+    }
+  }
+
+  // Spark rejects a string whose integral part has more than 38 digits as soon as it has parsed
+  // it, before it checks the value against the target type. So ANSI mode raises
+  // NUMERIC_OUT_OF_SUPPORTED_RANGE whatever the target type, where a value with up to 38 integral
+  // digits that does not fit raises NUMERIC_VALUE_OUT_OF_RANGE, and the other modes return NULL.
+  // See https://github.com/apache/datafusion-comet/issues/7188.
+  test("cast StringType to DecimalType - more than 38 integral digits") {
+    val tooManyDigits = Seq(
+      "6E+38",
+      "1" + "0" * 38, // 39 digits, which fit an i128 in Comet's parser
+      "1" + "0" * 39, // 40 digits, which do not
+      "-1.5e50",
+      "9" * 40 + ".5",
+      "0.1e40",
+      // leading zeros do not count
+      "0" * 50 + "1e38")
+    val withinTheLimit = Seq("1.5", "-12", "12345678901", "9" * 38, "1" + "0" * 37, "1e-50")
+    Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+      toType =>
+        // ANSI mode stops at the first row that fails, so each error is compared on its own.
+        tooManyDigits.foreach { value =>
+          castTest(Seq(value).toDF("a"), toType, expectAnsiFailure = true)
+        }
+        // The other modes return NULL for these and the usual result for the rest.
+        castTest((tooManyDigits ++ withinTheLimit).toDF("a"), toType, testAnsi = false)
+    }
+  }
+
+  // With the setting Spark skips the limit above, so a string with too many integral digits is an
+  // ordinary value that is too large for the target type. A zero with a large exponent is zero,
+  // whether or not Spark has SPARK-60118.
+  test("cast StringType to DecimalType - more than 38 integral digits with negative scale") {
+    withSQLConf("spark.sql.legacy.allowNegativeScaleOfDecimal" -> "true") {
+      Seq(DataTypes.createDecimalType(10, 2), DataTypes.createDecimalType(38, 10)).foreach {
+        toType =>
+          // 39 digits, which fit an i128 in Comet's parser
+          castTest(Seq("1" + "0" * 38).toDF("a"), toType, expectAnsiFailure = true)
+          castTest(Seq("0e38", "0E+73", "+0e83", "0e5887677", "1.5", "-12").toDF("a"), toType)
+      }
+    }
+  }
+
   test("cast StringType to DecimalType(38,10) high precision") {
     val values = gen.generateStrings(dataSize, numericPattern, 38).toDF("a")
     Seq(true, false).foreach(ansiEnabled =>
