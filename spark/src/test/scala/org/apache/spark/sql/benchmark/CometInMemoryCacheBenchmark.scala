@@ -912,6 +912,49 @@ object CometInMemoryCacheBenchmark extends CometBenchmarkBase {
       addStatsCase(benchmark, "Arrow vectors", decimalBatch, decimalAttrs)
       benchmark.run()
     } finally decimalBatch.close()
+
+    // Three string columns and nothing else, one row in ten null, so the strings' share of the
+    // cost is measured on its own. The first set of keys shares 30 to 50 bytes with its neighbours,
+    // as URLs and file paths do, so a comparison reads several 8-byte words before it finds a
+    // difference. The second is short keys that differ at the first byte or two, where a
+    // comparison ends inside its first word.
+    def addStringCase(name: String, key: Seq[Int => String]): Unit = {
+      val stringAttrs = key.indices.map(i => AttributeReference(s"s$i", StringType)())
+      val stringRows = Iterator.tabulate(batchSize) { r =>
+        if (r % 10 == 0) {
+          new GenericInternalRow(key.length)
+        } else {
+          InternalRow.fromSeq(key.map(k => UTF8String.fromString(k(r))))
+        }
+      }
+      val stringBatch = CometArrowConverters
+        .rowToArrowBatchIter(
+          stringRows,
+          Utils.fromAttributes(stringAttrs),
+          batchSize,
+          CometArrowStream.NATIVE_TIMEZONE,
+          CometArrowAllocator)
+        .next()
+      try {
+        val benchmark = new Benchmark(name, numRows.toLong, output = output)
+        addStatsCase(benchmark, "Arrow vectors", stringBatch, stringAttrs)
+        benchmark.run()
+      } finally stringBatch.close()
+    }
+
+    addStringCase(
+      "in-memory cache statistics, string columns with long shared prefixes",
+      Seq(
+        r => s"https://www.example.com/catalog/products/category-${r % 40}/item-$r",
+        r => s"/var/lib/datasets/warehouse/events/2026/11/11/part-${r % 5000}.parquet",
+        r => s"s3://analytics-bucket/warehouse/orders/dt=2026-11-${10 + r % 20}/part-$r"))
+
+    addStringCase(
+      "in-memory cache statistics, short string columns",
+      Seq(
+        r => s"k$r",
+        r => ((r.toLong * 7919) % 100000).toString,
+        r => Integer.toHexString(r * 31)))
   }
 
   private def runCacheBenchmark(
