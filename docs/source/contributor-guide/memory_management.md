@@ -332,6 +332,13 @@ JNI, which goes through Spark's ordinary `TaskMemoryManager`. That means:
   granted. While overcommit is outstanding, `try_grow` asks Spark for it on top of the request and
   is refused unless Spark can cover both, so operators spill until the debt is repaid. Both pools'
   `Display` output and their `try_grow` errors report the current overcommit.
+- When Spark throws while acquiring memory, for instance because a spill of another consumer
+  failed, every later `try_grow` of the task that asks for memory fails, before the fair pool
+  checks its own limits. A `grow` still records the full amount as overcommit, and when it was the
+  first to fail, the first `try_grow` after it is handed the exception itself. The others fail with
+  its message. That error is not `ResourcesExhausted`, so an operator that checks for a refusal,
+  such as the shuffle repartitioner, fails the task rather than spilling, and one that takes any
+  error for a refusal and asks again fails when it asks again.
 
 `CometFairMemoryPool` exists because Spark cannot ask a native operator to spill. Spark limits each
 task to an even share of its off-heap pool among the tasks that hold memory from it. Once one

@@ -242,6 +242,9 @@ impl MemoryPool for CometFairMemoryPool {
     ) -> Result<(), DataFusionError> {
         if additional > 0 {
             let mut state = self.state.lock();
+            // Before the pool's own limits, whose refusal would make the operator spill and carry
+            // on, and under the lock, which a `grow` holds while Spark fails it.
+            self.spark.check_failure()?;
             let can_spill = reservation.consumer().can_spill();
             let used = state.used;
             if limited_to_its_share(reservation.consumer()) {
