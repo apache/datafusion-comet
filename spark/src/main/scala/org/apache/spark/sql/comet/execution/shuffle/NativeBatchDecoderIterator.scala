@@ -42,7 +42,8 @@ case class NativeBatchDecoderIterator(
     nativeUtil: NativeUtil,
     tracingEnabled: Boolean,
     expectedSchema: Option[Array[Byte]] = None,
-    readBufferSize: Int = CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE)
+    readBufferSize: Int = CometShuffleBlockIterator.DEFAULT_READ_BUFFER_SIZE,
+    coalescing: Option[Int] = None)
     extends Iterator[ColumnarBatch] {
 
   // One consumer reads this iterator, while task completion may close it from another thread.
@@ -53,31 +54,46 @@ case class NativeBatchDecoderIterator(
   private var batch: Option[ColumnarBatch] = None
   private val validateRemoteFrames = in.isInstanceOf[CometShuffleReadFailureHandler]
   private var remoteDecoderHandle = 0L
+  private var coalescerHandle = 0L
+  private var endOfInput = false
 
   require(
     !validateRemoteFrames || expectedSchema.exists(_ != null),
     "Remote shuffle decoding requires the expected Spark schema")
+  require(!validateRemoteFrames || coalescing.isEmpty, "Batch coalescing is local-shuffle only")
 
   import NativeBatchDecoderIterator._
 
   override def hasNext: Boolean = {
-    synchronized {
-      if (in == null || isClosed) {
-        return false
-      }
-      if (batch.isDefined) {
-        return true
+    try {
+      synchronized {
+        if (in == null || isClosed) {
+          return false
+        }
+        if (batch.isDefined) {
+          return true
+        }
+
+        // Clear ownership before cleanup so a failed close cannot release this batch twice.
+        if (currentBatch != null) {
+          val previous = currentBatch
+          currentBatch = null
+          previous.close()
+        }
       }
 
-      // Clear ownership before cleanup so a failed close cannot release this batch twice.
-      if (currentBatch != null) {
-        val previous = currentBatch
-        currentBatch = null
-        previous.close()
-      }
+      if (coalescing.isDefined) fetchCoalesced() else fetchNext()
+    } catch {
+      // A failed append/import may leave pending native batches. Release them immediately,
+      // while preserving the ordinary reader's existing failure and stream-close behavior.
+      case NonFatal(failure) if coalescing.isDefined =>
+        try close()
+        catch {
+          case NonFatal(cleanupFailure) =>
+            if (cleanupFailure ne failure) failure.addSuppressed(cleanupFailure)
+        }
+        throw failure
     }
-
-    fetchNext()
   }
 
   def next(): ColumnarBatch = {
@@ -163,6 +179,60 @@ case class NativeBatchDecoderIterator(
     }
   }
 
+  /** Keep decoded arrays native until a bounded group is ready for a single FFI export. */
+  private def fetchCoalesced(): Boolean = {
+    var columns = synchronized {
+      if (isClosed) return false
+      if (coalescerHandle == 0L) {
+        coalescerHandle = nativeLib.createShuffleBatchCoalescer(coalescing.get)
+      }
+      nativeLib.peekShuffleBatch(coalescerHandle, endOfInput, tracingEnabled)
+    }
+    while (columns < 0 && !endOfInput) {
+      // As on the ordinary path, transport reads must not prevent task completion from closing
+      // the input. Native state is touched only under the same monitor as close().
+      val block = readNextBlock()
+      synchronized {
+        if (isClosed) return false
+        val startTime = System.nanoTime()
+        try {
+          columns = block match {
+            case Some((fieldCount, dataBuf, bytesToRead)) =>
+              nativeLib.appendShuffleBatch(
+                coalescerHandle,
+                dataBuf,
+                bytesToRead,
+                fieldCount,
+                tracingEnabled)
+            case None =>
+              endOfInput = true
+              nativeLib.peekShuffleBatch(coalescerHandle, true, tracingEnabled)
+          }
+        } finally decodeTime.add(System.nanoTime() - startTime)
+      }
+    }
+    synchronized {
+      if (isClosed) return false
+      if (columns < 0) {
+        close()
+        false
+      } else {
+        val startTime = System.nanoTime()
+        try {
+          batch = nativeUtil.getNextBatch(
+            columns,
+            (arrayAddrs, schemaAddrs) =>
+              nativeLib.takeShuffleBatch(
+                coalescerHandle,
+                arrayAddrs,
+                schemaAddrs,
+                tracingEnabled))
+          batch.isDefined
+        } finally decodeTime.add(System.nanoTime() - startTime)
+      }
+    }
+  }
+
   private def readNextBlock(): Option[(Int, ByteBuffer, Int)] = {
     // read compressed batch size from header
     longBuf.clear()
@@ -229,6 +299,8 @@ case class NativeBatchDecoderIterator(
         batch = None
         val decoderHandle = remoteDecoderHandle
         remoteDecoderHandle = 0L
+        val groupingHandle = coalescerHandle
+        coalescerHandle = 0L
 
         var failure: Throwable = null
         def release(resource: => Unit): Unit = {
@@ -243,6 +315,7 @@ case class NativeBatchDecoderIterator(
         if (previous != null) release(previous.close())
         prefetched.filterNot(_ eq previous).foreach(pending => release(pending.close()))
         if (decoderHandle != 0L) release(nativeLib.releaseRemoteShuffleDecoder(decoderHandle))
+        if (groupingHandle != 0L) release(nativeLib.closeShuffleBatchCoalescer(groupingHandle))
         if (in != null) release(in.close())
         release(resetDataBuf())
         if (failure != null) throw failure
@@ -259,7 +332,7 @@ object NativeBatchDecoderIterator {
     ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE)
   })
 
-  private def resetDataBuf(): Unit = {
+  private[shuffle] def resetDataBuf(): Unit = {
     if (threadLocalDataBuf.get().capacity() > INITIAL_BUFFER_SIZE) {
       threadLocalDataBuf.set(ByteBuffer.allocateDirect(INITIAL_BUFFER_SIZE))
     }
