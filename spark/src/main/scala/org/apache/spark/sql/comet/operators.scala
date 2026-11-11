@@ -917,8 +917,23 @@ abstract class CometNativeExec extends CometExec {
 
   override protected def doPrepare(): Unit = prepareSubqueries(this)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  /** The SQL metrics of this operator. [[metrics]] adds those of the native block it roots. */
+  protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext)
+
+  /**
+   * Whether this operator declares [[CometMetricNode.nativeCpuTimeMetrics]], which native code
+   * reports on the root of a native block. That is the operator holding the block's serialized
+   * plan, except for a native scan that executes on its own, which overrides this.
+   */
+  protected def reportsNativeCpuTime: Boolean = serializedPlanOpt.plan.isDefined
+
+  override final lazy val metrics: Map[String, SQLMetric] =
+    if (reportsNativeCpuTime) {
+      operatorMetrics ++ CometMetricNode.nativeCpuTimeMetrics(sparkContext)
+    } else {
+      operatorMetrics
+    }
 
   private def prepareSubqueries(sparkPlan: SparkPlan): Unit = {
     val runningSubqueries = new ArrayBuffer[ExecSubqueryExpression]
@@ -1645,7 +1660,7 @@ case class CometSortExec(
 
   override def hashCode(): Int = Objects.hashCode(output, sortOrder, child)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
       Map(
         "spill_count" -> SQLMetrics.createMetric(sparkContext, "number of spills"),
@@ -1699,7 +1714,7 @@ case class CometLocalLimitExec(
 
   override def stringArgs: Iterator[Any] = Iterator(limit, child)
 
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override protected def operatorMetrics: Map[String, SQLMetric] = Map.empty
 
   override def equals(obj: Any): Boolean = {
     obj match {
@@ -1843,7 +1858,7 @@ case class CometExpandExec(
   override def hashCode(): Int = Objects.hashCode(output, projections, child)
 
   // TODO: support native Expand metrics
-  override lazy val metrics: Map[String, SQLMetric] = Map.empty
+  override protected def operatorMetrics: Map[String, SQLMetric] = Map.empty
 }
 
 /**
@@ -1922,7 +1937,7 @@ case class CometMergeRowsExec(
       rowIdOrdinal,
       child)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
       Map(
         "output_batches" -> SQLMetrics.createMetric(sparkContext, "number of output batches")) ++
@@ -2041,7 +2056,7 @@ case class CometExplodeExec(
   override def hashCode(): Int =
     Objects.hashCode(output, generator, generatorOutput, outer: java.lang.Boolean, child)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++
       Map(
         "input_batches" -> SQLMetrics.createMetric(sparkContext, "number of input batches"),
@@ -2797,7 +2812,7 @@ abstract class CometBaseAggregateExec
       modes,
       child)
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val baseline = CometMetricNode.baselineMetrics(sparkContext)
     if (groupingExpressions.nonEmpty) {
       baseline ++ CometMetricNode.aggregateMetrics(sparkContext)
@@ -3187,7 +3202,7 @@ case class CometBroadcastNestedLoopJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, joinType, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.joinMetrics(sparkContext)
 }
 
@@ -3482,7 +3497,7 @@ case class CometHashJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, buildSide, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
     if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
       joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
@@ -3646,7 +3661,7 @@ case class CometBroadcastHashJoinExec(
       left,
       right)
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.joinMetrics(sparkContext)
     if (nativeOp.getHashJoin.getDynamicFilterEnabled) {
       joinMetrics ++ CometMetricNode.joinDynamicFilterMetrics(sparkContext)
@@ -3866,7 +3881,7 @@ case class CometSortMergeJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     val joinMetrics = CometMetricNode.sortMergeJoinMetrics(sparkContext)
     if (nativeOp.getSortMergeJoin.getRightKeyReductionEnabled) {
       joinMetrics ++ CometMetricNode.rightKeyReductionMetrics(sparkContext)

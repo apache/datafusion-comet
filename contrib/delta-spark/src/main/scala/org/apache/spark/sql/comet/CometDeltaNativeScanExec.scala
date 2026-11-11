@@ -73,7 +73,8 @@ case class CometDeltaNativeScanExec(
   // bug where a stored helper field desyncs from rewritten filters. Costs one extra file listing
   // per executed instance; correctness over the duplicate driver-side listing.
   //
-  // Forcing invariant: this lazy val is forced by the `metrics` override below, and AQE's UI
+  // Forcing invariant: this lazy val is forced by the `operatorMetrics` override below, which
+  // the `metrics` lazy val reads, and AQE's UI
   // plan-walk calls `.metrics` on every node MID-PLANNING, including while a DPP subquery is
   // still an adaptive placeholder or a partition filter holds an unresolved ScalarSubquery (see
   // `hasUnevaluableSubqueryFilter` below). That's safe ONLY because constructing `scanHelper` is a
@@ -202,6 +203,10 @@ case class CometDeltaNativeScanExec(
 
   def perPartitionFilePaths: Array[Seq[String]] = serializedPartitionData._3
 
+  // Executes itself when it is a native block on its own, serializing its plan then rather than
+  // through `serializedPlanOpt`, so it can be a block's root without a serialized plan.
+  override protected def reportsNativeCpuTime: Boolean = true
+
   override def doExecuteColumnar(): RDD[ColumnarBatch] = {
     val nativeMetrics = CometMetricNode.fromCometPlan(this)
     val serializedPlan = CometExec.serializeNativePlan(nativeOp)
@@ -265,7 +270,7 @@ case class CometDeltaNativeScanExec(
 
   // Forces `scanHelper` (see its doc above for why that -- and reading `.metrics` off it -- is
   // safe even when AQE calls `.metrics` mid-planning against an unresolved DPP/scalar subquery).
-  override lazy val metrics: Map[String, SQLMetric] = {
+  override protected def operatorMetrics: Map[String, SQLMetric] = {
     CometMetricNode.nativeScanMetrics(session.sparkContext) ++
       scanHelper.metrics.filter { case (k, _) => driverMetricKeys.contains(k) }
   }

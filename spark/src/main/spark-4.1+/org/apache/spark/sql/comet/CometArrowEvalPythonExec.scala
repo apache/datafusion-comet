@@ -219,7 +219,7 @@ case class CometArrowEvalPythonExec(
 
   override def producedAttributes: AttributeSet = AttributeSet(resultAttrs)
 
-  override lazy val metrics: Map[String, SQLMetric] =
+  override protected def operatorMetrics: Map[String, SQLMetric] =
     CometMetricNode.baselineMetrics(sparkContext) ++ Map(
       "python_time" -> SQLMetrics
         .createNanoTimingMetric(sparkContext, "time spent in Python UDFs"))

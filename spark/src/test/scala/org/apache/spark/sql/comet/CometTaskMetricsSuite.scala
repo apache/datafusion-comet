@@ -959,6 +959,68 @@ class CometTaskMetricsSuite extends CometTestBase with AdaptiveSparkPlanHelper {
     }
   }
 
+  test("native blocks without a JVM input report native CPU time in task-end events") {
+    // Such a block runs on Comet's Tokio workers while the task thread waits for its batches,
+    // and Spark's executorCpuTime counts only the task thread (#6935).
+    withParquetTable((0 until 100000).map(i => (i % 100, i.toLong, i.toString)), "tbl") {
+      // The sum of each task type's `native CPU time` updates, and the plan, for one query.
+      def run(query: String): (Map[String, Long], SparkPlan) = {
+        val cpuByTaskType = mutable.Map.empty[String, Long].withDefaultValue(0L)
+        val listener = new SparkListener {
+          override def onTaskEnd(taskEnd: SparkListenerTaskEnd): Unit = {
+            val cpu = taskEnd.taskInfo.accumulables
+              .filter(_.name.contains("native CPU time"))
+              .flatMap(_.update)
+              .map(_.asInstanceOf[Long])
+              .sum
+            cpuByTaskType.synchronized { cpuByTaskType(taskEnd.taskType) += cpu }
+          }
+        }
+        spark.sparkContext.listenerBus.waitUntilEmpty()
+        spark.sparkContext.addSparkListener(listener)
+        try {
+          val df = sql(query)
+          df.collect()
+          spark.sparkContext.listenerBus.waitUntilEmpty()
+          (
+            cpuByTaskType.synchronized(cpuByTaskType.toMap).withDefaultValue(0L),
+            df.queryExecution.executedPlan)
+        } finally {
+          spark.sparkContext.removeSparkListener(listener)
+        }
+      }
+
+      // The map side runs the scan and partial aggregate in the native shuffle writer's plan.
+      // The result side's aggregate reads the shuffle on the task thread and reports nothing.
+      val (aggregateCpu, aggregatePlan) = run("SELECT _1, sum(_2), max(_3) FROM tbl GROUP BY _1")
+      val exchange = collectFirst(aggregatePlan) {
+        case native: CometShuffleExchangeExec if native.shuffleType == CometNativeShuffle =>
+          native
+      }.getOrElse(fail(s"Expected a native shuffle exchange:\n${aggregatePlan.treeString}"))
+      assert(aggregateCpu("ShuffleMapTask") > 0L, aggregateCpu)
+      assert(exchange.metrics("native_cpu_time").value == aggregateCpu("ShuffleMapTask"))
+      assert(aggregateCpu("ResultTask") == 0L, aggregateCpu)
+
+      // A block whose output goes to the JVM reports on its root, including a scan on its own,
+      // which serializes its plan when it executes. The other operators in the block report
+      // nothing, and only scans, which can't tell whether they are the root, declare it.
+      Seq("SELECT _1 + 1, upper(_3) FROM tbl WHERE _2 > 10", "SELECT * FROM tbl").foreach {
+        query =>
+          val (cpu, plan) = run(query)
+          val blocks = collect(plan) { case native: CometNativeExec => native }
+          assert(blocks.nonEmpty, s"Expected a native block:\n${plan.treeString}")
+          assert(cpu("ResultTask") > 0L, cpu)
+          assert(blocks.head.metrics("native_cpu_time").value == cpu("ResultTask"))
+          blocks.tail.foreach { native =>
+            native.metrics.get("native_cpu_time").foreach { metric =>
+              assert(native.isInstanceOf[CometNativeScanExec], plan.treeString)
+              assert(metric.value <= 0L, plan.treeString)
+            }
+          }
+      }
+    }
+  }
+
   test("native parquet write reports task-level output metrics") {
     withParquetTable((0 until 5000).map(i => (i, (i + 1).toLong)), "tbl") {
       withTempPath { dir =>
