@@ -176,8 +176,10 @@ things:
 - **Enable CI on your fork.** Your fork has no enabled `Comet CI (fork run)` workflow. Usually
   GitHub Actions was never enabled on the fork, or no branch that includes the fork workflows has
   been pushed to it. GitHub shows this check as failed because it asks you to act. It does not block
-  merging, but the PR tier has not run on this commit anywhere, so a reviewer has no CI result to
-  go on.
+  merging. The check says only that no run of your fork was found for this commit. A pull request
+  opened before the PR tier moved to forks can still have results of the PR tier from here, as
+  [below](#when-the-fork-check-finds-no-run) says, and otherwise a reviewer has no CI result to go
+  on.
 - **No fork CI run for this commit.** The workflow exists but has no run for this commit. Either
   the run has not appeared yet, or the commit was pushed before Actions was enabled.
 
@@ -198,7 +200,9 @@ commit (`git commit --allow-empty`) will do. The check picks up the new run with
 
 A pull request opened before the PR tier moved to forks on 30 October 2026 had the PR tier run here
 for the commits pushed up to then, and those results still show on it. The sweep still adds a
-failed `CI (fork)` check to it, so set up your fork as above before your next push.
+`CI (fork)` check to it. It is the failed **Enable CI on your fork** one if your fork has no
+enabled workflow, and the neutral **No fork CI run for this commit** one if it has, so set up your
+fork as above before your next push.
 
 ## Opting a pull request into a suite the PR tier skips
 
