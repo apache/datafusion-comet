@@ -16,11 +16,10 @@
 // under the License.
 
 pub(crate) mod abs;
-mod ceil;
+mod ceil_floor;
 pub(crate) mod checked_arithmetic;
 mod checked_binary_expr;
 mod div;
-mod floor;
 mod greatest_least;
 pub mod internal;
 pub(crate) mod log;
@@ -35,12 +34,11 @@ mod utils;
 mod wide_decimal_binary_expr;
 
 pub use abs::abs;
-pub use ceil::spark_ceil;
+pub use ceil_floor::{spark_ceil, spark_floor};
 pub use checked_arithmetic::{checked_add, checked_div, checked_mul, checked_sub};
 pub use checked_binary_expr::CheckedBinaryExpr;
 pub use div::spark_decimal_div;
 pub use div::spark_decimal_integral_div;
-pub use floor::spark_floor;
 pub use greatest_least::SparkGreatestLeast;
 pub use internal::*;
 pub use log::spark_log;
