@@ -21,6 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.util.Locale
 
+import scala.annotation.tailrec
 import scala.collection.mutable
 import scala.collection.mutable.ArrayBuffer
 import scala.jdk.CollectionConverters._
@@ -45,10 +46,10 @@ import org.apache.spark.sql.execution.aggregate.{BaseAggregateExec, HashAggregat
 import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanExecBase
 import org.apache.spark.sql.execution.exchange.ReusedExchangeExec
-import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
+import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, BroadcastNestedLoopJoinExec, CartesianProductExec, HashJoin, ShuffledHashJoinExec, SortMergeJoinExec}
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLMetrics}
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, BooleanType, ByteType, DataType, DateType, DecimalType, DoubleType, FloatType, IntegerType, IntegralType, LongType, MapType, ShortType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.unsafe.Platform
 import org.apache.spark.util.SerializableConfiguration
@@ -509,7 +510,7 @@ private[comet] object PlanDataInjector extends Logging {
       // Stage boundaries - stop searching (partition indices won't align after these)
       case _: ShuffleQueryStageExec | _: AQEShuffleReadExec | _: CometShuffleExchangeExec |
           _: CometUnionExec | _: CometTakeOrderedAndProjectExec | _: CometCoalesceExec |
-          _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
+          _: CometCollectMetricsExec | _: ReusedExchangeExec | _: CometSparkToColumnarExec =>
         (Map.empty, Map.empty)
 
       // Continue searching through other operators, combining results from all children
@@ -736,6 +737,17 @@ abstract class CometExec extends CometPlan {
   }
 }
 
+/**
+ * Declares the distribution of the Spark operator that a Comet operator replaces. Without it
+ * AQE's OptimizeSkewInRebalancePartitions can split a skewed partition under an operator that
+ * needs its input clustered, because ValidateRequirements has nothing to reject, and one key then
+ * yields several rows. Mix it into operators that replace a clustering aggregate, window or join.
+ */
+trait CometDelegatesRequiredChildDistribution extends CometExec {
+  override def requiredChildDistribution: Seq[Distribution] =
+    originalPlan.requiredChildDistribution
+}
+
 object CometExec {
   final class InvalidSparkFallbackException(message: String)
       extends IllegalArgumentException(message)
@@ -798,6 +810,7 @@ object CometExec {
   /**
    * Create a CometExecIterator with a pre-serialized native plan. Use this overload when
    * executing the same plan across multiple partitions to avoid serializing the plan repeatedly.
+   * `sqlConf` is captured on the driver; see [[CapturedSQLConf]].
    */
   def getCometIterator(
       inputObjects: Array[Object],
@@ -805,7 +818,8 @@ object CometExec {
       serializedPlan: Array[Byte],
       numParts: Int,
       partitionIdx: Int,
-      outputTypes: Seq[DataType] = Seq.empty): CometExecIterator = {
+      sqlConf: CapturedSQLConf,
+      outputTypes: Seq[DataType]): CometExecIterator = sqlConf.withConf {
     new CometExecIterator(
       newIterId,
       inputObjects,
@@ -1228,8 +1242,9 @@ abstract class CometNativeExec extends CometExec {
         func(plan)
       case _: CometScanExec | _: CometBatchScanExec | _: QueryStageExec | _: AQEShuffleReadExec |
           _: CometShuffleExchangeExec | _: CometUnionExec | _: CometTakeOrderedAndProjectExec |
-          _: CometCoalesceExec | _: ReusedExchangeExec | _: CometBroadcastExchangeExec |
-          _: CometNativeArrowSource | _: CometInMemoryTableScanExec =>
+          _: CometCoalesceExec | _: CometCollectMetricsExec | _: ReusedExchangeExec |
+          _: CometBroadcastExchangeExec | _: CometNativeArrowSource |
+          _: CometInMemoryTableScanExec =>
         func(plan)
       case _: CometPlan =>
         // Other Comet operators, continue to traverse the tree.
@@ -2716,6 +2731,7 @@ object CometSortAggregateExec extends CometBaseAggregate[SortAggregateExec] {
  */
 abstract class CometBaseAggregateExec
     extends CometUnaryExec
+    with CometDelegatesRequiredChildDistribution
     with PartitioningPreservingUnaryExecNode {
 
   def groupingExpressions: Seq[NamedExpression]
@@ -3017,6 +3033,11 @@ trait CometHashJoin {
     }
   }
 
+  // mayReportFalseOrder for a window's input, checked by CometWindowExec before it relies on that
+  // order and by CometExecRule before a window that stays in Spark does.
+  private[apache] def mayReportFalseInputOrder(plan: SparkPlan): Boolean =
+    mayReportFalseOrder(plan, countInPlan = true)
+
   // Whether the order that `plan` reports may be false, because something that feeds it with no
   // sort in between cannot be relied on to keep it. Comet's hash joins report the order of their
   // streamed side, which Spark's own joins keep, but two Comet joins do not always: an outer join
@@ -3273,6 +3294,79 @@ object CometBroadcastNestedLoopJoinExec extends CometOperatorSerde[BroadcastNest
   }
 }
 
+case class CometCartesianProductExec(
+    override val nativeOp: Operator,
+    override val originalPlan: SparkPlan,
+    override val output: Seq[Attribute],
+    override val left: SparkPlan,
+    override val right: SparkPlan,
+    override val serializedPlanOpt: SerializedPlan)
+    extends CometBinaryExec {
+
+  // Inherits Spark's UnknownPartitioning from originalPlan, so exchange planning is unchanged.
+
+  // Each input must stay one partition. Without this, AQE's ValidateRequirements lets
+  // OptimizeSkewInRebalancePartitions split a REBALANCE(1) input after the product went native.
+  override def requiredChildDistribution: Seq[Distribution] = Seq(AllTuples, AllTuples)
+
+  override def withNewChildrenInternal(newLeft: SparkPlan, newRight: SparkPlan): SparkPlan =
+    this.copy(left = newLeft, right = newRight)
+
+  override def stringArgs: Iterator[Any] = Iterator(left, right)
+
+  override def equals(obj: Any): Boolean = {
+    obj match {
+      case other: CometCartesianProductExec =>
+        this.output == other.output &&
+        this.left == other.left &&
+        this.right == other.right &&
+        this.serializedPlanOpt == other.serializedPlanOpt
+      case _ =>
+        false
+    }
+  }
+
+  override def hashCode(): Int = Objects.hashCode(output, left, right)
+
+  override lazy val metrics: Map[String, SQLMetric] =
+    CometMetricNode.joinMetrics(sparkContext)
+}
+
+object CometCartesianProductExec extends CometOperatorSerde[CartesianProductExec] {
+
+  override def enabledConfig: Option[ConfigEntry[Boolean]] =
+    Some(CometConf.COMET_EXEC_CARTESIAN_PRODUCT_ENABLED)
+
+  override def getSupportLevel(op: CartesianProductExec): SupportLevel = {
+    // CartesianProductExec carries its own condition, and CrossJoinExec has no post-product filter.
+    if (op.condition.isDefined) {
+      Unsupported(Some("CartesianProduct with a join condition is not supported natively"))
+    } else if (op.left.outputPartitioning.numPartitions != 1 ||
+      op.right.outputPartitioning.numPartitions != 1) {
+      // A native plan runs per partition and cannot add an exchange here, so a cross product is
+      // only correct when both inputs are a single partition.
+      Unsupported(
+        Some(
+          "Native CartesianProduct requires single-partition inputs (a multi-partition " +
+            "cross product cannot be expressed per-partition)"))
+    } else {
+      Compatible(None)
+    }
+  }
+
+  override def convert(
+      op: CartesianProductExec,
+      builder: Operator.Builder,
+      childOp: Operator*): Option[Operator] = {
+    val joinBuilder = OperatorOuterClass.CrossJoin.newBuilder()
+    Some(builder.setCrossJoin(joinBuilder).build())
+  }
+
+  override def createExec(nativeOp: Operator, op: CartesianProductExec): CometNativeExec = {
+    CometCartesianProductExec(nativeOp, op, op.output, op.left, op.right, SerializedPlan(None))
+  }
+}
+
 object CometBroadcastHashJoinExec extends CometOperatorSerde[HashJoin] with CometHashJoin {
 
   override def enabledConfig: Option[ConfigEntry[Boolean]] =
@@ -3343,7 +3437,8 @@ case class CometHashJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3565,6 +3660,26 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
   override def enabledConfig: Option[ConfigEntry[Boolean]] = Some(
     CometConf.COMET_EXEC_SORT_MERGE_JOIN_ENABLED)
 
+  // Scope reduction to Comet shuffle inputs covered by the performance and memory controls.
+  @tailrec
+  private def readsCometShuffle(plan: SparkPlan): Boolean = plan match {
+    case _: CometShuffleExchangeExec => true
+    case stage: ShuffleQueryStageExec => stage.shuffle.isInstanceOf[CometShuffleExchangeExec]
+    case read: AQEShuffleReadExec => readsCometShuffle(read.child)
+    case ReusedExchangeExec(_, child) => readsCometShuffle(child)
+    case sink: CometSinkPlaceHolder => readsCometShuffle(sink.child)
+    case _ => false
+  }
+
+  // A sort on one integer column uses DataFusion's primitive merge cursor.
+  private def canReduceRightKey(join: SortMergeJoinExec): Boolean =
+    (join.right, join.rightKeys) match {
+      case (sort: CometSortExec, Seq(key: Attribute)) =>
+        key.dataType.isInstanceOf[IntegralType] && sort.output.size == 1 &&
+        key.semanticEquals(sort.output.head) && readsCometShuffle(sort.child)
+      case _ => false
+    }
+
   override def convert(
       join: SortMergeJoinExec,
       builder: Operator.Builder,
@@ -3657,6 +3772,9 @@ object CometSortMergeJoinExec extends CometOperatorSerde[SortMergeJoinExec] {
       val joinBuilder = OperatorOuterClass.SortMergeJoin
         .newBuilder()
         .setJoinType(joinType)
+        .setRightKeyReductionEnabled(
+          CometConf.COMET_EXEC_SORT_MERGE_JOIN_RIGHT_KEY_REDUCTION_ENABLED.get(join.conf) &&
+            join.joinType == LeftSemi && join.condition.isEmpty && canReduceRightKey(join))
         .addAllSortOptions(sortOptions.map(_.get).asJava)
         .addAllLeftJoinKeys(leftKeys.map(_.get).asJava)
         .addAllRightJoinKeys(rightKeys.map(_.get).asJava)
@@ -3709,7 +3827,8 @@ case class CometSortMergeJoinExec(
     override val left: SparkPlan,
     override val right: SparkPlan,
     override val serializedPlanOpt: SerializedPlan)
-    extends CometBinaryExec {
+    extends CometBinaryExec
+    with CometDelegatesRequiredChildDistribution {
 
   override def outputPartitioning: Partitioning = joinType match {
     case _: InnerLike =>
@@ -3747,8 +3866,14 @@ case class CometSortMergeJoinExec(
   override def hashCode(): Int =
     Objects.hashCode(output, leftKeys, rightKeys, joinType, condition, left, right)
 
-  override lazy val metrics: Map[String, SQLMetric] =
-    CometMetricNode.sortMergeJoinMetrics(sparkContext)
+  override lazy val metrics: Map[String, SQLMetric] = {
+    val joinMetrics = CometMetricNode.sortMergeJoinMetrics(sparkContext)
+    if (nativeOp.getSortMergeJoin.getRightKeyReductionEnabled) {
+      joinMetrics ++ CometMetricNode.rightKeyReductionMetrics(sparkContext)
+    } else {
+      joinMetrics
+    }
+  }
 }
 
 object CometScanWrapper extends CometSink[SparkPlan] {
