@@ -802,8 +802,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     hadoopConf.set("fs.s3a.bucket.target.path.style.access", "true")
     // Bucket `target.other` plus suffix `endpoint`, not bucket `target` plus `other.endpoint`.
     hadoopConf.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
-    hadoopConf.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
-    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "SSE-KMS")
+    // DSSE-KMS has no iceberg-rust equivalent, so it falls back for the bucket it applies to.
+    hadoopConf.set("fs.s3a.bucket.target.other.encryption.algorithm", "DSSE-KMS")
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "DSSE-KMS")
 
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
@@ -811,7 +812,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
 
     val longerBucket = new Configuration(false)
     longerBucket.set("fs.s3a.bucket.target.other.endpoint", "https://other.example")
-    longerBucket.set("fs.s3a.bucket.target.other.encryption.algorithm", "SSE-KMS")
+    longerBucket.set("fs.s3a.bucket.target.other.encryption.algorithm", "DSSE-KMS")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(longerBucket, Some("target.other")) ==
         Seq("fs.s3a.bucket.target.other.encryption.algorithm"))
@@ -851,7 +852,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
 
-    hadoopConf.set("fs.s3a.encryption.algorithm", "SSE-KMS")
+    hadoopConf.set("fs.s3a.encryption.algorithm", "DSSE-KMS")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
         "fs.s3a.encryption.algorithm"))
@@ -939,6 +940,229 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     }
   }
 
+  test("S3A server-side encryption translates to the s3.sse.* keys iceberg-rust reads") {
+    def translate(settings: (String, String)*): Option[Map[String, String]] = {
+      val hadoopConf = new Configuration(false)
+      settings.foreach { case (k, v) => hadoopConf.set(k, v) }
+      CometIcebergNativeWrite.hadoopS3EncryptionProperties(hadoopConf, Some("target"))
+    }
+    val kmsKey = "arn:aws:kms:us-east-1:111122223333:key/probe"
+    // A base64 AES-256 key of zero bytes and the base64 MD5 of those bytes.
+    val customerKey = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    val customerKeyMd5 = "cLyPS3KoaSFGi/joRB3OUQ=="
+
+    assert(translate() == Some(Map.empty))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> " aes256 ") == Some(Map("s3.sse.type" -> "s3")))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> "sse-kms") == Some(Map("s3.sse.type" -> "kms")))
+    assert(
+      translate("fs.s3a.encryption.algorithm" -> "SSE-KMS", "fs.s3a.encryption.key" -> kmsKey) ==
+        Some(Map("s3.sse.type" -> "kms", "s3.sse.key" -> kmsKey)))
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-C",
+        "fs.s3a.encryption.key" -> customerKey) == Some(
+        Map(
+          "s3.sse.type" -> "custom",
+          "s3.sse.key" -> customerKey,
+          "s3.sse.md5" -> customerKeyMd5)))
+    // The deprecated names, and the data bucket's setting over the global one.
+    assert(
+      translate("fs.s3a.server-side-encryption-algorithm" -> "AES256") == Some(
+        Map("s3.sse.type" -> "s3")))
+    assert(
+      translate(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.server-side-encryption-algorithm" -> "AES256") == Some(
+        Map("s3.sse.type" -> "s3")))
+    assert(translate("fs.s3a.bucket.other.encryption.algorithm" -> "DSSE-KMS") == Some(Map.empty))
+    // S3A ignores a key without an algorithm.
+    assert(translate("fs.s3a.encryption.key" -> kmsKey) == Some(Map.empty))
+
+    // Encryption iceberg-rust cannot apply, settings that fail the S3A write, and a credential
+    // store, which can supply the values in place of the configuration.
+    val store = "jceks://file/tmp/s3a.jceks"
+    Seq(
+      Seq("fs.s3a.encryption.algorithm" -> "DSSE-KMS"),
+      Seq("fs.s3a.encryption.algorithm" -> "CSE-KMS"),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-S3"),
+      Seq("fs.s3a.encryption.algorithm" -> "AES256", "fs.s3a.encryption.key" -> kmsKey),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-C"),
+      Seq("fs.s3a.encryption.algorithm" -> "SSE-C", "fs.s3a.encryption.key" -> "not base64!"),
+      Seq(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "hadoop.security.credential.provider.path" -> store),
+      Seq(
+        "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+        "fs.s3a.bucket.target.security.credential.provider.path" -> store)).foreach { settings =>
+      assert(translate(settings: _*).isEmpty, settings)
+    }
+  }
+
+  test("translated S3A encryption settings do not block a native write") {
+    val hadoopConf = new Configuration(false)
+    hadoopConf.set("fs.s3a.encryption.algorithm", "SSE-KMS")
+    hadoopConf.set("fs.s3a.bucket.target.encryption.key", "arn:aws:kms:us-east-1:1:key/k")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")).isEmpty)
+
+    // Client-side encryption for the data bucket makes every encryption setting fall back.
+    hadoopConf.set("fs.s3a.bucket.target.encryption.algorithm", "CSE-KMS")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.bucket.target.encryption.algorithm",
+        "fs.s3a.bucket.target.encryption.key",
+        "fs.s3a.encryption.algorithm"))
+  }
+
+  test("S3A credential settings are admitted when the S3A provider list signs the write") {
+    val hadoopConf = new Configuration(false)
+    Seq(
+      "fs.s3a.aws.credentials.provider" ->
+        ("software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider," +
+          "software.amazon.awssdk.auth.credentials.WebIdentityTokenFileCredentialsProvider"),
+      "fs.s3a.assumed.role.arn" -> "arn:aws:iam::111122223333:role/probe",
+      "fs.s3a.assumed.role.session.duration" -> "30m",
+      "fs.s3a.security.credential.provider.path" -> "jceks://file/tmp/s3a.jceks",
+      "fs.s3a.bucket.target.assumed.role.arn" -> "arn:aws:iam::111122223333:role/target")
+      .foreach { case (k, v) => hadoopConf.set(k, v) }
+    assert(
+      CometIcebergNativeWrite.usesS3ACredentialAdapter(hadoopConf, Map.empty, Some("target")))
+    assert(
+      CometIcebergNativeWrite
+        .unsupportedHadoopS3Settings(hadoopConf, Some("target"), s3aCredentialAdapter = true)
+        .isEmpty)
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(hadoopConf, Some("target")) == Seq(
+        "fs.s3a.assumed.role.arn",
+        "fs.s3a.assumed.role.session.duration",
+        "fs.s3a.aws.credentials.provider",
+        "fs.s3a.bucket.target.assumed.role.arn",
+        "fs.s3a.security.credential.provider.path"))
+
+    // The adapter refuses S3A delegation tokens, so they still fall back.
+    hadoopConf.set(
+      "fs.s3a.delegation.token.binding",
+      "org.apache.hadoop.fs.s3a.auth.delegation.SessionTokenBinding")
+    assert(
+      CometIcebergNativeWrite.unsupportedHadoopS3Settings(
+        hadoopConf,
+        Some("target"),
+        s3aCredentialAdapter = true) == Seq("fs.s3a.delegation.token.binding"))
+  }
+
+  test("the S3A credential adapter needs an explicit provider list and no Comet provider class") {
+    val simple = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    def uses(settings: (String, String)*)(fileIOProperties: (String, String)*): Boolean = {
+      val hadoopConf = new Configuration(false)
+      settings.foreach { case (k, v) => hadoopConf.set(k, v) }
+      CometIcebergNativeWrite.usesS3ACredentialAdapter(
+        hadoopConf,
+        fileIOProperties.toMap,
+        Some("target"))
+    }
+
+    assert(uses("fs.s3a.aws.credentials.provider" -> simple)())
+    // The data bucket's own list counts, another bucket's does not.
+    assert(uses("fs.s3a.bucket.target.aws.credentials.provider" -> simple)())
+    assert(!uses("fs.s3a.bucket.other.aws.credentials.provider" -> simple)())
+    // An empty list for the data bucket leaves S3A's default providers, which the adapter does
+    // not stand in for, so the write keeps falling back.
+    assert(
+      !uses(
+        "fs.s3a.aws.credentials.provider" -> simple,
+        "fs.s3a.bucket.target.aws.credentials.provider" -> "")())
+    // The adapter cannot serve anonymous access.
+    assert(
+      !uses("fs.s3a.aws.credentials.provider" ->
+        "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider")())
+    // A Comet provider class in the FileIO properties keeps its precedence.
+    assert(
+      !uses("fs.s3a.aws.credentials.provider" -> simple)(
+        "s3.comet.credential.provider.class" -> "com.example.Provider"))
+    assert(!uses()())
+
+    // Hadoop's built-in default list is not a setting.
+    val coreDefault = new Configuration(false)
+    coreDefault.addResource(
+      new java.io.ByteArrayInputStream(s"""<configuration>
+           |  <property><name>fs.s3a.aws.credentials.provider</name><value>$simple</value>
+           |  </property>
+           |</configuration>""".stripMargin.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+      "core-default.xml")
+    assert(coreDefault.get("fs.s3a.aws.credentials.provider") == simple)
+    assert(
+      !CometIcebergNativeWrite.usesS3ACredentialAdapter(coreDefault, Map.empty, Some("target")))
+  }
+
+  test("the write proto signs through the S3A adapter and carries the translated encryption") {
+    val provider = "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider"
+    val kmsKey = "arn:aws:kms:us-east-1:111122223333:key/probe"
+    // Set before the catalog initializes its FileIO, which keeps the values it saw then.
+    withSQLConf(
+      "fs.s3a.aws.credentials.provider" -> provider,
+      "fs.s3a.connection.maximum" -> "64",
+      "fs.s3a.encryption.algorithm" -> "SSE-KMS",
+      "fs.s3a.encryption.key" -> kmsKey,
+      CometConf.COMET_EXEC_LOCAL_TABLE_SCAN_ENABLED.key -> "true") {
+      withDetectionCatalog { _ =>
+        createTable(
+          "s3a_adapter",
+          partitionSpec = "",
+          properties = Some("'write.data.path'='s3a://probe-bucket/iceberg/db/s3a_adapter'"))
+        // Planning only: inspect the native proto without issuing any S3 requests.
+        val insert = spark.sessionState.sqlParser.parsePlan(
+          s"INSERT INTO $catalog.$ns.s3a_adapter VALUES (1, 'us', 1.0)")
+        val plan =
+          spark.sessionState.executePlan(insert, CommandExecutionMode.SKIP).executedPlan
+        val cometWrite = findCometWriteExec(plan)
+          .getOrElse(fail(s"expected CometIcebergWriteExec in:\n$plan"))
+        val properties = cometWrite.nativeOp.getIcebergWrite.getCommon.getCatalogPropertiesMap
+        assert(
+          properties.get("s3.comet.credential.provider.class") ==
+            CometIcebergNativeWrite.HadoopS3ACredentialAdapterClass,
+          properties)
+        // The adapter reads these on the executor, with the catalog's hadoop.* overrides.
+        assert(properties.get("fs.s3a.aws.credentials.provider") == provider, properties)
+        assert(properties.get("fs.s3a.connection.maximum") == "64", properties)
+        assert(properties.get("s3.sse.type") == "kms", properties)
+        assert(properties.get("s3.sse.key") == kmsKey, properties)
+      }
+    }
+  }
+
+  test("fall-back: an S3A provider list beside a Comet credential provider class") {
+    withTempIcebergDir { warehouseDir =>
+      val providerCat = "s3a_provider_list_cat"
+      withSQLConf(
+        "fs.s3a.aws.credentials.provider" ->
+          "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
+        s"spark.sql.catalog.$providerCat" -> "org.apache.iceberg.spark.SparkCatalog",
+        s"spark.sql.catalog.$providerCat.type" -> "hadoop",
+        s"spark.sql.catalog.$providerCat.warehouse" -> warehouseDir.getAbsolutePath,
+        s"spark.sql.catalog.$providerCat.s3.comet.credential.provider.class" ->
+          classOf[org.apache.comet.cloud.s3.MinioCometS3CredentialProvider].getName) {
+        spark.sql(s"""
+          CREATE TABLE $providerCat.$ns.provider_list (id INT, region STRING, amount DOUBLE)
+          USING iceberg
+          TBLPROPERTIES ('write.data.path'='s3a://probe-bucket/iceberg/db/provider_list')
+        """)
+        val writeExec = planInsertWriteExec(s"$providerCat.$ns.provider_list")
+        assertUnsupportedContains(
+          writeExec,
+          "provider_list",
+          "unsupported Hadoop S3A setting: fs.s3a.aws.credentials.provider")
+      }
+    }
+  }
+
+  test("the S3A credential adapter the write proto names is Comet's adapter class") {
+    assert(
+      classOf[org.apache.comet.cloud.s3.HadoopS3ACredentialProviderAdapter].getName ==
+        CometIcebergNativeWrite.HadoopS3ACredentialAdapterClass)
+  }
+
   test("Hadoop S3A built-in defaults are ignored but custom resources are effective") {
     def xml(key: String, value: String): java.io.ByteArrayInputStream =
       new java.io.ByteArrayInputStream(s"""<configuration>
@@ -948,23 +1172,23 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
     val key = "fs.s3a.encryption.algorithm"
 
     val coreDefaultOnly = new Configuration(false)
-    coreDefaultOnly.addResource(xml(key, "SSE-KMS"), "core-default.xml")
-    assert(coreDefaultOnly.get(key) == "SSE-KMS")
+    coreDefaultOnly.addResource(xml(key, "DSSE-KMS"), "core-default.xml")
+    assert(coreDefaultOnly.get(key) == "DSSE-KMS")
     assert(
       CometIcebergNativeWrite
         .unsupportedHadoopS3Settings(coreDefaultOnly, Some("target"))
         .isEmpty)
 
     val customDefault = new Configuration(false)
-    customDefault.addResource(xml(key, "SSE-KMS"), "tenant-default.xml")
-    assert(customDefault.get(key) == "SSE-KMS")
+    customDefault.addResource(xml(key, "DSSE-KMS"), "tenant-default.xml")
+    assert(customDefault.get(key) == "DSSE-KMS")
     assert(
       CometIcebergNativeWrite.unsupportedHadoopS3Settings(customDefault, Some("target")) == Seq(
         key))
 
     val site = new Configuration(false)
-    site.addResource(xml(key, "SSE-KMS"), "probe-site.xml")
-    assert(site.get(key) == "SSE-KMS")
+    site.addResource(xml(key, "DSSE-KMS"), "probe-site.xml")
+    assert(site.get(key) == "DSSE-KMS")
     assert(CometIcebergNativeWrite.unsupportedHadoopS3Settings(site, Some("target")) == Seq(key))
 
     coreDefaultOnly.set(key, "SSE-S3")
@@ -981,7 +1205,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         s"spark.sql.catalog.$catalogWithOverride" -> "org.apache.iceberg.spark.SparkCatalog",
         s"spark.sql.catalog.$catalogWithOverride.type" -> "hadoop",
         s"spark.sql.catalog.$catalogWithOverride.warehouse" -> warehouseDir.getAbsolutePath,
-        s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "SSE-KMS") {
+        s"spark.sql.catalog.$catalogWithOverride.hadoop.$hadoopKey" -> "DSSE-KMS") {
         spark.sql(s"""
           CREATE TABLE $catalogWithOverride.$ns.catalog_hadoop_override (
             id INT,
@@ -1006,7 +1230,7 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
           val fileIOConf = IcebergReflection
             .getFileIOHadoopConf(table)
             .getOrElse(fail("FileIO did not expose its Hadoop configuration"))
-          assert(fileIOConf.get(hadoopKey) == "SSE-KMS")
+          assert(fileIOConf.get(hadoopKey) == "DSSE-KMS")
           assertUnsupportedContains(
             writeExec,
             "catalog_hadoop_override",
@@ -1508,6 +1732,9 @@ class CometIcebergWriteDetectionSuite extends CometTestBase with CometIcebergTes
         assert(props.get("s3.endpoint") == "http://localhost:9000", props)
         assert(props.get("s3.access-key-id") == "probe-access-key", props)
         assert(props.get("s3.path-style-access") == "true", props)
+        // Without an S3A provider list the native writer keeps its own credential chain.
+        assert(!props.containsKey("s3.comet.credential.provider.class"), props)
+        assert(!props.containsKey("fs.s3a.access.key"), props)
         // The exec's string rendering must never fall through to the protobuf's toString:
         // Spark's argString redaction only covers Scala Maps, so the property bag -- now
         // carrying credential-shaped values like the access key above -- would land verbatim

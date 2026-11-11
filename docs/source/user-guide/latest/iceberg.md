@@ -542,7 +542,7 @@ A write is eligible only when ALL of the following hold:
 | `write.target-file-size-bytes`                                                                                                              | any value (the two writers can choose different roll points; see accepted divergences)                                                                                                                                                                                                                                                                                                                                                                                          |
 | data location URI scheme                                                                                                                    | `file`, `memory`, `s3`, `s3a`, `gs`, matched case-sensitively (`S3://` falls back). `s3`, `s3a` and `gs` need a bucket in the authority (`s3://bucket/...`), so a hostless form such as `s3:/bucket/key` falls back. `gs` only when the `FileIO` opening the data location is a `GCSFileIO`; see below                                                                                                                                                                          |
 | resolved `table.locationProvider()`                                                                                                         | Iceberg's built-in `DefaultLocationProvider`                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, plus the ignored settings listed below, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                                                    |
+| Hadoop S3A settings for an `s3` / `s3a` data location                                                                                       | `fs.s3a.access.key`, `secret.key`, `session.token`, `endpoint`, `endpoint.region`, and `path.style.access`, plus the ignored, encryption and credential settings described below, including their `fs.s3a.bucket.<data-bucket>.*` forms; any other effective `fs.s3a.*` setting falls back                                                                                                                                                                                      |
 | Iceberg `FileIO` S3 settings for an `s3` / `s3a` data location                                                                              | the S3 endpoint, region, static/session credentials, path-style, SSE (`none`, `s3`, `kms`, or `custom`; not `dsse-kms`), assume-role, anonymous/config-chain settings parsed by the pinned iceberg-rust version, plus Comet's credential-provider class and built-in web-identity properties. When a custom provider is configured, its vendor-owned `s3.*` / `client.*` properties are also forwarded; unsupported Iceberg-defined S3 settings still fall back                 |
 | partition spec                                                                                                                              | any, except a `void` field whose source column was dropped beside a live field (see below)                                                                                                                                                                                                                                                                                                                                                                                      |
 | column types                                                                                                                                | any except `uuid` (Spark plans it as a string; no Arrow cast reaches `fixed(16)`) and the v3 types `variant`, `unknown`, `timestamp_ns`, `geometry` and `geography`                                                                                                                                                                                                                                                                                                             |
@@ -600,8 +600,28 @@ Spark's session-wide vectored-read settings, `readahead.range`, `experimental.in
 sets `committer.name` and `committer.magic.enabled` itself when `spark-hadoop-cloud` is on the
 classpath. The data bucket's per-bucket `fs.s3a.bucket.<data-bucket>.<name>` forms of these
 settings are ignored too. Settings that can change a request still fall back: endpoint and region
-selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers,
-encryption, access points and credentials. On the `FileIO` side, the multipart, staging-directory,
+selection, SSL, proxies, signing, requester pays, ACLs, storage class, checksums, headers and
+access points.
+
+S3A server-side encryption is translated into iceberg-rust's `s3.sse.*` settings, with S3A's own
+precedence: the data bucket's `fs.s3a.bucket.<data-bucket>.*` setting wins over the global one, and
+`encryption.algorithm` and `encryption.key` win over the older `server-side-encryption-algorithm`
+and `server-side-encryption.key`. SSE-S3 (`AES256`), SSE-KMS (with or without a key) and SSE-C are
+supported. DSSE-KMS and client-side encryption fall back, and so do encryption settings when a
+Hadoop credential store (`hadoop.security.credential.provider.path` or
+`fs.s3a.security.credential.provider.path`) is configured, because the store can supply the values
+instead of the configuration.
+
+When `aws.credentials.provider` names the S3A credential providers explicitly, iceberg-java's
+writer signs with exactly that list, so the native writer takes its credentials from the same list
+through `HadoopS3ACredentialProviderAdapter`, which runs S3A's own provider factory on the
+executor (see [S3 credential providers](s3-credential-providers.md)). The provider list and the
+assumed-role and credential-store settings it reads are then admitted. This applies only when the
+catalog names no `s3.comet.credential.provider.class` of its own. A list that names an anonymous
+provider, and S3A delegation tokens, still fall back. Without an explicit list, the native writer
+uses its own credential chain, as for a read.
+
+On the `FileIO` side, the multipart, staging-directory,
 retry, delete-batching and client-preload settings are ignored, and so is `s3.delete-enabled=true`.
 `s3.delete-enabled=false` falls back, because a failed native write task deletes the files it
 wrote, which `S3FileIO` keeps when deletes are disabled. Unknown explicit

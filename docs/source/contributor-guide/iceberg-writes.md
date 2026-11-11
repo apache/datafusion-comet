@@ -344,8 +344,17 @@ deployments set cluster-wide (Spark seeds the vectored-read and `downgrade.synca
 settings into every session, and Spark 4.1 sets two of the committer keys itself), plus
 `fs.s3a.region`, which no hadoop-aws release reads. `fs.s3a.impl` is ignored only when it names
 `S3AFileSystem`. A suffix belongs on that list only if it cannot change the written object, where it
-is written or who writes it. Settings that can, such as encryption, ACLs, storage class, signing and
-the credentials provider, must keep falling back. `IgnoredS3FileIOProperties` does the same for
+is written or who writes it. Settings that can, such as ACLs, storage class and signing, must keep
+falling back. Encryption and the credential settings are admitted only where the write proto
+reproduces them. `hadoopS3EncryptionProperties` translates S3A's server-side encryption into
+`s3.sse.*` with S3A's precedence, and returns `None`, which keeps the encryption keys unsupported,
+for anything iceberg-rust cannot apply. `usesS3ACredentialAdapter` decides when the proto names
+`HadoopS3ACredentialProviderAdapter` as `s3.comet.credential.provider.class`: when the FileIO's
+Hadoop configuration sets `fs.s3a.aws.credentials.provider` explicitly and the FileIO properties
+name no provider class of their own. The adapter then runs that same S3A list on the executor, and
+`s3aCredentialAdapterProperties` forwards the explicit `fs.s3a.*` settings it reads. The gate and
+`buildIcebergWriteProto` call the same functions on the same configuration, so they cannot
+disagree. On the FileIO side, `IgnoredS3FileIOProperties` ignores
 `S3FileIO`'s multipart, staging-directory, retry, delete-batching and client-preload settings.
 `s3.delete-enabled` is admitted only when it is `true`, because a failed native write task deletes
 its files, which `S3FileIO` keeps when deletes are disabled. Keep those
