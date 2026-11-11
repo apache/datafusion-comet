@@ -226,10 +226,10 @@ cd native && cargo update && cargo check --all-targets --locked
 cd ../contrib/delta/native && cargo update && cargo check --all-targets --locked
 ```
 
-Dependabot already opens weekly PRs for `native/`, but it ignores major `arrow*`, `parquet` and `datafusion*` bumps,
-which are handled manually, and it does not cover the contrib crates or transitive dependencies that `cargo update`
-moves within their semver range. It also does not move git-pinned dependencies such as `iceberg-rust`, whose `rev` in
-`native/Cargo.toml` needs a deliberate bump.
+Dependabot already opens weekly PRs for `native/`, but it does not cover the contrib crates or the transitive
+dependencies that `cargo update` moves within their semver range. This refresh does not bump the major versions of
+`arrow*`, `parquet` and `datafusion*`, or git-pinned dependencies such as `iceberg-rust`, whose `rev` is in
+`native/Cargo.toml`. Those are upgrades that are planned and tested on their own, so leave them as they are.
 
 List what moved in the PR description (`git diff` of `Cargo.lock` shows the version changes). A dependency refresh
 can change the build on every platform and what the Spark and Iceberg suites exercise, so apply the labels that opt
