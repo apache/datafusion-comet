@@ -30,12 +30,12 @@ INSERT INTO test_array_sort VALUES
   (NULL)
 
 -- descending comparator
-query
+query expect_dispatch(array_sort)
 SELECT array_sort(a, (l, r) -> CASE WHEN l < r THEN 1 WHEN l > r THEN -1 ELSE 0 END)
 FROM test_array_sort
 
 -- ascending comparator
-query
+query expect_dispatch(array_sort)
 SELECT array_sort(a, (l, r) -> CASE WHEN l < r THEN -1 WHEN l > r THEN 1 ELSE 0 END)
 FROM test_array_sort
 

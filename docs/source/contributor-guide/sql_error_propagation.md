@@ -290,7 +290,7 @@ JVM exception it must surface as. It detects the `SparkErrorWithContext` type an
 ```rust
 // native/jni-bridge/src/errors.rs
 
-fn jvm_exception<'a>(error: &'a CometError, backtrace: Option<&str>) -> JvmException<'a> {
+fn jvm_exception(error: &CometError) -> JvmException<'_> {
     match error {
         CometError::DataFusion {
             source: DataFusionError::External(e), ..
@@ -405,8 +405,8 @@ def convertToSparkException(e: CometQueryExecutionException): Throwable = {
 
 ### `ShimSparkErrorConverter` calls the real Spark API
 
-Because Spark's `QueryExecutionErrors` API changes between Spark versions (3.4, 3.5, and the 4.x line),
-there is a separate implementation per branch (in `spark-3.4/`, `spark-3.5/`, and `spark-4.x/`, which is
+Because Spark's `QueryExecutionErrors` API changes between Spark versions (3.5 and the 4.x line),
+there is a separate implementation per branch (in `spark-3.5/` and `spark-4.x/`, which is
 shared by Spark 4.0, 4.1, and 4.2).
 
 ![Shim pattern for per-version Spark API bridging](./shim_pattern.svg)

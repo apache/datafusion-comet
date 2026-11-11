@@ -252,7 +252,8 @@ object CometJsonToStructs extends CometCodegenDispatch[JsonToStructs] with Nativ
 
   private def isSupportedSchema(dt: DataType): Boolean = dt match {
     case StructType(fields) =>
-      fields.nonEmpty && fields.forall(f => isSupportedSchema(f.dataType))
+      fields.nonEmpty && !DataTypeSupport.hasDuplicateFieldNames(fields) &&
+      fields.forall(f => isSupportedSchema(f.dataType))
     case DataTypes.IntegerType | DataTypes.LongType | DataTypes.FloatType | DataTypes.DoubleType |
         DataTypes.BooleanType | DataTypes.StringType =>
       true
