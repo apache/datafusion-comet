@@ -2648,9 +2648,14 @@ mod tests {
         assert!(parse_string_to_decimal(&s38, 38, 0, false, false)
             .unwrap()
             .is_some());
-        // 39-digit integral overflows i128, so returns the invalid_decimal_cast error.
+        // 39 integral digits are over Spark's limit, which rejects the string before the digits
+        // could overflow an i128.
         let s39 = "9".repeat(39);
-        assert!(parse_string_to_decimal(&s39, 38, 0, false, false).is_err());
+        let err = parse_string_to_decimal(&s39, 38, 0, false, false).unwrap_err();
+        assert!(
+            err.to_string().contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+            "{err}"
+        );
         // Very long fractional part now returns Err via the invalid_decimal_cast path instead
         // of panicking on 10_i128.pow(fractional_scale).
         let over_long = format!("0.{}", "0".repeat(40));
@@ -3168,22 +3173,11 @@ mod tests {
 
     /// `exceeds_integral_digit_limit` settles most strings from an upper bound on their integral
     /// digits and counts the digits only for the rest. The bound must never hide a string that is
-    /// over the limit, so compare the function with a count of the digits for strings of every
-    /// shape around the limit: all zeros, leading zeros, and none, before and after the point,
-    /// with exponents on both sides of it and near the ends of the int range.
+    /// over the limit, so compare the function with the count it stands in for, for strings of
+    /// every shape around the limit: all zeros, leading zeros, and none, before and after the
+    /// point, with exponents on both sides of it and near the ends of the int range.
     #[test]
     fn test_integral_digit_limit_bound_agrees_with_the_digit_count() {
-        // The integral digits are `precision - scale` of the parsed `BigDecimal`.
-        let reference = |integral: &str, fractional: &str, scale: i32, zero_any_exponent: bool| {
-            let digits = format!("{integral}{fractional}")
-                .trim_start_matches('0')
-                .len();
-            if digits == 0 {
-                !zero_any_exponent && 1i32.wrapping_sub(scale) > 38
-            } else {
-                digits as i64 - scale as i64 > 38
-            }
-        };
         let shapes = |len: usize| -> Vec<String> {
             let mut shapes = vec!["0".repeat(len)];
             if len > 0 {
@@ -3205,8 +3199,12 @@ mod tests {
                     for integral in shapes(integral_len) {
                         for fractional in shapes(fractional_len) {
                             for zero_any_exponent in [false, true] {
-                                let expected =
-                                    reference(&integral, &fractional, scale, zero_any_exponent);
+                                let expected = counted_digits_exceed_integral_digit_limit(
+                                    integral.as_bytes(),
+                                    fractional.as_bytes(),
+                                    scale,
+                                    zero_any_exponent,
+                                );
                                 let actual = exceeds_integral_digit_limit(
                                     integral.as_bytes(),
                                     fractional.as_bytes(),
@@ -3236,10 +3234,13 @@ mod tests {
         );
     }
 
-    /// The limit reaches both decimal widths from `SparkCastOptions`: NULL for a string over it in
-    /// legacy and try mode and NUMERIC_OUT_OF_SUPPORTED_RANGE under ANSI, unless
-    /// `decimal_skip_integral_digit_limit` is set. Each string is its own array because ANSI mode
-    /// stops at the first row that fails.
+    /// The limit reaches both decimal widths from `SparkCastOptions`, and an error becomes NULL in
+    /// legacy and try mode: a string over the limit raises NUMERIC_OUT_OF_SUPPORTED_RANGE under
+    /// ANSI, and with `decimal_skip_integral_digit_limit` a string too large for the target type
+    /// raises NUMERIC_VALUE_OUT_OF_RANGE. Which strings the parser rejects is covered by
+    /// `test_parse_string_to_decimal_integral_digit_limit` and its skip variant, so one string
+    /// stands for each class here. It is its own array because ANSI mode stops at the first row
+    /// that fails.
     #[test]
     fn test_cast_string_to_decimal_integral_digit_limit() -> DataFusionResult<()> {
         use arrow::array::AsArray;
@@ -3265,57 +3266,27 @@ mod tests {
             .flatten())
         };
 
+        // A string over the limit, and one the setting lets through that is too large for the target.
+        let over_the_limit = "6E+38".to_string();
+        let too_large = format!("1{}", "0".repeat(38));
         for to_type in [DataType::Decimal128(10, 2), DataType::Decimal256(10, 2)] {
-            for s in over_integral_digit_limit() {
-                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                    let result = cast_one(&s, &to_type, eval_mode, false);
+            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                for (s, skip_integral_digit_limit, ansi_error) in [
+                    (&over_the_limit, false, "NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                    (&too_large, true, "NUMERIC_VALUE_OUT_OF_RANGE"),
+                ] {
+                    let result = cast_one(s, &to_type, eval_mode, skip_integral_digit_limit);
                     if eval_mode == EvalMode::Ansi {
                         let err = result.unwrap_err().to_string();
                         assert!(
-                            err.contains("NUMERIC_OUT_OF_SUPPORTED_RANGE"),
+                            err.contains(ansi_error),
                             "{s} to {to_type} in {eval_mode:?}: {err}"
                         );
                     } else {
                         assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
                     }
                 }
-            }
-
-            // With the setting, the 39-digit string is a value too large for the target type.
-            let s = format!("1{}", "0".repeat(38));
-            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                let result = cast_one(&s, &to_type, eval_mode, true);
-                if eval_mode == EvalMode::Ansi {
-                    let err = result.unwrap_err().to_string();
-                    assert!(
-                        err.contains("NUMERIC_VALUE_OUT_OF_RANGE"),
-                        "{s} to {to_type}: {err}"
-                    );
-                } else {
-                    assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
-                }
-            }
-
-            // Two shapes the setting leaves as they were. Spark reports NUMERIC_VALUE_OUT_OF_RANGE
-            // under ANSI for both, and Comet reports CAST_INVALID_INPUT: a scale adjustment over
-            // 38 (#7576) and more digits than an i128 holds (#7581). NULL matches in the other modes.
-            for s in ["6E+38".to_string(), format!("1{}", "0".repeat(39))] {
-                for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
-                    let result = cast_one(&s, &to_type, eval_mode, true);
-                    if eval_mode == EvalMode::Ansi {
-                        let err = result.unwrap_err().to_string();
-                        assert!(
-                            err.contains("CAST_INVALID_INPUT"),
-                            "{s} to {to_type}: {err}"
-                        );
-                    } else {
-                        assert_eq!(result?, None, "{s} to {to_type} in {eval_mode:?}");
-                    }
-                }
-            }
-
-            // A string within the limit is unaffected, in every mode.
-            for eval_mode in [EvalMode::Legacy, EvalMode::Try, EvalMode::Ansi] {
+                // A string within the limit is unaffected, with or without the setting.
                 for skip_integral_digit_limit in [false, true] {
                     assert_eq!(
                         cast_one("1.255", &to_type, eval_mode, skip_integral_digit_limit)?,
