@@ -47,11 +47,11 @@ bytes = { version = "1.11.1" }
 parquet = { version = "60.1.0", default-features = false, features = ["experimental"] }
 # Tracking the DataFusion branch-56 revision ahead of the 56.0.0 release. The same revision is used
 # by the `datafusion-functions-nested` dev-dependency in core and by the contrib crates.
-datafusion = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
-datafusion-datasource = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b" }
-datafusion-functions = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false, features = ["datetime_expressions"] }
-datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b" }
-datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", features = ["core"] }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636", default-features = false, features = ["unicode_expressions", "crypto_expressions", "nested_expressions", "parquet"] }
+datafusion-datasource = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
+datafusion-functions = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636", default-features = false, features = ["datetime_expressions"] }
+datafusion-physical-expr-adapter = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
+datafusion-spark = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636", features = ["core"] }
 datafusion-comet-spark-expr = { path = "spark-expr" }
 datafusion-comet-common = { path = "common" }
 datafusion-comet-jni-bridge = { path = "jni-bridge" }

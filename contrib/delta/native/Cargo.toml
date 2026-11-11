@@ -47,4 +47,4 @@ crate-type = ["rlib"]
 datafusion-comet-proto = { path = "../../../native/proto" }
 # For `ExecutionPlan` (return type), `SchemaRef` (the shim hands these in), and `DataFusionError`
 # (the not-implemented error). Versions/features mirror core so the shared lockfile resolves cleanly.
-datafusion = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b", default-features = false, features = ["parquet"] }
+datafusion = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636", default-features = false, features = ["parquet"] }

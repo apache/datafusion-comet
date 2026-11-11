@@ -116,7 +116,7 @@ jni = { workspace = true, features = ["invocation"] }
 lazy_static = "1.4"
 assertables = "10"
 hex = "0.4.3"
-datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "1635ed94742c1c060852bc34dc6ebb2302241c7b" }
+datafusion-functions-nested = { git = "https://github.com/apache/datafusion", rev = "964f925bd02425fdec7924ca8153464c67151636" }
 comet-test-udfs = { path = "../comet-test-udfs" }
 # Test-only helpers for a hand-rolled in-memory HTTP client that exercises the web-identity STS
 # retry path without a socket, plus reqsign's SigV4 signer for the signing round-trip test. Already

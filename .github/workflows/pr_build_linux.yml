@@ -480,13 +480,16 @@ jobs:
   # native/native-executors, the Comet Native Executors cluster (issue #7288),
   # is a Cargo workspace of its own so that the main build never depends on
   # Ballista. linux-test-rust doesn't build it, so this job does, and the lint
-  # job checks its formatting. When Comet moves to a DataFusion major that
-  # Ballista hasn't released yet, the upgrade can turn this job off until
-  # Ballista catches up.
+  # job checks its formatting. The job is turned off because Comet is pinned
+  # to a DataFusion revision that Ballista doesn't build against yet. Turn it
+  # back on, by restoring the `if:` below, once the Ballista pin in
+  # native/native-executors/Cargo.toml is on the same DataFusion revision as
+  # native/Cargo.toml.
   linux-test-native-executors:
     needs: lint
     name: ubuntu-latest/native-executors
-    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    # if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    if: false
     runs-on: ubuntu-24.04
     container:
       image: amd64/rust
