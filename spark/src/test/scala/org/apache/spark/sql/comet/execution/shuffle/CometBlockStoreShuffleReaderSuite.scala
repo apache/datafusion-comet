@@ -25,6 +25,30 @@ import java.io.InputStream
 import org.scalatest.funsuite.AnyFunSuite
 
 class CometBlockStoreShuffleReaderSuite extends AnyFunSuite {
+  test("the read buffer grows to twice the block, keeps its size, and lets go on release") {
+    val buffer = new ShuffleReadBuffer
+    val allocationsBefore = ShuffleReadBuffer.allocations.get()
+    val initial = ShuffleReadBuffer.INITIAL_CAPACITY
+
+    val small = buffer.prepare(10)
+    assert(small.isDirect && small.position() == 0 && small.limit() == 10)
+    assert(small.capacity() == initial)
+
+    val large = buffer.prepare(3 * initial)
+    assert(large.capacity() == 6 * initial)
+    assert(large.limit() == 3 * initial)
+
+    val again = buffer.prepare(100)
+    assert((again eq large) && again.position() == 0 && again.limit() == 100)
+    assert(buffer.capacity == 6 * initial)
+    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 2L)
+
+    buffer.release()
+    assert(buffer.capacity == 0)
+    assert(buffer.prepare(5).capacity() == initial)
+    assert(ShuffleReadBuffer.allocations.get() - allocationsBefore == 3L)
+  }
+
   test("closing a partially consumed raw stream does not fetch remaining blocks") {
     class TrackingStream extends ByteArrayInputStream(Array[Byte](1, 2, 3)) {
       var wasClosed = false
