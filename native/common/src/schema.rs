@@ -100,8 +100,8 @@ fn cast_error(
 /// Describes where `expected` and `actual` first diverge, as a dotted path rooted at `path`.
 /// Returns `None` when the two types are equal.
 ///
-/// The nested arms cover the shapes Comet actually builds — see `make_all_fields_nullable` in the
-/// planner and `to_arrow_datatype` in the serde layer, which walk the same set.
+/// The nested arms cover the shapes Comet actually builds — see `make_all_fields_nullable` in
+/// `planner/aggregate.rs` and `to_arrow_datatype` in the serde layer, which walk the same set.
 fn describe_type_mismatch(path: &str, expected: &DataType, actual: &DataType) -> Option<String> {
     if expected == actual {
         return None;
@@ -208,9 +208,9 @@ pub fn describe_timestamp_label_mismatch(
 /// counts, different list flavours, ...) are left as `base`; those are real type differences and
 /// are handled by the cast in [`cast_and_stamp_schema`].
 ///
-/// Related but not interchangeable: `make_all_fields_nullable` in the planner widens one type
-/// unconditionally, and arrow's `Field::try_merge` unions two but errors on a leaf type difference
-/// instead of tolerating it and does not recurse into maps or fixed-size lists.
+/// Related but not interchangeable: `make_all_fields_nullable` in `planner/aggregate.rs` widens
+/// one type unconditionally, and arrow's `Field::try_merge` unions two but errors on a leaf type
+/// difference instead of tolerating it and does not recurse into maps or fixed-size lists.
 pub fn widen_nested_nullability(base: &DataType, other: &DataType) -> DataType {
     match (base, other) {
         (DataType::List(b), DataType::List(o)) => DataType::List(widen_field(b, o)),

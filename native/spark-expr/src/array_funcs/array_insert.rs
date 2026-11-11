@@ -219,10 +219,9 @@ fn array_insert<O: OffsetSizeTrait>(
     let mut mutable_values =
         MutableArrayData::with_capacities(vec![&values_data, &item_data], true, new_capacity);
 
-    // New offsets and top-level list validity bitmap
+    // New offsets
     let mut new_offsets = Vec::with_capacity(list_array.len() + 1);
     new_offsets.push(O::usize_as(0));
-    let mut list_valid = Vec::<bool>::with_capacity(list_array.len());
 
     // Spark supports only Int32 position indices
     let pos_data: &Int32Array = as_primitive_array(&pos_array);
@@ -235,7 +234,6 @@ fn array_insert<O: OffsetSizeTrait>(
         // Return null for the entire row when pos is null (consistent with Spark's behavior)
         if pos_data.is_null(row_index) {
             new_offsets.push(new_offsets[row_index]);
-            list_valid.push(false);
             continue;
         }
         let pos = pos_data.value(row_index);
@@ -243,7 +241,6 @@ fn array_insert<O: OffsetSizeTrait>(
         if list_array.is_null(row_index) {
             // Top-level list row is NULL: do not write any child values and do not advance offset
             new_offsets.push(new_offsets[row_index]);
-            list_valid.push(false);
             continue;
         }
 
@@ -310,7 +307,6 @@ fn array_insert<O: OffsetSizeTrait>(
 
         let prev = new_offsets[row_index].as_usize();
         new_offsets.push(O::usize_as(prev + final_len));
-        list_valid.push(true);
     }
 
     let child = make_array(mutable_values.freeze());
@@ -322,12 +318,12 @@ fn array_insert<O: OffsetSizeTrait>(
         _ => unreachable!(),
     };
 
-    // Build the resulting list array
+    // Build the resulting list array. A row is NULL when its list or its position is NULL.
     let new_list = GenericListArray::<O>::try_new(
         elem_field,
         OffsetBuffer::new(new_offsets.into()),
         child,
-        Some(NullBuffer::new(list_valid.into())),
+        NullBuffer::union(list_array.nulls(), pos_data.nulls()),
     )?;
 
     Ok(ColumnarValue::Array(Arc::new(new_list)))

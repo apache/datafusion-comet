@@ -30,7 +30,7 @@ under the License.
   </parent>
   <groupId>org.apache.datafusion</groupId>
   <artifactId>comet-parent-spark${spark.version.short}_${scala.binary.version}</artifactId>
-  <version>1.2.0-SNAPSHOT</version>
+  <version>1.3.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>Comet Project Parent POM</name>
 
@@ -43,6 +43,8 @@ under the License.
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    <!-- Also passed to the integration checker to honor intentional source-JAR skips. -->
+    <maven.source.skip>false</maven.source.skip>
     <java.version>17</java.version>
     <!--
       Default Delta dep version for the in-tree `-Pcontrib-delta` contrib, which
@@ -87,7 +89,10 @@ under the License.
     <protobuf.version>3.25.5</protobuf.version>
     <parquet.version>1.16.0</parquet.version>
     <parquet.maven.scope>provided</parquet.maven.scope>
-    <hadoop.version>3.3.4</hadoop.version>
+    <!-- hadoop-client-minicluster, test scope. Follows each Spark profile's Hadoop line below, as
+         hadoop-azure.version does: MiniDFSCluster cannot start when the minicluster is older than
+         the hadoop-client-api/runtime Spark supplies. The default matches spark-4.1. -->
+    <hadoop.version>3.4.2</hadoop.version>
     <arrow.version>18.3.0</arrow.version>
     <codehaus.jackson.version>1.9.13</codehaus.jackson.version>
     <spotless.version>2.43.0</spotless.version>
@@ -95,7 +100,7 @@ under the License.
          release that exists for each of their Scala versions (2.13.16, 2.13.17 and 2.13.18). -->
     <semanticdb.version>4.13.10</semanticdb.version>
     <slf4j.version>2.0.17</slf4j.version>
-    <guava.version>33.2.1-jre</guava.version>
+    <guava.version>33.7.1-jre</guava.version>
     <testcontainers.version>1.21.4</testcontainers.version>
     <amazon-awssdk-v2.version>2.31.51</amazon-awssdk-v2.version>
     <!-- AWS SDK v1, present at runtime on Hadoop 3.3.x (spark-3.x profiles). Used at provided
@@ -105,17 +110,16 @@ under the License.
     <aws-java-sdk-v1.version>1.12.262</aws-java-sdk-v1.version>
     <!-- hadoop-aws, provided scope, to compile the built-in S3 credential adapters against the S3A
          provider factory. Default tracks the default shim source set (spark-4.x -> SDK v2, needs
-         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.4 / spark-3.5 profiles override
-         it down to 3.3.x (SDK v1). hadoop.version itself (hadoop-client) is not changed. -->
+         Hadoop 3.4.x's CredentialProviderListFactory); the spark-3.5 profile overrides
+         it down to 3.3.x (SDK v1). -->
     <hadoop-aws.version>3.4.1</hadoop-aws.version>
     <!-- Delta Lake pairing for the contrib/delta-spark module (-Pdelta). Each Spark profile
-         in this pom sets delta.spark.version to its matching Delta release. Only spark-3.4
-         also sets delta.artifact, to delta-core, since Delta 2.x ships under that name and
-         3.x/4.x ship as delta-spark. The defaults match the default spark-4.1 profile and
-         only serve invocations that activate no Spark profile (e.g. `mvn -Pdelta
-         spotless:apply`). This is a separate property from `delta.version` (the in-tree
-         `-Pcontrib-delta` contrib) on purpose, so bumping one pairing cannot silently change
-         the other. -->
+         in this pom sets delta.spark.version to its matching Delta release. The delta.artifact
+         property names the Delta artifact (delta-spark for the 3.x/4.x lines). The defaults
+         match the default spark-4.1 profile and only serve invocations that activate no
+         Spark profile (e.g. `mvn -Pdelta spotless:apply`). This is a separate property from
+         `delta.version` (the in-tree `-Pcontrib-delta` contrib) on purpose, so bumping one
+         pairing cannot silently change the other. -->
     <delta.artifact>delta-spark</delta.artifact>
     <delta.spark.version>4.3.1</delta.spark.version>
     <!-- hadoop-azure, test scope, so the ABFS authentication tests run against the same
@@ -123,6 +127,9 @@ under the License.
          reflection only). Each Spark profile pins it to its Hadoop line; override with
          -Dhadoop-azure.version to test another release. -->
     <hadoop-azure.version>3.4.2</hadoop-azure.version>
+    <!-- Extra scalatest tags to exclude, comma separated, for example
+         -DtagsToExclude=org.apache.comet.tags.AzureTest. -->
+    <tagsToExclude></tagsToExclude>
     <jni.dir>${project.basedir}/../native/target/debug</jni.dir>
     <platform>darwin</platform>
     <arch>x86_64</arch>
@@ -542,6 +549,39 @@ under the License.
         </exclusions>
       </dependency>
 
+      <!-- PathOutputCommitProtocol and BindingParquetOutputCommitter, for writes committed by
+           S3A's committers. Its dependencies are those of the tests jar above, so the exclusions
+           are the same. Spark 4.1+ turns on the S3A magic committer for every session once these
+           classes load, so the test JVMs opt out, see the scalatest systemProperties below. -->
+      <dependency>
+        <groupId>org.apache.spark</groupId>
+        <artifactId>spark-hadoop-cloud_${scala.binary.version}</artifactId>
+        <version>${spark.version}</version>
+        <scope>test</scope>
+        <exclusions>
+          <exclusion>
+            <groupId>org.apache.hadoop.thirdparty</groupId>
+            <artifactId>hadoop-shaded-guava</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-annotations</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>javax.xml.bind</groupId>
+            <artifactId>jaxb-api</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>commons-logging</groupId>
+            <artifactId>commons-logging</artifactId>
+          </exclusion>
+          <exclusion>
+            <groupId>org.apache.arrow</groupId>
+            <artifactId>*</artifactId>
+          </exclusion>
+        </exclusions>
+      </dependency>
+
       <!-- TestContainers for testing reading Parquet on S3 -->
       <dependency>
         <groupId>org.testcontainers</groupId>
@@ -721,32 +761,6 @@ under the License.
     </profile>
 
     <profile>
-      <id>spark-3.4</id>
-      <properties>
-        <scala.version>2.12.17</scala.version>
-        <scala.binary.version>2.12</scala.binary.version>
-        <spark.version>3.4.3</spark.version>
-        <spark.version.short>3.4</spark.version.short>
-        <hadoop-aws.version>3.3.4</hadoop-aws.version>
-        <hadoop-azure.version>3.3.4</hadoop-azure.version>
-        <parquet.version>1.13.1</parquet.version>
-        <semanticdb.version>4.8.8</semanticdb.version>
-        <slf4j.version>2.0.6</slf4j.version>
-        <shims.majorVerSrc>spark-3.x</shims.majorVerSrc>
-        <shims.minorVerSrc>spark-3.4</shims.minorVerSrc>
-        <shims.minorPlusVerSrc>spark-none</shims.minorPlusVerSrc>
-        <!-- Delta 2.4 (the last Spark 3.4 line, artifact delta-core) predates the 3.x
-             DeltaParquetFileFormat API the contrib compiles against; the delta profile is
-             NOT yet supported on spark-3.4 (compile fails). Shim work tracked as future. -->
-        <delta.artifact>delta-core</delta.artifact>
-        <delta.spark.version>2.4.0</delta.spark.version>
-        <java.version>17</java.version>
-        <maven.compiler.source>${java.version}</maven.compiler.source>
-        <maven.compiler.target>${java.version}</maven.compiler.target>
-      </properties>
-    </profile>
-
-    <profile>
       <id>spark-3.5</id>
       <properties>
         <scala.version>2.12.18</scala.version>
@@ -754,6 +768,7 @@ under the License.
         <spark.version>3.5.9</spark.version>
         <spark.version.short>3.5</spark.version.short>
         <hadoop-aws.version>3.3.4</hadoop-aws.version>
+        <hadoop.version>3.3.4</hadoop.version>
         <hadoop-azure.version>3.3.4</hadoop-azure.version>
         <parquet.version>1.13.1</parquet.version>
         <semanticdb.version>4.8.8</semanticdb.version>
@@ -775,6 +790,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.0.4</spark.version>
         <spark.version.short>4.0</spark.version.short>
+        <hadoop.version>3.4.1</hadoop.version>
         <hadoop-azure.version>3.4.1</hadoop-azure.version>
         <parquet.version>1.15.2</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
@@ -799,6 +815,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.1.3</spark.version>
         <spark.version.short>4.1</spark.version.short>
+        <hadoop.version>3.4.2</hadoop.version>
         <hadoop-azure.version>3.4.2</hadoop-azure.version>
         <parquet.version>1.16.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
@@ -823,6 +840,7 @@ under the License.
         <scala.binary.version>2.13</scala.binary.version>
         <spark.version>4.2.0</spark.version>
         <spark.version.short>4.2</spark.version.short>
+        <hadoop.version>3.5.0</hadoop.version>
         <hadoop-azure.version>3.5.0</hadoop-azure.version>
         <parquet.version>1.17.0</parquet.version>
         <semanticdb.version>4.13.10</semanticdb.version>
@@ -1124,7 +1142,7 @@ under the License.
             <filereports>SparkTestSuite.txt</filereports>
             <stdout>D</stdout>
             <stderr/>
-            <tagsToExclude>org.apache.comet.IntegrationTestSuite</tagsToExclude>
+            <tagsToExclude>org.apache.comet.IntegrationTestSuite,${tagsToExclude}</tagsToExclude>
             <systemProperties>
               <!-- emit test logs to target/unit-tests.log -->
               <log4j.configurationFile>file:src/test/resources/log4j2.properties</log4j.configurationFile>
@@ -1136,6 +1154,11 @@ under the License.
               <!-- Set to a directory to make AbfsAuthParitySuite record its expectation file for
                    the hadoop-azure on the classpath instead of asserting against it. -->
               <comet.abfs.parity.record>${comet.abfs.parity.record}</comet.abfs.parity.record>
+              <!-- spark-hadoop-cloud is on the test classpath, so Spark 4.1+ would make the S3A
+                   magic committer, PathOutputCommitProtocol and BindingParquetOutputCommitter the
+                   defaults of every session (SPARK-47618). Suites that test the magic committer
+                   turn it back on in their own configuration. -->
+              <spark.hadoop.fs.s3a.committer.magic.enabled>false</spark.hadoop.fs.s3a.committer.magic.enabled>
             </systemProperties>
           </configuration>
           <executions>

@@ -26,10 +26,14 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec}
@@ -655,6 +659,239 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     global.result() ++ promoted.result()
   }
 
+  /**
+   * The client settings iceberg-rust's HDFS backend reads from its configuration and the JVM
+   * client reads too (hdfs-native 0.14, `common/config.rs`). The client otherwise reads only the
+   * executors' `$HADOOP_CONF_DIR`, so a value the session sets would never reach it. Not
+   * forwarded: the per-nameservice `dfs.client.failover.*.<ns>` keys, which the client would look
+   * up under a nameservice name of opendal's own, and `dfs.data.transfer.protection`, on which
+   * the client negotiates SASL whenever it is set where the JVM client does so only on a secure
+   * cluster, which falls back.
+   */
+  private[comet] val forwardedHdfsClientKeys: Seq[String] = Seq(
+    "dfs.client.use.datanode.hostname",
+    "dfs.client.socket-timeout",
+    "dfs.client.failover.max.attempts",
+    "dfs.client.failover.sleep.base.millis",
+    "dfs.client.failover.sleep.max.millis")
+
+  /**
+   * The HDFS properties a scan of `authorities` needs from the Hadoop configuration, for
+   * iceberg-rust's HDFS backend: nameservice declarations, and the client settings of
+   * [[forwardedHdfsClientKeys]] that the session set (a value from Hadoop's own `*-default.xml`
+   * is not a setting, and forwarded would override the executors' XML), as `hadoop.<key>`.
+   *
+   * The backend dials an authority with a port as written, but resolves a portless one
+   * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
+   * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
+   * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
+   * NameNode, becomes `hdfs.name-node.<ns>` with its NameNodes in declaration order. An authority
+   * the configuration knows nothing of is a single NameNode on Hadoop's default port, as
+   * `DFSUtilClient.getNNAddress` dials it for the JVM client. A name in `dfs.nameservices`
+   * without NameNodes, or with one that has no port, is left out, and
+   * [[undeclaredHdfsNameservice]] then declines the scan.
+   */
+  def hadoopToIcebergHdfsProperties(
+      hadoopConf: Configuration,
+      authorities: Set[String]): Map[String, String] = {
+    val clientSettings = if (authorities.isEmpty) {
+      Map.empty[String, String]
+    } else {
+      forwardedHdfsClientKeys.flatMap { key =>
+        val sources = Option(hadoopConf.getPropertySources(key)).getOrElse(Array.empty[String])
+        val set = sources.nonEmpty && !sources.exists(_.endsWith("-default.xml"))
+        if (set) Option(hadoopConf.getTrimmed(key)).map(s"hadoop.$key" -> _) else None
+      }.toMap
+    }
+    val logicalNames = hadoopConf.getTrimmedStringCollection("dfs.nameservices").asScala.toSet
+    val declarations = hdfsNameservices(authorities).flatMap { ns =>
+      val nameNodes = hadoopConf
+        .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
+        .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
+      if (nameNodes.nonEmpty) {
+        if (nameNodes.forall(hasPort)) Some(s"hdfs.name-node.$ns" -> nameNodes.mkString(","))
+        else None
+      } else if (logicalNames.contains(ns)) {
+        None
+      } else {
+        Some(
+          s"hdfs.name-node.$ns" -> s"$ns:${HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT}")
+      }
+    }.toMap
+    declarations ++ clientSettings
+  }
+
+  /**
+   * The first portless HDFS authority among `authorities` that `properties` declares neither with
+   * iceberg-rust's `hdfs.name-node.<ns>` nor with Hadoop's `dfs.ha.namenodes.<ns>`.
+   */
+  def undeclaredHdfsNameservice(
+      authorities: Set[String],
+      properties: Map[String, String]): Option[String] =
+    hdfsNameservices(authorities).find { ns =>
+      !properties.contains(s"hdfs.name-node.$ns") &&
+      !properties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+    }
+
+  private def hdfsNameservices(authorities: Set[String]): Seq[String] =
+    authorities.filterNot(hasPort).toSeq.sorted
+
+  /**
+   * Listings taken for the encryption-zone check, by filesystem URI, table UUID and parent
+   * directory: when each was taken, and the encrypted flag of every child, by name. A data
+   * directory cannot become a zone root once it holds files, and a table dropped and created
+   * again at the same path, inside a new zone or not, has a new UUID, so a listing is reused
+   * until it is older than `spark.sql.metadataCacheTTLSeconds`, or than
+   * [[DefaultEncryptionZoneListingAgeSeconds]] when that is unset. Every child is kept, not only
+   * the directories one scan reads, so a later scan of other partitions of the table lists
+   * nothing; what is kept is bounded to [[MaxKeptEncryptionZoneEntries]] children in all, the
+   * least recently used parents leaving first. Accessed under the map's own lock: a read moves
+   * the parent to the front.
+   */
+  private val listedParents =
+    new java.util.LinkedHashMap[(String, String, String), (Long, Map[String, Boolean])](
+      64,
+      0.75f,
+      true)
+  private var keptEntryCount = 0
+
+  private def keptListing(key: (String, String, String)): Option[(Long, Map[String, Boolean])] =
+    listedParents.synchronized(Option(listedParents.get(key)))
+
+  private def keepListing(
+      key: (String, String, String),
+      listing: (Long, Map[String, Boolean]),
+      maxKeptEntries: Int): Unit = listedParents.synchronized {
+    Option(listedParents.put(key, listing)).foreach(old => keptEntryCount -= old._2.size)
+    keptEntryCount += listing._2.size
+    val eldestFirst = listedParents.entrySet().iterator()
+    while (keptEntryCount > maxKeptEntries && eldestFirst.hasNext) {
+      keptEntryCount -= eldestFirst.next().getValue._2.size
+      eldestFirst.remove()
+    }
+  }
+
+  /** Children the kept listings hold, in all. */
+  private[comet] def keptEncryptionZoneEntries: Int = listedParents.synchronized(keptEntryCount)
+
+  /**
+   * Directory entries one scan may list for the encryption-zone check before it is declined
+   * instead. At HDFS's default page of 1000 entries (`dfs.ls.limit`) that is a thousand NameNode
+   * round trips, and a directory holds at most about a million entries by default
+   * (`dfs.namenode.fs-limits.max-directory-items`).
+   */
+  private[comet] val MaxEncryptionZoneEntriesPerScan = 1000000
+
+  /** Children the kept listings may hold in all, on the order of 100 bytes each. */
+  private[comet] val MaxKeptEncryptionZoneEntries = 1000000
+
+  /** How long a listing is kept when `spark.sql.metadataCacheTTLSeconds` is unset. */
+  private[comet] val DefaultEncryptionZoneListingAgeSeconds = 3600L
+
+  /**
+   * Why a scan of `directories`, HDFS directories of data and delete files, must not be claimed
+   * on account of HDFS encryption zones, or None. iceberg-rust's HDFS client is built without KMS
+   * support and rejects every file of a zone. The NameNode flags each path inside a zone as
+   * encrypted, directories included, so one listing of a parent tells the flag of every data
+   * directory under it: the partitions of a table cost one call, not one each. A listing is kept
+   * per table (see [[listedParents]]), and a directory missing from a kept listing, a new
+   * partition, lists its parent again. A cluster that cannot hold a zone at all, one whose
+   * NameNode advertises no key provider (a client-cached call) and whose session configures none,
+   * is not listed. A scan that would list more than `maxEntries` directory entries is declined
+   * once that many are listed; the parents listed whole are kept, so a later scan continues from
+   * them.
+   */
+  def hdfsEncryptionZoneFallback(
+      hadoopConf: Configuration,
+      directories: Set[String],
+      tableUuid: Option[String] = None,
+      ttlSeconds: Long = -1L,
+      maxEntries: Int = MaxEncryptionZoneEntriesPerScan,
+      maxKeptEntries: Int = MaxKeptEncryptionZoneEntries,
+      nowMillis: Long = System.currentTimeMillis()): Option[String] = {
+    val configuredProvider =
+      Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
+        .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    val maxAgeMillis =
+      (if (ttlSeconds > 0) ttlSeconds else DefaultEncryptionZoneListingAgeSeconds) * 1000
+    def fresh(listedAt: Long): Boolean = nowMillis - listedAt < maxAgeMillis
+    // A directory at the root of the filesystem has no parent and is listed itself.
+    val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
+      Option(dir.getParent).getOrElse(dir)
+    }
+    var entries = 0
+    def budgetReason(parent: Path): String =
+      s"Iceberg scan reads HDFS directories under '$parent' and beyond, which the check for " +
+        s"encryption zones did not reach within its budget of $maxEntries directory entries; " +
+        "a later scan continues from the listings kept"
+    byParent.toSeq
+      .sortBy(_._1.toString)
+      .iterator
+      .map { case (parent, dirs) =>
+        try {
+          val fs = parent.getFileSystem(hadoopConf)
+          val key = (fs.getUri.toString, tableUuid.getOrElse(""), parent.toString)
+          // Children are kept by name: every directory here is a child of `parent`.
+          val kept = keptListing(key).collect {
+            case (listedAt, flags)
+                if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.getName)) =>
+              flags
+          }
+          def encryptedReason(flags: Map[String, Boolean]): Option[String] =
+            dirs.find(dir => flags.getOrElse(dir.getName, false)).map { dir =>
+              s"Iceberg scan reads HDFS directory '$dir', which is in an encryption zone; " +
+                "Comet's native Iceberg reader cannot decrypt HDFS encryption zones"
+            }
+          kept match {
+            case Some(flags) => encryptedReason(flags)
+            case None =>
+              val canHoldZones = configuredProvider ||
+                Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty)
+              if (!canHoldZones) {
+                None
+              } else if (entries >= maxEntries) {
+                Some(budgetReason(parent))
+              } else {
+                // Paged on HDFS, so a parent beyond the budget costs the budget, no more.
+                val listing = fs.listStatusIterator(parent)
+                val listed = Map.newBuilder[String, Boolean]
+                while (entries < maxEntries && listing.hasNext) {
+                  val status = listing.next()
+                  listed += status.getPath.getName -> status.isEncrypted
+                  entries += 1
+                }
+                if (listing.hasNext) {
+                  Some(budgetReason(parent))
+                } else {
+                  val children = listed.result()
+                  val missing = dirs
+                    .filterNot(dir => children.contains(dir.getName))
+                    .map(dir => dir.getName -> fs.getFileStatus(dir).isEncrypted)
+                  val flags = children ++ missing
+                  keepListing(key, (nowMillis, flags), maxKeptEntries)
+                  encryptedReason(flags)
+                }
+              }
+          }
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Could not tell whether HDFS directories under $parent are encrypted", e)
+            Some(
+              s"Iceberg scan reads HDFS directories under '$parent', whose status could not be " +
+                s"read (${e.getClass.getSimpleName}: ${e.getMessage}); Comet's native Iceberg " +
+                "reader cannot decrypt HDFS encryption zones, so the scan is not claimed")
+        }
+      }
+      .collectFirst { case Some(reason) => reason }
+  }
+
+  private def hasPort(address: String): Boolean =
+    address != null && {
+      val colon = address.lastIndexOf(':')
+      colon > address.lastIndexOf(']') && colon < address.length - 1 &&
+      address.substring(colon + 1).forall(_.isDigit)
+    }
+
   /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
   def ioTimeoutProperty(): (String, String) =
     "opendal.io-timeout-ms" -> CometConf.COMET_ICEBERG_IO_TIMEOUT.get().toString
@@ -980,10 +1217,8 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     val commonBuilder = OperatorOuterClass.IcebergScanCommon.newBuilder()
 
     // Deduplication structures - map unique values to pool indices
-    val schemaToPoolIndex = mutable.HashMap[AnyRef, Int]()
     val partitionSpecToPoolIndex = mutable.HashMap[String, Int]()
     val nameMappingToPoolIndex = mutable.HashMap[String, Int]()
-    val projectFieldIdsToPoolIndex = mutable.HashMap[Seq[Int], Int]()
     val partitionDataToPoolIndex = mutable.HashMap[String, Int]()
     // Individual delete files are interned into a flat pool; deleteFilesToPoolIndex then dedups
     // the per-task sets as lists of indices into it, so a delete file that applies to many data
@@ -1006,25 +1241,38 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
           idx
         })
     val residualToPoolIndex = mutable.HashMap[OperatorOuterClass.IcebergPredicate, Int]()
-    // Field-id mappings are read out of an Iceberg schema by reflection, one lookup per column, so
-    // memoize them. Keyed like schemaToPoolIndex above: a task schema that Iceberg materializes
-    // fresh per task misses, but the table/scan schema shared by every task hits.
-    val fieldIdMappingCache = mutable.HashMap[AnyRef, Map[String, Int]]()
-    def fieldIdMapping(schema: AnyRef): Map[String, Int] =
-      fieldIdMappingCache.getOrElseUpdate(schema, IcebergReflection.buildFieldIdMapping(schema))
-    // Whether the scan schema references field ids the current table schema no longer has (a
-    // dropped column read through VERSION AS OF). Loop-invariant, and lazy so a scan whose tasks
-    // all carry deletes never walks the table schema at all.
-    lazy val hasHistoricalColumns = {
-      val tableSchemaFieldIds =
-        fieldIdMapping(metadata.tableSchema.asInstanceOf[AnyRef]).values.toSet
-      metadata.globalFieldIdMapping.values.exists(id => !tableSchemaFieldIds.contains(id))
-    }
     // Columns whose Iceberg type iceberg-rust cannot use for page-index pruning; residual
     // predicates over them are dropped (see icebergExprToProto). Computed once from the full table
     // schema so a filter column projected out of the scan output is still recognized.
     val pageIndexUnsupportedColumns =
       IcebergReflection.pageIndexUnsupportedColumns(metadata.tableSchema)
+
+    // iceberg-rust reads every leaf of a projected column that the task schema holds. Reading with
+    // the pruned task schema skips the nested fields Spark's schema pruning removed, which the
+    // full schema would read and decode only to drop later. Every task reads with the same schema
+    // (see IcebergReflection.nativeTaskSchemas), so its pool entry and the projected field ids are
+    // the same for every task too.
+    val taskSchema: AnyRef = metadata.taskSchema
+      .getOrElse(
+        throw new IllegalStateException(
+          "No native Iceberg task schema. CometScanRule should have fallen back to Spark."))
+      .asInstanceOf[AnyRef]
+    val nameToFieldId = IcebergReflection.buildFieldIdMapping(taskSchema)
+    val projectFieldIds = OperatorOuterClass.ProjectFieldIdList.newBuilder()
+    output.foreach { attr =>
+      projectFieldIds.addFieldIds(
+        nameToFieldId
+          .get(attr.name)
+          .orElse(metadata.globalFieldIdMapping.get(attr.name))
+          .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
+          .getOrElse {
+            throw new IllegalStateException(
+              s"Column '${attr.name}' not found in task schema, global schema, " +
+                "or metadata field IDs. This indicates a bug in CometScanRule " +
+                "validation -- all output columns should be resolvable.")
+          })
+    }
+    commonBuilder.addProjectFieldIdsPool(projectFieldIds.build())
 
     val perPartitionBuilders = mutable.ArrayBuffer[OperatorOuterClass.IcebergScan]()
 
@@ -1069,9 +1317,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
     // keyMetadata() is declared on ContentFile (present across all supported Iceberg versions).
     // For encrypted tables it returns the plaintext StandardKeyMetadata blob; null otherwise.
     val keyMetadataMethod = IcebergReflection.getMethod(contentFileClass, "keyMetadata")
-    val taskSchemaMethod = IcebergReflection.getMethod(fileScanTaskClass, "schema")
     val toJsonMethod =
       IcebergReflection.getMethod(schemaParserClass, "toJson", schemaClass)
+    commonBuilder.addSchemaPool(toJsonMethod.invoke(null, taskSchema).asInstanceOf[String])
 
     // Access inputRDD - safe now, DPP is resolved
     scanExec.inputRDD match {
@@ -1130,83 +1378,9 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
                 // verbatim for iceberg-rust to decode. Unencrypted files leave the field unset.
                 keyMetadataBytes(keyMetadataMethod, dataFile).foreach(taskBuilder.setKeyMetadata)
 
-                val taskSchema = taskSchemaMethod.invoke(task)
-
-                val deletes =
-                  IcebergReflection.getDeleteFilesFromTask(task, fileScanTaskClass)
-                val hasDeletes = !deletes.isEmpty
-
-                val baseSchema: AnyRef =
-                  if (hasDeletes) {
-                    // An equality delete may be keyed on a column dropped from the current schema
-                    // (schema evolution). iceberg-rust must read that column to apply the delete,
-                    // so union the equality-delete field ids into the task schema, resolving any
-                    // dropped ones from the table's schema history (mirrors Iceberg-Java's
-                    // DeleteFilter.fileProjection).
-                    val equalityFieldIds = deletes.asScala.flatMap { df =>
-                      requiredEqualityFieldIds(deleteFileClass, df).asScala.map(_.intValue())
-                    }.toSeq
-                    if (equalityFieldIds.nonEmpty) {
-                      IcebergReflection
-                        .schemaWithRequiredFields(taskSchema, metadata.table, equalityFieldIds)
-                        .asInstanceOf[AnyRef]
-                    } else {
-                      taskSchema
-                    }
-                  } else {
-                    if (hasHistoricalColumns) {
-                      metadata.scanSchema.asInstanceOf[AnyRef]
-                    } else {
-                      metadata.tableSchema.asInstanceOf[AnyRef]
-                    }
-                  }
-
-                // iceberg-rust validates a FileScanTask by resolving its partition spec against
-                // the task schema, so a task carrying a partition spec needs that spec's source
-                // columns present even when the query projects them out (e.g. selecting only
-                // _spec_id / _partition). Union them in. project_field_ids still drives the read,
-                // so these columns are not materialized into the output.
-                val schema: AnyRef =
-                  IcebergReflection
-                    .schemaWithRequiredFields(
-                      baseSchema,
-                      metadata.table,
-                      IcebergReflection.partitionSourceFieldIds(task, fileScanTaskClass))
-                    .asInstanceOf[AnyRef]
-
-                val schemaIdx = schemaToPoolIndex.getOrElseUpdate(
-                  schema, {
-                    val idx = schemaToPoolIndex.size
-                    val schemaJson = toJsonMethod.invoke(null, schema).asInstanceOf[String]
-                    commonBuilder.addSchemaPool(schemaJson)
-                    idx
-                  })
-                taskBuilder.setSchemaIdx(schemaIdx)
-
-                val nameToFieldId = fieldIdMapping(schema)
-
-                val projectFieldIds = output.map { attr =>
-                  nameToFieldId
-                    .get(attr.name)
-                    .orElse(metadata.globalFieldIdMapping.get(attr.name))
-                    .orElse(CometIcebergNativeScan.MetadataFieldIds.get(attr.name))
-                    .getOrElse {
-                      throw new IllegalStateException(
-                        s"Column '${attr.name}' not found in task schema, global schema, " +
-                          "or metadata field IDs. This indicates a bug in CometScanRule " +
-                          "validation -- all output columns should be resolvable.")
-                    }
-                }
-
-                val projectFieldIdsIdx = projectFieldIdsToPoolIndex.getOrElseUpdate(
-                  projectFieldIds, {
-                    val idx = projectFieldIdsToPoolIndex.size
-                    val listBuilder = OperatorOuterClass.ProjectFieldIdList.newBuilder()
-                    projectFieldIds.foreach(id => listBuilder.addFieldIds(id))
-                    commonBuilder.addProjectFieldIdsPool(listBuilder.build())
-                    idx
-                  })
-                taskBuilder.setProjectFieldIdsIdx(projectFieldIdsIdx)
+                // One task schema and one projection for the whole scan, both at pool index 0.
+                taskBuilder.setSchemaIdx(0)
+                taskBuilder.setProjectFieldIdsIdx(0)
 
                 val deleteFilesList =
                   extractDeleteFilesList(
@@ -1306,10 +1480,10 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     // Log deduplication summary
     val allPoolSizes = Seq(
-      schemaToPoolIndex.size,
+      commonBuilder.getSchemaPoolCount,
       partitionSpecToPoolIndex.size,
       nameMappingToPoolIndex.size,
-      projectFieldIdsToPoolIndex.size,
+      commonBuilder.getProjectFieldIdsPoolCount,
       partitionDataToPoolIndex.size,
       deleteFileToPoolIndex.size,
       deleteFilesToPoolIndex.size,

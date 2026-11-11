@@ -39,7 +39,7 @@ use iceberg::{Error, ErrorKind, Result};
 /// `timestamp`, or `timestamptz` source, which go through Comet's `iceberg_years` /
 /// `iceberg_months` / `iceberg_days` / `iceberg_hours` kernels instead: the ones the sort in front
 /// of a clustered write runs, pinned against iceberg-java's `DateTimeUtil` over the whole domain.
-/// iceberg-rust's transforms differ from iceberg-java's in three ways:
+/// iceberg-rust's transforms differ from iceberg-java's in two ways:
 ///
 /// - `year` and `month` split the calendar with Arrow's `date_part`, which returns NULL for
 ///   anything `chrono` cannot represent -- past year 262142 -- whereas iceberg-java goes through
@@ -49,9 +49,6 @@ use iceberg::{Error, ErrorKind, Result};
 /// - All four floor a pre-epoch timestamp that lies exactly 999999 microseconds into a unit, which
 ///   iceberg-java puts in the unit before, so `1969-01-01T00:00:00.999999` belongs in the 1968
 ///   partitions (apache/datafusion-comet#6426).
-/// - `day` moves a timestamp from the last second of a day before 1969-12-31 into the next day,
-///   unless its microsecond of second is 0 or 999999: it takes the whole seconds with a truncating
-///   division and the microseconds with a flooring one (apache/iceberg-rust#3315).
 ///
 /// A partition value that differs from the sort key can also fail a clustered write, which rejects
 /// a row whose partition it has already closed. Everywhere else the two implementations agree, so
@@ -393,7 +390,8 @@ mod tests {
             Some(-31_535_999_000_001),
             // 1969-12-31T23:00:00.999999, where that moves only the hour.
             Some(-3_599_000_001),
-            // 1969-12-30T23:59:59.5 and 1969-12-30T23:59:59.999998.
+            // 1969-12-30T23:59:59.5 and 1969-12-30T23:59:59.999998, which iceberg-rust's `day`
+            // moved into 1969-12-31 until apache/iceberg-rust#3315 was fixed.
             Some(-86_400_500_000),
             Some(-86_400_000_002),
             None,
@@ -419,7 +417,7 @@ mod tests {
             (
                 Transform::Day,
                 day([-366, -1, -2, -2]),
-                day([-365, -1, -1, -1]),
+                day([-365, -1, -2, -2]),
             ),
             (
                 Transform::Hour,
@@ -438,8 +436,7 @@ mod tests {
             for (i, (transform, java, rust)) in cases.iter().enumerate() {
                 let label = format!("{transform} of {}", source.data_type());
                 assert_eq!(&comet[i], java, "{label}");
-                // The reason Comet computes these: iceberg-rust floors the first two rows, and its
-                // `day` moves the last two into 1969-12-31 (apache/iceberg-rust#3315). If this
+                // The reason Comet computes these: iceberg-rust floors the first two rows. If this
                 // starts failing, iceberg-rust's transforms have changed and delegating needs
                 // another look.
                 assert_eq!(&iceberg_rust[i], rust, "iceberg-rust's {label}");

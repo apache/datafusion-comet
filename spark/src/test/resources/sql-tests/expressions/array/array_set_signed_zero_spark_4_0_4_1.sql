@@ -18,9 +18,10 @@
 -- MinSparkVersion: 4.0
 -- MaxSparkVersion: 4.1
 
--- 4.0.0-4.0.4 and 4.1.0-4.1.3 keep signed zeros distinct. 4.0.5+ and 4.1.4+ normalize during
--- evaluation (SPARK-59602), which native distinct/union do not match for NaNs or nested zeros, so
--- distinct/union fall back on every 4.0 and 4.1 release.
+-- 4.0.0-4.0.4 and 4.1.0-4.1.3 keep signed zeros distinct, so distinct/union fall back there.
+-- 4.0.5+ and 4.1.4+ normalize during evaluation (SPARK-59602), and distinct/union run natively.
+-- Which path runs depends on the patch release, so these cases check only the answer;
+-- CometArrayExpressionSuite checks the routing.
 
 statement
 CREATE TABLE test_array_set_signed_zero_float(a array<float>, b array<float>) USING parquet
@@ -34,16 +35,16 @@ INSERT INTO test_array_set_signed_zero_float VALUES
   (array(float('-0.0')), array(float('-0.0'))),
   (array(float('0.0'), float('-0.0')), array(float('0.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT array_distinct(array(float('0.0'), float('-0.0'), float('1.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT array_union(array(float('0.0')), array(float('-0.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_float
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_float
 
 query
@@ -64,10 +65,10 @@ INSERT INTO test_array_set_signed_zero_double VALUES
   (array(double('-0.0')), array(double('-0.0'))),
   (array(double('0.0'), double('-0.0')), array(double('0.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT array_distinct(array(double('0.0'), double('-0.0'), double('1.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT array_union(array(double('0.0')), array(double('-0.0')))
 
 query
@@ -79,10 +80,10 @@ SELECT array_intersect(array(double('-0.0')), array(double('0.0'))),
        array_intersect(array(double('0.0')), array(double('-0.0'))),
        array_intersect(array(double('-0.0')), array(double('-0.0')))
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_distinct(a) FROM test_array_set_signed_zero_double
 
-query expect_fallback(SPARK-54918)
+query spark_answer_only
 SELECT a, b, array_union(a, b) FROM test_array_set_signed_zero_double
 
 query

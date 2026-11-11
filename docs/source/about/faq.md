@@ -52,7 +52,7 @@ not documented, please [file an issue](https://github.com/apache/datafusion-come
 
 ### Which Spark and Java versions does Comet support?
 
-Spark 3.4, 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. Spark 3.4 is deprecated. The
+Spark 3.5, 4.0, 4.1, and 4.2, on Java 17 or later. The
 [installation guide](../user-guide/latest/installation.md#supported-spark-versions) lists the exact
 Spark, Java, and Scala versions, and the
 [Spark Version Compatibility](../user-guide/latest/compatibility/spark-versions.md) page lists known
@@ -90,7 +90,7 @@ for one platform only.
 
 ### Why do I get a `ClassNotFoundException` for `CometShuffleManager`?
 
-Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.4 and 3.5,
+Spark could not find the Comet jar when it created the shuffle manager. On Spark 3.5,
 executors create the shuffle manager before they load jars passed with `--jars` or `--packages`, so
 the jar must be on the startup classpath. Either copy it into `$SPARK_HOME/jars` on every machine, or
 set `spark.driver.extraClassPath` and `spark.executor.extraClassPath` to its path, as the
@@ -141,10 +141,10 @@ Common causes of a small speedup are:
 ### Does Comet support Delta Lake, Apache Hudi, or Apache Paimon tables?
 
 Not yet. Comet accelerates [Apache Iceberg](../user-guide/latest/iceberg.md) tables, with a native
-reader that is enabled by default and
-[experimental native writes](../user-guide/latest/iceberg-writes.md). It does not accelerate scans of
-Delta Lake, Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development;
-see the [roadmap](../contributor-guide/roadmap.md#delta-lake-support). Hudi and Paimon are not on the
+reader that is enabled by default and opt-in
+[native writes](../user-guide/latest/iceberg.md#writes). It does not accelerate scans of Delta Lake,
+Hudi, or Paimon tables, so Spark reads those. Native Delta Lake reads are in development; see the
+[roadmap](../contributor-guide/roadmap.md#delta-lake-support). Hudi and Paimon are not on the
 roadmap.
 
 ### Does Comet accelerate PySpark jobs and Python UDFs?

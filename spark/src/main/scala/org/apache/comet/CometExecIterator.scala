@@ -24,6 +24,7 @@ import java.util.Locale
 import java.util.concurrent.{ConcurrentHashMap, Executors, ThreadFactory, TimeUnit}
 import java.util.concurrent.atomic.AtomicBoolean
 
+import scala.util.Try
 import scala.util.control.NonFatal
 
 import org.apache.arrow.c.ArrowArrayStream
@@ -43,7 +44,7 @@ import org.apache.spark.util.SerializableConfiguration
 import org.apache.comet.CometConf._
 import org.apache.comet.Tracing.withTrace
 import org.apache.comet.exceptions.CometQueryExecutionException
-import org.apache.comet.parquet.CometFileKeyUnwrapper
+import org.apache.comet.parquet.{CometFileKeyUnwrapper, HadoopFileOutput}
 import org.apache.comet.serde.Config.ConfigMap
 import org.apache.comet.shuffle.ShufflePartitionPusher
 import org.apache.comet.udf.CometUdfBridge
@@ -73,6 +74,9 @@ import org.apache.comet.vector.NativeUtil
  *   Paths to encrypted Parquet files that need key unwrapping.
  * @param shufflePartitionPusher
  *   Optional task-owned callback that receives remote shuffle output.
+ * @param outputStream
+ *   Optional file that the JVM created for the plan's Parquet writer, which writes the file's
+ *   bytes to it rather than creating the file natively.
  * @param capturePartitionOffsets
  *   Whether to read the shuffle writer's partition offsets when the plan reaches the end of its
  *   output, for a plan rooted at a native shuffle writer with a local destination. Remote shuffle
@@ -94,6 +98,7 @@ class CometExecIterator(
     shuffleBlockIterators: Map[Int, CometShuffleBlockIterator] = Map.empty,
     taskFilePaths: Seq[String] = Seq.empty,
     shufflePartitionPusher: Option[ShufflePartitionPusher] = None,
+    outputStream: Option[HadoopFileOutput] = None,
     capturePartitionOffsets: Boolean = false,
     outputTypes: Seq[DataType] = Seq.empty)
     extends Iterator[ColumnarBatch]
@@ -148,6 +153,7 @@ class CometExecIterator(
       memoryConfig.offHeapMode,
       memoryConfig.memoryPoolType,
       memoryConfig.memoryLimit,
+      memoryConfig.offHeapSize,
       taskAttemptId,
       taskCPUs,
       keyUnwrapper,
@@ -163,6 +169,7 @@ class CometExecIterator(
       shufflePartitionPusher.foreach { pusher =>
         nativeLib.setShufflePartitionPusher(createdPlan, pusher)
       }
+      outputStream.foreach(output => nativeLib.setOutputStream(createdPlan, output))
       createdPlan
     } catch {
       case failure: Throwable =>
@@ -447,6 +454,22 @@ object CometExecIterator extends Logging {
     }
   }
 
+  /**
+   * Called on the Spark task thread before reducing semi-join keys. Only the fair pool can refuse
+   * a sort reservation before Spark can spill another consumer; the greedy pool always asks
+   * Spark.
+   */
+  def hasOtherExecutionMemory(context: TaskContext): Boolean = {
+    if (!CometSparkSessionExtensions.isOffHeapEnabled(SparkEnv.get.conf) ||
+      COMET_OFFHEAP_MEMORY_POOL_TYPE.get() != "fair_unified") {
+      false
+    } else {
+      val memory = taskMemories.get(context)
+      memory != null &&
+      memory.manager.internal.getMemoryConsumptionForThisTask > memory.manager.getUsed
+    }
+  }
+
   private val memoryUsageLogStarted = new AtomicBoolean(false)
 
   /** Native plans running at the previous memory usage log. Only the log's own thread uses it. */
@@ -553,7 +576,14 @@ object CometExecIterator extends Logging {
    * memory limit and never reads those settings. Comet does not know how any other cluster
    * manager sizes its executors.
    */
-  def isContainerSizedFromOverhead(master: String): Boolean =
+  def isContainerSizedFromOverhead(master: String): Boolean = isYarnOrKubernetes(master)
+
+  /**
+   * Whether `master` is YARN or Kubernetes, the cluster managers that give an executor a
+   * container and a default of one core, which Comet resolves its memory overhead and core count
+   * from.
+   */
+  private def isYarnOrKubernetes(master: String): Boolean =
     master == "yarn" || master.startsWith("k8s://")
 
   /**
@@ -889,11 +919,16 @@ object CometExecIterator extends Logging {
       CometConf.COMET_EXEC_SPILL_COMPRESSION_CODEC,
       CometConf.COMET_EXPLAIN_NATIVE_ENABLED,
       CometConf.COMET_MAX_TEMP_DIRECTORY_SIZE,
+      CometConf.COMET_NATIVE_UDF_ENABLED,
+      CometConf.COMET_PARQUET_PREFETCH_NEXT_FILE_METADATA_ENABLED,
       CometConf.COMET_PARQUET_ROW_FILTER_PUSHDOWN_ENABLED,
       CometConf.COMET_STRICT_TIMESTAMP_LABELS,
       CometConf.COMET_TRACING_ENABLED).foreach { entry =>
       builder.putEntries(entry.key, entry.get(SQLConf.get).toString)
     }
+    builder.putEntries(
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.key,
+      CometConf.COMET_NATIVE_UDF_ALLOWED_PATHS.get(SQLConf.get).mkString(","))
 
     builder.build().toByteArray
   }
@@ -912,36 +947,83 @@ object CometExecIterator extends Logging {
           s"offHeapSize=${toMB(offHeapSize)}, " +
           s"memoryFraction=$memoryFraction, " +
           s"memoryLimit=${toMB(memoryLimit)}")
-      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit)
+      MemoryConfig(offHeapMode, memoryPoolType, memoryLimit, offHeapSize)
     } else {
       // On-heap mode exists only so that the Spark SQL tests can run against Comet without
       // changing Spark's memory configuration, and native memory cannot be charged to Spark's
       // on-heap pool, so nothing is accounted. See the memory management contributor guide.
       logDebug("on-heap mode: native memory is unbounded and unaccounted")
-      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0)
+      MemoryConfig(offHeapMode, memoryPoolType = "unbounded", memoryLimit = 0, offHeapSize = 0)
     }
   }
 
+  private val unknownCoresWarned = new AtomicBoolean(false)
+
+  /**
+   * The number of cores this JVM runs tasks on, which sizes the native runtime's worker threads.
+   * If the master does not tell, falls back to the processors available to the JVM and logs a
+   * warning once, unless `COMET_WORKER_THREADS` sets the worker threads regardless.
+   */
   private def numDriverOrExecutorCores(conf: SparkConf): Int = {
-    def convertToInt(threads: String): Int = {
-      if (threads == "*") Runtime.getRuntime.availableProcessors() else threads.toInt
-    }
-
-    // If running in local mode, get number of threads from the spark.master setting.
-    // See https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
-    // for supported formats
-
-    // `local[*]` means using all available cores and `local[2]` means using 2 cores.
-    val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
-    // Also handle format `local[num-worker-threads, max-failures]
-    val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
-
     val master = conf.get("spark.master")
+    val availableProcessors = Runtime.getRuntime.availableProcessors()
+    numDriverOrExecutorCores(master, conf.getOption("spark.executor.cores"), availableProcessors)
+      .getOrElse {
+        // The native side takes COMET_WORKER_THREADS over this count, when it parses as a number.
+        val workerThreadsOverridden = sys.env
+          .get("COMET_WORKER_THREADS")
+          .exists(threads => Try(threads.toLong).filter(_ >= 0).isSuccess)
+        if (!workerThreadsOverridden && unknownCoresWarned.compareAndSet(false, true)) {
+          logWarning(
+            s"Comet cannot tell how many cores this executor has from spark.master=$master when " +
+              "spark.executor.cores is not set, so its native runtime starts one worker thread " +
+              s"for each of the $availableProcessors processors available to the JVM. Native " +
+              "plans that read no input from the JVM run on the worker threads, so concurrent " +
+              "tasks share them. Set spark.executor.cores, or the COMET_WORKER_THREADS " +
+              s"environment variable, to the executor's core count. ${CometConf.TUNING_GUIDE}.")
+        }
+        availableProcessors
+      }
+  }
+
+  // Master URL formats, as SparkContext parses them. See
+  // https://spark.apache.org/docs/latest/submitting-applications.html#master-urls
+  // `local[*]` means using all available cores and `local[2]` means using 2 cores.
+  private val LOCAL_N_REGEX = """local\[([0-9]+|\*)\]""".r
+  // `local[num-worker-threads, max-failures]`
+  private val LOCAL_N_FAILURES_REGEX = """local\[([0-9]+|\*)\s*,\s*([0-9]+)\]""".r
+  // `local-cluster[num-workers, cores-per-worker, memory-per-worker-mib]`
+  private val LOCAL_CLUSTER_REGEX =
+    """local-cluster\[\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*]""".r
+
+  /**
+   * The number of cores the driver (in local mode) or an executor runs tasks on, given the master
+   * URL, `spark.executor.cores` and the number of processors available to the JVM. Every task
+   * takes `spark.task.cpus` of these cores, so this is at least the number of tasks that run at
+   * once. None if it cannot be determined.
+   */
+  def numDriverOrExecutorCores(
+      master: String,
+      executorCores: Option[String],
+      availableProcessors: Int): Option[Int] = {
+    def localThreads(threads: String): Int =
+      if (threads == "*") availableProcessors else threads.toInt
+
     master match {
-      case "local" => 1
-      case LOCAL_N_REGEX(threads) => convertToInt(threads)
-      case LOCAL_N_FAILURES_REGEX(threads, _) => convertToInt(threads)
-      case _ => conf.get("spark.executor.cores", "1").toInt
+      // Local mode runs tasks on the master's threads and ignores spark.executor.cores.
+      case "local" => Some(1)
+      case LOCAL_N_REGEX(threads) => Some(localThreads(threads))
+      case LOCAL_N_FAILURES_REGEX(threads, _) => Some(localThreads(threads))
+      case _ if executorCores.isDefined => executorCores.map(_.toInt)
+      // Without spark.executor.cores, a standalone executor takes every core its worker offers,
+      // but Spark does not set spark.executor.cores on the executor. A local-cluster worker
+      // offers the master's cores per worker, and a standalone worker offers all of the
+      // machine's processors unless it is started with a different number.
+      case LOCAL_CLUSTER_REGEX(_, coresPerWorker, _) => Some(coresPerWorker.toInt)
+      case _ if master.startsWith("spark://") => Some(availableProcessors)
+      // The default of spark.executor.cores on YARN and Kubernetes.
+      case _ if isYarnOrKubernetes(master) => Some(1)
+      case _ => None
     }
   }
 
@@ -950,4 +1032,8 @@ object CometExecIterator extends Logging {
   }
 }
 
-case class MemoryConfig(offHeapMode: Boolean, memoryPoolType: String, memoryLimit: Long)
+case class MemoryConfig(
+    offHeapMode: Boolean,
+    memoryPoolType: String,
+    memoryLimit: Long,
+    offHeapSize: Long)

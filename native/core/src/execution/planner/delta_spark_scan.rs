@@ -108,14 +108,12 @@ fn plan_delta_spark_scan(
             .collect::<Result<Vec<_>, _>>()?,
     };
 
-    // Defense-in-depth against a stale or bypassed JVM gate: DeltaScanSupport.declineReason
-    // (multiStoreReason) already declines data files spanning multiple object-store authorities
-    // at planning time, but prepare_scan_store_and_files below resolves this whole partition's
-    // ObjectStoreUrl from the FIRST file only and then strips every other file down to its bare
-    // object-store path -- a file that actually lives under a different authority would
-    // silently read through the first file's store handle. Checked here rather than inside
-    // prepare_scan_store_and_files itself, which is shared with plain NativeScan and out of
-    // scope for this Delta-specific invariant.
+    // Defense in depth behind the JVM gate (DeltaScanSupport.declineReason, multiStoreReason),
+    // which declines data files spanning multiple object-store authorities. The shared
+    // get_partitioned_files also rejects a mixed-store partition, but it compares normalized store
+    // keys and runs after the first file's store is resolved. This check runs before any store is
+    // resolved and compares scheme, userinfo, host and port (see ObjectStoreAuthority), so a
+    // bypassed gate fails with the JVM decline's wording.
     check_same_object_store_authority(&spark_partition.partitioned_file)?;
 
     let (object_store_url, object_store_backend, mut files) =
@@ -232,18 +230,21 @@ fn plan_delta_spark_scan(
 /// from it may be case-sensitive and it is safer to draw more authority distinctions than fewer;
 /// port is compared as `Option<u16>` so an explicit port never collapses into an absent one.
 /// Mirrors `DeltaScanSupport.uriAuthority`'s normalization on the JVM side, which folds scheme,
-/// userinfo, host, and port into one lowercased `getAuthority`-derived key -- both sides must
-/// treat two URIs as the same authority in exactly the same cases so the JVM-side gate
-/// (`multiStoreReason`, which declines) always fires before this native check (which errors) ever
-/// would.
+/// userinfo, host, and port into one lowercased `getAuthority`-derived key. The JVM side also
+/// lowercases userinfo, but it declines every userinfo-bearing URI
+/// (`userInfoBearingAuthorityReason`) before `multiStoreReason` runs, so the two agree on every
+/// URI that reaches the JVM authority comparison and the JVM gate (which declines) fires before
+/// this native check (which errors) would.
 type ObjectStoreAuthority = (String, String, String, Option<u16>);
 
 /// Errors unless every file in `files` shares the first file's [`ObjectStoreAuthority`]. The
 /// `url` crate does NOT lowercase the host for opaque (non-"special") schemes like
 /// `s3a`/`abfss`/`hdfs`, so comparing `url[BeforeHost..AfterPort]` verbatim would treat two
 /// spellings of the same bucket (`s3a://Bucket-A/..` vs `s3a://bucket-a/..`) as different
-/// authorities and hard-error instead of gracefully declining. See the call site's comment for
-/// why this defensive check exists alongside the JVM-side gate.
+/// authorities and hard-error instead of gracefully declining. Two spellings that differ only in
+/// host case therefore pass here, and if they share a partition `get_partitioned_files` rejects
+/// it, since its store key keeps an opaque scheme's host as written. See the call site's comment
+/// for why this defensive check exists alongside the JVM-side gate.
 fn check_same_object_store_authority(files: &[SparkPartitionedFile]) -> Result<(), ExecutionError> {
     let mut first: Option<(ObjectStoreAuthority, &str)> = None;
     for file in files {

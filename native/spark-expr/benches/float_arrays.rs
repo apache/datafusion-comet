@@ -18,6 +18,10 @@
 //! Compare Comet's float `sort_array` and `array_remove` with DataFusion's `array_sort` and
 //! `array_remove_all` on doubles without zeros or NaNs, where both return the same arrays, which
 //! is checked before timing; special-value semantics belong in tests.
+//!
+//! Comet's `array_distinct` and `array_union` normalize their arguments and then call DataFusion's
+//! kernels. Their `_sliced` cases pass a slice of a longer list, as `explode` returns, to show
+//! that the normalization covers only the rows of the slice.
 
 use arrow::array::{Array, ArrayRef, Float64Array, ListArray};
 use arrow::buffer::{NullBuffer, OffsetBuffer};
@@ -26,9 +30,12 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::ScalarValue;
 use datafusion::functions_nested::remove::array_remove_all_udf;
+use datafusion::functions_nested::set_ops::{array_distinct_udf, array_union_udf};
 use datafusion::functions_nested::sort::array_sort_udf;
 use datafusion::logical_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDF};
-use datafusion_comet_spark_expr::{SparkArrayRemove, SparkFloatArrayContains, SparkSortArray};
+use datafusion_comet_spark_expr::{
+    SparkArrayRemove, SparkArraySetOp, SparkFloatArrayContains, SparkSortArray,
+};
 use datafusion_spark::function::array::array_contains::SparkArrayContains;
 use std::hint::black_box;
 use std::sync::Arc;
@@ -41,20 +48,26 @@ fn value(i: usize) -> f64 {
     ((i * 7919) % 101) as f64 * 0.5 + 1.0
 }
 
-/// `ROWS` lists of `len` doubles, with every tenth list and every seventh element null if
+/// `rows` lists of `len` doubles, with every tenth list and every seventh element null if
 /// `nulls`.
-fn lists(len: usize, nulls: bool) -> ArrayRef {
+fn lists(rows: usize, len: usize, nulls: bool) -> ArrayRef {
     let values = if nulls {
-        Float64Array::from_iter((0..ROWS * len).map(|i| (i % 7 != 0).then(|| value(i))))
+        Float64Array::from_iter((0..rows * len).map(|i| (i % 7 != 0).then(|| value(i))))
     } else {
-        Float64Array::from_iter_values((0..ROWS * len).map(value))
+        Float64Array::from_iter_values((0..rows * len).map(value))
     };
     Arc::new(ListArray::new(
         Arc::new(Field::new_list_field(DataType::Float64, true)),
-        OffsetBuffer::from_lengths(std::iter::repeat_n(len, ROWS)),
+        OffsetBuffer::from_lengths(std::iter::repeat_n(len, rows)),
         Arc::new(values),
-        nulls.then(|| NullBuffer::from_iter((0..ROWS).map(|row| row % 10 != 0))),
+        nulls.then(|| NullBuffer::from_iter((0..rows).map(|row| row % 10 != 0))),
     ))
+}
+
+/// `ROWS` lists sliced from the middle of 16 times as many. `explode` of a list of lists returns
+/// slices like this, one per output batch, which all keep the same child array.
+fn sliced_lists(len: usize, nulls: bool) -> ArrayRef {
+    lists(16 * ROWS, len, nulls).slice(8 * ROWS, ROWS)
 }
 
 fn args(args: Vec<ColumnarValue>, list: &ArrayRef) -> ScalarFunctionArgs {
@@ -81,9 +94,12 @@ fn criterion_benchmark(c: &mut Criterion) {
     // The native path other element types take: array_has plus Spark's null semantics.
     let datafusion_contains = Arc::new(ScalarUDF::new_from_impl(SparkArrayContains::default()));
     let (datafusion_sort, datafusion_remove) = (array_sort_udf(), array_remove_all_udf());
+    let comet_distinct = ScalarUDF::new_from_impl(SparkArraySetOp::distinct());
+    let comet_union = ScalarUDF::new_from_impl(SparkArraySetOp::union());
+    let (datafusion_distinct, datafusion_union) = (array_distinct_udf(), array_union_udf());
     for len in [8, 50] {
         for nulls in [false, true] {
-            let list = lists(len, nulls);
+            let list = lists(ROWS, len, nulls);
             let data = format!("len={len}_null={nulls}");
             let column = ColumnarValue::Array(Arc::clone(&list));
             let scalar = |value: ScalarValue| ColumnarValue::Scalar(value);
@@ -121,9 +137,17 @@ fn criterion_benchmark(c: &mut Criterion) {
             let row_values =
                 Float64Array::from_iter_values((0..ROWS).map(|row| value(row * len + 1)));
             let contains_column_args = args(
-                vec![column, ColumnarValue::Array(Arc::new(row_values))],
+                vec![column.clone(), ColumnarValue::Array(Arc::new(row_values))],
                 &list,
             );
+            let distinct_args = args(vec![column.clone()], &list);
+            // A union of a list with itself: the right side adds no elements, but it is still
+            // normalized and looked up.
+            let union_args = args(vec![column.clone(), column], &list);
+            let sliced = sliced_lists(len, nulls);
+            let sliced_column = ColumnarValue::Array(Arc::clone(&sliced));
+            let sliced_distinct_args = args(vec![sliced_column.clone()], &sliced);
+            let sliced_union_args = args(vec![sliced_column.clone(), sliced_column], &sliced);
             let cases = [
                 (
                     "sort_array",
@@ -159,6 +183,34 @@ fn criterion_benchmark(c: &mut Criterion) {
                     &datafusion_contains,
                     &contains_column_args,
                     &contains_column_args,
+                ),
+                (
+                    "array_distinct",
+                    &comet_distinct,
+                    &datafusion_distinct,
+                    &distinct_args,
+                    &distinct_args,
+                ),
+                (
+                    "array_distinct_sliced",
+                    &comet_distinct,
+                    &datafusion_distinct,
+                    &sliced_distinct_args,
+                    &sliced_distinct_args,
+                ),
+                (
+                    "array_union",
+                    &comet_union,
+                    &datafusion_union,
+                    &union_args,
+                    &union_args,
+                ),
+                (
+                    "array_union_sliced",
+                    &comet_union,
+                    &datafusion_union,
+                    &sliced_union_args,
+                    &sliced_union_args,
                 ),
             ];
             for (op, comet, datafusion, comet_args, datafusion_args) in cases {

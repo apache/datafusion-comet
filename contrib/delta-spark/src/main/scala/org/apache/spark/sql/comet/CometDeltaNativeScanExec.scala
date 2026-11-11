@@ -225,13 +225,6 @@ case class CometDeltaNativeScanExec(
   }
 
   override def doCanonicalize(): CometDeltaNativeScanExec = {
-    val canonOriginal = if (originalPlan != null) {
-      val stripped = originalPlan.copy(partitionFilters =
-        CometScanUtils.filterUnusedDynamicPruningExpressions(originalPlan.partitionFilters))
-      stripped.doCanonicalize()
-    } else {
-      null
-    }
     CometDeltaNativeScanExec(
       nativeOp,
       output.map(QueryPlan.normalizeExpressions(_, output)),
@@ -241,7 +234,7 @@ case class CometDeltaNativeScanExec(
         output),
       QueryPlan.normalizePredicates(dataFilters, output),
       relation,
-      canonOriginal,
+      CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       "")
   }

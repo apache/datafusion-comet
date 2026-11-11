@@ -774,6 +774,103 @@ mod tests {
         );
     }
 
+    /// Spark hashes `YearMonthIntervalType` as an int and `DayTimeIntervalType` as a long, which
+    /// Comet maps to `Interval(YearMonth)` and `Duration(Microsecond)`.
+    #[test]
+    fn test_ansi_intervals_hash_like_int_and_long() {
+        use arrow::array::{DurationMicrosecondArray, IntervalYearMonthArray};
+
+        test_murmur3_hash::<i32, IntervalYearMonthArray>(
+            vec![Some(1), Some(0), Some(-1), Some(i32::MAX), Some(i32::MIN)],
+            vec![0xdea578e3, 0x379fae8f, 0xa0590e3d, 0x07fb67e7, 0x2b1f0fc6],
+        );
+        test_murmur3_hash::<i64, DurationMicrosecondArray>(
+            vec![Some(1), Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN)],
+            vec![0x99f0149d, 0x9c67b85d, 0xc8008529, 0xa05b5d7b, 0xcd1e64fb],
+        );
+    }
+
+    /// A `NullType` value is always null, so it leaves the hash unchanged, as in Spark, both as a
+    /// column of its own and as a struct field, including a field of a null struct.
+    #[test]
+    fn test_null_type_leaves_hash_unchanged() {
+        use arrow::array::{NullArray, StructArray};
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field};
+
+        let ints: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(-1)]));
+        let nulls: ArrayRef = Arc::new(NullArray::new(3));
+
+        let mut expected = vec![42u32; 3];
+        create_murmur3_hashes(&[Arc::clone(&ints)], &mut expected).unwrap();
+        let mut hashes = vec![42u32; 3];
+        create_murmur3_hashes(&[Arc::clone(&ints), Arc::clone(&nulls)], &mut hashes).unwrap();
+        assert_eq!(hashes, expected);
+
+        let struct_nulls = Some(NullBuffer::from(vec![true, true, false]));
+        let x = Arc::new(Field::new("x", DataType::Int32, true));
+        let n = Arc::new(Field::new("n", DataType::Null, true));
+        let with_null_field: ArrayRef = Arc::new(StructArray::new(
+            vec![Arc::clone(&x), n].into(),
+            vec![Arc::clone(&ints), nulls],
+            struct_nulls.clone(),
+        ));
+        let without_null_field: ArrayRef =
+            Arc::new(StructArray::new(vec![x].into(), vec![ints], struct_nulls));
+
+        let mut expected = vec![42u32; 3];
+        create_murmur3_hashes(&[without_null_field], &mut expected).unwrap();
+        let mut hashes = vec![42u32; 3];
+        create_murmur3_hashes(&[with_null_field], &mut hashes).unwrap();
+        assert_eq!(hashes, expected);
+        assert_eq!(hashes[2], 42, "a null struct must leave the seed untouched");
+    }
+
+    /// Lists whose elements are `NullType` or an ANSI interval type go through the recursive
+    /// list path into the `Null`, `Interval(YearMonth)` and `Duration(Microsecond)` arms. A list
+    /// of nulls leaves the hash unchanged, and a list of intervals hashes like the same list of
+    /// ints or longs.
+    #[test]
+    fn test_lists_of_null_type_and_intervals() {
+        use arrow::array::{
+            DurationMicrosecondArray, IntervalYearMonthArray, ListArray, NullArray,
+        };
+        use arrow::buffer::{NullBuffer, OffsetBuffer};
+        use arrow::datatypes::Field;
+
+        // Rows [v0, v1], [], null and [v2].
+        let as_list = |values: ArrayRef| -> ArrayRef {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", values.data_type().clone(), true)),
+                OffsetBuffer::from_lengths([2, 0, 0, 1]),
+                values,
+                Some(NullBuffer::from(vec![true, true, false, true])),
+            ))
+        };
+        let hash = |list: ArrayRef| {
+            let mut hashes = vec![42u32; 4];
+            create_murmur3_hashes(&[list], &mut hashes).unwrap();
+            hashes
+        };
+
+        assert_eq!(hash(as_list(Arc::new(NullArray::new(3)))), vec![42u32; 4]);
+
+        let months = vec![Some(1), None, Some(i32::MIN)];
+        assert_eq!(
+            hash(as_list(Arc::new(IntervalYearMonthArray::from(
+                months.clone()
+            )))),
+            hash(as_list(Arc::new(Int32Array::from(months))))
+        );
+        let micros = vec![Some(-1), Some(i64::MAX), None];
+        assert_eq!(
+            hash(as_list(Arc::new(DurationMicrosecondArray::from(
+                micros.clone()
+            )))),
+            hash(as_list(Arc::new(Int64Array::from(micros))))
+        );
+    }
+
     #[test]
     fn test_f32() {
         test_murmur3_hash::<f32, Float32Array>(

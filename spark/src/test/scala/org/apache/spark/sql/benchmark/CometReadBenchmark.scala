@@ -49,12 +49,13 @@ import org.apache.comet.{CometConf, WithHdfsCluster}
 class CometReadBaseBenchmark extends CometBenchmarkBase {
 
   /**
-   * Measure the nine scan I/O accumulators separately from storage work. Run this benchmark with
-   * `--scan-metric-overhead`; add `--reverse-cases` to reverse the real-job comparison. The first
-   * two cases isolate driver creation and task-copy/merge costs. The last runs 10,000 Spark tasks
-   * with zero or nine extra SQL accumulators, including task serialization and scheduler updates.
-   * This is not an end-to-end scan benchmark: it excludes native counters, JNI traversal, the SQL
-   * UI's per-node rendering, and storage I/O.
+   * Measure scan I/O accumulators separately from storage work. Run this benchmark with
+   * `--scan-metric-overhead`; add `--reverse-cases` to reverse the comparisons. Compare the
+   * original nine metrics with the current eleven (including observed GETs and retries) and a
+   * hypothetical twelfth counter for total HTTP attempts. The first two benchmarks isolate driver
+   * creation and task-copy/merge costs. The last runs 10,000 Spark tasks, including task
+   * serialization and scheduler updates, and adds a zero-accumulator baseline. This excludes
+   * native counters, JNI traversal, the SQL UI's per-node rendering, and storage I/O.
    */
   def scanMetricAccumulatorBenchmark(reverseCases: Boolean): Unit = {
     val names = Seq(
@@ -66,8 +67,15 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       "scan_io_object_store_get_requested_bytes",
       "scan_io_object_store_response_bytes_read",
       "scan_io_metadata_cache_hits",
-      "scan_io_metadata_cache_misses")
-    def createMetrics() = names.map { name =>
+      "scan_io_metadata_cache_misses",
+      "scan_io_http_observed_gets",
+      "scan_io_http_retries",
+      // A hypothetical redundant counter: attempts = observed GETs + retries.
+      "scan_io_http_attempts")
+    val metricCounts =
+      Seq(names.count(!_.startsWith("scan_io_http_")), names.size - 1, names.size)
+    val cases = if (reverseCases) metricCounts.reverse else metricCounts
+    def createMetrics(count: Int) = names.take(count).map { name =>
       if (name.endsWith("bytes") || name.endsWith("bytes_read")) {
         SQLMetrics.createSizeMetric(spark.sparkContext, name)
       } else {
@@ -82,34 +90,38 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
         operators.toLong,
         minNumIters = 5,
         output = output)
-    creation.addCase("nine metrics per operator") { _ =>
-      var count = 0
-      while (count < operators) {
-        assert(createMetrics().size == 9)
-        count += 1
+    cases.foreach { count =>
+      creation.addCase(s"$count metrics per operator") { _ =>
+        var operator = 0
+        while (operator < operators) {
+          assert(createMetrics(count).size == count)
+          operator += 1
+        }
       }
     }
     creation.run()
 
     val tasks = 10000
-    val driverMetrics = createMetrics()
     val updates = new Benchmark(
       "Scan I/O SQL metrics: task snapshots",
       tasks.toLong,
       minNumIters = 5,
       output = output)
-    updates.addCase("copy, update and merge nine metrics") { _ =>
-      driverMetrics.foreach(_.reset())
-      var task = 0
-      while (task < tasks) {
-        driverMetrics.foreach { driver =>
-          val local = driver.copyAndReset()
-          local.add(64L)
-          driver.merge(local)
+    cases.foreach { count =>
+      val driverMetrics = createMetrics(count)
+      updates.addCase(s"copy, update and merge $count metrics") { _ =>
+        driverMetrics.foreach(_.reset())
+        var task = 0
+        while (task < tasks) {
+          driverMetrics.foreach { driver =>
+            val local = driver.copyAndReset()
+            local.add(64L)
+            driver.merge(local)
+          }
+          task += 1
         }
-        task += 1
+        assert(driverMetrics.forall(_.value == tasks * 64L))
       }
-      assert(driverMetrics.forall(_.value == tasks * 64L))
     }
     updates.run()
 
@@ -119,9 +131,9 @@ class CometReadBaseBenchmark extends CometBenchmarkBase {
       tasks.toLong,
       minNumIters = 3,
       output = output)
-    val cases = if (reverseCases) Seq(9, 0) else Seq(0, 9)
-    cases.foreach { count =>
-      val metrics = if (count == 0) Seq.empty else createMetrics()
+    val jobCases = if (reverseCases) cases :+ 0 else 0 +: cases
+    jobCases.foreach { count =>
+      val metrics = createMetrics(count)
       jobs.addCase(s"$count extra SQL accumulators") { _ =>
         metrics.foreach(_.reset())
         partitions.foreachPartition { _ =>

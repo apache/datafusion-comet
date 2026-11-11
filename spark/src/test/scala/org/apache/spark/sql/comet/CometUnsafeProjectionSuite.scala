@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.{CatalystTypeConverters, InternalRow}
 import org.apache.spark.sql.catalyst.expressions.{AttributeReference, InterpretedUnsafeProjection, UnsafeProjection}
 import org.apache.spark.sql.execution.WholeStageCodegenExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
-import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.{SQLConf, StaticSQLConf}
 import org.apache.spark.sql.types._
 
 class CometUnsafeProjectionSuite extends CometTestBase with AdaptiveSparkPlanHelper {
@@ -135,7 +135,7 @@ class CometUnsafeProjectionSuite extends CometTestBase with AdaptiveSparkPlanHel
 
   test("keeps the most recently used classes") {
     withCodegenOnly() {
-      val layouts = Seq.fill(CometUnsafeProjection.MaxCachedClasses + 1) {
+      val layouts = Seq.fill(SQLConf.get.codegenCacheMaxEntries + 1) {
         val name = s"f_${UUID.randomUUID().toString.replace("-", "")}"
         Seq(AttributeReference("c", StructType(Seq(StructField(name, IntegerType))))())
       }
@@ -145,6 +145,21 @@ class CometUnsafeProjectionSuite extends CometTestBase with AdaptiveSparkPlanHel
       assert(CometUnsafeProjection.generatedClassCount == before)
       CometUnsafeProjection.create(layouts.head)
       assert(CometUnsafeProjection.generatedClassCount == before + 1)
+    }
+  }
+
+  test("keeps as many classes as spark.sql.codegen.cache.maxEntries") {
+    Seq(0, 2).foreach { maxEntries =>
+      // A static conf, so set where the cache reads it rather than in the session.
+      val conf = new SQLConf
+      conf.setConfString(StaticSQLConf.CODEGEN_CACHE_MAX_ENTRIES.key, maxEntries.toString)
+      val cache = SQLConf.withExistingConf(conf)(new GeneratedClassCache[Int, String])
+      def get(key: Int): String = cache.getOrGenerate(key)((key.toString, true))
+      Seq(1, 2, 3).foreach(get)
+      val before = cache.generatedCount
+      // Most recently used first, so every key still cached is read before a miss evicts one.
+      Seq(3, 2, 1).foreach(get)
+      assert(cache.generatedCount == before + 3 - maxEntries)
     }
   }
 

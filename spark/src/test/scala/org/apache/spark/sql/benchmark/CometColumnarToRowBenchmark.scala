@@ -24,7 +24,7 @@ import scala.collection.mutable.ArrayBuffer
 import org.apache.spark.SparkConf
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.SparkSession
-import org.apache.spark.sql.comet.{CometColumnarToRowExec, CometNativeColumnarToRowExec}
+import org.apache.spark.sql.comet.CometColumnarToRowExec
 import org.apache.spark.sql.execution.{ColumnarToRowExec, QueryExecution, SparkPlan}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.util.QueryExecutionListener
@@ -35,7 +35,6 @@ import org.apache.comet.{CometConf, CometSparkSessionExtensions}
  * Benchmark to compare Columnar to Row conversion performance:
  *   - Spark's default ColumnarToRowExec
  *   - Comet's JVM-based CometColumnarToRowExec
- *   - Comet's Native CometNativeColumnarToRowExec
  *
  * To run this benchmark:
  * {{{
@@ -109,7 +108,6 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
           collect(plan) {
             case c: ColumnarToRowExec => c
             case c: CometColumnarToRowExec => c
-            case c: CometNativeColumnarToRowExec => c
           }
         }
         require(
@@ -131,18 +129,10 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
       CometConf.COMET_ENABLED.key -> "false")
 
     addCase(
-      "Comet JVM (CometColumnarToRowExec)",
+      "Comet (CometColumnarToRowExec)",
       classOf[CometColumnarToRowExec],
       CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "false")
-
-    addCase(
-      "Comet Native (CometNativeColumnarToRowExec)",
-      classOf[CometNativeColumnarToRowExec],
-      CometConf.COMET_ENABLED.key -> "true",
-      CometConf.COMET_EXEC_ENABLED.key -> "true",
-      CometConf.COMET_NATIVE_COLUMNAR_TO_ROW_ENABLED.key -> "true")
+      CometConf.COMET_EXEC_ENABLED.key -> "true")
   }
 
   /**
@@ -177,8 +167,7 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
   }
 
   /**
-   * Benchmark columnar to row conversion for fixed-width types ONLY (no strings). This tests the
-   * fast path in native C2R that pre-allocates buffers.
+   * Benchmark columnar to row conversion for fixed-width types ONLY (no strings).
    */
   def fixedWidthOnlyBenchmark(values: Int): Unit = {
     val benchmark =
@@ -581,8 +570,8 @@ object CometColumnarToRowBenchmark extends CometBenchmarkBase {
 
   /**
    * Benchmark where a JVM operator (Scala UDF projection + aggregate) consumes the rows. Unlike
-   * the noop() sink, this defeats escape analysis and exercises the WholeStageCodegen fusion
-   * asymmetry between the CodegenSupport JVM C2R and the iterator-based native C2R.
+   * the noop() sink, this defeats escape analysis and exercises the WholeStageCodegen fusion of
+   * the CodegenSupport Comet C2R with its consumer.
    */
   def jvmConsumerBenchmark(values: Int): Unit = {
     val benchmark =

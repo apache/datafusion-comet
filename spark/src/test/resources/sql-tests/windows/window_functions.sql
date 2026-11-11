@@ -232,16 +232,11 @@ FROM emp
 -- N days, so MAX(val_date) OVER (... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING)
 -- returns the largest val_date within the next 2 days of each row.
 -- Mirrors the "max(val_date) ... RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING"
--- case from Spark's window.sql. Comet falls back because its native window
--- planner ships RANGE frame offsets as Int64 while arrow-arith requires an
--- Interval RHS for Date32 arithmetic. Once the native planner coerces Int ->
--- Interval for DATE sort keys (as DataFusion's type-coercion analyzer does),
--- the guard in CometWindowExec can be removed and this test will start
--- failing because Comet stops falling back — that's the signal to re-enable
--- native execution.
+-- case from Spark's window.sql. The native planner coerces the Int offset to
+-- IntervalDayTime for Date32 sort keys so this runs natively.
 -- ============================================================
 
-query expect_fallback(RANGE frame with explicit offset on DATE ORDER BY is not supported)
+query
 SELECT val_date, cate,
   MAX(val_date) OVER (PARTITION BY cate ORDER BY val_date
                       RANGE BETWEEN CURRENT ROW AND 2 FOLLOWING) AS mx_d

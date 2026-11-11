@@ -34,8 +34,13 @@
 //! `DictionaryValuesWriter` and `RunLengthBitPackingHybridEncoder` in parquet-column, and the page
 //! boundary follows `ColumnWriteStoreBase.sizeCheck`.
 
-use arrow::array::{downcast_primitive_array, Array, AsArray, OffsetSizeTrait, RecordBatch};
-use arrow::datatypes::{DataType, Fields, Schema as ArrowSchema, ToByteSlice};
+use std::hash::{Hash, Hasher};
+
+use arrow::array::{downcast_primitive, Array, ArrayAccessor, AsArray, RecordBatch};
+use arrow::buffer::NullBuffer;
+use arrow::datatypes::{
+    ArrowNativeType, ArrowPrimitiveType, DataType, Fields, Schema as ArrowSchema, ToByteSlice,
+};
 use datafusion::common::HashSet;
 use datafusion::error::{DataFusionError, Result as DFResult};
 use parquet::arrow::ArrowSchemaConverter;
@@ -53,6 +58,11 @@ const FIRST_PAGE_SIZE_CHECK_ROWS: usize = 100;
 /// (`ColumnWriteStoreBase.THRESHOLD_TOLERANCE_RATIO`).
 const PAGE_SIZE_TOLERANCE_RATIO: f32 = 0.1;
 
+/// The most values a column's dictionary makes room for up front. A first page of a nested column
+/// can hold many more values than it has distinct ones, so past this the set grows only as
+/// distinct values arrive.
+const MAX_RESERVED_VALUES: usize = 1 << 16;
+
 /// Decides, from the rows a partition's data starts with, which of its columns keep dictionary
 /// encoding.
 ///
@@ -62,7 +72,7 @@ const PAGE_SIZE_TOLERANCE_RATIO: f32 = 0.1;
 /// only notices a full page at its periodic size checks, whose timing depends on every column, so
 /// where the page size decides, this ends the page at the first row past parquet-mr's threshold and
 /// can judge a column on somewhat fewer rows than parquet-mr would.
-pub(super) struct DictionaryChooser {
+pub struct DictionaryChooser {
     /// The table's writer properties, which every choice starts from.
     base: WriterProperties,
     /// The fields every batch is written with.
@@ -86,6 +96,8 @@ struct Candidate {
     path: ColumnPath,
     /// Where the column's values are in a batch.
     leaf: Leaf,
+    /// The Arrow type of the column's values.
+    data_type: DataType,
     /// Plain-encoded width of one value, or `None` for a byte array, which parquet-mr accounts as
     /// a 4-byte length plus the bytes.
     width: Option<u64>,
@@ -117,7 +129,7 @@ enum Step {
 impl DictionaryChooser {
     /// `schema` is the Arrow schema every batch is written with, which fixes the Parquet leaf
     /// columns the same way the parquet writer derives them.
-    pub(super) fn try_new(base: WriterProperties, schema: &ArrowSchema) -> DFResult<Self> {
+    pub fn try_new(base: WriterProperties, schema: &ArrowSchema) -> DFResult<Self> {
         let parquet_schema = ArrowSchemaConverter::new()
             .with_coerce_types(base.coerce_types())
             .convert(schema)
@@ -138,7 +150,7 @@ impl DictionaryChooser {
                 .columns()
                 .iter()
                 .zip(leaves)
-                .filter_map(|(descr, leaf)| {
+                .filter_map(|(descr, (leaf, data_type))| {
                     let path = descr.path();
                     let width = match descr.physical_type() {
                         PhysicalType::INT32 | PhysicalType::FLOAT => Some(4),
@@ -152,6 +164,7 @@ impl DictionaryChooser {
                     base.dictionary_enabled(path).then(|| Candidate {
                         path: path.clone(),
                         leaf,
+                        data_type,
                         width,
                         dictionary_limit: base.column_dictionary_page_size_limit(path) as u64,
                     })
@@ -196,7 +209,7 @@ impl DictionaryChooser {
     /// Columns are judged one at a time, and each is read only as far as its first page reaches,
     /// so what this keeps at any moment is one column's dictionary, which cannot outgrow
     /// `write.parquet.dict-size-bytes` by more than a value.
-    pub(super) fn choose(&self, sample: &[RecordBatch]) -> WriterProperties {
+    pub fn choose(&self, sample: &[RecordBatch]) -> WriterProperties {
         if sample
             .iter()
             .any(|batch| batch.schema_ref().fields() != &self.fields)
@@ -206,20 +219,11 @@ impl DictionaryChooser {
         }
         let mut plain = Vec::new();
         for candidate in &self.candidates {
-            let mut page = FirstPage::new(candidate, self.page_bytes);
-            for batch in sample {
-                if page.is_closed() || page.rows == self.page_rows {
-                    break;
-                }
-                let rows = batch.num_rows().min(self.page_rows - page.rows);
-                let top: Entries = Box::new((0..rows).map(|row| (row as u32, row)));
-                let Some((array, entries)) = candidate.leaf.entries(batch, top) else {
-                    // Cannot happen once the fields match, but a guess is worse than no choice.
-                    return self.base.clone();
-                };
-                page.extend(array, entries, rows);
-            }
-            if page.rows > 0 && !page.keeps_dictionary() {
+            let Some(keeps) = self.judge(candidate, sample) else {
+                // Cannot happen once the fields match, but a guess is worse than no choice.
+                return self.base.clone();
+            };
+            if !keeps {
                 plain.push(&candidate.path);
             }
         }
@@ -233,11 +237,102 @@ impl DictionaryChooser {
             })
             .build()
     }
+
+    /// Whether `candidate` keeps its dictionary on the first page `sample` gives it, or `None`
+    /// when a batch does not have the shape the schema promised. A column of a type there is no
+    /// reading is left as configured.
+    fn judge(&self, candidate: &Candidate, sample: &[RecordBatch]) -> Option<bool> {
+        macro_rules! primitive {
+            ($t:ty) => {
+                self.judge_primitive::<$t>(candidate, sample)
+            };
+        }
+        downcast_primitive! {
+            &candidate.data_type => (primitive),
+            DataType::Utf8 => {
+                self.judge_values(candidate, sample, |a| a.as_string_opt::<i32>().map(bytes))
+            }
+            DataType::LargeUtf8 => {
+                self.judge_values(candidate, sample, |a| a.as_string_opt::<i64>().map(bytes))
+            }
+            DataType::Utf8View => {
+                self.judge_values(candidate, sample, |a| a.as_string_view_opt().map(bytes))
+            }
+            DataType::Binary => {
+                self.judge_values(candidate, sample, |a| a.as_binary_opt::<i32>().map(bytes))
+            }
+            DataType::LargeBinary => {
+                self.judge_values(candidate, sample, |a| a.as_binary_opt::<i64>().map(bytes))
+            }
+            DataType::BinaryView => {
+                self.judge_values(candidate, sample, |a| a.as_binary_view_opt().map(bytes))
+            }
+            _ => Some(true),
+        }
+    }
+
+    /// [`Self::judge`] for a column of `T` values, told apart by their bits where those fit in a
+    /// `u128` and by their bytes where not.
+    fn judge_primitive<'a, T: ArrowPrimitiveType>(
+        &self,
+        candidate: &Candidate,
+        sample: &'a [RecordBatch],
+    ) -> Option<bool> {
+        let values = |array: &'a dyn Array| Some(array.as_primitive_opt::<T>()?.values().as_ref());
+        // Cannot be missing for a fixed-width type, but a guess is worse than no choice.
+        let width = candidate.width?;
+        if size_of::<T::Native>() <= size_of::<u64>() {
+            self.judge_values(candidate, sample, |array| {
+                values(array).map(|values| bits::<_, u64>(values, width))
+            })
+        } else if size_of::<T::Native>() <= size_of::<u128>() {
+            self.judge_values(candidate, sample, |array| {
+                values(array).map(|values| bits::<_, u128>(values, width))
+            })
+        } else {
+            self.judge_values(candidate, sample, |array| {
+                values(array).map(|values| native_bytes(values, width))
+            })
+        }
+    }
+
+    /// [`Self::judge`] for a column whose values `read` reads from each batch's leaf array: what
+    /// tells each value apart, and how many bytes it takes in the plain encoding.
+    fn judge_values<'a, K: Copy + Eq + Hash, R: Fn(usize) -> (K, u64)>(
+        &self,
+        candidate: &Candidate,
+        sample: &'a [RecordBatch],
+        read: impl Fn(&'a dyn Array) -> Option<R>,
+    ) -> Option<bool> {
+        // The way to the leaf in each batch the page reaches, with the rows of it the page can
+        // take, and how many leaf entries lie under those rows.
+        let mut batches = Vec::with_capacity(sample.len());
+        let mut entries = 0;
+        let mut rows_left = self.page_rows;
+        for batch in sample {
+            if rows_left == 0 {
+                break;
+            }
+            let rows = batch.num_rows().min(rows_left);
+            let path = candidate.leaf.path(batch)?;
+            entries += path.entries(rows);
+            rows_left -= rows;
+            batches.push((path, rows));
+        }
+        let mut page = FirstPage::<K>::new(candidate, self.page_bytes, entries);
+        for (path, rows) in &batches {
+            if page.is_closed() {
+                break;
+            }
+            page.extend(path, &read(path.leaf)?, *rows);
+        }
+        Some(page.rows == 0 || page.keeps_dictionary())
+    }
 }
 
-/// Appends the way to every leaf under a column of `data_type` that `leaf` leads to, in the
-/// depth-first order Parquet numbers leaf columns in.
-fn collect_leaves(data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<Leaf>) {
+/// Appends the way to every leaf under a column of `data_type` that `leaf` leads to, with the
+/// leaf's type, in the depth-first order Parquet numbers leaf columns in.
+fn collect_leaves(data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<(Leaf, DataType)>) {
     match data_type {
         DataType::Struct(fields) => {
             for (field, child) in fields.iter().enumerate() {
@@ -254,139 +349,232 @@ fn collect_leaves(data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<Leaf>)
                 descend(Step::Key, fields[0].data_type(), leaf, leaves);
                 descend(Step::Value, fields[1].data_type(), leaf, leaves);
             }
-            _ => leaves.push(leaf.clone()),
+            _ => leaves.push((leaf.clone(), data_type.clone())),
         },
-        _ => leaves.push(leaf.clone()),
+        _ => leaves.push((leaf.clone(), data_type.clone())),
     }
 }
 
-fn descend(step: Step, data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<Leaf>) {
+fn descend(step: Step, data_type: &DataType, leaf: &mut Leaf, leaves: &mut Vec<(Leaf, DataType)>) {
     leaf.steps.push(step);
     collect_leaves(data_type, leaf, leaves);
     leaf.steps.pop();
 }
 
-/// `(row, index)` pairs, one per entry of an array that the column chunk stores: its row of the
-/// batch, and its index into the array.
-type Entries<'a> = Box<dyn Iterator<Item = (u32, usize)> + 'a>;
-
 impl Leaf {
-    /// The leaf's array in `batch`, with the entries of it that lie under the rows `top` yields and
-    /// whose ancestors are all present, in the order the column chunk stores them. Nothing is
-    /// expanded ahead: each entry is produced when the page asks for it. `None` when `batch` does
-    /// not have the shape the schema promised.
-    fn entries<'a>(
-        &self,
-        batch: &'a RecordBatch,
-        top: Entries<'a>,
-    ) -> Option<(&'a dyn Array, Entries<'a>)> {
+    /// The arrays of `batch` the way to the leaf passes through, or `None` when `batch` does not
+    /// have the shape the schema promised.
+    fn path<'a>(&self, batch: &'a RecordBatch) -> Option<Path<'a>> {
         let mut array = batch.columns().get(self.column)?.as_ref();
-        let mut entries = top;
+        let mut levels = Vec::with_capacity(self.steps.len());
         for step in &self.steps {
-            let present = present(array, entries);
-            (array, entries) = match (step, array.data_type()) {
+            let (children, next) = match (step, array.data_type()) {
                 (Step::Field(field), DataType::Struct(_)) => {
-                    (array.as_struct().columns().get(*field)?.as_ref(), present)
+                    (Children::Same, array.as_struct().columns().get(*field)?)
                 }
                 (Step::Element, DataType::List(_)) => {
                     let list = array.as_list::<i32>();
-                    (
-                        list.values().as_ref(),
-                        children(present, list.value_offsets()),
-                    )
+                    (Children::Offsets(list.value_offsets()), list.values())
                 }
                 (Step::Element, DataType::LargeList(_)) => {
                     let list = array.as_list::<i64>();
-                    (
-                        list.values().as_ref(),
-                        children(present, list.value_offsets()),
-                    )
+                    (Children::LargeOffsets(list.value_offsets()), list.values())
                 }
-                (Step::Element, DataType::FixedSizeList(_, size)) => {
-                    let size = *size as usize;
-                    let elements: Entries<'a> = Box::new(present.flat_map(move |(row, index)| {
-                        (index * size..(index + 1) * size).map(move |element| (row, element))
-                    }));
-                    (array.as_fixed_size_list().values().as_ref(), elements)
-                }
+                (Step::Element, DataType::FixedSizeList(_, size)) => (
+                    Children::Fixed(*size as usize),
+                    array.as_fixed_size_list().values(),
+                ),
                 (Step::Key, DataType::Map(_, _)) => {
                     let map = array.as_map();
-                    (map.keys().as_ref(), children(present, map.value_offsets()))
+                    (Children::Offsets(map.value_offsets()), map.keys())
                 }
                 (Step::Value, DataType::Map(_, _)) => {
                     let map = array.as_map();
-                    (
-                        map.values().as_ref(),
-                        children(present, map.value_offsets()),
-                    )
+                    (Children::Offsets(map.value_offsets()), map.values())
                 }
                 _ => return None,
             };
+            // A null buffer with no nulls in it is as good as none, and a struct without nulls
+            // leads every entry straight to its field's, so neither needs a level.
+            let nulls = present_nulls(array);
+            if nulls.is_some() || !matches!(children, Children::Same) {
+                levels.push(Level { nulls, children });
+            }
+            array = next.as_ref();
         }
-        Some((array, entries))
+        Some(Path {
+            levels,
+            leaf: array,
+        })
     }
 }
 
-/// The entries whose value in `array` is not null.
-fn present<'a>(array: &'a dyn Array, entries: Entries<'a>) -> Entries<'a> {
-    match array.nulls() {
-        Some(nulls) => Box::new(entries.filter(move |&(_, index)| nulls.is_valid(index))),
-        None => entries,
+/// The arrays the way from a batch's column down to one leaf column passes through.
+struct Path<'a> {
+    /// One for each step, from the batch's column down.
+    levels: Vec<Level<'a>>,
+    /// The leaf column's array.
+    leaf: &'a dyn Array,
+}
+
+/// An array on the way to a leaf, and how its entries lead into the next one.
+struct Level<'a> {
+    /// A null entry has nothing under it in the column chunk, even where a null list spans child
+    /// values.
+    nulls: Option<&'a NullBuffer>,
+    children: Children<'a>,
+}
+
+/// The entries of the next array that lie under entry `i` of a level.
+#[derive(Clone, Copy)]
+enum Children<'a> {
+    /// A struct's: entry `i` of its field.
+    Same,
+    /// A list's or a map's: entries `offsets[i]` up to `offsets[i + 1]` of its elements, keys or
+    /// values.
+    Offsets(&'a [i32]),
+    /// A large list's.
+    LargeOffsets(&'a [i64]),
+    /// A fixed-size list's: the `size` elements from `i * size`.
+    Fixed(usize),
+}
+
+impl Children<'_> {
+    /// Where the entries under entry `index` start in the next array. Those under the entries
+    /// before `index` end there too, so this also holds for one past the last entry.
+    fn start(self, index: usize) -> usize {
+        match self {
+            Children::Same => index,
+            Children::Offsets(offsets) => offsets[index] as usize,
+            Children::LargeOffsets(offsets) => offsets[index] as usize,
+            Children::Fixed(size) => index * size,
+        }
     }
 }
 
-/// The entries of the children of every list or map entry in `entries`.
-fn children<'a, O: OffsetSizeTrait>(entries: Entries<'a>, offsets: &'a [O]) -> Entries<'a> {
-    Box::new(entries.flat_map(move |(row, index)| {
-        (offsets[index].as_usize()..offsets[index + 1].as_usize()).map(move |child| (row, child))
-    }))
+impl Path<'_> {
+    /// How many entries of the leaf array lie under the batch's first `rows` rows, null or not.
+    fn entries(&self, rows: usize) -> usize {
+        let (start, end) = self.levels.iter().fold((0, rows), |(start, end), level| {
+            (level.children.start(start), level.children.start(end))
+        });
+        end - start
+    }
+
+    /// Calls `f` with the leaf index of every entry under the batch's row `row` whose ancestors
+    /// are all present, in the order the column chunk stores them, until `f` returns `false`.
+    /// Returns whether every entry was visited. Nothing is expanded ahead, so a page that ends
+    /// partway through a batch reads no further.
+    fn visit(&self, row: usize, f: &mut impl FnMut(usize) -> bool) -> bool {
+        match self.levels.split_first() {
+            Some((level, below)) => visit(level, below, row, f),
+            // A leaf with no levels above it has one entry per row: the row itself.
+            None => f(row),
+        }
+    }
 }
 
-type ValueBytes<'a> = Box<dyn Fn(usize) -> &'a [u8] + 'a>;
+/// `array`'s nulls, or `None` when it has none.
+fn present_nulls(array: &dyn Array) -> Option<&NullBuffer> {
+    array.nulls().filter(|nulls| nulls.null_count() > 0)
+}
 
-/// The bytes that tell `array`'s values apart: a fixed-width value's native bytes, or a string's or
-/// binary's content. `None` for a type an Iceberg schema cannot produce.
-fn value_bytes<'a>(array: &'a dyn Array) -> Option<ValueBytes<'a>> {
-    let bytes: ValueBytes<'a> = downcast_primitive_array!(
-        array => Box::new(move |i| array.values()[i].to_byte_slice()),
-        DataType::Utf8 => {
-            let array = array.as_string::<i32>();
-            Box::new(move |i| array.value(i).as_bytes())
-        }
-        DataType::LargeUtf8 => {
-            let array = array.as_string::<i64>();
-            Box::new(move |i| array.value(i).as_bytes())
-        }
-        DataType::Utf8View => {
-            let array = array.as_string_view();
-            Box::new(move |i| array.value(i).as_bytes())
-        }
-        DataType::Binary => {
-            let array = array.as_binary::<i32>();
-            Box::new(move |i| array.value(i))
-        }
-        DataType::LargeBinary => {
-            let array = array.as_binary::<i64>();
-            Box::new(move |i| array.value(i))
-        }
-        DataType::BinaryView => {
-            let array = array.as_binary_view();
-            Box::new(move |i| array.value(i))
-        }
-        _ => return None,
-    );
-    Some(bytes)
+/// [`Path::visit`] for entry `index` of `level`, with `below` the levels under it.
+fn visit(level: &Level, below: &[Level], index: usize, f: &mut impl FnMut(usize) -> bool) -> bool {
+    if level.nulls.is_some_and(|nulls| nulls.is_null(index)) {
+        return true;
+    }
+    let mut children = level.children.start(index)..level.children.start(index + 1);
+    // The leaf's entries are visited here rather than one call deeper each.
+    match below.split_first() {
+        Some((next, below)) => children.all(|child| visit(next, below, child, &mut *f)),
+        None => children.all(f),
+    }
+}
+
+/// Reads fixed-width values by their bits, zero-extended to `K`, which is at least as wide. Each
+/// takes `width` bytes in the plain encoding.
+fn bits<T: ArrowNativeType, K: Bits>(values: &[T], width: u64) -> impl Fn(usize) -> (K, u64) + '_ {
+    move |index| (K::of(values[index]), width)
+}
+
+/// Reads fixed-width values too wide for [`bits`] by their native bytes. Each takes `width` bytes
+/// in the plain encoding.
+fn native_bytes<'a, T: ArrowNativeType>(
+    values: &'a [T],
+    width: u64,
+) -> impl Fn(usize) -> (Bytes<'a>, u64) {
+    move |index| (Bytes(values[index].to_byte_slice()), width)
+}
+
+/// Reads a string or binary array's values by their content. Each takes a 4-byte length and then
+/// its bytes in the plain encoding.
+fn bytes<'a, A, V>(array: A) -> impl Fn(usize) -> (Bytes<'a>, u64)
+where
+    A: ArrayAccessor<Item = &'a V>,
+    V: AsRef<[u8]> + ?Sized + 'a,
+{
+    move |index| {
+        let value = array.value(index).as_ref();
+        (Bytes(value), 4 + value.len() as u64)
+    }
+}
+
+/// The bits of a fixed-width value, zero-extended to fill this type.
+trait Bits: Copy + Eq + Hash {
+    fn of<T: ArrowNativeType>(value: T) -> Self;
+}
+
+impl Bits for u64 {
+    fn of<T: ArrowNativeType>(value: T) -> Self {
+        let mut bits = [0; 8];
+        let bytes = value.to_byte_slice();
+        bits[..bytes.len()].copy_from_slice(bytes);
+        u64::from_ne_bytes(bits)
+    }
+}
+
+impl Bits for u128 {
+    fn of<T: ArrowNativeType>(value: T) -> Self {
+        let mut bits = [0; 16];
+        let bytes = value.to_byte_slice();
+        bits[..bytes.len()].copy_from_slice(bytes);
+        u128::from_ne_bytes(bits)
+    }
+}
+
+/// A value's bytes. Two of the same length whose last bytes differ are told apart without
+/// comparing the rest, which spares comparing most distinct values with the one before them.
+/// Keyed by plain `&[u8]` instead, the `maps` and `nested` shapes of the
+/// `iceberg_dictionary_chooser` benchmark take about 25% longer and `primitives` and `arrays`
+/// about 12% longer, mostly for the comparison. Only `sorted`, whose values mostly repeat the one
+/// before them, is faster that way, by 2%.
+#[derive(Clone, Copy)]
+struct Bytes<'a>(&'a [u8]);
+
+impl PartialEq for Bytes<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len() && self.0.last() == other.0.last() && self.0 == other.0
+    }
+}
+
+impl Eq for Bytes<'_> {}
+
+impl Hash for Bytes<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // A value is always hashed alone, so its bytes need no length in front of them.
+        state.write(self.0);
+    }
 }
 
 /// What parquet-mr's dictionary writer has seen of one column chunk's first data page.
-struct FirstPage<'a> {
-    width: Option<u64>,
+struct FirstPage<K> {
     dictionary_limit: u64,
     page_bytes: u64,
     /// Every value seen so far, once each: the dictionary.
-    dictionary: HashSet<&'a [u8]>,
+    dictionary: HashSet<K>,
     /// The value before the one being added.
-    previous: Option<&'a [u8]>,
+    previous: Option<K>,
     /// The runs the page's dictionary ids would be encoded in.
     ids: HybridRuns,
     plain_bytes: u64,
@@ -397,17 +585,20 @@ struct FirstPage<'a> {
     full: bool,
     /// The dictionary outgrew `dictionary_limit` before the page ended.
     overflowed: bool,
-    /// The column's arrays are of a type there is no reading, so it is left as configured.
-    unreadable: bool,
 }
 
-impl<'a> FirstPage<'a> {
-    fn new(candidate: &Candidate, page_bytes: u64) -> Self {
+impl<K: Copy + Eq + Hash> FirstPage<K> {
+    /// A page that can see at most `entries` values, whose dictionary starts with room for as
+    /// many of them as it can hold.
+    fn new(candidate: &Candidate, page_bytes: u64, entries: usize) -> Self {
+        // A dictionary never holds more values than the page takes, nor more than one past the
+        // most that fit within its limit, since a value takes at least its width, or a 4-byte
+        // length.
+        let most = (candidate.dictionary_limit / candidate.width.unwrap_or(4) + 1) as usize;
         Self {
-            width: candidate.width,
             dictionary_limit: candidate.dictionary_limit,
             page_bytes,
-            dictionary: HashSet::default(),
+            dictionary: HashSet::with_capacity(entries.min(most).min(MAX_RESERVED_VALUES)),
             previous: None,
             ids: HybridRuns::default(),
             plain_bytes: 0,
@@ -415,39 +606,31 @@ impl<'a> FirstPage<'a> {
             rows: 0,
             full: false,
             overflowed: false,
-            unreadable: false,
         }
     }
 
     fn is_closed(&self) -> bool {
-        self.full || self.overflowed || self.unreadable
+        self.full || self.overflowed
     }
 
-    /// Adds `rows` rows of one batch, given as the entries of the leaf's `array` they hold. Stops
-    /// taking entries as soon as the page ends.
-    fn extend(
-        &mut self,
-        array: &'a dyn Array,
-        entries: impl Iterator<Item = (u32, usize)>,
-        rows: usize,
-    ) {
+    /// Adds `rows` rows of one batch, whose way down to the leaf is `path` and whose leaf values
+    /// `read` reads. Stops reading as soon as the page ends.
+    fn extend(&mut self, path: &Path<'_>, read: &impl Fn(usize) -> (K, u64), rows: usize) {
         if self.is_closed() {
             return;
         }
-        let Some(value) = value_bytes(array) else {
-            self.unreadable = true;
-            return;
-        };
-        let nulls = array.nulls();
-        let mut entries = entries.peekable();
-        for row in 0..rows as u32 {
-            while let Some((_, index)) = entries.next_if(|&(entry_row, _)| entry_row == row) {
-                if nulls.is_none_or(|nulls| nulls.is_valid(index)) {
-                    self.add(value(index));
-                    if self.overflowed {
-                        return;
-                    }
+        let nulls = present_nulls(path.leaf);
+        for row in 0..rows {
+            let whole_row = path.visit(row, &mut |index| {
+                if nulls.is_some_and(|nulls| nulls.is_null(index)) {
+                    return true;
                 }
+                let (value, size) = read(index);
+                self.add(value, size);
+                !self.overflowed
+            });
+            if !whole_row {
+                return;
             }
             self.rows += 1;
             if self.rows >= FIRST_PAGE_SIZE_CHECK_ROWS && self.plain_bytes >= self.page_bytes {
@@ -457,16 +640,17 @@ impl<'a> FirstPage<'a> {
         }
     }
 
-    /// `DictionaryValuesWriter.write*` and `FallbackValuesWriter`'s raw size, for one value.
-    fn add(&mut self, value: &'a [u8]) {
-        let size = self.width.unwrap_or(4 + value.len() as u64);
+    /// `DictionaryValuesWriter.write*` and `FallbackValuesWriter`'s raw size, for one value that
+    /// takes `size` bytes in the plain encoding.
+    fn add(&mut self, value: K, size: u64) {
         self.plain_bytes += size;
-        if self.dictionary.insert(value) {
+        // Ids are handed out in order of first appearance, so an id repeats the one before it
+        // exactly when its value does, and a repeated value is in the dictionary already.
+        let repeat = self.previous == Some(value);
+        if !repeat && self.dictionary.insert(value) {
             self.dictionary_bytes += size;
         }
-        // Ids are handed out in order of first appearance, so an id repeats the one before it
-        // exactly when its value does.
-        self.ids.write(self.previous == Some(value));
+        self.ids.write(repeat);
         self.previous = Some(value);
         // `DictionaryValuesWriter.shouldFallBack`, checked after every value.
         if self.dictionary_bytes > self.dictionary_limit {
@@ -479,9 +663,6 @@ impl<'a> FirstPage<'a> {
     /// the page's plain bytes (`DictionaryValuesWriter.isCompressionSatisfying`). A page of nulls
     /// only is plain, since nothing is fewer than zero bytes.
     fn keeps_dictionary(&self) -> bool {
-        if self.unreadable {
-            return true;
-        }
         if self.overflowed {
             return false;
         }
@@ -595,11 +776,13 @@ mod tests {
         Int32Builder, Int64Builder, ListBuilder, MapBuilder, MapFieldNames, StringBuilder,
     };
     use arrow::array::{
-        ArrayRef, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray, Float32Array,
-        Float64Array, Int32Array, Int64Array, ListArray, StringArray, StructArray,
+        ArrayRef, BooleanArray, Date32Array, Decimal128Array, FixedSizeBinaryArray,
+        FixedSizeListArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeListArray,
+        ListArray, MapArray, StringArray, StructArray, UInt32Array,
     };
     use arrow::buffer::{NullBuffer, OffsetBuffer};
-    use arrow::datatypes::{Field, Fields};
+    use arrow::compute::{cast, take_record_batch};
+    use arrow::datatypes::{Field, Fields, Int32Type, TimeUnit};
 
     /// splitmix64, the generator the parquet-mr ground truth below was recorded with.
     fn mix(x: u64) -> u64 {
@@ -1005,18 +1188,233 @@ mod tests {
         );
     }
 
-    /// Where a partition's rows were cut into batches does not change its choice.
+    /// Where a partition's rows were cut into batches does not change its choice, whether each
+    /// batch was built on its own or sliced from a larger one, as the clustered writer slices a
+    /// batch that spans partitions.
     #[test]
     fn batch_boundaries_do_not_change_the_choice() {
         let properties = || properties(20_000, 1024 * 1024, 2 * 1024 * 1024);
-        let whole = dictionary_columns(properties(), &corpus_batches(20_000, 20_000));
+        let batch = corpus(0..20_000);
+        let whole = dictionary_columns(properties(), std::slice::from_ref(&batch));
         for batch_rows in [777, 1000, 8192] {
             assert_eq!(
-                dictionary_columns(properties(), &corpus_batches(20_000, batch_rows)),
+                dictionary_columns(properties(), &corpus_batches(20_000, batch_rows as u64)),
                 whole,
                 "batches of {batch_rows} rows"
             );
+            let slices: Vec<RecordBatch> = (0..batch.num_rows())
+                .step_by(batch_rows)
+                .map(|start| batch.slice(start, batch_rows.min(batch.num_rows() - start)))
+                .collect();
+            assert_eq!(
+                dictionary_columns(properties(), &slices),
+                whole,
+                "slices of {batch_rows} rows"
+            );
         }
+    }
+
+    /// A batch sliced at an odd offset, as the clustered writer slices one that spans
+    /// partitions, makes the same choice as the same rows gathered into arrays of their own, as
+    /// the fanout writer gathers them.
+    #[test]
+    fn a_sliced_batch_is_read_only_within_its_slice() {
+        let rows = 3000;
+        let (offset, len) = (1001, 999);
+        // Every list, map and struct here is null on odd rows. Only the entries within the slice
+        // that are present and have nothing null above them hold one of four values. Every other
+        // entry holds a value of its own, so reading one past the slice, or a null or anything
+        // under one, overflows the 1 KiB dictionary.
+        let value = |row: usize, entry: usize, counted: bool| -> i64 {
+            if counted && (offset..offset + len).contains(&row) {
+                (entry % 4) as i64
+            } else {
+                (1_000_000 + 4 * row + entry) as i64
+            }
+        };
+        let even = |row: usize| row.is_multiple_of(2);
+        let row_nulls = || Some(NullBuffer::from_iter((0..rows).map(even)));
+        // Two entries per row, as the children of a list or a map.
+        let pairs = |first_entry: usize| -> ArrayRef {
+            Arc::new(Int64Array::from_iter_values(
+                (0..2 * rows).map(|i| value(i / 2, first_entry + i % 2, even(i / 2))),
+            ))
+        };
+        let element = || Arc::new(Field::new("element", DataType::Int64, true));
+        let map_entries = StructArray::new(
+            Fields::from(vec![
+                Field::new("key", DataType::Int64, false),
+                Field::new("value", DataType::Int64, true),
+            ]),
+            vec![pairs(0), pairs(2)],
+            None,
+        );
+        // `s.n` and `s.inner` are also null on every other even row.
+        let quarter = |row: usize| row.is_multiple_of(4);
+        let quarter_nulls = || Some(NullBuffer::from_iter((0..rows).map(|row| row % 4 != 2)));
+        let x = Fields::from(vec![Field::new("x", DataType::Int64, true)]);
+        let s = StructArray::new(
+            Fields::from(vec![
+                Field::new("n", DataType::Int64, true),
+                Field::new("inner", DataType::Struct(x.clone()), true),
+            ]),
+            vec![
+                Arc::new(Int64Array::new(
+                    (0..rows).map(|row| value(row, 0, quarter(row))).collect(),
+                    quarter_nulls(),
+                )),
+                Arc::new(StructArray::new(
+                    x,
+                    vec![Arc::new(Int64Array::from_iter_values(
+                        (0..rows).map(|row| value(row, 1, quarter(row))),
+                    ))],
+                    quarter_nulls(),
+                )),
+            ],
+            row_nulls(),
+        );
+        // A list of two structs per row, the second of them null.
+        let k = Fields::from(vec![Field::new("k", DataType::Int64, true)]);
+        let ls = ListArray::new(
+            Arc::new(Field::new("element", DataType::Struct(k.clone()), true)),
+            OffsetBuffer::from_repeated_length(2, rows),
+            Arc::new(StructArray::new(
+                k,
+                vec![Arc::new(Int64Array::from_iter_values(
+                    (0..2 * rows).map(|i| value(i / 2, i % 2, even(i / 2) && even(i))),
+                ))],
+                Some(NullBuffer::from_iter((0..2 * rows).map(even))),
+            )),
+            row_nulls(),
+        );
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            // Distinct within the slice too, so plain either way.
+            ("id", Arc::new(Int64Array::from_iter_values(0..rows as i64))),
+            (
+                "flat",
+                Arc::new(Int64Array::new(
+                    (0..rows).map(|row| value(row, 0, even(row))).collect(),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "l",
+                Arc::new(ListArray::new(
+                    element(),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    pairs(0),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "ll",
+                Arc::new(LargeListArray::new(
+                    element(),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    pairs(0),
+                    row_nulls(),
+                )),
+            ),
+            (
+                "fl",
+                Arc::new(FixedSizeListArray::new(element(), 2, pairs(0), row_nulls())),
+            ),
+            (
+                "m",
+                Arc::new(MapArray::new(
+                    Arc::new(Field::new(
+                        "key_value",
+                        map_entries.data_type().clone(),
+                        false,
+                    )),
+                    OffsetBuffer::from_repeated_length(2, rows),
+                    map_entries,
+                    row_nulls(),
+                    false,
+                )),
+            ),
+            ("s", Arc::new(s)),
+            ("ls", Arc::new(ls)),
+        ];
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        let properties = || properties(20_000, 1024 * 1024, 1024);
+        // Read whole, the batch overflows every dictionary.
+        assert!(dictionary_columns(properties(), std::slice::from_ref(&batch)).is_empty());
+
+        let slice = batch.slice(offset, len);
+        let gathered =
+            take_record_batch(&slice, &UInt32Array::from_iter_values(0..len as u32)).unwrap();
+        let expected = [
+            "flat",
+            "l.list.element",
+            "ll.list.element",
+            "fl.list.element",
+            "m.key_value.key",
+            "m.key_value.value",
+            "s.n",
+            "s.inner.x",
+            "ls.list.element.k",
+        ];
+        assert_eq!(dictionary_columns(properties(), &[slice]), expected);
+        assert_eq!(dictionary_columns(properties(), &[gathered]), expected);
+    }
+
+    /// A leaf column of any type is read. In each, a column of ten values keeps its dictionary and
+    /// a column of distinct values does not.
+    #[test]
+    fn reads_every_leaf_type() {
+        let rows = 1000;
+        let longs = |value: fn(usize) -> i64| -> ArrayRef {
+            Arc::new(Int64Array::from_iter(
+                (0..rows).map(|i| (i % 7 != 3).then(|| value(i))),
+            ))
+        };
+        let low = longs(|i| (i % 10) as i64);
+        let unique = longs(|i| i as i64 + 1_000_000);
+        let types = [
+            ("int", DataType::Int32),
+            ("long", DataType::Int64),
+            ("float", DataType::Float32),
+            ("double", DataType::Float64),
+            ("date", DataType::Date32),
+            ("time", DataType::Time64(TimeUnit::Microsecond)),
+            (
+                "timestamptz",
+                DataType::Timestamp(TimeUnit::Microsecond, Some("+00:00".into())),
+            ),
+            (
+                "timestamp_ns",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+            ),
+            ("decimal_9", DataType::Decimal128(9, 2)),
+            ("decimal_18", DataType::Decimal128(18, 2)),
+            ("decimal256_18", DataType::Decimal256(18, 2)),
+            ("string", DataType::Utf8),
+            ("large_string", DataType::LargeUtf8),
+            ("string_view", DataType::Utf8View),
+            ("binary", DataType::Binary),
+            ("large_binary", DataType::LargeBinary),
+            ("binary_view", DataType::BinaryView),
+        ];
+        let mut columns: Vec<(String, ArrayRef)> = Vec::new();
+        let mut expected = Vec::new();
+        for (name, data_type) in &types {
+            // arrow casts longs to neither dates nor binaries.
+            let via = match data_type {
+                DataType::Date32 => DataType::Int32,
+                DataType::Binary | DataType::LargeBinary | DataType::BinaryView => DataType::Utf8,
+                _ => data_type.clone(),
+            };
+            let convert = |longs: &ArrayRef| cast(&cast(longs, &via).unwrap(), data_type).unwrap();
+            columns.push((format!("low_{name}"), convert(&low)));
+            columns.push((format!("unique_{name}"), convert(&unique)));
+            expected.push(format!("low_{name}"));
+        }
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        assert_eq!(
+            dictionary_columns(properties(20_000, 1024 * 1024, 2 * 1024 * 1024), &[batch]),
+            expected
+        );
     }
 
     #[test]
@@ -1192,9 +1590,9 @@ mod tests {
             .dictionary_enabled(&ColumnPath::from("flags")));
     }
 
-    /// A column is read only as far as its first page reaches, one entry at a time. Each row here
-    /// lists 8192 ints, so the page is full at row 100, parquet-mr's first size check, and the
-    /// entries of the other 300 rows are never produced.
+    /// A column is read only as far as its first page reaches. Each row here lists 8192 ints, so
+    /// the page is full at row 100, parquet-mr's first size check, and the values of the other 300
+    /// rows are never read.
     #[test]
     fn a_column_is_read_only_as_far_as_its_first_page() {
         let rows = 400;
@@ -1211,45 +1609,66 @@ mod tests {
         )
         .unwrap();
         let candidate = &chooser.candidates[0];
-        let rows_walked = Cell::new(0);
-        let top: Entries = Box::new((0..rows).map(|row| {
-            rows_walked.set(rows_walked.get() + 1);
-            (row as u32, row)
-        }));
-        let (array, entries) = candidate.leaf.entries(&batch, top).unwrap();
-        let mut page = FirstPage::new(candidate, chooser.page_bytes);
-        page.extend(array, entries, rows);
+        let path = candidate.leaf.path(&batch).unwrap();
+        let read = bits::<_, u64>(path.leaf.as_primitive::<Int32Type>().values(), 4);
+        let reads = Cell::new(0);
+        let counted = |index| {
+            reads.set(reads.get() + 1);
+            read(index)
+        };
+        let mut page = FirstPage::new(candidate, chooser.page_bytes, 0);
+        page.extend(&path, &counted, rows);
         assert!(page.full);
         assert_eq!(page.rows, 100);
-        // The 100 rows the page took, and the next, whose first entry told it row 100 was done.
-        assert_eq!(rows_walked.get(), 101);
+        assert_eq!(reads.get(), 100 * 8192);
     }
 
     /// A null list can still span child values. They are not part of the column chunk, so they
     /// must not count toward its first page.
     #[test]
     fn values_under_a_null_list_are_not_counted() {
-        // Row 0 is a null list spanning 1000 unique values, which would overflow the 1 KiB
-        // dictionary if they were counted. Rows 1 to 1000 hold one 7 each, so the page the column
-        // chunk actually has is 1000 repeats of one value.
-        let mut offsets = vec![0i32, 1000];
-        offsets.extend((1..=1000).map(|row| 1000 + row));
+        // Row 1 is a null list spanning 1000 unique values, which would overflow the 1 KiB
+        // dictionary if they were counted. Every other row holds one 7, so the page the column
+        // chunk actually has is 1001 repeats of one value. Row 0 comes first so that an overflow
+        // would end a page that has rows, which is then judged.
+        let mut offsets = vec![0i32, 1, 1001];
+        offsets.extend((2..=1001).map(|row| 1000 + row));
         let list = ListArray::new(
             Arc::new(Field::new("element", DataType::Int64, true)),
             OffsetBuffer::new(offsets.into()),
-            Arc::new(Int64Array::from_iter_values((0..2000).map(|i| {
-                if i < 1000 {
+            Arc::new(Int64Array::from_iter_values((0..2001).map(|i| {
+                if (1..=1000).contains(&i) {
                     i
                 } else {
                     7
                 }
             }))),
-            Some(NullBuffer::from_iter((0..=1000).map(|row| row != 0))),
+            Some(NullBuffer::from_iter((0..=1001).map(|row| row != 1))),
         );
         let batch = RecordBatch::try_from_iter([("l", Arc::new(list) as ArrayRef)]).unwrap();
         assert_eq!(
             dictionary_columns(properties(20_000, 1024 * 1024, 1024), &[batch]),
             ["l.list.element"]
+        );
+    }
+
+    /// The fields of a null struct are not part of the column chunk either.
+    #[test]
+    fn values_under_a_null_struct_are_not_counted() {
+        // Every odd row's struct is null over a value no other row has, which would overflow the
+        // 1 KiB dictionary if they were counted. Every even row holds 7, so the page the column
+        // chunk actually has is 1000 repeats of one value.
+        let values =
+            Int64Array::from_iter_values((0..2000).map(|i| if i % 2 == 1 { i } else { 7 }));
+        let st = StructArray::new(
+            Fields::from(vec![Field::new("n", DataType::Int64, true)]),
+            vec![Arc::new(values) as ArrayRef],
+            Some(NullBuffer::from_iter((0..2000).map(|i| i % 2 == 0))),
+        );
+        let batch = RecordBatch::try_from_iter([("s", Arc::new(st) as ArrayRef)]).unwrap();
+        assert_eq!(
+            dictionary_columns(properties(20_000, 1024 * 1024, 1024), &[batch]),
+            ["s.n"]
         );
     }
 

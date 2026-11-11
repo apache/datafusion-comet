@@ -35,6 +35,9 @@
 //!   [`compare_floats_java`].
 //! - `Murmur3Hash` and `XxHash64`: `-0.0` hashes as `0.0`, and NaN as the canonical NaN. See
 //!   [`hash_input`].
+//! - Scala's `==` on boxed numbers (`BoxesRunTime.equals`), which keys of a Scala `HashMap[Any, _]`
+//!   such as `PivotFirst`'s pivot value index match on: IEEE 754 equality, so `-0.0` equals `0.0`
+//!   and NaN equals nothing, not even another NaN. See [`ieee_equality_key`].
 //!
 //! A native expression must follow the rule of the Spark function it replaces, so build it from
 //! these helpers rather than a local copy. Where an Arrow kernel sorts, row-encodes, hashes or
@@ -83,6 +86,18 @@ pub fn canonicalize_nan<T: Float>(v: T) -> T {
         T::nan()
     } else {
         v
+    }
+}
+
+/// The key that a Scala `HashMap[Any, _]` matches a boxed float on. Scala's `==` on boxed numbers
+/// is IEEE 754 equality, so `-0.0` and `0.0` share a key, and NaN has none: it equals nothing, not
+/// even another NaN.
+#[inline]
+pub fn ieee_equality_key<T: Float>(v: T) -> Option<T> {
+    if v.is_nan() {
+        None
+    } else {
+        Some(normalize_float(v))
     }
 }
 
@@ -207,6 +222,23 @@ mod tests {
             assert_eq!(canonicalize_nan(value).to_bits(), canonical.to_bits());
             assert_eq!(hash_input(value).to_bits(), normalized.to_bits());
         }
+    }
+
+    #[test]
+    fn ieee_equality_keys() {
+        let key = |v: f64| ieee_equality_key(v).map(f64::to_bits);
+        assert_eq!(key(-0.0), Some(0.0f64.to_bits()));
+        assert_eq!(key(0.0), Some(0.0f64.to_bits()));
+        assert_eq!(key(-1.5), Some((-1.5f64).to_bits()));
+        assert_eq!(key(f64::INFINITY), Some(f64::INFINITY.to_bits()));
+        for nan in [f64::NAN, NEGATIVE_NAN, PAYLOAD_NAN] {
+            assert_eq!(key(nan), None);
+        }
+        assert_eq!(
+            ieee_equality_key(-0.0f32).map(f32::to_bits),
+            Some(0.0f32.to_bits())
+        );
+        assert_eq!(ieee_equality_key(NEGATIVE_NAN_F32), None);
     }
 
     #[test]

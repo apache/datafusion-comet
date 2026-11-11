@@ -45,6 +45,10 @@ INSERT INTO test_arith VALUES (10, 3, 10, 3, 10.5, 3.2, 10.5, 3.2), (0, 1, 0, 1,
 query
 SELECT a + b, a - b, a * b, a / b, a % b FROM test_arith
 
+-- Keep the inner TRY overflow check when balancing legacy integer arithmetic.
+query
+SELECT try_add(a, b) + b, try_multiply(a, a) * b FROM test_arith
+
 query
 SELECT la + lb, la - lb, la * lb, la / lb, la % lb FROM test_arith
 
@@ -83,3 +87,7 @@ SELECT a / b, a % b, d / 0.0 FROM test_div_zero
 -- `-0.0D` is a double literal with the sign bit set, and is a zero divisor too
 query
 SELECT d / -0.0D, d % -0.0D, d / double('-0.0'), d % double('-0.0') FROM test_div_zero
+
+-- So is a column that holds `-0.0`, because Spark checks the divisor with `== 0`
+query
+SELECT 1.0D / (-d), 1.0D % (-d) FROM test_div_zero

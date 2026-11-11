@@ -189,7 +189,8 @@ impl S3StoreTemplate {
     fn build(&self, credentials: S3Credentials) -> Result<AmazonS3, object_store::Error> {
         let builder = AmazonS3Builder::new()
             .with_url(self.url.clone())
-            .with_allow_http(true);
+            .with_allow_http(true)
+            .with_http_connector(super::http_metrics::ScanHttpConnector);
         let mut builder = match credentials {
             S3Credentials::Provider(provider) => builder.with_credentials(provider),
             S3Credentials::SkipSignature => builder.with_skip_signature(true),

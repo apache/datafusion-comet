@@ -104,15 +104,18 @@ impl OperatorBuilder for ShuffleWriterBuilder {
         // only ever sees a real limit or none at all.
         let max_buffer_bytes =
             (writer.max_buffer_bytes > 0).then_some(writer.max_buffer_bytes as usize);
-        let shuffle_writer = Arc::new(ShuffleWriterExec::try_new_with_destination(
-            writer_input,
-            partitioning,
-            codec,
-            destination,
-            writer.tracing_enabled,
-            write_buffer_size,
-            max_buffer_bytes,
-        )?);
+        let shuffle_writer = Arc::new(
+            ShuffleWriterExec::try_new_with_destination(
+                writer_input,
+                partitioning,
+                codec,
+                destination,
+                writer.tracing_enabled,
+                write_buffer_size,
+                max_buffer_bytes,
+            )?
+            .with_offsets_as_lengths(writer.offsets_as_lengths),
+        );
 
         Ok((
             scans,
@@ -289,7 +292,7 @@ impl OperatorBuilder for ShuffleScanBuilder {
 ///
 /// With `strict_timestamp_labels`, a timestamp labelled with another timezone than declared fails
 /// planning instead of being cast. The child is native, so the label is wrong inside its plan too.
-fn align_shuffle_writer_input(
+pub(crate) fn align_shuffle_writer_input(
     child: Arc<dyn ExecutionPlan>,
     expected_proto: &[spark_operator::SparkStructField],
     strict_timestamp_labels: bool,

@@ -41,7 +41,7 @@ pub use extract_date_part::SparkHour;
 pub use extract_date_part::SparkMinute;
 pub use extract_date_part::SparkSecond;
 pub use hours::SparkHoursTransform;
-pub use make_date::SparkMakeDate;
+pub use make_date::{MakeDateExpr, SparkMakeDate};
 pub use make_interval::SparkMakeInterval;
 pub use make_time::SparkMakeTime;
 pub use next_day::SparkNextDay;

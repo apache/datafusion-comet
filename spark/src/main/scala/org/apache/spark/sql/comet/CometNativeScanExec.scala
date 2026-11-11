@@ -285,18 +285,6 @@ case class CometNativeScanExec(
   }
 
   override def doCanonicalize(): CometNativeScanExec = {
-    // Canonicalize originalPlan but strip its DPP partition filters.
-    // originalPlan carries column selection and schema info needed for
-    // equals/hashCode. But its partitionFilters may have stale DPP
-    // expressions (e.g., SABs not yet converted to TrueLiteral) that
-    // would prevent exchange reuse between otherwise-identical scans.
-    val canonOriginal = if (originalPlan != null) {
-      val stripped = originalPlan.copy(partitionFilters =
-        CometScanUtils.filterUnusedDynamicPruningExpressions(originalPlan.partitionFilters))
-      stripped.doCanonicalize()
-    } else {
-      null
-    }
     CometNativeScanExec(
       nativeOp,
       relation,
@@ -310,7 +298,7 @@ case class CometNativeScanExec(
       QueryPlan.normalizePredicates(dataFilters, output),
       None,
       disableBucketedScan,
-      canonOriginal,
+      CometScanUtils.canonicalizeOriginalPlan(originalPlan),
       SerializedPlan(None),
       null, // Transient scan not needed for canonicalization
       ""

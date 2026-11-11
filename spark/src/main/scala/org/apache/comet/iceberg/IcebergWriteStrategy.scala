@@ -31,16 +31,21 @@ import org.apache.comet.CometSparkSessionExtensions.isCometLoaded
 import org.apache.comet.shims.ShimCometMergeRows
 
 /**
- * Spark strategy for Comet's split Iceberg V2 writer. WriteDelta is modeled and dispatched here,
- * but position-delta rows are still executed by Iceberg's JVM DeltaWriter.
+ * Spark strategy for Comet's split Iceberg V2 writer. WriteDelta is modeled and dispatched here
+ * when the testing split flag is on, but position-delta rows are still executed by Iceberg's JVM
+ * DeltaWriter.
  */
 case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
 
   override def apply(plan: LogicalPlan): Seq[SparkPlan] = {
     val conf = session.sessionState.conf
+    // The native write flag plans the split operator on its own. The split flag plans it with
+    // the native writer off, which only tests do.
+    val splitEnabled = CometConf.COMET_ICEBERG_NATIVE_WRITE_ENABLED.get(conf) ||
+      CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf)
     // Planner strategies run whether or not Comet is enabled, so check it here too: with Comet
-    // off, Spark must plan its own V2 write operator.
-    if (!isCometLoaded(conf) || !CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf)) {
+    // or its native execution off, Spark must plan its own V2 write operator.
+    if (!isCometLoaded(conf) || !CometConf.COMET_EXEC_ENABLED.get(conf) || !splitEnabled) {
       return Nil
     }
     // Planner strategies run before CometRule, so plan-only mode needs its own guard here.
@@ -78,7 +83,11 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
       // Hit by AQE.
       case l @ IcebergWriteLogical(child, batchWrite, dispatch) =>
         Seq(IcebergWriteExec(batchWrite, l.output, planLater(child), dispatch))
-      case delta =>
+      // Iceberg's JVM DeltaWriter writes a merge-on-read write's rows under the split plan too,
+      // so the plan would give it nothing over Spark's own operator. Until the native writer can
+      // write them, only the testing split flag plans it.
+      // https://github.com/apache/datafusion-comet/issues/6240
+      case delta if CometConf.COMET_ICEBERG_WRITE_SPLIT_OPERATOR_ENABLED.get(conf) =>
         IcebergDeltaLogicalShim
           .extract(delta)
           .flatMap { fields =>
@@ -106,6 +115,7 @@ case class IcebergWriteStrategy(session: SparkSession) extends SparkStrategy {
             }
           }
           .toList
+      case _ => Nil
     }
   }
 
