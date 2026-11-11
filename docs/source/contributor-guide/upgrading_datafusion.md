@@ -35,9 +35,13 @@ It stays a draft until DataFusion N.0.0 is released (see [Merging the Upgrade](#
 An EPIC issue titled `DataFusion N upgrade` tracks the upgrade, with each regression it finds as a
 sub-issue. The pull request links the EPIC.
 
-Keep the branch as a small number of commits on top of current `main`, so the pull request shows
-only the upgrade. Updating it means resetting onto `main` and force pushing, as described in
-[Submitting a Pull Request](development.md#submitting-a-pull-request).
+Update the branch by merging `main` into it. The pull request still shows only the upgrade, because it
+is a diff against `main`, and the squash merge collapses the history when the upgrade merges. Do not
+reset the branch onto `main` and force push it. Any committer can push to it, and a reset drops a
+commit that someone pushed after your fetch, which `--force-with-lease` does not catch, because the
+lease compares against the ref you just fetched. If the branch has to be reset, announce it on the
+EPIC first and ask everyone with pending commits to rebase them onto the new head. See
+[Submitting a Pull Request](development.md#submitting-a-pull-request) for pushing after a rebase.
 
 ## Pinning DataFusion Main
 
@@ -117,12 +121,18 @@ A test that fails on the new DataFusion revision and passes on `main` is a regre
    upstream cause.
 3. Fix it in the project that owns it. A fix that merges to DataFusion `main` before the release
    branch is cut ships in N.0.0. If the fix belongs in Comet, make it on the upgrade branch.
-4. If the fix won't land before the upgrade merges, ignore the test with a reason that links the
-   Comet issue. For a Comet SQL file test see
-   [Handling test failures](sql-file-tests.md#handling-test-failures), and for one of Spark's own
-   tests see [Running Spark SQL Tests](spark-sql-tests.md). Document the limitation on the affected
-   feature's user guide page and in the
-   [Comet Upgrade Guide](../user-guide/latest/migration-guide.md) section for the next release.
+4. If the fix won't land before the upgrade merges, what you do depends on what the difference does:
+   - If the affected path is already safe, because Comet falls back to Spark, or the path is off by
+     default or behind an incompatible opt-in, ignore the test with a reason that links the Comet
+     issue. For a Comet SQL file test see
+     [Handling test failures](sql-file-tests.md#handling-test-failures), and for one of Spark's own
+     tests see [Running Spark SQL Tests](spark-sql-tests.md). Document the limitation on the
+     affected feature's user guide page and in the
+     [Comet Upgrade Guide](../user-guide/latest/migration-guide.md) section for the next release.
+   - If a native expression or operator that is enabled by default now returns a different result
+     from Spark, an ignored test and a note leave the wrong result enabled. Before the upgrade
+     merges, make that path fall back to Spark or move it behind an incompatible opt-in, and then
+     ignore the test as above. If neither is possible, defer the upgrade until the fix lands.
 
 ## Merging the Upgrade
 
@@ -131,7 +141,8 @@ Once DataFusion N.0.0 is released:
 1. In one commit, replace every DataFusion `git` and `rev` with `version = "N.0.0"`, move any
    dependencies pinned to a fork or an unmerged pull request back to an upstream release or `main`
    revision where one with the upgrade exists, and regenerate the lockfiles.
-2. Push it, add the labels above, and recheck the ignored tests against their issues.
+2. Push it, add the labels above, and recheck the ignored tests against their issues. Check that no
+   ignored test hides a wrong result on a path that is enabled by default.
 3. Mark the pull request ready for review and merge it.
 4. Delete the `datafusion-N` branch, and close the EPIC once its open sub-issues are moved to
    regular issues or fixed.
