@@ -27,6 +27,7 @@ use arrow::datatypes::{
     Float64Type, Int16Type, Int32Type, Int64Type, Int8Type, TimestampMicrosecondType,
 };
 use chrono::{LocalResult, NaiveDate, NaiveTime, Offset, TimeZone, Timelike};
+use datafusion_comet_common::days_from_civil;
 use num::traits::CheckedNeg;
 use num::{CheckedSub, Integer};
 use std::num::Wrapping;
@@ -1342,25 +1343,13 @@ fn get_timestamp_values<T: TimeZone>(
     }
 }
 
-/// Howard Hinnant's algorithm: proleptic Gregorian days since 1970-01-01 for any i64 year.
-/// Works correctly for positive and negative years via Euclidean floor division.
-/// Spark uses Java's equivalent [LocalDate.toEpochDay](https://github.com/openjdk/jdk/blob/cddee6d6eb3e048635c380a32bd2f6ebfd2c18b5/src/java.base/share/classes/java/time/LocalDate.java#L1954)
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
-    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
-    let yoe = y - era * 400; // year of era [0, 399]
-    let doy = (153 * m + 2) / 5 + d - 1; // day of year [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era [0, 146096]
-    era * 146097 + doe - 719468
-}
-
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian year/month/day, or `None` when the
 /// combination is not a real calendar date. Unlike `NaiveDate::from_ymd_opt`, this accepts
-/// any year that fits in `i64`.
+/// years past chrono's range.
 pub(crate) fn ymd_to_epoch_day(year: i64, month: i64, day: i64) -> Option<i64> {
     const DAYS_IN_MONTH: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let mut max_day = *DAYS_IN_MONTH.get(usize::try_from(month.checked_sub(1)?).ok()?)?;
@@ -1430,7 +1419,7 @@ fn parse_timestamp_to_micros<T: TimeZone>(
         //   (b) year outside chrono's representable range (> 262143 or < -262144)
         //
         // For case (b) we fall back to Howard Hinnant's direct arithmetic, which works
-        // for any year that fits in i64.  This covers the Long.MaxValue / Long.MinValue
+        // past chrono's range.  This covers the Long.MaxValue / Long.MinValue
         // boundary timestamps (year 294247 / -290308).
         let year = timestamp_info.year as i64;
         if (-262144..=262143).contains(&year) {
