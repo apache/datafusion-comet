@@ -26,10 +26,14 @@ import java.util.{Base64, UUID}
 
 import scala.collection.mutable
 import scala.jdk.CollectionConverters._
+import scala.util.control.NonFatal
 
 import org.json4s.JsonDSL._
 import org.json4s.jackson.JsonMethods._
 
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.comet.{CometBatchScanExec, CometNativeExec, IcebergPartitionPlanData, PartitionPlanData}
@@ -649,6 +653,239 @@ object CometIcebergNativeScan extends CometOperatorSerde[CometBatchScanExec] wit
 
     global.result() ++ promoted.result()
   }
+
+  /**
+   * The client settings iceberg-rust's HDFS backend reads from its configuration and the JVM
+   * client reads too (hdfs-native 0.14, `common/config.rs`). The client otherwise reads only the
+   * executors' `$HADOOP_CONF_DIR`, so a value the session sets would never reach it. Not
+   * forwarded: the per-nameservice `dfs.client.failover.*.<ns>` keys, which the client would look
+   * up under a nameservice name of opendal's own, and `dfs.data.transfer.protection`, on which
+   * the client negotiates SASL whenever it is set where the JVM client does so only on a secure
+   * cluster, which falls back.
+   */
+  private[comet] val forwardedHdfsClientKeys: Seq[String] = Seq(
+    "dfs.client.use.datanode.hostname",
+    "dfs.client.socket-timeout",
+    "dfs.client.failover.max.attempts",
+    "dfs.client.failover.sleep.base.millis",
+    "dfs.client.failover.sleep.max.millis")
+
+  /**
+   * The HDFS properties a scan of `authorities` needs from the Hadoop configuration, for
+   * iceberg-rust's HDFS backend: nameservice declarations, and the client settings of
+   * [[forwardedHdfsClientKeys]] that the session set (a value from Hadoop's own `*-default.xml`
+   * is not a setting, and forwarded would override the executors' XML), as `hadoop.<key>`.
+   *
+   * The backend dials an authority with a port as written, but resolves a portless one
+   * (`hdfs://ns1/...`) only through a nameservice declared in the FileIO properties, never
+   * through `$HADOOP_CONF_DIR`. A nameservice the Hadoop configuration declares in full, with
+   * `dfs.ha.namenodes.<ns>` and a `host:port` `dfs.namenode.rpc-address.<ns>.<id>` for each
+   * NameNode, becomes `hdfs.name-node.<ns>` with its NameNodes in declaration order. An authority
+   * the configuration knows nothing of is a single NameNode on Hadoop's default port, as
+   * `DFSUtilClient.getNNAddress` dials it for the JVM client. A name in `dfs.nameservices`
+   * without NameNodes, or with one that has no port, is left out, and
+   * [[undeclaredHdfsNameservice]] then declines the scan.
+   */
+  def hadoopToIcebergHdfsProperties(
+      hadoopConf: Configuration,
+      authorities: Set[String]): Map[String, String] = {
+    val clientSettings = if (authorities.isEmpty) {
+      Map.empty[String, String]
+    } else {
+      forwardedHdfsClientKeys.flatMap { key =>
+        val sources = Option(hadoopConf.getPropertySources(key)).getOrElse(Array.empty[String])
+        val set = sources.nonEmpty && !sources.exists(_.endsWith("-default.xml"))
+        if (set) Option(hadoopConf.getTrimmed(key)).map(s"hadoop.$key" -> _) else None
+      }.toMap
+    }
+    val logicalNames = hadoopConf.getTrimmedStringCollection("dfs.nameservices").asScala.toSet
+    val declarations = hdfsNameservices(authorities).flatMap { ns =>
+      val nameNodes = hadoopConf
+        .getTrimmedStrings(s"dfs.ha.namenodes.$ns")
+        .map(id => hadoopConf.getTrimmed(s"dfs.namenode.rpc-address.$ns.$id"))
+      if (nameNodes.nonEmpty) {
+        if (nameNodes.forall(hasPort)) Some(s"hdfs.name-node.$ns" -> nameNodes.mkString(","))
+        else None
+      } else if (logicalNames.contains(ns)) {
+        None
+      } else {
+        Some(
+          s"hdfs.name-node.$ns" -> s"$ns:${HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT}")
+      }
+    }.toMap
+    declarations ++ clientSettings
+  }
+
+  /**
+   * The first portless HDFS authority among `authorities` that `properties` declares neither with
+   * iceberg-rust's `hdfs.name-node.<ns>` nor with Hadoop's `dfs.ha.namenodes.<ns>`.
+   */
+  def undeclaredHdfsNameservice(
+      authorities: Set[String],
+      properties: Map[String, String]): Option[String] =
+    hdfsNameservices(authorities).find { ns =>
+      !properties.contains(s"hdfs.name-node.$ns") &&
+      !properties.contains(s"hadoop.dfs.ha.namenodes.$ns")
+    }
+
+  private def hdfsNameservices(authorities: Set[String]): Seq[String] =
+    authorities.filterNot(hasPort).toSeq.sorted
+
+  /**
+   * Listings taken for the encryption-zone check, by filesystem URI, table UUID and parent
+   * directory: when each was taken, and the encrypted flag of every child, by name. A data
+   * directory cannot become a zone root once it holds files, and a table dropped and created
+   * again at the same path, inside a new zone or not, has a new UUID, so a listing is reused
+   * until it is older than `spark.sql.metadataCacheTTLSeconds`, or than
+   * [[DefaultEncryptionZoneListingAgeSeconds]] when that is unset. Every child is kept, not only
+   * the directories one scan reads, so a later scan of other partitions of the table lists
+   * nothing; what is kept is bounded to [[MaxKeptEncryptionZoneEntries]] children in all, the
+   * least recently used parents leaving first. Accessed under the map's own lock: a read moves
+   * the parent to the front.
+   */
+  private val listedParents =
+    new java.util.LinkedHashMap[(String, String, String), (Long, Map[String, Boolean])](
+      64,
+      0.75f,
+      true)
+  private var keptEntryCount = 0
+
+  private def keptListing(key: (String, String, String)): Option[(Long, Map[String, Boolean])] =
+    listedParents.synchronized(Option(listedParents.get(key)))
+
+  private def keepListing(
+      key: (String, String, String),
+      listing: (Long, Map[String, Boolean]),
+      maxKeptEntries: Int): Unit = listedParents.synchronized {
+    Option(listedParents.put(key, listing)).foreach(old => keptEntryCount -= old._2.size)
+    keptEntryCount += listing._2.size
+    val eldestFirst = listedParents.entrySet().iterator()
+    while (keptEntryCount > maxKeptEntries && eldestFirst.hasNext) {
+      keptEntryCount -= eldestFirst.next().getValue._2.size
+      eldestFirst.remove()
+    }
+  }
+
+  /** Children the kept listings hold, in all. */
+  private[comet] def keptEncryptionZoneEntries: Int = listedParents.synchronized(keptEntryCount)
+
+  /**
+   * Directory entries one scan may list for the encryption-zone check before it is declined
+   * instead. At HDFS's default page of 1000 entries (`dfs.ls.limit`) that is a thousand NameNode
+   * round trips, and a directory holds at most about a million entries by default
+   * (`dfs.namenode.fs-limits.max-directory-items`).
+   */
+  private[comet] val MaxEncryptionZoneEntriesPerScan = 1000000
+
+  /** Children the kept listings may hold in all, on the order of 100 bytes each. */
+  private[comet] val MaxKeptEncryptionZoneEntries = 1000000
+
+  /** How long a listing is kept when `spark.sql.metadataCacheTTLSeconds` is unset. */
+  private[comet] val DefaultEncryptionZoneListingAgeSeconds = 3600L
+
+  /**
+   * Why a scan of `directories`, HDFS directories of data and delete files, must not be claimed
+   * on account of HDFS encryption zones, or None. iceberg-rust's HDFS client is built without KMS
+   * support and rejects every file of a zone. The NameNode flags each path inside a zone as
+   * encrypted, directories included, so one listing of a parent tells the flag of every data
+   * directory under it: the partitions of a table cost one call, not one each. A listing is kept
+   * per table (see [[listedParents]]), and a directory missing from a kept listing, a new
+   * partition, lists its parent again. A cluster that cannot hold a zone at all, one whose
+   * NameNode advertises no key provider (a client-cached call) and whose session configures none,
+   * is not listed. A scan that would list more than `maxEntries` directory entries is declined
+   * once that many are listed; the parents listed whole are kept, so a later scan continues from
+   * them.
+   */
+  def hdfsEncryptionZoneFallback(
+      hadoopConf: Configuration,
+      directories: Set[String],
+      tableUuid: Option[String] = None,
+      ttlSeconds: Long = -1L,
+      maxEntries: Int = MaxEncryptionZoneEntriesPerScan,
+      maxKeptEntries: Int = MaxKeptEncryptionZoneEntries,
+      nowMillis: Long = System.currentTimeMillis()): Option[String] = {
+    val configuredProvider =
+      Seq("hadoop.security.key.provider.path", "dfs.encryption.key.provider.uri")
+        .exists(key => hadoopConf.getTrimmed(key, "").nonEmpty)
+    val maxAgeMillis =
+      (if (ttlSeconds > 0) ttlSeconds else DefaultEncryptionZoneListingAgeSeconds) * 1000
+    def fresh(listedAt: Long): Boolean = nowMillis - listedAt < maxAgeMillis
+    // A directory at the root of the filesystem has no parent and is listed itself.
+    val byParent = directories.toSeq.sorted.map(new Path(_)).groupBy { dir =>
+      Option(dir.getParent).getOrElse(dir)
+    }
+    var entries = 0
+    def budgetReason(parent: Path): String =
+      s"Iceberg scan reads HDFS directories under '$parent' and beyond, which the check for " +
+        s"encryption zones did not reach within its budget of $maxEntries directory entries; " +
+        "a later scan continues from the listings kept"
+    byParent.toSeq
+      .sortBy(_._1.toString)
+      .iterator
+      .map { case (parent, dirs) =>
+        try {
+          val fs = parent.getFileSystem(hadoopConf)
+          val key = (fs.getUri.toString, tableUuid.getOrElse(""), parent.toString)
+          // Children are kept by name: every directory here is a child of `parent`.
+          val kept = keptListing(key).collect {
+            case (listedAt, flags)
+                if fresh(listedAt) && dirs.forall(dir => flags.contains(dir.getName)) =>
+              flags
+          }
+          def encryptedReason(flags: Map[String, Boolean]): Option[String] =
+            dirs.find(dir => flags.getOrElse(dir.getName, false)).map { dir =>
+              s"Iceberg scan reads HDFS directory '$dir', which is in an encryption zone; " +
+                "Comet's native Iceberg reader cannot decrypt HDFS encryption zones"
+            }
+          kept match {
+            case Some(flags) => encryptedReason(flags)
+            case None =>
+              val canHoldZones = configuredProvider ||
+                Option(fs.getServerDefaults(parent).getKeyProviderUri).exists(_.trim.nonEmpty)
+              if (!canHoldZones) {
+                None
+              } else if (entries >= maxEntries) {
+                Some(budgetReason(parent))
+              } else {
+                // Paged on HDFS, so a parent beyond the budget costs the budget, no more.
+                val listing = fs.listStatusIterator(parent)
+                val listed = Map.newBuilder[String, Boolean]
+                while (entries < maxEntries && listing.hasNext) {
+                  val status = listing.next()
+                  listed += status.getPath.getName -> status.isEncrypted
+                  entries += 1
+                }
+                if (listing.hasNext) {
+                  Some(budgetReason(parent))
+                } else {
+                  val children = listed.result()
+                  val missing = dirs
+                    .filterNot(dir => children.contains(dir.getName))
+                    .map(dir => dir.getName -> fs.getFileStatus(dir).isEncrypted)
+                  val flags = children ++ missing
+                  keepListing(key, (nowMillis, flags), maxKeptEntries)
+                  encryptedReason(flags)
+                }
+              }
+          }
+        } catch {
+          case NonFatal(e) =>
+            logWarning(s"Could not tell whether HDFS directories under $parent are encrypted", e)
+            Some(
+              s"Iceberg scan reads HDFS directories under '$parent', whose status could not be " +
+                s"read (${e.getClass.getSimpleName}: ${e.getMessage}); Comet's native Iceberg " +
+                "reader cannot decrypt HDFS encryption zones, so the scan is not claimed")
+        }
+      }
+      .collectFirst { case Some(reason) => reason }
+  }
+
+  private def hasPort(address: String): Boolean =
+    address != null && {
+      val colon = address.lastIndexOf(':')
+      colon > address.lastIndexOf(']') && colon < address.length - 1 &&
+      address.substring(colon + 1).forall(_.isDigit)
+    }
 
   /** iceberg-rust's per-I/O-call timeout, set from `spark.comet.iceberg.ioTimeout`. */
   def ioTimeoutProperty(): (String, String) =
