@@ -196,7 +196,7 @@ match a bare version too. Prefer patterns such as `comet-spark-spark3.5_2.12-*.j
 The release branch has the same CI workflows as `main`, so a `-SNAPSHOT`-only glob in a test harness or script
 fails only after the release branch is cut. The version bump pull request is where it shows up. It changes the
 `pom.xml` files, so it runs the suites that find the jar by file name or version, such as the PyArrow UDF tests and
-the Spark SQL and Iceberg suites. The Spark SQL suite for Spark 3.4 runs only with the `run-spark-3.4-tests` label.
+the Spark SQL and Iceberg suites.
 
 ### Update Version in main
 
@@ -295,8 +295,7 @@ change log file into `main`.
 
 Once the generated docs, version bump, and change log have merged to the release branch, run every CI suite
 against it. Each pull request ran against the branch as it stood when its run started, so nothing has yet tested
-the branch with all of them merged. Pull requests there also skip the Spark SQL suite for Spark 3.4 unless it is
-labeled, and Miri, which runs only on a schedule on `main`.
+the branch with all of them merged. Pull requests there also skip Miri, which runs only on a schedule on `main`.
 
 A dispatch runs every job in the release branch's own `ci.yml`, including `docs`, which publishes the website. So
 first check that the branch limits that job to `main`: the `if:` this prints must require
@@ -315,7 +314,7 @@ gh workflow run miri.yml --repo apache/datafusion-comet --ref branch-0.13
 ```
 
 A dispatched `ci.yml` run ignores the tiers and the path filters. It runs every suite in the
-[tier table](ci.md#three-tiers), including the Spark SQL suite for Spark 3.4, which sits outside every tier.
+[tier table](ci.md#three-tiers).
 `miri.yml` runs the unsafe code checks, which are not part of `ci.yml`. Expect the runs to take a few hours.
 
 A failed dispatched run does not open a `ci-nightly-failure` issue, so check the result yourself. This prints the
