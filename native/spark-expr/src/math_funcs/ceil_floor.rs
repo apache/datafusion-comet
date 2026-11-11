@@ -417,7 +417,7 @@ mod test {
             spark_ceil,
             &input,
             (38, 6),
-            38,
+            33,
             vec![
                 Some(20_000_000_000_000_i128),
                 Some(20_000_000_000_001_i128),
@@ -429,7 +429,7 @@ mod test {
             spark_floor,
             &input,
             (38, 6),
-            38,
+            33,
             vec![
                 Some(20_000_000_000_000_i128),
                 Some(20_000_000_000_000_i128),
@@ -455,7 +455,7 @@ mod test {
             spark_ceil,
             &input,
             (38, 6),
-            38,
+            33,
             vec![
                 Some(9_223_372_036_855_i128),
                 Some(9_223_372_036_855_i128),
@@ -467,7 +467,7 @@ mod test {
             spark_floor,
             &input,
             (38, 6),
-            38,
+            33,
             vec![
                 Some(9_223_372_036_854_i128),
                 Some(9_223_372_036_854_i128),
@@ -491,14 +491,14 @@ mod test {
             spark_ceil,
             &input,
             (38, 19),
-            38,
+            20,
             vec![Some(2000), Some(2001), Some(-2000), None],
         )?;
         check_decimal_array(
             spark_floor,
             &input,
             (38, 19),
-            38,
+            20,
             vec![Some(2000), Some(2000), Some(-2001), None],
         )
     }
