@@ -1,0 +1,479 @@
+{
+  "schema_version": 4,
+  "purpose": "Source-code inventory and explicit per-source measurement policies; not execution-frequency data",
+  "sources": [
+    {
+      "id": "spark-sql-tests",
+      "repository": "apache/spark",
+      "commit": "a2f49fa82fb9d6b78028ff13ebab0d2274d90844",
+      "archive": "regex5812-spark.tar.gz",
+      "archive_root": "spark-a2f49fa82fb9d6b78028ff13ebab0d2274d90844",
+      "path_prefix": "sql/core/src/test/resources/sql-tests/inputs/",
+      "suffix": ".sql",
+      "category": "engine-tests",
+      "measurement": {
+        "decoder": "spark-literal",
+        "interpretation": "Spark 4.1.3 literal parser, escapedStringLiterals=false; ANSI double-quoted identifiers disabled. Source locations, not replayed upstream test executions."
+      },
+      "license": "Apache-2.0; see repository LICENSE and NOTICE",
+      "bias": "Standalone SQL inputs only; excludes Scala, Python and API tests, expected outputs and imported fixture expansion. Not query execution frequency.",
+      "population": "engine_fixture",
+      "domain": "spark_engine",
+      "independence_group": "spark_sql_tests"
+    },
+    {
+      "id": "spark-hive-tests",
+      "repository": "apache/spark",
+      "commit": "a2f49fa82fb9d6b78028ff13ebab0d2274d90844",
+      "archive": "regex5812-spark.tar.gz",
+      "archive_root": "spark-a2f49fa82fb9d6b78028ff13ebab0d2274d90844",
+      "path_prefix": "sql/hive/src/test/resources/ql/src/test/queries/clientpositive/",
+      "suffix": ".q",
+      "category": "inherited-engine-tests",
+      "measurement": {
+        "decoder": "hive-literal-crosscheck",
+        "interpretation": "Hive dependency's unescapeSQLString, requiring equality with Spark 4.1.3 default literal parsing. Does not replay the original Hive/Spark tests."
+      },
+      "license": "Apache-2.0; see repository LICENSE and NOTICE",
+      "bias": "Inherited Hive fixtures; overlaps Hive upstream and is not an independent workload. Counts source locations, not Spark's selected/executed tests.",
+      "population": "engine_fixture",
+      "domain": "hive_engine",
+      "independence_group": "hive_fixtures"
+    },
+    {
+      "id": "hive-tests",
+      "repository": "apache/hive",
+      "commit": "3802476e88f74e7202925fe46d68690178872456",
+      "archive": "regex5812-hive.tar.gz",
+      "archive_root": "hive-3802476e88f74e7202925fe46d68690178872456",
+      "path_prefix": "ql/src/test/queries/clientpositive/",
+      "suffix": ".q",
+      "category": "engine-tests",
+      "measurement": {
+        "decoder": "hive-literal-crosscheck",
+        "interpretation": "Hive dependency's unescapeSQLString, requiring equality with Spark 4.1.3 default literal parsing. Does not replay the original upstream Hive tests."
+      },
+      "license": "Apache-2.0; see repository LICENSE and NOTICE",
+      "bias": "Clientpositive fixtures only; duplicated vectorization cases dominate occurrences. Positive-test naming does not establish validity of every regex or statement.",
+      "population": "engine_fixture",
+      "domain": "hive_engine",
+      "independence_group": "hive_fixtures"
+    },
+    {
+      "id": "wikimedia-refinery",
+      "repository": "wikimedia/analytics-refinery",
+      "commit": "f4aa212721f889a83c5f616fc2703106c31a359c",
+      "archive": "regex5812-refinery.tar.gz",
+      "archive_root": "analytics-refinery-f4aa212721f889a83c5f616fc2703106c31a359c",
+      "path_prefix": "hql/",
+      "suffix": ".hql",
+      "category": "application-query-source",
+      "measurement": {
+        "exclude": "application_sql_templates_not_validated"
+      },
+      "license": "UNRESOLVED: no root LICENSE/COPYING identified in this snapshot. Review before redistributing extracted literals.",
+      "bias": "One organization's checked-in Hive/Spark query templates; no execution logs or parameter expansion. Historical and active jobs are not distinguished.",
+      "population": "application",
+      "domain": "web_analytics",
+      "independence_group": "wikimedia_refinery"
+    },
+    {
+      "id": "gentropy-application",
+      "repository": "opentargets/gentropy",
+      "commit": "78b7f1e050089216ed42b2767b5246814ccb845e",
+      "archive": "regex5812-gentropy.tar.gz",
+      "archive_root": "gentropy-78b7f1e050089216ed42b2767b5246814ccb845e",
+      "path_prefix": "src/gentropy/",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "category": "application-expression-source",
+      "measurement": {
+        "decoder": "python-value",
+        "interpretation": "AST-decoded positional constants at six manually reviewed PySpark Column.rlike call sites. No execution-frequency weighting."
+      },
+      "license": "Apache-2.0; see pinned LICENSE.md and pyproject.toml",
+      "license_paths": [
+        "LICENSE.md"
+      ],
+      "api_validation": "All six extracted sites reviewed against PySpark imports, Column annotations and f.col construction. Package declares pyspark >=3.5.0,<3.6 in pyproject.toml.",
+      "bias": "Genomics application/toolkit source locations, not execution logs. Tests and docstrings excluded. This snapshot contributes six direct method literals; no application constants or embedded SQL are promoted. No runtime type inference.",
+      "population": "application",
+      "domain": "genomics",
+      "independence_group": "gentropy",
+      "reviewed_api_sites": [
+        {
+          "path": "src/gentropy/common/processing.py",
+          "line": 576,
+          "column": 26
+        },
+        {
+          "path": "src/gentropy/common/processing.py",
+          "line": 576,
+          "column": 61
+        },
+        {
+          "path": "src/gentropy/dataset/l2g_prediction.py",
+          "line": 162,
+          "column": 50
+        },
+        {
+          "path": "src/gentropy/datasource/gwas_catalog/associations.py",
+          "line": 200,
+          "column": 28
+        },
+        {
+          "path": "src/gentropy/datasource/gwas_catalog/associations.py",
+          "line": 450,
+          "column": 25
+        },
+        {
+          "path": "src/gentropy/datasource/gwas_catalog/associations.py",
+          "line": 508,
+          "column": 24
+        }
+      ]
+    },
+    {
+      "id": "mozilla-etl-survey",
+      "repository": "mozilla/python_mozetl",
+      "commit": "65fc913f38f1f016e0a6e4a86bd2f6e2c37f07bc",
+      "archive": "regex5812-mozetl.tar.gz",
+      "archive_root": "python_mozetl-65fc913f38f1f016e0a6e4a86bd2f6e2c37f07bc",
+      "path_prefix": "mozetl/",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "category": "application-source-survey",
+      "license": "MIT; copyright 2017 Ryan Harter; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "bias": "Archived Firefox Telemetry ETL source. Retained as a zero-hit survey result, not evidence of a workload with no runtime regex.",
+      "population": "application",
+      "domain": "browser_telemetry",
+      "independence_group": "mozilla_etl"
+    },
+    {
+      "id": "fink-broker-survey",
+      "repository": "astrolabsoftware/fink-broker",
+      "commit": "48b0d9594f05699b2165cb4ede19d3942773486c",
+      "archive": "regex5812-fink.tar.gz",
+      "archive_root": "fink-broker-48b0d9594f05699b2165cb4ede19d3942773486c",
+      "path_prefix": "fink_broker/",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "category": "application-source-survey",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "bias": "Astronomical-alert broker package only; command-line scripts, notebooks and external filters are outside this scope. No execution-frequency evidence.",
+      "population": "application",
+      "domain": "astronomy",
+      "independence_group": "fink"
+    },
+    {
+      "id": "fink-filters-survey",
+      "repository": "astrolabsoftware/fink-filters",
+      "commit": "6be6efc60956c99179bc400693ae8b87f19663e1",
+      "archive": "regex5812-filters.tar.gz",
+      "archive_root": "fink-filters-6be6efc60956c99179bc400693ae8b87f19663e1",
+      "path_prefix": "fink_filters/",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "category": "application-source-survey",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "bias": "Same Fink ecosystem as fink-broker, not an independent organization. Only checked-in Python method calls are inspected.",
+      "population": "application",
+      "domain": "astronomy",
+      "independence_group": "fink"
+    },
+    {
+      "id": "cms-spark-survey",
+      "repository": "dmwm/CMSSpark",
+      "commit": "7f32910b2f199bf03553a28d8eacc977b540f966",
+      "archive": "regex5812-cms.tar.gz",
+      "archive_root": "CMSSpark-7f32910b2f199bf03553a28d8eacc977b540f966",
+      "path_prefix": "src/python/CMSSpark/",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "category": "generated-query-source-survey",
+      "license": "MIT; copyright 2018 Valentin Kuznetsov; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "bias": "CMS analytics jobs. Ten intended RLIKE positions in dynamic SQL templates are audited without expansion. Docker copies excluded; CLI and function defaults are definitions, not observed query values or execution counts.",
+      "population": "application",
+      "domain": "particle_physics",
+      "independence_group": "cms",
+      "include_sql_templates": true
+    },
+    {
+      "id": "cuallee-toolkit-code",
+      "path_prefix": "cuallee/",
+      "category": "toolkit-code",
+      "repository": "canimus/cuallee",
+      "commit": "907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "archive": "regex5812-cuallee.tar.gz",
+      "archive_root": "cuallee-907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "independence_group": "cuallee",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "include_sql_templates": true,
+      "non_rlike_methods": [
+        "has_pattern"
+      ],
+      "measurement": {
+        "exclude": "toolkit_dynamic_sql_not_validated"
+      },
+      "bias": "Multi-backend toolkit or its PySpark tests, not deployed application queries. has_pattern maps to regexp_extract in PySpark and is NON_RLIKE_REGEX. Dynamic SQL context is not assumed safe. No cross-function propagation.",
+      "backend_contract": "cuallee/pyspark_validation.py:161-172 uses length(regexp_extract(...)) > 0; satisfies at 354-360 uses expr(rule.value)."
+    },
+    {
+      "id": "cuallee-pyspark-tests",
+      "path_prefix": "test/unit/pyspark_dataframe/",
+      "category": "toolkit-tests",
+      "repository": "canimus/cuallee",
+      "commit": "907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "archive": "regex5812-cuallee.tar.gz",
+      "archive_root": "cuallee-907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "independence_group": "cuallee",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "include_sql_templates": true,
+      "non_rlike_methods": [
+        "has_pattern"
+      ],
+      "measurement": {
+        "exclude": "toolkit_dynamic_sql_not_validated"
+      },
+      "bias": "Multi-backend toolkit or its PySpark tests, not deployed application queries. has_pattern maps to regexp_extract in PySpark and is NON_RLIKE_REGEX. Dynamic SQL context is not assumed safe. No cross-function propagation.",
+      "backend_contract": "cuallee/pyspark_validation.py:161-172 uses length(regexp_extract(...)) > 0; satisfies at 354-360 uses expr(rule.value)."
+    },
+    {
+      "repository": "maltzsama/sumeh",
+      "commit": "da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "archive": "regex5812-sumeh.tar.gz",
+      "archive_root": "sumeh-da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "independence_group": "sumeh",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "id": "sumeh-pyspark-code",
+      "path_prefix": "sumeh/engines/pyspark/",
+      "category": "toolkit-code",
+      "measurement": {
+        "exclude": "runtime_rule_values"
+      },
+      "bias": "PatternAnalyzer calls Column.rlike with rule.value. Runtime values and CLI/config inputs are not inferred; this code scope contains no observed application configurations."
+    },
+    {
+      "repository": "maltzsama/sumeh",
+      "commit": "da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "archive": "regex5812-sumeh.tar.gz",
+      "archive_root": "sumeh-da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "suffix": ".py",
+      "extractor": "pyspark-method-ast",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "independence_group": "sumeh",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "id": "sumeh-pyspark-test-rule",
+      "path_prefix": "tests/engines/test_pyspark.py",
+      "category": "toolkit-tests",
+      "reviewed_rule_constructors": [
+        "sumeh.core.rules.rule_model.RuleDefinition"
+      ],
+      "reviewed_api_sites": [
+        {
+          "path": "tests/engines/test_pyspark.py",
+          "line": 265,
+          "column": 13
+        }
+      ],
+      "measurement": {
+        "decoder": "python-value",
+        "allow_resolved_constants": true,
+        "interpretation": "One manually reviewed Python rule definition in the PySpark test, not application execution frequency. Direct dataclass construction leaves value unchanged; PySpark registry routes has_pattern to PatternAnalyzer.rlike."
+      },
+      "bias": "One PySpark toolkit test rule. No other backend tests, shared fixtures, README examples or generic from_dict value parsing are counted. This is a rule definition occurrence, not an RLIKE call-site count."
+    }
+  ],
+  "collection_targets": {
+    "official_issue_threshold": false,
+    "application_independence_groups": 3,
+    "application_domains": 3,
+    "application_unique_eligible_patterns": 30
+  },
+  "surveys": [
+    {
+      "id": "cuallee-fast-survey",
+      "repository": "canimus/cuallee",
+      "commit": "907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "archive": "regex5812-cuallee.tar.gz",
+      "archive_root": "cuallee-907d93c310c160de0c8858442452a4e3c2b8fbde",
+      "path_prefix": "",
+      "suffixes": [
+        ".py",
+        ".scala",
+        ".sql",
+        ".yaml",
+        ".yml",
+        ".md",
+        ".json"
+      ],
+      "license_paths": [
+        "LICENSE"
+      ],
+      "license": "Apache-2.0",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "disposition": "Investigated: has_pattern is NON_RLIKE_REGEX in the PySpark backend; two RLIKE references occur in a dynamic-column SQL template. No qualified new application patterns.",
+      "review_evidence": [
+        {
+          "path": "cuallee/pyspark_validation.py",
+          "line": 161,
+          "finding": "has_pattern uses regexp_extract, not RLIKE"
+        },
+        {
+          "path": "cuallee/pyspark_validation.py",
+          "line": 354,
+          "finding": "satisfies passes runtime rule.value to Spark expr"
+        },
+        {
+          "path": "cuallee/bio/checks.py",
+          "line": 50,
+          "finding": "Two intended RLIKE predicates inside a dynamic-column f-string; not constant SQL"
+        },
+        {
+          "path": "cuallee/__init__.py",
+          "line": 591,
+          "finding": "is_legit default belongs to non-RLIKE has_pattern; a rule definition, not an observed application execution"
+        }
+      ]
+    },
+    {
+      "id": "quality-fast-survey",
+      "repository": "sparkutils/quality",
+      "commit": "dd1a447353ef0b37db11e4052e5368317a25abc3",
+      "archive": "regex5812-quality.tar.gz",
+      "archive_root": "quality-dd1a447353ef0b37db11e4052e5368317a25abc3",
+      "path_prefix": "",
+      "suffixes": [
+        ".py",
+        ".scala",
+        ".sql",
+        ".yaml",
+        ".yml",
+        ".md",
+        ".json"
+      ],
+      "license_paths": [
+        "LICENSE"
+      ],
+      "license": "Apache-2.0",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "disposition": "No whole-word RLIKE/REGEXP/REGEXP_LIKE/has_pattern hits in the declared code, rule/config and documentation scope. RunnerLike and regExpTest substring hits are not SQL regex calls.",
+      "review_evidence": [
+        {
+          "path": "server/src/test/scala/com/sparkutils/quality/tests/MetaRuleSetTest.scala",
+          "line": 25,
+          "finding": "regExpTest is a test name, not an RLIKE rule"
+        }
+      ]
+    },
+    {
+      "repository": "maltzsama/sumeh",
+      "commit": "da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "archive": "regex5812-sumeh.tar.gz",
+      "archive_root": "sumeh-da514b3ae953d8ea99ef1ad2c69c98c5d3ebd516",
+      "population": "toolkit",
+      "domain": "data_quality",
+      "independence_group": "sumeh",
+      "license": "Apache-2.0; see pinned LICENSE",
+      "license_paths": [
+        "LICENSE"
+      ],
+      "id": "sumeh-fast-survey",
+      "path_prefix": "",
+      "suffixes": [
+        ".py",
+        ".scala",
+        ".sql",
+        ".yaml",
+        ".yml",
+        ".md",
+        ".json"
+      ],
+      "disposition": "One fixed PySpark test rule has a reviewed RLIKE consumer. Toolkit code receives runtime rule.value; shared/multi-backend fixtures are not counted as application usage.",
+      "review_evidence": [
+        {
+          "path": "tests/engines/test_pyspark.py",
+          "line": 265,
+          "finding": "One has_pattern rule passed to the imported PySpark validate function at line 272"
+        },
+        {
+          "path": "sumeh/core/rules/rule_model.py",
+          "line": 46,
+          "finding": "Direct dataclass construction and __post_init__ leave value unchanged; from_dict is a separate path and is not generalized"
+        },
+        {
+          "path": "sumeh/engines/pyspark/registry.py",
+          "line": 57,
+          "finding": "has_pattern dispatches to PatternAnalyzer"
+        },
+        {
+          "path": "sumeh/engines/pyspark/analyzers.py",
+          "line": 343,
+          "finding": "PySpark Column.rlike consumes rule.value"
+        },
+        {
+          "path": "sumeh/engines/pyspark/engine.py",
+          "line": 129,
+          "finding": "Row-level validation dispatches the existing rule object to the registered analyzer without rewriting value; source-level consumer review, not replayed test execution."
+        }
+      ]
+    }
+  ],
+  "validation_evidence": [
+    {
+      "repository": "wikimedia/analytics-refinery-source",
+      "commit": "9615df82755beec64a6c6064acadbb33dba4b47c",
+      "path": "refinery-job/src/main/scala/org/wikimedia/analytics/refinery/job/HiveToGraphite.scala",
+      "cache_file": "regex5812-HiveToGraphite.scala",
+      "sha256": "a8d38b694a1db292ee45b28d7a03c15b982db581e4b90eeaacc40955e84d26b0",
+      "finding": "Consumer uses SparkSQLNoCLIDriver and SparkConf(loadDefaults=true); does not establish deployed SQL settings."
+    },
+    {
+      "repository": "wikimedia/analytics-refinery-source",
+      "commit": "9615df82755beec64a6c6064acadbb33dba4b47c",
+      "path": "LICENSE.md",
+      "cache_file": "regex5812-refinery-source-LICENSE.md",
+      "sha256": "8afbd5f7003db4919d5daaad3d61976dd2fca45828c2ead5c0dc36d458e5c243",
+      "finding": "Explicitly scopes Apache-2.0 to refinery/source. This is not a redistribution grant for the separate analytics/refinery deployment repository."
+    }
+  ]
+}
