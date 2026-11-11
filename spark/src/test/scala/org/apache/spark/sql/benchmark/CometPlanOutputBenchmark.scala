@@ -53,8 +53,8 @@ import org.apache.comet.vector.NativeUtil
  */
 object CometPlanOutputBenchmark extends CometBenchmarkBase {
 
-  private val narrowRows = 8 * 1024 * 1024
-  private val wideRows = 1024 * 1024
+  private val narrowRows = 8L * 1024 * 1024
+  private val wideRows = 1024L * 1024
   private val wideColumns = 100
 
   override def runCometBenchmark(mainArgs: Array[String]): Unit = {
@@ -208,6 +208,6 @@ object CometPlanOutputBenchmark extends CometBenchmarkBase {
         }
         .collect()
     }
-    BatchCounts(perTask.map(_._1).sum, perTask.map(_._2).sum, perTask.count(_._2 > 0))
+    BatchCounts(perTask.map(_._1).sum, perTask.map(_._2).sum, perTask.count(_._2 > 0).toLong)
   }
 }

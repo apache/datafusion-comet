@@ -273,7 +273,7 @@ class NativeUtil extends AutoCloseable {
           val fields = imported.map(_.getValueVector.getField).toArray
           // A field with a dictionary is good for its own batch only, and native sends the schema
           // of every batch that has one.
-          planOutputFields = if (fields.exists(NativeUtil.hasDictionary)) null else fields
+          planOutputFields = if (fields.exists(CometVectorUtils.hasDictionary)) null else fields
           NativeUtil.planOutputSchemaImports.increment()
           imported.toArray
         } else {
@@ -468,10 +468,6 @@ object NativeUtil {
    * that tests and benchmarks can check that a plan sends it only when it changes.
    */
   private[apache] val planOutputSchemaImports = new LongAdder()
-
-  /** Whether `field` or a field nested in it is dictionary-encoded. */
-  private def hasDictionary(field: Field): Boolean =
-    field.getDictionary != null || field.getChildren.asScala.exists(hasDictionary)
 
   /**
    * Describes the first timestamp in `field` whose timezone label is not Comet's convention for

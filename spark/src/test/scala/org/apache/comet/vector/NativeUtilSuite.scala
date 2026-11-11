@@ -28,7 +28,7 @@ import scala.util.Using
 
 import org.apache.arrow.c.{ArrowArray, ArrowSchema, Data}
 import org.apache.arrow.memory.RootAllocator
-import org.apache.arrow.vector.{IntVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
+import org.apache.arrow.vector.{BigIntVector, FieldVector, IntVector, TimeStampMicroTZVector, UInt4Vector, VarCharVector}
 import org.apache.arrow.vector.complex.StructVector
 import org.apache.arrow.vector.dictionary.Dictionary
 import org.apache.arrow.vector.dictionary.DictionaryProvider.MapDictionaryProvider
@@ -39,7 +39,7 @@ import org.apache.spark.sql.comet.{CapturedSQLConf, CometExec, CometNativeExec}
 import org.apache.spark.sql.comet.util.Utils
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.vectorized.ConstantColumnVector
-import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, MapType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
+import org.apache.spark.sql.types.{ArrayType, BinaryType, DataType, IntegerType, LongType, MapType, StringType, StructField, StructType, TimestampNTZType, TimestampType}
 import org.apache.spark.sql.vectorized.{ColumnarBatch, ColumnVector}
 
 import org.apache.comet.{CometArrowAllocator, CometArrowImportAllocator, CometConf, CometRuntimeException}
@@ -352,6 +352,55 @@ class NativeUtilSuite extends CometTestBase {
         batches.foreach(_.close())
       }
       // Only the kept schema structs remain, until close() frees them.
+      nativeUtil.close()
+      assert(allocator.getAllocatedMemory == 0)
+    }
+  }
+
+  test(
+    "getNextPlanBatch reads a batch sent without a schema with the latest schema it was sent") {
+    withIsolatedStructAllocator { (nativeUtil, allocator, _) =>
+      def nextBatch(vector: FieldVector, rows: Int, withSchema: Boolean): ColumnarBatch =
+        Using.resource(vector) { _ =>
+          nativeUtil
+            .getNextPlanBatch(
+              1,
+              (arrays, schemas) => {
+                val schema = if (withSchema) ArrowSchema.wrap(schemas(0)) else null
+                Data.exportVector(allocator, vector, null, ArrowArray.wrap(arrays(0)), schema)
+                if (withSchema) rows.toLong | NativeUtil.OUTPUT_SCHEMA_EXPORTED else rows.toLong
+              })
+            .get
+        }
+      def ints(values: Seq[Int]): IntVector = {
+        val vector = new IntVector("value", allocator)
+        vector.allocateNew(values.length)
+        values.indices.foreach(i => vector.setSafe(i, values(i)))
+        vector.setValueCount(values.length)
+        vector
+      }
+      def longs(values: Seq[Long]): BigIntVector = {
+        val vector = new BigIntVector("value", allocator)
+        vector.allocateNew(values.length)
+        values.indices.foreach(i => vector.setSafe(i, values(i)))
+        vector.setValueCount(values.length)
+        vector
+      }
+
+      // The schema changes from int to bigint, and the batch after it carries none. It has to
+      // read as longs, which the first schema's fields would not give.
+      val batches = Seq(
+        nextBatch(ints(Seq(1, 2)), 2, withSchema = true),
+        nextBatch(longs(Seq(Int.MaxValue.toLong + 1, 4L)), 2, withSchema = true),
+        nextBatch(longs(Seq(5L, 6L, 7L)), 3, withSchema = false))
+      try {
+        val types = batches.map(_.column(0).dataType())
+        assert(types == Seq(IntegerType, LongType, LongType))
+        assert((0 until 3).map(batches(2).column(0).getLong) == Seq(5L, 6L, 7L))
+        assert((0 until 2).map(batches(1).column(0).getLong) == Seq(Int.MaxValue.toLong + 1, 4L))
+      } finally {
+        batches.foreach(_.close())
+      }
       nativeUtil.close()
       assert(allocator.getAllocatedMemory == 0)
     }
