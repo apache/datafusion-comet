@@ -51,9 +51,26 @@ locked_version ()
   ' "${script_dir}/../native/Cargo.lock"
 }
 
-check_native_license_versions ()
+bundled_protobuf_version ()
 {
-  local lz4_version zstd_sys_version zstd_version
+  # The root pom sets the protobuf-java version that Maven Shade bundles. Reject absent or
+  # ambiguous versions.
+  awk '
+    match($0, /<protobuf\.version>[^<]+<\/protobuf\.version>/) {
+      version = substr($0, RSTART + 18, RLENGTH - 37); count++
+    }
+    END { if (count != 1) exit 1; print version }
+  ' "${script_dir}/../pom.xml"
+}
+
+licensed ()
+{
+  tr -d '\r' < "${binary_license}" | grep -Fx "$1" > /dev/null
+}
+
+check_license_versions ()
+{
+  local lz4_version zstd_sys_version zstd_version protobuf_version
   if ! lz4_version=$(locked_version lz4_flex) || ! zstd_sys_version=$(locked_version zstd-sys); then
     echo "[ERROR] Expected one lz4_flex and one zstd-sys version in native/Cargo.lock."
     return 1
@@ -62,11 +79,17 @@ check_native_license_versions ()
     *+zstd.*) zstd_version=${zstd_sys_version##*+zstd.} ;;
     *) echo "[ERROR] Cannot read the vendored Zstandard version from zstd-sys ${zstd_sys_version}."; return 1 ;;
   esac
-  if ! tr -d '\r' < "${binary_license}" |
-      grep -Fx "The native Comet library bundles lz4_flex ${lz4_version} (MIT)." > /dev/null ||
-      ! tr -d '\r' < "${binary_license}" |
-      grep -Fx "The native Comet library bundles Zstandard ${zstd_version} (BSD-3-Clause)." > /dev/null; then
+  if ! licensed "The native Comet library bundles lz4_flex ${lz4_version} (MIT)." ||
+      ! licensed "The native Comet library bundles Zstandard ${zstd_version} (BSD-3-Clause)."; then
     echo "[ERROR] Update LICENSE-binary.txt for locked lz4_flex ${lz4_version} / Zstandard ${zstd_version}."
+    return 1
+  fi
+  if ! protobuf_version=$(bundled_protobuf_version); then
+    echo "[ERROR] Expected one protobuf.version property in pom.xml."
+    return 1
+  fi
+  if ! licensed "The Comet JAR bundles protobuf-java ${protobuf_version} (BSD-3-Clause)."; then
+    echo "[ERROR] Update LICENSE-binary.txt for bundled protobuf-java ${protobuf_version}."
     return 1
   fi
 }
@@ -213,7 +236,7 @@ for artifact_index in "${!artifact_list[@]}"; do
   # Here-strings rather than pipes: under pipefail, grep -q closing a pipe early could fail
   # the writer and hide a match.
   if grep -q -E '^org/apache/comet/[^/]+/[^/]+/(libcomet\.(so|dylib)|comet\.dll)$' <<< "${entries}"; then
-    if ! check_native_license_versions; then
+    if ! check_license_versions; then
       bad_artifacts=${bad_artifacts}+1
       continue
     fi
@@ -222,7 +245,7 @@ for artifact_index in "${!artifact_list[@]}"; do
       echo "[ERROR] Expected exactly one META-INF/LICENSE in '${artifact}'."
       bad_artifacts=${bad_artifacts}+1
     elif ! unzip -p "${artifact}" META-INF/LICENSE | cmp -s "${binary_license}" -; then
-      echo "[ERROR] Binary LICENSE differs or is missing native attribution in '${artifact}'."
+      echo "[ERROR] Binary LICENSE differs or is missing a bundled attribution in '${artifact}'."
       bad_artifacts=${bad_artifacts}+1
     else
       echo "[INFO] Binary LICENSE matches: '$(basename "${artifact}")'"
