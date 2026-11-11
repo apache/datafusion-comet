@@ -106,6 +106,7 @@ jobs:
         run: |
           rustup component add rustfmt
           cd native && cargo fmt --all -- --check
+          cargo fmt --manifest-path native-executors/Cargo.toml --all -- --check
 
   # Fast syntactic-only scalafix check. Parses sources without compiling, so it
   # surfaces version-independent style issues (e.g. RedundantSyntax) in seconds,
@@ -163,9 +164,6 @@ jobs:
     strategy:
       matrix:
         profile:
-          - name: "Spark 3.4, JDK 17, Scala 2.12"
-            java_version: "17"
-            maven_opts: "-Pspark-3.4 -Pscala-2.12"
           - name: "Spark 3.5, JDK 17, Scala 2.12"
             java_version: "17"
             maven_opts: "-Pspark-3.5 -Pscala-2.12"
@@ -476,6 +474,36 @@ jobs:
       - name: Rust test steps
         uses: ./.github/actions/rust-test
 
+  # native/native-executors, the Comet Native Executors cluster (issue #7288),
+  # is a Cargo workspace of its own so that the main build never depends on
+  # Ballista. linux-test-rust doesn't build it, so this job does, and the lint
+  # job checks its formatting. When Comet moves to a DataFusion major that
+  # Ballista hasn't released yet, the upgrade can turn this job off until
+  # Ballista catches up.
+  linux-test-native-executors:
+    needs: lint
+    name: ubuntu-latest/native-executors
+    if: ${{ !inputs.cache-refresh-only && inputs.profiles != 'nightly' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: amd64/rust
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Rust & Java toolchain
+        uses: ./.github/actions/setup-builder
+        with:
+          rust-version: ${{ env.RUST_VERSION }}
+          jdk-version: 17
+
+      - name: Check Cargo clippy
+        run: |
+          cargo clippy --manifest-path native/native-executors/Cargo.toml --color=never \
+            --all-targets -- -D warnings
+
+      - name: Run Cargo test
+        run: cargo test --manifest-path native/native-executors/Cargo.toml --color=never
+
   linux-test:
     # `lint` is already upstream via build-native; it is listed here so this
     # job can read its `profile-matrix` output.
@@ -507,6 +535,7 @@ jobs:
               org.apache.comet.CometVariantProjectionSuite
               org.apache.spark.sql.CometVariantShreddingSuite
               org.apache.comet.CometIcebergNativeSuite
+              org.apache.comet.CometIcebergHdfsSuite
               org.apache.comet.CometBroadcastBuildSideSuite
               org.apache.comet.CometIcebergEncryptionSuite
               org.apache.comet.CometIcebergRewriteActionSuite
@@ -525,7 +554,6 @@ jobs:
             value: |
               org.apache.comet.exec.CometShuffleSuite
               org.apache.comet.exec.CometShuffle4_0Suite
-              org.apache.comet.exec.CometNativeColumnarToRowSuite
               org.apache.comet.exec.CometDirectColumnarToRowSuite
               org.apache.comet.exec.CometNativeShuffleSuite
               org.apache.comet.exec.CometShuffleInputConversionSuite
@@ -587,7 +615,7 @@ jobs:
               org.apache.spark.CometExecIteratorLifecycleSuite
               org.apache.spark.CometPluginsDefaultSuite
               org.apache.spark.CometPluginsMemoryOverheadWarningSuite
-              org.apache.spark.CometPluginsMemoryPoolFractionWarningSuite
+              org.apache.spark.CometPluginsDeprecatedConfigWarningSuite
               org.apache.spark.CometPluginsUnifiedModeSuite
               org.apache.spark.CometPluginsExtensionOnlySuite
               org.apache.spark.CometPluginsSparkShuffleManagerSuite
@@ -635,6 +663,7 @@ jobs:
               org.apache.spark.sql.comet.execution.arrow.CachedBatchRowIteratorSuite
               org.apache.spark.sql.comet.execution.arrow.CometArrowWriterSuite
               org.apache.spark.sql.comet.execution.arrow.CometStringWriterSuite
+              org.apache.spark.sql.comet.execution.arrow.CometZstdCompressionCodecSuite
               org.apache.spark.sql.CometSparkInternalFunctionsSuite
           - name: "expressions"
             value: |

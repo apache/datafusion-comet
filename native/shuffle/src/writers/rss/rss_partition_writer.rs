@@ -1229,7 +1229,7 @@ mod buffer_tests {
         let block_writer =
             ShuffleBlockWriter::try_new(batch.schema().as_ref(), crate::CompressionCodec::None)
                 .unwrap();
-        let mut output = BoundedBuffer::try_new(67_996).unwrap();
+        let mut output = BoundedBuffer::try_new(65_948).unwrap();
         block_writer
             .write_rss_batch(
                 &batch,
@@ -1238,11 +1238,11 @@ mod buffer_tests {
                 &Time::default(),
             )
             .unwrap();
-        assert_eq!(output.inner.get_ref().len(), 67_996);
-        assert_eq!(output.inner.get_ref().capacity(), 67_996);
+        assert_eq!(output.inner.get_ref().len(), 65_948);
+        assert_eq!(output.inner.get_ref().capacity(), 65_948);
         assert!(output.write(&[1]).is_err());
         assert!(output.exceeded);
-        assert_eq!(output.minimum_size, 67_997);
-        assert_eq!(output.inner.get_ref().capacity(), 67_996);
+        assert_eq!(output.minimum_size, 65_949);
+        assert_eq!(output.inner.get_ref().capacity(), 65_948);
     }
 }
