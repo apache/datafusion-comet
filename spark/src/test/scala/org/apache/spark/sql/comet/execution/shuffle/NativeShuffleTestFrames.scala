@@ -40,13 +40,16 @@ private[sql] object NativeShuffleTestFrames {
     }
   }
 
-  def frameBytes(payload: Byte*): Array[Byte] = ByteBuffer
-    .allocate(20 + payload.size)
+  def frameBytes(payload: Byte*): Array[Byte] = frameArray(payload.toArray)
+
+  // Takes an Array because passing one to a varargs parameter copies it on Scala 2.13 and warns.
+  def frameArray(payload: Array[Byte]): Array[Byte] = ByteBuffer
+    .allocate(20 + payload.length)
     .order(ByteOrder.LITTLE_ENDIAN)
-    .putLong(12L + payload.size)
+    .putLong(12L + payload.length)
     .putLong(0L)
     .put(Array[Byte](78, 79, 78, 69)) // NONE codec
-    .put(payload.toArray)
+    .put(payload)
     .array()
 
   def arrowFrame(root: VectorSchemaRoot, dictionaries: DictionaryProvider = null): Array[Byte] = {
@@ -59,7 +62,7 @@ private[sql] object NativeShuffleTestFrames {
         writer.end()
         output.toByteArray
       } finally writer.close()
-    val frame = frameBytes(payload: _*)
+    val frame = frameArray(payload)
     ByteBuffer
       .wrap(frame)
       .order(ByteOrder.LITTLE_ENDIAN)

@@ -24,6 +24,7 @@ import scala.util.control.NonFatal
 import org.apache.spark.{SparkException, SparkThrowable}
 import org.apache.spark.sql.catalyst.planning.PhysicalOperation
 import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution.HiveResult.hiveResultString
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.{DescribeColumnCommand, DescribeCommandBase}
@@ -83,7 +84,7 @@ trait CometSQLQueryTestHelper {
     try {
       result
     } catch {
-      case e: SparkThrowable with Throwable if e.getErrorClass != null =>
+      case e: SparkThrowable with Throwable if errorCondition(e) != null =>
         (emptySchema, Seq(e.getClass.getName, e.getMessage))
       case a: AnalysisException =>
         // Do not output the logical plan tree which contains expression IDs.
@@ -96,7 +97,7 @@ trait CometSQLQueryTestHelper {
         // information of stage, task ID, etc.
         // To make result matching simpler, here we match the cause of the exception if it exists.
         s.getCause match {
-          case e: SparkThrowable with Throwable if e.getErrorClass != null =>
+          case e: SparkThrowable with Throwable if errorCondition(e) != null =>
             (emptySchema, Seq(e.getClass.getName, e.getMessage))
           case cause =>
             (emptySchema, Seq(cause.getClass.getName, cause.getMessage))

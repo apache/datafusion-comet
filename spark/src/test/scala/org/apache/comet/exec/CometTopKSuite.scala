@@ -28,6 +28,7 @@ import scala.jdk.CollectionConverters._
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.{CometTestBase, Row}
 import org.apache.spark.sql.comet.{CometLocalTopKExec, CometNativeScanExec, CometTakeOrderedAndProjectExec}
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 import org.apache.spark.sql.execution.{LocalTableScanExec, SparkPlan, TakeOrderedAndProjectExec}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{ByteType, IntegerType, LongType, ShortType}
@@ -368,7 +369,7 @@ class CometTopKSuite extends CometTestBase {
                   if (isSpark40Plus) "FAILED_READ_FILE.NO_HINT" else "_LEGACY_ERROR_TEMP_2064"
                 val readError = causeChain(failure)
                   .collectFirst {
-                    case error: SparkThrowable if error.getErrorClass == errorClass => error
+                    case error: SparkThrowable if errorCondition(error) == errorClass => error
                   }
                   .getOrElse(fail(s"Missing $errorClass in ${causeChain(failure)}"))
                 // A lower-level cause can mention the file even when the structured path is lost.

@@ -22,6 +22,7 @@ package org.apache.comet
 import org.scalatest.funsuite.AnyFunSuite
 
 import org.apache.spark.{SparkException, SparkThrowable}
+import org.apache.spark.sql.comet.shims.ShimSparkErrorCondition.errorCondition
 
 import org.apache.comet.CometSparkSessionExtensions.isSpark40Plus
 
@@ -38,7 +39,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
           null)
         .getOrElse(fail("Expected arithmetic overflow"))
       assert(error.isInstanceOf[ArithmeticException])
-      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(errorCondition(error.asInstanceOf[SparkThrowable]) == "ARITHMETIC_OVERFLOW")
       assert(
         error.getMessage.contains(
           s"Use '$function' to tolerate overflow and return NULL instead."))
@@ -53,7 +54,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       val error = SparkErrorConverter
         .convertErrorType("ArithmeticOverflow", "ARITHMETIC_OVERFLOW", params, Array.empty, null)
         .getOrElse(fail("Expected arithmetic overflow"))
-      assert(error.asInstanceOf[SparkThrowable].getErrorClass == "ARITHMETIC_OVERFLOW")
+      assert(errorCondition(error.asInstanceOf[SparkThrowable]) == "ARITHMETIC_OVERFLOW")
       assert(error.asInstanceOf[SparkThrowable].getMessageParameters.get("alternative") == "")
       assert(!error.getMessage.contains("try_"))
     }
@@ -130,7 +131,7 @@ class SparkErrorConverterSuite extends AnyFunSuite {
       option: String): Unit = ex match {
     // SparkUpgradeException is private[spark], so match on the public SparkThrowable.
     case e: SparkThrowable if ex.getClass.getName == "org.apache.spark.SparkUpgradeException" =>
-      assert(e.getErrorClass == ReadAncientDatetimeClass)
+      assert(errorCondition(e) == ReadAncientDatetimeClass)
       val params = e.getMessageParameters
       assert(params.get("format") == format)
       assert(params.get("config") == s""""$config"""")

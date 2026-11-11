@@ -48,7 +48,8 @@ object CometExistenceJoinBenchmark extends CometBenchmarkBase {
       // explicitly or Comet stays disabled and both arms measure Spark.
       .set("spark.comet.exec.onHeap.enabled", "true")
 
-    val sparkSession = SparkSession.builder
+    val sparkSession = SparkSession
+      .builder()
       .config(conf)
       .withExtensions(new CometSparkSessionExtensions)
       .getOrCreate()

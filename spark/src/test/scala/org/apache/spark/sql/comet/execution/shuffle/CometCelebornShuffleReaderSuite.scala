@@ -1125,7 +1125,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
           0,
           java.util.Collections.singleton[Object]("worker"))
         client.streams.put(0, new ByteArrayInputStream(frames.next()))
-        val metrics = context.taskMetrics.createTempShuffleReadMetrics()
+        val metrics = context.taskMetrics().createTempShuffleReadMetrics()
         val partitions = new CelebornRawPartitionReader(
           client,
           dependency.shuffleId,
@@ -1475,7 +1475,7 @@ class CometCelebornShuffleReaderSuite extends CometTestBase {
       .toSeq
     assert(positions.size == 1)
     ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN).putInt(positions.head + 8, 2)
-    val frame = frameBytes(payload: _*)
+    val frame = frameArray(payload)
     ByteBuffer.wrap(frame).order(ByteOrder.LITTLE_ENDIAN).putLong(8, 1L)
     val attributes = Seq(AttributeReference("value", StringType)())
 

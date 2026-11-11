@@ -60,14 +60,20 @@ public abstract class CometVector extends ColumnVector {
   private static final int DECIMAL_BYTE_WIDTH = 16;
   private final byte[] DECIMAL_BYTES = new byte[DECIMAL_BYTE_WIDTH];
 
-  private static final long decimalValOffset;
+  private static final long decimalValOffset = computeDecimalValOffset();
 
-  static {
+  // sun.misc.Unsafe has no supported replacement for reading a field offset. It is reached
+  // reflectively because javac warns on every compile-time reference to it and offers no way to
+  // suppress that warning.
+  private static long computeDecimalValOffset() {
     try {
-      java.lang.reflect.Field unsafeField = sun.misc.Unsafe.class.getDeclaredField("theUnsafe");
+      java.lang.reflect.Field unsafeField =
+          Class.forName("sun.misc.Unsafe").getDeclaredField("theUnsafe");
       unsafeField.setAccessible(true);
-      final sun.misc.Unsafe unsafe = (sun.misc.Unsafe) unsafeField.get(null);
-      decimalValOffset = unsafe.objectFieldOffset(Decimal.class.getDeclaredField("decimalVal"));
+      Object unsafe = unsafeField.get(null);
+      java.lang.reflect.Method objectFieldOffset =
+          unsafe.getClass().getMethod("objectFieldOffset", java.lang.reflect.Field.class);
+      return (long) objectFieldOffset.invoke(unsafe, Decimal.class.getDeclaredField("decimalVal"));
     } catch (Throwable e) {
       throw new RuntimeException(e);
     }

@@ -307,7 +307,7 @@ private[shuffle] final class CelebornRawPartitionReader(
       Array[AnyRef](mapAttempts, metricsCallback, java.lang.Boolean.FALSE)
     val stream =
       try {
-        Option(invoke(readPartitionMethod, client, arguments: _*))
+        Option(invokeWithArray(readPartitionMethod, client, arguments))
           .getOrElse {
             throw new IOException(s"Celeborn returned a null stream for reducer $partition")
           }
@@ -712,6 +712,13 @@ private[shuffle] object CelebornRawPartitionReader {
   }
 
   private def invoke(method: Method, instance: AnyRef, arguments: AnyRef*): AnyRef =
+    invokeWithArray(method, instance, arguments.toArray)
+
+  // Passing an Array to a Scala varargs parameter copies it on Scala 2.13 and warns.
+  private def invokeWithArray(
+      method: Method,
+      instance: AnyRef,
+      arguments: Array[AnyRef]): AnyRef =
     try method.invoke(instance, arguments: _*)
     catch {
       case failure: InvocationTargetException =>

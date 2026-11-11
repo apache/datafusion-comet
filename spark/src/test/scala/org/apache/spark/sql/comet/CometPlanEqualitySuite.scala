@@ -21,7 +21,7 @@ package org.apache.spark.sql.comet
 
 import java.lang.reflect.Modifier
 
-import scala.collection.JavaConverters._
+import scala.jdk.CollectionConverters._
 import scala.reflect.runtime.universe.runtimeMirror
 
 import org.scalatest.funsuite.AnyFunSuite
