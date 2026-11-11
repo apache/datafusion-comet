@@ -115,7 +115,7 @@ even when both of those aggregates run on Spark.
 The native shuffle writer buffers a task's output in memory and spills it to disk. By default
 (`spark.comet.shuffle.native.maxBufferBytes=0`) it spills only when the memory pool denies an allocation, so it holds
 as much of the task's share of the off-heap pool as it can get. That can leave a sort or an aggregation in the same
-task without memory, and the large buffers it frees at the end of the task can stay resident in the memory allocator,
+task without memory, and the large buffers it frees at the end of the task can stay resident in the Rust allocator,
 adding to the executor's memory footprint.
 
 Setting `spark.comet.shuffle.native.maxBufferBytes` makes the writer spill whenever it has buffered that many bytes.

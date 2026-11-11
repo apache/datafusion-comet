@@ -49,7 +49,7 @@ class GenerateDocsSuite extends AnyFunSuite {
          |
          |- A `UTF8_BINARY` literal pattern admitted by the [plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe) is evaluated natively by default.
          |
-         |For applicable cases that are not selected for native execution automatically, `RLike` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `$configKey=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
+         |For applicable cases where Comet does not select its native implementation automatically, `RLike` is evaluated in the JVM using Spark's own code-generated implementation (run inside the Comet pipeline) by default. Set `$configKey=true` to explicitly select Comet's native implementation, which has the following differences from Spark:
          |
          |- For applicable literal patterns outside the automatically admitted subset, the native Rust regex engine may behave differently from Java regex.
          |""".stripMargin

@@ -448,18 +448,20 @@ accelerated paths, a DataFusion expression in Rust and the JVM codegen dispatche
 `doGenCode` compiled into an Arrow batch kernel), and both produce Spark-matching results by
 construction.
 
-If your serde picks between them, for example returning `Unsupported` for one input type and
-relying on `CodegenDispatchFallback` to keep it in the pipeline, use `checkSparkAnswerAndImpl` so
+If your serde picks between them, for example by input type with `CodegenDispatchFallback`, or by a
+config as `lower` does with `spark.comet.caseConversion.enabled`, use `checkSparkAnswerAndImpl` so
 the choice is asserted rather than assumed:
 
 ```scala
-test("bit_length dispatches on binary and stays native on string") {
+test("lower dispatches by default and runs in Rust with case conversion enabled") {
   withTable("t") {
-    sql("CREATE TABLE t (b BINARY, s STRING) USING parquet")
-    sql("INSERT INTO t VALUES (X'48656c6c6f', 'hello'), (NULL, NULL)")
+    sql("CREATE TABLE t (s STRING) USING parquet")
+    sql("INSERT INTO t VALUES ('Hello'), (NULL)")
 
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(b) FROM t"), dispatched = Seq("bit_length"))
-    checkSparkAnswerAndImpl(sql("SELECT bit_length(s) FROM t"), native = Seq("bit_length"))
+    checkSparkAnswerAndImpl(sql("SELECT lower(s) FROM t"), dispatched = Seq("lower"))
+    withSQLConf(CometConf.COMET_CASE_CONVERSION_ENABLED.key -> "true") {
+      checkSparkAnswerAndImpl(sql("SELECT lower(s) FROM t"), native = Seq("lower"))
+    }
   }
 }
 ```
