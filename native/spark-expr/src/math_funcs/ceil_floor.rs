@@ -22,7 +22,8 @@ use arrow::array::{Array, ArrowNativeTypeOp, Int64Array};
 use arrow::datatypes::DataType;
 use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::physical_plan::ColumnarValue;
-use num::integer::{div_ceil, div_floor};
+use num::integer::{div_ceil, div_floor, Integer};
+use num::Float;
 use std::sync::Arc;
 
 /// Evaluates `$body` with `$exp` bound as a compile-time constant equal to `$scale`, for every
@@ -116,7 +117,7 @@ pub fn spark_ceil(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_ceil_or_floor::<Ceil>(args, data_type)
+    spark_ceil_or_floor::<true>(args, data_type)
 }
 
 /// `floor` function that simulates Spark `floor` expression
@@ -124,93 +125,50 @@ pub fn spark_floor(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
-    spark_ceil_or_floor::<Floor>(args, data_type)
+    spark_ceil_or_floor::<false>(args, data_type)
 }
 
-/// The rounding direction that distinguishes `ceil` from `floor`.
-///
-/// Implemented by marker types so that each direction is monomorphized into the element loop
-/// rather than dispatched for every value.
-trait RoundingMode {
-    const NAME: &'static str;
-
-    fn round_f32(x: f32) -> f32;
-    fn round_f64(x: f64) -> f64;
-    fn div_i64(x: i64, div: i64) -> i64;
-    fn div_i128(x: i128, div: i128) -> i128;
-}
-
-struct Ceil;
-
-impl RoundingMode for Ceil {
-    const NAME: &'static str = "ceil";
-
-    #[inline]
-    fn round_f32(x: f32) -> f32 {
+#[inline]
+fn round_float<const CEIL: bool, T: Float>(x: T) -> T {
+    if CEIL {
         x.ceil()
-    }
-
-    #[inline]
-    fn round_f64(x: f64) -> f64 {
-        x.ceil()
-    }
-
-    #[inline]
-    fn div_i64(x: i64, div: i64) -> i64 {
-        div_ceil(x, div)
-    }
-
-    #[inline]
-    fn div_i128(x: i128, div: i128) -> i128 {
-        div_ceil(x, div)
-    }
-}
-
-struct Floor;
-
-impl RoundingMode for Floor {
-    const NAME: &'static str = "floor";
-
-    #[inline]
-    fn round_f32(x: f32) -> f32 {
+    } else {
         x.floor()
     }
+}
 
-    #[inline]
-    fn round_f64(x: f64) -> f64 {
-        x.floor()
-    }
-
-    #[inline]
-    fn div_i64(x: i64, div: i64) -> i64 {
-        div_floor(x, div)
-    }
-
-    #[inline]
-    fn div_i128(x: i128, div: i128) -> i128 {
+#[inline]
+fn div_round<const CEIL: bool, T: Integer>(x: T, div: T) -> T {
+    if CEIL {
+        div_ceil(x, div)
+    } else {
         div_floor(x, div)
     }
 }
 
 /// Shared implementation of Spark's `ceil` and `floor` expressions.
-fn spark_ceil_or_floor<M: RoundingMode>(
+///
+/// `CEIL` selects the rounding direction. It is a const parameter so that each direction is
+/// monomorphized into the element loop rather than branched on for every value.
+fn spark_ceil_or_floor<const CEIL: bool>(
     args: &[ColumnarValue],
     data_type: &DataType,
 ) -> Result<ColumnarValue, DataFusionError> {
+    let name = if CEIL { "ceil" } else { "floor" };
     let value = &args[0];
     match value {
         ColumnarValue::Array(array) => match array.data_type() {
             DataType::Float32 => {
                 let result: Int64Array = arrow::compute::kernels::arity::unary(
                     array.as_primitive::<Float32Type>(),
-                    |x| M::round_f32(x) as i64,
+                    |x| round_float::<CEIL, _>(x) as i64,
                 );
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
             DataType::Float64 => {
                 let result: Int64Array = arrow::compute::kernels::arity::unary(
                     array.as_primitive::<Float64Type>(),
-                    |x| M::round_f64(x) as i64,
+                    |x| round_float::<CEIL, _>(x) as i64,
                 );
                 Ok(ColumnarValue::Array(Arc::new(result)))
             }
@@ -222,53 +180,53 @@ fn spark_ceil_or_floor<M: RoundingMode>(
                 let (precision, scale) = get_precision_scale(data_type);
                 dispatch_pow10!(
                     *input_scale,
-                    EXP => make_decimal_array(array, precision, scale, decimal_round_pow10::<M, EXP>),
-                    make_decimal_array(array, precision, scale, decimal_round_f::<M>(*input_scale))
+                    EXP => make_decimal_array(array, precision, scale, decimal_round_pow10::<CEIL, EXP>),
+                    make_decimal_array(array, precision, scale, decimal_round_f::<CEIL>(*input_scale))
                 )
             }
             other => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {other:?} for function {}",
-                M::NAME,
+                name,
             ))),
         },
         ColumnarValue::Scalar(a) => match a {
             ScalarValue::Float32(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
-                a.map(|x| M::round_f32(x) as i64),
+                a.map(|x| round_float::<CEIL, _>(x) as i64),
             ))),
             ScalarValue::Float64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(
-                a.map(|x| M::round_f64(x) as i64),
+                a.map(|x| round_float::<CEIL, _>(x) as i64),
             ))),
             ScalarValue::Int64(a) => Ok(ColumnarValue::Scalar(ScalarValue::Int64(a.map(|x| x)))),
             ScalarValue::Decimal128(a, _, input_scale) if *input_scale > 0 => {
-                let f = decimal_round_f::<M>(*input_scale);
+                let f = decimal_round_f::<CEIL>(*input_scale);
                 let (precision, scale) = get_precision_scale(data_type);
                 make_decimal_scalar(a, precision, scale, f)
             }
             _ => Err(DataFusionError::Internal(format!(
                 "Unsupported data type {:?} for function {}",
                 value.data_type(),
-                M::NAME,
+                name,
             ))),
         },
     }
 }
 
 #[inline]
-fn decimal_round_f<M: RoundingMode>(scale: i8) -> impl Fn(i128) -> i128 {
+fn decimal_round_f<const CEIL: bool>(scale: i8) -> impl Fn(i128) -> i128 {
     let div = 10_i128.pow_wrapping(scale as u32);
-    move |x: i128| M::div_i128(x, div)
+    move |x: i128| div_round::<CEIL, _>(x, div)
 }
 
-/// Rounds an unscaled decimal divided by `10^EXP` in the direction of `M`.
+/// Rounds an unscaled decimal divided by `10^EXP` up if `CEIL` is set, down otherwise.
 ///
 /// `EXP` is a compile-time constant so that the divisor is folded in and the division lowered to a
 /// multiply-and-shift. A 128-bit division is always a libcall, even by a constant, so values that
 /// fit in 64 bits take a 64-bit path; unscaled decimals rarely exceed that range.
 #[inline]
-fn decimal_round_pow10<M: RoundingMode, const EXP: u32>(x: i128) -> i128 {
+fn decimal_round_pow10<const CEIL: bool, const EXP: u32>(x: i128) -> i128 {
     match i64::try_from(x) {
-        Ok(x) => M::div_i64(x, const { 10_i64.pow(EXP) }) as i128,
-        Err(_) => decimal_round_wide::<M>(x, const { 10_i128.pow(EXP) }),
+        Ok(x) => div_round::<CEIL, _>(x, const { 10_i64.pow(EXP) }) as i128,
+        Err(_) => decimal_round_wide::<CEIL>(x, const { 10_i128.pow(EXP) }),
     }
 }
 
@@ -276,8 +234,8 @@ fn decimal_round_pow10<M: RoundingMode, const EXP: u32>(x: i128) -> i128 {
 /// [`decimal_round_pow10`] instantiation.
 #[cold]
 #[inline(never)]
-fn decimal_round_wide<M: RoundingMode>(x: i128, div: i128) -> i128 {
-    M::div_i128(x, div)
+fn decimal_round_wide<const CEIL: bool>(x: i128, div: i128) -> i128 {
+    div_round::<CEIL, _>(x, div)
 }
 
 #[cfg(test)]
