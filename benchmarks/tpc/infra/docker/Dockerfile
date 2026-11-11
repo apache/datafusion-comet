@@ -56,6 +56,7 @@ ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
 # Copy the benchmark scripts into the image.
 COPY benchmarks/tpc/run.py              /opt/benchmarks/run.py
 COPY benchmarks/tpc/tpcbench.py         /opt/benchmarks/tpcbench.py
+COPY benchmarks/tpc/tpcds_schema.py     /opt/benchmarks/tpcds_schema.py
 COPY benchmarks/tpc/engines             /opt/benchmarks/engines
 COPY benchmarks/tpc/queries             /opt/benchmarks/queries
 COPY benchmarks/tpc/create-iceberg-tables.py /opt/benchmarks/create-iceberg-tables.py
