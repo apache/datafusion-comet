@@ -209,10 +209,13 @@ and only for a type that contains a `FLOAT` or `DOUBLE`.
 - Add the expression to the sweep in `float_semantics/`, which crosses the edge values with
   operator contexts and with every expression and aggregate that accepts floating-point input.
   A new expression goes in `expressions.sql`, or in `aggregates.sql` for an aggregate, with one
-  query for `DOUBLE` and one for `FLOAT`. If one does not match Spark yet, mark its queries
-  `ignore(<issue>)`. A SQL file test cannot expect a difference, so a gap that should fail once it
-  is fixed goes in `CometFloatSemanticsSuite`, whose test for `collect_set` before Spark 4.2 fails
-  when the answers start to match.
+  query for `DOUBLE` and one for `FLOAT`. An expression that falls back in the default config,
+  such as `mode` or the array set operations, goes in a file that turns on its
+  `allowIncompatible` config and sets `MinSparkVersion` to the first release where it runs
+  natively (`aggregates_mode.sql`, `array_set_operations_4_2.sql`), so that a plain `query` pins
+  native execution. If one does not match Spark yet, add a strict test in
+  `CometFloatSemanticsSuite` that links the issue and fails once the answers match, like its
+  `collect_set` test before Spark 4.2. A SQL file test cannot expect a difference.
 
 Fixtures to start from include `expressions/conditional/float_comparisons.sql`,
 `expressions/math/nan_divisor.sql`, `expressions/math/greatest_least_floating_point.sql`,

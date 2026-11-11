@@ -146,17 +146,7 @@ query
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
 SELECT id, approx_count_distinct(x) FROM (SELECT id, pos, x FROM p LATERAL VIEW posexplode(array(l, r)) t AS pos, x) GROUP BY id
 
--- mode, DOUBLE
--- mode falls back to Spark unless Mode.allowIncompatible is set, so only the answer is checked
--- here. expressions/aggregate/mode.sql runs it natively.
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, mode(x) FROM (SELECT id, x FROM p LATERAL VIEW explode(array(l, r, r)) t AS x) GROUP BY id
-
--- mode, FLOAT
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, mode(x) FROM (SELECT id, x FROM p LATERAL VIEW explode(array(l, r, r)) t AS x) GROUP BY id
+-- mode is in aggregates_mode.sql, which turns on Mode.allowIncompatible.
 
 -- global max and min, DOUBLE
 query

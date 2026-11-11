@@ -300,49 +300,8 @@ query
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
 SELECT id, arrays_overlap(array(l), array(r)) FROM p
 
--- array_distinct, DOUBLE
--- Whether float elements run natively depends on the Spark release (array_distinct.sql), so only
--- the answer is checked.
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, array_distinct(array(l, r)) FROM p
-
--- array_distinct, FLOAT
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, array_distinct(array(l, r)) FROM p
-
--- array_union, DOUBLE
--- Whether float elements run natively depends on the Spark release (array_union.sql), so only the
--- answer is checked.
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, array_union(array(l), array(r)) FROM p
-
--- array_union, FLOAT
-query spark_answer_only
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, array_union(array(l), array(r)) FROM p
-
--- array_intersect, DOUBLE
-query
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, array_intersect(array(l), array(r)) FROM p
-
--- array_intersect, FLOAT
-query
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, array_intersect(array(l), array(r)) FROM p
-
--- array_except, DOUBLE
-query
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, array_except(array(l), array(r)) FROM p
-
--- array_except, FLOAT
-query
-WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, array_except(array(l), array(r)) FROM p
+-- array_distinct, array_union, array_intersect and array_except are in array_set_operations_4_2.sql,
+-- where every query runs natively.
 
 -- sort_array, DOUBLE
 query
@@ -394,17 +353,18 @@ query
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
 SELECT id, array_min(array(l, r)) FROM p
 
--- map lookup, DOUBLE
--- A map with a float key falls back to Spark (map_builders_float_key_gate.sql), so only the answer
--- is checked.
-query spark_answer_only
+-- element_at on a map, DOUBLE
+-- Spark looks a key up in its SQL ordering, so a map with a float key falls back to Spark
+-- (map_builders_float_key_gate.sql, expressions/map/element_at_map.sql). `map(l, 1)[r]` is not
+-- here: Spark's optimizer rewrites it to a CASE over the keys, which comparison.sql covers.
+query expect_fallback(Spark looks a key up in its SQL ordering)
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_double)
-SELECT id, map(l, 1)[r], element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
+SELECT id, element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
 
--- map lookup, FLOAT
-query spark_answer_only
+-- element_at on a map, FLOAT
+query expect_fallback(Spark looks a key up in its SQL ordering)
 WITH p AS (SELECT id, IF(lneg, -l, l) AS l, IF(rneg, -r, r) AS r FROM fs_pair_float)
-SELECT id, map(l, 1)[r], element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
+SELECT id, element_at(map(l, 1), r) FROM p WHERE l IS NOT NULL
 
 -- map_contains_key, DOUBLE
 query

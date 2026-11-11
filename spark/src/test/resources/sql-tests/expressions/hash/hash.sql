@@ -114,6 +114,9 @@ SELECT hash(d), hash(-d), xxhash64(d), xxhash64(-d), hash(f), hash(-f), xxhash64
 query
 SELECT hash(array(-d)), xxhash64(array(-d)), hash(named_struct('a', -d, 'b', -f)), xxhash64(named_struct('a', -d, 'b', -f)) FROM test_nan
 
+query
+SELECT hash(array(-f)), xxhash64(array(-f)), hash(array(-d, -d)), xxhash64(array(f, -f)) FROM test_nan
+
 -- Spark rejects hashing a map unless the legacy config above is set. Map keys cannot be null,
 -- so the null row is filtered out.
 query
