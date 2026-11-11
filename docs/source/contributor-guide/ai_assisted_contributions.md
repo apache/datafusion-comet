@@ -20,40 +20,28 @@ under the License.
 # AI-Assisted Contributions
 
 Many Comet contributors use AI coding tools to write code, tests and documentation, and to help
-review pull requests. That is welcome, and this page sets out what the project expects when you do.
+review pull requests. That is welcome. Comet follows Apache DataFusion's [AI Policy]. Read it first.
+It sets out that you are responsible for everything you submit, whichever tool helped you write it,
+and it covers AI dumps, replying to reviews in your own words, and editing AI review output before
+you post it. This page adds what is specific to Comet.
 
-In short, you are responsible for everything you submit, whichever tool helped you write it.
-Automated reviews can be helpful, but a pull request must always be approved by a human.
+In short, automated reviews can be helpful, but a pull request must always be approved by a human.
 
 ## Writing Code with AI Tools
 
-Reviewers treat you as the author of your pull request, whoever or whatever wrote the code. Before
-you open it:
+On top of the AI Policy, a change to Comet has to meet these:
 
-- Understand the change end to end. Be ready to explain the design and the code in review, and to
-  justify the choices it makes.
-- Point out anything you are unsure about, in the description or in a comment on your own pull
-  request, so that reviewers know where to look. For example: "this passes the tests, but I don't
-  know whether it is safe to call from more than one thread."
-- Test it. Comet has to return the same results as Spark, including for nulls, overflow, ANSI mode
-  and time zones, and code that looks right can still get those wrong. Test those cases, and run the
-  suites that your change affects. [Continuous Integration](ci.md) explains which changes need which
-  suites.
+- Test it against Spark. Comet has to return the same results as Spark, including for nulls,
+  overflow, ANSI mode and time zones, and code that looks right can still get those wrong. Test
+  those cases, and run the suites that your change affects. [Continuous Integration](ci.md)
+  explains which changes need which suites.
 - Read the diff the way a reviewer will. Remove comments that narrate how the change was developed,
   tests that don't cover anything new, and edits unrelated to the change.
-- Keep the pull request focused. A tool can produce a large change in minutes, but reviewing it
-  takes much longer, and small pull requests get reviewed sooner.
-
-The same goes for issues and comments that you write with a tool's help. They are posted under your
-name, so check them before you post them.
-
-You are also responsible for making sure that your contribution can be licensed under the Apache
-License. The ASF's [Generative Tooling Guidance] explains what that involves when a tool wrote part
-of it.
+- Make sure that your contribution can be licensed under the Apache License. The ASF's
+  [Generative Tooling Guidance] explains what that involves when a tool wrote part of it.
 
 The repository has instructions for coding agents in [`AGENTS.md`] and skills for common Comet
-tasks, such as adding an expression or reviewing a pull request, under [`.ai/skills`]. For more on
-why understanding your change matters, see DataFusion's [policy on AI-assisted contributions].
+tasks, such as adding an expression or reviewing a pull request, under [`.ai/skills`].
 
 ## Automated Reviews
 
@@ -91,4 +79,4 @@ In practice:
 [Generative Tooling Guidance]: https://www.apache.org/legal/generative-tooling.html
 [`AGENTS.md`]: https://github.com/apache/datafusion-comet/blob/main/AGENTS.md
 [`.ai/skills`]: https://github.com/apache/datafusion-comet/tree/main/.ai/skills
-[policy on AI-assisted contributions]: https://datafusion.apache.org/contributor-guide/index.html#ai-assisted-contributions
+[AI Policy]: https://datafusion.apache.org/contributor-guide/ai-policy.html

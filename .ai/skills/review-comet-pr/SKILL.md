@@ -70,7 +70,6 @@ Before forming your review:
 3. **Avoid duplicating feedback** that others have already provided
 4. **Build on existing discussions** rather than starting new threads on the same topic
 5. **If you have no additional concerns beyond what is already discussed, say so**
-6. **Ignore Copilot reviews.** Do not reference or build upon comments from GitHub Copilot.
 
 `gh pr view <pr> --repo apache/datafusion-comet --comments` shows them.
 
@@ -365,7 +364,8 @@ Present your review as guidance for the reviewer:
      performance regression, including an unintended behavior change against the latest release.
      Name those findings.
    - **Approve**, or dismiss the earlier review, when this is a re-review and the findings behind the
-     reviewer's earlier **Request changes** review have all been addressed.
+     reviewer's earlier **Request changes** review have all been addressed. This is a recommendation
+     to the reviewer. Never submit an approval yourself (see [Do Not Post Comments](#do-not-post-comments)).
    - **Comment** otherwise.
 
 ## Review Tone and Style
@@ -394,7 +394,11 @@ Instead:
 are for providing guidance to a human reviewer. Present all findings and suggested comments to the
 user. The user will decide what to post.
 
-When the user tells you to post the review for them, submit it in the review state from the output.
-For **Request changes** that is
+When the user tells you to post the review for them, post only the suggested comments and a short
+body. Leave out the PR summary, the areas and the CI status, which the author's description and the
+checks already show. Submit it in the review state from the output, with one exception: **never
+submit an approval**, even when asked. A human must approve every pull request. For a recommended
+**Approve**, post a **Comment** review if there is anything to say, and tell the user to approve it
+themselves. For **Request changes** the command is
 `gh pr review <pr> --repo apache/datafusion-comet --request-changes --body-file <file>`. A PR comment
 or a **Comment** review does not block the merge.
