@@ -32,7 +32,7 @@ To use this version of Comet, see the following section on building from the Git
 
 <!-- IF_RELEASE -->
 
-Official source releases are available from the [Download](https://datafusion.apache.org/comet/download.html) page,
+Official source releases are available from the [Download](../../download.md) page,
 together with the signature, checksum and instructions for verifying the download.
 
 ```console

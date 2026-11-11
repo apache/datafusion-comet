@@ -444,7 +444,7 @@ deployed to https://datafusion.apache.org/comet/ by the documentation publishing
 Note that the download links in the installation guide will not work until the release is finalized, but having the
 documentation available could be useful for anyone testing out the release candidate during the voting period.
 
-The [Download](https://datafusion.apache.org/comet/download.html) page is not part of this step. It is updated only after
+The [Download](../download.md) page is not part of this step. It is updated only after
 the release is published; see [Update the download page](#update-the-download-page).
 
 ## Publishing the Release Candidate
@@ -603,7 +603,7 @@ git push apache 0.13.0
 
 ASF release policy requires the project website to have a download page for the source release, and the
 announcement to link to it. Update `docs/source/download.md` to point at the new release: change the version in the
-links and commands, the changelog link and the user guide links, and create a pull request against `main`.
+links and commands and the changelog link, and create a pull request against `main`.
 
 Wait at least one hour after the tarball is uploaded to the release repository, so that it has reached
 `downloads.apache.org` and the mirrors, before merging the pull request. Do not merge it before the release is
@@ -620,7 +620,7 @@ Reply to the vote thread to close the vote and announce the release. The announc
 
 - The release version
 - A link to the release notes / changelog
-- A link to the [Download](https://datafusion.apache.org/comet/download.html) page for the source release (required by
+- A link to the [Download](../download.md) page for the source release (required by
   ASF release policy), and optionally the Maven coordinates
 - Thanks to everyone who contributed and voted
 

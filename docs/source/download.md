@@ -31,7 +31,7 @@ Foundation and must not be taken from a mirror. The public keys of the release m
 [KEYS](https://downloads.apache.org/datafusion/KEYS) file.
 
 The release notes are in the [changelog](changelog/1.2.0.md).
-See [Building Comet From Source](https://datafusion.apache.org/comet/user-guide/1.1/source.html) for how to build the tarball.
+See [Building Comet From Source](user-guide/latest/source.md) for how to build the tarball.
 
 ## Verifying the download
 
@@ -53,7 +53,7 @@ The `gpg --verify` command should report a good signature. See the
 
 Pre-built Comet jar files for Linux are published to
 [Maven Central](https://central.sonatype.com/namespace/org.apache.datafusion) as a convenience. They are built from
-the source release above. See the [installation guide](https://datafusion.apache.org/comet/user-guide/1.1/installation.html) for the links and for the
+the source release above. See the [installation guide](user-guide/latest/installation.md) for the links and for the
 supported Spark versions.
 
 ## Older releases
