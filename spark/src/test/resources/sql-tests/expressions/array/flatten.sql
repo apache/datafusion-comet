@@ -78,3 +78,22 @@ SELECT COUNT(1) FROM test_flatten_binary3 WHERE length(flatten(flatten(arr))[0])
 
 query
 SELECT k, COUNT(1) FROM test_flatten_binary3 WHERE length(flatten(flatten(arr))[0]) = 13 GROUP BY 1
+
+-- A struct or map element still falls back, and the reason names the function.
+statement
+CREATE TABLE test_flatten_struct(arr array<array<struct<a:int>>>) USING parquet
+
+statement
+INSERT INTO test_flatten_struct VALUES (array(array(named_struct('a', 1)), array(named_struct('a', 2)))), (NULL)
+
+query expect_fallback(flatten: )
+SELECT flatten(arr) FROM test_flatten_struct
+
+statement
+CREATE TABLE test_flatten_map(arr array<array<map<string,int>>>) USING parquet
+
+statement
+INSERT INTO test_flatten_map VALUES (array(array(map('k', 1)), array(map('k', 2)))), (NULL)
+
+query expect_fallback(flatten: )
+SELECT flatten(arr) FROM test_flatten_map

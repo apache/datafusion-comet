@@ -56,7 +56,8 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *           CometSubqueryBroadcastExec for exchange reuse with Comet broadcasts
  *      b. insertTransitions:        ColumnarToRow/RowToColumnar added
  *      c. postColumnarTransitions:  RevertNativeForTransitionHeavyStages,
- *                                   EliminateRedundantTransitions, CometCacheColumnarRule
+ *                                   EliminateRedundantTransitions, CometCacheBuildRule,
+ *                                   CometCacheColumnarRule
  *   5. ReuseExchangeAndSubquery     -- Spark deduplicates subqueries (sees Comet nodes)
  * }}}
  *
@@ -84,7 +85,8 @@ import org.apache.comet.shims.ShimCometSparkSessionExtensions
  *        a. preColumnarTransitions: CometRule (no-op, already converted)
  *        b. insertTransitions
  *        c. postColumnarTransitions: RevertNativeForTransitionHeavyStages,
- *                                    EliminateRedundantTransitions, CometCacheColumnarRule
+ *                                    EliminateRedundantTransitions, CometCacheBuildRule,
+ *                                    CometCacheColumnarRule
  * }}}
  *
  * On Spark 3.4, injectQueryStageOptimizerRule is unavailable. CometExecRule does not wrap SABs,
@@ -379,19 +381,23 @@ object CometSparkSessionExtensions extends Logging {
    * as a flat set of strings, so a reason such as "data type not supported: ..." would not say
    * which function rejected the type. Leaves, aliases and attributes are left alone: their
    * reasons describe a type or a config, and their names would add nothing. So are reasons that
-   * already identify their subject, either by mentioning the expression's name or by naming a
+   * already identify their subject, either by mentioning the expression's name or its Scala class
+   * name (several serdes say `unsupported arguments for ArrayInsert`) or by naming a
    * `spark.comet.` config key (the key names the expression to enable, which need not be the one
    * that recorded the reason).
    */
   private def qualifyReasons(expr: Expression, reasons: Set[String]): Set[String] = expr match {
     case _: Attribute | _: Alias | _: Literal => reasons
     case _ =>
-      val name = CometExplainInfo.exprDisplayName(expr match {
+      val subject = expr match {
         case agg: AggregateExpression => agg.aggregateFunction
         case other => other
-      })
-      lazy val namePattern =
-        Pattern.compile(s"\\b${Pattern.quote(name)}\\b", Pattern.CASE_INSENSITIVE)
+      }
+      val name = CometExplainInfo.exprDisplayName(subject)
+      val names = Seq(name, subject.getClass.getSimpleName).distinct
+      lazy val namePattern = Pattern.compile(
+        names.map(n => s"\\b${Pattern.quote(n)}\\b").mkString("|"),
+        Pattern.CASE_INSENSITIVE)
       reasons.map { reason =>
         if (reason.contains("spark.comet.") || namePattern.matcher(reason).find()) reason
         else s"$name: $reason"
