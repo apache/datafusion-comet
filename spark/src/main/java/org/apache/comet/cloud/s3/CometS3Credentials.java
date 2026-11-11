@@ -26,7 +26,15 @@ import org.apache.comet.annotation.Public;
 /**
  * Credentials returned by a {@link CometS3CredentialProvider}. Field names are read back over JNI
  * by name and are part of the cross-language contract. {@code sessionToken} is null for non-STS
- * credentials; {@code expirationEpochMillis} of {@code 0} means "unknown".
+ * credentials.
+ *
+ * <p>{@code expirationEpochMillis} is when the credential stops working, in milliseconds since the
+ * epoch. Comet reuses the credential until five minutes before it, then asks the provider again.
+ * {@code 0} means unknown and {@code Long.MAX_VALUE} means the credential does not expire. Comet
+ * does not reuse either, and asks again for every request that does not overlap a call already in
+ * flight. A value before 2000, almost always seconds sent as milliseconds, is treated as unknown. A
+ * provider whose credentials can be revoked before the expiry it reports should report an earlier
+ * one, or {@code 0}.
  */
 @Public
 public final class CometS3Credentials {

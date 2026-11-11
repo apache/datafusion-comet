@@ -27,7 +27,7 @@ class RowPartition(initialSize: Int) {
 
   def addRow(addr: Long, size: Int): Unit = {
     rowAddresses += addr
-    rowSizes += size
+    val _ = rowSizes += size
   }
 
   def getNumRows: Int = if (rowAddresses == null) {

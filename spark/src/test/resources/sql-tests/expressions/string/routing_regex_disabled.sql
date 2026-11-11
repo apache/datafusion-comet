@@ -27,7 +27,7 @@ CREATE TABLE routing_regex(s STRING, p STRING, i INT) USING parquet
 statement
 INSERT INTO routing_regex VALUES ('ab12ab', '(ab)', 1), ('', '(ab)', 1), (NULL, '(ab)', 1)
 
-query expect_fallback(rlike: spark.comet.exec.scalaUDF.codegen.enabled=false)
+query expect_native(rlike)
 SELECT s RLIKE '(ab)' FROM routing_regex
 
 query expect_fallback(rlike: spark.comet.exec.scalaUDF.codegen.enabled=false)

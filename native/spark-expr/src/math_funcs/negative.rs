@@ -243,6 +243,7 @@ impl PhysicalExpr for NegativeExpr {
         {
             return Err(SparkError::ArithmeticOverflow {
                 from_type: "long".to_string(),
+                function_name: String::new(),
             }
             .into());
         }
@@ -339,7 +340,7 @@ mod tests {
 
     fn assert_spark_overflow(err: DataFusionError, expected_from_type: &str) {
         if let DataFusionError::External(ref e) = err {
-            if let Some(SparkError::ArithmeticOverflow { from_type }) =
+            if let Some(SparkError::ArithmeticOverflow { from_type, .. }) =
                 e.downcast_ref::<SparkError>()
             {
                 assert_eq!(from_type, expected_from_type);

@@ -19,13 +19,15 @@
 
 package org.apache.comet.serde
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Base64, BitLength, BoundReference, Cast, Concat, ConcatWs, Contains, Elt, Empty2Null, EndsWith, Expression, FindInSet, FormatNumber, FormatString, GetJsonObject, InitCap, Left, Length, Levenshtein, Like, Literal, Lower, Mask, OctetLength, Overlay, RegExpExtract, RegExpExtractAll, RegExpInStr, RegExpReplace, Right, RLike, SoundEx, StartsWith, StringInstr, StringLocate, StringLPad, StringRepeat, StringReplace, StringRPad, StringSplit, StringTranslate, StringTrim, StringTrimLeft, StringTrimRight, Substring, SubstringIndex, ToCharacter, ToNumber, TryToNumber, UnBase64, Upper}
 import org.apache.spark.sql.types.{ArrayType, BinaryType, DataTypes, IntegerType, LongType, StringType}
+import org.apache.spark.unsafe.types.UTF8String
 
 import org.apache.comet.CometConf
+import org.apache.comet.expressions.{CometRegex, RegexFlavor}
 import org.apache.comet.serde.ExprOuterClass.Expr
 import org.apache.comet.serde.QueryPlanSerde.{createBinaryExpr, exprToProtoInternal, scalarFunctionExprToProto, scalarFunctionExprToProtoWithReturnType}
-import org.apache.comet.shims.CometTypeShim
+import org.apache.comet.shims.{CometExprShim, CometTypeShim}
 
 object CometStringRepeat extends CometExpressionSerde[StringRepeat] {
 
@@ -82,14 +84,7 @@ object CometUpper extends CometCaseConversionBase[Upper]("upper")
 
 object CometLower extends CometCaseConversionBase[Lower]("lower")
 
-object CometLength extends CometScalarFunction[Length]("length") {
-  override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
-
-  override def getSupportLevel(expr: Length): SupportLevel = expr.child.dataType match {
-    case _: BinaryType => Unsupported(Some("Length on BinaryType is not supported"))
-    case _ => Compatible()
-  }
-}
+object CometLength extends CometScalarFunction[Length]("length")
 
 object CometBitLength extends CometScalarFunction[BitLength]("bit_length") {
   override def getUnsupportedReasons(): Seq[String] = Seq("`BinaryType` input is not supported")
@@ -191,13 +186,58 @@ object CometInitCap extends CometScalarFunction[InitCap]("initcap") with NativeO
 
 object CometStringReplace
     extends CometScalarFunction[StringReplace]("replace")
-    with NativeOptInAvailable {
+    with NativeOptInAvailable
+    with CometTypeShim {
+
+  private val MaxNativeLiteralBytes = 64 * 1024
+  // With a replacement column, DataFusion broadcasts the scalar search into an Arrow array.
+  // Bound both the literal and its total expansion at the configured batch size.
+  private val MaxBroadcastSearchBytes = 256
+  private val MaxBroadcastSearchBytesPerBatch = 8 * 1024 * 1024
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getCompatibleNotes(): Seq[String] = Seq(
+    "Native by default for a direct string column with a non-empty, valid UTF-8 search " +
+      "literal and either a replacement literal (both at most 64 KiB) or a replacement " +
+      "column (search at most 256 bytes and at most 8 MiB when broadcast per batch), under " +
+      "UTF8_BINARY collation. Other cases use " +
+      "the JVM codegen dispatcher by default.")
+
+  // DataFusion 55.1.0 keeps two non-null literal arguments as scalars when the source is an
+  // array. With a replacement column it broadcasts the search literal, hence the smaller bound.
+  // Direct column operands avoid Spark NULL short-circuit differences in nested expressions.
+  private def nativeSafeSubset(expr: StringReplace): Boolean = expr.children match {
+    case Seq(source, Literal(search: UTF8String, _), Literal(replacement: UTF8String, _)) =>
+      (source.isInstanceOf[Attribute] || source.isInstanceOf[BoundReference]) &&
+      search.numBytes() > 0 && search.numBytes() <= MaxNativeLiteralBytes &&
+      replacement.numBytes() <= MaxNativeLiteralBytes &&
+      isValidUtf8(search) && isValidUtf8(replacement) &&
+      !hasNonDefaultStringCollation(expr.dataType) &&
+      !expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))
+    case Seq(source, Literal(search: UTF8String, _), replacement) =>
+      (source.isInstanceOf[Attribute] || source.isInstanceOf[BoundReference]) &&
+      (replacement.isInstanceOf[Attribute] || replacement.isInstanceOf[BoundReference]) &&
+      search.numBytes() > 0 && search.numBytes() <= MaxBroadcastSearchBytes &&
+      search.numBytes().toLong * CometConf.COMET_BATCH_SIZE.get() <=
+        MaxBroadcastSearchBytesPerBatch &&
+        isValidUtf8(search) &&
+        !hasNonDefaultStringCollation(expr.dataType) &&
+        !expr.children.exists(child => hasNonDefaultStringCollation(child.dataType))
+    case _ => false
+  }
+
+  private def useNative(expr: StringReplace): Boolean =
+    CometConf.isExprAllowIncompat(getExprConfigName(expr)) || nativeSafeSubset(expr)
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Produces different results from Spark when the search string is empty")
+    Seq(
+      "Unrestricted native arguments can change malformed UTF-8 results or Spark's NULL " +
+        "short-circuit behavior, ignore non-default collations, or overflow Arrow offsets when " +
+        "scalars are broadcast")
 
   override def getSupportLevel(expr: StringReplace): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
+    if (!useNative(expr)) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
@@ -208,10 +248,7 @@ object CometStringReplace
       expr: StringReplace,
       inputs: Seq[Attribute],
       binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
-      // The native DataFusion `replace` avoids the JVM allocations of the codegen
-      // dispatcher but is not Spark-compatible for an empty search string, so it is
-      // only used when incompatibility is explicitly allowed.
+    if (useNative(expr)) {
       super.convert(expr, inputs, binding)
     } else {
       // Run Spark's own generated code inside the Comet pipeline so the result matches Spark
@@ -223,7 +260,78 @@ object CometStringReplace
 
 object CometSubstring extends CometScalarFunction[Substring]("substring")
 
-object CometSubstringIndex extends CometExpressionSerde[SubstringIndex] {
+/**
+ * Support level for native string kernels that search, trim or compare strings by raw bytes
+ * (`instr`, `substring_index`, `trim` with a trim string, `greatest`, `least`). They ignore a
+ * non-UTF8_BINARY collation, for example UTF8_LCASE where 'a' equals 'A', and give wrong answers.
+ * Reporting Incompatible routes the expression through the JVM codegen dispatcher, which runs
+ * Spark's collation-aware implementation.
+ */
+private[serde] object StringCollationSupport extends CometTypeShim {
+  def collationReason(name: String): String =
+    "Spark evaluates non-UTF8_BINARY collated string input under its collation, while " +
+      s"Comet's native $name compares raw bytes"
+
+  def getSupportLevel(name: String, operands: Seq[Expression]): SupportLevel =
+    if (operands.exists(op => hasNonDefaultStringCollation(op.dataType))) {
+      Incompatible(Some(collationReason(name)))
+    } else {
+      Compatible()
+    }
+}
+
+object CometStringInstr
+    extends CometScalarFunction[StringInstr]("instr")
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason("instr"))
+
+  override def getSupportLevel(expr: StringInstr): SupportLevel =
+    StringCollationSupport.getSupportLevel("instr", expr.children)
+}
+
+/**
+ * `trim`, `ltrim` and `rtrim`. Without a trim string they remove only spaces, which does not
+ * depend on the collation, so only the form with an explicit trim string is collation sensitive.
+ */
+class CometStringTrimBase[T <: Expression](function: String)
+    extends CometScalarFunction[T](function)
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason(s"$function with a trim string"))
+
+  // The children are the source string followed by the optional trim string.
+  override def getSupportLevel(expr: T): SupportLevel =
+    if (expr.children.length > 1) {
+      StringCollationSupport.getSupportLevel(function, expr.children)
+    } else {
+      Compatible()
+    }
+}
+
+object CometStringTrim extends CometStringTrimBase[StringTrim]("trim")
+
+object CometStringTrimLeft extends CometStringTrimBase[StringTrimLeft]("ltrim")
+
+object CometStringTrimRight extends CometStringTrimBase[StringTrimRight]("rtrim")
+
+object CometSubstringIndex
+    extends CometExpressionSerde[SubstringIndex]
+    with CodegenDispatchFallback {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getIncompatibleReasons(): Seq[String] =
+    Seq(StringCollationSupport.collationReason("substring_index"))
+
+  override def getSupportLevel(expr: SubstringIndex): SupportLevel =
+    StringCollationSupport.getSupportLevel("substring_index", Seq(expr.strExpr, expr.delimExpr))
 
   override def convert(
       expr: SubstringIndex,
@@ -352,7 +460,6 @@ object CometLike extends CometExpressionSerde[Like] with CodegenDispatchFallback
 
   override def convert(expr: Like, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
     createBinaryExpr(
-      expr,
       expr.left,
       expr.right,
       inputs,
@@ -380,43 +487,75 @@ object CometEndsWith
     with CollationAwareBinaryPredicate[EndsWith]
 
 /**
- * `rlike` runs Spark's own implementation through the codegen dispatcher by default, for
- * byte-exact results. The native (rust) regexp engine is faster but has different semantics from
- * Java regexp, so it is opt-in via `spark.comet.expression.RLike.allowIncompatible`; any case it
- * does not cover (a non-scalar pattern) falls through to the codegen dispatcher via
- * [[CometScalaUDF]].
+ * `rlike` uses a plan-time whitelist ([[org.apache.comet.expressions.CometRegex]]) to decide the
+ * engine. A `UTF8_BINARY` literal pattern that the analyzer proves equivalent to Java regex runs
+ * natively by default. Every other case stays on the JVM codegen dispatcher (Spark's own
+ * `doGenCode` inside the Comet pipeline) unless the user sets
+ * `spark.comet.expression.RLike.allowIncompatible=true`, which can force native execution for a
+ * non-null default-collation literal. Non-default collations remain on the JVM dispatcher because
+ * the native kernel does not implement Spark collation semantics. A non-literal or NULL pattern
+ * always stays on the dispatcher. Falls through to Spark when the dispatcher is disabled.
  */
-object CometRLike extends CometExpressionSerde[RLike] with NativeOptInAvailable {
+object CometRLike
+    extends CometExpressionSerde[RLike]
+    with NativeOptInAvailable
+    with CometTypeShim {
+
+  override def hasConditionalNativeDefault: Boolean = true
+
+  override def getCompatibleNotes(): Seq[String] =
+    Seq(
+      "A `UTF8_BINARY` literal pattern admitted by the " +
+        "[plan-time compatibility analyzer](../../regex.md#when-the-rust-engine-is-safe) is " +
+        "evaluated natively by default.")
 
   override def getIncompatibleReasons(): Seq[String] =
-    Seq("Uses Rust regexp engine, which has different behavior to Java regexp engine")
+    Seq(
+      "For applicable literal patterns outside the automatically admitted subset, the native " +
+        "Rust regex engine may behave differently from Java regex.")
 
-  private def nativeApplicable(expr: RLike): Boolean = expr.right match {
-    case Literal(_, DataTypes.StringType) => true
-    case _ => false
+  private def literalPattern(expr: RLike): Option[String] = expr.right match {
+    case Literal(v: UTF8String, _: StringType) => Some(v.toString)
+    case _ => None
   }
 
-  override def getSupportLevel(expr: RLike): SupportLevel =
-    if (!CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
+  private def hasNonDefaultCollation(expr: RLike): Boolean =
+    hasNonDefaultStringCollation(expr.left.dataType) ||
+      hasNonDefaultStringCollation(expr.right.dataType)
+
+  private def nativeApplicable(expr: RLike): Boolean =
+    !hasNonDefaultCollation(expr) && literalPattern(expr).isDefined
+
+  private def provablyCompatible(expr: RLike): Boolean =
+    nativeApplicable(expr) &&
+      literalPattern(expr).exists { p =>
+        CometRegex.supportLevel(p, RegexFlavor.RLike).isInstanceOf[Compatible]
+      }
+
+  override def getSupportLevel(expr: RLike): SupportLevel = {
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
+      Compatible()
+    } else if (nativeApplicable(expr)) {
       Compatible(nativeOptIn =
         Some(NativeOptIn(CometConf.getExprAllowIncompatConfigKey(getExprConfigName(expr)))))
     } else {
       Compatible()
     }
+  }
 
   override def convert(expr: RLike, inputs: Seq[Attribute], binding: Boolean): Option[Expr] = {
-    if (CometConf.isExprAllowIncompat(getExprConfigName(expr)) && nativeApplicable(expr)) {
-      // Native path: the Rust regexp engine has different semantics from Java regexp.
+    val allowIncompat = CometConf.isExprAllowIncompat(getExprConfigName(expr))
+    if (provablyCompatible(expr) || (allowIncompat && nativeApplicable(expr))) {
       return createBinaryExpr(
-        expr,
         expr.left,
         expr.right,
         inputs,
         binding,
         (builder, binaryExpr) => builder.setRlike(binaryExpr))
     }
-    // Default: route through the codegen dispatcher so Spark's own doGenCode runs inside the Comet
-    // pipeline. Falls back to Spark when the dispatcher is disabled.
+    // Out-of-subset literal, non-literal, NULL pattern, or non-default collation: run Spark's
+    // own doGenCode inside the Comet pipeline. Falls back to Spark when the dispatcher is off.
     CometScalaUDF.emitJvmCodegenDispatch(expr, inputs, binding)
   }
 }
@@ -663,15 +802,23 @@ object CometRegExpInStr extends CometCodegenDispatch[RegExpInStr]
  * `spark.comet.expression.GetJsonObject.allowIncompatible`; otherwise it rides the codegen
  * dispatcher via [[CometCodegenDispatch]].
  */
-object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with NativeOptInAvailable {
+object CometGetJsonObject
+    extends CometCodegenDispatch[GetJsonObject]
+    with NativeOptInAvailable
+    with CometExprShim {
 
   override def getIncompatibleReasons(): Seq[String] =
     Seq(
       "Spark allows single-quoted JSON and unescaped control characters" +
         " which Comet does not support",
-      "For JSON objects containing duplicate keys, Spark returns the value of the first" +
-        " occurrence while Comet's native implementation returns the last occurrence" +
-        " ([#4947](https://github.com/apache/datafusion-comet/issues/4947))")
+      "Very long numbers near Jackson's 1000-digit limit can depend on Spark's" +
+        " recycled parser buffer, which Comet cannot reproduce from the input alone",
+      "Selected JSON integers outside the 64-bit range and very long numbers" +
+        " can lose precision or fail during Comet's native JSON materialization",
+      "Some selected floating-point values can differ from Spark at decimal" +
+        " parsing or Java-version formatting boundaries",
+      "When a returned object or array contains duplicate keys, Spark preserves them" +
+        " while Comet's native JSON materialization keeps only the last value")
 
   override def getSupportLevel(expr: GetJsonObject): SupportLevel =
     if (!CometConf.isExprAllowIncompat(getExprConfigName(expr))) {
@@ -689,7 +836,7 @@ object CometGetJsonObject extends CometCodegenDispatch[GetJsonObject] with Nativ
       val jsonExpr = exprToProtoInternal(expr.json, inputs, binding)
       val pathExpr = exprToProtoInternal(expr.path, inputs, binding)
       val optExpr = scalarFunctionExprToProtoWithReturnType(
-        "get_json_object",
+        getJsonObjectNativeFunctionName,
         expr.dataType,
         false,
         jsonExpr,

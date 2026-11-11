@@ -15,9 +15,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
+use crate::conversion_funcs::utils::timestamp_micros_with_tz;
 use crate::SparkResult;
-use arrow::array::{Array, ArrayRef, AsArray, TimestampMicrosecondBuilder};
-use arrow::datatypes::DataType;
+use arrow::array::{ArrayRef, AsArray, PrimitiveArray};
+use arrow::datatypes::{DataType, TimestampMicrosecondType};
 use std::sync::Arc;
 
 /// Boolean -> Decimal is intentionally absent: it has no native path and is routed through the
@@ -35,18 +36,11 @@ pub(crate) fn cast_boolean_to_timestamp(
     target_tz: &Option<Arc<str>>,
 ) -> SparkResult<ArrayRef> {
     let bool_array = array_ref.as_boolean();
-    let mut builder = TimestampMicrosecondBuilder::with_capacity(bool_array.len());
-
-    for i in 0..bool_array.len() {
-        if bool_array.is_null(i) {
-            builder.append_null();
-        } else {
-            let micros = if bool_array.value(i) { 1 } else { 0 };
-            builder.append_value(micros);
-        }
-    }
-
-    Ok(Arc::new(builder.finish().with_timezone_opt(target_tz.clone())) as ArrayRef)
+    // true is 1 microsecond and false is 0.
+    let micros = PrimitiveArray::<TimestampMicrosecondType>::from_unary(bool_array, |value| {
+        i64::from(value)
+    });
+    Ok(timestamp_micros_with_tz(micros, target_tz))
 }
 
 #[cfg(test)]
@@ -56,10 +50,11 @@ mod tests {
     use crate::{EvalMode, SparkCastOptions};
     use arrow::array::{
         Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int16Array, Int32Array,
-        Int64Array, Int8Array, StringArray,
+        Int64Array, Int8Array, StringArray, TimestampMicrosecondBuilder,
     };
-    use arrow::datatypes::DataType::Decimal128;
-    use arrow::datatypes::TimestampMicrosecondType;
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::DataType::{Decimal128, Timestamp};
+    use arrow::datatypes::{TimeUnit, TimestampMicrosecondType};
     use std::sync::Arc;
 
     fn test_input_bool_array() -> ArrayRef {
@@ -67,7 +62,7 @@ mod tests {
     }
 
     fn test_input_spark_opts() -> SparkCastOptions {
-        SparkCastOptions::new(EvalMode::Legacy, "Asia/Kolkata", false)
+        SparkCastOptions::new(EvalMode::Legacy, "Asia/Kolkata")
     }
 
     #[test]
@@ -220,6 +215,53 @@ mod tests {
             assert_eq!(ts_array.value(1), 0); // false -> 0 (epoch)
             assert!(ts_array.is_null(2));
             assert_eq!(ts_array.timezone(), tz.as_ref().map(|s| s.as_ref()));
+        }
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp_edges() {
+        let all_true: ArrayRef = Arc::new(BooleanArray::from(vec![true, true]));
+        let out = cast_boolean_to_timestamp(&all_true, &None).unwrap();
+        let ts = out.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(ts.values().as_ref(), &[1, 1]);
+        assert!(ts.nulls().is_none());
+    }
+
+    #[test]
+    fn test_cast_boolean_to_timestamp_null_slot_matches_builder() {
+        let tz = Some(Arc::from("UTC"));
+        // The slice starts on a null whose bit is set.
+        let bits = BooleanArray::from(vec![false, true, false, true]);
+        let masked = BooleanArray::new(
+            bits.values().clone(),
+            Some(NullBuffer::from(vec![true, false, true, false])),
+        );
+        let input = Array::slice(&masked, 1, 3);
+        let bools = input.as_boolean();
+        let mut builder = TimestampMicrosecondBuilder::with_capacity(bools.len());
+        for i in 0..bools.len() {
+            if bools.is_null(i) {
+                builder.append_null();
+            } else {
+                builder.append_value(i64::from(bools.value(i)));
+            }
+        }
+        let expected = builder.finish().with_timezone_opt(tz.clone());
+
+        let out = cast_array(
+            Arc::clone(&input),
+            &Timestamp(TimeUnit::Microsecond, tz),
+            &SparkCastOptions::new(EvalMode::Ansi, "UTC"),
+        )
+        .unwrap();
+        let actual = out.as_primitive::<TimestampMicrosecondType>();
+        assert_eq!(actual.len(), expected.len());
+        assert_eq!(actual.timezone(), expected.timezone());
+        for i in 0..actual.len() {
+            assert_eq!(actual.is_null(i), expected.is_null(i), "index {i}");
+            if actual.is_valid(i) {
+                assert_eq!(actual.value(i), expected.value(i), "index {i}");
+            }
         }
     }
 }

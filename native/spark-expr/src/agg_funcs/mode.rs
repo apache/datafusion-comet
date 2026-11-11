@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::float_semantics::{canonicalize_nan, normalize_float};
 use arrow::array::{Array, ArrayRef, AsArray, BooleanArray, StructArray};
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Int64Type};
 use datafusion::common::{internal_datafusion_err, not_impl_err, Result, ScalarValue};
@@ -171,21 +172,15 @@ impl AggregateUDFImpl for Mode {
 /// equality, which is what Spark's `OpenHashSet` uses. `-0.0` is folded into `0.0` only when
 /// `normalize_neg_zero` is set, i.e. only on Spark 4.2.0+ (SPARK-57329); see [`Mode`].
 fn normalize_key(value: ScalarValue, normalize_neg_zero: bool) -> ScalarValue {
-    macro_rules! normalize_float {
-        ($variant:path, $f:expr, $nan:expr) => {
-            if $f.is_nan() {
-                $variant(Some($nan))
-            } else if normalize_neg_zero && $f == 0.0 {
-                // `-0.0 == 0.0` in IEEE 754, so this catches negative zero only.
-                $variant(Some(0.0))
-            } else {
-                $variant(Some($f))
-            }
-        };
-    }
     match value {
-        ScalarValue::Float32(Some(f)) => normalize_float!(ScalarValue::Float32, f, f32::NAN),
-        ScalarValue::Float64(Some(f)) => normalize_float!(ScalarValue::Float64, f, f64::NAN),
+        ScalarValue::Float32(Some(f)) if normalize_neg_zero => {
+            ScalarValue::Float32(Some(normalize_float(f)))
+        }
+        ScalarValue::Float64(Some(f)) if normalize_neg_zero => {
+            ScalarValue::Float64(Some(normalize_float(f)))
+        }
+        ScalarValue::Float32(Some(f)) => ScalarValue::Float32(Some(canonicalize_nan(f))),
+        ScalarValue::Float64(Some(f)) => ScalarValue::Float64(Some(canonicalize_nan(f))),
         other => other,
     }
 }

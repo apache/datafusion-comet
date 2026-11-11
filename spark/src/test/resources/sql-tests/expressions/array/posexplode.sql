@@ -15,8 +15,8 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- posexplode_outer is now supported natively; see DataFusion #19053 handling
--- via ListEmptyToNullExpr in the planner.
+-- posexplode_outer runs natively: the planner asks DataFusion's unnest for
+-- NullHandling::PreserveAndExpandEmpty, which matches Spark's outer semantics.
 
 statement
 CREATE TABLE test_posexplode_int(id int, arr array<int>) USING parquet
@@ -168,13 +168,12 @@ query
 SELECT id, pos, value
 FROM test_posexplode_int LATERAL VIEW OUTER posexplode(arr) p AS pos, value
 
--- ===== Pre-projection wiring for posexplode_outer =====
+-- ===== Projection wiring for posexplode_outer =====
 
 -- Carry the array column through alongside posexplode_outer. The passthrough
 -- `arr` shows the original array (empty rows stay []) while the exploded pos
--- and value are NULL for empty rows, so this is the only shape where the
--- difference between the original array and the null-marked copy is
--- observable at the query level.
+-- and value are NULL for those same rows, so this is the shape that shows the
+-- outer substitution applying to the generated columns only.
 query
 SELECT id, arr, posexplode_outer(arr) FROM test_posexplode_int
 
@@ -184,8 +183,8 @@ SELECT id, arr, posexplode_outer(arr) FROM test_posexplode_int
 query
 SELECT posexplode_outer(arr) FROM test_posexplode_int
 
--- posexplode_outer batch of only-empty arrays exercises the slow path with an
--- all-zeros non-empty bitmap; only-null exercises the fast-path passthrough.
+-- A batch of only-empty arrays and a batch of only-null arrays: every row is
+-- substituted, so the whole output batch comes from padding.
 statement
 CREATE TABLE test_posexplode_all_empty(id int, arr array<int>) USING parquet
 

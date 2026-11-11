@@ -44,7 +44,8 @@ class CometPublicApiSuite extends AnyFunSuite {
     "org.apache.comet.cloud.s3.CometS3AccessMode",
     "org.apache.comet.cloud.s3.CometS3CredentialContext",
     "org.apache.comet.cloud.s3.CometS3CredentialProvider",
-    "org.apache.comet.cloud.s3.CometS3Credentials")
+    "org.apache.comet.cloud.s3.CometS3Credentials",
+    "org.apache.comet.cloud.s3.CometS3LocationScopedCredentialProvider")
 
   test("the public API is exactly the set enumerated in the versioning policy") {
     val classesDir = mainClassesDir()

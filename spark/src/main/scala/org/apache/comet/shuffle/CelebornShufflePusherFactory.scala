@@ -246,7 +246,7 @@ object CelebornShufflePusherFactory {
       client: AnyRef,
       taskContext: TaskContext,
       handle: ShuffleHandle): Unit = {
-    sparkUtilsClass
+    val _ = sparkUtilsClass
       .getMethod(
         "addFailureListenerIfBarrierTask",
         shuffleClientClass,
@@ -336,7 +336,7 @@ object CelebornShufflePusherFactory {
   /** Remove task-independent state for one unregistered Celeborn generation. */
   def cleanupShuffle(client: AnyRef, celebornShuffleId: Int): Unit = {
     try {
-      client.getClass
+      val _ = client.getClass
         .getMethod("cleanupShuffle", java.lang.Integer.TYPE)
         .invoke(client, Int.box(celebornShuffleId))
     } catch {
@@ -354,7 +354,8 @@ object CelebornShufflePusherFactory {
     try {
       val shuffleClientClass = ClassLoaders.loadClass(CELEBORN_SHUFFLE_CLIENT)
       try {
-        shuffleClientClass.getMethod("removeInstance", shuffleClientClass).invoke(null, client)
+        val _ =
+          shuffleClientClass.getMethod("removeInstance", shuffleClientClass).invoke(null, client)
       } catch {
         case _: NoSuchMethodException =>
         // Celeborn 0.6 owns one shared application client and cannot remove a single instance.

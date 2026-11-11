@@ -19,9 +19,21 @@
 
 package org.apache.comet.serde.operator
 
-import org.apache.spark.sql.catalyst.plans.QueryPlan
+import java.util.Locale
 
-import org.apache.comet.serde.OperatorOuterClass
+import scala.util.Try
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+import org.apache.hadoop.mapreduce.lib.output.PathOutputCommitterFactory
+import org.apache.parquet.hadoop.ParquetOutputFormat
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.QueryPlan
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.types.{DateType, TimestampType}
+
+import org.apache.comet.serde.{OperatorOuterClass, SupportLevel}
 import org.apache.comet.serde.QueryPlanSerde.serializeDataType
 
 /**
@@ -29,6 +41,16 @@ import org.apache.comet.serde.QueryPlanSerde.serializeDataType
  * [[CometIcebergNativeWrite]] for V2 Iceberg writes).
  */
 object NativeWriteUtils {
+
+  /**
+   * Hadoop's `FileOutputFormat.BASE_OUTPUT_NAME`, which is `protected` there. Spelled out for the
+   * same reason Spark spells it out in `HadoopMapReduceCommitProtocol.getFilename`, which is
+   * where a write's effective value is read.
+   */
+  val BASE_OUTPUT_NAME: String = "mapreduce.output.basename"
+
+  /** The file-name prefix a write uses when [[BASE_OUTPUT_NAME]] is not set. */
+  val DEFAULT_BASE_OUTPUT_NAME: String = "part"
 
   /**
    * Build a synthetic `Scan` operator that lets a native write op consume Arrow batches shipped
@@ -51,4 +73,329 @@ object NativeWriteUtils {
         .setScan(scan.build())
         .build())
   }
+
+  /**
+   * ASCII characters the native URL parser rewrites inside a path. Determined against the locked
+   * `url` 2.5 crate by parsing `hdfs://ns/pre<c>post/output` for every printable ASCII `c` and
+   * comparing `url.path()` with the input: these nine are rewritten and the rest survive,
+   * including `%`, `[`, `\`, `]`, `^` and `|`. Control characters and DEL are handled separately
+   * in [[needsNativeUrlEscaping]] rather than listed here.
+   *
+   * `native/core/src/parquet/parquet_support.rs` has a `url_path_rewritten_characters` test that
+   * fails if a `url` upgrade changes this set, so the two cannot drift apart silently.
+   *
+   * `?` and `#` are the worst of the nine: they are not escaped but treated as delimiters, so the
+   * native path is *truncated* there rather than merely spelled differently.
+   */
+  private val nativeUrlEscapedAscii: Set[Char] =
+    Set(' ', '"', '#', '<', '>', '?', '`', '{', '}')
+
+  /**
+   * Whether the native URL parser would rewrite `s`, so that the name it creates on HDFS differs
+   * from the Hadoop filename Spark commits.
+   *
+   * `percent_encoding`'s `should_percent_encode` is `!byte.is_ascii() || set.contains(byte)`, so
+   * every non-ASCII byte is escaped regardless of the encode set. That is the case Java's URI
+   * comparison cannot see, because `java.net.URI` leaves non-ASCII path characters alone: a name
+   * holding U+00E9 comes back identically from `getRawPath` and `getPath`, while the native
+   * parser produces `caf%C3%A9`.
+   */
+  private def needsNativeUrlEscaping(s: String): Boolean =
+    s.exists(c => c < ' ' || c > '~' || nativeUrlEscapedAscii.contains(c))
+
+  /**
+   * Whether the native writer and Spark would spell `path` differently, and how.
+   *
+   * The native side receives `Path.toString`, which is not a URI string, and reaches HDFS through
+   * `create_hdfs_object_store`, which hands `url.path()` -- now escaped by the Rust parser -- to
+   * `object_store::path::Path::parse`. So the native writer creates a directory literally called
+   * `dir%20with%20space`, or `caf%C3%A9` for a name holding U+00E9. Spark's committer, meanwhile,
+   * works with the unescaped Hadoop `Path` and commits `dir with space`, or that same U+00E9 name
+   * unescaped. Job commit then succeeds while the data sits somewhere else, which is worse than
+   * not accelerating the write.
+   *
+   * Two conditions, because neither covers the other:
+   *
+   *   - the native parser escapes a character, which is the direct statement of the divergence
+   *     and the only condition that catches non-ASCII names;
+   *   - `java.net.URI` had to escape something, which catches a literal `%` in the Hadoop name.
+   *     The native parser leaves `%` alone, so `50%off` reaches `Path::parse` as an invalid
+   *     escape rather than as a rewritten name.
+   *
+   * Local `file:` destinations are unaffected and deliberately not gated here: they go through a
+   * different object-store constructor that keeps the string verbatim.
+   */
+  private def hdfsPathDivergence(path: String): Option[String] = {
+    if (!path.startsWith("hdfs:")) return None
+    val uri = new Path(path).toUri
+    val raw = uri.getRawPath
+    val decoded = uri.getPath
+    val javaEscaped = raw != null && decoded != null && raw != decoded
+    // Checked against the string handed to the native writer, which is `path` itself.
+    if (javaEscaped || needsNativeUrlEscaping(path)) {
+      Some(if (decoded != null) decoded else path)
+    } else {
+      None
+    }
+  }
+
+  /**
+   * A fallback reason when a write to `outputPath` would land somewhere the committer is not
+   * looking, or `None` when the write can proceed.
+   *
+   * Two things go into every committed file name, and the native writer has to reproduce both
+   * byte for byte (see [[hdfsPathDivergence]] for why it may not):
+   *
+   *   - the destination directory, and
+   *   - `fileNamePrefix`, the basename every file name is built from. Spark 4.0+
+   *     `HadoopMapReduceCommitProtocol.getFilename` reads `mapreduce.output.basename` and
+   *     interpolates it into `<basename>-<split>-<jobId>`; Spark 3.x hardcodes `part` instead.
+   *     Both native writers take the exact file name from the commit protocol. A basename holding
+   *     `?` or `#` is dangerous on 4.0+: the native URL parser truncates there, so every task
+   *     writes a file with the same truncated name and they overwrite each other during commit.
+   *     Custom committer paths are checked by [[checkNativeWriteDestination]].
+   *
+   * The basename is checked by running [[hdfsPathDivergence]] over the path it produces rather
+   * than over the name alone. Everything else `getFilename` interpolates -- the split number, the
+   * job id and the codec extension -- is Comet-independent ASCII, so the probe below covers the
+   * whole committed file name. Sharing the one predicate with [[checkNativeWriteDestination]] is
+   * also what keeps planning from admitting a basename the task guard then aborts on: a literal
+   * `%` is invisible to [[needsNativeUrlEscaping]] but not to `java.net.URI`.
+   */
+  def escapedHdfsDestination(outputPath: String, fileNamePrefix: String): Option[String] = {
+    if (!outputPath.startsWith("hdfs:")) return None
+    hdfsPathDivergence(outputPath)
+      .map(shown =>
+        "HDFS output paths needing URI escaping are not supported: the native writer would " +
+          s"write to the escaped path while Spark commits the unescaped one ($shown)")
+      .orElse {
+        hdfsPathDivergence(s"$outputPath/$fileNamePrefix").map(_ =>
+          "HDFS output file names needing URI escaping are not supported: " +
+            s"$BASE_OUTPUT_NAME=$fileNamePrefix would make the native writer create a " +
+            "different file from the one Spark commits")
+      }
+  }
+
+  /**
+   * Fail the task if the native writer would not write to exactly `filePath`.
+   *
+   * [[escapedHdfsDestination]] declines the shapes Comet can predict at planning time, but the
+   * path a write actually uses comes from `FileCommitProtocol.newTaskTempFile`, and a custom
+   * commit protocol can return anything. This is the backstop: it runs before the writer opens
+   * anything, so the task fails with a clear message rather than committing successfully with the
+   * data left somewhere else.
+   */
+  def checkNativeWriteDestination(filePath: String): Unit =
+    hdfsPathDivergence(filePath).foreach { shown =>
+      throw new UnsupportedOperationException(
+        s"Comet's native Parquet writer cannot write to '$filePath': the path it would create " +
+          s"on HDFS is not the one the commit protocol chose ($shown). Set " +
+          "spark.comet.write.parquet.enabled=false to write this table with Spark.")
+    }
+
+  /**
+   * Whether the native writer creates the file at `filePath` itself, which it does for local and
+   * HDFS files. Any other file is created through Hadoop's FileSystem API and the native writer
+   * only writes its bytes, see [[org.apache.comet.parquet.HadoopFileOutput]]. That is always
+   * correct, whatever the file system and whatever the committer expects of it, which is why this
+   * is decided per task on the path the commit protocol actually returned rather than at
+   * planning.
+   */
+  def nativeWriterCreatesFile(filePath: String): Boolean =
+    filePath.startsWith("file:") || filePath.startsWith("hdfs:")
+
+  /**
+   * A fallback reason when the native writer cannot write to `outputPath`'s file system, or
+   * `None` when it can. Local and HDFS files are created natively. The files of a write that
+   * S3A's magic committer commits are created through S3A and written natively (see
+   * [[org.apache.comet.parquet.HadoopFileOutput]]).
+   *
+   * That is a matter of scope, not of correctness: any file, including any other S3A file, could
+   * be written the same way. Other S3 writes stay on Spark until the cost of streaming a file
+   * through S3A has been measured against uploading it natively (#6944).
+   *
+   * @param hadoopConf
+   *   the write's Hadoop configuration, only built for a destination the native writer does not
+   *   create files in
+   */
+  def unsupportedFileSystem(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: => Configuration): Option[String] =
+    if (nativeWriterCreatesFile(outputPath) ||
+      usesS3AMagicCommitter(outputPath, commitProtocolClass, hadoopConf)) {
+      None
+    } else {
+      Some("Supported output filesystems: local, HDFS, and S3 with the S3A magic committer")
+    }
+
+  /** Spark's commit protocol for Hadoop's `PathOutputCommitter`s, in spark-hadoop-cloud. */
+  val PathOutputCommitProtocolClass: String =
+    "org.apache.spark.internal.io.cloud.PathOutputCommitProtocol"
+
+  /**
+   * Spark's Parquet output committer that delegates to a `PathOutputCommitter`, in
+   * spark-hadoop-cloud.
+   */
+  val BindingParquetOutputCommitterClass: String =
+    "org.apache.spark.internal.io.cloud.BindingParquetOutputCommitter"
+
+  /** S3A's committer factory that always creates the magic committer. */
+  private val MagicCommitterFactoryClass =
+    "org.apache.hadoop.fs.s3a.commit.magic.MagicS3GuardCommitterFactory"
+
+  /** S3A's committer factory that creates the committer `fs.s3a.committer.name` names. */
+  private val S3ACommitterFactoryClass = "org.apache.hadoop.fs.s3a.commit.S3ACommitterFactory"
+
+  /**
+   * Whether S3A's magic committer commits a write to `outputPath`.
+   *
+   * Spark reaches Hadoop's committer factories through one of two bindings in spark-hadoop-cloud.
+   * Spark 4.1 configures both whenever that module is on the classpath (SPARK-47618), and earlier
+   * versions for a bucket that sets `fs.s3a.bucket.<bucket>.committer.magic.enabled`:
+   *
+   *   - the commit protocol `PathOutputCommitProtocol`, or a subclass of it, or
+   *   - `BindingParquetOutputCommitter` as `spark.sql.parquet.output.committer.class`, under a
+   *     commit protocol that instantiates that class, as Spark's default one does.
+   *
+   * Either asks Hadoop's `PathOutputCommitterFactory` for the committer. Its factory is
+   * `mapreduce.outputcommitter.factory.class` when set, else
+   * `mapreduce.outputcommitter.factory.scheme.<scheme>`. The committer is the magic committer
+   * when that factory is `MagicS3GuardCommitterFactory`, or when it is `S3ACommitterFactory` and
+   * the committer it is asked for is `magic`: `fs.s3a.committer.name` in the job's configuration.
+   * `S3ACommitterFactory` reads the file system's configuration, where a bucket's own
+   * `fs.s3a.bucket.<bucket>.committer.name` applies, only for a job that sets no name. Hadoop's
+   * `core-default.xml` sets `file`, so a Spark job always has one and a bucket's name never wins.
+   *
+   * Only planning asks, to decide whether a write is in scope for the native writer. A wrong
+   * answer cannot misplace data, because each task writes the path the committer actually
+   * returns.
+   *
+   * @param commitProtocolClass
+   *   the write's `spark.sql.sources.commitProtocolClass`
+   * @param hadoopConf
+   *   the write's Hadoop configuration, which carries `spark.sql.parquet.output.committer.class`
+   *   as Spark's Parquet writer reads it
+   */
+  def usesS3AMagicCommitter(
+      outputPath: String,
+      commitProtocolClass: String,
+      hadoopConf: Configuration): Boolean = {
+    val outputCommitterClass =
+      hadoopConf.getTrimmed(SQLConf.PARQUET_OUTPUT_COMMITTER_CLASS.key, "")
+    val asksCommitterFactory = isPathOutputCommitProtocol(commitProtocolClass) ||
+      (commitProtocolClass == SQLConf.FILE_COMMIT_PROTOCOL_CLASS.defaultValueString &&
+        outputCommitterClass == BindingParquetOutputCommitterClass)
+    val uri = new Path(outputPath).toUri
+    if (!asksCommitterFactory || uri.getScheme == null) {
+      return false
+    }
+
+    val factory = Seq(
+      PathOutputCommitterFactory.COMMITTER_FACTORY_CLASS,
+      PathOutputCommitterFactory.COMMITTER_FACTORY_SCHEME_PATTERN.format(uri.getScheme))
+      .map(key => hadoopConf.getTrimmed(key, ""))
+      .find(_.nonEmpty)
+    factory match {
+      case Some(MagicCommitterFactoryClass) => true
+      case Some(S3ACommitterFactoryClass) =>
+        Option(hadoopConf.getTrimmed("fs.s3a.committer.name")).contains("magic")
+      case _ => false
+    }
+  }
+
+  /**
+   * Whether `commitProtocolClass` is `PathOutputCommitProtocol` or a subclass of it. A subclass
+   * asks the committer factory too unless it overrides how its committer is created, and even
+   * then each task writes the path its committer returns.
+   */
+  private def isPathOutputCommitProtocol(commitProtocolClass: String): Boolean =
+    commitProtocolClass == PathOutputCommitProtocolClass || Try {
+      val loader = Thread.currentThread().getContextClassLoader
+      // scalastyle:off classforname
+      Class
+        .forName(PathOutputCommitProtocolClass, false, loader)
+        .isAssignableFrom(Class.forName(commitProtocolClass, false, loader))
+      // scalastyle:on classforname
+    }.getOrElse(false)
+
+  /**
+   * A fallback reason when the session asks for a LEGACY datetime rebase on write, or `None`.
+   *
+   * The native writer always writes proleptic Gregorian (corrected) datetime values and stamps
+   * `org.apache.spark.version` with no legacy markers. Honoring a LEGACY write rebase mode would
+   * require rebasing the values and stamping `org.apache.spark.legacyDateTime` /
+   * `org.apache.spark.legacyINT96`, so fall back to Spark rather than silently ignoring the
+   * requested mode and letting readers trust a "corrected" marker over legacy-intent data.
+   * TIMESTAMP_NTZ is exempt because Spark never rebases NTZ values on write.
+   */
+  def legacyDatetimeRebaseWriteReason(output: Seq[Attribute]): Option[String] = {
+    val hasDate = output.exists(a => SupportLevel.containsType(a.dataType, classOf[DateType]))
+    val hasTimestamp =
+      output.exists(a => SupportLevel.containsType(a.dataType, classOf[TimestampType]))
+    // getConf also reads the 3.x legacy alias keys. Both modes default to EXCEPTION on 3.x and
+    // to CORRECTED on 4.0+.
+    def isLegacy(mode: Any): Boolean = mode.toString == "LEGACY"
+    val datetimeLegacy = (hasDate || hasTimestamp) &&
+      isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_REBASE_MODE_IN_WRITE))
+    val int96Legacy =
+      hasTimestamp && isLegacy(SQLConf.get.getConf(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE))
+    val legacyModeKeys =
+      (if (datetimeLegacy) Seq(SQLConf.PARQUET_REBASE_MODE_IN_WRITE.key) else Nil) ++
+        (if (int96Legacy) Seq(SQLConf.PARQUET_INT96_REBASE_MODE_IN_WRITE.key) else Nil)
+    if (legacyModeKeys.isEmpty) {
+      None
+    } else {
+      Some(
+        "Native Parquet write always writes corrected (proleptic Gregorian) datetime values " +
+          s"and does not support LEGACY rebase mode (${legacyModeKeys.mkString(", ")})")
+    }
+  }
+
+  /** Compression codecs Comet's native Parquet writer can produce. */
+  val supportedCompressionCodecs: Set[String] =
+    Set("none", "uncompressed", "snappy", "lz4", "zstd", "gzip")
+
+  /**
+   * The compression codec a write will use, resolved exactly as Spark's own `ParquetOptions`
+   * does: `compression`, then `parquet.compression` (i.e. `ParquetOutputFormat.COMPRESSION`),
+   * then `spark.sql.parquet.compression.codec`.
+   *
+   * The `CaseInsensitiveMap` is not cosmetic. Spark reaches these options through one
+   * (`ParquetOptions.compressionCodecClassName`) and `DataFrameWriter` passes the caller's keys
+   * through verbatim, so `option("Compression", "gzip")` is a gzip write to Spark. Reading it
+   * case-sensitively would both name the file `...-c000.gz.parquet` while writing SNAPPY, and let
+   * an unsupported codec slip past [[supportedCompressionCodecs]] by falling through to the
+   * SQLConf default.
+   */
+  def parseCompressionCodec(options: Map[String, String]): String = {
+    val caseInsensitive = CaseInsensitiveMap(options)
+    caseInsensitive
+      .get("compression")
+      .orElse(caseInsensitive.get(ParquetOutputFormat.COMPRESSION))
+      .getOrElse(
+        SQLConf.get.getConfString(
+          SQLConf.PARQUET_COMPRESSION.key,
+          SQLConf.PARQUET_COMPRESSION.defaultValueString))
+      .toLowerCase(Locale.ROOT)
+  }
+
+  /**
+   * The proto codec for a Spark codec name, or `None` if Comet cannot produce it.
+   *
+   * At execution time the name to pass here is `CodecConfig.from(context).getCodec.name()`:
+   * `ParquetUtils.prepareWrite` resolves the write's options into `parquet.compression` on the
+   * job configuration, and the file extension comes from that same `CodecConfig`. Reading the
+   * codec back from there is what makes the file's name and its contents agree by construction
+   * rather than by two copies of the precedence rule agreeing.
+   */
+  def protoCompressionCodec(codec: String): Option[OperatorOuterClass.CompressionCodec] =
+    codec.toLowerCase(Locale.ROOT) match {
+      case "snappy" => Some(OperatorOuterClass.CompressionCodec.Snappy)
+      case "lz4" => Some(OperatorOuterClass.CompressionCodec.Lz4)
+      case "zstd" => Some(OperatorOuterClass.CompressionCodec.Zstd)
+      case "gzip" => Some(OperatorOuterClass.CompressionCodec.Gzip)
+      case "none" | "uncompressed" => Some(OperatorOuterClass.CompressionCodec.None)
+      case _ => None
+    }
 }

@@ -28,7 +28,7 @@ import org.apache.spark.shuffle.ShuffleWriteProcessor
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.comet.{CometMetricNode, NativeExecContext}
+import org.apache.spark.sql.comet.{CapturedSQLConf, CometMetricNode, NativeExecContext}
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.StructType
@@ -43,7 +43,26 @@ import org.apache.comet.serde.OperatorOuterClass
 case class NativeShuffleSpec(
     childNativeOp: OperatorOuterClass.Operator,
     childMetricNode: CometMetricNode,
-    execContext: NativeExecContext)
+    execContext: NativeExecContext,
+    /** The session's Comet configs, captured on the driver; see [[CapturedSQLConf]]. */
+    sqlConf: CapturedSQLConf,
+    /**
+     * Set when round-robin placement is positional rather than content-hashed. Both the decision
+     * and the group size are resolved once on the driver: the decision because it depends on the
+     * shape of the plan fused into `childNativeOp`, which the executor never sees, and the group
+     * size so that a re-executed map task places rows exactly as the attempt it replaces. See
+     * `CometShuffleExchangeExec.positionalRoundRobinSpec`.
+     */
+    positionalRoundRobin: Option[PositionalRoundRobin] = None)
+
+/**
+ * Parameters for positional round-robin placement, resolved on the driver.
+ *
+ * @param groupRows
+ *   rows per contiguous group, always positive. A configured `0` is resolved here rather than on
+ *   the executor, whose batch size need not match the one the stage was first run with.
+ */
+case class PositionalRoundRobin(groupRows: Int)
 
 /**
  * A [[ShuffleDependency]] that allows us to identify the shuffle dependency as a Comet shuffle.

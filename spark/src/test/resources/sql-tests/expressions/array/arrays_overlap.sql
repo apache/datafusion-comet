@@ -18,8 +18,11 @@
 statement
 CREATE TABLE test_arrays_overlap(a array<int>, b array<int>) USING parquet
 
+-- COALESCE(1) writes the table as one file, so the rows share a batch: a constant array reaches
+-- native as a scalar, and beside a column it has to be compared with every row, not only the
+-- first.
 statement
-INSERT INTO test_arrays_overlap VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2))
+INSERT INTO test_arrays_overlap SELECT /*+ COALESCE(1) */ * FROM VALUES (array(1, 2, 3), array(3, 4, 5)), (array(1, 2), array(3, 4)), (array(), array(1)), (NULL, array(1)), (array(1, NULL), array(NULL, 2)) AS t(a, b)
 
 query
 SELECT arrays_overlap(a, b) FROM test_arrays_overlap
@@ -31,6 +34,9 @@ SELECT arrays_overlap(a, array(3, 4, 5)) FROM test_arrays_overlap
 -- literal + column
 query
 SELECT arrays_overlap(array(1, 2, 3), b) FROM test_arrays_overlap
+
+query
+SELECT arrays_overlap(array(3, 4, 5), a) FROM test_arrays_overlap
 
 -- literal + literal
 query
@@ -117,7 +123,7 @@ statement
 CREATE TABLE test_overlap_dbl(a array<double>, b array<double>) USING parquet
 
 statement
-INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(0.0), array(double('-0.0'))), (array(1.0, NULL), array(2.0, NULL))
+INSERT INTO test_overlap_dbl VALUES (array(1.0, 2.0), array(2.0, 3.0)), (array(1.0, double('NaN')), array(double('NaN'), 2.0)), (array(double('Infinity'), 1.0), array(double('Infinity'))), (array(double('-Infinity')), array(double('Infinity'))), (array(double('0.0')), array(double('-0.0'))), (array(1.0, NULL), array(2.0, NULL))
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_dbl
@@ -233,15 +239,51 @@ INSERT INTO test_overlap_nested VALUES (array(array(1, 2), array(3, 4)), array(a
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested
 
+-- nested double arrays: Spark's nested path uses ordering.equiv, where -0.0 == 0.0
+statement
+CREATE TABLE test_overlap_nested_dbl(a array<array<double>>, b array<array<double>>) USING parquet
+
+statement
+INSERT INTO test_overlap_nested_dbl VALUES
+  (array(array(double('-0.0'))), array(array(double('0.0')))),
+  (array(array(double('0.0'))), array(array(double('-0.0')))),
+  (array(array(1.0, double('-0.0'))), array(array(1.0, 0.0))),
+  (array(array(double('NaN'))), array(array(double('NaN')))),
+  (array(array(1.0)), array(array(2.0))),
+  (array(array(double('-0.0')), cast(NULL as array<double>)), array(array(double('0.0')))),
+  (array(cast(NULL as array<double>)), array(array(double('0.0'))))
+
+query
+SELECT a, b, arrays_overlap(a, b) FROM test_overlap_nested_dbl
+
+-- struct element with a double field
+statement
+CREATE TABLE test_overlap_struct_dbl(a array<struct<x:double>>, b array<struct<x:double>>) USING parquet
+
+statement
+INSERT INTO test_overlap_struct_dbl VALUES
+  (array(named_struct('x', double('-0.0'))), array(named_struct('x', double('0.0')))),
+  (array(named_struct('x', double('0.0'))), array(named_struct('x', double('-0.0')))),
+  (array(named_struct('x', double('NaN'))), array(named_struct('x', double('NaN')))),
+  (array(named_struct('x', 1.0)), array(named_struct('x', 2.0))),
+  (array(cast(NULL as struct<x:double>)), array(named_struct('x', double('0.0'))))
+
+query
+SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct_dbl
+
 -- struct element arrays
 statement
 CREATE TABLE test_overlap_struct(a array<struct<x:int, y:int>>, b array<struct<x:int, y:int>>) USING parquet
 
+-- One file, so the rows share a batch for the struct constants below.
 statement
-INSERT INTO test_overlap_struct VALUES (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 1, 'y', 2))), (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 3, 'y', 4))), (array(named_struct('x', 1, 'y', cast(NULL as int))), array(named_struct('x', 1, 'y', cast(NULL as int)))), (array(cast(NULL as struct<x:int, y:int>)), array(cast(NULL as struct<x:int, y:int>)))
+INSERT INTO test_overlap_struct SELECT /*+ COALESCE(1) */ * FROM VALUES (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 1, 'y', 2))), (array(named_struct('x', 1, 'y', 2)), array(named_struct('x', 3, 'y', 4))), (array(named_struct('x', 1, 'y', cast(NULL as int))), array(named_struct('x', 1, 'y', cast(NULL as int)))), (array(cast(NULL as struct<x:int, y:int>)), array(cast(NULL as struct<x:int, y:int>))) AS t(a, b)
 
 query
 SELECT a, b, arrays_overlap(a, b) FROM test_overlap_struct
+
+query
+SELECT b, arrays_overlap(b, array(named_struct('x', 3, 'y', 4))), arrays_overlap(array(named_struct('x', 3, 'y', 4)), b) FROM test_overlap_struct
 
 -- mixed column and literal with NULL elements
 query

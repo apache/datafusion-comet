@@ -31,6 +31,13 @@ use arrow::record_batch::RecordBatch;
 /// [`finish_partition`](PartitionWriter::finish_partition) per partition in
 /// ascending id order, then a single [`finish_all`](PartitionWriter::finish_all).
 ///
+/// Batches passed to [`write`](PartitionWriter::write) and
+/// [`finish_partition`](PartitionWriter::finish_partition) should be maximal `batch_size`
+/// chunks plus at most one smaller tail per call, as `PartitionedBatchIterator` yields.
+/// [`LocalPartitionWriter`] writes each batch as its own block in multi-partition mode, and
+/// spilled blocks are copied to the output as they are, so staging many small batches would
+/// produce many small blocks.
+///
 /// [`LocalPartitionWriter`]: crate::writers::local::local_partition_writer::LocalPartitionWriter
 pub(crate) trait PartitionWriter: Send {
     /// Stages the batches from `iter` for partition `pid` without finalizing it.
@@ -68,4 +75,9 @@ pub(crate) trait PartitionWriter: Send {
     /// [`finish_partition`](PartitionWriter::finish_partition).
     fn finish_all(&mut self, metrics: &ShufflePartitionerMetrics)
         -> datafusion::common::Result<()>;
+
+    /// Marks the end of one burst of [`write`](PartitionWriter::write) calls (a spill
+    /// event), letting the writer drop transient encode state. Staging more batches
+    /// afterwards is still allowed.
+    fn write_burst_complete(&mut self) {}
 }

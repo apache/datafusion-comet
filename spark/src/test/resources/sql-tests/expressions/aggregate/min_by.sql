@@ -17,9 +17,8 @@
 
 -- min_by(x, y) returns the value of x associated with the minimum value of y.
 --
--- The value (x) must be a fixed-length type: Spark only uses HashAggregate (the aggregate
--- operator Comet accelerates) when the aggregation buffer is mutable, so variable-length
--- value types such as string force SortAggregate and fall back to Spark.
+-- The value (x) must be a fixed-length type. A variable-length value type such as string makes
+-- Spark plan SortAggregate rather than HashAggregate, and Comet falls back for it.
 --
 -- Ordering values are kept unique within each group so results are deterministic (min_by is
 -- non-deterministic when several rows tie on the minimum ordering).
@@ -247,9 +246,8 @@ SELECT grp, min_by(v, ord) FROM mnb_signed_zero GROUP BY grp ORDER BY grp
 -- ============================================================
 -- Variable-length value or ordering falls back to Spark
 --
--- See the equivalent section in max_by.sql for why this needs a TypedImperativeAggregate
--- alongside it: without one, Spark plans SortAggregate and Comet never sees the aggregate at all,
--- so the serde's type check would go untested.
+-- See the equivalent section in max_by.sql: with or without a TypedImperativeAggregate
+-- alongside it, the serde's type check is what keeps the aggregate off the native path.
 -- ============================================================
 
 statement
@@ -264,3 +262,9 @@ SELECT grp, min_by(s, v), percentile(v, 0.5) FROM mnb_varlen GROUP BY grp ORDER 
 
 query expect_fallback(Unsupported ordering data type)
 SELECT grp, min_by(v, s), percentile(v, 0.5) FROM mnb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported value data type)
+SELECT grp, min_by(s, v) FROM mnb_varlen GROUP BY grp ORDER BY grp
+
+query expect_fallback(Unsupported ordering data type)
+SELECT grp, min_by(v, s) FROM mnb_varlen GROUP BY grp ORDER BY grp
