@@ -53,7 +53,7 @@ A client runs a query through the scheduler's Arrow Flight service:
    endpoint's expiration time says until when.
 
 Ballista runs a query in one of two modes, set for every query with
-`COMET_SCHEDULER_BALLISTA_CONFIG` (`ballista.execution.mode`, blocking by default). In pipelined
+`COMET_SCHEDULER_BALLISTA_CONFIG` (`ballista.execution.mode`, staged by default). In pipelined
 mode the executors stream a result once and cannot hold it, so the scheduler reads each query's
 result into its own memory and serves it from its own Flight service. Its endpoints have no
 location: read them from the scheduler. The scheduler buffers at most
@@ -61,7 +61,7 @@ location: read them from the scheduler. The scheduler buffers at most
 `COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES` for all queries, and fails a query whose result is
 larger than the first. When a new result does not fit in the second, the scheduler drops the oldest
 results, which a client then finds expired. With a retention of `0` that is the only thing that
-drops them. Run a query with a large result in blocking mode.
+drops them. Run a query with a large result in staged mode.
 
 The scheduler cancels a job whose client disconnects, whose result it cannot read, or that runs
 longer than `COMET_SCHEDULER_QUERY_TIMEOUT_SECONDS`.
@@ -109,7 +109,7 @@ hash join built on the right, with column keys and no condition, whose build sid
 within Ballista's maximum estimate multiple of its broadcast threshold and whose probe side many
 times larger.
 
-- In blocking mode, a rule in Ballista's adaptive planner holds the probe side's stage back until
+- In staged mode, a rule in Ballista's adaptive planner holds the probe side's stage back until
   the build side's stage finishes, then moves the join if the build side measured under
   `ballista.optimizer.broadcast_join_threshold_bytes`, or releases the probe side's stage as it
   was.

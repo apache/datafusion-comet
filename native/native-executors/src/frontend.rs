@@ -23,7 +23,7 @@
 //! query's results a set time after the query ends, whether or not they have been read (see the
 //! comet-scheduler binary).
 //!
-//! In Ballista's blocking mode each endpoint names the executor that holds the partition. In its
+//! In Ballista's staged mode each endpoint names the executor that holds the partition. In its
 //! pipelined mode the executors stream a result once, so the scheduler reads the result into its
 //! own memory, within the limits of [`Limits`], and its endpoints have no location: the driver
 //! reads them from this service.
@@ -144,7 +144,7 @@ impl CometFlightService {
         )
     }
 
-    /// Keeps a pipelined query's result until it expires, as long as a blocking job's. With no
+    /// Keeps a pipelined query's result until it expires, as long as a staged job's. With no
     /// retention it is kept until the limit on the results kept pushes it out. Fails if the
     /// result alone is over that limit.
     fn store(&self, job_id: String, result: StoredResult) -> Result<(), Status> {
@@ -312,7 +312,7 @@ async fn submit(
 /// A pipelined job's final stage streams each output partition to one reader, once, and can't
 /// finish until it has been read. A Spark driver may read a result partition more than once,
 /// since Spark can compute a partition of an RDD again, so the scheduler reads the streams itself
-/// and serves them from its own Flight service for as long as a blocking job's results are kept.
+/// and serves them from its own Flight service for as long as a staged job's results are kept.
 /// It buffers at most [`Limits::max_result_bytes`] of them, and fails the query beyond that.
 ///
 /// The result is gathered into one partition first. A sorted query's result is already one
@@ -454,7 +454,8 @@ async fn fetch_pipelined(
             return Err(Status::resource_exhausted(format!(
                 "The query's result is larger than the {max_bytes} bytes the scheduler buffers \
                  for a pipelined query (COMET_SCHEDULER_PIPELINED_RESULT_MAX_BYTES and \
-                 COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES). Run it in blocking mode instead."
+                 COMET_SCHEDULER_PIPELINED_STORE_MAX_BYTES). Run it in staged mode \
+                 (ballista.execution.mode=staged) instead."
             )));
         }
         batches.push(batch);
@@ -657,7 +658,7 @@ impl FlightService for CometFlightService {
         unimplemented("GetSchema")
     }
 
-    /// Serves a result partition of a pipelined query. A blocking query's results are read from
+    /// Serves a result partition of a pipelined query. A staged query's results are read from
     /// the executors instead.
     async fn do_get(
         &self,
