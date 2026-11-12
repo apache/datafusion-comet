@@ -151,6 +151,8 @@ fn write_block<W: Write>(
     debug_assert!(!block.is_empty() && block.len() <= BLOCK_SIZE);
     let bound = get_maximum_output_size(block.len());
     if compressed.len() < bound {
+        // exact, so that growing from a short block does not double the capacity
+        compressed.reserve_exact(bound - compressed.len());
         compressed.resize(bound, 0);
     }
     let len = compress_into_with_table(block, compressed, table).map_err(io::Error::other)?;
@@ -287,6 +289,21 @@ mod tests {
         frame.finish().unwrap();
         assert_eq!(block_sizes(&out).len(), 2);
         assert_eq!(decode(&out), input);
+    }
+
+    /// The output buffer grows to the bound of the largest block and no further, so the encoder
+    /// keeps at most 154,029 bytes of buffers and table.
+    #[test]
+    fn output_buffer_stays_within_one_block_bound() {
+        let mut encoder = Lz4FrameEncoder::default();
+        for len in [60_000, BLOCK_SIZE, 3 * BLOCK_SIZE] {
+            encode(&mut encoder, &data(len, false), len);
+            assert!(
+                encoder.compressed.capacity() <= get_maximum_output_size(BLOCK_SIZE),
+                "{len}: {}",
+                encoder.compressed.capacity()
+            );
+        }
     }
 
     /// A frame abandoned part way leaves nothing behind for the next one.
