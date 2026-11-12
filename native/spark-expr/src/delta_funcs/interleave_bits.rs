@@ -374,6 +374,25 @@ mod tests {
     }
 
     #[test]
+    fn empty_batches() {
+        let empty = || int_array(vec![]);
+        let scalar = || ColumnarValue::Scalar(ScalarValue::Int32(Some(-1)));
+        for args in [
+            vec![empty()],
+            vec![empty(), empty()],
+            vec![empty(), scalar()],
+            vec![scalar(), empty()],
+        ] {
+            let ColumnarValue::Array(result) = invoke(args, 0).unwrap() else {
+                panic!("expected an array result");
+            };
+            assert_eq!(result.data_type(), &DataType::Binary);
+            assert_eq!(result.len(), 0);
+            assert_eq!(result.null_count(), 0);
+        }
+    }
+
+    #[test]
     fn scalar_broadcasts() {
         let column = vec![Some(1), Some(2), None];
         let minus_one = || ColumnarValue::Scalar(ScalarValue::Int32(Some(-1)));
