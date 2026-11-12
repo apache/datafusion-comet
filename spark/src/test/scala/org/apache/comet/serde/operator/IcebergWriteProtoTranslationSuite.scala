@@ -60,6 +60,17 @@ class IcebergWriteProtoTranslationSuite extends AnyFunSuite {
     }
   }
 
+  test("brotli detection ignores case and the surrounding whitespace of the codec name") {
+    Seq("brotli", "BROTLI", "Brotli", " brotli ").foreach { codec =>
+      assert(compressesWithBrotli(Map(Keys.ParquetCompression -> codec)), s"codec='$codec'")
+    }
+    Seq("zstd", "ZSTD", "snappy", "gzip", "uncompressed", "").foreach { codec =>
+      assert(!compressesWithBrotli(Map(Keys.ParquetCompression -> codec)), s"codec='$codec'")
+    }
+    // Unset, the codec defaults to zstd.
+    assert(!compressesWithBrotli(Map.empty))
+  }
+
   test("compression codec parsing is case-insensitive") {
     val settings =
       buildParquetSettings(Map(Keys.ParquetCompression -> "ZSTD"), TestCreatedBy)
