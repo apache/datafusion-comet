@@ -24,8 +24,9 @@
 //! but it measured no faster than a new encoder per frame on 8192-row blocks
 //! (`benches/shuffle_writer.rs`), and it holds each whole compressed frame until it is copied out.
 //!
-//! The frames have independent blocks of at most 64 KiB, no checksums, no content size and an
-//! end mark. A block that does not get smaller is stored uncompressed, as `FrameEncoder` does.
+//! The frames have independent blocks of at most 64 KiB, no block or content checksums, no
+//! content size and an end mark. A block that does not get smaller is stored uncompressed, as
+//! `FrameEncoder` does.
 
 use lz4_flex::block::{compress_into_with_table, get_maximum_output_size, CompressTable};
 use std::io::{self, Write};
