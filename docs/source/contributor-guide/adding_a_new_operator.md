@@ -24,36 +24,37 @@ This guide explains how to add support for a new Spark physical operator in Apac
 ## Overview
 
 `CometExecRule` is responsible for replacing Spark operators with Comet operators. There are different approaches to
-implementing Comet operators depending on where they execute and how they integrate with the native execution engine.
+implementing Comet operators depending on where they execute and how they integrate with Comet's Rust code.
 
 ### Types of Comet Operators
 
 `CometExecRule` maintains two distinct maps of operators:
 
-#### 1. Native Operators (`nativeExecs` map)
+#### 1. Operators in the `nativeExecs` Map
 
-These operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. Native
-operators are registered in the `nativeExecs` map in `CometExecRule.scala`.
+Most of these operators run entirely in native Rust code and are the primary way to accelerate Spark workloads. They
+are registered in the `nativeExecs` map in `CometExecRule.scala`. `LocalTableScanExec`, `InMemoryTableScanExec` and
+`EmptyRelationExec` are the exceptions: they become JVM-side Comet scans that feed Arrow batches into a native plan.
 
-Key characteristics of native operators:
+Key characteristics of the Rust-implemented operators:
 
-- They are converted to their corresponding native protobuf representation
-- They execute as DataFusion operators in the native engine
+- They are converted to their corresponding protobuf representation
+- They execute as DataFusion operators in Rust
 - The `CometOperatorSerde` implementation handles enable/disable checks, support validation, and protobuf serialization
 
 Examples: `ProjectExec`, `FilterExec`, `SortExec`, `HashAggregateExec`, `SortMergeJoinExec`, `ExpandExec`, `WindowExec`
 
 #### 2. Sink Operators (`sinks` map)
 
-Sink operators serve as entry points (data sources) for native execution blocks. They are registered in the `sinks`
+Sink operators serve as entry points (data sources) for native plans. They are registered in the `sinks`
 map in `CometExecRule.scala`.
 
 Key characteristics of sinks:
 
 - They become `ScanExec` operators in the native plan (see `operator2Proto` in `CometExecRule.scala`)
-- They can be leaf nodes that feed data into native execution blocks
+- They can be leaf nodes that feed data into native plans
 - They are wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` during plan transformation
-- Examples include operators that bring data from various sources into native execution
+- Examples include operators that bring data from various sources into a native plan
 
 Examples: `UnionExec`, `CoalesceExec`, `CollectLimitExec`, `TakeOrderedAndProjectExec`
 
@@ -74,7 +75,7 @@ Examples: `CometBroadcastExchangeExec`, `CometShuffleExchangeExec`
 
 `CometTakeOrderedAndProjectExec` owns local candidate selection, the optional shuffle, and final
 selection with offset and projection. When `spark.comet.exec.topK.fusion.enabled` is enabled for an
-eligible native Parquet scan, its conversion inserts `CometLocalTopKExec` before native blocks are
+eligible native Parquet scan, its conversion inserts `CometLocalTopKExec` before native plans are
 serialized. The local node extends `CometUnaryExec` and serializes a bounded sort above the native
 scan, so they execute in one block. It preserves the scan's output and partitioning and advertises
 the local sort order.
@@ -82,7 +83,7 @@ the local sort order.
 The inserted node keeps the original Spark TopK for plan bookkeeping, but only the outer TopK owns
 Spark's offset and projection. Both transition reversion and aggregate-buffer restoration therefore
 remove the inserted local node when restoring Spark execution. Restoring its `originalPlan` would
-apply the global TopK twice. A single input partition uses a final native limit and projection;
+apply the global TopK twice. A single input partition uses a final limit and projection in Rust;
 multiple input partitions still require a final TopK after the shuffle.
 
 With `spark.comet.exec.topK.dynamicFilter.enabled`, only the local sort sets the protobuf
@@ -97,26 +98,26 @@ attachment counters belong to the local TopK.
 
 When adding a new operator, choose based on these criteria:
 
-**Use Native Operators when:**
+**Use Rust-implemented operators when:**
 
 - The operator transforms data (e.g., project, filter, sort, aggregate, join)
 - The operator has a direct DataFusion equivalent or custom implementation
-- The operator consumes native child operators and produces native output
+- The operator consumes and produces data within a native plan
 - The operator is in the middle of an execution pipeline
 
 **Use Sink Operators when:**
 
-- The operator serves as a data source for native execution (becomes a `ScanExec`)
-- The operator brings data from non-native sources (e.g., `UnionExec` combining multiple inputs)
+- The operator serves as a data source for a native plan (becomes a `ScanExec`)
+- The operator brings data from sources outside the native plan (e.g., `UnionExec` combining multiple inputs)
 - The operator is typically a leaf or near-leaf node in the execution tree
-- The operator needs special handling to interface with the native engine
+- The operator needs special handling at the JVM/native boundary
 
 **Implementation Note for Sinks:**
 
 Sink operators are handled specially in `CometExecRule.operator2Proto`. Instead of converting to their own operator
 type, they are converted to `ScanExec` in the native plan. This allows them to serve as entry points for native
-execution blocks. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
-manages the boundary between JVM and native execution.
+plans. The original Spark operator is wrapped with `CometScanWrapper` or `CometSinkPlaceHolder` which
+manages the JVM/native boundary.
 
 ### Operators That Should Not Be Converted
 
@@ -131,18 +132,18 @@ stages, mark whole-stage code generation boundaries, choose which shuffle blocks
 or point at a plan that runs elsewhere. AQE creates the query stages itself, after Comet's rules
 have run on the plan inside them, and depends on their exact class. For example, it casts the root
 of the final plan to `ResultQueryStageExec`. When a query stage wraps a Comet shuffle, broadcast,
-or cached relation, `CometExecRule` reads from it as a native input through `CometExchangeSink`
-and leaves the stage itself in place.
+or cached relation, `CometExecRule` reads from it as an input to a native plan through
+`CometExchangeSink` and leaves the stage itself in place.
 
 **Operators that run user JVM code on JVM objects.** The typed `Dataset` API plans
 `DeserializeToObjectExec`, `SerializeFromObjectExec`, `MapElementsExec`, `MapPartitionsExec`,
 `AppendColumnsExec`, `AppendColumnsWithObjectExec`, `MapGroupsExec`, and `CoGroupExec`. They
 convert rows to JVM objects, run an arbitrary user function on those objects, or convert them back,
 and most of them pass the objects to the next operator as an `ObjectType` column, which has no
-Arrow representation. None of this can run natively, so these operators stay on Spark. Every typed
+Arrow representation. None of this can run in Comet, so these operators stay on Spark. Every typed
 operation ends in `SerializeFromObjectExec`, though, whose output is ordinary rows. With
 `spark.comet.convert.typedDataset.enabled`, `CometExecRule` puts a `CometSparkToColumnarExec` above
-it, so the operators above the typed operation can run natively. Spark inserts no columnar
+it, so the operators above the typed operation can run in Comet. Spark inserts no columnar
 transitions below a `RowToColumnarTransition`, so the rule inserts them for the typed operation's
 own operators itself. Spark computes a typed operation's rows one at a time, as they are read, while
 the conversion fills a whole Arrow batch first. So the rule leaves the output unconverted where a
@@ -168,9 +169,9 @@ summary does not count it as a Spark operator. If `CometExecRule` visits the nod
 the operators it leaves in place without recording a fallback reason. `ExtendedExplainInfo`
 already skips every `QueryStageExec`, so a new query stage type needs no change there.
 
-## Implementing a Native Operator
+## Implementing an Operator in Rust
 
-This section focuses on adding a native operator, which is the most common and complex case.
+This section focuses on adding a Rust-implemented operator, which is the most common and complex case.
 
 ### Step 1: Define the Protobuf Message
 
@@ -364,25 +365,25 @@ An operator that overrides `outputOrdering`, as `CometFilterExec` does above wit
 the order satisfies. Report what the Spark operator reports and nothing more. `SampleExec`, for
 example, reports no order, so `CometSampleExec` must not report its child's.
 
-The claim has to hold at run time as well. A native hash join declares the order Spark reports for
-its streamed side to DataFusion, and a native window the order of its partition keys. An aggregate
+The claim has to hold at run time as well. A Comet hash join declares the order Spark reports for
+its streamed side to DataFusion, and a Comet window the order of its partition keys. An aggregate
 above may then run in sorted mode, or a top-k sort may stop reading early, on the strength of that
 order. If the order is false, the result is wrong groups or wrong rows, not only rows out of order.
-So an operator that reports an ordering must keep it natively, and the native operator must say so
+So an operator that reports an ordering must keep it in Rust, and its Rust operator must say so
 by returning `true` from `maintains_input_order` for that child, as DataFusion's filter and
 projection do. The planner declares the order through an operator only when the operator says it
-keeps it. An operator that cannot keep the order natively must not report it, or has to be added to
+keeps it. An operator that cannot keep the order in Rust must not report it, or has to be added to
 `mayReportFalseOrder` in `operators.scala`. The hash join and window serdes then send no order over
 it, an outer hash join above it that has to keep that order falls back to Spark, and a window that
 runs in Spark above it gets its input sorted again. Comet's hash joins are the exception within one
-native plan: an outer hash join over one of them stays native, even over one that declared no order,
-since DataFusion keeps the order it can see there.
+native plan: an outer hash join over one of them stays in Comet, even over one that declared no
+order, since DataFusion keeps the order it can see there.
 
 A leaf that reports an ordering is where the order starts, so the planner has to know that the
-native operator produces its rows in that order. It knows that of an input from the JVM and of a
-scan of files, which reads the files of each partition one after the other, and the native range
-declares its order itself through `SortedInputExec`. A new leaf that reports an ordering must
-declare it natively the same way.
+leaf's Rust operator produces its rows in that order. It knows that of an input from the JVM and of
+a scan of files, which reads the files of each partition one after the other, and the Rust range
+operator declares its order itself through `SortedInputExec`. A new leaf that reports an ordering
+must declare it in Rust the same way.
 
 #### Plan Identity and Exchange Reuse
 
@@ -403,9 +404,9 @@ The examples above follow the implementations in
 - `nativeOp` is the protobuf representation and `originalPlan` is the source Spark plan; neither is
   compared by these operators. `CometNativeExec.canonicalizePlans` clears the non-child Spark plan
   references, including their `originalPlan`.
-- `serializedPlanOpt` holds the bytes for a native execution block. These operators compare it in
-  `equals`, but omit it from `hashCode`; `CometNativeExec.doCanonicalize` clears the block's serialized
-  plan. The bytes therefore do not distinguish canonicalized plans.
+- `serializedPlanOpt` holds the bytes for the native plan of an execution block. These operators
+  compare it in `equals`, but omit it from `hashCode`; `CometNativeExec.doCanonicalize` clears the
+  block's serialized plan. The bytes therefore do not distinguish canonicalized plans.
 - `stringArgs` controls the plan's displayed arguments. Show the semantic fields and children
   rather than serialization state; this method does not define equality.
 
@@ -456,7 +457,7 @@ Note that Comet will treat an operator as incompatible if any of the child expre
 
 Add your operator to the appropriate map in `CometExecRule.scala`:
 
-#### For Native Operators
+#### For Operators in the `nativeExecs` Map
 
 Add to the `nativeExecs` map (`CometExecRule.scala`):
 
@@ -500,7 +501,7 @@ val COMET_EXEC_YOUR_OPERATOR_ENABLED: ConfigEntry[Boolean] =
 
 Run `make` to update the user guide. The new configuration option will be added to `docs/source/user-guide/latest/configs.md`.
 
-### Step 5: Implement the Native Operator in Rust
+### Step 5: Implement the Operator in Rust
 
 #### Update the Planner
 
@@ -634,7 +635,7 @@ test("your operator") {
 
 The `checkSparkAnswerAndOperator` helper verifies:
 
-1. Results match Spark's native execution
+1. Results match Spark without Comet
 2. Your operator is actually being used (not falling back)
 
 #### Plan Identity Regression Tests
@@ -650,7 +651,7 @@ Use the "aggregate canonicalization preserves result expressions and equivalent 
 as a model. Inspect the executed plans: an optimizer rewrite can make the branches differ for an
 unrelated reason, allowing a test to pass even when the intended field is missing from `equals`.
 Choose inputs and query shapes that preserve the parameter difference, and traverse adaptive and
-query-stage wrappers when checking the native operator and reused exchange.
+query-stage wrappers when checking the Comet operator and reused exchange.
 
 #### Rust Unit Tests
 
@@ -674,7 +675,7 @@ Add your operator to the supported operators list in `docs/source/user-guide/lat
 
 ## Implementing a Sink Operator
 
-Sink operators are converted to `ScanExec` in the native plan and serve as entry points for native execution. The implementation is simpler than native operators because sink operators extend the `CometSink` base class which provides the conversion logic.
+Sink operators are converted to `ScanExec` in the native plan and serve as entry points for native plans. The implementation is simpler than for Rust-implemented operators because sink operators extend the `CometSink` base class which provides the conversion logic.
 
 ### Step 1: Create a CometOperatorSerde Implementation
 
@@ -772,7 +773,7 @@ val COMET_EXEC_YOUR_SINK_ENABLED: ConfigEntry[Boolean] =
 
 ### Step 4: Add Tests
 
-Test that your sink operator correctly feeds data into native execution:
+Test that your sink operator correctly feeds data into a native plan:
 
 ```scala
 test("your sink operator") {

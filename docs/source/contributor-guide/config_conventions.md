@@ -197,8 +197,8 @@ Two cases do **not** need a legacy config:
 - **Correctness fixes.** When a `Compatible` expression or operator does not match Spark, that is a
   bug. Fixing it is a bug fix and may ship in any release, including a patch release. Add a legacy
   config only if the fix has an unusually wide blast radius, and say so in the PR description.
-- **Changes to which expressions and operators run natively.** Falling back to Spark, or ceasing
-  to, changes performance rather than results.
+- **Changes to which expressions and operators run in the Comet pipeline.** Falling back to
+  Spark, or ceasing to, changes performance rather than results.
 
 Nor does a change to a key in the `testing` category or a key marked `internal()`, both
 [exempt from the versioning policy](../about/versioning_policy.md#testing-and-internal-configurations-are-exempt):

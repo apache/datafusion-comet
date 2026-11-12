@@ -21,7 +21,7 @@ under the License.
 
 Compatibility notes for Comet running on Apache Spark 4.1. Expressions that are not 100%
 Spark-compatible fall back to Spark by default, except those with a JVM codegen-dispatch
-path, which stay in Comet's native pipeline and match Spark exactly. Set
+path, which stay in the Comet pipeline and match Spark exactly. Set
 `spark.comet.expression.EXPRNAME.allowIncompatible=true`, where `EXPRNAME` is the Spark
 expression class name, to run Comet's native implementation despite its differences
 from Spark. See the [Comet Supported Expressions Guide](../../../expressions.md)

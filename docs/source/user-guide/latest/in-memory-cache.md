@@ -38,10 +38,10 @@ It has to be set before the `SparkContext` starts. Comet's driver plugin chooses
 `spark.sql.cache.serializer` once, while the context is initializing, so an application keeps the
 cache format it started with however the config is set afterwards. The plugin installs Comet's
 serializer only if `spark.comet.enabled` and `spark.comet.exec.enabled` are enabled at that point
-too, because an application that starts without native execution could not scan Comet's format
-natively. It also keeps Spark's format when Comet shuffle is enabled but `spark.shuffle.manager` is
-not one of Comet's shuffle managers, since Comet then disables itself, and when Kryo would reject
-Comet's format; see [Kryo](#kryo).
+too, because an application that starts with Comet operators disabled would store its caches in
+Comet's format with only Spark operators to read them. It also keeps Spark's format when Comet
+shuffle is enabled but `spark.shuffle.manager` is not one of Comet's shuffle managers, since Comet
+then disables itself, and when Kryo would reject Comet's format; see [Kryo](#kryo).
 
 ## What changes when it is enabled
 
@@ -175,7 +175,7 @@ on Comet either way and only the cache-scan boundary moves: on the left, Spark's
 `InMemoryTableScanExec` feeds those same Comet operators through a `CometSparkColumnarToColumnar`
 bridge, which the benchmark turns on with `spark.comet.convert.inMemoryCache.enabled`; on the
 right, `CometInMemoryTableScan` feeds them directly. Both columns read the same
-Comet-written `CometCachedBatch`. These numbers are therefore "keep the cached scan native" against
+Comet-written `CometCachedBatch`. These numbers are therefore "keep the cache scan in Comet" against
 "fall back to a Spark cache scan and convert", not Comet against Spark execution, and not a
 comparison with Spark's own cache format, which follows.
 
@@ -196,7 +196,7 @@ Ryzen 9 7950X3D (JDK 17, Spark 4.1, release build):
 | Full projection (6 of 6)   |               299 ms |               224 ms |     1.3x |
 
 A Spark operator above the cache scan, standing in for any operator Comet does not support, is
-measured the same way, with Comet's aggregate turned off. With Comet's format, the native scan feeds
+measured the same way, with Comet's aggregate turned off. With Comet's format, Comet's scan feeds
 that operator through a columnar-to-row transition:
 
 | Query shape                | Spark's cache format | Comet's cache format | Relative |
@@ -253,8 +253,8 @@ Comet's cached batch, Comet's driver plugin does not install Comet's serializer,
 Spark's format. Registrations made another way, through a registrator of the application's own or
 `spark.kryo.classesToRegister`, count as well. The plugin warns at startup when Kryo requires
 registration and has not registered every class `CometKryoRegistrator` registers. An application
-that sets `spark.sql.cache.serializer` to Comet's serializer itself gets the error instead. Native
-broadcast needs the same registrator even when the cache is disabled; see
+that sets `spark.sql.cache.serializer` to Comet's serializer itself gets the error instead. Comet's
+broadcast exchange needs the same registrator even when the cache is disabled; see
 [Kryo serialization](installation.md#kryo-serialization).
 
 Spark registers its own cached batch with Kryo only from Spark 4.1, so on earlier versions caching
@@ -264,7 +264,7 @@ Spark's cached batch too.
 ## Limitations
 
 A relation cached after a sort, such as `sortWithinPartitions`, reports that order to the queries
-that read it, and Spark removes the sorts it makes redundant. Some native joins over such a
+that read it, and Spark removes the sorts it makes redundant. Some Comet joins over such a
 relation do not keep the order, so partitions above them can come back unsorted, and an operator
 that relies on the order, such as a sort-merge join, can return wrong rows. These cases are tracked
 in [#6787](https://github.com/apache/datafusion-comet/issues/6787),
@@ -276,10 +276,10 @@ Reads that feed **Spark** operators rather than Comet ones can be slower than Sp
 format, because every cached batch is decoded from Arrow before Spark reads it. How a Spark
 operator reads a relation cached in Comet's format depends on the scan below it:
 
-- With native execution enabled (`spark.comet.exec.enabled=true`), the cache is scanned by
+- With Comet operators enabled (`spark.comet.exec.enabled=true`), the cache is scanned by
   `CometInMemoryTableScan`, and a Spark operator above it reads the scan's batches through
   `CometColumnarToRow`, as it would above any other Comet operator.
-- With Comet enabled but native execution disabled, the cache is scanned by Spark's
+- With Comet enabled but Comet operators disabled, the cache is scanned by Spark's
   `InMemoryTableScanExec`. When the operator directly above the scan takes part in whole-stage code
   generation, as filters, projections and aggregates do, Comet puts Spark's `ColumnarToRowExec`
   between the two, and the generated code reads the cached Arrow vectors directly, with no
@@ -297,7 +297,7 @@ operator reads a relation cached in Comet's format depends on the scan below it:
 Whenever Spark's scan reads Comet's format, which also happens for a relation whose cached plan
 records `Dataset.observe` metrics, Comet records a fallback reason on the scan.
 
-Measured by the same benchmark over the same 5M-row relation, with native execution off so that
+Measured by the same benchmark over the same 5M-row relation, with Comet operators off so that
 Spark operators consume the cached data, Comet disabled for the row reader and enabled for the fused
 reader (Apple M4, JDK 17, Spark 4.1; the average of two runs):
 
@@ -312,7 +312,7 @@ The fused reader is faster than Spark's own format for the narrowest reads and w
 the others. The row reader takes up to 1.6 times as long, and it is the only reader for relations
 wider than `spark.sql.codegen.maxFields`: reading every column of relations of 100, 200 and 1500
 nullable `bigint` columns took 2.2 to 2.5 times as long as from Spark's format. A Spark operator
-above Comet's native cache scan does not pay this; see [Performance](#performance).
+above Comet's cache scan does not pay this; see [Performance](#performance).
 
 Most of what the row reader pays is decompression, so `lz4` narrows these gaps. Measured on an
 Apple M3 Ultra, the row reader takes up to 1.25 times as long as Spark's format with `lz4`, against

@@ -417,9 +417,9 @@ object GenerateDocs {
       }
       if (n.incompatibleReasons.nonEmpty) {
         val header = if (n.conditionalNativeDefault) {
-          "\nFor applicable cases that are not selected for native execution automatically," +
-            s" `$name` is evaluated in the JVM using Spark's own code-generated implementation" +
-            " (run inside the Comet pipeline) by default." +
+          "\nFor applicable cases where Comet does not select its native implementation" +
+            s" automatically, `$name` is evaluated in the JVM using Spark's own code-generated" +
+            " implementation (run inside the Comet pipeline) by default." +
             s" Set `${n.nativeOptInConfigKey}=true` to explicitly select Comet's native" +
             " implementation, which has the following differences from Spark:\n\n"
         } else if (n.nativeOptIn) {

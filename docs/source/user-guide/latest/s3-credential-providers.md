@@ -19,7 +19,7 @@ under the License.
 
 # S3 Credential Providers
 
-Comet's native S3 readers and native Iceberg writer normally fetch credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every native credential request through the vendor's Java code.
+Comet's native readers and native Iceberg writer normally fetch S3 credentials from the standard AWS credential chain (static keys, instance profiles, environment variables, etc.). Some clusters use a vendor-managed mechanism instead, where credentials are issued per request based on a JWT or per S3 path. For those clusters, Comet supports loading a vendor-supplied bridge class that routes every credential request from the Rust side through the vendor's Java code.
 
 ## Do I need this?
 
@@ -40,7 +40,7 @@ You probably do, if any of these are true:
 
 If a native Parquet scan fails with `Unsupported credential provider: <class>` (for example `com.amazonaws.auth.DefaultAWSCredentialsProviderChain`), the class you named in `fs.s3a.aws.credentials.provider` is one that plain Spark/Hadoop accepts but Comet's native reader does not reimplement. Comet ships two built-in `CometS3CredentialProvider` adapters that fix this with a one-line config change; you leave your existing `fs.s3a.aws.credentials.provider` untouched.
 
-These adapters cover the Parquet native scan path only. Enabling one is opt-in: naming it is what activates it. Note the native side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
+These adapters cover the native Parquet scan only. Enabling one is opt-in: naming it is what activates it. Note the Rust side forwards the `fs.s3a.*` config to `initialize()` for _any_ provider class named on the Parquet path, not just these two adapters: a vendor `CometS3CredentialProvider` that received an empty map in Comet 1.0 now receives the `fs.s3a.*` subset (including static keys), and one cached instance per distinct `fs.s3a.*` config rather than one per bucket. This is additive, but a provider that logs the map or treats an empty map as "the Parquet path" should be aware of it.
 
 The adapters and the AWS SDK are loaded through the class loader that loaded Comet, so `hadoop-aws` and the matching AWS SDK must be visible from there — put them on the same classpath as Comet (`spark.executor.extraClassPath` / `spark.driver.extraClassPath`, or `$SPARK_HOME/jars`), not only via `--packages`. If they are only on the user-jar loader, credential resolution fails at planning with `NoClassDefFoundError` before the adapter can report anything useful.
 
@@ -149,7 +149,7 @@ Without the config set, no credential-related log lines appear at startup; nativ
 
 This is automatic; there is nothing to configure to get the protection, and it does not involve a bridge class. It applies to native Iceberg **reads and writes** (both build their `FileIO` through the same path). The raw-Parquet path is unaffected: it uses the AWS SDK default chain, which already retries and stops on a provider error rather than downgrading.
 
-On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. On the Iceberg path, opendal's default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every native read then fails with a hard `403 AccessDenied` even though the throttle was transient.
+On EKS with [IAM Roles for Service Accounts (IRSA)](https://docs.aws.amazon.com/eks/latest/userguide/iam-roles-for-service-accounts.html), executors assume the application role by calling STS `AssumeRoleWithWebIdentity`. Under a large concurrent startup burst (many executors times many cores, all fetching credentials at once), STS can throttle that call. On the Iceberg path, opendal's default credential chain does not retry the throttle and falls through to the EKS node instance role, which usually lacks bucket access, so every read then fails with a hard `403 AccessDenied` even though the throttle was transient.
 
 When Comet detects IRSA (both `AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN` are set), a region is set, and the catalog configures no explicit credentials, the native Iceberg reader resolves web-identity credentials itself instead of using opendal's default chain. It builds the STS client from the AWS SDK's fully-resolved config, so region, `AWS_USE_FIPS_ENDPOINT`, `AWS_USE_DUALSTACK_ENDPOINT`, and any profile/custom STS endpoint are honored. The provider:
 
@@ -191,7 +191,7 @@ spark.sql.catalog.<catalog>.s3.path-style-access = true      (path-style endpoin
 
 ## Writing a bridge
 
-Comet's native scan paths (`object_store` for raw Parquet, `opendal` via `iceberg-rust` for Iceberg) bypass Hadoop S3A entirely. The standard `AWSCredentialsProvider.getCredentials()` has no path argument, so vendors that issue per-path STS credentials cannot expose them through it. The `CometS3CredentialProvider` SPI fills that gap.
+Comet's native scans (`object_store` for raw Parquet, `opendal` via `iceberg-rust` for Iceberg) bypass Hadoop S3A entirely. The standard `AWSCredentialsProvider.getCredentials()` has no path argument, so vendors that issue per-path STS credentials cannot expose them through it. The `CometS3CredentialProvider` SPI fills that gap.
 
 Implement `org.apache.comet.cloud.s3.CometS3CredentialProvider`:
 
@@ -209,7 +209,7 @@ public interface CometS3CredentialProvider extends AutoCloseable {
 }
 ```
 
-The class must have a public no-arg constructor. `getCredentialsForPath` may be invoked concurrently from many native tokio worker threads; the implementation must be thread-safe. The supplied `CometS3CredentialContext` exposes `getBucket()`, `getPath()`, and `getMode()`; future Comet releases may add accessors here without changing the method signature, so vendors compiled against today's API stay binary-compatible.
+The class must have a public no-arg constructor. `getCredentialsForPath` may be invoked concurrently from many Rust tokio worker threads; the implementation must be thread-safe. The supplied `CometS3CredentialContext` exposes `getBucket()`, `getPath()`, and `getMode()`; future Comet releases may add accessors here without changing the method signature, so vendors compiled against today's API stay binary-compatible.
 
 ### Lifecycle
 
@@ -387,7 +387,7 @@ public final class IcebergRESTVendedS3Provider implements CometS3CredentialProvi
 
 | Value   | Used for                                                                                                                                                                                       |
 | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `READ`  | All native scan paths (raw Parquet, Iceberg).                                                                                                                                                  |
+| `READ`  | All native scans (raw Parquet, Iceberg).                                                                                                                                                       |
 | `WRITE` | The native Iceberg writer (see [Iceberg Writes](iceberg.md#writes)). If the configured provider fails to initialize, the write fails rather than falling back to the default credential chain. |
 
 A `WRITE` credential is not implicitly read-capable. Vendors that need read-during-write workflows include the required read permissions in the IAM policy attached to their `WRITE` credentials.

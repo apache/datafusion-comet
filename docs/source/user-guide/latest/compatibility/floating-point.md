@@ -24,7 +24,7 @@ However, one exception is comparison. Spark does not normalize NaN and zero when
 because they are handled well in Spark (e.g., `SQLOrderingUtil.compareFloats`). But the comparison
 functions of arrow-rs used by DataFusion do not normalize NaN and zero (e.g., [arrow::compute::kernels::cmp::eq](https://docs.rs/arrow/latest/arrow/compute/kernels/cmp/fn.eq.html#)).
 For `FLOAT` and `DOUBLE` comparisons (`=`, `<>`, `<=>`, `<`, `<=`, `>` and `>=`), Comet
-compares the operands in Spark's order natively, including noncanonical NaNs: `-0.0` equals
+compares the operands in Spark's order in Rust, including noncanonical NaNs: `-0.0` equals
 `0.0`, all NaNs are equal, and NaN sorts above every other value. This applies wherever a
 comparison appears: projections, filters, aggregate arguments and `FILTER` clauses, join
 conditions, sort keys, and generator arguments.
@@ -56,7 +56,7 @@ or structs; see [#6019](https://github.com/apache/datafusion-comet/issues/6019).
 
 ## Nested comparisons and membership
 
-For arrays and structs containing `FLOAT` or `DOUBLE`, native `=`, `<>`, `IN`, and `NOT IN`
+For arrays and structs containing `FLOAT` or `DOUBLE`, Comet's `=`, `<>`, `IN`, and `NOT IN`
 compare signed zeros as equal and all NaN representations as equal, matching Spark. This also
 covers single-candidate membership that Spark rewrites into equality. `<=>`, `<`, `<=`, `>`, and
 `>=` follow Spark's order too, in which NaN sorts above every other value.
@@ -73,25 +73,25 @@ Spark's `ORDER BY`, `RANK`, `DENSE_RANK`, and window frame comparisons route thr
 define `-0.0 == 0.0`. NaN sorts above every non-NaN value.
 
 For `FLOAT` and `DOUBLE` keys, and for keys that nest them in arrays and structs at any depth,
-Comet normalizes NaNs and signed zeros before native sorting, window peer comparisons, and
-`WindowGroupLimitExec` rank comparisons. Native range partitioning normalizes its keys and
+Comet normalizes NaNs and signed zeros before sorting, window peer comparisons, and
+`WindowGroupLimitExec` rank comparisons. Native shuffle's range partitioning normalizes its keys and
 sampled boundaries in the same way; it only accepts scalar keys. Only comparison keys are
 normalized; returned values retain their original NaN representations and zero signs.
 
 Because those comparison keys match Spark, `spark.comet.exec.strictFloatingPoint=true` does not
 force a fallback for them: sort keys, window and rank order keys, and range partitioning keys all
-stay native under strict mode, whether the floats in them are scalar or nested.
+stay in Comet under strict mode, whether the floats in them are scalar or nested.
 
 That includes a key that nests floats in an array or struct whose type can hold a null element or
 field. Spark orders such a null below every other value, whatever the key's `NULLS FIRST` or
 `NULLS LAST`. Comet keeps the key's root null placement separate from its nested comparison, so
-sorts and ranking windows stay native under either null order
+sorts and ranking windows stay in Comet under either null order
 ([#6476](https://github.com/apache/datafusion-comet/issues/6476)). A `RANGE` window frame that
 has to find a row's peers over such a key still falls back to Spark
 ([#6477](https://github.com/apache/datafusion-comet/issues/6477)). The
 [operator compatibility notes](operators.md) describe both.
 
-`array_min` and `array_max` use Spark-compatible native comparisons in both strict and non-strict
+`array_min` and `array_max` use Spark-compatible Rust comparisons in both strict and non-strict
 floating-point modes. Signed zeros compare equal, and all NaN representations compare equal and
 greater than non-NaN values. The original first equal element is retained: for example,
 `array_min(array(0.0D, -0.0D))` returns `0.0`, while reversing those elements returns `-0.0`.
@@ -104,7 +104,7 @@ The `min` and `max` aggregates, including over window frames, and `greatest` and
 `FLOAT` and `DOUBLE` values in the same order: NaN is larger than every other value and `-0.0`
 equals `0.0`. Of equal values the first one wins, as in Spark: `greatest(-0.0D, 0.0D)` returns
 `-0.0`, and `max` returns whichever zero it reads first. `greatest` and `least` follow the same
-order inside arrays and structs. These run natively in strict floating-point mode too.
+order inside arrays and structs. These run in Comet in strict floating-point mode too.
 
 Spark treats `greatest` and `least` as commutative when it matches expressions, so a projection
 that holds both `greatest(a, b)` and `greatest(b, a)` evaluates only one of them and returns the
@@ -114,18 +114,18 @@ the two can differ.
 ## Array distinct and union
 
 When their element type contains `FLOAT` or `DOUBLE`, `array_distinct` and `array_union` run
-natively on Spark 4.0.5+, 4.1.4+, and 4.2+. These releases treat `-0.0` and `0.0`, and every NaN
+in Rust on Spark 4.0.5+, 4.1.4+, and 4.2+. These releases treat `-0.0` and `0.0`, and every NaN
 representation, as one value in these functions, including inside nested arrays and structs, and
 return the normalized value. Spark 4.2.0 normalizes the arguments in the plan (SPARK-54918), and
 4.0.5, 4.1.4, and 4.2.1 normalize while these functions evaluate (SPARK-59602). Comet normalizes
 the elements the same way. Spark 3.5, 4.0.0 to 4.0.4, and 4.1.0 to 4.1.3 keep positive and
 negative zero distinct in flat arrays, so on those versions these functions fall back to Spark.
-Other element types remain native on every version.
+Other element types run in Rust on every version.
 
 Elements that hold a string with a non-`UTF8_BINARY` collation fall back on every version,
 including a struct with a `DOUBLE` and a `STRING COLLATE UTF8_LCASE` field. Spark compares such
 strings under their collation, so `'a'` and `'A'` are one value under `UTF8_LCASE`, while the
-native kernels compare their bytes.
+Rust kernels compare their bytes.
 
 Where these functions fall back, the check is based on the element type, not the values. It also
 applies to NULL or empty floating-point arrays and columns that never contain negative zero. The
@@ -135,22 +135,22 @@ unrelated expressions in the same projection out of Comet. For example,
 
 This can have a substantial cost. A local Spark 4.1.3 benchmark of
 `sum(cardinality(array_distinct(d)))` over two million `array<double>` rows found the default
-projection fallback about 15 times slower than native opt-in (best of five runs).
-The slowdown depends on the workload.
+projection fallback about 15 times slower than opting in to the native implementation (best of
+five runs). The slowdown depends on the workload.
 
 Setting `spark.comet.expression.ArrayDistinct.allowIncompatible=true` or
-`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores native execution on the older
-versions, but signed-zero results may differ from Spark. Native execution treats `-0.0` and `0.0`
-as one value and returns `0.0`. The older versions keep both zeros in a flat floating-point array,
-and inside nested arrays or structs they return whichever zero came first. Only opt in if these
-differences are acceptable for your data.
+`spark.comet.expression.ArrayUnion.allowIncompatible=true` restores the native implementation on the
+older versions, but signed-zero results may differ from Spark. The native implementation treats
+`-0.0` and `0.0` as one value and returns `0.0`. The older versions keep both zeros in a flat
+floating-point array, and inside nested arrays or structs they return whichever zero came first.
+Only opt in if these differences are acceptable for your data.
 
 The check uses the Spark version number, not the changes a build contains. A vendor build that
 reports an older version but includes SPARK-54918 or SPARK-59602 still falls back.
 
 ## `arrays_overlap`
 
-`arrays_overlap` runs natively on every Spark version and follows that version's rule for `FLOAT`
+`arrays_overlap` runs in Rust on every Spark version and follows that version's rule for `FLOAT`
 and `DOUBLE` elements in a flat array. Spark 4.0.5+, 4.1.4+, and 4.2+ treat `-0.0` and `0.0` as one
 value (SPARK-54918, SPARK-59602), and earlier releases keep them apart. Every NaN representation is
 one value on every version, and nested arrays and structs compare their elements in Spark's order,
@@ -165,7 +165,7 @@ is a zero of opposite sign, where Spark returns `true`.
 `array_contains` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
 NaN representations are equal, inside nested arrays and structs too. The result keeps Spark's
 three-valued form: null when nothing matches and the array holds a null element. Flat arrays run a
-native kernel; nested float elements go through the codegen dispatcher.
+Rust kernel; nested float elements go through the codegen dispatcher.
 
 `array_remove` compares `FLOAT` and `DOUBLE` elements as Spark does: `-0.0` equals `0.0`, and all
 NaN representations are equal, inside nested arrays too. The elements it keeps retain their
@@ -175,11 +175,11 @@ original NaN representations and zero signs.
 representations tie, and keeps equal elements in their original order. In an array whose elements
 can be null, such as one built from nullable columns, `-0.0` and `0.0` therefore tie. Sorting an
 array whose elements cannot be null in ascending order, Spark's generated code puts `-0.0` before
-`0.0`, and so does Comet. All three expressions run natively in strict floating-point mode.
+`0.0`, and so does Comet. All three expressions run in Comet in strict floating-point mode.
 
 ## Map construction
 
-`map_from_arrays` and `map_from_entries` don't build a map natively when its key type holds a
+`map_from_arrays` and `map_from_entries` don't build a map in Rust when its key type holds a
 `FLOAT` or `DOUBLE` at any depth. They run Spark's code through the codegen dispatcher instead, so
 duplicate keys, including NaNs and zeros of either sign, behave as in Spark. `FLOAT` and `DOUBLE`
 values don't affect either function. The expressions' entries in the

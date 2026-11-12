@@ -28,16 +28,16 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
   default (`spark.comet.exec.scalaUDF.codegen.enabled=true`); if the dispatcher is disabled, regex
   expressions fall back to Spark. This is the default for every regex expression except an
   in-subset `rlike` literal (see below).
-- **Native (rust) engine** — the Rust [`regex`] crate, run natively with no JNI overhead. It is
+- **Rust engine** — the Rust [`regex`] crate, which runs with no JNI overhead. It is
   faster but has different semantics from Java regex (see below). For `rlike`, a plan-time
-  analyzer admits a conservative subset of `UTF8_BINARY` literal patterns and runs those natively
+  analyzer admits a conservative subset of `UTF8_BINARY` literal patterns and runs those in Rust
   **by default**. Out-of-subset default-collation literals still require
   `spark.comet.expression.RLike.allowIncompatible`. Non-literal patterns, NULL patterns, and
   non-default collations stay on the codegen dispatcher even with that flag. Every other regex
   expression still requires its own `allowIncompatible` flag. `regexp_instr` has no native
   implementation and always runs through the codegen dispatcher.
 
-| SQL                  | Native (rust) opt-in config                                 |
+| SQL                  | Rust engine opt-in config                                   |
 | -------------------- | ----------------------------------------------------------- |
 | `rlike`              | `spark.comet.expression.RLike.allowIncompatible`            |
 | `regexp_replace`     | `spark.comet.expression.RegExpReplace.allowIncompatible`    |
@@ -45,12 +45,12 @@ Comet evaluates Spark regular-expression expressions (`rlike`, `regexp_replace`,
 | `regexp_extract_all` | `spark.comet.expression.RegExpExtractAll.allowIncompatible` |
 | `split`              | `spark.comet.expression.StringSplit.allowIncompatible`      |
 
-`allowIncompatible` can force native execution for a non-null default-collation
-literal. Non-default collations remain on the JVM dispatcher because the native
+`allowIncompatible` can force the Rust engine for a non-null default-collation
+literal. Non-default collations remain on the JVM dispatcher because the Rust
 kernel does not implement Spark collation semantics. It is not needed for in-subset
 literals, and it does not apply to non-literal or NULL patterns.
 
-When the native path is selected but a case has no native implementation (for example a
+When the Rust engine is selected but a case has no native implementation (for example a
 non-scalar `rlike` pattern, `regexp_replace` with a non-1 offset, or `regexp_extract` with a
 non-literal pattern or idx), Comet routes that case through the codegen dispatcher.
 
@@ -75,16 +75,16 @@ the engine selector:
 |                      | Rust engine                                                                                                         | Codegen dispatcher                                                                                                  |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
 | **Compatibility**    | In-subset `rlike` literals match Java regex; other patterns may differ (see below)                                  | 100% compatible with Spark                                                                                          |
-| **Feature coverage** | `rlike`, `regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all` natively; `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
-| **Performance**      | Fully native, no JNI overhead                                                                                       | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
+| **Feature coverage** | `rlike`, `regexp_replace`, `split`, `regexp_extract`, `regexp_extract_all` via Rust; `regexp_instr` via fallthrough | All regexp expressions (`rlike`, `regexp_extract`, `regexp_extract_all`, `regexp_instr`, `regexp_replace`, `split`) |
+| **Performance**      | Fully in Rust, no JNI overhead                                                                                      | One JNI round-trip per batch (Arrow vectors stay columnar)                                                          |
 | **Pattern support**  | Linear-time subset only                                                                                             | All Java regex features (backreferences, lookaround, etc.)                                                          |
 | **`rlike` default**  | Used automatically for analyzer-admitted `UTF8_BINARY` literals                                                     | Used for every other `rlike` pattern                                                                                |
 
 The **Rust engine** is faster but cannot match Java regex semantics for every pattern. For `rlike`,
-Comet therefore runs only the analyzer-admitted subset natively by default. Setting
-`spark.comet.expression.RLike.allowIncompatible=true` can force native execution for a non-null
+Comet therefore runs only the analyzer-admitted subset in Rust by default. Setting
+`spark.comet.expression.RLike.allowIncompatible=true` can force the Rust engine for a non-null
 default-collation literal that the analyzer cannot prove equivalent, and declares acceptance of
-any remaining differences. Non-default collations remain on the JVM dispatcher because the native
+any remaining differences. Non-default collations remain on the JVM dispatcher because the Rust
 kernel does not implement Spark collation semantics. The other regex expressions still require
 their own `allowIncompatible` flag.
 
@@ -154,11 +154,11 @@ endpoints, and counted, aggregate, nested-group, or nested-quantifier patterns t
 conservative compile-size budget stay on the Java engine. Any unrecognized construct also stays
 on the Java engine.
 
-For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the native path is
+For `regexp_replace`, `split`, `regexp_extract`, and `regexp_extract_all`, the Rust engine is
 still opt-in via `allowIncompatible`. If you are confident those patterns fit the same ASCII,
 non-anchored shape, opting in is generally safe.
 
-Native `rlike` operates on Arrow string values and assumes well-formed UTF-8.
+The Rust engine's `rlike` operates on Arrow string values and assumes well-formed UTF-8.
 Behavior for malformed string data supplied outside Arrow's StringArray invariants
 has not been established.
 

@@ -19,10 +19,10 @@ under the License.
 
 # Date/Time Expressions
 
-- **TruncTimestamp (date_trunc)**: In non-UTC sessions the native path is marked Incompatible and
-  routes through the JVM codegen dispatcher by default, producing Spark-identical results. The
-  native path is itself correct for dates within chrono-tz's DST horizon (approximately year 2100;
-  see "Date and Time Functions" below) and can be enabled by setting
+- **TruncTimestamp (date_trunc)**: In non-UTC sessions the native implementation is marked
+  Incompatible and routes through the JVM codegen dispatcher by default, producing Spark-identical
+  results. The native implementation is itself correct for dates within chrono-tz's DST horizon
+  (approximately year 2100; see "Date and Time Functions" below) and can be enabled by setting
   `spark.comet.expression.TruncTimestamp.allowIncompatible=true`. TimestampNTZ inputs are handled
   correctly regardless of session timezone (timezone-independent truncation).
 
@@ -44,10 +44,10 @@ If you need to process dates far in the future with accurate timezone handling, 
 
 ### Timezone Database Versions
 
-Comet's native code converts between instants and local time with the IANA timezone database that
+Comet's Rust code converts between instants and local time with the IANA timezone database that
 chrono-tz compiles into the Comet library. Spark uses the JVM's timezone database (`tzdb.dat`), whose
 version depends on the JDK build and on whether its timezone data has been updated. When the two versions
-have different rules for a timezone, local times that Comet computes natively for that timezone can differ
+have different rules for a timezone, local times that Comet computes in Rust for that timezone can differ
 from Spark's for the affected dates. That covers `hour`, casts between timestamps and strings or dates,
 `date_trunc`, and parsing strings as timestamps. Comet logs a warning at startup when the two versions
 differ.

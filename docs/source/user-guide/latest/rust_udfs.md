@@ -20,7 +20,7 @@
 # Custom Rust UDFs
 
 Comet can load scalar user-defined functions written in Rust from a shared library and run them
-natively, inside the Comet pipeline, with no JVM round trip per row.
+inside the Comet pipeline, with no JVM round trip per row.
 
 This is different from [Scala UDF and Java UDF Support](scala_java_udfs.md), where the user
 function stays on the JVM and Comet dispatches into it. Here the function is compiled Rust that
@@ -158,7 +158,7 @@ CometNativeUDF.register(
 
 Registration loads the library on the driver and verifies that a function with that name exists, so
 a bad path or a missing function fails immediately with a clear error rather than at execution time.
-It also checks that Comet can carry the argument and return types natively.
+It also checks that Comet can pass the argument and return types to Rust.
 
 The function is then callable from SQL or the DataFrame API like any other:
 
@@ -188,7 +188,7 @@ Loading a library runs its code with the privileges of the JVM, so an operator c
 
 | Config                               | Default | Effect                                                       |
 | ------------------------------------ | ------- | ------------------------------------------------------------ |
-| `spark.comet.nativeUdf.enabled`      | `true`  | When `false`, no native UDF library is loaded.               |
+| `spark.comet.nativeUdf.enabled`      | `true`  | When `false`, no Rust UDF library is loaded.                 |
 | `spark.comet.nativeUdf.allowedPaths` | empty   | Comma-separated directories a library must be under, if set. |
 
 With `allowedPaths` set, a library is loaded only if its path is absolute and, once symlinks and
@@ -205,7 +205,7 @@ you trust.
 
 ### When Spark evaluates the call
 
-A call runs only inside Comet's native execution. Spark cannot run the function, so wherever Spark
+A call runs only in Comet's Rust code. Spark cannot run the function, so wherever Spark
 has to evaluate the call itself, the query fails with `CometUdfNotEvaluatedException`. That happens:
 
 - when Comet does not take the operator holding the call, for example because another expression
@@ -329,7 +329,7 @@ This feature is at an early stage. The current limitations are:
   an explicit `cast` in the query. `return_field` should still reject anything it does not handle.
   Downcast defensively in `invoke` and return a clear `Err` rather than assuming a particular array
   layout.
-- **Loading a library is loading native code.** It runs with the full privileges of the executor
+- **Loading a library is loading machine code.** It runs with the full privileges of the executor
   process and Comet cannot sandbox it: a bug in a UDF can corrupt memory or crash the executor.
   Only register libraries you trust and control. See
   [Restricting which libraries can be loaded](#restricting-which-libraries-can-be-loaded) for the

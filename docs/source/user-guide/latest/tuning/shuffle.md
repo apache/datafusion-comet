@@ -45,7 +45,7 @@ back to Spark for shuffle operations.
 
 ### Native Shuffle
 
-Comet provides a fully native shuffle implementation, which generally provides the best performance. Native shuffle
+Comet provides a native shuffle implementation, which generally provides the best performance. Native shuffle
 supports `HashPartitioning`, `RangePartitioning`, and `SinglePartition`, plus `RoundRobinPartitioning` when enabled
 (see [Round-Robin Partitioning](../compatibility/operators.md#round-robin-partitioning)). Range partitioning keys must be
 scalar types. Hash partitioning keys must be scalar types unless
@@ -73,16 +73,16 @@ Comet Columnar shuffle is JVM-based and supports `HashPartitioning`, `RoundRobin
 `SinglePartition`. This shuffle implementation supports complex data types as partitioning keys.
 
 By default, Comet will convert a Spark `ShuffleExchangeExec` to columnar shuffle even when the shuffle's child is a
-non-Comet (Spark) plan. The benefit is that the next query stage can start as native Comet execution, since the
+non-Comet (Spark) plan. The benefit is that the next query stage can start in the Comet pipeline, since the
 shuffle output is already in Arrow format. The cost is a row to columnar conversion at the shuffle boundary on the
 write side. To restrict columnar shuffle to cases where the child is already a Comet plan, set
 `spark.comet.shuffle.convertFromSparkPlan.enabled=false`. Shuffles whose child is a Spark plan will then be left
-as native Spark shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
+as Spark's built-in shuffles, which avoids the row to columnar conversion but means the downstream stage will also start
 on Spark.
 
 Setting `spark.comet.convert.shuffleInput.enabled=true` makes such a shuffle use native shuffle instead. Comet
 converts the child's rows to Arrow, as the `spark.comet.convert.*` settings do for Spark scans, and shuffles the
-batches natively. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
+batches in Rust. With hash partitioning that is usually faster than columnar shuffle, while with range partitioning
 the two come out about even. This applies only where native shuffle supports the partitioning and Comet can convert
 all of the child's columns, which rules out calendar intervals, and arrays and maps other than `array<string>` and
 `map<string,string>`. A shuffle that hashes a string or a value computed from a string stays on columnar shuffle, so
@@ -115,7 +115,7 @@ even when both of those aggregates run on Spark.
 The native shuffle writer buffers a task's output in memory and spills it to disk. By default
 (`spark.comet.shuffle.native.maxBufferBytes=0`) it spills only when the memory pool denies an allocation, so it holds
 as much of the task's share of the off-heap pool as it can get. That can leave a sort or an aggregation in the same
-task without memory, and the large buffers it frees at the end of the task can stay resident in the native allocator,
+task without memory, and the large buffers it frees at the end of the task can stay resident in the Rust allocator,
 adding to the executor's memory footprint.
 
 Setting `spark.comet.shuffle.native.maxBufferBytes` makes the writer spill whenever it has buffered that many bytes.
@@ -142,5 +142,5 @@ are written as before.
 
 `spark.shuffle.compress=false` disables compression for Comet's native shuffle only. It has no effect on
 the JVM columnar shuffle writer, which always compresses spill files with the codec above. Disabling
-compression on the native path may result in faster shuffle times in certain environments, such as
-single-node setups with fast NVMe drives, at the expense of increased disk space usage.
+compression on the native shuffle path may result in faster shuffle times in certain environments,
+such as single-node setups with fast NVMe drives, at the expense of increased disk space usage.

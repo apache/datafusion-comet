@@ -28,12 +28,13 @@ verification has been performed, and any known gaps.
 The status column uses these values:
 
 - **Supported** -- Comet honors every value of the config within the Comet pipeline and
-  produces results matching Spark. The execution path may be native or use the JVM codegen
-  dispatcher, as noted for each config.
-- **Partial** -- Comet runs natively for some values of the config but falls back to
-  Spark for others, or runs natively but with documented incompatibilities.
-- **Falls back** -- Comet does not run the affected expressions natively under this
-  config and always defers to Spark.
+  produces results matching Spark. The execution path may be Rust-implemented or use the JVM
+  codegen dispatcher, as noted for each config.
+- **Partial** -- Comet keeps the affected expressions in the Comet pipeline for some values
+  of the config but falls back to Spark for others, or keeps them in the Comet pipeline but
+  with documented incompatibilities.
+- **Falls back** -- Comet does not run the affected expressions in the Comet pipeline under
+  this config and always defers to Spark.
 - **Unaudited** -- the config's interaction with Comet has not yet been verified.
 
 ## Audited Configurations
@@ -112,9 +113,9 @@ policy-independent cases and routes policy-sensitive expressions through Spark's
 expression code via the Arrow-direct codegen dispatcher. In particular,
 `to_timestamp`, `to_timestamp_ntz`, `to_date`, `try_to_date`, and
 `try_to_timestamp` are rewritten by Spark to `Cast` or `GetTimestamp` before Comet
-sees the plan. Supported casts run natively, while `GetTimestamp` runs through the
+sees the plan. Supported casts run in Rust, while `GetTimestamp` runs through the
 codegen dispatcher and therefore preserves Spark's selected parser policy inside the
-Comet pipeline. Other affected expressions use a mixture of native, codegen-dispatch,
+Comet pipeline. Other affected expressions use a mixture of Rust-implemented, codegen-dispatch,
 and fallback paths:
 
 - `date_format` is `Compatible` only for a small whitelist of formats under UTC; the
@@ -128,14 +129,14 @@ and fallback paths:
   selected parser policy.
 - `to_unix_timestamp` routes through the codegen dispatcher.
 
-If a Comet contributor adds native string-format parsing or extends the date_format
+If a Comet contributor adds Rust string-format parsing or extends the date_format
 whitelist, this audit should be revisited and the policy must be honored explicitly.
 
 **Test coverage.** `spark/src/test/resources/sql-tests/expressions/datetime/`:
 
 - One ConfigMatrix file per originally audited expression covering convergent
   inputs under `LEGACY,CORRECTED,EXCEPTION` (`*_time_parser_policy.sql`).
-  `try_to_date`, added in Spark 4.1, has native-coverage tests in
+  `try_to_date`, added in Spark 4.1, is tested in
   `try_datetime.sql` but has not yet been added to the parser-policy matrix.
 - Per-policy files locking in divergent behavior:
   - `_legacy.sql` -- lenient inputs (single-digit fields, out-of-range values,

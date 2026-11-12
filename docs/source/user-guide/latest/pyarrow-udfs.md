@@ -80,7 +80,7 @@ spark.comet.exec.pyarrowUDF.enabled=true
 
 The default is `false` while the feature stabilizes.
 
-### Native scalar Arrow UDFs (Spark 4.1+)
+### Scalar Arrow UDFs in Embedded Python (Spark 4.1+)
 
 Scalar `@arrow_udf` in Spark 4.1 and later can run inside Comet's Rust execution pipeline when
 the native library is built with the `python-udf` Cargo feature and this separate option is enabled:
@@ -114,7 +114,7 @@ return anything `pyarrow.RecordBatch.from_arrays` accepts, such as a list or a N
 UTF-8 in a returned string array, which an unsafe PyArrow cast can produce, is replaced as it is for
 other strings that Comet imports. It splits larger input batches according to
 `spark.sql.execution.arrow.maxRecordsPerBatch` and
-`spark.sql.execution.arrow.maxBytesPerBatch`. A native worker is created per partition.
+`spark.sql.execution.arrow.maxBytesPerBatch`. Comet loads each UDF once per partition.
 
 Each partition unpickles its own callable. Imported modules and their global state are shared by
 concurrent tasks in the executor's embedded Python interpreter. Comet imports PyArrow and unpickles
@@ -129,8 +129,8 @@ Python version differs from the embedded interpreter's, for example after a Pyth
 rebuild of the native library, stays on Spark's Python worker path. Install those packages
 into that Python environment and ensure the executor process can find them through the embedded
 interpreter's `sys.path`, for example by setting `PYTHONPATH` in the executor's environment. On a
-cluster manager, `spark.executorEnv.PYTHONPATH` does this and keeps the native path enabled. In
-local mode the executor runs in the driver process, which Spark does not launch with
+cluster manager, `spark.executorEnv.PYTHONPATH` does this and keeps the embedded Python path
+enabled. In local mode the executor runs in the driver process, which Spark does not launch with
 `spark.executorEnv.*`, so a query stays on Spark's worker path unless the driver's own environment
 already has the same value.
 `PYSPARK_PYTHON` selects the external worker executable; it does not select or configure the
@@ -138,9 +138,9 @@ embedded interpreter. The worker-only `pyspark.zip` path is not automatically ad
 feature and config are disabled by default. Without either, `ArrowEvalPythonExec` stays on Spark's
 normal path.
 
-The initial native path accepts scalar `@arrow_udf` calls with regular or named arguments and
-multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast variables,
-Python includes, per-function environment overrides other than Spark's default
+The initial embedded Python path accepts scalar `@arrow_udf` calls with regular or named arguments
+and multiple independent UDFs in one `ArrowEvalPythonExec`. Chained Python UDFs, broadcast
+variables, Python includes, per-function environment overrides other than Spark's default
 `PYTHONHASHSEED=0` and `spark.executorEnv.*` entries, `spark.sql.pyspark.worker.logging.enabled`,
 and `spark.sql.execution.arrow.useLargeVarTypes=true` stay on Spark's path.
 UDFs that capture a PySpark accumulator also stay on Spark's worker path so their task updates
@@ -153,8 +153,8 @@ Iterator Arrow UDFs,
 ordinary `udf(..., useArrow=True)`, scalar pandas UDFs, and `mapInArrow` are separate execution
 types; `mapInArrow` retains the columnar runner described above.
 
-The native path accepts boolean, byte, short, integer, long, float, double, plain string, binary,
-decimal, date, and timestamp without time zone. Other input or result types and an
+The embedded Python path accepts boolean, byte, short, integer, long, float, double, plain string,
+binary, decimal, date, and timestamp without time zone. Other input or result types and an
 enabled `spark.sql.pyspark.udf.profiler` stay on Spark's path. Spark labels `TimestampType` with the
 session time zone, while Comet uses UTC; nested Arrow field names can also differ. This allow-list
 keeps types with unverified Arrow schemas on Spark's path. `TimeType` also stays on Spark's path:
@@ -164,15 +164,15 @@ The embedded interpreter is shared by tasks. Pure Python code contends on its gl
 lock, so multiple partitions may be slower than Spark's separate Python workers; PyArrow kernels
 that release the lock can still run concurrently. Python execution stays synchronous on JVM input
 paths and hands off other async tasks when it runs on a Tokio worker. `pyspark.TaskContext.get()`
-returns `None` inside a native UDF. A native extension crash or `os._exit` terminates the executor
+returns `None` inside a UDF on this path. A C extension crash or `os._exit` terminates the executor
 process. Killing a task does not interrupt a running Python call: Spark stops its Python worker
-`spark.python.task.killTimeout` after interrupting the task, but a native UDF runs on the task
+`spark.python.task.killTimeout` after interrupting the task, but here the UDF runs on the task
 thread until it returns, so a cancelled job or the losing copy of a speculative task keeps its core
 and competes for the interpreter lock until then
 ([#6811](https://github.com/apache/datafusion-comet/issues/6811)). A failing UDF raises Spark's
 `PythonException` with its Python traceback, which PySpark raises as
 `pyspark.errors.PythonException`. Errors outside the UDF's own code, such as a result of the wrong
-length or type, are still reported as Comet native errors. The operator reports the time spent in
+length or type, are still reported as `CometNativeException`. The operator reports the time spent in
 Python as its `python_time` metric. The embedded Python interpreter and PyArrow allocate outside Comet's memory pool. Those
 allocations are also absent from the executor's `Comet native memory usage: allocated` figure and
 are not limited by `spark.executor.pyspark.memory`. Budget them in executor memory overhead in
@@ -189,14 +189,14 @@ worker. Both confs can be set independently.
 
 ## Supported APIs
 
-| PySpark API                      | Spark Plan Node             | Supported                |
-| -------------------------------- | --------------------------- | ------------------------ |
-| `df.mapInArrow(func, schema)`    | `MapInArrowExec`            | Yes                      |
-| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes                      |
-| scalar `@arrow_udf` (Spark 4.1+) | `ArrowEvalPythonExec`       | Experimental native path |
-| `udf(..., useArrow=True)`        | `ArrowEvalPythonExec`       | Not yet                  |
-| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet                  |
-| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet                  |
+| PySpark API                      | Spark Plan Node             | Supported                     |
+| -------------------------------- | --------------------------- | ----------------------------- |
+| `df.mapInArrow(func, schema)`    | `MapInArrowExec`            | Yes                           |
+| `df.mapInPandas(func, schema)`   | `MapInPandasExec`           | Yes                           |
+| scalar `@arrow_udf` (Spark 4.1+) | `ArrowEvalPythonExec`       | Experimental, embedded Python |
+| `udf(..., useArrow=True)`        | `ArrowEvalPythonExec`       | Not yet                       |
+| `@pandas_udf` (scalar)           | `ArrowEvalPythonExec`       | Not yet                       |
+| `df.applyInPandas(func, schema)` | `FlatMapGroupsInPandasExec` | Not yet                       |
 
 ## Example
 
@@ -277,9 +277,9 @@ on the unoptimized path.
 
 ## Limitations
 
-- The columnar Python runner applies to `mapInArrow` and `mapInPandas`. The separate native path
-  applies to scalar `@arrow_udf` on Spark 4.1+. Scalar pandas UDFs (`@pandas_udf`) and grouped
-  operations (`applyInPandas`) are not yet supported.
+- The columnar Python runner applies to `mapInArrow` and `mapInPandas`. The separate embedded
+  Python path applies to scalar `@arrow_udf` on Spark 4.1+. Scalar pandas UDFs (`@pandas_udf`) and
+  grouped operations (`applyInPandas`) are not yet supported.
 - The optimization requires Arrow data on the input side. If a shuffle sits between the upstream
   Comet operator and the Python UDF, use Comet's columnar shuffle for the optimization to apply.
   Both the `jvm` and `native` shuffle modes can feed `CometMapInBatch`. Set
@@ -302,8 +302,8 @@ on the unoptimized path.
   session time zone such a UDF can diverge from the unoptimized path. Set
   `spark.comet.exec.pyarrowUDF.enabled=false` for those UDFs.
 - `spark.sql.execution.arrow.useLargeVarTypes=true` is not supported. With this conf enabled,
-  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Native
-  Comet vectors use 4-byte offsets, and direct serialization advertises their matching `string`
+  Spark supplies `large_string` and `large_binary` input columns with 8-byte offsets. Comet's
+  vectors use 4-byte offsets, and direct serialization advertises their matching `string`
   and `binary` types. This produces a valid IPC stream, but does not preserve the input types
   requested by the configuration. `EliminateRedundantTransitions` therefore skips the rewrite
   and vanilla Spark handles the operation. Comet can read `large_string` and `large_binary`

@@ -30,11 +30,11 @@ Comet operators report the following metrics in the Spark SQL UI.
 | `scan time` | Time spent reading batches from the wrapped DataSource V2 reader. Comet measures this time in nanoseconds and does not round it to the nearest millisecond per batch. |
 
 Parquet scans through the DataSource V1 API appear in plans as `CometNativeScan` and report the
-native metrics described under [Native Parquet scans](#native-parquet-scans) rather than `scan time`.
+scan metrics described under [Native Parquet scans](#native-parquet-scans) rather than `scan time`.
 
 ### CometIcebergNativeScan
 
-The native Iceberg scan reports two groups of metrics. The runtime metrics are produced natively
+The native Iceberg scan reports two groups of metrics. The runtime metrics are produced in Rust
 during execution; the planning metrics are Iceberg's own scan-report counters, computed by
 Iceberg's Java planner on the driver and surfaced here so they show in the UI as they do for a
 plain Spark + Iceberg `BatchScan`.
@@ -69,12 +69,12 @@ scan planning and do not change during execution.
 | `indexedDeleteFiles`     | Delete files served from the delete-file index.     |
 
 Iceberg's `numDeletes` (deletes applied at read time) is not reported: it is a Java-reader runtime
-counter, and Comet reads natively through iceberg-rust, which exposes no deletes-applied count, so
+counter, and Comet reads through iceberg-rust, which exposes no deletes-applied count, so
 the value would always be 0.
 
 ### CometHashAggregate
 
-Native aggregates with grouping keys report these additional metrics:
+Comet aggregates with grouping keys report these additional metrics:
 
 | Metric                               | Description                                                                                                                                  |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -82,14 +82,14 @@ Native aggregates with grouping keys report these additional metrics:
 | `number of spills`                   | Number of times the aggregate spilled to disk.                                                                                               |
 | `total spilled bytes`                | Bytes written to aggregate spill files.                                                                                                      |
 | `number of spilled rows`             | Rows written to aggregate spill files.                                                                                                       |
-| `peak native aggregate memory`       | Peak memory used by the native aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).          |
+| `peak native aggregate memory`       | Peak memory used by the aggregate. Not currently reported ([#5703](https://github.com/apache/datafusion-comet/issues/5703)).                 |
 
-Spill bytes from native sorts, aggregates, and sort-merge joins are also added to Spark's task-level
-`diskBytesSpilled` metric in every stage, not only in shuffle stages.
+Spill bytes from Rust-implemented sorts, aggregates, and sort-merge joins are also added to Spark's
+task-level `diskBytesSpilled` metric in every stage, not only in shuffle stages.
 
 ### Hash Joins
 
-With `spark.comet.exec.join.dynamicFilter.enabled=true`, native broadcast and shuffled hash joins
+With `spark.comet.exec.join.dynamicFilter.enabled=true`, Comet's broadcast and shuffled hash joins
 report these additional metric keys. See [Join Runtime Filters](tuning/operators.md#join-runtime-filters) for
 eligibility and reader restrictions.
 
@@ -99,7 +99,7 @@ eligibility and reader restrictions.
 | `dynamic_filter_join_rows_pruned`      | Probe rows rejected by that filter before the hash probe.                                                     |
 | `dynamic_filter_join_rows_bypassed`    | Probe rows passed through while the runtime filter is inactive.                                               |
 | `dynamic_filter_join_eval_time`        | Time evaluating the runtime filter.                                                                           |
-| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native reader.                                               |
+| `dynamic_filter_join_filters_attached` | Executions that attach their runtime filter to a native Parquet reader.                                       |
 | `dynamic_filter_join_filters_skipped`  | Executions whose probe input is ineligible for reader attachment.                                             |
 | `dynamic_filter_early_rows_evaluated`  | Rows evaluated before an intermediate join on this join's probe path.                                         |
 | `dynamic_filter_early_rows_pruned`     | Rows rejected there before the intermediate join does its probe work.                                         |
@@ -154,8 +154,8 @@ Comet adds some additional metrics:
 | `memory spilled bytes`            | Uncompressed Arrow backing-buffer and partition-index data before spilling.                                                                      |
 | `number of input batches`         | Batches received by the native shuffle writer.                                                                                                   |
 
-Comet exchanges also report Spark's standard shuffle read and write metrics, including when native
-operators read shuffle blocks directly.
+Comet exchanges also report Spark's standard shuffle read and write metrics, including when
+Rust-implemented operators read shuffle blocks directly.
 
 Disk and memory spilled bytes measure different representations of the same native shuffle spill.
 Disk spill bytes count the actual bytes written to disk: compressed when shuffle compression is
@@ -182,16 +182,16 @@ Spark's remote-read counters do not identify the storage destination: local shuf
 fetched from another executor also count as remote reads. See
 [Verifying the Shuffle Path](celeborn.md#verifying-the-shuffle-path) for plan and storage checks.
 
-## Native Metrics
+## Rust Operator Metrics
 
-Setting `spark.comet.explain.native.enabled=true` will cause native plans to be logged in each executor. Metrics are
-logged for each native plan (and there is usually one plan per task, so this is very verbose).
+Setting `spark.comet.explain.native.enabled=true` will cause Rust plans to be logged in each executor. Metrics are
+logged for each Rust plan (and there is usually one plan per task, so this is very verbose).
 
-The SQL metrics that native plans report accumulate per task. When one task runs several native plans, such as a
+The SQL metrics that Rust plans report accumulate per task. When one task runs several Rust plans, such as a
 coalesce without a shuffle that reads several partitions, each metric reports their sum, while the two memory
 high-water marks, `peak_mem_used` and `build_mem_used`, report the largest value among them.
 
-Here is a guide to some of the native metrics.
+Here is a guide to some of these metrics.
 
 ### ScanExec
 
@@ -216,8 +216,8 @@ Here is a guide to some of the native metrics.
 
 ### Native Parquet scans
 
-Native Parquet scans expose these counters in the Spark SQL metric map as well as native
-execution metrics. Counters accumulate per scan operator; they do not instrument individual rows.
+Native Parquet scans expose these counters in the Spark SQL metric map as well as in the Rust
+plan's metrics. Counters accumulate per scan operator; they do not instrument individual rows.
 
 | Metric                                     | Description                                                                                                                                                                                                                  |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -225,7 +225,7 @@ execution metrics. Counters accumulate per scan operator; they do not instrument
 | `scan_io_metadata_bytes`                   | Bytes returned for footer prefetches, page indexes, and Bloom filters. A footer prefetch can also contain unused data bytes.                                                                                                 |
 | `scan_io_footer_reads`                     | Storage reads of complete serialized footer payloads, counted once per metadata open. Plaintext payloads must decode successfully; encrypted payloads are counted before key retrieval/decryption, even if those later fail. |
 | `scan_io_footer_bytes`                     | Serialized footer payload bytes, excluding the final eight-byte trailer. These bytes are already included in `scan_io_metadata_bytes`.                                                                                       |
-| `scan_io_object_store_get_calls`           | Nonempty GET operations at the native remote `ObjectStore` API, after range coalescing. Does not count transport retries or HEAD requests.                                                                                   |
+| `scan_io_object_store_get_calls`           | Nonempty GET operations at the remote `ObjectStore` API, after range coalescing. Does not count transport retries or HEAD requests.                                                                                          |
 | `scan_io_object_store_get_requested_bytes` | Requested coalesced range bytes at that API. A failed or partly consumed request can contribute requested bytes without the same number of response bytes.                                                                   |
 | `scan_io_object_store_response_bytes_read` | Response bytes actually consumed at that API, including bytes fetched between coalesced ranges. Not HTTP wire bytes.                                                                                                         |
 | `scan_io_metadata_cache_hits`              | Successful, cache-eligible metadata opens requiring no storage reads.                                                                                                                                                        |
@@ -242,13 +242,13 @@ no `scan_io_metadata_prefetches`.
 A valid plaintext footer followed by a page-index failure still contributes footer bytes; an
 invalid plaintext footer does not.
 
-Remote counters follow the backend selected during object-store construction, including native
+Remote counters follow the backend selected during object-store construction, including Comet's Rust
 S3 (`s3`/`s3a`), GCS (`gs`), Azure (`az`, `adl`, `azure`, `abfs`, `abfss`), and HTTP(S) stores.
 Configured S3-compatible aliases are normalized before this classification.
 Local files, in-memory stores, and HDFS/custom backends (including cloud-looking schemes selected
 through `fs.comet.libhdfs.schemes`) retain reader-level counters but have zero remote counters.
-The native cloud wrapper observes default range coalescing; custom `get_ranges` implementations
-require an explicit accounting contract before being composed with that wrapper.
+The wrapper around these cloud stores observes default range coalescing; custom `get_ranges`
+implementations require an explicit accounting contract before being composed with that wrapper.
 
 For data-bearing scans, comparing remote response bytes with reader data bytes can reveal
 coalescing and metadata overhead. For a metadata-only scan, data bytes are zero: report the
@@ -274,11 +274,11 @@ can therefore reflect stale location credentials as well as S3 throttling or net
 HEAD requests, credential requests, bucket-region lookups, and redirects or protocol retries
 handled inside reqwest are not counted.
 
-Only scans using the native S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
+Only scans using Comet's Rust S3 connector fill these counters. GCS, Azure, HTTP(S), local, and
 HDFS scans always report zero, which does not mean their requests were never retried. This also
-applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a native S3 scan,
-`scan_io_http_observed_gets` normally matches `scan_io_object_store_get_calls`, the number of
-GETs after range coalescing.
+applies to S3 paths routed through HDFS by `fs.comet.libhdfs.schemes`. For a scan through Comet's
+Rust S3 connector, `scan_io_http_observed_gets` normally matches
+`scan_io_object_store_get_calls`, the number of GETs after range coalescing.
 
 ## Task-Level Input Metrics on Spark 4.1+
 
@@ -287,7 +287,7 @@ counter. It counts requested data/Bloom-filter ranges through the Parquet reader
 methods, not all filesystem I/O. Footer and page-index reads through metadata loading bypass
 this counter, and range coalescing can fetch more bytes than the logical ranges request. The
 additional scan I/O metrics above expose those differences without changing `bytes_scanned`.
-The native `scan_efficiency_ratio` still uses `bytes_scanned` as its numerator and has the same
+DataFusion's `scan_efficiency_ratio` still uses `bytes_scanned` as its numerator and has the same
 blind spots; it is not the remote read-amplification ratio described above.
 
 Spark 4.1 changed its own parquet reader to pre-open the `SeekableInputStream` and read the file

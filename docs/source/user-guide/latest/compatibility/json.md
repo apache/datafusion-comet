@@ -28,29 +28,29 @@ Comet can evaluate JSON expressions (`get_json_object`, `from_json`, `to_json`,
   batch. This rides the codegen dispatcher
   (`spark.comet.exec.scalaUDF.codegen.enabled`, enabled by default); if the
   dispatcher is disabled, the operator falls back to Spark.
-- **Native (rust) path:** the native DataFusion implementation. Faster, but has
+- **Rust path:** Comet's Rust implementation. Faster, but has
   known compatibility gaps with Spark on certain inputs, so it is **opt-in per
   expression** via the expression's `allowIncompatible` config. Any expression or
-  input case with no native implementation falls back to the codegen dispatcher.
+  input case with no native implementation routes through the codegen dispatcher.
 
 ## Expression coverage
 
-| SQL                 | Native (rust) path                                                                             | Opt-in config                                                |
+| SQL                 | Rust path                                                                                      | Opt-in config                                                |
 | ------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
 | `get_json_object`   | Supported, with gaps on single-quoted JSON and unescaped control characters                    | `spark.comet.expression.GetJsonObject.allowIncompatible`     |
 | `from_json`         | Supported with restrictions (PERMISSIVE mode only, simple schema types only)                   | `spark.comet.expression.JsonToStructs.allowIncompatible`     |
 | `to_json`           | Supported for struct inputs only, no options                                                   | `spark.comet.expression.StructsToJson.allowIncompatible`     |
 | `json_array_length` | Supported, with gaps on single-quoted JSON, unescaped control characters, and trailing content | `spark.comet.expression.LengthOfJsonArray.allowIncompatible` |
 
-When the native path is enabled but an expression or input case has no native
+When the Rust path is enabled but an expression or input case has no native
 implementation (for example `to_json` with map or array inputs, or `from_json`
-with an unsupported schema), Comet falls back to the codegen dispatcher for that
-case.
+with an unsupported schema), Comet routes that case through the codegen
+dispatcher.
 
-## When to use the native path
+## When to use the Rust path
 
-- You want the faster native path and your inputs avoid the known compatibility
+- You want the faster Rust path and your inputs avoid the known compatibility
   gaps above.
 - Enable it per expression, for example
-  `spark.comet.expression.GetJsonObject.allowIncompatible=true`. Cases the native path
-  does not cover still fall back to the codegen dispatcher.
+  `spark.comet.expression.GetJsonObject.allowIncompatible=true`. Cases the Rust path
+  does not cover still run through the codegen dispatcher.
