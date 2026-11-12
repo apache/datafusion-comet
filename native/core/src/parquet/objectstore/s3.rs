@@ -70,8 +70,9 @@ pub fn create_store(
     configs: &HashMap<String, String>,
     min_ttl: Duration,
 ) -> Result<(Box<dyn ObjectStore>, Path), object_store::Error> {
-    // The parser quotes the URL it rejects.
-    let (scheme, path) = ObjectStoreScheme::parse(&without_credentials(url))?;
+    // The parser and the S3 builder quote the URL in their errors.
+    let url = &without_credentials(url);
+    let (scheme, path) = ObjectStoreScheme::parse(url)?;
     if scheme != ObjectStoreScheme::AmazonS3 {
         return Err(object_store::Error::Generic {
             store: "S3",
@@ -182,8 +183,7 @@ impl S3StoreTemplate {
         };
 
         Ok(Self {
-            // The builder reads only the bucket from the URL and quotes the URL in its errors.
-            url: without_credentials(url).to_string(),
+            url: url.to_string(),
             region,
             s3_configs,
         })
@@ -1327,9 +1327,14 @@ mod tests {
 
     #[test]
     fn create_store_errors_do_not_echo_userinfo_or_query() {
+        // Anonymous access and a configured region keep the builder case offline.
+        let configs = TestConfigBuilder::new()
+            .with_credential_provider(HADOOP_ANONYMOUS)
+            .with_region("us-east-1")
+            .build();
         let error_for = |raw: &str| {
             let url = Url::parse(raw).unwrap();
-            let err = match create_store(&url, &HashMap::new(), Duration::from_secs(300)) {
+            let err = match create_store(&url, &configs, Duration::from_secs(300)) {
                 Err(e) => e.to_string(),
                 Ok(_) => panic!("{raw} built a store"),
             };
@@ -1347,27 +1352,16 @@ mod tests {
         let unknown = error_for("foo://alice:SECRET@host/dir/f.parquet?sig=SAS-MARKER");
         assert!(unknown.contains("Unable to recognise URL"), "{unknown}");
         assert!(unknown.contains("foo://host"), "{unknown}");
-    }
-
-    /// The builder reads only the bucket from the template URL and quotes the URL in its errors.
-    #[test]
-    fn template_url_carries_no_credentials() {
-        let bucket = "comet-template-credentials-test-bucket";
-        // A configured region skips the region lookup.
-        let configs = HashMap::from([(
-            "fs.s3a.endpoint.region".to_string(),
-            "us-west-2".to_string(),
-        )]);
-        let url = Url::parse(&format!("s3a://alice:SECRET@{bucket}/k?sig=SAS-MARKER")).unwrap();
-        let template = S3StoreTemplate::new(&url, &configs, bucket).unwrap();
-        for leaked in ["alice", "SECRET", "SAS-MARKER"] {
-            assert!(
-                !template.url.contains(leaked),
-                "{leaked} echoed: {}",
-                template.url
-            );
-        }
-        assert_eq!(template.url, format!("s3a://{bucket}/k"));
+        // The parser accepts any amazonaws.com host; the builder rejects this one and quotes it.
+        let rejected = error_for("https://alice:SECRET@bucket.amazonaws.com/k?sig=SAS-MARKER");
+        assert!(
+            rejected.contains("URL did not match any known pattern"),
+            "{rejected}"
+        );
+        assert!(
+            rejected.contains("https://bucket.amazonaws.com/k"),
+            "{rejected}"
+        );
     }
 
     #[test]

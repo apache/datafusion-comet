@@ -340,6 +340,17 @@ mod tests {
         let err = error("alice@host://x");
         assert!(err.contains("Error parsing URL: "), "{err}");
         assert!(!err.contains("alice") && !err.contains("host"), "{err}");
+        let err =
+            promote_hostless_alias_url("blob://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER")
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("Error parsing blob URL: invalid port number"),
+            "{err}"
+        );
+        for leaked in ["alice", "SECRET", "SAS-MARKER"] {
+            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
+        }
     }
 
     #[test]
@@ -524,21 +535,6 @@ mod tests {
         // A hostless URL with no promotable first segment errors, so the scan fails loudly rather
         // than opening a bucketless URL. (The JVM gate already declines these; defense in depth.)
         assert!(promote_hostless_alias_url("blob:///").is_err());
-    }
-
-    #[test]
-    fn promote_errors_do_not_echo_the_url() {
-        let err =
-            promote_hostless_alias_url("blob://alice:SECRET@bucket:notaport/x?sig=SAS-MARKER")
-                .unwrap_err()
-                .to_string();
-        for leaked in ["alice", "SECRET", "SAS-MARKER"] {
-            assert!(!err.contains(leaked), "{leaked} echoed: {err}");
-        }
-        assert!(
-            err.contains("Error parsing blob URL: invalid port number"),
-            "{err}"
-        );
     }
 
     #[test]
