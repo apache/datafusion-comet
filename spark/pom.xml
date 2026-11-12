@@ -352,6 +352,7 @@ under the License.
       -->
       <properties>
         <delta.version>3.3.2</delta.version>
+        <iceberg.spark.runtime.version>1.8.1</iceberg.spark.runtime.version>
       </properties>
       <dependencies>
         <!--
@@ -389,7 +390,7 @@ under the License.
         <dependency>
           <groupId>org.apache.iceberg</groupId>
           <artifactId>iceberg-spark-runtime-${spark.version.short}_${scala.binary.version}</artifactId>
-          <version>1.8.1</version>
+          <version>${iceberg.spark.runtime.version}</version>
           <scope>test</scope>
         </dependency>
         <!-- Jetty 9.4.x for Spark 3.5 (javax.* packages) -->
