@@ -97,7 +97,7 @@ implementation depends on the source of the data:
 
 - `RowArrowReader`: a Spark `Iterator[InternalRow]` (row input)
 - `SparkColumnarArrowReader`: a non-Arrow Spark `ColumnarBatch`
-- `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (transfers `VectorSchemaRoot` ownership)
+- `ColumnarBatchArrowReader`: an Arrow-backed `ColumnarBatch` (retains its buffers before closing the input batch)
 
 The exported `ArrowArrayStream`s are boxed into the `Array[Object]` that `CometExecIterator` / `CometExecRDD` pass
 to native `createPlan`, one slot per scan input.
@@ -165,6 +165,12 @@ Off-heap Memory:                            │
 **Key Point**: The actual data buffers are shared zero-copy; native only takes pointers to the off-heap buffers.
 
 ### Ownership and Lifecycle
+
+For JVM columnar consumers, `CometNativeArrowSource` uses `CometArrowStream.readerBatchIter` to return batches
+with independent vectors that retain the reader's buffers without copying the data. Closing a batch or its
+columns leaves the source reader's reusable vector structure intact for its next batch. The iterator releases
+the batch vectors when it advances, and closes the final batch, reader and allocator at task completion. A later
+native consumer's `ColumnarBatchArrowReader` retains the buffers before closing its input batch.
 
 The Arrow C Stream Interface transfers ownership by reference count: native takes ownership of each imported batch,
 so it is safe to buffer batches in operators such as `SortExec` or `ShuffleWriterExec` without a deep copy.
@@ -243,13 +249,16 @@ or sliced booleans reach the JVM misaligned
 
 `zero_offsets` leaves the offsets of a sliced string, binary, list or map array as they are. arrow-rs slices those
 arrays by moving the start of their offsets, so the JVM imports them with offsets that start past zero and with the
-rows before the slice still at the front of the data buffer, or of the child vector for a list or map. Reading values
+rows before the slice still at the front of the data buffer, or of the child vector for a list or map. The first slice
+of an array starts at zero, but a list or map still has the elements of the later slices in its child. Reading values
 through the offsets is correct, but Arrow Java 18.3's `VectorSchemaRootAppender` assumes offsets that start at zero and
 folds those rows into the first value it appends, and `VectorUnloader` writes them into an IPC stream. So
 `Utils.serializeBatches` rebases a broadcast batch's offsets with `VectorSchemaRoot.slice` before
-`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and code that
-appends imported vectors has to rebase them too. The in-memory cache serializer still writes the earlier rows
-([#6995](https://github.com/apache/datafusion-comet/issues/6995)).
+`coalesceBroadcastBatches` appends it ([#6779](https://github.com/apache/datafusion-comet/issues/6779)), and
+`CachedBatchIpc.serialize` does the same before the in-memory cache writes a batch, so that a cached slice neither
+stores nor reports the rows before it ([#6995](https://github.com/apache/datafusion-comet/issues/6995)). The Arrow
+Python runner rebases the same way before it sends a batch to the worker. All three go through
+`Utils.withRebasedOffsets`, and code that appends or writes imported vectors has to use it too.
 
 ### Ownership and Lifecycle
 
