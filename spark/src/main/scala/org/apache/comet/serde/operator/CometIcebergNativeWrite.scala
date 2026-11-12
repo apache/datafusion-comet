@@ -902,12 +902,12 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
       op: IcebergWriteExec,
       builder: Operator.Builder,
       childOp: Operator*): Option[OperatorOuterClass.Operator] = {
-    val _ = (builder, childOp) // unused: we synthesise our own FFI scan child below
+    val _ = builder // unused: the write builds its own operator below
     try {
       for {
         icebergWrite <- buildIcebergWriteProto(op)
-        ffiScan <- buildFfiScan(op)
-        writeChild <- dropNonDataColumns(op, ffiScan)
+        input <- buildInputScan(op, childOp)
+        writeChild <- dropNonDataColumns(op, input)
       } yield OperatorOuterClass.Operator
         .newBuilder()
         .setPlanId(op.id)
@@ -934,11 +934,11 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
    * `decorate_batch_with_field_ids` rejects the batch.
    *
    * Plain writes already present only data columns, so no extra projection is needed. For 4.x
-   * ReplaceData we splice a `Projection` proto between our `IcebergWrite` op and the FFI `Scan`,
-   * selecting the upstream attributes whose names match the Iceberg schema's columns. The
-   * JVM-side child stays at the original wide output, so its `executeColumnar()` still emits the
-   * wide batches the FFI scan declares; the projection then strips them inside the native runtime
-   * before the writer sees the data.
+   * ReplaceData we splice a `Projection` proto between our `IcebergWrite` op and the input scan
+   * (`buildInputScan`), selecting the upstream attributes whose names match the Iceberg schema's
+   * columns. The JVM-side child stays at the original wide output, so its batches or shuffle
+   * blocks still carry the wide rows the scan declares; the projection then strips them inside
+   * the native runtime before the writer sees the data.
    */
   private def dropNonDataColumns(
       op: IcebergWriteExec,
@@ -995,6 +995,21 @@ object CometIcebergNativeWrite extends CometOperatorSerde[IcebergWriteExec] {
         .setProjection(projection)
         .build())
   }
+
+  /**
+   * The leaf of the write's native plan, which reads its child. A child that reads a Comet
+   * shuffle directly is a sink whose native operator is a `ShuffleScan` (see
+   * `CometExchangeSink`). The write takes that `ShuffleScan` as its own leaf, so the shuffle
+   * blocks are decoded inside the write's plan instead of in the JVM, and are not exported and
+   * imported again over FFI. Any other child is read through an FFI `Scan` of its batches.
+   */
+  private def buildInputScan(
+      op: IcebergWriteExec,
+      childOp: Seq[Operator]): Option[OperatorOuterClass.Operator] =
+    childOp match {
+      case Seq(child) if child.hasShuffleScan => Some(child)
+      case _ => buildFfiScan(op)
+    }
 
   private def buildFfiScan(op: IcebergWriteExec): Option[OperatorOuterClass.Operator] = {
     val scan = NativeWriteUtils.buildFfiScan(op.child, op.id)
